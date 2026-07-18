@@ -31,7 +31,7 @@ if(NOT CMAKE_CXX_COMPILER)
     set(CMAKE_CXX_COMPILER g++-14)
 endif()
 
-project(simplex_cpp LANGUAGES CXX)
+project(simplex_cpp VERSION 0.0.1 LANGUAGES CXX)
 
 # ---- LTO probe (shared) -----------------------------------------------------
 include(CheckIPOSupported)
@@ -90,5 +90,10 @@ target_compile_definitions(boost_dll_iface INTERFACE BOOST_DLL_USE_STD_FS)
 # module would scope CTest to that module's build dir and hide tests from a
 # top-level `ctest` run.)
 enable_testing()
+
+# versioning is added before indextools so its generated header
+# (build/generated/versioning/version.hpp) and SIMPLEX_VERSIONING_INCLUDE_DIR
+# are available to indextools' host, plugins, and tests.
+add_subdirectory(versioning)
 
 add_subdirectory(indextools)

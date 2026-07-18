@@ -1,0 +1,39 @@
+#pragma once
+
+/**
+ * @file versioning/version.hpp
+ * @brief Build-generated single source of truth for project version constants.
+ *
+ * This header is generated at configure time from version.hpp.in by
+ * versioning/CMakeLists.txt (via configure_file). It lives under the build
+ * tree (build/generated/versioning/version.hpp) and is exposed to every
+ * module through the `simplex_versioning` INTERFACE target and the
+ * SIMPLEX_VERSIONING_INCLUDE_DIR directory-scope variable.
+ *
+ * Do NOT edit the generated file — edit version.hpp.in and the CMakeLists
+ * that feeds it. To add a new version constant:
+ *   1. Set its value in versioning/CMakeLists.txt (or derive it from
+ *      PROJECT_VERSION_* set by the top-level project()).
+ *   2. Reference it here as an @PLACEHOLDER@.
+ *   3. Re-configure the build.
+ */
+
+#include <cstdint>
+
+namespace simplex {
+
+/// Project version components, derived from the top-level project() VERSION.
+inline constexpr unsigned VERSION_MAJOR = @PROJECT_VERSION_MAJOR@;
+inline constexpr unsigned VERSION_MINOR = @PROJECT_VERSION_MINOR@;
+inline constexpr unsigned VERSION_PATCH = @PROJECT_VERSION_PATCH@;
+
+/// Full project version string ("MAJOR.MINOR.PATCH").
+inline constexpr const char* VERSION_STRING = "@PROJECT_VERSION@";
+
+/// Plugin ABI contract version. Bump whenever LangPlugin or LangAnalyze
+/// changes in a binary-incompatible way; the indextools host refuses to load
+/// any language plugin whose abi_version() differs. See
+/// indextools/include/lang_plugin.hpp for the full contract.
+inline constexpr std::uint32_t LANG_PLUGIN_ABI_VERSION = @SIMPLEX_LANG_PLUGIN_ABI_VERSION@;
+
+} // namespace simplex

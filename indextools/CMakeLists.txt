@@ -27,9 +27,12 @@ set(INDEXTOOLS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # indextools headers are visible to this module's own targets. third_party
 # headers come in via simplex_thirdparty_iface; the lib search path likewise.
+# SIMPLEX_VERSIONING_INCLUDE_DIR (set by the sibling versioning/ module) brings
+# in the build-generated versioning/version.hpp — used by lang_plugin.hpp.
 include_directories(
     "${INDEXTOOLS_INCLUDE_DIR}"
     "${SIMPLEX_THIRDPARTY_DIR}/include"
+    "${SIMPLEX_VERSIONING_INCLUDE_DIR}"
 )
 link_directories("${SIMPLEX_THIRDPARTY_DIR}/libs")
 

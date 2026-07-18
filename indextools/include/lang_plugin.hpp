@@ -73,6 +73,7 @@
 #include <cstdint>
 
 #include "lang.hpp"
+#include "versioning/version.hpp"
 
 #if defined(_WIN32)
     #define LANG_PLUGIN_EXPORT extern "C" __declspec(dllexport)
@@ -87,7 +88,11 @@ namespace indextools {
 ///
 /// v2: replaced extensions() (extension table) with file_pattern() (regex on
 ///     the file name) and added priority() for match ordering.
-inline constexpr std::uint32_t LANG_PLUGIN_ABI_VERSION = 2;
+///
+/// The canonical value lives in the sibling versioning/ module
+/// (build-generated versioning/version.hpp → simplex::LANG_PLUGIN_ABI_VERSION).
+/// This alias keeps the existing indextools-namespace references unchanged.
+inline constexpr std::uint32_t LANG_PLUGIN_ABI_VERSION = simplex::LANG_PLUGIN_ABI_VERSION;
 
 /// Default priority for plugins that do not override priority(). Higher wins;
 /// a broad catch-all should return a value below this so real language plugins
