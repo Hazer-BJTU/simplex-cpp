@@ -23,10 +23,14 @@ using namespace indextools;
 // The helper `run_with_manager` constructs a SubProcessManager on the
 // io_context's executor and passes it to the test body. Because the manager
 // and its instances are shared_ptr-owned and the background coroutines
-// (read/write tasks, the wait_done reaper) capture shared_from_this(),
+// (read/write tasks, the background reaper) capture shared_from_this(),
 // io_context::run() keeps spinning until every spawned child has been reaped
-// — so tests MUST terminate/collect every process they spawn, otherwise
-// run() never returns and the test hangs.
+// and collected — so tests MUST collect (or terminate+collect) every process
+// they spawn, otherwise run() never returns and the test hangs.
+//
+// Note: wait_done() (the per-id reaper) is private — spawn() already starts it
+// automatically. Tests therefore synchronise on reap completion through the
+// public collect_*() surface rather than calling wait_done() directly.
 
 namespace {
 
@@ -44,9 +48,9 @@ void run_with_manager(Fn fn) {
 }
 
 // Pull a value out of a ProcessReport's meta table by its field_name label.
-// list_status / collect_* now return schema::ProcessReport[] (see schema.hpp),
-// whose id/status/exit-code live in the parallel meta arrays rather than as
-// nested keys.
+// list_status / collect_* / spawn_and_wait now return schema::ProcessReport
+// (see schema.hpp), whose id/status/exit-code live in the parallel meta arrays
+// rather than as nested keys.
 nlohmann::json report_meta(const nlohmann::json& report, const std::string& name) {
     const auto& meta = report.at("meta");
     const auto& names = meta.at("field_name");
@@ -92,6 +96,46 @@ boost::asio::awaitable<std::string> drain_until(
     co_return accumulated;
 }
 
+// Block until every spawned child has been reaped into `_finished` (i.e.
+// collect_running() reports nothing), WITHOUT draining `_finished`. This is
+// the public-API replacement for the private wait_done() when a test needs to
+// gate a subsequent collect_finished() — e.g. to assert on the *first*
+// collect's delta output.
+boost::asio::awaitable<void> wait_until_reaped(SubProcessManager& manager, int max_polls = 80) {
+    boost::asio::steady_timer t(co_await boost::asio::this_coro::executor);
+    for (int i = 0; i < max_polls; ++i) {
+        auto running = co_await manager.collect_running(true);
+        if (running.empty()) {
+            co_return;
+        }
+        t.expires_after(25ms);
+        co_await t.async_wait(boost::asio::use_awaitable);
+    }
+    co_return;
+}
+
+// Accumulate collect_finished() output (full buffers) until @p n reaped
+// processes have been collected, polling the background reaper. Deterministic
+// replacement for the old spawn → wait_done → collect_finished sequence: it
+// waits for the reaper to do its job and returns the gathered reports.
+boost::asio::awaitable<nlohmann::json> collect_until_count(
+    std::shared_ptr<SubProcessManager> manager, size_t n, int max_polls = 80)
+{
+    nlohmann::json all = nlohmann::json::array();
+    boost::asio::steady_timer t(co_await boost::asio::this_coro::executor);
+    for (int i = 0; i < max_polls && all.size() < n; ++i) {
+        auto batch = co_await manager->collect_finished(true);
+        for (auto& entry: batch) {
+            all.push_back(std::move(entry));
+        }
+        if (all.size() < n) {
+            t.expires_after(25ms);
+            co_await t.async_wait(boost::asio::use_awaitable);
+        }
+    }
+    co_return all;
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -104,10 +148,7 @@ BOOST_AUTO_TEST_CASE(spawn_echo_collects_stdout_full)
 {
     run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
         auto id = co_await manager->spawn("echo hello", "bash", {"-c", "echo hello"});
-        co_await manager->wait_done(id);
-        co_await brief_sleep();
-
-        auto result = co_await manager->collect_finished(true);
+        auto result = co_await collect_until_count(manager, 1);
         BOOST_REQUIRE_EQUAL(result.size(), 1u);
         BOOST_CHECK_EQUAL(report_meta(result[0], "ID"), id);
         BOOST_CHECK_EQUAL(report_meta(result[0], "Status"), "exited");
@@ -120,11 +161,8 @@ BOOST_AUTO_TEST_CASE(spawn_echo_collects_stdout_full)
 BOOST_AUTO_TEST_CASE(spawn_nonzero_exit_code)
 {
     run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
-        auto id = co_await manager->spawn("exit 7", "bash", {"-c", "exit 7"});
-        co_await manager->wait_done(id);
-        co_await brief_sleep();
-
-        auto result = co_await manager->collect_finished(true);
+        co_await manager->spawn("exit 7", "bash", {"-c", "exit 7"});
+        auto result = co_await collect_until_count(manager, 1);
         BOOST_REQUIRE_EQUAL(result.size(), 1u);
         BOOST_CHECK_EQUAL(report_meta(result[0], "Status"), "exited");
         BOOST_CHECK_EQUAL(report_meta(result[0], "Exit Code"), 7);
@@ -135,11 +173,8 @@ BOOST_AUTO_TEST_CASE(spawn_nonzero_exit_code)
 BOOST_AUTO_TEST_CASE(spawn_captures_stderr_separately)
 {
     run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
-        auto id = co_await manager->spawn("err msg", "bash", {"-c", "echo errstuff >&2; echo outmsg"});
-        co_await manager->wait_done(id);
-        co_await brief_sleep();
-
-        auto result = co_await manager->collect_finished(true);
+        co_await manager->spawn("err msg", "bash", {"-c", "echo errstuff >&2; echo outmsg"});
+        auto result = co_await collect_until_count(manager, 1);
         BOOST_REQUIRE_EQUAL(result.size(), 1u);
         BOOST_CHECK_EQUAL(result[0]["stdout"], "outmsg\n");
         BOOST_CHECK_EQUAL(result[0]["stderr"], "errstuff\n");
@@ -150,11 +185,12 @@ BOOST_AUTO_TEST_CASE(spawn_captures_stderr_separately)
 BOOST_AUTO_TEST_CASE(collect_finished_default_uses_delta)
 {
     // Default collect_finished (full_output=false) reports the deltas since
-    // the last read. On the first collect, the delta equals the full buffer.
+    // the last read. On the first collect, the delta equals the full buffer —
+    // but only if we wait for the reaper without first draining via
+    // collect_finished(true), hence wait_until_reaped().
     run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
-        auto id = co_await manager->spawn("echo", "bash", {"-c", "echo first"});
-        co_await manager->wait_done(id);
-        co_await brief_sleep();
+        co_await manager->spawn("echo", "bash", {"-c", "echo first"});
+        co_await wait_until_reaped(*manager);
 
         auto first = co_await manager->collect_finished(false);
         BOOST_REQUIRE_EQUAL(first.size(), 1u);
@@ -199,8 +235,7 @@ BOOST_AUTO_TEST_CASE(read_delta_returns_only_new_bytes)
         auto empty_delta = co_await inst->read_delta(SubProcessManager::IO::STDOUT);
         BOOST_CHECK(!empty_delta.has_value());
 
-        co_await manager->wait_done(id);
-        co_await manager->collect_finished(true);
+        co_await collect_until_count(manager, 1);
         co_return;
     });
 }
@@ -229,8 +264,7 @@ BOOST_AUTO_TEST_CASE(read_delta_separates_stdout_and_stderr_cursors)
         BOOST_CHECK_EQUAL(*out_delta, "toout\n");
         BOOST_CHECK_EQUAL(*err_delta, "toerr\n");
 
-        co_await manager->wait_done(id);
-        co_await manager->collect_finished(true);
+        co_await collect_until_count(manager, 1);
         co_return;
     });
 }
@@ -243,8 +277,7 @@ BOOST_AUTO_TEST_CASE(read_stdin_returns_nullopt)
         BOOST_REQUIRE(inst);
         auto result = co_await inst->read(SubProcessManager::IO::STDIN);
         BOOST_CHECK(!result.has_value());
-        co_await manager->wait_done(id);
-        co_await manager->collect_finished(true);
+        co_await collect_until_count(manager, 1);
         co_return;
     });
 }
@@ -267,8 +300,7 @@ BOOST_AUTO_TEST_CASE(read_returns_full_buffer_including_earlier_delta)
         BOOST_REQUIRE(full);
         BOOST_CHECK_EQUAL(*full, "line1\nline2\n");
 
-        co_await manager->wait_done(id);
-        co_await manager->collect_finished(true);
+        co_await collect_until_count(manager, 1);
         co_return;
     });
 }
@@ -296,8 +328,7 @@ BOOST_AUTO_TEST_CASE(write_is_echoed_back_by_cat)
         BOOST_CHECK(accumulated.find("hello world") != std::string::npos);
 
         co_await inst->stop_writing();
-        co_await manager->wait_done(id);
-        co_await manager->collect_finished(true);
+        co_await collect_until_count(manager, 1);
         co_return;
     });
 }
@@ -316,8 +347,7 @@ BOOST_AUTO_TEST_CASE(stop_writing_makes_subsequent_write_fail)
         bool ok = co_await inst->write("should not be written\n");
         BOOST_CHECK(!ok);
 
-        co_await manager->wait_done(id);
-        co_await manager->collect_finished(true);
+        co_await collect_until_count(manager, 1);
         co_return;
     });
 }
@@ -325,17 +355,17 @@ BOOST_AUTO_TEST_CASE(stop_writing_makes_subsequent_write_fail)
 BOOST_AUTO_TEST_CASE(write_to_unknown_pipe_returns_false)
 {
     run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
-        // `true` exits immediately; stdin closes when the process is reaped.
+        // `true` exits immediately; once reaped, done() closes stdin.
         auto id = co_await manager->spawn("true", "bash", {"-c", "true"});
-        co_await manager->wait_done(id);
-        co_await brief_sleep();
-
         auto inst = co_await manager->get(id);
         BOOST_REQUIRE(inst);
+
+        // Wait for the reaper to reap (closing the stdin pipe) without holding
+        // a collect result; the instance stays alive via `inst`.
+        co_await collect_until_count(manager, 1);
+
         bool ok = co_await inst->write("too late\n");
         BOOST_CHECK(!ok);
-
-        co_await manager->collect_finished(true);
         co_return;
     });
 }
@@ -359,10 +389,7 @@ BOOST_AUTO_TEST_CASE(list_status_reports_all_live_instances)
         auto status = co_await manager->list_status();
         BOOST_CHECK_EQUAL(status.size(), 3u);
 
-        for (auto id: ids) {
-            co_await manager->wait_done(id);
-        }
-        co_await manager->collect_finished(true);
+        co_await collect_until_count(manager, ids.size());
         co_return;
     });
 }
@@ -400,15 +427,15 @@ BOOST_AUTO_TEST_CASE(execution_status_transitions_running_to_exited)
         BOOST_CHECK_EQUAL(before["status"], "running");
         BOOST_CHECK(before["exit_code"].is_null());
 
-        co_await manager->wait_done(id);
+        // collect_until_count blocks until the reaper reaps the sleeper. The
+        // instance is removed from the manager but kept alive by `inst`.
+        co_await collect_until_count(manager, 1);
 
         auto after = co_await inst->execution_status();
         BOOST_CHECK_EQUAL(after["status"], "exited");
         BOOST_CHECK_EQUAL(after["exit_code"], 0);
         // execution_milliseconds is a non-negative duration.
         BOOST_CHECK_GE(after["execution_milliseconds"].get<int64_t>(), 0);
-
-        co_await manager->collect_finished(true);
         co_return;
     });
 }
@@ -462,7 +489,7 @@ BOOST_AUTO_TEST_CASE(terminate_all_reaps_every_running_instance)
         }
 
         co_await manager->terminate_all();
-        // Let the background wait_done reapers transition _running → _finished.
+        // Let the background reapers transition _running → _finished.
         co_await brief_sleep();
 
         auto collected = co_await manager->collect_finished(true);
@@ -496,16 +523,13 @@ BOOST_AUTO_TEST_CASE(collected_id_is_recycled_on_next_spawn)
 {
     run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
         auto first = co_await manager->spawn("first", "bash", {"-c", "true"});
-        co_await manager->wait_done(first);
-        co_await brief_sleep();
-        co_await manager->collect_finished(true);  // returns `first` to _free
+        co_await collect_until_count(manager, 1);  // reaps + frees `first`
 
         auto second = co_await manager->spawn("second", "bash", {"-c", "true"});
         // The recycled id should be the one we just freed.
         BOOST_CHECK_EQUAL(second, first);
 
-        co_await manager->wait_done(second);
-        co_await manager->collect_finished(true);
+        co_await collect_until_count(manager, 1);
         co_return;
     });
 }
@@ -530,6 +554,162 @@ BOOST_AUTO_TEST_CASE(ids_are_unique_while_not_freed)
 BOOST_AUTO_TEST_SUITE_END()
 
 // ============================================================================
+// Suite: SpawnAndWait — spawn_and_wait: ProcessReport / timeout / kill / detach
+// ============================================================================
+//
+// spawn_and_wait returns a full schema::ProcessReport (meta + stdout/stderr).
+// The meta Status field is "exited" once reaped (with Exit Code) or "running"
+// when the timeout detached the still-living child. A reaped child is removed
+// from the manager and its id recycled before the call returns — no
+// collect_finished() needed — so the reaped-case tests below perform no
+// collection. A detached child stays tracked for a later collect_*().
+
+BOOST_AUTO_TEST_SUITE(SpawnAndWaitSuite)
+
+BOOST_AUTO_TEST_CASE(spawn_and_wait_returns_exited_report_when_child_finishes_in_time)
+{
+    run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
+        auto report = co_await manager->spawn_and_wait(
+            "true", "bash", {"-c", "true"}, 2s, /*kill=*/false);
+        BOOST_CHECK_EQUAL(report_meta(report, "Status"), "exited");
+        BOOST_CHECK_EQUAL(report_meta(report, "Exit Code"), 0);
+        // Full ProcessReport always carries the stream slots.
+        BOOST_CHECK(report.contains("stdout"));
+        BOOST_CHECK(report.contains("stderr"));
+        // Reaped → handle already reclaimed, nothing left to collect.
+        BOOST_CHECK_EQUAL((co_await manager->collect_finished(true)).size(), 0u);
+        co_return;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(spawn_and_wait_report_includes_stdout_stream)
+{
+    run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
+        auto report = co_await manager->spawn_and_wait(
+            "echo", "bash", {"-c", "echo hello"}, 2s, /*kill=*/false);
+        BOOST_CHECK_EQUAL(report_meta(report, "Status"), "exited");
+        BOOST_CHECK_EQUAL(report["stdout"], "hello\n");
+        // No stderr produced: read() returns the (empty) full buffer, which
+        // serialises as an empty string — matching collect_finished(true).
+        BOOST_CHECK_EQUAL(report["stderr"], "");
+        co_return;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(spawn_and_wait_report_includes_stderr_stream)
+{
+    run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
+        auto report = co_await manager->spawn_and_wait(
+            "err", "bash", {"-c", "echo boom >&2"}, 2s, /*kill=*/false);
+        BOOST_CHECK_EQUAL(report_meta(report, "Status"), "exited");
+        BOOST_CHECK_EQUAL(report["stderr"], "boom\n");
+        BOOST_CHECK_EQUAL(report["stdout"], "");
+        co_return;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(spawn_and_wait_report_carries_id_and_description)
+{
+    run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
+        auto report = co_await manager->spawn_and_wait(
+            "label-here", "bash", {"-c", "true"}, 2s, /*kill=*/false);
+        BOOST_CHECK_EQUAL(report_meta(report, "Description"), "label-here");
+        auto id = report_meta(report, "ID");
+        BOOST_REQUIRE(id.is_number_integer());
+        co_return;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(spawn_and_wait_nonzero_exit_within_timeout)
+{
+    run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
+        auto report = co_await manager->spawn_and_wait(
+            "exit 7", "bash", {"-c", "exit 7"}, 2s, /*kill=*/true);
+        BOOST_CHECK_EQUAL(report_meta(report, "Status"), "exited");
+        BOOST_CHECK_EQUAL(report_meta(report, "Exit Code"), 7);
+        co_return;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(spawn_and_wait_timeout_kills_long_running_process)
+{
+    run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
+        auto report = co_await manager->spawn_and_wait(
+            "long sleep", "bash", {"-c", "sleep 30"}, 200ms, /*kill=*/true);
+        BOOST_CHECK_EQUAL(report_meta(report, "Status"), "exited");
+        // SIGTERM death surfaces a non-null exit code.
+        BOOST_CHECK(!report_meta(report, "Exit Code").is_null());
+        // Killed → reaped → handle reclaimed.
+        BOOST_CHECK_EQUAL((co_await manager->collect_finished(true)).size(), 0u);
+        co_return;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(spawn_and_wait_reaped_child_reclaims_id_and_handle)
+{
+    // The whole point of reclaiming: after a reaped spawn_and_wait the id is
+    // recycled and the manager holds no live instance.
+    run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
+        auto report = co_await manager->spawn_and_wait(
+            "first", "bash", {"-c", "true"}, 2s, /*kill=*/false);
+        auto first_id = report_meta(report, "ID").get<SubProcessManager::ProcessID>();
+        BOOST_CHECK_EQUAL(report_meta(report, "Status"), "exited");
+
+        // Handle gone: no live instances, nothing to collect.
+        BOOST_CHECK_EQUAL((co_await manager->list_status()).size(), 0u);
+        BOOST_CHECK_EQUAL((co_await manager->collect_finished(true)).size(), 0u);
+
+        // The freed id is reused by the next spawn.
+        auto recycled = co_await manager->spawn("second", "bash", {"-c", "true"});
+        BOOST_CHECK_EQUAL(recycled, first_id);
+        co_await collect_until_count(manager, 1);
+        co_return;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(spawn_and_wait_timeout_detaches_when_kill_false)
+{
+    run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
+        auto report = co_await manager->spawn_and_wait(
+            "long sleep", "bash", {"-c", "sleep 30"}, 200ms, /*kill=*/false);
+        // Detached: the child is still alive, so the snapshot reports running.
+        BOOST_CHECK_EQUAL(report_meta(report, "Status"), "running");
+        BOOST_CHECK(report_meta(report, "Exit Code").is_null());
+
+        // collect_running must still see the detached child.
+        auto running = co_await manager->collect_running(true);
+        BOOST_REQUIRE_EQUAL(running.size(), 1u);
+        BOOST_CHECK_EQUAL(report_meta(running[0], "Status"), "running");
+
+        // Clean up so io_context::run() can return.
+        co_await manager->terminate_all();
+        co_await brief_sleep();
+        co_await manager->collect_finished(true);
+        co_return;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(spawn_and_wait_detach_then_collect_finished_after_exit)
+{
+    // A detached child must still flow through _finished once it exits on its
+    // own, so a later collect_finished() drains it.
+    run_with_manager([](std::shared_ptr<SubProcessManager> manager) -> boost::asio::awaitable<void> {
+        auto report = co_await manager->spawn_and_wait(
+            "short sleep", "bash", {"-c", "sleep 1"}, 100ms, /*kill=*/false);
+        BOOST_CHECK_EQUAL(report_meta(report, "Status"), "running");
+
+        // It exits ~900ms later; collect_until_count waits for the reaper.
+        auto collected = co_await collect_until_count(manager, 1);
+        BOOST_REQUIRE_EQUAL(collected.size(), 1u);
+        BOOST_CHECK_EQUAL(report_meta(collected[0], "Status"), "exited");
+        BOOST_CHECK_EQUAL(report_meta(collected[0], "Exit Code"), 0);
+        co_return;
+    });
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ============================================================================
 // Suite: ConcurrentSpawning — many processes at once
 // ============================================================================
 
@@ -543,11 +723,7 @@ BOOST_AUTO_TEST_CASE(spawn_many_processes_and_collect_all)
             std::vector<std::string> args{"-c", "echo " + std::to_string(i)};
             ids.push_back(co_await manager->spawn("echo", "bash", std::move(args)));
         }
-        for (auto id: ids) {
-            co_await manager->wait_done(id);
-        }
-        co_await brief_sleep();
-        auto collected = co_await manager->collect_finished(true);
+        auto collected = co_await collect_until_count(manager, ids.size());
         BOOST_CHECK_EQUAL(collected.size(), 10u);
 
         // Under heavy concurrency the background read tasks can lose a

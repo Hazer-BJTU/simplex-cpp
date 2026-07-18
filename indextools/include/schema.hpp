@@ -14,7 +14,8 @@
  *                       entity, check_difference, and the read interface
  *                       (viewer.hpp). See "DisplayBlock" below.
  *   - ProcessReport[] — subprocess status responses: SubProcessManager's
- *                       list_status / collect_finished / collect_running.
+ *                       list_status / collect_finished / collect_running, and
+ *                       the single ProcessReport returned by spawn_and_wait().
  *                       See "ProcessReport" below.
  *
  * The two are deliberately distinct: a display block is `meta` + one body

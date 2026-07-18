@@ -52,6 +52,7 @@
 
 #include <boost/asio.hpp>
 #include <boost/asio/experimental/channel.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/process.hpp>
 #include <boost/system.hpp>
 
@@ -147,7 +148,11 @@ public:
         /// Background loop: drain `_write_channel` into the child's stdin, suspending when empty.
         boost::asio::awaitable<void> _background_write_task() noexcept;
 
-        /// Block until the process exits, then close all pipes and record exit_code. Idempotent.
+        /// Block until the process exits, then close all pipes and record
+        /// exit_code. Idempotent, and cancellation-safe: if the internal
+        /// async_wait is cancelled (e.g. spawn_and_wait's timeout firing) while
+        /// the child is still running, done() returns WITHOUT reaping, leaving
+        /// the child and its pipes intact for a later detach/kill.
         boost::asio::awaitable<ProcessID> done() noexcept;
         /// Send SIGTERM, then done(). Idempotent.
         boost::asio::awaitable<ProcessID> terminate() noexcept;
@@ -168,6 +173,23 @@ private:
     boost::asio::strand<boost::asio::any_io_executor> _strand;  ///< Serialises all manager state.
     std::unordered_map<ProcessID, std::shared_ptr<SubProcessInstance>> _instances;  ///< Every live instance by ID.
     std::unordered_set<ProcessID> _free, _running, _finished;  ///< ID pools: recyclable / unreaped / reaped.
+
+    /// Background reaper for one process: await done() then move `_running →
+    /// _finished`. No-op if @p id isn't running (already collected). Called
+    /// automatically by spawn()'s detached reaper — public callers should use
+    /// spawn_and_wait() or collect_finished() instead, hence private.
+    boost::asio::awaitable<void> wait_done(ProcessID id) noexcept;
+
+    /// Shared spawn body: allocate an id, create the instance, register it as
+    /// running, and — when @p autoreap — start the background reaper. spawn()
+    /// passes autoreap=true; spawn_and_wait() passes false and reaps inline so
+    /// it can reclaim the id itself without racing a detached reaper.
+    boost::asio::awaitable<ProcessID> _spawn(
+        std::string_view description,
+        std::string_view exec_name,
+        std::vector<std::string> args,
+        bool autoreap
+    );
 
 public:
     SubProcessManager(boost::asio::any_io_executor io_executor);
@@ -193,8 +215,42 @@ public:
         std::vector<std::string> args
     );
 
-    /// Block until @p id has exited and been reaped. No-op if unknown / already reaped.
-    boost::asio::awaitable<void> wait_done(ProcessID id) noexcept;
+    /**
+     * @brief Launch a child process and wait for it up to @p timeout.
+     *
+     * Unlike spawn(), this does NOT start a background reaper — it owns the
+     * single async_wait on the child for the duration of the wait, so there is
+     * no concurrent reaper to race when it reclaims the id. The wait races
+     * done() against a steady_timer of @p timeout:
+     *   - If the child exits in time, it is reaped by done() and the call
+     *     returns the final report.
+     *   - If @p timeout elapses and @p kill is true, the child is SIGTERM'd and
+     *     reaped (terminate()).
+     *   - If @p timeout elapses and @p kill is false, the child is left running
+     *     (detached); a background reaper is started so a later
+     *     collect_running()/collect_finished() can still observe/drain it.
+     *
+     * Because spawn_and_wait returns the final result, a reaped child (natural
+     * exit or kill) is removed from `_instances` and its id returned to `_free`
+     * before the call returns — no collect_finished() is needed for it. The
+     * removal happens in a single dispatch on the manager strand with no
+     * suspension in between, so a concurrent spawn() cannot recycle the id
+     * mid-removal. A detached child stays in `_instances`/`_running` (it is not
+     * done yet) and is reclaimed later via collect_finished().
+     *
+     * @return A full schema::ProcessReport (meta + stdout/stderr streams) for
+     *         the child at the moment of return. Streams carry the accumulated
+     *         output so far (complete when reaped, partial when detached). The
+     *         Status meta field is "exited" (with Exit Code) or "running"
+     *         (detached, Exit Code null).
+     */
+    boost::asio::awaitable<nlohmann::json> spawn_and_wait(
+        std::string_view description,
+        std::string_view exec_name,
+        std::vector<std::string> args,
+        Clock::duration timeout,
+        bool kill
+    );
 
     /// Look up the instance for @p id (nullptr if unknown). Safe to call while reaping.
     boost::asio::awaitable<std::shared_ptr<SubProcessInstance>> get(ProcessID id) const noexcept;

@@ -170,6 +170,12 @@ boost::asio::awaitable<void> SubProcessManager::SubProcessInstance::_background_
 // Reap the child: wait for it to exit, then tear down all I/O. Guarded by
 // `exited` so it is safe to call multiple times (e.g. once from terminate()
 // and once from the manager's background wait_done()).
+//
+// Cancellation-safe: spawn_and_wait() races this against a timeout. If the
+// async_wait is cancelled while the child is still running, redirect_error
+// captures operation_aborted into `ec` (no throw) and we then gate the reap on
+// `!running()` — a still-living child is left untouched so the caller can
+// detach or kill it. Only an actually-exited child is reaped.
 boost::asio::awaitable<SubProcessManager::ProcessID> SubProcessManager::SubProcessInstance::done() noexcept {
     boost::system::error_code ec;
     co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
@@ -177,25 +183,25 @@ boost::asio::awaitable<SubProcessManager::ProcessID> SubProcessManager::SubProce
         co_await _process_ptr->async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
     }
 
-    if (!exited) {
+    // Only reap when the child has truly exited. A cancelled async_wait leaves
+    // it running; reaping anyway would drop the handle and orphan it.
+    if (!exited && _process_ptr && !_process_ptr->running()) {
         exited = true;
         end_point = Clock::now();
-        if (_process_ptr) {
-            exit_code = _process_ptr->exit_code();
-            // Close the write channel first to wake the background write task,
-            // then close all pipes to signal EOF to the read tasks.
-            _write_channel.close();
-            if (_pipe0.is_open()) {
-                _pipe0.close(ec);
-            }
-            if (_pipe1.is_open()) {
-                _pipe1.close(ec);
-            }
-            if (_pipe2.is_open()) {
-                _pipe2.close(ec);
-            }
-            _process_ptr.reset();
+        exit_code = _process_ptr->exit_code();
+        // Close the write channel first to wake the background write task,
+        // then close all pipes to signal EOF to the read tasks.
+        _write_channel.close();
+        if (_pipe0.is_open()) {
+            _pipe0.close(ec);
         }
+        if (_pipe1.is_open()) {
+            _pipe1.close(ec);
+        }
+        if (_pipe2.is_open()) {
+            _pipe2.close(ec);
+        }
+        _process_ptr.reset();
     }
     co_return id;
 }
@@ -328,12 +334,15 @@ _top_id(0), _strand(std::move(io_executor)), _instances(), _free(), _running(), 
 SubProcessManager::~SubProcessManager() {}
 
 // Hand out a (possibly recycled) ID, launch the instance on the manager's
-// executor, register it as running, and start a background reaper that will
-// move it to `_finished` as soon as the child exits.
-boost::asio::awaitable<SubProcessManager::ProcessID> SubProcessManager::spawn(
+// executor, and register it as running. When @p autoreap, also start a
+// background reaper that moves it to `_finished` as soon as the child exits.
+// spawn_and_wait() passes autoreap=false and reaps inline so it can reclaim
+// the id itself without racing a detached reaper.
+boost::asio::awaitable<SubProcessManager::ProcessID> SubProcessManager::_spawn(
     std::string_view description,
     std::string_view exec_name,
-    std::vector<std::string> args
+    std::vector<std::string> args,
+    bool autoreap
 ) {
     co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
 
@@ -349,12 +358,100 @@ boost::asio::awaitable<SubProcessManager::ProcessID> SubProcessManager::spawn(
     _instances[current_id] = SubProcessInstance::create(current_id, description, exec_name, std::move(args), _strand.get_inner_executor());
     _running.insert(current_id);
 
-    // Detached reaper: keeps the manager alive (shared_from_this) until the
-    // child is reaped, then transitions _running → _finished.
-    boost::asio::co_spawn(_strand, [current_id, self = shared_from_this()]() -> boost::asio::awaitable<void> {
-        co_await self->wait_done(current_id);
-    }, [](std::exception_ptr){});
+    if (autoreap) {
+        // Detached reaper: keeps the manager alive (shared_from_this) until the
+        // child is reaped, then transitions _running → _finished.
+        boost::asio::co_spawn(_strand, [current_id, self = shared_from_this()]() -> boost::asio::awaitable<void> {
+            co_await self->wait_done(current_id);
+        }, [](std::exception_ptr){});
+    }
     co_return current_id;
+}
+
+boost::asio::awaitable<SubProcessManager::ProcessID> SubProcessManager::spawn(
+    std::string_view description,
+    std::string_view exec_name,
+    std::vector<std::string> args
+) {
+    co_return co_await _spawn(description, exec_name, std::move(args), /*autoreap=*/true);
+}
+
+// spawn_and_wait owns the wait itself: it spawns WITHOUT a background reaper
+// (autoreap=false), so its done() holds the single async_wait on the child,
+// then races that against a timeout. There is no concurrent reaper, so when it
+// reclaims the id for a reaped child nothing else is mid-bookkeeping for that
+// id. awaitable_operators' operator|| cancels the losing branch and waits for
+// it to unwind before returning, so a cancelled done() has fully released the
+// async_wait before we act on the timeout.
+boost::asio::awaitable<nlohmann::json> SubProcessManager::spawn_and_wait(
+    std::string_view description,
+    std::string_view exec_name,
+    std::vector<std::string> args,
+    Clock::duration timeout,
+    bool kill
+) {
+    auto id = co_await _spawn(description, exec_name, std::move(args), /*autoreap=*/false);
+    auto instance = co_await get(id);
+    if (!instance) {
+        // Spawn reported success but the instance vanished before get() — emit a
+        // minimal ProcessReport-shaped unknown status so callers still see the
+        // contract's meta fields.
+        nlohmann::json unknown_status = {
+            {"status", "unknown"},
+            {"exit_code", nullptr},
+            {"execution_milliseconds", 0}
+        };
+        co_return schema::ProcessReport(id, description, unknown_status).build();
+    }
+
+    boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor, timeout);
+    boost::system::error_code timer_ec;
+    using boost::asio::experimental::awaitable_operators::operator||;
+    // Race reap-vs-timeout. Both branches use redirect_error so the cancelled
+    // loser completes cleanly (no throw). winner.index() 0 = done() reaped
+    // (child exited), 1 = timer fired first.
+    auto winner = co_await (
+        instance->done() ||
+        timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, timer_ec))
+    );
+
+    if (winner.index() == 1) {
+        // Timer won → timeout. done() was cancelled; the child is (almost
+        // always) still running. SIGTERM+reap when asked, otherwise leave it
+        // running (detach).
+        if (kill) {
+            co_await instance->terminate();
+        }
+    }
+    // winner.index() == 0: done() reaped the child on natural exit.
+
+    // Build the full ProcessReport: meta from execution_status(), plus the
+    // accumulated stdout/stderr (complete when reaped, partial when detached).
+    auto status = co_await instance->execution_status();
+    auto out = co_await instance->read(IO::STDOUT);
+    auto err = co_await instance->read(IO::STDERR);
+    auto report = schema::ProcessReport(instance->id, instance->description, status)
+                      .stream(out, err)
+                      .build();
+
+    // Reclaim the id for a reaped child. Done as ONE dispatch on the manager
+    // strand with no suspension between the erase/free, so a concurrent
+    // spawn() cannot recycle this id mid-removal. A detached child is left in
+    // _instances/_running and handed to a freshly started reaper instead.
+    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
+    if (status["status"] == "exited") {
+        _instances.erase(id);
+        _running.erase(id);
+        _finished.erase(id);
+        _free.insert(id);
+    } else {
+        // Detached: start the background reaper so the still-living child is
+        // eventually reaped and a later collect_*() can observe it.
+        boost::asio::co_spawn(_strand, [id, self = shared_from_this()]() -> boost::asio::awaitable<void> {
+            co_await self->wait_done(id);
+        }, [](std::exception_ptr){});
+    }
+    co_return report;
 }
 
 // Background reaper for a single process. No-op if the id isn't running (e.g.
