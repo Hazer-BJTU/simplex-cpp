@@ -30,6 +30,11 @@ foreach(TEST_SRC ${TEST_SOURCES})
     elseif(TEST_NAME STREQUAL "test_logger")
         # Logger is self-contained: only needs its own .cpp.
         set(TEST_EXTRA_SOURCES "${INDEXTOOLS_SOURCE_DIR}/src/logger.cpp")
+    elseif(TEST_NAME STREQUAL "test_shell")
+        # SpawnWaitCommand::execute is a coroutine defined in the header that
+        # references SubProcessManager::spawn_and_wait — the linker needs the
+        # symbol even though ensure_params-only tests never call it.
+        set(TEST_EXTRA_SOURCES "${INDEXTOOLS_SOURCE_DIR}/src/subprocess.cpp")
     else()
         set(TEST_EXTRA_SOURCES
             "${INDEXTOOLS_SOURCE_DIR}/src/utils.cpp"
