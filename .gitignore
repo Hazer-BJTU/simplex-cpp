@@ -39,6 +39,10 @@
 *.out
 *.app
 
+# Vendored third-party static libs ARE source — un-ignore them despite *.a above.
+# (Only build outputs under build/ should be ignored; third_party/ is committed.)
+!third_party/libs/*.a
+
 # Build directories
 build/
 Build/
