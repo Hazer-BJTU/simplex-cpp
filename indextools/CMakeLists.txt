@@ -9,7 +9,8 @@
 # per-module dependency inventory.
 #
 # This file owns only indextools-specific build logic:
-#   - the `indextools` host executable
+#   - the `indextools_lib` static library (consumed by this module's tests
+#     and by sibling modules such as the future model adapter / agentloop)
 #   - its language plugin modules (via languages/)
 #   - its unit tests (via test/)
 #
@@ -36,8 +37,6 @@ include_directories(
 )
 link_directories("${SIMPLEX_THIRDPARTY_DIR}/libs")
 
-set(MAIN_DEPENDENCIES "Boost::process" "Boost::program_options" "boost_dll_iface")
-
 # ========================================== #
 # Build Language Support (plugin mode)       #
 # ========================================== #
@@ -55,33 +54,53 @@ set(MAIN_DEPENDENCIES "Boost::process" "Boost::program_options" "boost_dll_iface
 add_subdirectory(languages)
 
 # ========================================== #
-# Build Main                                 #
+# Build indextools_lib (static library)      #
 # ========================================== #
+#
+# The module's reusable logic compiles to a static library so it can be linked
+# by this module's unit tests and by sibling modules (model adapter, agentloop).
+# PUBLIC include dirs and link deps propagate to every consumer; a downstream
+# target only needs `target_link_libraries(... PRIVATE indextools_lib)`.
+#
+# Note: Boost.program_options used to be listed among the host's dependencies
+# but was never referenced by any source/header — it is omitted here. Add it
+# back (PUBLIC) should a future CLI source pull it in.
 
-set(EXECUTABLE_NAME "indextools")
+set(LIB_NAME "indextools_lib")
 
-file(GLOB SOURCES "src/*.cpp")
+file(GLOB LIB_SOURCES "src/*.cpp")
 
-add_executable(${EXECUTABLE_NAME} ${SOURCES} main.cpp)
-target_compile_options(${EXECUTABLE_NAME} PRIVATE
+add_library(${LIB_NAME} STATIC ${LIB_SOURCES})
+target_compile_options(${LIB_NAME} PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
-target_compile_definitions(${EXECUTABLE_NAME} PRIVATE
+target_compile_definitions(${LIB_NAME} PRIVATE
     $<$<CONFIG:Debug>:DEBUG_BUILD>
     $<$<CONFIG:Release>:NDEBUG>
 )
-# The host loads plugins at runtime via Boost::dll; it does NOT link the
-# language analyzers directly anymore.
-target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${MAIN_DEPENDENCIES})
-# Ensure every discovered language plugin is built whenever the host is, without
-# naming any language here (the list is populated by languages/ auto-discovery).
+# Headers (the public surface) pull in Boost.Process/Asio and Boost.DLL, so
+# those travel PUBLIC: consumers get the include dirs and the link deps without
+# redeclaring them. The library does NOT link the language analyzers — plugins
+# are loaded at runtime via Boost::dll.
+target_include_directories(${LIB_NAME} PUBLIC
+    "${INDEXTOOLS_INCLUDE_DIR}"
+    "${SIMPLEX_THIRDPARTY_DIR}/include"
+    "${SIMPLEX_VERSIONING_INCLUDE_DIR}"
+)
+target_link_libraries(${LIB_NAME} PUBLIC
+    Boost::process
+    boost_dll_iface
+)
+# Ensure every discovered language plugin is built whenever the lib's tests are,
+# without naming any language here (the list is populated by languages/
+# auto-discovery). Tests that load plugins at runtime need the .so on disk.
 get_property(_lang_plugins GLOBAL PROPERTY INDEX_LANG_PLUGINS)
 if(_lang_plugins)
-    add_dependencies(${EXECUTABLE_NAME} ${_lang_plugins})
+    add_dependencies(${LIB_NAME} ${_lang_plugins})
 endif()
 if(LTO_SUPPORT)
-    set_target_properties(${EXECUTABLE_NAME} PROPERTIES
+    set_target_properties(${LIB_NAME} PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
         INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE
     )
@@ -100,6 +119,15 @@ option(BUILD_TESTS "Build unit tests" ON)
 # for what this does and does not catch (notably: it will not flag a revert of
 # result_channel to a plain channel).
 option(ENABLE_TSAN "Instrument test_cache_system with ThreadSanitizer" OFF)
+
+# The cache machinery exercised by test_cache_system lives in indextools_lib,
+# so the lib's sources must be compiled with -fsanitize=thread for TSan to see
+# the races. The sanitizer runtime is linked at the test executable (see
+# test/CMakeLists.txt); here we only add the compile instrumentation to the lib.
+if(ENABLE_TSAN)
+    target_compile_options(${LIB_NAME} PRIVATE
+        -fsanitize=thread -g -O1 -fno-omit-frame-pointer)
+endif()
 
 if(BUILD_TESTS)
     add_subdirectory(test)

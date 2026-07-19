@@ -2,61 +2,24 @@
 file(GLOB TEST_SOURCES "test_*.cpp")
 
 # Build one executable per test file (Boost.Test static linking requires
-# one BOOST_TEST_MODULE/main per binary)
+# one BOOST_TEST_MODULE/main per binary). Each test links indextools_lib, which
+# transitively brings in the project headers, third_party headers, and the
+# Boost.Process / Boost.DLL link deps — so a test no longer has to hand-pick
+# src/*.cpp files or redeclare include paths.
 foreach(TEST_SRC ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
     set(TEST_EXE "${TEST_NAME}")
 
-    # Most tests exercise the editor/utils layer; a couple have bespoke needs:
-    #   - test_subprocess drives the async SubProcessManager.
-    #   - test_plugin_manager loads the real language plugins at runtime, so it
-    #     compiles the plugin manager and links Boost.DLL instead of the
-    #     static analyzer library.
-    if(TEST_NAME STREQUAL "test_subprocess")
-        set(TEST_EXTRA_SOURCES "${INDEXTOOLS_SOURCE_DIR}/src/subprocess.cpp")
-    elseif(TEST_NAME STREQUAL "test_plugin_manager")
-        set(TEST_EXTRA_SOURCES "${INDEXTOOLS_SOURCE_DIR}/src/plugin_manager.cpp")
-    elseif(TEST_NAME STREQUAL "test_cache_system")
-        # SearchInterface drives the real plugin loader (like test_plugin_manager)
-        # and additionally needs the cache engine and glob-based utils.
-        set(TEST_EXTRA_SOURCES
-            "${INDEXTOOLS_SOURCE_DIR}/src/plugin_manager.cpp"
-            "${INDEXTOOLS_SOURCE_DIR}/src/cache_system.cpp"
-            "${INDEXTOOLS_SOURCE_DIR}/src/utils.cpp")
-    elseif(TEST_NAME STREQUAL "test_viewer")
-        # The read interface is pure: it only needs viewer.cpp (split.hpp and
-        # schema.hpp are header-only).
-        set(TEST_EXTRA_SOURCES "${INDEXTOOLS_SOURCE_DIR}/src/viewer.cpp")
-    elseif(TEST_NAME STREQUAL "test_logger")
-        # Logger is self-contained: only needs its own .cpp.
-        set(TEST_EXTRA_SOURCES "${INDEXTOOLS_SOURCE_DIR}/src/logger.cpp")
-    elseif(TEST_NAME STREQUAL "test_shell")
-        # SpawnWaitCommand::execute is a coroutine defined in the header that
-        # references SubProcessManager::spawn_and_wait — the linker needs the
-        # symbol even though ensure_params-only tests never call it.
-        set(TEST_EXTRA_SOURCES "${INDEXTOOLS_SOURCE_DIR}/src/subprocess.cpp")
-    else()
-        set(TEST_EXTRA_SOURCES
-            "${INDEXTOOLS_SOURCE_DIR}/src/utils.cpp"
-            "${INDEXTOOLS_SOURCE_DIR}/src/editor.cpp")
-    endif()
-
-    add_executable(${TEST_EXE} ${TEST_SRC} ${TEST_EXTRA_SOURCES})
-
-    target_include_directories(${TEST_EXE} PRIVATE
-        "${INDEXTOOLS_INCLUDE_DIR}"
-        "${SIMPLEX_THIRDPARTY_DIR}/include"
-    )
+    add_executable(${TEST_EXE} ${TEST_SRC})
 
     target_compile_options(${TEST_EXE} PRIVATE
         $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
         $<$<CONFIG:Release>:-O3 -DNDEBUG>
     )
 
-    # Boost::process is needed by subprocess.cpp (Boost.Process v2 + Asio).
     target_link_libraries(${TEST_EXE} PRIVATE
+        indextools_lib
         Boost::unit_test_framework
-        Boost::process
     )
 
     # Language targets are discovered by languages/ and exposed via GLOBAL
@@ -65,8 +28,9 @@ foreach(TEST_SRC ${TEST_SOURCES})
     get_property(_lang_analyzer_libs GLOBAL PROPERTY INDEX_LANG_ANALYZER_LIBS)
 
     if(TEST_NAME STREQUAL "test_plugin_manager" OR TEST_NAME STREQUAL "test_cache_system")
-        # Runtime plugin loader: needs Boost.DLL and every plugin .so on disk.
-        target_link_libraries(${TEST_EXE} PRIVATE boost_dll_iface)
+        # Runtime plugin loader: needs every plugin .so on disk at the path
+        # compiled into the lib (LANG_PLUGIN_DIR is defined on these tests).
+        # indextools_lib already links Boost::dll transitively.
         target_compile_definitions(${TEST_EXE} PRIVATE
             "LANG_PLUGIN_DIR=\"${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins\"")
         if(_lang_plugins)
@@ -81,13 +45,12 @@ foreach(TEST_SRC ${TEST_SOURCES})
 
     add_test(NAME ${TEST_EXE} COMMAND ${TEST_EXE})
 
-    # Opt-in ThreadSanitizer build of the cache test. It instruments the
-    # multithreaded_* cases, guarding the multi-threaded io_context path
-    # against data races in the cache machinery (strand-protected map access,
-    # payload sharing, etc.). The analyzer sources compiled into the target
-    # (cache_system.cpp etc.) are instrumented alongside; the runtime-loaded
-    # language plugins stay uninstrumented, which is fine — the cache and
-    # channel are only touched from instrumented code.
+    # Opt-in ThreadSanitizer build of the cache test. The cache machinery
+    # (cache_system.cpp etc.) now lives in indextools_lib, so when ENABLE_TSAN
+    # is on the parent CMakeLists instruments the lib's sources too; here we
+    # only add the link-time runtime and the test's own compile flags. The
+    # runtime-loaded language plugins stay uninstrumented, which is fine — the
+    # cache and channel are only touched from instrumented code.
     #
     # Caveat: this will NOT reliably flag a revert from concurrent_channel back
     # to plain channel. basic_channel uses a null_mutex internally (so the race
