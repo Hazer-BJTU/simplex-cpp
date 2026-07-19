@@ -1,7 +1,7 @@
 #define BOOST_TEST_MODULE PluginManagerTests
 #include <boost/test/unit_test.hpp>
 
-#include "plugin_manager.hpp"
+#include "indextools/plugin_manager.hpp"
 
 #include <filesystem>
 #include <fstream>

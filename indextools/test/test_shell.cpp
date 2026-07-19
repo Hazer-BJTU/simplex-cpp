@@ -1,9 +1,9 @@
 #define BOOST_TEST_MODULE ShellCommandTests
 #include <boost/test/unit_test.hpp>
 
-#include "service_command/shell.hpp"
-#include "service_command/service_command.hpp"
-#include "schema.hpp"
+#include "indextools/service_command/shell.hpp"
+#include "indextools/service_command/service_command.hpp"
+#include "indextools/schema.hpp"
 
 #include <nlohmann/json.hpp>
 

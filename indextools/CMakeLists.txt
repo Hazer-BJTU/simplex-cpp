@@ -11,47 +11,46 @@
 # This file owns only indextools-specific build logic:
 #   - the `indextools_lib` static library (consumed by this module's tests
 #     and by sibling modules such as the future model adapter / agentloop)
-#   - its language plugin modules (via languages/)
+#   - the `indextools_iface` INTERFACE target (the plugin contract headers —
+#     consumed by the sibling `languages/` module to compile analyzer/plugin
+#     targets)
 #   - its unit tests (via test/)
 #
-# Path conventions used here and in the child subdirectories (languages/, test/):
-#   ${INDEXTOOLS_SOURCE_DIR}        - this directory (indextools/)
-#   ${INDEXTOOLS_INCLUDE_DIR}       - indextools/include  (project headers)
-#   ${SIMPLEX_THIRDPARTY_DIR}       - top-level third_party/  (set by parent)
-#   ${SIMPLEX_THIRDPARTY_DIR}/include  - vendored headers (nlohmann, glob, tree-sitter)
-#   ${SIMPLEX_THIRDPARTY_DIR}/libs     - vendored static libs (tree-sitter .a)
-# These variables propagate to child scopes added below.
+# The language plugin modules live in the sibling `languages/` directory (added
+# at the top level, before this module, so its GLOBAL property registrations are
+# visible here). See languages/README.md for the plugin contract.
+#
+# Header management is interface-target-only: there are no directory-scope
+# include_directories()/link_directories() calls and no propagated path
+# variables here. Every consumer links `indextools_iface` (which itself links
+# `simplex_thirdparty_iface` and `simplex_versioning`) to get the indextools,
+# third_party, and versioning include paths. Exported indextools headers live
+# under include/indextools/ and are included as "indextools/<name>.hpp".
 # =============================================================================
 
-set(INDEXTOOLS_SOURCE_DIR  "${CMAKE_CURRENT_SOURCE_DIR}")
-set(INDEXTOOLS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
-
-# indextools headers are visible to this module's own targets. third_party
-# headers come in via simplex_thirdparty_iface; the lib search path likewise.
-# SIMPLEX_VERSIONING_INCLUDE_DIR (set by the sibling versioning/ module) brings
-# in the build-generated versioning/version.hpp — used by lang_plugin.hpp.
-include_directories(
-    "${INDEXTOOLS_INCLUDE_DIR}"
-    "${SIMPLEX_THIRDPARTY_DIR}/include"
-    "${SIMPLEX_VERSIONING_INCLUDE_DIR}"
+# ========================================== #
+# indextools_iface (plugin contract headers) #
+# ========================================== #
+#
+# The sibling `languages/` module compiles each analyzer and plugin against the
+# indextools plugin contract (indextools/lang.hpp + indextools/lang_plugin.hpp).
+# Those headers are header-only, so a plugin .so needs only the include paths —
+# not indextools_lib itself. This INTERFACE target is the single bundle for the
+# contract:
+#   - indextools/include          (indextools/lang.hpp, lang_plugin.hpp, …)
+#   - simplex_thirdparty_iface    (nlohmann/json, glob — pulled in by lang.hpp;
+#                                  also carries the third_party lib search dir)
+#   - simplex_versioning          (LANG_PLUGIN_ABI_VERSION, pulled in by
+#                                  lang_plugin.hpp)
+# A language target links this (PRIVATE for plugins, PUBLIC for analyzer libs
+# whose own public headers #include indextools/lang.hpp) and gets all three.
+add_library(indextools_iface INTERFACE)
+target_include_directories(indextools_iface INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(indextools_iface INTERFACE
+    simplex_thirdparty_iface
+    simplex_versioning
 )
-link_directories("${SIMPLEX_THIRDPARTY_DIR}/libs")
-
-# ========================================== #
-# Build Language Support (plugin mode)       #
-# ========================================== #
-#
-# Languages are no longer statically linked via a generated factory header.
-# Each language lives in its own self-contained module under languages/<name>/
-# and compiles to a shared plugin (.so) in bin/plugins/, loaded at runtime by
-# indextools::LangPluginManager (include/plugin_manager.hpp). The old Python
-# codegen (generate_lang_factory.py + language_config.json) is retired; a plugin
-# self-declares its extensions in its *_plugin.cpp. See languages/README.md.
-#
-# languages/ auto-discovers its module subdirectories and records their targets
-# in the GLOBAL properties INDEX_LANG_PLUGINS / INDEX_LANG_ANALYZER_LIBS.
-
-add_subdirectory(languages)
 
 # ========================================== #
 # Build indextools_lib (static library)      #
@@ -81,14 +80,15 @@ target_compile_definitions(${LIB_NAME} PRIVATE
 )
 # Headers (the public surface) pull in Boost.Process/Asio and Boost.DLL, so
 # those travel PUBLIC: consumers get the include dirs and the link deps without
-# redeclaring them. The library does NOT link the language analyzers — plugins
-# are loaded at runtime via Boost::dll.
-target_include_directories(${LIB_NAME} PUBLIC
-    "${INDEXTOOLS_INCLUDE_DIR}"
-    "${SIMPLEX_THIRDPARTY_DIR}/include"
-    "${SIMPLEX_VERSIONING_INCLUDE_DIR}"
-)
+# redeclaring them. The include dirs come from indextools_iface (the single
+# source of truth for the header contract) linked PUBLIC here, so indextools_lib
+# and the sibling languages/ module see the same paths. `logging_lib` is also
+# PUBLIC because the public service_command.hpp header uses logging::Logger.
+# The library does NOT link the language analyzers — plugins are loaded at
+# runtime via Boost::dll.
 target_link_libraries(${LIB_NAME} PUBLIC
+    indextools_iface
+    logging_lib
     Boost::process
     boost_dll_iface
 )
@@ -110,7 +110,7 @@ endif()
 # Unit tests                                 #
 # ========================================== #
 
-option(BUILD_TESTS "Build unit tests" ON)
+option(ENABLE_TSAN "Instrument test_cache_system with ThreadSanitizer" OFF)
 # When ON, test_cache_system is built with -fsanitize=thread so its
 # multi-threaded launch_search cases are checked for data races in the cache
 # machinery. Off by default: TSan instrumentation slows the build and the
@@ -118,7 +118,6 @@ option(BUILD_TESTS "Build unit tests" ON)
 # a separate build dir with -DENABLE_TSAN=ON to run it). See test/CMakeLists.txt
 # for what this does and does not catch (notably: it will not flag a revert of
 # result_channel to a plain channel).
-option(ENABLE_TSAN "Instrument test_cache_system with ThreadSanitizer" OFF)
 
 # The cache machinery exercised by test_cache_system lives in indextools_lib,
 # so the lib's sources must be compiled with -fsanitize=thread for TSan to see

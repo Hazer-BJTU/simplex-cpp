@@ -1,7 +1,7 @@
 #define BOOST_TEST_MODULE SubProcessTests
 #include <boost/test/unit_test.hpp>
 
-#include "subprocess.hpp"
+#include "indextools/subprocess.hpp"
 
 #include <chrono>
 #include <optional>

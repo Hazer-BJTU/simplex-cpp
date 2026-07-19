@@ -1,8 +1,8 @@
 #define BOOST_TEST_MODULE CacheSystemTests
 #include <boost/test/unit_test.hpp>
 
-#include "cache_system.hpp"
-#include "plugin_manager.hpp"
+#include "indextools/cache_system.hpp"
+#include "indextools/plugin_manager.hpp"
 
 #include <boost/asio.hpp>
 

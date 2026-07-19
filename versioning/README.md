@@ -27,12 +27,11 @@ on its include path by linking the INTERFACE target:
 target_link_libraries(my_target PRIVATE simplex_versioning)
 ```
 
-`indextools` instead uses the directory-scope variable (matching its existing
-`include_directories(...)` style), so its host, plugins, and tests all see it:
-
-```cmake
-include_directories("${SIMPLEX_VERSIONING_INCLUDE_DIR}")
-```
+This is the single supported way: the project manages all header paths through
+interface targets, not directory-scope `include_directories(...)` variables.
+`indextools_iface` links `simplex_versioning` directly, so indextools' host,
+plugins, and tests all see the header by linking `indextools_iface` (or
+`indextools_lib`, which carries it transitively).
 
 Then in code:
 

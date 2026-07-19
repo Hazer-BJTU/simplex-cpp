@@ -1,4 +1,4 @@
-#include "plugin_manager.hpp"
+#include "indextools/plugin_manager.hpp"
 
 #include <algorithm>
 #include <iostream>

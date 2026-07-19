@@ -1,16 +1,14 @@
 # =============================================================================
 # versioning — module
 #
-# A parallel sibling of indextools/ that is the single source of truth for every
-# project version constant. It owns no compiled code: it only feeds a header
-# template (version.hpp.in) through configure_file() so the constants materialize
-# as a header-only versioning/version.hpp under the build tree.
+# A sibling module that is the single source of truth for every project version
+# constant. It owns no compiled code: it only feeds a header template
+# (version.hpp.in) through configure_file() so the constants materialize as a
+# header-only versioning/version.hpp under the build tree.
 #
-# Consumers get the generated header two equivalent ways:
-#   - link the INTERFACE target `simplex_versioning` (preferred for targets), or
-#   - use the SIMPLEX_VERSIONING_INCLUDE_DIR variable in a directory-scope
-#     include_directories() (matches indextools' existing style; what indextools
-#     itself uses so its host, plugins, and tests all see the header).
+# Consumers get the generated header by linking the INTERFACE target
+# `simplex_versioning` — that is the single, supported way (the project manages
+# all header paths through interface targets, not directory-scope variables).
 #
 # The project version comes from the top-level project(VERSION ...); this file
 # only adds module-owned constants (currently the plugin ABI version) and renders
@@ -26,9 +24,8 @@ set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 2)
 
 # ---- Render the generated header --------------------------------------------
 # Generated under build/generated/ so it is found as "versioning/version.hpp"
-# once build/generated/ is on the include path.
+# once build/generated/ is on the include path (carried by simplex_versioning).
 set(SIMPLEX_VERSIONING_GEN_DIR "${CMAKE_BINARY_DIR}/generated")
-set_property(GLOBAL PROPERTY SIMPLEX_VERSIONING_GEN_DIR "${SIMPLEX_VERSIONING_GEN_DIR}")
 
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/version.hpp.in"
@@ -40,8 +37,3 @@ configure_file(
 add_library(simplex_versioning INTERFACE)
 target_include_directories(simplex_versioning INTERFACE
     "${SIMPLEX_VERSIONING_GEN_DIR}")
-
-# Directory-scope variable for modules that use include_directories() rather than
-# linking the target (propagates to top-level scope, hence to sibling modules
-# added after this one, e.g. indextools).
-set(SIMPLEX_VERSIONING_INCLUDE_DIR "${SIMPLEX_VERSIONING_GEN_DIR}" PARENT_SCOPE)

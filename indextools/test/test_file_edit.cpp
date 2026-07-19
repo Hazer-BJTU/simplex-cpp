@@ -1,8 +1,8 @@
 #define BOOST_TEST_MODULE FileEditTests
 #include <boost/test/unit_test.hpp>
 
-#include "service_command/file_edit.hpp"
-#include "schema.hpp"
+#include "indextools/service_command/file_edit.hpp"
+#include "indextools/schema.hpp"
 
 #include <boost/asio.hpp>
 

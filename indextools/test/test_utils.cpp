@@ -1,9 +1,9 @@
 #define BOOST_TEST_MODULE UtilsTests
 #include <boost/test/unit_test.hpp>
 
-#include "utils.hpp"
-#include "schema.hpp"
-#include "split.hpp"
+#include "indextools/utils.hpp"
+#include "indextools/schema.hpp"
+#include "indextools/split.hpp"
 
 #include <algorithm>
 

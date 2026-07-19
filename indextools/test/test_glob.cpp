@@ -1,7 +1,7 @@
 #define BOOST_TEST_MODULE GlobTests
 #include <boost/test/unit_test.hpp>
 
-#include "utils.hpp"
+#include "indextools/utils.hpp"
 
 #include <algorithm>
 #include <chrono>

@@ -1,8 +1,8 @@
 #define BOOST_TEST_MODULE ViewerTests
 #include <boost/test/unit_test.hpp>
 
-#include "viewer.hpp"
-#include "split.hpp"
+#include "indextools/viewer.hpp"
+#include "indextools/split.hpp"
 
 #include <string>
 

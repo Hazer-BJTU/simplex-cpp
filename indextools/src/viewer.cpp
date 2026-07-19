@@ -1,5 +1,5 @@
-#include "viewer.hpp"
-#include "schema.hpp"
+#include "indextools/viewer.hpp"
+#include "indextools/schema.hpp"
 
 namespace indextools {
 

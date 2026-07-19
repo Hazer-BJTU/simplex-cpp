@@ -1,7 +1,7 @@
 #define BOOST_TEST_MODULE LangAnalyzeTests
 #include <boost/test/unit_test.hpp>
 
-#include "lang.hpp"
+#include "indextools/lang.hpp"
 
 #include <fstream>
 #include <filesystem>

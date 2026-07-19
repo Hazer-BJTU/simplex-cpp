@@ -1,7 +1,7 @@
 #define BOOST_TEST_MODULE LevenshteinTests
 #include <boost/test/unit_test.hpp>
 
-#include "editor.hpp"
+#include "indextools/editor.hpp"
 
 #include <functional>
 #include <optional>

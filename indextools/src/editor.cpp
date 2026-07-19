@@ -1,5 +1,5 @@
-#include "editor.hpp"
-#include "schema.hpp"
+#include "indextools/editor.hpp"
+#include "indextools/schema.hpp"
 
 #include <ranges>
 #include <sstream>

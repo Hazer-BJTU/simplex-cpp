@@ -1,5 +1,5 @@
-#include "subprocess.hpp"
-#include "schema.hpp"
+#include "indextools/subprocess.hpp"
+#include "indextools/schema.hpp"
 
 namespace indextools {
 

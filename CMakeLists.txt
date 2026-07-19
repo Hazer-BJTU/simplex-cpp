@@ -64,6 +64,16 @@ target_include_directories(simplex_thirdparty_iface INTERFACE
 target_link_directories(simplex_thirdparty_iface INTERFACE
     "${SIMPLEX_THIRDPARTY_DIR}/libs")
 
+# ---- Shared dependency: OpenSSL ---------------------------------------------
+# Used by modules that need TLS/SSL connectivity (HTTPS clients, secure IPC,
+# cryptographic hashing). Found here so every module links the same system
+# OpenSSL; CMake's FindOpenSSL provides the imported targets OpenSSL::SSL and
+# OpenSSL::Crypto.
+find_package(OpenSSL REQUIRED)
+
+add_library(openssl_iface INTERFACE)
+target_link_libraries(openssl_iface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+
 # ---- Shared dependency: Boost ----------------------------------------------
 # Used by the indextools host (process / program_options / DLL) and by the
 # unit-test layer (unit_test_framework). Future modules (model adapter,
@@ -91,9 +101,25 @@ target_compile_definitions(boost_dll_iface INTERFACE BOOST_DLL_USE_STD_FS)
 # top-level `ctest` run.)
 enable_testing()
 
-# versioning is added before indextools so its generated header
-# (build/generated/versioning/version.hpp) and SIMPLEX_VERSIONING_INCLUDE_DIR
-# are available to indextools' host, plugins, and tests.
-add_subdirectory(versioning)
+# Project-wide test switch. Declared here (not inside a module) so every
+# module's test/ subdirectory sees the same option.
+option(BUILD_TESTS "Build unit tests" ON)
 
+# Module add order matters: each module may consume targets or GLOBAL properties
+# populated by an earlier one.
+#   - versioning first: its `simplex_versioning` INTERFACE target feeds the
+#     indextools plugin contract (lang_plugin.hpp) and, through indextools_iface,
+#     the languages/ analyzers/plugins.
+#   - logging before indextools: indextools_lib links `logging_lib` (the public
+#     service_command.hpp header uses logging::Logger).
+#   - languages before indextools: languages registers INDEX_LANG_PLUGINS /
+#     INDEX_LANG_ANALYZER_LIBS, which indextools reads to make plugins build deps
+#     of indextools_lib and which indextools' runtime-loader tests depend on.
+#     languages compiles against indextools' header contract (indextools_iface,
+#     defined inside indextools/) — CMake resolves that forward reference at
+#     generate time, so the add order is driven by the dependency/property flow,
+#     not by the header dependency.
+add_subdirectory(versioning)
+add_subdirectory(logging)
+add_subdirectory(languages)
 add_subdirectory(indextools)
