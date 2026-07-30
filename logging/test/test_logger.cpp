@@ -171,6 +171,11 @@ BOOST_AUTO_TEST_CASE(multiple_arguments)
 
 BOOST_AUTO_TEST_CASE(integer_formatting)
 {
+    // debug is compiled out in non-debug builds.
+    if constexpr (!kDebugBuild) {
+        return;
+    }
+
     Logger::set_level(LogLevel::debug);
 
     StreamRedirect cout_guard(std::cout);
@@ -226,6 +231,10 @@ BOOST_AUTO_TEST_CASE(info_goes_to_stdout)
 
 BOOST_AUTO_TEST_CASE(debug_goes_to_stdout)
 {
+    if constexpr (!kDebugBuild) {
+        return;
+    }
+
     Logger::set_level(LogLevel::debug);
 
     StreamRedirect cout_guard(std::cout);
@@ -325,13 +334,17 @@ BOOST_AUTO_TEST_CASE(level_label_is_six_chars_padded)
     {
         StreamRedirect cout_guard(std::cout);
         Logger::trace("t");
-        // "TRACE " (6 chars, right-padded with space)
-        BOOST_CHECK(cout_guard.str().find("[TRACE ]") != std::string::npos);
+        // "TRACE " (6 chars, right-padded with space) — compiled out in release
+        if constexpr (kDebugBuild) {
+            BOOST_CHECK(cout_guard.str().find("[TRACE ]") != std::string::npos);
+        }
     }
     {
         StreamRedirect cout_guard(std::cout);
         Logger::debug("d");
-        BOOST_CHECK(cout_guard.str().find("[DEBUG ]") != std::string::npos);
+        if constexpr (kDebugBuild) {
+            BOOST_CHECK(cout_guard.str().find("[DEBUG ]") != std::string::npos);
+        }
     }
     {
         StreamRedirect cout_guard(std::cout);
@@ -605,6 +618,10 @@ BOOST_AUTO_TEST_CASE(braces_in_message)
 
 BOOST_AUTO_TEST_CASE(trace_level_when_enabled)
 {
+    if constexpr (!kDebugBuild) {
+        return;
+    }
+
     Logger::set_level(LogLevel::trace);
 
     StreamRedirect cout_guard(std::cout);
@@ -634,6 +651,60 @@ BOOST_AUTO_TEST_CASE(fatal_level_always_visible_when_enabled)
     BOOST_CHECK(err.find("[FATAL ]") != std::string::npos);
 
     Logger::set_level(LogLevel::info);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ============================================================================
+// Suite: CompileTimeGateSuite — trace/debug are compile-time gated
+// ============================================================================
+//
+// The verbose levels (trace, debug) are gated by kDebugBuild: their bodies are
+// discarded in non-debug builds, so they emit nothing then.  These cases hold
+// in either configuration.
+BOOST_AUTO_TEST_SUITE(CompileTimeGateSuite)
+
+BOOST_AUTO_TEST_CASE(debug_emits_only_in_debug_build)
+{
+    Logger::set_level(LogLevel::debug);
+
+    StreamRedirect cout_guard(std::cout);
+    Logger::debug("gated diagnostic {}", 42);
+
+    std::string out = cout_guard.str();
+    if constexpr (kDebugBuild) {
+        BOOST_CHECK(out.find("gated diagnostic 42") != std::string::npos);
+        BOOST_CHECK(out.find("[DEBUG ]") != std::string::npos);
+    } else {
+        BOOST_CHECK(out.empty());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(trace_emits_only_in_debug_build)
+{
+    Logger::set_level(LogLevel::trace);
+
+    StreamRedirect cout_guard(std::cout);
+    Logger::trace("gated trace {}", 7);
+
+    std::string out = cout_guard.str();
+    if constexpr (kDebugBuild) {
+        BOOST_CHECK(out.find("gated trace 7") != std::string::npos);
+        BOOST_CHECK(out.find("[TRACE ]") != std::string::npos);
+    } else {
+        BOOST_CHECK(out.empty());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(info_is_not_gated)
+{
+    // info is an operational level: always available regardless of kDebugBuild.
+    Logger::set_level(LogLevel::info);
+
+    StreamRedirect cout_guard(std::cout);
+    Logger::info("always on {}", 1);
+
+    BOOST_CHECK(cout_guard.str().find("always on 1") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
