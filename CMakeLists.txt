@@ -123,3 +123,6 @@ add_subdirectory(versioning)
 add_subdirectory(logging)
 add_subdirectory(languages)
 add_subdirectory(indextools)
+# endpoint after logging: endpoint_lib links logging_lib (the public
+# https_connection.hpp uses logging::Logger) and the shared Boost/OpenSSL.
+add_subdirectory(endpoint)
