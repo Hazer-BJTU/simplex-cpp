@@ -81,6 +81,16 @@ boost::asio::awaitable<nlohmann::json> json_request_once(
 
         // Let the caller validate and decode the service-specific response.
         stage = HttpRequestException::Stage::HandleResponse;
+        if (response.result() != http::status::ok) {
+            throw HttpRequestException(
+                stage,
+                std::format("HTTP request returns code: {}", response.result_int()),
+                {},
+                std::string(request.method_string()),
+                std::string(request.target()),
+                std::string(request[http::field::host]));
+        }
+
         auto json_response = response_handler(std::move(response));
         co_return json_response;
     }
@@ -108,6 +118,8 @@ boost::asio::awaitable<nlohmann::json> json_request_once(
     }
 }
 
+inline constexpr size_t DEFAULT_SSE_CHUNK_SIZE = 8192;
+
 /**
  * @brief Perform a one-shot Server-Sent Events (SSE) request over a TLS stream.
  *
@@ -127,7 +139,7 @@ boost::asio::awaitable<nlohmann::json> json_request_once(
  */
 template<typename RequestHandler, typename SSEParser>
 boost::asio::awaitable<void> json_request_once_sse(
-    std::unique_ptr<https_stream>& stream,
+    std::unique_ptr<https_stream> stream,
     const nlohmann::json& json_payload,
     RequestHandler&& request_handler,
     SSEParser&& sse_parser
@@ -193,8 +205,7 @@ boost::asio::awaitable<void> json_request_once_sse(
         // Feed body bytes to the parser until the server ends the stream.
         // buffer_body writes directly into `chunk`; `written` is how many bytes
         // Beast produced in this round.
-        constexpr std::size_t sse_chunk_size = 8192;
-        std::array<char, sse_chunk_size> chunk;
+        std::array<char, DEFAULT_SSE_CHUNK_SIZE> chunk;
         auto& body = parser.get().body();
         while (!parser.is_done()) {
             body.data = chunk.data();
