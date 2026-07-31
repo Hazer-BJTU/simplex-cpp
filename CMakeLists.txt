@@ -112,6 +112,12 @@ option(BUILD_TESTS "Build unit tests" ON)
 #     the languages/ analyzers/plugins.
 #   - logging before indextools: indextools_lib links `logging_lib` (the public
 #     service_command.hpp header uses logging::Logger).
+#   - plugin before languages/indextools: the generic plugin framework defines
+#     `plugin_iface`. indextools/lang_plugin.hpp derives LangPlugin from
+#     plugin::Plugin<LangAnalyze>, so indextools_iface links plugin_iface; adding
+#     `plugin` here means plugin_iface is fully defined before indextools_iface
+#     links it (no forward reference on that edge). languages gets plugin/
+#     headers transitively via indextools_iface.
 #   - languages before indextools: languages registers INDEX_LANG_PLUGINS /
 #     INDEX_LANG_ANALYZER_LIBS, which indextools reads to make plugins build deps
 #     of indextools_lib and which indextools' runtime-loader tests depend on.
@@ -122,6 +128,7 @@ option(BUILD_TESTS "Build unit tests" ON)
 add_subdirectory(versioning)
 add_subdirectory(exceptions)
 add_subdirectory(logging)
+add_subdirectory(plugin)
 add_subdirectory(languages)
 add_subdirectory(indextools)
 # endpoint after logging: endpoint_lib links logging_lib (the public

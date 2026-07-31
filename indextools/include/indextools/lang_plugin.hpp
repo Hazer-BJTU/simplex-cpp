@@ -73,6 +73,7 @@
 #include <cstdint>
 
 #include "indextools/lang.hpp"
+#include "plugin/plugin.hpp"
 #include "versioning/version.hpp"
 
 #if defined(_WIN32)
@@ -109,26 +110,19 @@ inline constexpr const char* LANG_PLUGIN_FACTORY_NAME = "create_lang_plugin";
 /**
  * @brief Abstract descriptor + factory for one language.
  *
- * Instances are created by the plugin's exported factory and owned by the
- * host's LangPluginManager. A plugin is stateless with respect to individual
- * files; it only knows which extensions it serves and how to build analyzers.
+ * Specializes the generic `plugin::Plugin<LangAnalyze>` base: the language
+ * domain inherits `abi_version()`, `name()`, `priority()`, and `create()` from
+ * it and adds exactly one piece of domain-specific routing metadata,
+ * `file_pattern()`. Instances are created by the plugin's exported factory and
+ * owned by the host's LangPluginManager. A plugin is stateless with respect to
+ * individual files; it only knows its identity and how to build analyzers.
+ *
+ * The base `priority()` default (0) equals LANG_PLUGIN_DEFAULT_PRIORITY, so a
+ * dedicated language plugin need not override it; a broad catch-all overrides
+ * it to return LANG_PLUGIN_FALLBACK_PRIORITY.
  */
-class LangPlugin {
+class LangPlugin : public plugin::Plugin<LangAnalyze> {
 public:
-    virtual ~LangPlugin() = default;
-
-    /**
-     * @brief ABI version this plugin was built against.
-     *
-     * Must equal LANG_PLUGIN_ABI_VERSION for the host to accept the plugin.
-     * Implementations should simply `return LANG_PLUGIN_ABI_VERSION;`.
-     */
-    virtual std::uint32_t abi_version() const noexcept = 0;
-
-    /// Human-readable language name (e.g. "Python", "Fallback"). Used for
-    /// logging and diagnostics; not required to be unique but should be.
-    virtual std::string_view name() const noexcept = 0;
-
     /**
      * @brief ECMAScript regular expression matching every file name this
      *        language claims.
@@ -144,29 +138,6 @@ public:
      * plugin to be rejected.
      */
     virtual std::string_view file_pattern() const noexcept = 0;
-
-    /**
-     * @brief Match priority when several plugins claim the same file.
-     *
-     * The host evaluates loaded plugins in priority order (highest first, ties
-     * broken by load order) and selects the first whose file_pattern() matches.
-     * A dedicated language plugin should keep the default
-     * (LANG_PLUGIN_DEFAULT_PRIORITY); a broad catch-all should return a low
-     * value (e.g. LANG_PLUGIN_FALLBACK_PRIORITY) so it is only chosen when no
-     * dedicated plugin matches. Overriding is optional.
-     */
-    virtual int priority() const noexcept { return LANG_PLUGIN_DEFAULT_PRIORITY; }
-
-    /**
-     * @brief Mint a fresh, empty analyzer for this language.
-     *
-     * The returned object is allocated inside the plugin module. The caller
-     * (LangPluginManager) is responsible for ensuring the owning library
-     * outlives the returned analyzer — it does so via a custom deleter.
-     *
-     * @return A newly constructed LangAnalyze, never null on success.
-     */
-    virtual std::unique_ptr<LangAnalyze> create() const = 0;
 };
 
 /// Signature of the exported factory alias every plugin must provide.
