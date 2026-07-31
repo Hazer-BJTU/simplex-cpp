@@ -21,6 +21,13 @@ namespace endpoint {
  *
  * The lowest layer can be accessed with `boost::beast::get_lowest_layer()`
  * when callers need to change a deadline or close the socket.
+ *
+ * Ownership of a live connection is always exclusive: `create_https_connection_stream`
+ * returns a `std::unique_ptr<https_stream>`, and the underlying `ssl::stream` is
+ * non-copyable. A connection therefore has a single owner at any time and may only
+ * be handed off by moving it. This guarantees a stream is never shared across
+ * threads — any future pooling or transfer logic must preserve this move-only
+ * discipline and never expose shared access to one connection.
  */
 using https_stream = boost::asio::ssl::stream<boost::beast::tcp_stream>;
 using ssl_context = boost::asio::ssl::context;
@@ -58,8 +65,10 @@ inline constexpr std::string_view DEFAULT_HTTPS_PORT = "443";
  * @brief Resolve a host, establish TCP, and complete a verified TLS handshake.
  *
  * SNI is set before the handshake, and the certificate is checked against
- * `host`. The returned shared pointer keeps the stream alive across subsequent
- * asynchronous HTTP operations.
+ * `host`. The returned `std::unique_ptr` grants the caller exclusive ownership
+ * of the stream; it keeps the connection alive across subsequent asynchronous
+ * HTTP operations and must be moved (never copied) when transferred between
+ * scopes or coroutines, so the connection is never shared across threads.
  *
  * This overload accepts an explicit context, primarily for applications with a
  * private CA or a custom trust policy. The context must outlive the stream.
@@ -72,7 +81,7 @@ inline constexpr std::string_view DEFAULT_HTTPS_PORT = "443";
  * @throws boost::system::system_error on SNI, DNS, TCP, timeout, certificate,
  *         or TLS-handshake failure.
  */
-inline boost::asio::awaitable<std::shared_ptr<https_stream>>
+inline boost::asio::awaitable<std::unique_ptr<https_stream>>
 create_https_connection_stream(
     boost::asio::any_io_executor executor,
     ssl_context& context,
@@ -80,7 +89,7 @@ create_https_connection_stream(
     std::string_view port = DEFAULT_HTTPS_PORT
 ) {
     auto resolver = boost::asio::ip::tcp::resolver{ executor };
-    auto stream = std::make_shared<https_stream>(executor, context);
+    auto stream = std::make_unique<https_stream>(executor, context);
 
     // SNI lets a server select the correct certificate on shared endpoints.
     if (!SSL_set_tlsext_host_name(stream->native_handle(), host.c_str())) {
@@ -108,7 +117,7 @@ create_https_connection_stream(
  * This is the normal entry point for public HTTPS services. See the context
  * overload for parameter and error details.
  */
-inline boost::asio::awaitable<std::shared_ptr<https_stream>>
+inline boost::asio::awaitable<std::unique_ptr<https_stream>>
 create_https_connection_stream(
     boost::asio::any_io_executor executor,
     std::string host,
@@ -125,7 +134,7 @@ create_https_connection_stream(
  * that coroutine's executor with `boost::asio::this_coro::executor` and then
  * delegates to the executor-taking overload.
  */
-inline boost::asio::awaitable<std::shared_ptr<https_stream>>
+inline boost::asio::awaitable<std::unique_ptr<https_stream>>
 create_https_connection_stream(
     ssl_context& context,
     std::string host,
@@ -142,7 +151,7 @@ create_https_connection_stream(
  * This is the shortest form for callers already executing inside an Asio
  * coroutine.
  */
-inline boost::asio::awaitable<std::shared_ptr<https_stream>>
+inline boost::asio::awaitable<std::unique_ptr<https_stream>>
 create_https_connection_stream(
     std::string host,
     std::string_view port = DEFAULT_HTTPS_PORT

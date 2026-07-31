@@ -8,7 +8,10 @@ target_include_directories(endpoint_lib INTERFACE
 
 target_link_libraries(endpoint_lib INTERFACE
     Boost::headers
+    exceptions_lib
     openssl_iface
+    logging_lib
+    simplex_thirdparty_iface
 )
 
 # Keep tests optional under the project-wide BUILD_TESTS switch.

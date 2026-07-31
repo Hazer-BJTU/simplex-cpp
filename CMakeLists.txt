@@ -120,6 +120,7 @@ option(BUILD_TESTS "Build unit tests" ON)
 #     generate time, so the add order is driven by the dependency/property flow,
 #     not by the header dependency.
 add_subdirectory(versioning)
+add_subdirectory(exceptions)
 add_subdirectory(logging)
 add_subdirectory(languages)
 add_subdirectory(indextools)
