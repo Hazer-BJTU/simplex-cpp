@@ -42,8 +42,9 @@
 #                                  also carries the third_party lib search dir)
 #   - simplex_versioning          (LANG_PLUGIN_ABI_VERSION, pulled in by
 #                                  lang_plugin.hpp)
-#   - plugin_iface                (the generic plugin base; lang_plugin.hpp
-#                                  derives LangPlugin from plugin::Plugin<LangAnalyze>)
+#   - extension_framework_iface   (ExtensionContext / product_factory;
+#                                  lang_plugin.hpp derives LangPlugin from
+#                                  extension::ExtensionContext)
 # A language target links this (PRIVATE for plugins, PUBLIC for analyzer libs
 # whose own public headers #include indextools/lang.hpp) and gets all four.
 add_library(indextools_iface INTERFACE)
@@ -52,7 +53,7 @@ target_include_directories(indextools_iface INTERFACE
 target_link_libraries(indextools_iface INTERFACE
     simplex_thirdparty_iface
     simplex_versioning
-    plugin_iface
+    extension_framework_iface
 )
 
 # ========================================== #

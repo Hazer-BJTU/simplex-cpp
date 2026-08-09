@@ -2,13 +2,13 @@
 #include <boost/test/unit_test.hpp>
 
 #include "indextools/cache_system.hpp"
-#include "indextools/plugin_manager.hpp"
 
 #include <boost/asio.hpp>
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -16,19 +16,16 @@
 using namespace indextools;
 namespace fs = std::filesystem;
 
-// The plugin output directory, injected by CMake (see test/CMakeLists.txt).
-#ifndef LANG_PLUGIN_DIR
-#error "LANG_PLUGIN_DIR must be defined by the build system"
-#endif
-
 namespace {
 
-// Ensure the process-wide plugin manager is loaded from the real built plugins.
-// ensure_loaded() is idempotent, so every test can call this safely.
+// CacheSystem auto-loads language plugins from <exe>/plugins at construction
+// (== LANG_PLUGIN_DIR under the test build). Verify at least one warmed so a
+// missing/broken plugin build fails fast here with a clear message, rather than
+// producing empty search results deep inside each test.
 void ensure_plugins() {
-    size_t n = LangPluginManager::instance().ensure_loaded(LANG_PLUGIN_DIR);
-    BOOST_REQUIRE_MESSAGE(n >= 1,
-        "expected >=1 plugin in " LANG_PLUGIN_DIR ", loaded " << n);
+    boost::asio::io_context ioc;
+    auto cache = std::make_shared<CacheSystem>(1, ioc.get_executor());
+    BOOST_REQUIRE_GE(cache->plugin_count(), 1u);
 }
 
 // A temporary directory tree of Python sources, cleaned up on destruction.

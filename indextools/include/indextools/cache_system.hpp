@@ -33,17 +33,118 @@
  * not safe for concurrent senders.
  */
 
-#include "indextools/plugin_manager.hpp"
+#include "indextools/lang_plugin.hpp"
 #include "indextools/utils.hpp"
+#include "extension_framework/extensions.hpp"
 
 #include <ranges>
+#include <system_error>
 
 #include <boost/asio.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
+#include <boost/dll/runtime_symbol_info.hpp>
 
 #include <nlohmann/json.hpp>
 
 namespace indextools {
+
+/**
+ * @brief Language-plugin loader + file router, built on ExtensionDispatcher.
+ *
+ * Replaces the old process-wide LangPluginManager singleton. A CacheSystem owns
+ * one of these directly. load_plugins() loads every language .so in a directory
+ * (default `<executable_dir>/plugins`), ABI-gates them, and warms each
+ * LangPlugin — compiling its file-name regex and resolving its cached
+ * product_factory<LangAnalyze>. All of that happens once, single-threaded, at
+ * construction; afterwards the dispatcher's state is immutable, so make_analyzer()
+ * (route + create) is a pure concurrent read — exactly what CacheSystem's parallel
+ * launch_search needs.
+ */
+class LangDispatcher : public extension::ExtensionDispatcher {
+public:
+    LangDispatcher() {
+        // Route by file *name*: the dispatch key is the filename, and a plugin
+        // matches when its warmed regex claims it. The plugin downcast reaches
+        // the language-specific file_pattern() state.
+        set_matcher([](const ContextPtr& ctx, std::string_view filename) -> bool {
+            auto plugin = std::dynamic_pointer_cast<LangPlugin>(ctx);
+            return plugin && plugin->matches(filename);
+        });
+    }
+
+    /**
+     * @brief Load, ABI-gate, and warm every language plugin in @p directory.
+     *
+     * Tolerant of a missing/unreadable directory (returns 0 instead of throwing),
+     * since CacheSystem constructs eagerly and the plugins dir may be absent in
+     * some environments. Per-plugin load failures are logged and dropped by the
+     * underlying load_and_verify_directory. Must be called once, single-threaded,
+     * before any make_analyzer() query.
+     *
+     * @return The number of plugins that loaded, passed the ABI gate, and warmed
+     *         successfully (i.e. are actually routable).
+     */
+    std::size_t load_plugins(const std::filesystem::path& directory) {
+        std::error_code dc;
+        if (!std::filesystem::is_directory(directory, dc)) {
+            return _usable;
+        }
+        try {
+            load_directory(directory, extension::is_likely_dynamic_library,
+                           extension::same_tag_always{LANG_PLUGIN_FACTORY_NAME});
+        } catch (const std::exception&) {
+            return _usable;
+        }
+        // ABI-gate + warm. A context that fails either is left inert: matches()
+        // returns false for an unwarmed plugin, so it is never routed.
+        for (const auto& ctx : contexts()) {
+            if (!ctx || ctx->abi_version() != LANG_PLUGIN_ABI_VERSION) {
+                continue;
+            }
+            auto plugin = std::dynamic_pointer_cast<LangPlugin>(ctx);
+            if (plugin && plugin->warm()) {
+                ++_usable;
+            }
+        }
+        return _usable;
+    }
+
+    /// Load from `<executable_dir>/plugins` (the default install location).
+    std::size_t load_default_plugins() {
+        boost::system::error_code ec;
+        auto exe = boost::dll::program_location(ec);
+        if (ec) {
+            return _usable;
+        }
+        // Round-trip through .string() so this works whether Boost.DLL was built
+        // against std::filesystem or boost::filesystem.
+        std::filesystem::path exe_path(exe.string());
+        return load_plugins(exe_path.parent_path() / "plugins");
+    }
+
+    /**
+     * @brief Route @p file_path to the best plugin and mint a fresh analyzer.
+     *
+     * Dispatch keys on the file name (priority decides among multiple matches);
+     * the matched LangPlugin then mints the analyzer through its cached
+     * product_factory (a single indirect call — no per-create symbol resolution).
+     *
+     * @return A deleter-pinned analyzer (self-contained), or nullptr if no warmed
+     *         plugin claims @p file_path.
+     */
+    std::shared_ptr<LangAnalyze> make_analyzer(const std::filesystem::path& file_path) const {
+        auto ctx = dispatch(file_path.filename().string());
+        auto plugin = std::dynamic_pointer_cast<LangPlugin>(ctx);
+        return plugin ? plugin->create_analyzer() : nullptr;
+    }
+
+    /// Number of plugins that loaded, ABI-matched, and warmed (the routable set).
+    std::size_t usable_count() const noexcept { return _usable; }
+
+private:
+    std::size_t _usable = 0;
+};
+
 
 /**
  * @brief Cache of parsed source analyzers with a fan-out batch search engine.
@@ -51,9 +152,10 @@ namespace indextools {
  * A CacheSystem maps each canonical file path to a parsed LangAnalyze plus the
  * file's size and last-modified time at parse time. On lookup, an entry is
  * considered valid only if the file's current size and mtime still match the
- * snapshot; otherwise it is treated as a miss and re-parsed. Analyzers are
- * minted by the process-wide LangPluginManager, which guarantees each analyzer
- * keeps its owning plugin library loaded for its whole lifetime.
+ * snapshot; otherwise it is treated as a miss and re-parsed. Analyzers are minted
+ * by the CacheSystem's own LangDispatcher (constructed with it), which keeps the
+ * loaded plugin libraries mapped; each minted analyzer is deleter-pinned, so it
+ * stays valid for its whole lifetime without any process-wide singleton.
  *
  * Instances must be owned by a std::shared_ptr (the class derives from
  * enable_shared_from_this): launch_search captures shared_from_this() into the
@@ -70,6 +172,10 @@ private:
         std::filesystem::file_time_type last_modify;   ///< mtime at parse time.
         uintmax_t file_size;                           ///< size at parse time.
     };
+
+    /// Language-plugin loader + router. Loaded once in the constructor; immutable
+    /// thereafter, so make_analyzer() is safe under launch_search's concurrency.
+    LangDispatcher _lang_plugins;
 
     /// Number of concurrent search tasks launch_search fans out into (>= 1).
     const size_t _num_tasks;
@@ -95,6 +201,11 @@ public:
     CacheSystem& operator = (const CacheSystem&) = delete;
     CacheSystem(CacheSystem&&) = delete;
     CacheSystem& operator = (CacheSystem&&) = delete;
+
+    /// Number of language plugins that loaded, ABI-matched, and warmed
+    /// (the routable set). Construction auto-loads from `<exe>/plugins`, so a
+    /// count of 0 means no plugins were found there.
+    std::size_t plugin_count() const noexcept { return _lang_plugins.usable_count(); }
 
 private:
     /**
@@ -179,12 +290,10 @@ public:
                         auto analyzer = co_await self->_get_entry(target_path);
 
                         if (analyzer == nullptr) {
-                            // Pure extension routing — skip files no plugin claims.
-                            if (!LangPluginManager::instance().is_supported(target_path)) {
-                                continue;
-                            }
-
-                            analyzer = LangPluginManager::instance().make_lang_analyze(target_path);
+                            // Route to the best plugin and mint an analyzer in one
+                            // call (the factory is cached, so this is cheap). A null
+                            // result means no plugin claims the file — skip it.
+                            analyzer = self->_lang_plugins.make_analyzer(target_path);
                             if (analyzer == nullptr) {
                                 continue;
                             }

@@ -29,7 +29,13 @@
 #       which is binary-incompatible, so rebuilt plugins must report v3. Host and
 #       plugins are always rebuilt together from the same headers, so both sides
 #       agree; a stale v2 .so is deliberately rejected at load.
-set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 3)
+#   v4: LangPlugin now derives from extension::ExtensionContext (not
+#       plugin::Plugin<LangAnalyze>); analyzer creation moved from the virtual
+#       Plugin::create() to the exported `create_lang_analyze` alias (cached in a
+#       product_factory), and the descriptor factory returns unique_ptr<ExtensionContext>.
+#       New base + new members (warmed regex + product_factory) reorders the
+#       layout/vtable, so rebuilt plugins must report v4.
+set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 
 # ---- Render the generated header --------------------------------------------
 # Generated under build/generated/ so it is found as "versioning/version.hpp"

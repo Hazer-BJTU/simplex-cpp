@@ -128,15 +128,15 @@ option(BUILD_TESTS "Build unit tests" ON)
 add_subdirectory(versioning)
 add_subdirectory(exceptions)
 add_subdirectory(logging)
+# extension_framework after logging + the top-level interface targets: it is a
+# header-only module (extension_framework_iface) that links boost_dll_iface,
+# logging_lib, and simplex_thirdparty_iface. indextools' language layer is now
+# built on it (LangPlugin derives from extension::ExtensionContext), so it must
+# be added before indextools/languages.
+add_subdirectory(extension_framework)
 add_subdirectory(plugin)
 add_subdirectory(languages)
 add_subdirectory(indextools)
 # endpoint after logging: endpoint_lib links logging_lib (the public
 # https_connection.hpp uses logging::Logger) and the shared Boost/OpenSSL.
 add_subdirectory(endpoint)
-
-# extension_framework after logging + the top-level interface targets: it is a
-# header-only module (extension_framework_iface) that links boost_dll_iface,
-# logging_lib, and simplex_thirdparty_iface. It does not depend on any other
-# module, so it is safe to add last. (No existing module references it.)
-add_subdirectory(extension_framework)

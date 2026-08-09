@@ -27,7 +27,7 @@ foreach(TEST_SRC ${TEST_SOURCES})
     get_property(_lang_plugins      GLOBAL PROPERTY INDEX_LANG_PLUGINS)
     get_property(_lang_analyzer_libs GLOBAL PROPERTY INDEX_LANG_ANALYZER_LIBS)
 
-    if(TEST_NAME STREQUAL "test_plugin_manager" OR TEST_NAME STREQUAL "test_cache_system")
+    if(TEST_NAME STREQUAL "test_cache_system" OR TEST_NAME STREQUAL "test_lang_dispatcher")
         # Runtime plugin loader: needs every plugin .so on disk at the path
         # compiled into the lib (LANG_PLUGIN_DIR is defined on these tests).
         # indextools_lib already links Boost::dll transitively.
