@@ -70,19 +70,26 @@ has to name a specific language):
 ## Plugin contract (ABI)
 
 The contract header is `indextools/include/indextools/lang_plugin.hpp` (reached
-via the `indextools_iface` INTERFACE target), shared by the host and every
-plugin:
+via the `indextools_iface` INTERFACE target, which links
+`extension_framework_iface`), shared by the host and every plugin:
 
-- `LangPlugin` abstract interface: `abi_version()` / `name()` / `extensions()` / `create()`.
-- `LANG_PLUGIN_ABI_VERSION`: the ABI version; the host refuses to load a plugin whose version does not match.
-- A plugin must export a factory named `create_lang_plugin` (via `BOOST_DLL_ALIAS`).
+- `LangPlugin` derives from `extension::ExtensionContext`. A concrete plugin
+  implements `abi_version()`, `name()`, and `file_pattern()` (an ECMAScript regex
+  matched case-insensitively against the file *name*); `priority()` is optional
+  (higher wins, default 0; a catch-all returns a low value).
+- `LANG_PLUGIN_ABI_VERSION`: the host's `LangDispatcher` rejects any plugin whose
+  `abi_version()` differs.
+- A plugin exports **two** factory aliases (via `BOOST_DLL_ALIAS`):
+  `create_lang_plugin` → `std::unique_ptr<extension::ExtensionContext>` (the
+  descriptor), and `create_lang_analyze` → `std::unique_ptr<LangAnalyze>` (a
+  fresh per-file analyzer).
 
-**Lifetime note**: a `LangAnalyze` object created by a plugin has its vtable and
-destructor code inside the `.so`. `LangPluginManager` binds the
-`shared_library` that owns that `.so` into the deleter of the
-`shared_ptr<LangAnalyze>` it returns, guaranteeing the `.so` outlives every
-analyzer it created — callers just use `shared_ptr` RAII as usual and never
-have to think about library unloading.
+**Lifetime note**: an analyzer minted by a plugin has its vtable and destructor
+inside the `.so`. `LangPlugin::warm()` resolves the `create_lang_analyze` alias
+once into a cached `product_factory<LangAnalyze>`; the analyzers it mints are
+deleter-pinned, so each `shared_ptr<LangAnalyze>` carries its own library
+reference and is safely destructible independently — callers just use
+`shared_ptr` RAII as usual. No process-wide singleton keeps libraries mapped.
 
 ---
 
@@ -113,9 +120,9 @@ other shared facilities. Use `python/` (structured tree-sitter analysis) or
 
 ### 3. Write the plugin export wrapper `rustlang_plugin.cpp`
 
-Copy `python/src/pythonlang_plugin.cpp` and change three things: the class name,
-`name()`, and the extension list in `extensions()` (**each language declares its
-own**):
+Copy `python/src/pythonlang_plugin.cpp` and adapt: the class name, `name()`, the
+`file_pattern()` regex (**each language declares its own**), and the analyzer
+type the product factory mints.
 
 ```cpp
 #include "rust/rustlang.h"
@@ -128,23 +135,33 @@ class RustPlugin final : public LangPlugin {
 public:
     std::uint32_t abi_version() const noexcept override { return LANG_PLUGIN_ABI_VERSION; }
     std::string_view name() const noexcept override { return "Rust"; }
-    std::vector<std::string_view> extensions() const noexcept override { return {".rs"}; }
-    std::unique_ptr<LangAnalyze> create() const override {
-        return std::make_unique<RustLanguage>();
-    }
+    // Matched case-insensitively against the file name.
+    std::string_view file_pattern() const noexcept override { return R"(\.rs$)"; }
+    // priority() not overridden -> default 0 (dedicated plugins outrank the
+    // low-priority fallback automatically).
 };
 } // namespace
 
-std::shared_ptr<LangPlugin> create_lang_plugin() { return std::make_shared<RustPlugin>(); }
+// Descriptor factory -- returns the base ExtensionContext.
+std::unique_ptr<extension::ExtensionContext> create_lang_plugin() {
+    return std::make_unique<RustPlugin>();
+}
+// Analyzer factory -- mints a fresh per-file analyzer (resolved once per plugin
+// into a cached product_factory by LangPlugin::warm()).
+std::unique_ptr<LangAnalyze> create_lang_analyze() {
+    return std::make_unique<RustLanguage>();
+}
 } // namespace indextools
 
-BOOST_DLL_ALIAS(indextools::create_lang_plugin, create_lang_plugin)
+BOOST_DLL_ALIAS(indextools::create_lang_plugin,  create_lang_plugin)
+BOOST_DLL_ALIAS(indextools::create_lang_analyze, create_lang_analyze)
 ```
 
-> If an extension used to fall through to `fallback` (e.g. `.rs`), remove it
-> from the list in `fallback/src/fallbacklang_plugin.cpp` so two plugins do not
-> claim the same extension (on a clash `LangPluginManager` prints a warning and
-> ignores the later claimant).
+> Routing is **priority-ordered**, not exclusive: when several plugins' patterns
+> match a file, the host picks the highest `priority()`. The fallback plugin is a
+> low-priority catch-all, so a dedicated plugin (using the default priority)
+> automatically wins — there is no need to prune the fallback's regex when adding
+> one.
 
 ### 4. Write the module `CMakeLists.txt`
 
