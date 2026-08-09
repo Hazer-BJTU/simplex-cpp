@@ -134,3 +134,9 @@ add_subdirectory(indextools)
 # endpoint after logging: endpoint_lib links logging_lib (the public
 # https_connection.hpp uses logging::Logger) and the shared Boost/OpenSSL.
 add_subdirectory(endpoint)
+
+# extension_framework after logging + the top-level interface targets: it is a
+# header-only module (extension_framework_iface) that links boost_dll_iface,
+# logging_lib, and simplex_thirdparty_iface. It does not depend on any other
+# module, so it is safe to add last. (No existing module references it.)
+add_subdirectory(extension_framework)
