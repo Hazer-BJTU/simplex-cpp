@@ -75,6 +75,7 @@
  */
 
 #include <cctype>          // std::tolower
+#include <concepts>        // std::convertible_to (concept requirements)
 #include <cstdint>         // std::uint32_t
 #include <filesystem>
 #include <format>
@@ -100,6 +101,82 @@
 #include "logging/logger.hpp"
 
 namespace extension {
+
+// =============================================================================
+// Concepts — vocabulary requirements for the template policies/types below
+// =============================================================================
+//
+// The framework is generic over a handful of policy and object types. Each has
+// a hard requirement that, if unmet, used to surface only as a deeply nested
+// template error. These concepts turn those requirements into clear constraints
+// at the call site:
+//
+//   - FactoryFunction : a function type (the raw form of a factory alias).
+//   - DsoObject       : an object type minted across a DSO boundary.
+//   - LibraryFilter   : a per-file acceptance predicate for a directory scan.
+//   - AliasGenerator  : a per-file factory-alias-name generator.
+
+/**
+ * @brief A factory alias resolves to a raw function pointer, so the supplied
+ *        type must itself be a function type (e.g. `std::unique_ptr<T>()`).
+ *
+ * Replaces the `static_assert(std::is_function_v<...>)` that previously guarded
+ * `detail::resolve_factory_alias`; with a concept the violation is reported at
+ * the call site instead of deep inside the resolution machinery.
+ */
+template<typename Signature>
+concept FactoryFunction = std::is_function_v<Signature>;
+
+/**
+ * @brief An object type that is safe to mint from — and destroy through — a
+ *        dynamic library.
+ *
+ * `create_object_from_library`, `create_product`, and `product_factory` all
+ * produce an object *inside* a loaded .so/.dll and later destroy it with
+ * `delete p`, where `p` is a pointer to the supplied type. The real object is
+ * normally a library-private derived type that implements the interface's
+ * virtual functions (`ExtensionContext`, `ToyProduct`, …). Deleting such an
+ * object through a base pointer is well-defined ONLY if the type has a virtual
+ * destructor — otherwise the destruction slices, leaks, or invokes UB across
+ * the DSO boundary. This concept encodes that load-bearing lifetime invariant,
+ * rejecting a non-polymorphic-destructor type up front rather than letting it
+ * compile into silent UB.
+ *
+ * This deliberately does NOT require derivation from `ExtensionContext`: the
+ * factory machinery is intentionally reusable for any exported interface (the
+ * toy test mints a `ToyProduct` that is not an `ExtensionContext`), and a
+ * concrete `final` type with a virtual destructor satisfies it too.
+ */
+template<typename T>
+concept DsoObject = std::has_virtual_destructor_v<T>;
+
+/**
+ * @brief A directory-scan file predicate: invocable as `bool(const path&)`.
+ *
+ * `is_likely_dynamic_library` is the ready-made implementation. Constrains the
+ * `Filter` policy of `load_modules_directory` / `load_and_verify_directory`.
+ * The lvalue-callable form (`F&`) is required because the same predicate is
+ * invoked once per discovered file.
+ */
+template<typename F>
+concept LibraryFilter = requires(F& filter, const std::filesystem::path& path) {
+    { filter(path) } -> std::convertible_to<bool>;
+};
+
+/**
+ * @brief A per-file factory-alias generator: invocable as
+ *        `string_view(const path&)`.
+ *
+ * `same_tag_always` is the ready-made implementation. Constrains the
+ * `TagGenerator` policy of `load_modules_directory` / `load_and_verify_directory`.
+ *
+ * @note Named `AliasGenerator` (not `TagGenerator`) to avoid shadowing the
+ *       same-named template parameter inside the functions' `requires` clauses.
+ */
+template<typename G>
+concept AliasGenerator = requires(G& generator, const std::filesystem::path& path) {
+    { generator(path) } -> std::convertible_to<std::string_view>;
+};
 
 // =============================================================================
 // Platform-aware dynamic-library predicate
@@ -252,13 +329,11 @@ namespace detail {
  *               the message to aid diagnosis.
  */
 template<typename FactorySignature>
+    requires FactoryFunction<FactorySignature>
 FactorySignature* resolve_factory_alias(
     const std::shared_ptr<boost::dll::shared_library>& library_ref,
     std::string_view target_field
 ) {
-    static_assert(std::is_function_v<FactorySignature>,
-                  "FactorySignature must be a function type, e.g. std::unique_ptr<T>()");
-
     if (library_ref == nullptr) {
         throw std::runtime_error("empty library reference (=nullptr)");
     }
@@ -351,6 +426,7 @@ FactorySignature* resolve_factory_alias(
  *        message to aid diagnosis.
  */
 template<typename ExtensionObject, bool bind_library_ref_deleter = false>
+    requires DsoObject<ExtensionObject>
 std::shared_ptr<ExtensionObject> create_object_from_library(
     std::shared_ptr<boost::dll::shared_library> library_ref,
     std::string_view target_field
@@ -518,6 +594,7 @@ public:
  *               directory aborts the whole call; per-file failures do not).
  */
 template<typename Filter, typename TagGenerator>
+    requires LibraryFilter<Filter> && AliasGenerator<TagGenerator>
 std::vector<std::shared_ptr<ExtensionContext>> load_modules_directory(
     const std::filesystem::path& directory_path,
     Filter&& filter,
@@ -595,6 +672,7 @@ std::vector<std::shared_ptr<ExtensionContext>> load_modules_directory(
  * parallel error vector.
  */
 template<typename Filter, typename TagGenerator>
+    requires LibraryFilter<Filter> && AliasGenerator<TagGenerator>
 std::vector<std::shared_ptr<ExtensionContext>> load_modules_directory(
     const std::filesystem::path& directory_path,
     Filter&& filter,
@@ -733,6 +811,7 @@ inline std::vector<std::shared_ptr<ExtensionContext>> verify_after_loaded(
  * @see verify_after_loaded      for the filter + sort step.
  */
 template<typename Filter, typename TagGenerator>
+    requires LibraryFilter<Filter> && AliasGenerator<TagGenerator>
 std::vector<std::shared_ptr<ExtensionContext>> load_and_verify_directory(
     const std::filesystem::path& directory_path,
     Filter&& filter,
@@ -765,6 +844,7 @@ std::vector<std::shared_ptr<ExtensionContext>> load_and_verify_directory(
  * the caller gives up visibility into which modules (if any) failed to load.
  */
 template<typename Filter, typename TagGenerator>
+    requires LibraryFilter<Filter> && AliasGenerator<TagGenerator>
 std::vector<std::shared_ptr<ExtensionContext>> load_and_verify_directory(
     const std::filesystem::path& directory_path,
     Filter&& filter,
@@ -816,6 +896,7 @@ std::vector<std::shared_ptr<ExtensionContext>> load_and_verify_directory(
  * @see ExtensionDispatcher::dispatch  for how to obtain @p context for a given key.
  */
 template<typename Product, bool bind_library_ref_deleter = true>
+    requires DsoObject<Product>
 std::shared_ptr<Product> create_product(
     const std::shared_ptr<ExtensionContext>& context,
     std::string_view factory_alias
@@ -869,6 +950,7 @@ std::shared_ptr<Product> create_product(
  *                                  `true` = self-contained / safe).
  */
 template<typename Product, bool bind_library_ref_deleter = true>
+    requires DsoObject<Product>
 class product_factory {
 public:
     /// The factory's function type: nullary, returns `unique_ptr<Product>`.
