@@ -16,6 +16,7 @@
  *   - ExtensionContext             — the abstract base every extension implements.
  *   - load_modules_directory()     — scan a dir, load every accepted module.
  *   - verify_after_loaded()        — drop failures, log diagnostics, sort by priority.
+ *   - load_and_verify_directory()  — one-shot: scan + load + verify, return sorted.
  *
  * ## Why a single header
  *
@@ -623,6 +624,100 @@ inline std::vector<std::shared_ptr<ExtensionContext>> verify_after_loaded(
     );
 
     return verified_loaded;
+}
+
+// =============================================================================
+// One-shot load + verify (composes load_modules_directory + verify_after_loaded)
+// =============================================================================
+
+/**
+ * @brief Load every module in a directory and return the verified, sorted set.
+ *
+ * This is the high-level convenience entry point most hosts actually want: it
+ * composes `load_modules_directory` and `verify_after_loaded` so that one call
+ * turns a directory into a ready-to-use, ordered context list. Concretely it:
+ *
+ *   1. scans @p directory_path for accepted files (applying @p filter, optionally
+ *      recursing) and loads each one as a deleter-pinned, self-sufficient context;
+ *   2. drops any module that failed to load or was left without a bound library
+ *      handle, logging a diagnostic for each; and
+ *   3. returns the survivors ordered highest-`priority()`-first (stable, so equal
+ *      priorities keep discovery order).
+ *
+ * The returned list contains only usable contexts — no nulls, no unbound
+ * contexts. Per-file load failures do NOT abort the call: they are appended to
+ * @p errors (parallel to the raw load result) and silently dropped from the
+ * returned list, exactly as if the two underlying functions had been called by
+ * hand. The only condition that throws is a failure to scan @p directory_path
+ * itself.
+ *
+ * @tparam Filter        Callable `bool(const std::filesystem::path&)` selecting
+ *                       which files to attempt (`is_likely_dynamic_library` is a
+ *                       ready-made choice).
+ * @tparam TagGenerator  Callable returning the alias name to import from a given
+ *                       path (`same_tag_always` is a ready-made choice).
+ *
+ * @param directory_path  Directory to scan (must exist and be a directory).
+ * @param filter          File-acceptance predicate.
+ * @param tag_generator   Per-file alias-name generator.
+ * @param errors[out]     Appended to, one entry per discovered module (null slot
+ *                        on the raw load = error message here; usable context =
+ *                        `std::nullopt`).
+ * @param recursive       Recurse into subdirectories if true.
+ * @return The verified, priority-sorted contexts (no nulls, no unbound contexts).
+ * @throw std::runtime_error if @p directory_path itself cannot be scanned (a bad
+ *               directory aborts the whole call; per-file failures do not).
+ *
+ * @see load_modules_directory  for the raw load step.
+ * @see verify_after_loaded      for the filter + sort step.
+ */
+template<typename Filter, typename TagGenerator>
+std::vector<std::shared_ptr<ExtensionContext>> load_and_verify_directory(
+    const std::filesystem::path& directory_path,
+    Filter&& filter,
+    TagGenerator&& tag_generator,
+    std::vector<std::optional<std::string>>& errors,
+    bool recursive = false
+) {
+    // Load first: produces a parallel (context, error) slot per discovered module,
+    // with null context slots paired to error messages. The contexts are already
+    // deleter-pinned + bound, so they are safe to hold for the caller's lifetime.
+    auto loaded = load_modules_directory(
+        directory_path,
+        std::forward<Filter>(filter),
+        std::forward<TagGenerator>(tag_generator),
+        errors,
+        recursive
+    );
+
+    // Then filter out the nulls / unbound contexts, log diagnostics, and stable-
+    // sort survivors by priority. `loaded` is moved in (verify takes it by value)
+    // since the raw vector is not needed beyond this point.
+    return verify_after_loaded(std::move(loaded), errors);
+}
+
+/**
+ * @brief Convenience overload of `load_and_verify_directory` that discards errors.
+ *
+ * Use when per-file diagnostics are not needed: returns only the usable,
+ * priority-sorted contexts. Internally it discards the parallel error vector, so
+ * the caller gives up visibility into which modules (if any) failed to load.
+ */
+template<typename Filter, typename TagGenerator>
+std::vector<std::shared_ptr<ExtensionContext>> load_and_verify_directory(
+    const std::filesystem::path& directory_path,
+    Filter&& filter,
+    TagGenerator&& tag_generator,
+    bool recursive = false
+) {
+    std::vector<std::optional<std::string>> errors;
+    return load_and_verify_directory(
+        directory_path,
+        std::forward<Filter>(filter),
+        std::forward<TagGenerator>(tag_generator),
+        errors,
+        recursive
+    );
 }
 
 } // namespace extension

@@ -6,9 +6,10 @@
  * module: the platform file predicate, the tag-generator policy, the
  * ExtensionContext base interface (bind / priority / extras), the error paths of
  * get_library_ref and create_object_from_library, the filtering + stable
- * priority sort in verify_after_loaded, and load_modules_directory's per-file
- * error collection (driven by a runtime-created bogus .so, so no build-time DSO
- * is needed here). The real dynamic path is exercised by test_extensions_dynamic.
+ * priority sort in verify_after_loaded, load_modules_directory's per-file error
+ * collection, and the one-shot load_and_verify_directory convenience (filtering +
+ * error collection) — all driven by a runtime-created bogus .so, so no build-time
+ * DSO is needed here. The real dynamic path is exercised by test_extensions_dynamic.
  */
 
 #define BOOST_TEST_MODULE ExtensionFrameworkStaticTests
@@ -277,6 +278,58 @@ BOOST_AUTO_TEST_CASE(load_directory_throws_for_missing_directory) {
     std::vector<std::optional<std::string>> errors;
     BOOST_CHECK_THROW(
         extension::load_modules_directory(
+            "/no/such/directory/here", extension::is_likely_dynamic_library,
+            extension::same_tag_always{"any"}, errors),
+        std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------
+// load_and_verify_directory: one-shot scan + load + verify + sort
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(load_and_verify_directory_empty_dir_yields_nothing) {
+    scoped_temp_dir dir;
+    std::vector<std::optional<std::string>> errors;
+    auto verified = extension::load_and_verify_directory(
+        dir.p, extension::is_likely_dynamic_library,
+        extension::same_tag_always{"any"}, errors);
+
+    BOOST_CHECK(verified.empty());
+    BOOST_CHECK(errors.empty());
+}
+
+BOOST_AUTO_TEST_CASE(load_and_verify_directory_drops_bogus_so_and_records_error) {
+    scoped_temp_dir dir;
+
+    // Filtered out (wrong extension): never attempted.
+    { std::ofstream(dir.p / "notes.txt") << "ignore me"; }
+    // Passes the filter but is not a real ELF: load fails.
+    { std::ofstream(dir.p / "broken.so", std::ios::binary) << "not a real ELF"; }
+
+    std::vector<std::optional<std::string>> errors;
+    auto verified = extension::load_and_verify_directory(
+        dir.p, extension::is_likely_dynamic_library,
+        extension::same_tag_always{"create_toy_extension"}, errors);
+
+    // The one candidate failed, so nothing usable comes back...
+    BOOST_CHECK(verified.empty());
+    // ...but the failure is still surfaced in the errors vector.
+    BOOST_REQUIRE_EQUAL(errors.size(), 1u);
+    BOOST_CHECK(errors[0].has_value());
+}
+
+BOOST_AUTO_TEST_CASE(load_and_verify_directory_convenience_overload_compiles_and_runs) {
+    scoped_temp_dir dir;
+    // No errors& overload: empty dir -> empty verified list, errors discarded.
+    auto verified = extension::load_and_verify_directory(
+        dir.p, extension::is_likely_dynamic_library,
+        extension::same_tag_always{"any"});
+    BOOST_CHECK(verified.empty());
+}
+
+BOOST_AUTO_TEST_CASE(load_and_verify_directory_throws_for_missing_directory) {
+    std::vector<std::optional<std::string>> errors;
+    BOOST_CHECK_THROW(
+        extension::load_and_verify_directory(
             "/no/such/directory/here", extension::is_likely_dynamic_library,
             extension::same_tag_always{"any"}, errors),
         std::runtime_error);
