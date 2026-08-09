@@ -8,8 +8,13 @@
  * get_library_ref and create_object_from_library, the filtering + stable
  * priority sort in verify_after_loaded, load_modules_directory's per-file error
  * collection, and the one-shot load_and_verify_directory convenience (filtering +
- * error collection) — all driven by a runtime-created bogus .so, so no build-time
- * DSO is needed here. The real dynamic path is exercised by test_extensions_dynamic.
+ * error collection). Also covers the ExtensionDispatcher class (in-memory add /
+ * name index, default + injected matcher/selector, stable tie-breaking, one-off
+ * matcher, downcast, clear, and the virtual import_directory() override) and the
+ * create_product() error paths. All driven by a runtime-created bogus .so where a
+ * DSO is needed at all; the real dynamic path (including load_directory over a
+ * real .so and a real create_product<Product>) is exercised by
+ * test_extensions_dynamic.
  */
 
 #define BOOST_TEST_MODULE ExtensionFrameworkStaticTests
@@ -332,6 +337,205 @@ BOOST_AUTO_TEST_CASE(load_and_verify_directory_throws_for_missing_directory) {
         extension::load_and_verify_directory(
             "/no/such/directory/here", extension::is_likely_dynamic_library,
             extension::same_tag_always{"any"}, errors),
+        std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------
+// ExtensionDispatcher: directory-driven registry + name index + key router
+// ---------------------------------------------------------------------------
+// Built in-memory via add() here (FakeContext), so no DSO is needed. The real
+// directory-import path (load_directory) is exercised in test_extensions_dynamic
+// with libtoyextension.so; the virtual import_directory() override is covered
+// both there and by the local subclass below.
+using DispatcherPtr = extension::ExtensionDispatcher::ContextPtr;
+
+/// "any context matches any key" matcher — to exercise selection in isolation.
+auto match_any = [](const DispatcherPtr&, std::string_view) -> bool { return true; };
+
+BOOST_AUTO_TEST_CASE(dispatcher_starts_empty) {
+    extension::ExtensionDispatcher d;
+    BOOST_CHECK(d.empty());
+    BOOST_CHECK_EQUAL(d.size(), 0u);
+    BOOST_CHECK(d.dispatch(std::string_view("anything")) == nullptr);
+    BOOST_CHECK(d.find("anything") == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_add_indexes_by_name) {
+    extension::ExtensionDispatcher d;
+    BOOST_CHECK(d.add(make_bound("python", 10)));
+    BOOST_CHECK(d.add(make_bound("ruby", 5)));
+    BOOST_CHECK_EQUAL(d.size(), 2u);
+
+    BOOST_CHECK(d.contains("python"));
+    BOOST_CHECK(d.find("python")->name() == "python");
+    BOOST_CHECK(!d.contains("cobol"));
+    BOOST_CHECK(d.find("cobol") == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_add_rejects_null) {
+    extension::ExtensionDispatcher d;
+    BOOST_CHECK(!d.add(nullptr));
+    BOOST_CHECK(d.empty());
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_first_name_wins_in_index) {
+    // A second context under an existing name does not overwrite find(); both stay
+    // in the list (so dispatch can still reach the later one).
+    extension::ExtensionDispatcher d;
+    d.add(make_bound("dup", 1));
+    d.add(make_bound("dup", 9));
+    BOOST_CHECK_EQUAL(d.size(), 2u);
+    BOOST_CHECK_EQUAL(d.find("dup")->priority(), 1); // earliest registered wins
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_dispatch_default_matches_by_name) {
+    extension::ExtensionDispatcher d;
+    d.add(make_bound("python", 10));
+    d.add(make_bound("ruby", 5));
+    auto chosen = d.dispatch(std::string_view("ruby"));
+    BOOST_REQUIRE(chosen != nullptr);
+    BOOST_CHECK(chosen->name() == "ruby");
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_dispatch_returns_null_when_no_match) {
+    extension::ExtensionDispatcher d;
+    d.add(make_bound("python", 10));
+    BOOST_CHECK(d.dispatch(std::string_view("cobol")) == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_dispatch_picks_highest_priority_among_matches) {
+    extension::ExtensionDispatcher d;
+    d.set_matcher(match_any);
+    d.add(make_bound("low", 1));
+    d.add(make_bound("high", 100));
+    d.add(make_bound("mid", 50));
+    auto chosen = d.dispatch(std::string_view("any"));
+    BOOST_REQUIRE(chosen != nullptr);
+    BOOST_CHECK(chosen->name() == "high");
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_dispatch_ties_break_first_seen) {
+    // Equal priorities: the first-seen match is kept (stable selection).
+    extension::ExtensionDispatcher d;
+    d.set_matcher(match_any);
+    d.add(make_bound("first", 5));
+    d.add(make_bound("second", 5));
+    BOOST_CHECK(d.dispatch(std::string_view("k"))->name() == "first");
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_set_selector_overrides_default) {
+    // Inject a selector that prefers LOWER priority (reverse of the default).
+    extension::ExtensionDispatcher d;
+    d.set_matcher(match_any);
+    d.set_selector([](const DispatcherPtr& a, const DispatcherPtr& b) {
+        return a->priority() < b->priority();
+    });
+    d.add(make_bound("hi", 100));
+    d.add(make_bound("lo", 1));
+    BOOST_CHECK(d.dispatch(std::string_view("k"))->name() == "lo");
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_one_off_matcher_ignores_bound_one) {
+    // dispatch(key, matcher) uses the ad-hoc matcher, not the bound one.
+    extension::ExtensionDispatcher d;
+    d.add(make_bound("python", 10));
+    auto by_priority = [](const DispatcherPtr& c, std::string_view) {
+        return c->priority() == 10;
+    };
+    // The bound matcher (match by name) would miss "nomatch"; the ad-hoc one hits.
+    BOOST_CHECK(d.dispatch(std::string_view("nomatch"), by_priority) != nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_downcast_reaches_concrete_type) {
+    // The caller downcasts the returned base pointer to the concrete type to
+    // reach category-specific state — the framework stays generic.
+    extension::ExtensionDispatcher d;
+    d.add(make_bound("concrete", 10));
+    auto chosen = d.dispatch(std::string_view("concrete"));
+    BOOST_REQUIRE(chosen != nullptr);
+    auto concrete = std::dynamic_pointer_cast<FakeContext>(chosen);
+    BOOST_REQUIRE(concrete != nullptr);
+    BOOST_CHECK_EQUAL(concrete->priority(), 10);
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_clear_drops_everything) {
+    extension::ExtensionDispatcher d;
+    d.add(make_bound("a", 1));
+    d.add(make_bound("b", 2));
+    d.clear();
+    BOOST_CHECK(d.empty());
+    BOOST_CHECK(!d.contains("a"));
+    BOOST_CHECK(d.dispatch(std::string_view("a")) == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(dispatcher_import_directory_override_is_used) {
+    // A subclass overrides the virtual import_directory() to source contexts
+    // differently; load_directory() must route through it and still index the
+    // results. This is the "supports inheritance + override" contract.
+    struct CustomDispatcher : extension::ExtensionDispatcher {
+        std::vector<ContextPtr> import_directory(
+            const std::filesystem::path&,
+            Filter, TagGenerator,
+            std::vector<std::optional<std::string>>&, bool) override {
+            // Hand-built contexts instead of a real directory scan; the path and
+            // filter/tag args are deliberately ignored.
+            return {make_bound("custom-a", 3), make_bound("custom-b", 7)};
+        }
+    };
+    CustomDispatcher d;
+    std::vector<std::optional<std::string>> errors;
+    auto added = d.load_directory("/any/path/ignored",
+                                  extension::is_likely_dynamic_library,
+                                  extension::same_tag_always{"x"}, errors);
+    BOOST_CHECK_EQUAL(added, 2u);
+    BOOST_CHECK_EQUAL(d.size(), 2u);
+    BOOST_CHECK(d.contains("custom-a"));
+    BOOST_CHECK_EQUAL(d.find("custom-b")->priority(), 7);
+}
+
+// ---------------------------------------------------------------------------
+// create_product: mint a Product from a context via create_object_from_library
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(create_product_rejects_null_context) {
+    BOOST_CHECK_THROW(
+        extension::create_product<FakeContext>(nullptr, "any_alias"),
+        std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(create_product_rejects_unbound_context) {
+    // A context that was never bound has a null library handle: forwarded to
+    // create_object_from_library, which rejects it.
+    auto unbound = std::make_shared<FakeContext>("u", 0);
+    BOOST_CHECK_THROW(
+        extension::create_product<FakeContext>(unbound, "any_alias"),
+        std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(create_product_surfaces_missing_alias) {
+    // make_bound() attaches an *unloaded* shared_library, whose has() is always
+    // false, so any alias lookup fails — without needing a real .so on disk.
+    auto bound = make_bound("b", 0);
+    BOOST_CHECK_THROW(
+        extension::create_product<FakeContext>(bound, "no_such_alias"),
+        std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------
+// product_factory: resolve-once cached factory handle
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(product_factory_rejects_null_library) {
+    // Whole expression parenthesized so the commas in the template args and the
+    // ctor call are not seen as BOOST_CHECK_THROW macro-arg separators.
+    BOOST_CHECK_THROW(
+        (extension::product_factory<FakeContext>(nullptr, "any_alias")),
+        std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(product_factory_rejects_missing_alias) {
+    // An unloaded shared_library has() == false for every alias.
+    auto stub = std::make_shared<boost::dll::shared_library>();
+    BOOST_CHECK_THROW(
+        (extension::product_factory<FakeContext>(stub, "no_such_alias")),
         std::runtime_error);
 }
 

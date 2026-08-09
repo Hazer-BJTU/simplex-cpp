@@ -17,6 +17,9 @@
  *   - load_modules_directory()     — scan a dir, load every accepted module.
  *   - verify_after_loaded()        — drop failures, log diagnostics, sort by priority.
  *   - load_and_verify_directory()  — one-shot: scan + load + verify, return sorted.
+ *   - create_product()             — mint a real Product from a context's library.
+ *   - product_factory<>            — cached factory: resolve an alias once, create many.
+ *   - ExtensionDispatcher          — directory-driven registry + key router (class).
  *
  * ## Why a single header
  *
@@ -75,6 +78,7 @@
 #include <cstdint>         // std::uint32_t
 #include <filesystem>
 #include <format>
+#include <functional>      // std::function (ExtensionDispatcher Matcher/Selector)
 #include <memory>
 #include <optional>
 #include <algorithm>
@@ -82,6 +86,8 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>     // std::is_function_v (resolve_factory_alias)
+#include <unordered_map>   // std::unordered_map (ExtensionDispatcher name index)
 #include <utility>
 #include <vector>
 
@@ -220,6 +226,77 @@ inline std::shared_ptr<boost::dll::shared_library> get_library_ref(
     }
 }
 
+namespace detail {
+
+/**
+ * @brief Resolve a factory alias to its raw function pointer, with validation.
+ *
+ * Shared resolution step for `create_object_from_library` (one-shot) and
+ * `product_factory` (cached): checks the handle and the alias, then returns the
+ * resolved raw function pointer. Using the raw pointer directly — rather than
+ * Boost's `library_function` wrapper that `import_alias` returns — keeps a cached
+ * hot path (product_factory::create) down to a single indirect call, with no
+ * per-call Boost object or shared_ptr churn.
+ *
+ * This mirrors exactly what `import_alias` does internally: an alias symbol
+ * stores the function's address, and `get<Signature*>(name)` reads that stored
+ * pointer. The only thing omitted is wrapping it in a `library_function`.
+ *
+ * @tparam FactorySignature  A function type, e.g. `std::unique_ptr<T>()`.
+ * @param library_ref   A non-null handle to a library exporting @p target_field.
+ * @param target_field  The exported alias name (string_view accepted here;
+ *                      converted internally because Boost.DLL needs const char*).
+ * @return The resolved factory function pointer.
+ * @throw std::runtime_error if the handle is null, the alias is missing, or
+ *               resolution fails. The owning library's location is included in
+ *               the message to aid diagnosis.
+ */
+template<typename FactorySignature>
+FactorySignature* resolve_factory_alias(
+    const std::shared_ptr<boost::dll::shared_library>& library_ref,
+    std::string_view target_field
+) {
+    static_assert(std::is_function_v<FactorySignature>,
+                  "FactorySignature must be a function type, e.g. std::unique_ptr<T>()");
+
+    if (library_ref == nullptr) {
+        throw std::runtime_error("empty library reference (=nullptr)");
+    }
+
+    // Boost.DLL's symbol/alias lookup only accepts const char* / const std::string&,
+    // so materialize the view exactly once and reuse it below.
+    const std::string field{target_field};
+
+    if (!library_ref->has(field)) {
+        boost::system::error_code loc_ec;
+        throw std::runtime_error(
+            std::format(
+                "symbol or alias name {} not found in library: {}",
+                field,
+                library_ref->location(loc_ec).string()
+            )
+        );
+    }
+
+    try {
+        // An alias symbol stores the function's address; get<Signature*> returns
+        // that stored function pointer (this is precisely what import_alias does
+        // to obtain the pointer before wrapping it).
+        return library_ref->get<FactorySignature*>(field);
+    } catch (const std::exception& e) {
+        boost::system::error_code loc_ec;
+        throw std::runtime_error(
+            std::format(
+                "library: {} import error: {}",
+                library_ref->location(loc_ec).string(),
+                e.what()
+            )
+        );
+    }
+}
+
+} // namespace detail
+
 /**
  * @brief Import an extension object from an already-opened library via its
  *        exported factory alias.
@@ -278,30 +355,14 @@ std::shared_ptr<ExtensionObject> create_object_from_library(
     std::shared_ptr<boost::dll::shared_library> library_ref,
     std::string_view target_field
 ) {
-    if (library_ref == nullptr) {
-        throw std::runtime_error("empty library reference (=nullptr)");
-    }
-
-    // Boost.DLL's symbol/alias lookup only accepts const char* / const std::string&,
-    // so materialize the view exactly once and reuse it below.
-    const std::string field{target_field};
-
-    if (!library_ref->has(field)) {
-        boost::system::error_code loc_ec;
-        throw std::runtime_error(
-            std::format(
-                "symbol or alias name {} not found in library: {}",
-                field,
-                library_ref->location(loc_ec).string()
-            )
-        );
-    }
+    // Resolve + validate the factory symbol once: a null handle, a missing alias,
+    // or a resolution failure all surface as std::runtime_error carrying the
+    // library location (see detail::resolve_factory_alias).
+    auto factory_function = detail::resolve_factory_alias<std::unique_ptr<ExtensionObject>()>(
+        library_ref, target_field
+    );
 
     try {
-        auto factory_function = boost::dll::import_alias<std::unique_ptr<ExtensionObject>()>(
-            *library_ref, field
-        );
-
         auto new_object = factory_function();
 
         if constexpr (bind_library_ref_deleter) {
@@ -719,5 +780,424 @@ std::vector<std::shared_ptr<ExtensionContext>> load_and_verify_directory(
         recursive
     );
 }
+
+// =============================================================================
+// Product creation
+// =============================================================================
+
+/**
+ * @brief Create a real `Product` object from a loaded context's bound library.
+ *
+ * Thin wrapper over `create_object_from_library`: it pulls the bound library
+ * handle off @p context and imports @p factory_alias as a
+ * `std::unique_ptr<Product>()` factory, minting a new `Product`. Use this to turn
+ * a dispatched context into the actual service/object it provides — the creation
+ * path a concrete `Plugin::create()` used to own is now just this one call.
+ *
+ * The default deleter-pinned mode (`bind_library_ref_deleter = true`) is safe:
+ * the `Product`'s `shared_ptr` deleter captures the handle, so the library stays
+ * mapped through the `Product`'s deleting-destructor — the same lifetime
+ * invariant documented on `create_object_from_library`, and the same reason
+ * `load_modules_directory` uses that mode. The context independently keeps its
+ * *own* bound reference, so context and product may outlive each other freely.
+ *
+ * @tparam Product                  The concrete product type the factory mints.
+ * @tparam bind_library_ref_deleter Ownership mode (default `true` = self-contained
+ *                                  and safe; `false` = external ownership, caller
+ *                                  must keep the context/library alive).
+ * @param context        A loaded context whose bound library exports @p factory_alias.
+ * @param factory_alias  The exported factory alias that mints the `Product`.
+ * @return The created `Product` (never null on success).
+ * @throw std::runtime_error if @p context is null, has no bound library handle,
+ *               the alias is missing, or the factory/import fails (all forwarded
+ *               from the null-context check here or from `create_object_from_library`).
+ *
+ * @see create_object_from_library  for the underlying import + lifetime semantics.
+ * @see ExtensionDispatcher::dispatch  for how to obtain @p context for a given key.
+ */
+template<typename Product, bool bind_library_ref_deleter = true>
+std::shared_ptr<Product> create_product(
+    const std::shared_ptr<ExtensionContext>& context,
+    std::string_view factory_alias
+) {
+    if (context == nullptr) {
+        throw std::runtime_error("cannot create product from a null context");
+    }
+    // A verified context always has a bound handle; create_object_from_library
+    // re-checks for null and surfaces a clear error if it is somehow absent.
+    return create_object_from_library<Product, bind_library_ref_deleter>(
+        context->get_library_ref(), factory_alias
+    );
+}
+
+/**
+ * @brief Cached factory handle: resolve a Product's factory alias ONCE, then mint
+ *        many Products by invoking the cached pointer.
+ *
+ * `create_product` / `create_object_from_library` redo the full symbol resolution
+ * (the `has()` lookup + the alias dereference) on *every* call — fine for a
+ * one-shot, but on a hot path that mints many Products from one library that is
+ * wasted work. `product_factory` pays that cost once, in the constructor, and
+ * stores the resolved raw function pointer; `create()` then costs nothing but a
+ * single indirect call.
+ *
+ * The factory holds its own reference to the library (the handle it resolved
+ * from), keeping it mapped for the factory's lifetime. Created Products follow
+ * the same two ownership modes as `create_object_from_library`, selected by
+ * @p bind_library_ref_deleter:
+ *
+ *   - **`true` (default)** — each Product is deleter-pinned: its shared_ptr
+ *     deleter captures the library ref, so it is safely destructible *even after
+ *     the factory is destroyed*. Self-contained, matches `create_product`'s
+ *     default. Costs one control-block allocation per Product (unavoidable with a
+ *     custom deleter).
+ *   - **`false`** — Products are plain shared_ptrs with no deleter (no per-Product
+ *     allocation). They rely on the factory (its held library ref) outliving
+ *     every one of them — the cheaper, external-ownership mode. Use only when the
+ *     factory's lifetime strictly encloses all Products'.
+ *
+ * Typical hot-path usage:
+ * @code
+ *   product_factory<MyService> factory{ctx->get_library_ref(), "create_service"};
+ *   for (...) {
+ *       auto svc = factory.create();   // no symbol resolution, just a call
+ *   }
+ * @endcode
+ *
+ * @tparam Product                  The concrete product type the factory mints.
+ * @tparam bind_library_ref_deleter Ownership mode for created Products (default
+ *                                  `true` = self-contained / safe).
+ */
+template<typename Product, bool bind_library_ref_deleter = true>
+class product_factory {
+public:
+    /// The factory's function type: nullary, returns `unique_ptr<Product>`.
+    using factory_signature = std::unique_ptr<Product>();
+    /// Resolved raw factory function pointer, cached at construction.
+    using factory_pointer = factory_signature*;
+
+    /**
+     * @brief Resolve the factory alias from a loaded library handle.
+     *
+     * @param library_ref  A non-null handle to a library exporting @p alias.
+     * @param alias        The exported factory alias (e.g. "create_my_product").
+     * @throw std::runtime_error if the handle is null, the alias is missing, or
+     *               resolution fails (forwarded from detail::resolve_factory_alias,
+     *               message includes the library location).
+     */
+    product_factory(std::shared_ptr<boost::dll::shared_library> library_ref,
+                    std::string_view alias)
+        : _library_ref(std::move(library_ref)) {
+        _factory = detail::resolve_factory_alias<factory_signature>(_library_ref, alias);
+    }
+
+    // The state is a shared_ptr + a raw pointer, so default copy/move are correct
+    // (copies share the resolved pointer and the library ref).
+    product_factory(const product_factory&) = default;
+    product_factory(product_factory&&) noexcept = default;
+    product_factory& operator=(const product_factory&) = default;
+    product_factory& operator=(product_factory&&) noexcept = default;
+
+    /**
+     * @brief Mint one Product by invoking the cached factory pointer.
+     *
+     * No symbol resolution happens here — only a single indirect call through the
+     * pointer cached at construction.
+     *
+     * @return The created Product (self-contained in the default mode).
+     */
+    std::shared_ptr<Product> create() const {
+        auto new_object = _factory();   // unique_ptr<Product> via the cached pointer
+        if constexpr (bind_library_ref_deleter) {
+            // Deleter-pinned: capture the library ref so the Product is safely
+            // destructible even if this factory is gone first.
+            return std::shared_ptr<Product>(
+                new_object.release(),
+                [object_library_ref = _library_ref](Product* p) { delete p; }
+            );
+        } else {
+            // External ownership: the Product does not pin the library; this
+            // factory (its _library_ref) must outlive every created Product.
+            return new_object;
+        }
+    }
+
+    /// The library handle this factory resolved from (kept mapped while alive).
+    const std::shared_ptr<boost::dll::shared_library>& library_ref() const noexcept {
+        return _library_ref;
+    }
+
+private:
+    /// Keeps the owning library mapped; the factory pointer's code lives in it.
+    std::shared_ptr<boost::dll::shared_library> _library_ref;
+    /// Resolved once in the constructor; invoked per create().
+    factory_pointer _factory = nullptr;
+};
+
+// =============================================================================
+// ExtensionDispatcher — directory-driven context registry + key router
+// =============================================================================
+//
+// A stateful counterpart to the free functions above: it owns the verified
+// ExtensionContext list produced by importing one or more directories, maintains
+// a name -> context index for O(1) exact-name lookup, and routes a request key to
+// the best matching context. The Matcher and Selector are bound at run time via
+// `std::function` members (set_matcher / set_selector), NOT template parameters,
+// so `ExtensionDispatcher` itself is a single non-templated type — you reconfigure
+// its routing without changing its type.
+//
+// ## Two independent customization levers
+//
+//   1. Composition (no subclass needed). set_matcher() / set_selector() swap the
+//      matching and selection rules at run time. The defaults match by name()
+//      and prefer higher priority(), so the dispatcher works as a name-keyed
+//      router straight out of the box.
+//
+//   2. Inheritance. load_directory() delegates to a protected virtual
+//      import_directory(); the default implementation calls
+//      load_and_verify_directory(), but a subclass overrides import_directory()
+//      to change how a directory becomes contexts (multiple sources, a custom
+//      verifier, in-memory assembly, etc.) while reusing the indexing +
+//      dispatch machinery. The class has a virtual destructor, so it is designed
+//      to be derived from.
+//
+// The framework still knows nothing about your domain: a Matcher typically
+// downcasts the base shared_ptr (`std::dynamic_pointer_cast<YourContext>`) to read
+// category-specific state — the concrete context *is* the payload, so no separate
+// per-entry datum is needed.
+//
+// ## Lifetime
+//
+// Entries are shared_ptr<ExtensionContext>, each self-sufficient via the
+// deleter-pinned bind from load_and_verify_directory. The dispatcher may be
+// copied, moved, and destroyed freely; clear() or destruction releases the
+// contexts (and, when the last reference drops, their libraries).
+
+/**
+ * @brief Stateful directory-driven context registry + key router.
+ *
+ * Holds a verified context list + a name index, and routes a key to the best
+ * matching context. Populate it with load_directory() (or add() for in-memory
+ * contexts), configure matching/selection with set_matcher()/set_selector(), and
+ * query with dispatch() / find().
+ */
+class ExtensionDispatcher {
+public:
+    /// Owned context pointer type.
+    using ContextPtr = std::shared_ptr<ExtensionContext>;
+
+    /// "Does this context claim @p key?" Default matches `ctx->name() == key`.
+    using Matcher = std::function<bool(const ContextPtr&, std::string_view)>;
+
+    /// "Is @p a strictly better than @p b?" Default = higher `priority()`.
+    using Selector = std::function<bool(const ContextPtr&, const ContextPtr&)>;
+
+    /// Directory-scan file predicate (`is_likely_dynamic_library` is the norm).
+    using Filter = std::function<bool(const std::filesystem::path&)>;
+
+    /// Per-file factory-alias generator (`same_tag_always` is the norm).
+    using TagGenerator = std::function<std::string_view(const std::filesystem::path&)>;
+
+    ExtensionDispatcher() = default;
+    virtual ~ExtensionDispatcher() = default;
+
+    // The state is all shared_ptr / std::function / value types, so the default
+    // copy/move are correct (copying shares the contexts via refcount).
+    ExtensionDispatcher(const ExtensionDispatcher&) = default;
+    ExtensionDispatcher(ExtensionDispatcher&&) noexcept = default;
+    ExtensionDispatcher& operator=(const ExtensionDispatcher&) = default;
+    ExtensionDispatcher& operator=(ExtensionDispatcher&&) noexcept = default;
+
+    // ---- manual registration -------------------------------------------------
+
+    /**
+     * @brief Register a single context directly (no directory needed).
+     *
+     * Appends @p context to the list and indexes it by `name()`. Useful for
+     * in-memory contexts or tests. A later context under an already-indexed name
+     * does NOT overwrite the first (the index keeps the earliest); it is still
+     * appended to the list and reachable via dispatch().
+     *
+     * @return true if added; false if @p context was null (nothing changes).
+     */
+    bool add(ContextPtr context) {
+        if (!context) {
+            return false;
+        }
+        // emplace leaves an existing name untouched; the context is still pushed
+        // below so dispatch() can still reach it by key.
+        _by_name.emplace(std::string(context->name()), context);
+        _contexts.push_back(std::move(context));
+        return true;
+    }
+
+    // ---- directory import ----------------------------------------------------
+
+    /**
+     * @brief Import a directory's modules, verify, and append to the registry.
+     *
+     * Calls the protected virtual import_directory() (which defaults to
+     * load_and_verify_directory()), then appends the surviving contexts and
+     * indexes each by `name()`. Override import_directory() in a subclass to
+     * change the import/verify step without touching indexing.
+     *
+     * Safe to call multiple times to merge directories. Per-file load failures
+     * are surfaced through @p errors and dropped from the result (they never
+     * reach the registry); only a directory-scan failure throws.
+     *
+     * @return The number of contexts added this call.
+     * @throw std::runtime_error if the directory itself cannot be scanned
+     *               (forwarded from load_and_verify_directory / import_directory).
+     */
+    std::size_t load_directory(
+        const std::filesystem::path& directory,
+        Filter filter,
+        TagGenerator tag_generator,
+        std::vector<std::optional<std::string>>& errors,
+        bool recursive = false
+    ) {
+        auto imported = import_directory(
+            directory, std::move(filter), std::move(tag_generator), errors, recursive
+        );
+        for (auto& ctx : imported) {
+            if (!ctx) {
+                continue;                 // defensive: verify_after_loaded yields none
+            }
+            _by_name.emplace(std::string(ctx->name()), ctx); // first name wins
+            _contexts.push_back(std::move(ctx));
+        }
+        return imported.size();
+    }
+
+    /// Convenience overload of load_directory() that discards per-file errors.
+    std::size_t load_directory(
+        const std::filesystem::path& directory,
+        Filter filter,
+        TagGenerator tag_generator,
+        bool recursive = false
+    ) {
+        std::vector<std::optional<std::string>> errors;
+        return load_directory(
+            std::move(directory), std::move(filter), std::move(tag_generator), errors, recursive
+        );
+    }
+
+    // ---- name index ----------------------------------------------------------
+
+    /// O(1) lookup of the context first registered under @p name, or null.
+    ContextPtr find(std::string_view name) const {
+        const auto it = _by_name.find(std::string(name));
+        return it == _by_name.end() ? nullptr : it->second;
+    }
+
+    /// Whether any context is registered under @p name.
+    bool contains(std::string_view name) const noexcept {
+        return _by_name.find(std::string(name)) != _by_name.end();
+    }
+
+    // ---- context list --------------------------------------------------------
+
+    /// Read-only view of the verified, ordered context list.
+    const std::vector<ContextPtr>& contexts() const noexcept { return _contexts; }
+    /// Number of registered contexts.
+    std::size_t size() const noexcept { return _contexts.size(); }
+    /// Whether the registry is empty.
+    bool empty() const noexcept { return _contexts.empty(); }
+
+    /// Drop every context and clear the name index.
+    void clear() noexcept {
+        _contexts.clear();
+        _by_name.clear();
+    }
+
+    // ---- dispatch ------------------------------------------------------------
+
+    /**
+     * @brief Route @p key to the best matching context, or null if none claim it.
+     *
+     * Iterates the context list, keeps those for which the bound Matcher returns
+     * true, and returns the one that beats the rest under the bound Selector.
+     * Stable among equals: the Selector is a strict comparator, so a tie keeps
+     * the first-seen context. A null result means "no context claims this key" —
+     * a normal outcome, not an error.
+     *
+     * @return The best matching context, or a null shared_ptr.
+     */
+    ContextPtr dispatch(std::string_view key) const {
+        return dispatch(key, _matcher);
+    }
+
+    /**
+     * @brief One-off dispatch with an explicit matcher, ignoring the bound one.
+     *
+     * Use when a single lookup needs a different matching rule without disturbing
+     * the configured Matcher.
+     */
+    ContextPtr dispatch(std::string_view key, const Matcher& matcher) const {
+        ContextPtr best;
+        for (const auto& ctx : _contexts) {
+            if (!ctx) {
+                continue;                 // defensive: the list holds no nulls
+            }
+            if (!matcher(ctx, key)) {
+                continue;                 // not a candidate for this key
+            }
+            // Strict comparator: on a tie _selector returns false both ways, so
+            // `best` (the earlier-seen context) is retained — stable selection.
+            if (!best || _selector(ctx, best)) {
+                best = ctx;
+            }
+        }
+        return best;
+    }
+
+    // ---- matcher / selector binding -----------------------------------------
+
+    /// Bind the Matcher used by the one-argument dispatch().
+    void set_matcher(Matcher matcher) { _matcher = std::move(matcher); }
+    /// Bind the Selector used by dispatch() to pick among matches.
+    void set_selector(Selector selector) { _selector = std::move(selector); }
+    /// The currently bound Matcher.
+    const Matcher& matcher() const noexcept { return _matcher; }
+    /// The currently bound Selector.
+    const Selector& selector() const noexcept { return _selector; }
+
+protected:
+    /**
+     * @brief Virtual hook: produce the verified context list for a directory.
+     *
+     * The default forwards to load_and_verify_directory(). Override to change
+     * how a directory becomes contexts (merge several sources, apply a custom
+     * verifier, build in memory, ...) while reusing load_directory()'s indexing.
+     * Called only from load_directory(), i.e. after construction — so the virtual
+     * dispatch reaches the most-derived override.
+     *
+     * @return The verified contexts to append (nulls are tolerated and skipped).
+     */
+    virtual std::vector<ContextPtr> import_directory(
+        const std::filesystem::path& directory,
+        Filter filter,
+        TagGenerator tag_generator,
+        std::vector<std::optional<std::string>>& errors,
+        bool recursive
+    ) {
+        return load_and_verify_directory(
+            directory, std::move(filter), std::move(tag_generator), errors, recursive
+        );
+    }
+
+    /// The registry: verified contexts in load/add order.
+    std::vector<ContextPtr> _contexts;
+    /// name() -> context index (first registration of a name wins).
+    std::unordered_map<std::string, ContextPtr> _by_name;
+    /// Bound matcher (default: match by name()).
+    Matcher _matcher = [](const ContextPtr& c, std::string_view key) {
+        return c->name() == key;
+    };
+    /// Bound selector (default: higher priority() first).
+    Selector _selector = [](const ContextPtr& a, const ContextPtr& b) {
+        return a->priority() > b->priority();
+    };
+};
 
 } // namespace extension

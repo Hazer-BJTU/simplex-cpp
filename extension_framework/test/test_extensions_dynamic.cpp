@@ -9,6 +9,12 @@
  *   - wrong-alias rejection
  *   - load_modules_directory + verify_after_loaded over the DSO directory
  *   - load_and_verify_directory (the one-shot composed pipeline) over the DSO dir
+ *   - ExtensionDispatcher.load_directory -> dispatch -> create_product end-to-end
+ *     (build the name index from the DSO, dispatch by name, then mint a real
+ *     ToyProduct via create_object_from_library through create_product)
+ *   - product_factory: resolve the alias once, then create() many ToyProducts
+ *     from the cached function pointer (no re-import), plus deleter-pinned
+ *     survival past the factory's destruction
  *
  * Together with test_extensions.cpp (pure-logic coverage), this validates every
  * code path in extensions.hpp.
@@ -164,6 +170,81 @@ BOOST_AUTO_TEST_CASE(load_and_verify_directory_convenience_overload_loads_toy) {
         ext::same_tag_always{ext_test::TOY_EXTENSION_FACTORY_NAME});
     BOOST_REQUIRE_EQUAL(verified.size(), 1u);
     BOOST_CHECK(verified[0]->name() == ext_test::TOY_EXTENSION_NAME);
+}
+
+// Full end-to-end flow over a real DSO through the ExtensionDispatcher:
+// load_directory (default import_directory == load_and_verify_directory) builds
+// the name index -> dispatch by key -> create_product from the dispatched
+// context. The dispatched base pointer is used to mint a distinct Product
+// (ToyProduct), whose compute() proves the object is real and its vtable (in the
+// .so) was reached safely.
+BOOST_AUTO_TEST_CASE(dispatcher_load_then_dispatch_then_create_end_to_end) {
+    namespace ext = extension;
+    ext::ExtensionDispatcher d;
+    std::size_t added = d.load_directory(
+        TOY_EXTENSION_DIR, ext::is_likely_dynamic_library,
+        ext::same_tag_always{ext_test::TOY_EXTENSION_FACTORY_NAME});
+    BOOST_REQUIRE_EQUAL(added, 1u);
+    BOOST_CHECK_EQUAL(d.size(), 1u);
+
+    // The name index was built from the loaded context.
+    BOOST_CHECK(d.contains(ext_test::TOY_EXTENSION_NAME));
+    BOOST_CHECK(d.find(ext_test::TOY_EXTENSION_NAME) != nullptr);
+
+    // Dispatch by name (default matcher) -> base pointer.
+    auto chosen = d.dispatch(std::string_view(ext_test::TOY_EXTENSION_NAME));
+    BOOST_REQUIRE(chosen != nullptr);
+    BOOST_CHECK(chosen->name() == ext_test::TOY_EXTENSION_NAME);
+
+    // Create the real product from the dispatched context's bound library.
+    auto product = ext::create_product<ext_test::ToyProduct>(
+        chosen, ext_test::TOY_PRODUCT_FACTORY_NAME);
+    BOOST_REQUIRE(product != nullptr);
+    BOOST_CHECK_EQUAL(product->compute(), ext_test::TOY_PRODUCT_VALUE);
+
+    // A key nothing handles dispatches to null (not a throw).
+    BOOST_CHECK(d.dispatch(std::string_view("no_such_extension")) == nullptr);
+}
+
+// product_factory resolves the alias ONCE (in the ctor) and create() only invokes
+// the cached function pointer — no symbol resolution per Product. Demonstrated by
+// minting many products from one factory and checking each is a real, distinct
+// ToyProduct whose vtable (in the .so) is reached safely.
+BOOST_AUTO_TEST_CASE(product_factory_creates_many_products_without_reimport) {
+    namespace ext = extension;
+    auto library_ref = ext::get_library_ref(toy_extension_path());
+
+    ext::product_factory<ext_test::ToyProduct> factory(
+        library_ref, ext_test::TOY_PRODUCT_FACTORY_NAME);
+
+    constexpr int N = 5;
+    std::vector<std::shared_ptr<ext_test::ToyProduct>> products;
+    for (int i = 0; i < N; ++i) {
+        products.push_back(factory.create());
+    }
+    BOOST_REQUIRE_EQUAL(products.size(), N);
+    for (const auto& p : products) {
+        BOOST_REQUIRE(p != nullptr);
+        BOOST_CHECK_EQUAL(p->compute(), ext_test::TOY_PRODUCT_VALUE);
+    }
+    // Each create() yields a distinct object.
+    BOOST_CHECK(products[0] != products[1]);
+    BOOST_CHECK(products[0] != products[N - 1]);
+}
+
+// Default mode (deleter-pinned): a Product keeps the library mapped via its own
+// captured ref, so it outlives the factory safely.
+BOOST_AUTO_TEST_CASE(product_factory_default_product_survives_factory_destruction) {
+    namespace ext = extension;
+    std::shared_ptr<ext_test::ToyProduct> product;
+    {
+        auto library_ref = ext::get_library_ref(toy_extension_path());
+        ext::product_factory<ext_test::ToyProduct> factory(
+            library_ref, ext_test::TOY_PRODUCT_FACTORY_NAME);
+        product = factory.create();
+        BOOST_REQUIRE(product != nullptr);
+    } // factory + library_ref destroyed here; product still holds a library ref
+    BOOST_CHECK_EQUAL(product->compute(), ext_test::TOY_PRODUCT_VALUE);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
