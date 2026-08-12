@@ -14,12 +14,12 @@ target_link_libraries(test_https_stream PRIVATE
 
 add_test(NAME test_https_stream COMMAND test_https_stream)
 
-add_executable(test_request test_request.cpp)
-target_link_libraries(test_request PRIVATE
+add_executable(test_http_request_exception test_http_request_exception.cpp)
+target_link_libraries(test_http_request_exception PRIVATE
     endpoint_lib
     Boost::unit_test_framework
 )
-add_test(NAME test_request COMMAND test_request)
+add_test(NAME test_http_request_exception COMMAND test_http_request_exception)
 
 add_executable(test_sse_response_handler test_sse_response_handler.cpp)
 target_link_libraries(test_sse_response_handler PRIVATE

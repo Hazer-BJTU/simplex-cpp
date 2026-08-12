@@ -6,8 +6,8 @@
 // handler lifecycle. Like https_connectivity_check it is a plain executable and
 // is not registered with CTest.
 #include "endpoint/https_stream.hpp"
+#include "endpoint/http_request_exception.hpp"
 #include "endpoint/request.hpp"
-#include "exceptions/http_request_exception.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>

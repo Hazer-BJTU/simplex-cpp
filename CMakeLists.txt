@@ -120,7 +120,6 @@ option(BUILD_TESTS "Build unit tests" ON)
 #     generate time, so the add order is driven by the dependency/property flow,
 #     not by the header dependency.
 add_subdirectory(versioning)
-add_subdirectory(exceptions)
 add_subdirectory(logging)
 # extension_framework after logging + the top-level interface targets: it is a
 # header-only module (extension_framework_iface) that links boost_dll_iface,

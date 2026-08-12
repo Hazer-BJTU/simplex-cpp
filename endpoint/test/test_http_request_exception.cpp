@@ -1,7 +1,7 @@
 #define BOOST_TEST_MODULE HttpRequestExceptionTests
 #include <boost/test/unit_test.hpp>
 
-#include "exceptions/http_request_exception.hpp"
+#include "endpoint/http_request_exception.hpp"
 
 #include <boost/system/errc.hpp>
 
