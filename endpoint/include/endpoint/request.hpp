@@ -292,14 +292,26 @@ public:
     virtual boost::asio::awaitable<Product> get() = 0;
 };
 
+// Lifecycle state of an SSEResponseHandler, hoisted to namespace scope so it
+// can be carried by SSEAborted without making that exception a template.
+enum class SSEHandlerState { RUNNING, RESUMABLE, ERROR, DONE };
+
 // Raised by SSEResponseHandler::put()/get() when an in-flight channel operation
-// is aborted by an external control call — suspend(), finish(), or reset() on a
-// closed channel — so the producer/consumer coroutine can break out and inspect
-// the handler's state. Catch this and call get_state() to distinguish RESUMABLE
-// (suspended) from DONE (finished).
+// ends because the channel was closed — via finish(), or via put()'s own error
+// path on a framing/decode fault — so the producer/consumer coroutine can break
+// out. (suspend()/reset() do NOT close the channel and so never raise this.) The
+// handler's state at throw time is captured and exposed via state(), so the
+// catch site can distinguish ERROR from DONE directly from the exception,
+// without re-querying the handler.
 class SSEAborted : public std::runtime_error {
 public:
-    explicit SSEAborted(const char* what) : std::runtime_error(what) {}
+    explicit SSEAborted(const char* what, SSEHandlerState state)
+        : std::runtime_error(what), _state(state) {}
+
+    SSEHandlerState state() const noexcept { return _state; }
+
+private:
+    SSEHandlerState _state;
 };
 
 /**
@@ -319,12 +331,16 @@ public:
  *
  * Typical roles:
  *   - Put side (producer): owns the https_stream, reads chunks and feeds put().
- *     On a dropped connection it calls suspend() to obtain a recommended restart
- *     index, reconnects (honouring SSE @c retry: / @c Last-Event-ID), then calls
- *     reset(index) and resumes put(). suspend()/reset() are therefore normally
- *     driven from the put side.
+ *     On a dropped connection it calls suspend(RESUMABLE) to obtain a recommended
+ *     restart index, reconnects (honouring SSE @c retry: / @c Last-Event-ID),
+ *     then calls reset(index) and resumes put(). suspend()/reset() are put-side
+ *     bookkeeping only — they mutate the line-buffer state but never touch the
+ *     channel, so the get side is completely unaware of a reconnect and the
+ *     queue stays readable. On an unrecoverable fault the put side may instead
+ *     call finish(ERROR) to force-abort both ends.
  *   - Get side (consumer): drains get() and, when the stream is logically
- *     complete, calls finish() to drive the handler to DONE.
+ *     complete, calls finish(DONE). finish() is the *only* control that breaks a
+ *     blocked get() out of its wait (it closes the channel).
  *
  * @tparam Product  The decoded event type. Subclasses override _handle_message()
  *                  to turn a framed event (a span of LineInfo) into a Product.
@@ -333,7 +349,10 @@ template<typename Product>
 class SSEResponseHandler: public AsyncResponseHandler<Product> {
 public:
     using LineInfo = std::pair<std::string, std::string>;
-    enum class State { RUNNING, RESUMABLE, ERROR, DONE };
+    // Lifecycle states. Aliased to the namespace-scope enum so call sites can
+    // keep writing SSEResponseHandler<Product>::State while SSEAborted carries
+    // the same type.
+    using State = SSEHandlerState;
 
 protected:
     // Tag stored in LineInfo::first to mark a blank line, which is the SSE
@@ -456,65 +475,86 @@ public:
 
     // Feed a raw SSE chunk, frame it into events, and publish each completed
     // event. async_send suspends while the queue is full, giving natural
-    // back-pressure against a slow consumer. Throws SSEAborted if the channel
-    // operation is aborted by suspend()/finish()/reset().
+    // back-pressure against a slow consumer.
+    //
+    // Exception safety: _split_line()/_next_message()/_handle_message() allocate
+    // and may throw (and _handle_message is user-overridable) — they are not
+    // noexcept. Any such fault is fatal for the handler: put() drives it to ERROR
+    // via finish() (which closes the channel and so also unblocks any waiting
+    // get()), then rethrows so the producer's read loop can tear down. A channel
+    // error reported through ec (finish() was called from elsewhere) becomes
+    // SSEAborted carrying the current state.
     boost::asio::awaitable<void> put(std::string_view payload) override {
-        _buffer.append(payload);
-        _split_line();
+        try {
+            _buffer.append(payload);
+            _split_line();
 
-        std::span<const LineInfo> message;
-        while (!(message = _next_message()).empty()) {
-            boost::system::error_code ec;
-            co_await _queue.async_send(
-                boost::system::error_code{},
-                _handle_message(message),
-                boost::asio::redirect_error(boost::asio::use_awaitable, ec)
-            );
-            // cancel()/close() surfaces here as a non-clear ec; convert it so
-            // the producer's read loop can break out and check the state.
-            if (ec) {
-                throw SSEAborted("SSE put aborted");
+            std::span<const LineInfo> message;
+            while (!(message = _next_message()).empty()) {
+                boost::system::error_code ec;
+                co_await _queue.async_send(
+                    boost::system::error_code{},
+                    _handle_message(message),
+                    boost::asio::redirect_error(boost::asio::use_awaitable, ec)
+                );
+                // Only close() surfaces here now (suspend()/reset() leave the
+                // channel alone): the channel was closed by finish(), so the
+                // state already holds the terminal value — propagate it.
+                if (ec) {
+                    throw SSEAborted("SSE put aborted", get_state());
+                }
             }
+        } catch (const SSEAborted&) {
+            throw;
+        } catch (...) {
+            // Framing/decode fault: force the handler into ERROR and tear the
+            // channel down (unblocking any waiting get()), then propagate the
+            // original exception to the producer.
+            finish(State::ERROR);
+            throw;
         }
         co_return;
     }
 
     // Suspend until the next event is available. A non-clear ec means the
-    // channel operation was aborted by suspend()/finish() (or the producer
-    // reported a fault); _state then holds the precise state for the caller.
+    // channel was closed — by finish() from the consumer, or by the producer's
+    // put() error path — so get() throws SSEAborted carrying the handler's state
+    // at that moment (ERROR or DONE). suspend()/reset() never cause this: they
+    // do not touch the channel, so a blocked get() is unaffected by a put-side
+    // reconnect.
     boost::asio::awaitable<Product> get() override {
         boost::system::error_code ec;
         Product product = co_await _queue.async_receive(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
         if (ec) {
-            throw SSEAborted("SSE get aborted");
+            throw SSEAborted("SSE get aborted", get_state());
         }
         co_return product;
     }
 
     // --- External control -------------------------------------------------
 
-    // Manually suspend processing from another context: mark the handler
-    // resumable and cancel any channel operation currently blocked inside
-    // put()/get() (they complete with channel_cancelled and throw SSEAborted).
-    // Returns the recommended restart index (from _restart_index()) — the line
-    // checkpoint to pass to reset() after reconnecting. The channel stays open;
-    // reset() reopens the slate for resumption.
-    std::size_t suspend() {
+    // Put-side suspension: record the intended state (typically RESUMABLE) and
+    // return the recommended restart index from _restart_index() — the line
+    // checkpoint to hand to reset() after reconnecting. This is pure put-side
+    // bookkeeping: it does NOT touch the channel, so the get side is completely
+    // unaware and the queue stays readable (a blocked get() keeps waiting
+    // normally, a draining get() keeps draining). The producer is expected to
+    // call this when it is not itself blocked inside put(); cancelling its own
+    // read coroutine is the producer's concern, not the handler's.
+    std::size_t suspend(State state) {
         std::size_t restart_at = _restart_index();   // capture before mutation
-        set_state(State::RESUMABLE);
-        _queue.cancel();
+        set_state(state);
         return restart_at;
     }
 
-    // Rewind to a committed checkpoint `index` into _lines. Keeps the committed
-    // prefix _lines[0, index), drops the tail, parks _next_line at `index` so
-    // that only newly appended data is delivered, clears the raw buffer and the
-    // channel, and returns the handler to RUNNING.
-    //
-    // Not safe to call concurrently with put()/get()/_split_line(): call it
-    // only after the producer and consumer have observed the suspended state
-    // (via suspend()) and stopped touching the handler.
+    // Put-side rewind to a committed checkpoint `index` into _lines: keep the
+    // prefix _lines[0, index), drop the suffix, park _next_line at `index` so
+    // only newly appended data is framed afterwards, clear the raw buffer, and
+    // return the handler to RUNNING. Like suspend() this does NOT touch the
+    // channel — the get side is unaware and the queue remains readable. Not safe
+    // to call concurrently with put() (or _split_line()/_next_message()): the
+    // line-buffer state they share is not synchronized.
     void reset(std::size_t index) {
         if (index > _lines.size()) {
             throw std::out_of_range("SSEResponseHandler::reset: index out of range");
@@ -523,15 +563,20 @@ public:
         _buffer.clear();
         _lines.resize(index);   // keep committed prefix, drop the suffix
         _next_line = index;     // cursor parked at the checkpoint
-        _queue.reset();         // drop buffered products and reopen the channel
         set_state(State::RUNNING);
     }
 
-    // Permanently end processing: mark the handler done and close the channel.
-    // A blocked put() completes with channel_closed and throws SSEAborted;
-    // further send/receive attempts fail the same way.
-    void finish() {
-        set_state(State::DONE);
+    // Permanently end processing and forcibly abort any in-flight channel work
+    // on BOTH sides. Records `state` then closes the channel: a blocked put()
+    // and/or get() completes with channel_closed and throws SSEAborted carrying
+    // this state, and further send/receive attempts fail the same way. This is
+    // the only control that breaks a blocked get() out of its wait.
+    //
+    //   - get side, normal end:        finish() / finish(DONE);
+    //   - put side, unrecoverable err: finish(ERROR) — force-aborts the consumer
+    //     too, since no further events can be produced.
+    void finish(State state = State::DONE) {
+        set_state(state);
         _queue.close();
     }
 };
