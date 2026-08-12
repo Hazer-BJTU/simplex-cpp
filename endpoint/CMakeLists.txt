@@ -17,3 +17,7 @@ target_link_libraries(endpoint_lib INTERFACE
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
+
+# Interactive examples against live HTTPS services. Built unconditionally (a
+# single small translation unit); not registered with CTest.
+add_subdirectory(example)
