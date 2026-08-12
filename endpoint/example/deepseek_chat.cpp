@@ -51,6 +51,13 @@ struct Delta {
     bool done = false;
 };
 
+// Return obj[key] only when it is a real JSON string; tolerate null/missing
+// (DeepSeek emits "content": null on the role/usage deltas).
+static std::string string_or_empty(const nlohmann::json& obj, const char* key) {
+    if (obj.contains(key) && obj[key].is_string()) return obj[key].get<std::string>();
+    return {};
+}
+
 // Frames the raw SSE byte stream (driven by sse_request's put side) and decodes
 // each OpenAI-style event into a Delta for the consumer to print.
 class DeepSeekDeltaHandler final : public SSEResponseHandler<Delta> {
@@ -71,12 +78,19 @@ public:
                 return {};
             }
 
+            // Deltas often carry `"content": null` (e.g. the opening role delta
+            // or the final usage chunk). json::value() only substitutes a
+            // default when the key is *absent*, so pull strings defensively.
             Delta delta;
             const auto choices = parsed.value("choices", nlohmann::json::array());
-            if (!choices.empty() && choices[0].contains("delta")) {
-                const auto& d = choices[0]["delta"];
-                delta.content = d.value("content", "");
-                delta.reasoning = d.value("reasoning_content", "");
+            if (choices.is_array() && !choices.empty()) {
+                const auto& choice = choices[0];
+                if (choice.is_object() && choice.contains("delta") &&
+                    choice["delta"].is_object()) {
+                    const auto& d = choice["delta"];
+                    delta.content = string_or_empty(d, "content");
+                    delta.reasoning = string_or_empty(d, "reasoning_content");
+                }
             }
             return delta;
         }
