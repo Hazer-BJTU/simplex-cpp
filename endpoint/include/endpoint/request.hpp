@@ -296,6 +296,17 @@ public:
 // can be carried by SSEAborted without making that exception a template.
 enum class SSEHandlerState { RUNNING, RESUMABLE, ERROR, DONE };
 
+// Streaming for diagnostics (Boost.Test assertions, logging).
+inline std::ostream& operator<<(std::ostream& os, SSEHandlerState state) {
+    switch (state) {
+        case SSEHandlerState::RUNNING:   return os << "RUNNING";
+        case SSEHandlerState::RESUMABLE: return os << "RESUMABLE";
+        case SSEHandlerState::ERROR:     return os << "ERROR";
+        case SSEHandlerState::DONE:      return os << "DONE";
+    }
+    return os << "SSEHandlerState(?)";
+}
+
 // Raised by SSEResponseHandler::put()/get() when an in-flight channel operation
 // ends because the channel was closed — via finish(), or via put()'s own error
 // path on a framing/decode fault — so the producer/consumer coroutine can break

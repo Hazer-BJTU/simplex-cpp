@@ -21,7 +21,20 @@ target_link_libraries(test_request PRIVATE
 )
 add_test(NAME test_request COMMAND test_request)
 
+add_executable(test_sse_response_handler test_sse_response_handler.cpp)
+target_link_libraries(test_sse_response_handler PRIVATE
+    endpoint_lib
+    Boost::unit_test_framework
+)
+add_test(NAME test_sse_response_handler COMMAND test_sse_response_handler)
+
 # Manual end-to-end HTTPS check. It is intentionally not registered with CTest
 # so ordinary test runs remain deterministic and work offline.
 add_executable(https_connectivity_check https_connectivity_check.cpp)
 target_link_libraries(https_connectivity_check PRIVATE endpoint_lib)
+
+# End-to-end check for sse_request against a local TLS SSE server. Like the
+# connectivity check it is offline (loopback + self-signed cert) but heavier, so
+# it is kept out of CTest.
+add_executable(sse_request_e2e sse_request_e2e.cpp)
+target_link_libraries(sse_request_e2e PRIVATE endpoint_lib)
