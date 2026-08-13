@@ -53,6 +53,52 @@ public:
     }
 };
 
+// A handler that exposes the line-buffer internals so the rolling-trim
+// behavior can be observed directly.
+class InspectableHandler final : public SSEResponseHandler<std::vector<Field>> {
+public:
+    InspectableHandler(asio::any_io_executor executor, std::size_t line_window)
+        : SSEResponseHandler<std::vector<Field>>(executor, line_window) {}
+
+    std::vector<Field> _handle_message(std::span<const Field> message) override {
+        return std::vector<Field>(message.begin(), message.end());
+    }
+
+    std::size_t line_count() const { return _lines.size(); }
+    std::size_t base() const { return _base; }
+};
+
+// A handler that overrides _restart_index() to rewind to the boundary of the
+// last event carrying an id: field — the Last-Event-ID-style checkpoint. The
+// checkpoint is captured from _next_line inside _handle_message, which only
+// works if the handler's line numbering stays absolute across rolling trims.
+class IdCheckpointHandler final : public SSEResponseHandler<std::vector<Field>> {
+public:
+    IdCheckpointHandler(asio::any_io_executor executor, std::size_t line_window)
+        : SSEResponseHandler<std::vector<Field>>(executor, line_window) {}
+
+    std::vector<Field> _handle_message(std::span<const Field> message) override {
+        std::vector<Field> event(message.begin(), message.end());
+        for (const auto& line : event) {
+            if (line.first == "id") {
+                // _next_line already points past this event's blank delimiter:
+                // an absolute, trim-stable boundary to resume from.
+                _checkpoint = _next_line;
+                break;
+            }
+        }
+        return event;
+    }
+
+    std::size_t _restart_index() const override { return _checkpoint; }
+
+    std::size_t base() const { return _base; }
+    std::size_t checkpoint() const { return _checkpoint; }
+
+private:
+    std::size_t _checkpoint = 0;
+};
+
 // --- helpers --------------------------------------------------------------
 
 static std::string data_value(const std::vector<Field>& event) {
@@ -84,8 +130,9 @@ static void pump(asio::io_context& io) {
 
 // Drive put(chunk) on the handler together with `expect` get() consumers, and
 // return the decoded events in delivery order. Rethrows any get() exception.
+template<typename Handler>
 static std::vector<std::vector<Field>> exchange(
-    asio::io_context& io, FieldHandler& handler,
+    asio::io_context& io, Handler& handler,
     std::string_view chunk, std::size_t expect) {
     std::vector<std::optional<std::vector<Field>>> received(expect);
     std::vector<std::optional<std::exception_ptr>> errors(expect);
@@ -364,6 +411,119 @@ BOOST_AUTO_TEST_CASE(suspend_and_reset_keep_the_channel_readable) {
     } catch (const SSEAborted& aborted) {
         BOOST_TEST(aborted.state() == SSEHandlerState::DONE);
     }
+}
+
+// --- rolling trim ---------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(consumed_history_is_trimmed_to_the_retention_window) {
+    asio::io_context io;
+    // Window of 8 consumed lines: each event is a data line + a blank line.
+    InspectableHandler handler(io.get_executor(), 8);
+
+    for (std::size_t i = 0; i < 50; ++i) {
+        auto events =
+            exchange(io, handler, "data: event-" + std::to_string(i) + "\n\n", 1);
+        // Decoding must stay correct across many trims.
+        BOOST_TEST(data_value(events[0]) == "event-" + std::to_string(i));
+    }
+
+    // 50 events × 2 lines = 100 lines consumed; only the 8 most recent are
+    // retained, and _base advanced so absolute indices stay stable.
+    BOOST_TEST(handler.line_count() == 8u);
+    BOOST_TEST(handler.base() == 92u);
+}
+
+BOOST_AUTO_TEST_CASE(suspend_reset_round_trip_survives_rolling_trim) {
+    asio::io_context io;
+    InspectableHandler handler(io.get_executor(), 8);
+
+    for (std::size_t i = 0; i < 10; ++i)
+        exchange(io, handler, "data: e" + std::to_string(i) + "\n\n", 1);
+
+    // 20 lines consumed, 8 retained: the cursor sits at absolute line 20.
+    BOOST_TEST(handler.line_count() == 8u);
+    BOOST_TEST(handler.base() == 12u);
+
+    std::size_t restart_at = handler.suspend(SSEHandlerState::RESUMABLE);
+    BOOST_TEST(restart_at == 20u);   // absolute cursor, stable across trims
+    handler.reset(restart_at);       // still inside the retained window
+    BOOST_TEST(handler.get_state() == SSEHandlerState::RUNNING);
+
+    auto events = exchange(io, handler, "data: resumed\n\n", 1);
+    BOOST_TEST(data_value(events[0]) == "resumed");
+
+    // The oldest retained checkpoint (the window frontier) is reachable too.
+    handler.suspend(SSEHandlerState::RESUMABLE);
+    handler.reset(handler.base());
+    events = exchange(io, handler, "data: tail\n\n", 1);
+    BOOST_TEST(data_value(events[0]) == "tail");
+}
+
+BOOST_AUTO_TEST_CASE(reset_below_the_retention_window_throws) {
+    asio::io_context io;
+    InspectableHandler handler(io.get_executor(), 8);
+
+    for (std::size_t i = 0; i < 10; ++i)
+        exchange(io, handler, "data: e" + std::to_string(i) + "\n\n", 1);
+
+    // 20 lines consumed, 8 retained — the first 12 are trimmed away.
+    BOOST_TEST(handler.base() == 12u);
+    BOOST_CHECK_THROW(handler.reset(0), std::out_of_range);
+    BOOST_CHECK_THROW(handler.reset(11), std::out_of_range);
+
+    // The frontier itself is still a valid checkpoint.
+    handler.reset(12);
+    BOOST_TEST(handler.get_state() == SSEHandlerState::RUNNING);
+}
+
+BOOST_AUTO_TEST_CASE(zero_window_trims_all_consumed_history) {
+    asio::io_context io;
+    InspectableHandler handler(io.get_executor(), 0);
+
+    auto events = exchange(io, handler, "data: a\n\ndata: b\n\n", 2);
+    BOOST_TEST(data_value(events[1]) == "b");
+    BOOST_TEST(handler.line_count() == 0u);   // everything consumed is dropped
+    BOOST_TEST(handler.base() == 4u);
+
+    // The cursor checkpoint is always inside the window, so the suspend/reset
+    // round trip still works when nothing older is retained.
+    std::size_t restart_at = handler.suspend(SSEHandlerState::RESUMABLE);
+    handler.reset(restart_at);
+    events = exchange(io, handler, "data: again\n\n", 1);
+    BOOST_TEST(data_value(events[0]) == "again");
+
+    BOOST_CHECK_THROW(handler.reset(0), std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(overridden_restart_checkpoint_stays_absolute_across_trims) {
+    asio::io_context io;
+    // Window of 16 lines; ids appear every 4th event, so the checkpoint lags
+    // the cursor by at most 3 events (6 lines) and always stays in-window.
+    IdCheckpointHandler handler(io.get_executor(), 16);
+
+    for (std::size_t i = 0; i < 20; ++i) {
+        std::string chunk = (i % 4 == 0)
+            ? "id: " + std::to_string(i) + "\ndata: e" + std::to_string(i) + "\n\n"
+            : "data: e" + std::to_string(i) + "\n\n";
+        auto events = exchange(io, handler, chunk, 1);
+        BOOST_TEST(data_value(events[0]) == "e" + std::to_string(i));
+    }
+
+    // 20 events of 2 lines plus 5 extra id lines = 45 lines; with a window of
+    // 16, the 29 oldest are trimmed. The checkpoint captured inside
+    // _handle_message (the boundary after event 16, the last one with an id)
+    // must keep its absolute value nonetheless.
+    BOOST_TEST(handler.base() == 29u);
+    BOOST_TEST(handler.checkpoint() == 39u);
+
+    std::size_t restart_at = handler.suspend(SSEHandlerState::RESUMABLE);
+    BOOST_TEST(restart_at == 39u);
+    BOOST_TEST(restart_at >= handler.base());   // still in the retained window
+
+    handler.reset(restart_at);
+    BOOST_TEST(handler.get_state() == SSEHandlerState::RUNNING);
+    auto events = exchange(io, handler, "data: resumed\n\n", 1);
+    BOOST_TEST(data_value(events[0]) == "resumed");
 }
 
 // --- abort semantics ------------------------------------------------------

@@ -31,6 +31,12 @@ namespace endpoint {
 /// stream before handing them to the handler's put() side.
 inline constexpr std::size_t DEFAULT_SSE_CHUNK_SIZE = 8192;
 
+/// Default retention window for SSEResponseHandler: the number of already-
+/// consumed lines kept behind the cursor so reset() can still rewind to a
+/// recent checkpoint after rolling trim has dropped older history. Per-instance
+/// configurable via the SSEResponseHandler constructor.
+inline constexpr std::size_t DEFAULT_SSE_LINE_WINDOW = 1024;
+
 template<typename Product>
 class AsyncResponseHandler {
 public:
@@ -84,8 +90,8 @@ private:
  * atomic state are for). No other concurrency is permitted:
  *   - never call put() from two tasks at once, nor get() from two at once;
  *   - never call suspend()/reset()/finish() concurrently with put()/get() or
- *     with each other — the line-buffer state (_buffer/_lines/_next_line) they
- *     mutate is not synchronized.
+ *     with each other — the line-buffer state (_buffer/_lines/_next_line/_base)
+ *     they mutate is not synchronized.
  * In short: serialize everything except the lone put↔get pair.
  *
  * Typical roles:
@@ -100,6 +106,17 @@ private:
  *   - Get side (consumer): drains get() and, when the stream is logically
  *     complete, calls finish(DONE). finish() is the *only* control that breaks a
  *     blocked get() out of its wait (it closes the channel).
+ *
+ * Memory: the consumed history is retained only up to a rolling window of
+ * DEFAULT_SSE_LINE_WINDOW lines (configurable per instance), so a long-lived
+ * stream such as a model delta feed keeps a bounded footprint instead of
+ * accumulating every line ever seen. Lines keep absolute indices for their
+ * lifetime — rolling trim advances _base rather than shifting the cursor, so
+ * suspend()/reset() indices and _restart_index() overrides stay stable across
+ * trims; a checkpoint older than the retained window has been trimmed away and
+ * reset() rejects it with out_of_range. Trimming never invalidates a live span:
+ * put() trims only after the last message span of a chunk has been consumed by
+ * _handle_message().
  *
  * @tparam Product  The decoded event type. Subclasses override _handle_message()
  *                  to turn a framed event (a span of LineInfo) into a Product.
@@ -122,6 +139,15 @@ protected:
     std::string _buffer;
     std::vector<LineInfo> _lines;
     std::size_t _next_line;
+    // Absolute index of _lines[0]. Rolling trim erases the oldest consumed
+    // lines from the front of _lines and advances _base by the same amount, so
+    // _next_line (and any checkpoint a _restart_index() override caches) lives
+    // in a stable coordinate space that trims never shift. reset() re-parks the
+    // cursor without touching _base. Invariant:
+    // _base <= _next_line <= _base + _lines.size().
+    std::size_t _base;
+    // Max number of consumed lines retained behind the cursor; see _trim().
+    std::size_t _line_window;
 
     std::atomic<State> _state;
     // The leading error_code is the per-message status: clear for a normal
@@ -171,13 +197,15 @@ protected:
     // Return the next complete event: the run of lines up to a blank-line
     // delimiter. Leading blank lines are skipped, so the result is always
     // non-empty when a complete event exists. An empty span means no complete
-    // event is available yet (the caller should wait for more input).
+    // event is available yet (the caller should wait for more input). _next_line
+    // is an absolute line index; it is mapped into _lines coordinates via _base.
     virtual std::span<const LineInfo> _next_message() {
-        while(_next_line < _lines.size() && _lines[_next_line].first == BLANK_LINE) {
-            ++_next_line;
+        std::size_t first = _next_line - _base;
+        while (first < _lines.size() && _lines[first].first == BLANK_LINE) {
+            ++first;
         }
 
-        std::size_t last_line = _next_line;
+        std::size_t last_line = first;
         while (last_line < _lines.size() && _lines[last_line].first != BLANK_LINE) {
             ++last_line;
         }
@@ -186,32 +214,58 @@ protected:
             return {};
         }
 
-        auto slice = std::span<const LineInfo>(_lines).subspan(_next_line, last_line - _next_line);
-        _next_line = last_line + 1;   // consume the delimiter
+        auto slice = std::span<const LineInfo>(_lines).subspan(first, last_line - first);
+        _next_line = _base + last_line + 1;   // consume the delimiter
         return slice;
     }
 
+    // Rolling trim: drop the oldest consumed lines once the retained history
+    // exceeds _line_window, so a long-lived stream keeps a bounded footprint.
+    // Only lines strictly before the cursor are eligible — _next_message()
+    // hands out spans into [_next_line, ...), so touching anything at or after
+    // the cursor would invalidate them. Call only where no message span is
+    // alive: put() invokes this after its message loop, once the last span has
+    // been consumed by _handle_message().
+    void _trim() {
+        if (_next_line - _base > _line_window) {
+            std::size_t drop = (_next_line - _base) - _line_window;
+            _lines.erase(
+                _lines.begin(),
+                _lines.begin() + static_cast<std::ptrdiff_t>(drop));
+            _base += drop;
+        }
+    }
+
     // Decode one framed event into a Product. The default is a no-op;
-    // subclasses override this to implement the SSE field handling.
+    // subclasses override this to implement the SSE field handling. The span is
+    // only valid for the duration of this call — do not retain it.
     virtual Product _handle_message(std::span<const LineInfo> /*message*/) {
         return Product{};
     }
 
     // Recommended line index to rewind to on reconnect, returned by suspend()
-    // for the caller to hand to reset(). The default is the current cursor
-    // (the last fully-delivered event boundary), i.e. drop only the incomplete
-    // tail. Override to consult SSE resume metadata — e.g. the line index of the
-    // last acknowledged `id:` (the `retry:` field only governs reconnect timing,
-    // not position) — so reset() can replay from the correct checkpoint.
+    // for the caller to hand to reset(). Indices are absolute line numbers in a
+    // coordinate space that rolling trim never shifts (_base tracks the front
+    // of _lines), so an override may cache a checkpoint and return it later.
+    // The default is the current cursor (the last fully-delivered event
+    // boundary), i.e. drop only the incomplete tail. Override to consult SSE
+    // resume metadata — e.g. the line index of the last acknowledged `id:` (the
+    // `retry:` field only governs reconnect timing, not position) — so reset()
+    // can replay from the correct checkpoint. A checkpoint older than the
+    // retained window has been trimmed away; reset() then throws out_of_range.
     virtual std::size_t _restart_index() const {
         return _next_line;
     }
 
 public:
-    explicit SSEResponseHandler(boost::asio::any_io_executor executor)
+    explicit SSEResponseHandler(
+        boost::asio::any_io_executor executor,
+        std::size_t line_window = DEFAULT_SSE_LINE_WINDOW)
         : _buffer()
         , _lines()
         , _next_line(0)
+        , _base(0)
+        , _line_window(line_window)
         , _state(State::RUNNING)
         , _queue(executor) {}
 
@@ -263,6 +317,11 @@ public:
                     throw SSEAborted("SSE put aborted", get_state());
                 }
             }
+
+            // Every message span handed to _handle_message above is dead by
+            // now, so this is the only safe trim point — rolling trim must
+            // never run while a span is (or might still be) alive.
+            _trim();
         } catch (const SSEAborted&) {
             throw;
         } catch (...) {
@@ -295,33 +354,38 @@ public:
 
     // Put-side suspension: record the intended state (typically RESUMABLE) and
     // return the recommended restart index from _restart_index() — the line
-    // checkpoint to hand to reset() after reconnecting. This is pure put-side
-    // bookkeeping: it does NOT touch the channel, so the get side is completely
-    // unaware and the queue stays readable (a blocked get() keeps waiting
-    // normally, a draining get() keeps draining). The producer is expected to
-    // call this when it is not itself blocked inside put(); cancelling its own
-    // read coroutine is the producer's concern, not the handler's.
+    // checkpoint (an absolute line index) to hand to reset() after reconnecting.
+    // This is pure put-side bookkeeping: it does NOT touch the channel, so the
+    // get side is completely unaware and the queue stays readable (a blocked
+    // get() keeps waiting normally, a draining get() keeps draining). The
+    // producer is expected to call this when it is not itself blocked inside
+    // put(); cancelling its own read coroutine is the producer's concern, not
+    // the handler's.
     std::size_t suspend(State state) {
         std::size_t restart_at = _restart_index();   // capture before mutation
         set_state(state);
         return restart_at;
     }
 
-    // Put-side rewind to a committed checkpoint `index` into _lines: keep the
-    // prefix _lines[0, index), drop the suffix, park _next_line at `index` so
-    // only newly appended data is framed afterwards, clear the raw buffer, and
-    // return the handler to RUNNING. Like suspend() this does NOT touch the
-    // channel — the get side is unaware and the queue remains readable. Not safe
-    // to call concurrently with put() (or _split_line()/_next_message()): the
-    // line-buffer state they share is not synchronized.
+    // Put-side rewind to a committed checkpoint `index` (an absolute line
+    // index): keep the prefix up to it, drop the suffix, park _next_line at
+    // `index` so only newly appended data is framed afterwards, clear the raw
+    // buffer, and return the handler to RUNNING. Like suspend() this does NOT
+    // touch the channel — the get side is unaware and the queue remains
+    // readable. Not safe to call concurrently with put() (or
+    // _split_line()/_next_message()): the line-buffer state they share is not
+    // synchronized. The checkpoint must lie within the retained window — a
+    // checkpoint below _base has already been dropped by rolling trim and is
+    // rejected with out_of_range (the cursor itself, the default checkpoint, is
+    // always within the window).
     void reset(std::size_t index) {
-        if (index > _lines.size()) {
+        if (index < _base || index > _base + _lines.size()) {
             throw std::out_of_range("SSEResponseHandler::reset: index out of range");
         }
 
         _buffer.clear();
-        _lines.resize(index);   // keep committed prefix, drop the suffix
-        _next_line = index;     // cursor parked at the checkpoint
+        _lines.resize(index - _base);   // keep committed prefix, drop the suffix
+        _next_line = index;             // cursor parked at the checkpoint
         set_state(State::RUNNING);
     }
 
