@@ -39,9 +39,11 @@
 *.out
 *.app
 
-# Vendored third-party static libs ARE source — un-ignore them despite *.a above.
-# (Only build outputs under build/ should be ignored; third_party/ is committed.)
-!third_party/libs/*.a
+# Vendored third-party artifacts are NOT committed: headers and static libs
+# under third_party/ are fetched locally per the pinned releases recorded in
+# third_party/versions/. Licenses under third_party/license/ remain tracked.
+third_party/include/
+third_party/libs/
 
 # Build directories
 build/
