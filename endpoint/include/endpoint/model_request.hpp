@@ -172,4 +172,43 @@ inline ResolvedEndpoint resolve_endpoint(const model_io::ModelEndpoint& endpoint
     return resolved;
 }
 
+/**
+ * @brief Apply a ModelEndpoint's transport headers to a built request.
+ *
+ * Shared by concrete interpreters (proven out by the Responses-API layer):
+ * standard headers first — the auth credential per AuthScheme, then
+ * User-Agent — then extra_headers, so user-supplied headers win over the
+ * standard ones. An empty api_key never produces a credential header, and
+ * AuthScheme::None produces none by design (fail-closed scheme).
+ */
+inline void apply_transport_headers(
+    ModelRequestInterpreter::HttpRequest& request,
+    const model_io::ModelEndpoint& endpoint) {
+    namespace http = boost::beast::http;
+
+    switch (endpoint.auth.scheme) {
+        case model_io::AuthScheme::Bearer:
+            if (!endpoint.auth.api_key.empty()) {
+                request.set(http::field::authorization,
+                            "Bearer " + endpoint.auth.api_key);
+            }
+            break;
+        case model_io::AuthScheme::CustomHeader:
+            if (!endpoint.auth.api_key.empty() &&
+                !endpoint.auth.header_name.empty()) {
+                request.set(endpoint.auth.header_name, endpoint.auth.api_key);
+            }
+            break;
+        case model_io::AuthScheme::None:
+            break;
+    }
+
+    if (!endpoint.user_agent.empty()) {
+        request.set(http::field::user_agent, endpoint.user_agent);
+    }
+    for (const auto& [name, value] : endpoint.extra_headers) {
+        request.set(name, value);
+    }
+}
+
 } // namespace endpoint

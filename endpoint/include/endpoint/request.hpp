@@ -125,6 +125,10 @@ template<typename Product>
 class SSEResponseHandler: public AsyncResponseHandler<Product> {
 public:
     using LineInfo = std::pair<std::string, std::string>;
+    // The decoded event type this handler produces, named so wrapping
+    // templates (e.g. PeekingHandler) can refer to it without knowing the
+    // concrete Product parameter a handler was specialised with.
+    using product_type = Product;
     // Lifecycle states. Aliased to the namespace-scope enum so call sites can
     // keep writing SSEResponseHandler<Product>::State while SSEAborted carries
     // the same type.
