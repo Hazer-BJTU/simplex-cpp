@@ -11,6 +11,9 @@ target_link_libraries(endpoint_lib INTERFACE
     openssl_iface
     logging_lib
     simplex_thirdparty_iface
+    # The model request interpreter interface consumes the data contract
+    # (AgentInputState) and the provider endpoint configuration records.
+    dataclass_iface
 )
 
 # Keep tests optional under the project-wide BUILD_TESTS switch.

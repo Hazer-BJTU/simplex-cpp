@@ -28,6 +28,15 @@ target_link_libraries(test_sse_response_handler PRIVATE
 )
 add_test(NAME test_sse_response_handler COMMAND test_sse_response_handler)
 
+# Offline tests for the model request interpreter interface: lenient endpoint
+# resolution plus the contract's implementability through a stub.
+add_executable(test_model_request test_model_request.cpp)
+target_link_libraries(test_model_request PRIVATE
+    endpoint_lib
+    Boost::unit_test_framework
+)
+add_test(NAME test_model_request COMMAND test_model_request)
+
 # Manual end-to-end HTTPS check. It is intentionally not registered with CTest
 # so ordinary test runs remain deterministic and work offline.
 add_executable(https_connectivity_check https_connectivity_check.cpp)
