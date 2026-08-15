@@ -72,6 +72,7 @@ BOOST_AUTO_TEST_CASE(message_item_optionals_omitted_when_empty) {
     BOOST_CHECK(!j.contains("reasoning"));
     BOOST_CHECK(!j.contains("action_status"));
     BOOST_CHECK(!j.contains("invokes"));
+    BOOST_CHECK(!j.contains("invoke_return"));
     BOOST_CHECK(!j.contains("extras"));
 }
 
@@ -120,6 +121,13 @@ BOOST_AUTO_TEST_CASE(agent_loop_step_invoke_returns_roundtrip) {
     ret.type = MessageItemType::InvokeReturn;
     ret.role = "tool";
     ret.content.raw = "a.txt";
+    // Embed the originating record: query.id "c0" correlates the result back
+    // to the call above (the wire tool_call_id).
+    InvokeReturn record;
+    record.query = call;
+    record.output.type = ContentType::Text;
+    record.output.raw = "a.txt";
+    ret.invoke_return = std::move(record);
     s.invoke_returns = std::vector<MessageItem>{ret};
 
     auto s2 = roundtrip(s);
@@ -127,6 +135,51 @@ BOOST_AUTO_TEST_CASE(agent_loop_step_invoke_returns_roundtrip) {
     BOOST_CHECK_EQUAL(s2.model_response.invokes->at(0).name, "ls");
     BOOST_REQUIRE(s2.invoke_returns.has_value());
     BOOST_CHECK_EQUAL(s2.invoke_returns->at(0).content.raw, "a.txt");
+    BOOST_REQUIRE(s2.invoke_returns->at(0).invoke_return.has_value());
+    BOOST_CHECK_EQUAL(s2.invoke_returns->at(0).invoke_return->query.id, "c0");
+}
+
+// ---- invoke-return provenance --------------------------------------------------
+
+// A tool-result MessageItem may embed its originating InvokeReturn; the query
+// inside carries the id that correlates the result to the call that produced
+// it — the "tool call id" providers require on tool-result messages.
+BOOST_AUTO_TEST_CASE(message_item_embeds_invoke_return) {
+    MessageItem m;
+    m.type = MessageItemType::InvokeReturn;
+    m.role = "tool";
+    m.content.raw = "a.txt";
+    InvokeReturn record;
+    record.query.type = InvokeType::ReadOnly;
+    record.query.security = InvokeSecurity::Trusted;
+    record.query.id = "c0";
+    record.query.name = "ls";
+    record.query.arguments = nlohmann::json{{"path", "."}};
+    record.output.type = ContentType::Text;
+    record.output.raw = "a.txt";
+    record.extras = nlohmann::json{{"duration_ms", 3}};
+    m.invoke_return = std::move(record);
+
+    nlohmann::json j = m;
+    BOOST_CHECK(!j.contains("reasoning"));
+    BOOST_REQUIRE(j.contains("invoke_return"));
+    BOOST_CHECK_EQUAL(j["invoke_return"]["query"]["id"], "c0");
+    BOOST_CHECK_EQUAL(j["invoke_return"]["output"]["raw"], "a.txt");
+
+    auto m2 = roundtrip(m);
+    BOOST_REQUIRE(m2.invoke_return.has_value());
+    BOOST_CHECK_EQUAL(m2.invoke_return->query.id, "c0");
+    BOOST_CHECK_EQUAL(m2.invoke_return->query.name, "ls");
+    BOOST_CHECK_EQUAL(m2.invoke_return->query.arguments["path"], ".");
+    BOOST_CHECK_EQUAL(m2.invoke_return->output.raw, "a.txt");
+    BOOST_REQUIRE(m2.invoke_return->extras.has_value());
+    BOOST_CHECK_EQUAL(m2.invoke_return->extras->at("duration_ms"), 3);
+
+    // A missing key yields nullopt (protocol rule: optionals reset on read).
+    MessageItem bare;
+    nlohmann::json{{"type", "invoke_return"}, {"role", "tool"}}.get_to(bare);
+    BOOST_CHECK(bare.type == MessageItemType::InvokeReturn);
+    BOOST_CHECK(!bare.invoke_return.has_value());
 }
 
 BOOST_AUTO_TEST_CASE(user_loop_step_compact_preference_roundtrips) {
@@ -268,6 +321,11 @@ BOOST_AUTO_TEST_CASE(agent_input_state_holds_the_session_together) {
     result.type = MessageItemType::InvokeReturn;
     result.role = "tool";
     result.content.raw = "a.txt";
+    InvokeReturn record;   // provenance: query.id "c0" names the call above
+    record.query = q;
+    record.output.type = ContentType::Text;
+    record.output.raw = "a.txt";
+    result.invoke_return = std::move(record);
     cycle.invoke_returns = std::vector<MessageItem>{result};
     turn.agent_loop_step = {cycle};
     state.turns.push_back(std::move(turn));
@@ -293,4 +351,7 @@ BOOST_AUTO_TEST_CASE(agent_input_state_holds_the_session_together) {
     BOOST_CHECK_EQUAL(step.model_response.invokes->at(0).name, "ls");
     BOOST_REQUIRE(step.invoke_returns.has_value());
     BOOST_CHECK_EQUAL(step.invoke_returns->at(0).content.raw, "a.txt");
+    // The embedded record survives, correlating the result to its call.
+    BOOST_REQUIRE(step.invoke_returns->at(0).invoke_return.has_value());
+    BOOST_CHECK_EQUAL(step.invoke_returns->at(0).invoke_return->query.id, "c0");
 }

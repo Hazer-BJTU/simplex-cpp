@@ -48,7 +48,9 @@
 //
 //   AgentLoopStep models one ReAct cycle inside the agent loop:
 //     model_response  — an assistant message (text / reasoning / tool calls)
-//     invoke_returns  — the tool results produced by the calls in that response
+//     invoke_returns  — the tool results produced by the calls in that
+//                       response; each item may embed the InvokeReturn record
+//                       whose query.id names the call it answers
 //
 //   - User loop:  one user turn, possibly followed by several agent
 //                 reasoning/acting steps until the model emits a final answer.
@@ -220,13 +222,21 @@ NLOHMANN_JSON_SERIALIZE_ENUM(MessageItemType, {
 // A single message. Overloaded across the three MessageItemType roles via
 // `type`; the optional fields are populated as the role demands (e.g.
 // `reasoning`/`invokes` on model responses, the result in `content` for invoke
-// returns).
+// returns). An invoke-return item may additionally embed its originating
+// InvokeReturn record in `invoke_return`: the query inside carries the id that
+// correlates the result back to the entry in the model_response's `invokes`
+// (the wire-level "tool call id" providers require on tool-result messages).
+// `content` stays the canonical payload position; the record's `output` is
+// expected to carry the same bytes when both are set.
 struct MessageItem {
     MessageItemType type = MessageItemType::UserInput;
     std::string role;
     Content content;
     std::optional<Content> reasoning, action_status;
     std::optional<std::vector<InvokeQuery>> invokes;
+    // On an InvokeReturn item: the originating call + result as one record —
+    // provenance for correlating the result to the call that produced it.
+    std::optional<InvokeReturn> invoke_return;
     std::optional<nlohmann::json> extras;
 };
 
@@ -239,6 +249,7 @@ inline void to_json(nlohmann::json& j, const MessageItem& m) {
     if (m.reasoning) j["reasoning"] = *m.reasoning;
     if (m.action_status) j["action_status"] = *m.action_status;
     if (m.invokes) j["invokes"] = *m.invokes;
+    if (m.invoke_return) j["invoke_return"] = *m.invoke_return;
     if (m.extras) j["extras"] = *m.extras;
 }
 
@@ -255,6 +266,9 @@ inline void from_json(const nlohmann::json& j, MessageItem& m) {
     if (auto it = j.find("invokes"); it != j.end())
         m.invokes = it->get<std::vector<InvokeQuery>>();
     else m.invokes.reset();
+    if (auto it = j.find("invoke_return"); it != j.end())
+        m.invoke_return = it->get<InvokeReturn>();
+    else m.invoke_return.reset();
     if (auto it = j.find("extras"); it != j.end()) m.extras = *it;
     else m.extras.reset();
 }
@@ -477,6 +491,13 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
 //   |                            arguments: json satisfying that Invocable's
 //   |                                      argument_schema
 //   |                            extras?  : optional<json>
+//   |        invoke_return? : optional<InvokeReturn> — on an invoke_return
+//   |                          item, the originating call + result as one
+//   |                          record; query.id correlates the result back to
+//   |                          the invokes entry of the model_response that
+//   |                          made the call (the wire "tool call id"). The
+//   |                          record recurses as the InvokeReturn struct
+//   |                          above: query / output / extras?.
 //   |        extras?        : optional<json>
 //   |
 //   +-- extras : optional<json>
@@ -501,7 +522,8 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
 //   - turns -> the message list, flattened: each user_input becomes a user
 //     message; each AgentLoopStep's model_response becomes an assistant
 //     message (its invokes -> tool_calls) and its invoke_returns become
-//     tool-result messages
+//     tool-result messages, correlated to their calls by the embedded
+//     invoke_return's query.id (the wire "tool_call_id" providers require)
 //   - extras -> interpreter/provider-specific request parameters
 //   Everything else a request needs — model name, base_url, temperature,
 //   stream, max_tokens, ... — comes from the interpreter's provider/endpoint
