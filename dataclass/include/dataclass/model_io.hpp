@@ -119,15 +119,23 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ContentType, {
 struct Content {
     ContentType type = ContentType::Text;
     std::string raw;
+    // Provider-specific content-part fields beyond what ContentType can say —
+    // e.g. the Responses API's part "type" ("output_text", ...) alongside our
+    // coarse text/binary/external_ref, or annotations. Consumers that map to
+    // a plain string content ignore it.
+    std::optional<nlohmann::json> extras;
 };
 
 inline void to_json(nlohmann::json& j, const Content& c) {
     j = nlohmann::json{{"type", c.type}, {"raw", c.raw}};
+    if (c.extras) j["extras"] = *c.extras;
 }
 
 inline void from_json(const nlohmann::json& j, Content& c) {
     if (auto it = j.find("type"); it != j.end()) it->get_to(c.type);
     if (auto it = j.find("raw"); it != j.end()) it->get_to(c.raw);
+    if (auto it = j.find("extras"); it != j.end()) c.extras = *it;
+    else c.extras.reset();
 }
 
 // How a tool invocation may touch state.
@@ -477,7 +485,10 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
 //   |        role           : string   "user" / "assistant" / "tool"
 //   |        content        : Content  type : ContentType (text | binary |
 //   |                               external_ref) — how `raw` is encoded;
-//   |                               raw  : string payload
+//   |                               raw  : string payload;
+//   |                               extras? : optional<json> content-part
+//   |                               fields beyond ContentType (e.g. the
+//   |                               Responses API part "type")
 //   |        reasoning?     : optional<Content>  chain-of-thought, if any
 //   |        action_status? : optional<Content>  lifecycle annotation
 //   |        invokes?       : optional<vector<InvokeQuery>> — the tool calls

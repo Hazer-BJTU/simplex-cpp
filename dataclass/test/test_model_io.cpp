@@ -33,6 +33,31 @@ BOOST_AUTO_TEST_CASE(content_enum_serializes_as_string) {
     BOOST_CHECK_EQUAL(j["type"], "external_ref");
 }
 
+// Provider-specific content-part fields ride in extras — e.g. the Responses
+// API part "type" that our coarse ContentType cannot express.
+BOOST_AUTO_TEST_CASE(content_extras_roundtrip) {
+    Content c;
+    c.type = ContentType::Text;
+    c.raw = "hello";
+    c.extras = nlohmann::json{{"type", "output_text"},
+                              {"annotations", nlohmann::json::array()}};
+    nlohmann::json j = c;
+    BOOST_REQUIRE(j.contains("extras"));
+    BOOST_CHECK_EQUAL(j["extras"]["type"], "output_text");
+
+    auto c2 = roundtrip(c);
+    BOOST_REQUIRE(c2.extras.has_value());
+    BOOST_CHECK_EQUAL(c2.extras->at("type"), "output_text");
+    BOOST_CHECK(c2.extras->at("annotations").is_array());
+
+    // Omitted when unset; a missing key resets (protocol rules).
+    Content bare;
+    nlohmann::json jb = bare;
+    BOOST_CHECK(!jb.contains("extras"));
+    nlohmann::json{{"type", "text"}, {"raw", "x"}}.get_to(bare);
+    BOOST_CHECK(!bare.extras.has_value());
+}
+
 BOOST_AUTO_TEST_CASE(invoke_query_roundtrips_with_arguments) {
     InvokeQuery q;
     q.type = InvokeType::SerialWrite;
