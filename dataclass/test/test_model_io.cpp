@@ -232,3 +232,65 @@ BOOST_AUTO_TEST_CASE(invocable_missing_keys_keep_member_defaults) {
     BOOST_CHECK(!v.remote_type.has_value());
     BOOST_CHECK(!v.extras.has_value());
 }
+
+// ---- session input container --------------------------------------------------
+
+// AgentInputState has NO to_json/from_json (it embeds PromptTemplate, which
+// is deliberately outside the JSON contract) — what CAN round-trip are its
+// serialisable members, tools and turns.
+BOOST_AUTO_TEST_CASE(agent_input_state_holds_the_session_together) {
+    AgentInputState state; // fresh session: everything empty
+    BOOST_CHECK(state.tools.empty());
+    BOOST_CHECK(state.turns.empty());
+    BOOST_CHECK(!state.extras.has_value());
+
+    state.system_prompt
+        .add_section("identity", "Identity", "You are a coding agent.")
+        .add_section("tools", "Tools", "", SectionStability::Growing)
+        .add_section("clock", "", "Date: 2026-08-15.", SectionStability::Volatile);
+
+    Invocable ls;
+    ls.name = "ls";
+    ls.description = "List files";
+    state.tools.push_back(std::move(ls));
+
+    UserLoopStep turn;
+    turn.user_input.role = "user";
+    turn.user_input.content.raw = "list the files";
+    AgentLoopStep cycle;
+    cycle.model_response.type = MessageItemType::ModelResponse;
+    cycle.model_response.role = "assistant";
+    InvokeQuery q;
+    q.id = "c0";
+    q.name = "ls";
+    cycle.model_response.invokes = std::vector<InvokeQuery>{q};
+    MessageItem result;
+    result.type = MessageItemType::InvokeReturn;
+    result.role = "tool";
+    result.content.raw = "a.txt";
+    cycle.invoke_returns = std::vector<MessageItem>{result};
+    turn.agent_loop_step = {cycle};
+    state.turns.push_back(std::move(turn));
+
+    // The system prompt renders through the template, spans first section
+    // immutable (what the interpreter turns into messages[0]).
+    auto rendered = state.system_prompt.render();
+    BOOST_CHECK_NE(rendered.markdown.find("## Identity"), std::string::npos);
+    BOOST_REQUIRE_EQUAL(rendered.spans.size(), 3u);
+    BOOST_CHECK_EQUAL(rendered.spans.front().name, "identity");
+    BOOST_CHECK(rendered.spans.front().stability == SectionStability::Immutable);
+
+    // The serialisable members keep their ADL pairs.
+    auto tools2 = nlohmann::json(state.tools).get<std::vector<Invocable>>();
+    BOOST_REQUIRE_EQUAL(tools2.size(), 1u);
+    BOOST_CHECK_EQUAL(tools2[0].name, "ls");
+
+    auto turns2 = nlohmann::json(state.turns).get<std::vector<UserLoopStep>>();
+    BOOST_REQUIRE_EQUAL(turns2.size(), 1u);
+    BOOST_CHECK_EQUAL(turns2[0].user_input.content.raw, "list the files");
+    const auto& step = turns2[0].agent_loop_step.at(0);
+    BOOST_REQUIRE(step.model_response.invokes.has_value());
+    BOOST_CHECK_EQUAL(step.model_response.invokes->at(0).name, "ls");
+    BOOST_REQUIRE(step.invoke_returns.has_value());
+    BOOST_CHECK_EQUAL(step.invoke_returns->at(0).content.raw, "a.txt");
+}

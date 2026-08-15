@@ -20,23 +20,31 @@
 // before any type that embeds the record by value, so each struct is followed
 // immediately by its to_json/from_json and the types are ordered so
 // dependencies come first: Content -> InvokeQuery -> InvokeReturn ->
-// MessageItem -> AgentLoopStep -> UserLoopStep. The standalone tool
-// registration record Invocable (no record dependencies) closes the file.
+// MessageItem -> AgentLoopStep -> UserLoopStep -> Invocable. The session
+// container AgentInputState closes the file and is the ONE composite without
+// a serialisation pair: it embeds PromptTemplate (prompt_template.hpp), which
+// is text management only and deliberately outside the JSON contract.
 //
 // The tool-definition record is part of the contract: Invocable (tool
-// registration section, end of file) names a tool and carries its argument
-// schema; the per-call type/security metadata rides in InvokeQuery. The
-// session-level container (system prompt + user + registered tools + turns)
-// is intentionally not part of the contract yet; it will be defined once
-// these types settle.
+// registration section) names a tool and carries its argument schema; the
+// per-call type/security metadata rides in InvokeQuery. The session-level
+// container is AgentInputState (end of file): system prompt + registered
+// tools + turns — the complete input a (future) interpreter consumes to
+// build one provider request.
 //
 // Overall model-I/O management logic
 // ----------------------------------
-// The conversation is organised as a two-tier loop:
+// The conversation is organised as a two-tier loop, held together at the top
+// by the session container:
+//
+//   AgentInputState                          (session input; end of file)
+//   +-- system_prompt : PromptTemplate        the system prompt (markdown)
+//   +-- tools         : vector<Invocable>     tools registered this session
+//   +-- turns         : vector<UserLoopStep>  <- one entry per user turn
 //
 //   UserLoopStep
-//   +-- user_input      : MessageItem         (one user message)
-//   +-- agent_loop_step : vector<MessageItem> <- the "agent loop"
+//   +-- user_input      : MessageItem          (one user message)
+//   +-- agent_loop_step : vector<AgentLoopStep> <- the "agent loop"
 //
 //   AgentLoopStep models one ReAct cycle inside the agent loop:
 //     model_response  — an assistant message (text / reasoning / tool calls)
@@ -85,6 +93,8 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "dataclass/prompt_template.hpp"
 
 namespace model_io {
 
@@ -299,7 +309,7 @@ inline void from_json(const nlohmann::json& j, AgentLoopStep& s) {
 // One user-loop step: a user message plus the agent steps it triggered.
 struct UserLoopStep {
     MessageItem user_input;
-    std::vector<MessageItem> agent_loop_step;
+    std::vector<AgentLoopStep> agent_loop_step;
     std::optional<nlohmann::json> extras;
     // Compact-selection preference — bias for summarising vs. keeping this turn.
     RetainPriority retain_priority = RetainPriority::Normal;
@@ -365,5 +375,148 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
     if (auto it = j.find("extras"); it != j.end()) v.extras = *it;
     else v.extras.reset();
 }
+
+// ---- session input container ---------------------------------------------------
+
+// AgentInputState — everything one model invocation needs
+// ========================================================
+//
+// The session-level container the file header reserved: the complete input a
+// (future) interpreter interface turns into ONE provider request. The host
+// (agent runtime) owns an AgentInputState for the session, evolves it as the
+// session runs (append prompt regions, register tools, push turns), and hands
+// it to the interpreter before each model call; the interpreter maps it
+// directly onto a request the way endpoint/example/deepseek_chat.cpp's
+// build_request() assembles a {model, stream, messages[], tools[]}
+// chat-completion body.
+//
+// Scope — the CONVERSATION only. Model and generation settings (model name,
+// base_url, api key, temperature, stream, max_tokens, ...) are deliberately
+// NOT part of AgentInputState: they are provider/endpoint configuration the
+// interpreter owns separately and merges into the request it builds — in the
+// deepseek example, model_name(), the parsed base_url and the api_key come
+// from the caller's configuration, not from the conversation. This type
+// changes when the conversation changes, not when the deployment does.
+//
+// Structure, recursed to the leaves:
+//
+//   AgentInputState
+//   |
+//   +-- system_prompt : PromptTemplate
+//   |      The system prompt as managed markdown (prompt_template.hpp — text
+//   |      management only, deliberately outside the JSON contract). Laid
+//   |      out for byte-prefix provider caches: immutable regions first,
+//   |      growing regions next, volatile regions last; the class enforces
+//   |      both the order and the per-tier mutation rules.
+//   |      +-- heading_level : int
+//   |      |    '#' depth of every section title; default 2, validated
+//   |      |    1..6 at render().
+//   |      +-- sections (read via begin()/end()/find(name))
+//   |      |    one PromptSection per add_section(), in order:
+//   |      |      name      : string  unique key ("tools")
+//   |      |      title     : string  heading text; "" renders body only
+//   |      |      stability : SectionStability
+//   |      |                  Immutable — fixed at creation; no mutation path
+//   |      |                  Growing   — append() only; bytes only grow
+//   |      |                  Volatile  — rewrite()/erase(); lives at tail
+//   |      |      text      : string  canonicalised body; emitted verbatim
+//   |      +-- render() -> RenderedPrompt   (pure, deterministic)
+//   |           markdown : string           the assembled system prompt
+//   |           spans    : vector<SectionSpan>
+//   |                     one [begin, end) byte range per rendered section,
+//   |                     carrying its name and stability — for cache-prefix
+//   |                     accounting
+//   |
+//   +-- tools : vector<Invocable>
+//   |      The tools registered for the session — what the model may call.
+//   |      Each Invocable:
+//   |        name            : string  wire name the model calls
+//   |        description     : string  what the tool does
+//   |        argument_schema : json    JSON Schema an InvokeQuery's
+//   |                                `arguments` must satisfy
+//   |        remote_type?    : optional<string>  plugin/remote dispatch kind;
+//   |                                            nullopt = in-process tool
+//   |        extras?         : optional<json>    provider-specific metadata
+//   |
+//   +-- turns : vector<UserLoopStep>
+//   |      The conversation so far, oldest user turn first. Each UserLoopStep
+//   |      is one user turn:
+//   |        user_input      : MessageItem  the user message that started it
+//   |        agent_loop_step : vector<AgentLoopStep>  the ReAct cycles it
+//   |                          triggered, in order; each AgentLoopStep is one
+//   |                          cycle (see the struct above):
+//   |                            model_response  : MessageItem  the assistant
+//   |                                  message — text / reasoning / invokes
+//   |                            invoke_returns? : vector<MessageItem>  the
+//   |                                  tool results the calls in that
+//   |                                  response produced (payload in content)
+//   |                            retain_priority : RetainPriority  trim
+//   |                                  preference under the token budget
+//   |                            extras?         : optional<json>
+//   |        retain_priority : RetainPriority  Normal/Discardable/Pinned;
+//   |                          biases turn compaction (see file header)
+//   |        extras?         : optional<json>
+//   |      recursing each MessageItem (user_input, every model_response, and
+//   |      every invoke_returns entry):
+//   |        type           : MessageItemType  user_input | model_response |
+//   |                                           invoke_return
+//   |        role           : string   "user" / "assistant" / "tool"
+//   |        content        : Content  type : ContentType (text | binary |
+//   |                               external_ref) — how `raw` is encoded;
+//   |                               raw  : string payload
+//   |        reasoning?     : optional<Content>  chain-of-thought, if any
+//   |        action_status? : optional<Content>  lifecycle annotation
+//   |        invokes?       : optional<vector<InvokeQuery>> — the tool calls
+//   |                          a model response made. Each InvokeQuery:
+//   |                            type     : InvokeType     read_only |
+//   |                                      parall_write | serial_write
+//   |                            security : InvokeSecurity default_deny |
+//   |                                      require_confirm | trusted
+//   |                            id, name : call id; `name` must resolve to
+//   |                                      an Invocable in `tools`
+//   |                            arguments: json satisfying that Invocable's
+//   |                                      argument_schema
+//   |                            extras?  : optional<json>
+//   |        extras?        : optional<json>
+//   |
+//   +-- extras : optional<json>
+//          Escape hatch for the session state itself (provider-specific or
+//          experimental knobs the interpreter should pass through).
+//
+// Serialisation: NONE, deliberately. Every other composite in this file has
+// an ADL to_json/from_json pair; AgentInputState does not, because it embeds
+// PromptTemplate, which by design has no JSON form. It is an in-memory
+// assembly point: to persist a session, serialise the members that have
+// pairs (tools, turns) and store system_prompt.render().markdown — not this
+// struct.
+//
+// Interpreter consumption (why this type exists): before each model call the
+// interpreter flattens an AgentInputState straight into a provider request
+// (cf. endpoint/example/deepseek_chat.cpp::build_request):
+//   - system_prompt.render().markdown -> messages[0] (the system message);
+//     its spans mark where the immutable/growing prefix ends, so an adapter
+//     can place provider cache breakpoints and keep the volatile tail last
+//   - tools -> the request's tool definitions; name + description +
+//     argument_schema is exactly the wire triple providers expect
+//   - turns -> the message list, flattened: each user_input becomes a user
+//     message; each AgentLoopStep's model_response becomes an assistant
+//     message (its invokes -> tool_calls) and its invoke_returns become
+//     tool-result messages
+//   - extras -> interpreter/provider-specific request parameters
+//   Everything else a request needs — model name, base_url, temperature,
+//   stream, max_tokens, ... — comes from the interpreter's provider/endpoint
+//   configuration, NOT from this struct (see Scope above).
+// The mapping lives in the interpreter, never here: this struct is pure data.
+struct AgentInputState {
+    // The system prompt: managed markdown, rendered by the interpreter at
+    // request-build time (never serialised).
+    PromptTemplate system_prompt;
+    // Tools registered for this session — what the model may invoke.
+    std::vector<Invocable> tools;
+    // The conversation so far, oldest user turn first.
+    std::vector<UserLoopStep> turns;
+    // Escape hatch: provider-specific / experimental session-level fields.
+    std::optional<nlohmann::json> extras;
+};
 
 } // namespace model_io
