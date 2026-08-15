@@ -11,3 +11,7 @@ target_link_libraries(dataclass_iface INTERFACE
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
+
+# Offline usage example for PromptTemplate: cheap to build, deterministic to
+# run; not registered with CTest.
+add_subdirectory(example)
