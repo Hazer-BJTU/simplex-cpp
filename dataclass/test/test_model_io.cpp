@@ -181,3 +181,54 @@ BOOST_AUTO_TEST_CASE(missing_keys_keep_member_defaults) {
     BOOST_CHECK(!m.reasoning.has_value());
     BOOST_CHECK(!m.invokes.has_value());
 }
+
+// ---- tool registration -------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(invocable_roundtrips) {
+    Invocable v;
+    v.name = "search";
+    v.description = "Full-text search over the index";
+    v.argument_schema = nlohmann::json{
+        {"type", "object"},
+        {"properties", {{"q", {{"type", "string"}}}}},
+        {"required", nlohmann::json::array({"q"})},
+    };
+    v.remote_type = "extension";
+    v.extras = nlohmann::json{{"vendor", "acme"}};
+
+    auto v2 = roundtrip(v);
+    BOOST_CHECK_EQUAL(v2.name, "search");
+    BOOST_CHECK_EQUAL(v2.description, "Full-text search over the index");
+    // The schema embeds inline as-is.
+    BOOST_CHECK_EQUAL(v2.argument_schema["properties"]["q"]["type"], "string");
+    BOOST_CHECK_EQUAL(v2.argument_schema["required"][0], "q");
+    BOOST_REQUIRE(v2.remote_type.has_value());
+    BOOST_CHECK_EQUAL(*v2.remote_type, "extension");
+    BOOST_REQUIRE(v2.extras.has_value());
+    BOOST_CHECK_EQUAL(v2.extras->at("vendor"), "acme");
+}
+
+BOOST_AUTO_TEST_CASE(invocable_optionals_omitted_when_empty) {
+    Invocable v;
+    v.name = "ls";
+    v.description = "List files";
+    nlohmann::json j = v;
+    BOOST_CHECK_EQUAL(j["name"], "ls");
+    BOOST_CHECK_EQUAL(j["description"], "List files");
+    BOOST_CHECK(j["argument_schema"].is_object());
+    BOOST_CHECK(!j.contains("remote_type"));
+    BOOST_CHECK(!j.contains("extras"));
+}
+
+BOOST_AUTO_TEST_CASE(invocable_missing_keys_keep_member_defaults) {
+    nlohmann::json j = nlohmann::json::object(); // every key missing
+    Invocable v;
+    j.get_to(v);
+    BOOST_CHECK(v.name.empty());
+    BOOST_CHECK(v.description.empty());
+    // Default is the vacuously-accepting object schema, never null (null is
+    // not a valid JSON Schema).
+    BOOST_CHECK(v.argument_schema.is_object());
+    BOOST_CHECK(!v.remote_type.has_value());
+    BOOST_CHECK(!v.extras.has_value());
+}

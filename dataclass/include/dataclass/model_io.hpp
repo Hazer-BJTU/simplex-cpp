@@ -20,11 +20,15 @@
 // before any type that embeds the record by value, so each struct is followed
 // immediately by its to_json/from_json and the types are ordered so
 // dependencies come first: Content -> InvokeQuery -> InvokeReturn ->
-// MessageItem -> AgentLoopStep -> UserLoopStep.
+// MessageItem -> AgentLoopStep -> UserLoopStep. The standalone tool
+// registration record Invocable (no record dependencies) closes the file.
 //
-// The tool-definition record (ToolSchema) and the session-level container
-// (system prompt + user + registered tools + turns) are intentionally not
-// part of the contract yet; both will be defined once these types settle.
+// The tool-definition record is part of the contract: Invocable (tool
+// registration section, end of file) names a tool and carries its argument
+// schema; the per-call type/security metadata rides in InvokeQuery. The
+// session-level container (system prompt + user + registered tools + turns)
+// is intentionally not part of the contract yet; it will be defined once
+// these types settle.
 //
 // Overall model-I/O management logic
 // ----------------------------------
@@ -319,6 +323,47 @@ inline void from_json(const nlohmann::json& j, UserLoopStep& u) {
     else u.extras.reset();
     if (auto it = j.find("retain_priority"); it != j.end())
         it->get_to(u.retain_priority);
+}
+
+// ---- tool registration -------------------------------------------------------
+
+// A tool exposed to the model: what it is called, what it does, and the
+// JSON-Schema contract its arguments must satisfy. Registering an Invocable
+// makes the tool available; the model then calls it through InvokeQuery,
+// which carries the per-call type/security metadata and the arguments
+// themselves.
+struct Invocable {
+    std::string name, description;
+    // JSON Schema the `arguments` of an InvokeQuery must satisfy — the
+    // `parameters` / `input_schema` object tool definitions carry on the
+    // wire. The default `{}` is a schema that accepts anything, including
+    // no arguments at all (null is not a valid JSON Schema).
+    nlohmann::json argument_schema = nlohmann::json::object();
+    // Kind of remote/plugin-registered tool, for provider-specific dispatch;
+    // nullopt for plain in-process tools.
+    std::optional<std::string> remote_type;
+    std::optional<nlohmann::json> extras;
+};
+
+inline void to_json(nlohmann::json& j, const Invocable& v) {
+    j = nlohmann::json{
+        {"name", v.name},
+        {"description", v.description},
+        {"argument_schema", v.argument_schema},
+    };
+    if (v.remote_type) j["remote_type"] = *v.remote_type;
+    if (v.extras) j["extras"] = *v.extras;
+}
+
+inline void from_json(const nlohmann::json& j, Invocable& v) {
+    if (auto it = j.find("name"); it != j.end()) it->get_to(v.name);
+    if (auto it = j.find("description"); it != j.end()) it->get_to(v.description);
+    if (auto it = j.find("argument_schema"); it != j.end()) v.argument_schema = *it;
+    if (auto it = j.find("remote_type"); it != j.end())
+        v.remote_type = it->get<std::string>();
+    else v.remote_type.reset();
+    if (auto it = j.find("extras"); it != j.end()) v.extras = *it;
+    else v.extras.reset();
 }
 
 } // namespace model_io
