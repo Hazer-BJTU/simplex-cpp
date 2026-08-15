@@ -1,5 +1,5 @@
-// Round-trip tests for the model_io records' to_json/from_json. Pure data
-// checks: no network, no filesystem.
+// Round-trip tests for the model_io records' nlohmann ADL
+// to_json/from_json. Pure data checks: no network, no filesystem.
 #define BOOST_TEST_MODULE model_io
 #include <boost/test/unit_test.hpp>
 
@@ -9,10 +9,11 @@
 
 using namespace model_io;
 
-// Round-trip a record through JSON (to_json then json construction).
+// Round-trip a record through JSON (json j = x; then j.get<T>()).
 template <class T>
 static T roundtrip(const T& in) {
-    return T{in.to_json()};
+    nlohmann::json j = in;
+    return j.get<T>();
 }
 
 BOOST_AUTO_TEST_CASE(content_roundtrips) {
@@ -28,7 +29,7 @@ BOOST_AUTO_TEST_CASE(content_enum_serializes_as_string) {
     Content c;
     c.type = ContentType::ExternalRef;
     c.raw = "file:///x";
-    nlohmann::json j = c.to_json();
+    nlohmann::json j = c;
     BOOST_CHECK_EQUAL(j["type"], "external_ref");
 }
 
@@ -67,7 +68,7 @@ BOOST_AUTO_TEST_CASE(message_item_optionals_omitted_when_empty) {
     m.role = "assistant";
     m.content.type = ContentType::Text;
     m.content.raw = "hi";
-    nlohmann::json j = m.to_json();
+    nlohmann::json j = m;
     BOOST_CHECK(!j.contains("reasoning"));
     BOOST_CHECK(!j.contains("action_status"));
     BOOST_CHECK(!j.contains("invokes"));
@@ -97,7 +98,7 @@ BOOST_AUTO_TEST_CASE(agent_loop_step_retain_priority_defaults_and_roundtrips) {
     s.model_response.content.raw = "answer";
     // Default member initializer -> Normal.
     BOOST_CHECK(s.retain_priority == RetainPriority::Normal);
-    nlohmann::json j = s.to_json();
+    nlohmann::json j = s;
     BOOST_CHECK_EQUAL(j["retain_priority"], "normal");
     s.retain_priority = RetainPriority::Pinned;
     auto s2 = roundtrip(s);
@@ -134,73 +135,31 @@ BOOST_AUTO_TEST_CASE(user_loop_step_compact_preference_roundtrips) {
     u.user_input.role = "user";
     u.user_input.content.raw = "hi";
     u.retain_priority = RetainPriority::Discardable;
-    nlohmann::json j = u.to_json();
+    nlohmann::json j = u;
     BOOST_CHECK_EQUAL(j["retain_priority"], "discardable");
     auto u2 = roundtrip(u);
     BOOST_CHECK(u2.retain_priority == RetainPriority::Discardable);
 }
 
-BOOST_AUTO_TEST_CASE(polymorphic_use_through_serializable_base) {
-    Content c;
-    c.type = ContentType::Binary;
-    c.raw = "AA==";
-
-    // Records are usable uniformly through the base interface.
-    dataclass::Serializable& iface = c;
-    nlohmann::json j = iface.to_json();
+BOOST_AUTO_TEST_CASE(records_are_plain_aggregates) {
+    // No base class or declared constructors: aggregate initialisation works
+    // and records convert through the nlohmann ADL functions.
+    Content c{ContentType::Binary, "AA=="};
+    nlohmann::json j = c;
     BOOST_CHECK_EQUAL(j["type"], "binary");
+    BOOST_CHECK_EQUAL(j["raw"], "AA==");
 
-    Content c2;
-    dataclass::Serializable& iface2 = c2;
-    iface2.from_json_string(iface.to_json_string());
+    auto c2 = j.get<Content>(); // json -> record
     BOOST_CHECK(c2.type == ContentType::Binary);
-    BOOST_CHECK_EQUAL(c2.raw, "AA==");
-}
-
-BOOST_AUTO_TEST_CASE(records_construct_and_assign_from_json) {
-    nlohmann::json j{
-        {"type", "binary"},
-        {"raw", "AA=="},
-    };
-
-    Content c{j}; // explicit json constructor
-    BOOST_CHECK(c.type == ContentType::Binary);
-    BOOST_CHECK_EQUAL(c.raw, "AA==");
-
-    Content c2;
-    c2 = j; // assignment via the base operator=
     BOOST_CHECK_EQUAL(c2.raw, "AA==");
 
     Content c3;
-    c3 = c2; // ordinary copy assignment still resolves
+    j.get_to(c3); // in-place deserialisation
     BOOST_CHECK_EQUAL(c3.raw, "AA==");
-}
 
-BOOST_AUTO_TEST_CASE(field_helpers_plain_and_optional_flavours) {
-    nlohmann::json j;
-    std::string plain = "x";
-    std::optional<std::string> opt;
-
-    dataclass::to_json(j, "plain", plain);
-    dataclass::to_json(j, "opt", opt, dataclass::optional); // empty: omitted
-    BOOST_CHECK_EQUAL(j["plain"], "x");
-    BOOST_CHECK(!j.contains("opt"));
-
-    opt = "y";
-    dataclass::to_json(j, "opt", opt, dataclass::optional);
-    BOOST_CHECK_EQUAL(j["opt"], "y");
-
-    std::string out;
-    dataclass::from_json(j, "plain", out);
-    BOOST_CHECK_EQUAL(out, "x");
-
-    std::optional<std::string> opt2;
-    dataclass::from_json(j, "opt", opt2, dataclass::optional);
-    BOOST_CHECK(opt2.has_value() && *opt2 == "y");
-
-    nlohmann::json empty;
-    dataclass::from_json(empty, "opt", opt2, dataclass::optional);
-    BOOST_CHECK(!opt2.has_value());
+    Content c4;
+    c4 = c3; // ordinary copy assignment still resolves
+    BOOST_CHECK_EQUAL(c4.raw, "AA==");
 }
 
 BOOST_AUTO_TEST_CASE(missing_keys_keep_member_defaults) {
@@ -209,13 +168,14 @@ BOOST_AUTO_TEST_CASE(missing_keys_keep_member_defaults) {
     j["query"]["id"] = "t0";
     j["query"]["name"] = "ls";
     // "output" missing: the plain member keeps its default; optionals reset.
-    r.from_json(j);
+    j.get_to(r);
     BOOST_CHECK_EQUAL(r.query.id, "t0");
     BOOST_CHECK(r.output.raw.empty());
     BOOST_CHECK(!r.extras.has_value());
 
     MessageItem m;
-    m.from_json(nlohmann::json{{"type", "model_response"}});
+    nlohmann::json jm{{"type", "model_response"}};
+    jm.get_to(m);
     BOOST_CHECK(m.type == MessageItemType::ModelResponse);
     BOOST_CHECK(m.role.empty());
     BOOST_CHECK(!m.reasoning.has_value());

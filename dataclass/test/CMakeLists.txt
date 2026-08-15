@@ -1,4 +1,5 @@
-# Round-trip tests for the model_io records' to_json/from_json. Pure data
+# Round-trip tests for the model_io records' nlohmann ADL to_json/from_json.
+# Pure data
 # checks — no network, no filesystem. Boost.Test supplies the executable's test
 # runner.
 add_executable(test_model_io test_model_io.cpp)

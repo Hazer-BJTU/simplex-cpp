@@ -133,7 +133,8 @@ add_subdirectory(indextools)
 # https_connection.hpp uses logging::Logger) and the shared Boost/OpenSSL.
 add_subdirectory(endpoint)
 # dataclass after the shared third-party interface: a header-only module
-# (dataclass_iface) defining the model_io data contract. Every record derives
-# from dataclass::Serializable and implements its own to_json/from_json, so the
-# module depends only on simplex_thirdparty_iface (for <nlohmann/json.hpp>).
+# (dataclass_iface) defining the model_io data contract. Every record is a
+# plain aggregate serialised through nlohmann ADL to_json/from_json free
+# functions, so the module depends only on simplex_thirdparty_iface
+# (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
