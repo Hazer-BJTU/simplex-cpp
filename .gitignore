@@ -76,3 +76,6 @@ Testing/
 
 # .vscode
 .vscode/
+
+# Local external API reference documents (large vendor docs, kept untracked)
+docs/
