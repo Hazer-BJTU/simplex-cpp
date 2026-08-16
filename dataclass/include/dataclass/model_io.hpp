@@ -100,6 +100,24 @@
 
 namespace model_io {
 
+// ---- null-tolerant optional reads ---------------------------------------------
+//
+// Protocol rules 3+6 hardened against laxer external producers: a JSON null
+// under an optional key reads as absent (std::nullopt), exactly like a
+// missing key — never a type error (which would fail the whole session load)
+// and never an engaged optional holding a default-constructed value.
+namespace detail {
+template<typename T>
+void read_optional(const nlohmann::json& j, const char* key,
+                   std::optional<T>& member) {
+    if (auto it = j.find(key); it != j.end() && !it->is_null()) {
+        member = it->get<T>();
+    } else {
+        member.reset();
+    }
+}
+} // namespace detail
+
 // ---- conversation data types ------------------------------------------------
 
 // How the bytes of a Content payload are encoded in `raw`.
@@ -134,8 +152,7 @@ inline void to_json(nlohmann::json& j, const Content& c) {
 inline void from_json(const nlohmann::json& j, Content& c) {
     if (auto it = j.find("type"); it != j.end()) it->get_to(c.type);
     if (auto it = j.find("raw"); it != j.end()) it->get_to(c.raw);
-    if (auto it = j.find("extras"); it != j.end()) c.extras = *it;
-    else c.extras.reset();
+    detail::read_optional(j, "extras", c.extras);
 }
 
 // How a tool invocation may touch state.
@@ -191,8 +208,7 @@ inline void from_json(const nlohmann::json& j, InvokeQuery& q) {
     if (auto it = j.find("id"); it != j.end()) it->get_to(q.id);
     if (auto it = j.find("name"); it != j.end()) it->get_to(q.name);
     if (auto it = j.find("arguments"); it != j.end()) it->get_to(q.arguments);
-    if (auto it = j.find("extras"); it != j.end()) q.extras = *it;
-    else q.extras.reset();
+    detail::read_optional(j, "extras", q.extras);
 }
 
 // The result of executing an InvokeQuery.
@@ -210,8 +226,7 @@ inline void to_json(nlohmann::json& j, const InvokeReturn& r) {
 inline void from_json(const nlohmann::json& j, InvokeReturn& r) {
     if (auto it = j.find("query"); it != j.end()) it->get_to(r.query);
     if (auto it = j.find("output"); it != j.end()) it->get_to(r.output);
-    if (auto it = j.find("extras"); it != j.end()) r.extras = *it;
-    else r.extras.reset();
+    detail::read_optional(j, "extras", r.extras);
 }
 
 // What kind of conversational item a MessageItem represents.
@@ -265,20 +280,11 @@ inline void from_json(const nlohmann::json& j, MessageItem& m) {
     if (auto it = j.find("type"); it != j.end()) it->get_to(m.type);
     if (auto it = j.find("role"); it != j.end()) it->get_to(m.role);
     if (auto it = j.find("content"); it != j.end()) it->get_to(m.content);
-    if (auto it = j.find("reasoning"); it != j.end())
-        m.reasoning = it->get<Content>();
-    else m.reasoning.reset();
-    if (auto it = j.find("action_status"); it != j.end())
-        m.action_status = it->get<Content>();
-    else m.action_status.reset();
-    if (auto it = j.find("invokes"); it != j.end())
-        m.invokes = it->get<std::vector<InvokeQuery>>();
-    else m.invokes.reset();
-    if (auto it = j.find("invoke_return"); it != j.end())
-        m.invoke_return = it->get<InvokeReturn>();
-    else m.invoke_return.reset();
-    if (auto it = j.find("extras"); it != j.end()) m.extras = *it;
-    else m.extras.reset();
+    detail::read_optional(j, "reasoning", m.reasoning);
+    detail::read_optional(j, "action_status", m.action_status);
+    detail::read_optional(j, "invokes", m.invokes);
+    detail::read_optional(j, "invoke_return", m.invoke_return);
+    detail::read_optional(j, "extras", m.extras);
 }
 
 // Retention preference shared by agent-loop and user-loop steps (see file
@@ -319,11 +325,8 @@ inline void to_json(nlohmann::json& j, const AgentLoopStep& s) {
 inline void from_json(const nlohmann::json& j, AgentLoopStep& s) {
     if (auto it = j.find("model_response"); it != j.end())
         it->get_to(s.model_response);
-    if (auto it = j.find("invoke_returns"); it != j.end())
-        s.invoke_returns = it->get<std::vector<MessageItem>>();
-    else s.invoke_returns.reset();
-    if (auto it = j.find("extras"); it != j.end()) s.extras = *it;
-    else s.extras.reset();
+    detail::read_optional(j, "invoke_returns", s.invoke_returns);
+    detail::read_optional(j, "extras", s.extras);
     if (auto it = j.find("retain_priority"); it != j.end())
         it->get_to(s.retain_priority);
 }
@@ -351,8 +354,7 @@ inline void from_json(const nlohmann::json& j, UserLoopStep& u) {
         it->get_to(u.user_input);
     if (auto it = j.find("agent_loop_step"); it != j.end())
         it->get_to(u.agent_loop_step);
-    if (auto it = j.find("extras"); it != j.end()) u.extras = *it;
-    else u.extras.reset();
+    detail::read_optional(j, "extras", u.extras);
     if (auto it = j.find("retain_priority"); it != j.end())
         it->get_to(u.retain_priority);
 }
@@ -391,11 +393,8 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
     if (auto it = j.find("name"); it != j.end()) it->get_to(v.name);
     if (auto it = j.find("description"); it != j.end()) it->get_to(v.description);
     if (auto it = j.find("argument_schema"); it != j.end()) v.argument_schema = *it;
-    if (auto it = j.find("remote_type"); it != j.end())
-        v.remote_type = it->get<std::string>();
-    else v.remote_type.reset();
-    if (auto it = j.find("extras"); it != j.end()) v.extras = *it;
-    else v.extras.reset();
+    detail::read_optional(j, "remote_type", v.remote_type);
+    detail::read_optional(j, "extras", v.extras);
 }
 
 // ---- session input container ---------------------------------------------------

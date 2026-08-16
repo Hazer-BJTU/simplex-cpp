@@ -207,6 +207,64 @@ BOOST_AUTO_TEST_CASE(message_item_embeds_invoke_return) {
     BOOST_CHECK(!bare.invoke_return.has_value());
 }
 
+BOOST_AUTO_TEST_CASE(json_null_under_optional_keys_reads_as_absent) {
+    // Protocol rules 3+6 hardened for laxer external producers: this module
+    // never WRITES nulls, but a session file from elsewhere may carry them.
+    // Before the guard, "invokes": null threw type_error.302 (failing the
+    // whole session load) while "reasoning": null silently produced an
+    // engaged optional holding a default Content — both wrong. Null must read
+    // exactly like a missing key: std::nullopt.
+    const nlohmann::json external = nlohmann::json{
+        {"type", "model_response"},
+        {"role", "assistant"},
+        {"content", {{"type", "text"}, {"raw", "hi"}}},
+        {"reasoning", nullptr},
+        {"action_status", nullptr},
+        {"invokes", nullptr},
+        {"invoke_return", nullptr},
+        {"extras", nullptr},
+    };
+
+    MessageItem m = external.get<MessageItem>();
+    BOOST_CHECK(m.type == MessageItemType::ModelResponse);
+    BOOST_CHECK_EQUAL(m.content.raw, "hi");
+    BOOST_CHECK(!m.reasoning.has_value());
+    BOOST_CHECK(!m.action_status.has_value());
+    BOOST_CHECK(!m.invokes.has_value());
+    BOOST_CHECK(!m.invoke_return.has_value());
+    BOOST_CHECK(!m.extras.has_value());
+
+    // The same leniency holds one level up and for the other record kinds.
+    const nlohmann::json step = nlohmann::json{
+        {"model_response", external},
+        {"invoke_returns", nullptr},
+        {"extras", nullptr},
+    };
+    AgentLoopStep s = step.get<AgentLoopStep>();
+    BOOST_CHECK(!s.invoke_returns.has_value());
+    BOOST_CHECK(!s.extras.has_value());
+    BOOST_CHECK(!s.model_response.reasoning.has_value());
+
+    const nlohmann::json tool = nlohmann::json{
+        {"name", "ls"},
+        {"description", "list"},
+        {"argument_schema", nlohmann::json::object()},
+        {"remote_type", nullptr},
+        {"extras", nullptr},
+    };
+    Invocable v = tool.get<Invocable>();
+    BOOST_CHECK(!v.remote_type.has_value());
+    BOOST_CHECK(!v.extras.has_value());
+
+    const nlohmann::json turn = nlohmann::json{
+        {"user_input", {{"type", "user_input"}, {"role", "user"}}},
+        {"agent_loop_step", nlohmann::json::array()},
+        {"extras", nullptr},
+    };
+    UserLoopStep u = turn.get<UserLoopStep>();
+    BOOST_CHECK(!u.extras.has_value());
+}
+
 BOOST_AUTO_TEST_CASE(user_loop_step_compact_preference_roundtrips) {
     UserLoopStep u;
     u.user_input.type = MessageItemType::UserInput;
