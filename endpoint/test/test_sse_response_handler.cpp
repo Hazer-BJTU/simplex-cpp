@@ -269,29 +269,52 @@ BOOST_AUTO_TEST_CASE(leading_blank_lines_are_skipped) {
     BOOST_TEST(data_value(events[0]) == "x");
 }
 
-BOOST_AUTO_TEST_CASE(colonless_lines_are_dropped) {
+BOOST_AUTO_TEST_CASE(colonless_line_is_a_field_with_empty_value) {
     asio::io_context io;
     FieldHandler handler(io.get_executor());
 
-    // A line with no colon is comment/junk and is dropped; the subsequent
-    // well-formed event is still delivered intact.
+    // Per the SSE field syntax a line without any colon is the WHOLE line as
+    // the field name with an empty value — not a comment, not junk.
     auto events =
         exchange(io, handler, "this has no colon\ndata: kept\n\n", 1);
     BOOST_TEST(events.size() == 1u);
-    BOOST_TEST(events[0].size() == 1u);
+    BOOST_TEST(events[0].size() == 2u);
     BOOST_TEST(data_value(events[0]) == "kept");
+    BOOST_TEST(field_value(events[0], "this has no colon") == "");
 }
 
-BOOST_AUTO_TEST_CASE(line_with_only_colon_yields_empty_named_field) {
+BOOST_AUTO_TEST_CASE(leading_colon_lines_are_comments_and_are_dropped) {
     asio::io_context io;
     FieldHandler handler(io.get_executor());
 
-    // ":" parses to an empty field name (colon at position 0); it is retained,
-    // not dropped, and does not disturb the following event.
-    auto events = exchange(io, handler, ":\ndata: ok\n\n", 1);
+    // A line starting with ':' is a comment — ":" itself, ": ping" keep-alives,
+    // anything. Comments neither split the event nor appear in it.
+    auto events = exchange(io, handler, ":\n: keep-alive\ndata: ok\n\n", 1);
+    BOOST_TEST(events.size() == 1u);
+    BOOST_TEST(events[0].size() == 1u);
+    BOOST_TEST(data_value(events[0]) == "ok");
+
+    // A comment-only frame (": ping\n\n") is no event at all: nothing between
+    // two dispatchable boundaries may surface, not even a marker.
+    FieldHandler handler2(io.get_executor());
+    auto none = exchange(io, handler2, "data: a\n: keep-alive\n\ndata: b\n\n", 2);
+    BOOST_TEST(none.size() == 2u);
+    BOOST_TEST(data_value(none[0]) == "a");
+    BOOST_TEST(data_value(none[1]) == "b");
+}
+
+BOOST_AUTO_TEST_CASE(literal_empty_field_name_is_not_the_delimiter) {
+    asio::io_context io;
+    FieldHandler handler(io.get_executor());
+
+    // The blank-line sentinel is no longer the string "empty": a field
+    // literally named "empty" is an ordinary field and must not split the
+    // event.
+    auto events = exchange(io, handler, "empty: x\ndata: kept\n\n", 1);
     BOOST_TEST(events.size() == 1u);
     BOOST_TEST(events[0].size() == 2u);
-    BOOST_TEST(data_value(events[0]) == "ok");
+    BOOST_TEST(field_value(events[0], "empty") == "x");
+    BOOST_TEST(data_value(events[0]) == "kept");
 }
 
 BOOST_AUTO_TEST_CASE(exactly_one_leading_space_after_colon_is_stripped) {

@@ -48,3 +48,28 @@ private:
     std::string target_;
     std::string host_;
 };
+
+/**
+ * The read-timeout flavour of HttpRequestException: http_request raises it
+ * when a bounded response does not complete within the caller-configured read
+ * deadline. The stage is always Read, and error_code() carries the transport's
+ * timeout code. Catch it specifically to distinguish a slow backend from a
+ * dead connection, or as HttpRequestException like every other failure.
+ */
+class HttpRequestTimeoutException : public HttpRequestException {
+public:
+    HttpRequestTimeoutException(
+        std::string message,
+        boost::system::error_code ec = {},
+        std::string method = {},
+        std::string target = {},
+        std::string host = {})
+        : HttpRequestException(
+              Stage::Read,
+              std::move(message),
+              std::move(ec),
+              std::move(method),
+              std::move(target),
+              std::move(host))
+    {}
+};

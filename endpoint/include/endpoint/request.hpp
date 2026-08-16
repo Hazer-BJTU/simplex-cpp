@@ -136,9 +136,11 @@ public:
 
 protected:
     // Tag stored in LineInfo::first to mark a blank line, which is the SSE
-    // event delimiter. A real field line always carries a field name before
-    // the colon, so this can never collide with a legitimate field name.
-    static constexpr std::string_view BLANK_LINE = "empty";
+    // event delimiter. Parsed field names are never empty — comments
+    // (leading ':') are dropped and a colon-less line keeps its whole (non-
+    // empty) text as the name — so the empty-string tag cannot collide with
+    // a legitimate field (a literal "empty: ..." field is fine).
+    static constexpr std::string_view BLANK_LINE = "";
 
     std::string _buffer;
     std::vector<LineInfo> _lines;
@@ -158,9 +160,14 @@ protected:
     // event, set when the producer reports a fault or closes the stream.
     boost::asio::experimental::concurrent_channel<void(boost::system::error_code, Product)> _queue;
 
-    // Frame _buffer into complete (newline-terminated) lines. Each line becomes
-    // a (field, value) entry; a blank line becomes (BLANK_LINE, ""). Lines
-    // without a colon are comments/junk and are dropped.
+    // Frame _buffer into complete (newline-terminated) lines per the SSE
+    // field syntax (WHATWG §9.2 "Interpretting an event stream"):
+    //   - a blank line is the event delimiter (stored as (BLANK_LINE, ""));
+    //   - a line starting with ':' is a comment and is dropped;
+    //   - a line containing ':' splits into field/value there (exactly one
+    //     leading space after the colon is skipped);
+    //   - a line without any ':' is the WHOLE line as the field name with an
+    //     empty value (e.g. a bare "data" — it is not a comment).
     virtual void _split_line() {
         std::size_t endline_pos;
         while ((endline_pos = _buffer.find("\n")) != std::string::npos) {
@@ -178,18 +185,20 @@ protected:
 
             if (line.empty()) {
                 _lines.emplace_back(std::string(BLANK_LINE), "");
-            } else {
-                auto colon_pos = line.find(":");
-                if (colon_pos != std::string_view::npos) {
-                    auto field = line.substr(0, colon_pos);
-                    std::size_t value_pos = colon_pos + 1;
-                    // SSE skips exactly one leading space after the colon.
-                    if (value_pos < line.size() && line[value_pos] == ' ') {
-                        ++value_pos;
-                    }
-                    _lines.emplace_back(std::string(field), std::string(line.substr(value_pos)));
+            } else if (line.front() == ':') {
+                // Comment line (": ping" keep-alives are the common shape) —
+                // never part of any event.
+            } else if (auto colon_pos = line.find(":"); colon_pos != std::string_view::npos) {
+                auto field = line.substr(0, colon_pos);
+                std::size_t value_pos = colon_pos + 1;
+                // SSE skips exactly one leading space after the colon.
+                if (value_pos < line.size() && line[value_pos] == ' ') {
+                    ++value_pos;
                 }
-                // else: comment / junk line (no colon) — drop.
+                _lines.emplace_back(std::string(field), std::string(line.substr(value_pos)));
+            } else {
+                // No colon: the whole line is the field name, value empty.
+                _lines.emplace_back(std::string(line), "");
             }
 
             // Consume the line plus its newline only once the view is dead.
@@ -409,7 +418,37 @@ public:
 };
 
 /**
- * @brief Drive the put side of an SSEResponseHandler over a single TLS stream.
+ * @brief Wrap a request failure into the module's lifecycle exception, keeping
+ *        the request context (method, target, host) for callers' logs.
+ *
+ * Shared by the request drivers below so every failure path enriches alike.
+ *
+ * @param stage    Lifecycle stage the failure belongs to.
+ * @param message  Already-prefixed human-readable description.
+ * @param ec       Transport error code when the failure is an error_code-
+ *                 reported one, a clear one otherwise.
+ * @param request  The failing request; only its metadata is read, never the
+ *                 body.
+ */
+inline HttpRequestException wrap_request_failure(
+    HttpRequestException::Stage stage,
+    std::string message,
+    const boost::system::error_code& ec,
+    const boost::beast::http::request<boost::beast::http::string_body>& request)
+{
+    namespace http = boost::beast::http;
+    return HttpRequestException(
+        stage,
+        std::move(message),
+        ec,
+        std::string(request.method_string()),
+        std::string(request.target()),
+        std::string(request[http::field::host]));
+}
+
+/**
+ * @brief Drive the put side of an SSEResponseHandler over a single connection
+ *        stream.
  *
  * Sends @p request, then pumps the streamed response body into @p handler->put()
  * chunk by chunk until the server closes the connection or the handler is
@@ -428,19 +467,24 @@ public:
  *
  * A put() that throws SSEAborted (the channel was closed via finish() from
  * elsewhere) is treated as a cooperative stop: the pump ends the stream cleanly
- * and returns. Any other failure (bad HTTP status, network/SSL error, or a
+ * and returns. Any other failure (bad HTTP status, network error, or a
  * framing/decode fault raised by the handler — which will already have driven it
  * to ERROR) surfaces as an HttpRequestException carrying the failing stage.
  *
  * @tparam Product  The handler's decoded event type.
+ * @tparam Stream   Connection stream flavour: endpoint::https_stream (from
+ *                  create_https_connection_stream) or endpoint::http_stream
+ *                  (from create_http_connection_stream). Deduced from the
+ *                  argument; the body is flavour-agnostic except for the
+ *                  teardown, which shutdown_stream specialises per flavour.
  * @param handler   Shared with the consumer task; put() is the only method used.
- * @param stream    Single-use TLS stream; torn down on a clean end.
+ * @param stream    Single-use connection stream; torn down on a clean end.
  * @param request   Fully constructed SSE request to send.
  */
-template<typename Product>
+template<typename Product, typename Stream>
 boost::asio::awaitable<void> sse_request(
     std::shared_ptr<SSEResponseHandler<Product>> handler,
-    std::unique_ptr<https_stream> stream,
+    std::unique_ptr<Stream> stream,
     boost::beast::http::request<boost::beast::http::string_body> request)
 {
     namespace http = boost::beast::http;
@@ -460,9 +504,11 @@ boost::asio::awaitable<void> sse_request(
     HttpRequestException::Stage stage = HttpRequestException::Stage::Write;
 
     try {
-        // Send the caller-constructed request on the existing TLS stream.
+        // Send the caller-constructed request on the existing stream. The
+        // write deadline is deliberately longer than the connect one: a large
+        // request body on a slow uplink is not an unreachable service.
         boost::beast::get_lowest_layer(*stream).expires_after(
-            std::chrono::seconds(DEFAULT_TIMEOUT_SEC));
+            std::chrono::seconds(DEFAULT_WRITE_TIMEOUT_SEC));
         co_await http::async_write(*stream, request, boost::asio::use_awaitable);
 
         // Read only the header so the status can be checked before any event
@@ -476,14 +522,12 @@ boost::asio::awaitable<void> sse_request(
 
         stage = HttpRequestException::Stage::HandleResponse;
         if (parser.get().result() != http::status::ok) {
-            throw HttpRequestException(
+            throw wrap_request_failure(
                 stage,
-                "SSE request rejected with status " + std::to_string(parser.get().result_int()),
+                "SSE request rejected with status " +
+                    std::to_string(parser.get().result_int()),
                 {},
-                std::string(request.method_string()),
-                std::string(request.target()),
-                std::string(request[http::field::host])
-            );
+                request);
         }
 
         // SSE connections sit idle between events, so the body phase must not be
@@ -526,7 +570,9 @@ boost::asio::awaitable<void> sse_request(
             }
 
             // An indefinite SSE stream ends when the peer closes the connection;
-            // treat those as the clean end of the exchange.
+            // treat those as the clean end of the exchange. stream_truncated is
+            // the TLS flavour of a dropped connection; it never occurs on a
+            // plain stream, where eof already covers it.
             if (ec == http::error::partial_message ||
                 ec == boost::asio::error::eof ||
                 ec == boost::asio::ssl::error::stream_truncated) {
@@ -538,38 +584,210 @@ boost::asio::awaitable<void> sse_request(
             }
         }
 
-        // Clean end (server closed) or cooperative stop: tear the stream down.
-        boost::system::error_code shutdown_ec;
-        co_await stream->async_shutdown(boost::asio::redirect_error(boost::asio::use_awaitable, shutdown_ec));
-        // A peer may drop the connection before close_notify; the lowest-layer
-        // close is best-effort (noexcept) to finish tearing the socket down.
-        boost::beast::get_lowest_layer(*stream).close();
+        // Clean end (server closed) or cooperative stop: tear the stream down,
+        // flavour-appropriately (close_notify for TLS, FIN for plain).
+        co_await shutdown_stream(*stream);
         co_return;
     }
     catch (const boost::system::system_error& exception) {
-        throw HttpRequestException(
+        throw wrap_request_failure(
             stage,
             std::string("HTTP request failed: ") + exception.what(),
             exception.code(),
-            std::string(request.method_string()),
-            std::string(request.target()),
-            std::string(request[http::field::host])
-        );
+            request);
     }
     catch (const HttpRequestException&) {
         // Preserve exceptions already enriched above (bad status, null args).
         throw;
     }
     catch (const std::exception& exception) {
-        throw HttpRequestException(
+        throw wrap_request_failure(
             stage,
             std::string("HTTP request exception: ") + exception.what(),
             {},
-            std::string(request.method_string()),
-            std::string(request.target()),
-            std::string(request[http::field::host])
-        );
+            request);
     }
+}
+
+/**
+ * @brief Exchange one complete HTTP request/response over a connection stream
+ *        and return the full response message.
+ *
+ * The bounded counterpart of sse_request: sends @p request, reads one
+ * complete response — header plus the entire body, kept bounded by Beast's
+ * default body limit — tears the single-use stream down, and returns the whole
+ * message (status, headers, and body).
+ *
+ * Unlike sse_request this performs **no status gating**: every status carries
+ * its body back to the caller, because provider error payloads arrive in
+ * non-2xx bodies and discarding them would hide exactly what the caller needs
+ * to diagnose. Only transport-level faults (write, read, timeout, network)
+ * throw, as HttpRequestException with the failing stage.
+ *
+ * Timeouts: the write phase runs under DEFAULT_WRITE_TIMEOUT_SEC (deliberately
+ * longer than the connect deadline), while the response read runs under
+ * @p read_timeout_sec — generous by default, because a model backend may
+ * compute for minutes before its first response byte (the same reason the SSE
+ * body phase runs untimed). A read that exceeds the deadline throws
+ * HttpRequestTimeoutException, the HttpRequestException flavour dedicated to
+ * read timeouts, so a slow backend is distinguishable from other faults; pass
+ * 0 to disable the read deadline entirely. HTTP keep-alive is not honoured —
+ * module connections are single-use, so the stream is torn down after the one
+ * exchange regardless of the server's offer.
+ *
+ * @tparam Stream  Connection stream flavour: endpoint::https_stream or
+ *                 endpoint::http_stream; deduced from the argument.
+ * @param stream   Single-use connection stream; torn down before returning.
+ * @param request  Fully constructed request to send.
+ * @param read_timeout_sec  Deadline for reading the complete response, in
+ *                 seconds; 0 waits indefinitely.
+ * @return The complete response message (result(), headers, body()).
+ */
+template<typename Stream>
+boost::asio::awaitable<boost::beast::http::response<boost::beast::http::string_body>>
+http_request(
+    std::unique_ptr<Stream> stream,
+    boost::beast::http::request<boost::beast::http::string_body> request,
+    std::size_t read_timeout_sec = DEFAULT_HTTP_READ_TIMEOUT_SEC)
+{
+    namespace http = boost::beast::http;
+
+    if (!stream) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::Unknown,
+            "invalid stream pointer (= nullptr)");
+    }
+
+    HttpRequestException::Stage stage = HttpRequestException::Stage::Write;
+
+    try {
+        // The write deadline is deliberately longer than the connect one: a
+        // large request body on a slow uplink is not an unreachable service.
+        boost::beast::get_lowest_layer(*stream).expires_after(
+            std::chrono::seconds(DEFAULT_WRITE_TIMEOUT_SEC));
+        co_await http::async_write(*stream, request, boost::asio::use_awaitable);
+
+        stage = HttpRequestException::Stage::Read;
+        if (read_timeout_sec == 0) {
+            boost::beast::get_lowest_layer(*stream).expires_never();
+        } else {
+            boost::beast::get_lowest_layer(*stream).expires_after(
+                std::chrono::seconds(read_timeout_sec));
+        }
+        boost::beast::flat_buffer buffer;
+        http::response_parser<http::string_body> parser;
+        co_await http::async_read(*stream, buffer, parser, boost::asio::use_awaitable);
+
+        co_await shutdown_stream(*stream);
+        co_return parser.release();
+    }
+    catch (const boost::system::system_error& exception) {
+        // A deadline that fires during the response read is the read-timeout
+        // case: report it with the dedicated exception type so callers can
+        // catch it specifically. (A write-phase timeout keeps the generic
+        // path — its stage is still Write here.)
+        if (stage == HttpRequestException::Stage::Read &&
+            (exception.code() == boost::beast::error::timeout ||
+             exception.code() == boost::asio::error::timed_out)) {
+            throw HttpRequestTimeoutException(
+                std::string("HTTP response read timed out after ") +
+                    std::to_string(read_timeout_sec) +
+                    "s: " + exception.what(),
+                exception.code(),
+                std::string(request.method_string()),
+                std::string(request.target()),
+                std::string(request[http::field::host]));
+        }
+        throw wrap_request_failure(
+            stage,
+            std::string("HTTP request failed: ") + exception.what(),
+            exception.code(),
+            request);
+    }
+    catch (const HttpRequestException&) {
+        // Preserve exceptions already enriched above (null args).
+        throw;
+    }
+    catch (const std::exception& exception) {
+        throw wrap_request_failure(
+            stage,
+            std::string("HTTP request exception: ") + exception.what(),
+            {},
+            request);
+    }
+}
+
+/**
+ * @brief Exchange one complete HTTP request/response, delivering the body to
+ *        an AsyncResponseHandler's put side.
+ *
+ * Runs the direct http_request overload for the whole exchange, then hands the
+ * complete body to @p handler->put() exactly once — a bounded-exchange handler
+ * decodes the whole payload, not chunks (a generic AsyncResponseHandler, or
+ * any SSEResponseHandler, whose framing is chunk-boundary-agnostic anyway).
+ * The consumer side drains get() elsewhere on the same shared handler, with
+ * the same rendezvous back-pressure as the SSE pump. Only the body reaches
+ * the handler; status and headers stay with the producer — use the direct
+ * overload when they matter.
+ *
+ * Status handling matches the direct overload: never gated, so an error body
+ * still becomes one Product. put()'s own failures surface as
+ * HttpRequestException{HandleResponse}; an SSEAborted (the channel was closed
+ * via finish() from elsewhere) is a cooperative stop, exactly as in
+ * sse_request's pump. On return the handler is *not* finished — the caller
+ * decides that, like on every other path.
+ *
+ * @tparam Product  The handler's decoded event type. Like sse_request's, this
+ *                  parameter is usually named explicitly at the call site —
+ *                  a shared_ptr<DerivedHandler> cannot deduce it.
+ * @tparam Stream   Connection stream flavour; deduced from the argument.
+ * @param handler   Shared with the consumer task; put() is the only method
+ *                  used.
+ * @param stream    Single-use connection stream; torn down before put() runs.
+ * @param request   Fully constructed request to send.
+ * @param read_timeout_sec  Read deadline forwarded to the direct overload,
+ *                  in seconds; see there (0 waits indefinitely).
+ */
+template<typename Product, typename Stream>
+boost::asio::awaitable<void> http_request(
+    std::shared_ptr<AsyncResponseHandler<Product>> handler,
+    std::unique_ptr<Stream> stream,
+    boost::beast::http::request<boost::beast::http::string_body> request,
+    std::size_t read_timeout_sec = DEFAULT_HTTP_READ_TIMEOUT_SEC)
+{
+    namespace http = boost::beast::http;
+
+    if (!handler) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::Unknown,
+            "invalid handler pointer (= nullptr)");
+    }
+
+    // The exchange below consumes the request; keep the log context for the
+    // put() failure path, which outlives it.
+    const std::string method = std::string(request.method_string());
+    const std::string target = std::string(request.target());
+    const std::string host = std::string(request[http::field::host]);
+
+    http::response<http::string_body> response =
+        co_await http_request(std::move(stream), std::move(request), read_timeout_sec);
+
+    try {
+        co_await handler->put(response.body());
+    } catch (const SSEAborted&) {
+        // Cooperative stop: the channel was closed via finish() from
+        // elsewhere; the body was superseded, so end cleanly.
+        co_return;
+    } catch (const std::exception& exception) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::HandleResponse,
+            std::string("HTTP request handler exception: ") + exception.what(),
+            {},
+            method,
+            target,
+            host);
+    }
+    co_return;
 }
 
 }

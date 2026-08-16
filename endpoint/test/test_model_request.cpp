@@ -66,6 +66,7 @@ BOOST_AUTO_TEST_CASE(resolve_accepts_schemeless_and_bare_host) {
     BOOST_CHECK_EQUAL(r.host, "api.deepseek.com");
     BOOST_CHECK_EQUAL(r.port, "443"); // https assumed
     BOOST_CHECK_EQUAL(r.target, "/chat/completions"); // request_path default
+    BOOST_CHECK(r.tls); // https assumed
 }
 
 BOOST_AUTO_TEST_CASE(resolve_keeps_scheme_port_and_prefix) {
@@ -85,10 +86,18 @@ BOOST_AUTO_TEST_CASE(resolve_http_defaults_to_port_80) {
     BOOST_CHECK_EQUAL(r.host, "localhost");
     BOOST_CHECK_EQUAL(r.port, "11434"); // explicit port beats scheme default
     BOOST_CHECK_EQUAL(r.target, "/chat/completions");
+    BOOST_CHECK(!r.tls); // plain-HTTP transport, local backend
 
     e.base_url = "http://localhost";
     r = resolve_endpoint(e);
     BOOST_CHECK_EQUAL(r.port, "80");
+    BOOST_CHECK(!r.tls);
+
+    // An explicit port does not smuggle in a scheme: only http:// clears tls.
+    e.base_url = "https://localhost:80";
+    r = resolve_endpoint(e);
+    BOOST_CHECK_EQUAL(r.port, "80");
+    BOOST_CHECK(r.tls);
 }
 
 BOOST_AUTO_TEST_CASE(resolve_appends_request_path_after_prefix) {

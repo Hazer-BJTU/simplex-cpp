@@ -23,7 +23,12 @@
 // built request plugs straight into the existing pipeline:
 //
 //   interpreter->build_request(state, endpoint, generation)
-//     -> create_https_connection_stream(host, port) -> sse_request(...)
+//     -> resolve_endpoint(...) picks the factory by scheme:
+//        tls ? create_https_connection_stream(host, port)
+//            : create_http_connection_stream(host, port)
+//     -> sse_request(handler, std::move(stream), std::move(request))
+//        (or http_request for a bounded, non-streaming exchange — directly
+//        returning the response, or through an AsyncResponseHandler)
 //
 // This interface is provider-neutral and this header-only module carries no
 // concrete interpreter: implementations (with their dedicated SSE handlers)
@@ -107,6 +112,19 @@ struct ResolvedEndpoint {
     std::string host;
     std::string port = "443";
     std::string target;
+    /// Whether the transport must use TLS: pick create_https_connection_stream
+    /// when true, create_http_connection_stream when false.
+    bool tls = true;
+
+    /// host[:port] for the request's Host header — RFC 9110 §7.2 requires the
+    /// port when it is non-default for the scheme (443 https / 80 http);
+    /// vhost-routing proxies match on the authority, so dropping a non-default
+    /// port misroutes the request.
+    std::string authority() const {
+        const std::string_view default_port = tls ? "443" : "80";
+        if (port == default_port) return host;
+        return host + ":" + port;
+    }
 };
 
 /**
@@ -114,7 +132,8 @@ struct ResolvedEndpoint {
  *
  *   * scheme optional (https assumed); http:// allowed for local backends;
  *     the default port follows the scheme (443 / 80) unless an explicit
- *     :port overrides it
+ *     :port overrides it, and the tls flag records the scheme so callers can
+ *     pick the matching connection factory
  *   * any path prefix in base_url is kept and request_path is appended
  *   * trailing slashes in either part are tolerated
  *
@@ -135,6 +154,7 @@ inline ResolvedEndpoint resolve_endpoint(const model_io::ModelEndpoint& endpoint
     }
 
     ResolvedEndpoint resolved;
+    resolved.tls = tls;
     resolved.port = tls ? "443" : "80";
 
     const auto slash = rest.find('/');

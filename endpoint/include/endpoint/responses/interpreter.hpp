@@ -19,7 +19,8 @@
 //   tools          each Invocable -> {type:"function", name, description,
 //                  parameters} — only when any are registered
 //   stream         true, ALWAYS (builder-owned): this layer speaks SSE only;
-//                  sse_request cannot consume a non-streaming JSON body
+//                  the transport has http_request for non-streaming JSON
+//                  bodies, but this layer's decoder is the SSE handler
 //   store          false by default; a generation "store" wins
 //   include        when store resolves to false, "reasoning.encrypted_content"
 //                  is ensured (appended if missing) — multi-turn reasoning
