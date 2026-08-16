@@ -167,7 +167,11 @@ static http::request<http::string_body> build_request(
     body["messages"] = messages;
 
     http::request<http::string_body> request{http::verb::post, endpoint.target, 11};
-    request.set(http::field::host, endpoint.host);
+    // RFC 9110 §7.2: carry the port in Host when non-default (443 https/80 http).
+    const bool default_port = endpoint.port == "443" || endpoint.port == "80";
+    request.set(http::field::host,
+                default_port ? endpoint.host
+                             : endpoint.host + ":" + endpoint.port);
     request.set(http::field::authorization, "Bearer " + api_key);
     request.set(http::field::accept, "text/event-stream");
     request.set(http::field::content_type, "application/json");

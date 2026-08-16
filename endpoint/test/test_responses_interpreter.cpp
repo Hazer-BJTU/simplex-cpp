@@ -522,3 +522,73 @@ BOOST_AUTO_TEST_CASE(request_path_is_used_verbatim) {
     auto joined = interpreter.build_request(state, f.endpoint, f.generation);
     BOOST_CHECK_EQUAL(joined.target(), "/openai/v1/responses");
 }
+
+// RFC 9110 §7.2: the Host authority carries the port when it is non-default
+// for the scheme (443 https / 80 http) — vhost-routing proxies match on it.
+BOOST_AUTO_TEST_CASE(host_carries_non_default_port) {
+    Fixture f;
+    ResponsesInterpreter interpreter;
+    AgentInputState state;
+
+    // Default ports are omitted for both schemes.
+    auto https_default =
+        interpreter.build_request(state, f.endpoint, f.generation);
+    BOOST_CHECK_EQUAL(std::string(https_default.at(http::field::host)),
+                      "api.example.com");
+
+    f.endpoint.base_url = "http://localhost";
+    auto http_default =
+        interpreter.build_request(state, f.endpoint, f.generation);
+    BOOST_CHECK_EQUAL(std::string(http_default.at(http::field::host)),
+                      "localhost");
+
+    // The local-backend shape resolve_endpoint explicitly supports: an
+    // explicit port rides along on both schemes.
+    f.endpoint.base_url = "http://localhost:11434/v1";
+    auto local = interpreter.build_request(state, f.endpoint, f.generation);
+    BOOST_CHECK_EQUAL(std::string(local.at(http::field::host)),
+                      "localhost:11434");
+
+    f.endpoint.base_url = "https://gateway.internal:8443";
+    auto tls_port = interpreter.build_request(state, f.endpoint, f.generation);
+    BOOST_CHECK_EQUAL(std::string(tls_port.at(http::field::host)),
+                      "gateway.internal:8443");
+}
+
+// The synthesized assistant message must not leak the stream handler's
+// refusal key into the output_text part: the API models refusal as its own
+// part kind, and a strict backend rejects the schema violation.
+BOOST_AUTO_TEST_CASE(synthesized_refusal_becomes_its_own_part) {
+    Fixture f;
+    ResponsesInterpreter interpreter;
+    AgentInputState state;
+
+    // A stream-truncated model_response: output_text accumulated AND a
+    // refusal parked in content.extras (exactly what _assemble produces),
+    // with no captured output_items — the synthesized path.
+    model_io::UserLoopStep turn;
+    turn.user_input.type = model_io::MessageItemType::UserInput;
+    turn.user_input.role = "user";
+    turn.user_input.content.raw = "q";
+    model_io::AgentLoopStep step;
+    step.model_response.type = model_io::MessageItemType::ModelResponse;
+    step.model_response.role = "assistant";
+    step.model_response.content.raw = "partial answer";
+    step.model_response.content.extras =
+        nlohmann::json{{"refusal", "cannot help with that"}};
+    turn.agent_loop_step.push_back(std::move(step));
+    state.turns.push_back(std::move(turn));
+
+    const auto body =
+        body_of(interpreter.build_request(state, f.endpoint, f.generation));
+
+    // The assistant message is the second input item (after the user message).
+    const auto& content = body["input"][1]["content"];
+    BOOST_REQUIRE_EQUAL(content.size(), 2u);
+    BOOST_CHECK_EQUAL(content[0]["type"], "output_text");
+    BOOST_CHECK_EQUAL(content[0]["text"], "partial answer");
+    BOOST_CHECK(!content[0].contains("refusal"));   // the leak, fixed
+    BOOST_CHECK_EQUAL(content[1]["type"], "refusal");
+    BOOST_CHECK_EQUAL(content[1]["refusal"], "cannot help with that");
+    BOOST_CHECK(!content[1].contains("text"));
+}

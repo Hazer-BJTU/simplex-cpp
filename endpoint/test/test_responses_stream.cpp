@@ -363,6 +363,116 @@ BOOST_AUTO_TEST_CASE(reasoning_summary_and_text_are_distinct_channels) {
     BOOST_CHECK_EQUAL(both.response().reasoning->raw, "raw thinking");
 }
 
+// The multi-part case: summary parts stay separate (keyed by their index),
+// a part's .done text is authoritative for THAT part only, and the assembled
+// fallback joins parts in index order. Before the fix all parts glued into
+// one separator-less string and the last .done overwrote the whole thing.
+BOOST_AUTO_TEST_CASE(multi_part_summaries_stay_separate_and_join) {
+    asio::io_context io;
+    ResponsesStreamHandler handler(io.get_executor());
+    const std::string chunk =
+        sse(nlohmann::json{{"type", "response.output_item.added"},
+                           {"output_index", 0},
+                           {"item", {{"id", "rs_m"},
+                                     {"type", "reasoning"},
+                                     {"summary", nlohmann::json::array()}}}}) +
+        sse(nlohmann::json{{"type", "response.reasoning_summary_part.added"},
+                           {"item_id", "rs_m"},
+                           {"summary_index", 0}}) +
+        sse(nlohmann::json{{"type", "response.reasoning_summary_text.delta"},
+                           {"item_id", "rs_m"},
+                           {"content_index", 0},
+                           {"delta", "Need to check"}}) +
+        sse(nlohmann::json{{"type", "response.reasoning_summary_text.delta"},
+                           {"item_id", "rs_m"},
+                           {"content_index", 0},
+                           {"delta", " the records."}}) +
+        sse(nlohmann::json{{"type", "response.reasoning_summary_part.added"},
+                           {"item_id", "rs_m"},
+                           {"summary_index", 1}}) +
+        sse(nlohmann::json{{"type", "response.reasoning_summary_text.delta"},
+                           {"item_id", "rs_m"},
+                           {"content_index", 1},
+                           {"delta", "Then compare."}}) +
+        // .done texts are authoritative per part; arrival order (1 before 0)
+        // must not affect the index-ordered join.
+        sse(nlohmann::json{{"type", "response.reasoning_summary_part.done"},
+                           {"item_id", "rs_m"},
+                           {"summary_index", 1},
+                           {"part", {{"type", "summary_text"},
+                                     {"text", "Then compare them."}}}}) +
+        sse(nlohmann::json{{"type", "response.reasoning_summary_part.done"},
+                           {"item_id", "rs_m"},
+                           {"summary_index", 0},
+                           {"part", {{"type", "summary_text"},
+                                     {"text", "Need to check the tables."}}}}) +
+        sse(nlohmann::json{{"type", "response.completed"},
+                           {"response", {{"id", "r"}}}});
+    exchange(io, handler, chunk, 9);
+    BOOST_REQUIRE(handler.response().reasoning);
+    BOOST_CHECK_EQUAL(handler.response().reasoning->raw,
+                      "Need to check the tables.\n\nThen compare them.");
+}
+
+// The truncated-stream leniency _item() documents: deltas that arrived
+// without their output_item.added/done. _assemble used to drop those bytes
+// entirely; now they are salvaged by best-effort routing.
+BOOST_AUTO_TEST_CASE(untyped_item_bytes_are_salvaged) {
+    // Text deltas with an item_id but no item lifecycle events at all.
+    asio::io_context io;
+    ResponsesStreamHandler handler(io.get_executor());
+    const std::string chunk =
+        sse(nlohmann::json{{"type", "response.output_text.delta"},
+                           {"item_id", "orphan"},
+                           {"output_index", 0},
+                           {"delta", "the full "}}) +
+        sse(nlohmann::json{{"type", "response.output_text.delta"},
+                           {"item_id", "orphan"},
+                           {"output_index", 0},
+                           {"delta", "answer"}}) +
+        sse(nlohmann::json{{"type", "response.completed"},
+                           {"response", {{"id", "r"}}}});
+    exchange(io, handler, chunk, 3);
+    BOOST_CHECK_EQUAL(handler.response().content.raw, "the full answer");
+
+    // Argument deltas alone make the slot a salvaged function call.
+    asio::io_context io2;
+    ResponsesStreamHandler calls(io2.get_executor());
+    const std::string chunk2 =
+        sse(nlohmann::json{{"type", "response.function_call_arguments.delta"},
+                           {"item_id", "fc_orphan"},
+                           {"output_index", 0},
+                           {"delta", "{\"city\":"}}) +
+        sse(nlohmann::json{{"type", "response.function_call_arguments.delta"},
+                           {"item_id", "fc_orphan"},
+                           {"output_index", 0},
+                           {"delta", "\"London\"}"}}) +
+        sse(nlohmann::json{{"type", "response.completed"},
+                           {"response", {{"id", "r"}}}});
+    exchange(io2, calls, chunk2, 3);
+    const auto& salvaged = calls.response();
+    BOOST_REQUIRE_EQUAL(salvaged.invokes->size(), 1u);
+    BOOST_CHECK_EQUAL((*salvaged.invokes)[0].arguments["city"], "London");
+}
+
+// A comment-only frame (": keep-alive\n\n") between events is NOT an event:
+// before the framing fix it leaked into the handler as a bogus Marker delta.
+BOOST_AUTO_TEST_CASE(comment_frames_produce_no_deltas) {
+    asio::io_context io;
+    ResponsesStreamHandler handler(io.get_executor());
+    const std::string chunk =
+        sse(nlohmann::json{{"type", "response.created"},
+                           {"response", {{"id", "r"}}}}) +
+        ": keep-alive\n\n" +
+        sse(nlohmann::json{{"type", "response.completed"},
+                           {"response", {{"id", "r"}}}});
+    auto deltas = exchange(io, handler, chunk, 2);
+    BOOST_CHECK(deltas[0].kind == DeltaKind::Marker);
+    BOOST_CHECK_EQUAL(deltas[0].text, "response.created");
+    BOOST_CHECK(deltas[1].kind == DeltaKind::Marker);
+    BOOST_CHECK_EQUAL(deltas[1].text, "response.completed");
+}
+
 // --- peeker ---------------------------------------------------------------------
 
 // A reusable monitor functor — the many-to-many case: one functor type,

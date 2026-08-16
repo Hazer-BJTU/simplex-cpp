@@ -133,7 +133,11 @@ private:
         std::size_t output_index = 0;
         std::string text;          // message output_text / reasoning_text channel
         std::string refusal;       // message refusal part
-        std::string summary;       // reasoning summary channel
+        // Reasoning summaries arrive as INDEXED parts (summary_index on part
+        // lifecycle events, content_index on the text channel): kept separate
+        // so one part's text (and its .done overwrite) cannot clobber
+        // another's. _assemble joins them in index order.
+        std::map<std::size_t, std::string> summary_parts;
         std::string call_id, name, arguments;  // function_call
         // Full item json from output_item.done (the authoritative version);
         // null until captured — is_object() doubles as the captured flag.

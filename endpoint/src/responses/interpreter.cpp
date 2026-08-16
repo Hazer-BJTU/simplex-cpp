@@ -37,6 +37,26 @@ json content_part(const model_io::Content& content, const char* wire_type) {
     return part;
 }
 
+// The synthesized assistant content: the output_text part, then — when the
+// stream handler parked a refusal in content.extras — a proper refusal part.
+// The API models refusal as its own part kind; it must never ride as a member
+// of an output_text part (schema-invalid, rejected by strict backends).
+json::array_t synthesized_content(const model_io::Content& content) {
+    json part = content_part(content, "output_text");
+    json refusal;
+    if (auto it = part.find("refusal"); it != part.end()) {
+        refusal = std::move(*it);
+        part.erase("refusal");
+    }
+    json::array_t parts;
+    parts.push_back(std::move(part));
+    if (refusal.is_string()) {
+        parts.push_back(
+            json{{"type", "refusal"}, {"refusal", std::move(refusal)}});
+    }
+    return parts;
+}
+
 // The wire item captured in an extras record, if it is one of the wanted
 // type — the round-trip fast path the stream handler sets up.
 const json* captured_item(const std::optional<json>& extras,
@@ -112,8 +132,7 @@ void emit_assistant_message(json::array_t& input,
         json message;
         message["type"] = "message";
         message["role"] = "assistant";
-        message["content"] =
-            json::array({content_part(response.content, "output_text")});
+        message["content"] = synthesized_content(response.content);
         input.push_back(std::move(message));
     }
 }
@@ -273,7 +292,9 @@ ModelRequestInterpreter::HttpRequest ResponsesInterpreter::build_request(
     }
 
     HttpRequest request{http::verb::post, where.target, 11};
-    request.set(http::field::host, where.host);
+    // RFC 9110 §7.2: the Host authority carries the port when non-default —
+    // vhost-routing proxies match on it.
+    request.set(http::field::host, where.authority());
     apply_transport_headers(request, endpoint);
     // SSE-specific headers live here, not in the shared helper.
     request.set(http::field::accept, "text/event-stream");

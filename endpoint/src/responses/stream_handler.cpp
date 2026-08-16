@@ -37,6 +37,29 @@ std::optional<std::size_t> get_index(const nlohmann::json& j, const char* key) {
     return it->get<std::size_t>();
 }
 
+// The reasoning-summary part an event belongs to: content_index on the
+// summary-text channel (the documented field), summary_index on the part
+// lifecycle events, 0 when a server omits both (single-part degenerate case).
+std::size_t summary_part_index(const nlohmann::json& event) {
+    if (auto index = get_index(event, "content_index")) return *index;
+    if (auto index = get_index(event, "summary_index")) return *index;
+    return 0;
+}
+
+// Join a reasoning item's summary parts in index order, blank paragraphs
+// apart — the readable flattening of the wire's summary[] array into the one
+// reasoning.raw fallback string.
+std::string join_summary_parts(
+    const std::map<std::size_t, std::string>& parts) {
+    std::string joined;
+    for (const auto& [index, text] : parts) {
+        if (text.empty()) continue;
+        if (!joined.empty()) joined += "\n\n";
+        joined += text;
+    }
+    return joined;
+}
+
 // ---- delta constructors -------------------------------------------------------
 
 ResponsesDelta text_delta(DeltaKind kind, const nlohmann::json& event) {
@@ -243,13 +266,18 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
 
     if (type == "response.reasoning_summary_text.delta") {
         ItemState& item = _item(get_string(event, "item_id"));
-        item.summary += get_string(event, "delta");
+        item.summary_parts[summary_part_index(event)] +=
+            get_string(event, "delta");
         return text_delta(DeltaKind::ReasoningSummary, event);
     }
     if (type == "response.reasoning_summary_text.done") {
+        // The done text is authoritative for ITS part only (the increments
+        // were already accumulated); other parts keep their own text.
         ItemState& item = _item(get_string(event, "item_id"));
         std::string full = get_string(event, "text");
-        if (!full.empty()) item.summary = std::move(full);
+        if (!full.empty()) {
+            item.summary_parts[summary_part_index(event)] = std::move(full);
+        }
         return marker(event);
     }
 
@@ -355,6 +383,18 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
 
     if (type == "response.reasoning_summary_part.added" ||
         type == "response.reasoning_summary_part.done") {
+        // The part lifecycle's done event carries the part's authoritative
+        // text; capture it into its indexed slot (added carries none).
+        if (type == "response.reasoning_summary_part.done") {
+            ItemState& item = _item(get_string(event, "item_id"));
+            if (const nlohmann::json* part = find_object(event, "part")) {
+                std::string text = get_string(*part, "text");
+                if (!text.empty()) {
+                    item.summary_parts[summary_part_index(event)] =
+                        std::move(text);
+                }
+            }
+        }
         return marker(event);
     }
 
@@ -384,29 +424,55 @@ void ResponsesStreamHandler::_assemble() {
     std::vector<nlohmann::json> reasoning_items, output_items;
     std::vector<model_io::InvokeQuery> invokes;
 
+    // Per-kind folding of one item into the single assembled message.
+    const auto as_message = [&](const ItemState& item) {
+        text += item.text;
+        refusal += item.refusal;
+    };
+    const auto as_reasoning = [&](const ItemState& item) {
+        reasoning_text += item.text;
+        summary += join_summary_parts(item.summary_parts);
+        if (item.done_item.is_object()) reasoning_items.push_back(item.done_item);
+    };
+    const auto as_call = [&](const ItemState& item) {
+        model_io::InvokeQuery query;
+        query.id = item.call_id;
+        query.name = item.name;
+        // The wire carries arguments as a JSON STRING; parse now that
+        // they are complete, keeping the raw string when malformed.
+        if (!item.arguments.empty()) {
+            nlohmann::json parsed =
+                nlohmann::json::parse(item.arguments, nullptr, false);
+            query.arguments = parsed.is_discarded()
+                ? nlohmann::json(item.arguments)
+                : std::move(parsed);
+        }
+        if (item.done_item.is_object()) query.extras = item.done_item;
+        invokes.push_back(std::move(query));
+    };
+
     for (const ItemState* item : ordered) {
         if (item->type == "message") {
-            text += item->text;
-            refusal += item->refusal;
+            as_message(*item);
         } else if (item->type == "reasoning") {
-            reasoning_text += item->text;
-            summary += item->summary;
-            if (item->done_item.is_object()) reasoning_items.push_back(item->done_item);
+            as_reasoning(*item);
         } else if (item->type == "function_call") {
-            model_io::InvokeQuery query;
-            query.id = item->call_id;
-            query.name = item->name;
-            // The wire carries arguments as a JSON STRING; parse now that
-            // they are complete, keeping the raw string when malformed.
-            if (!item->arguments.empty()) {
-                nlohmann::json parsed =
-                    nlohmann::json::parse(item->arguments, nullptr, false);
-                query.arguments = parsed.is_discarded()
-                    ? nlohmann::json(item->arguments)
-                    : std::move(parsed);
+            as_call(*item);
+        } else if (item->type.empty()) {
+            // Untyped slot — deltas arrived but output_item.added/done never
+            // did (the leniency _item() documents). Salvage by best-effort
+            // routing instead of dropping the bytes: call fields make it a
+            // function call, summary parts make it reasoning, and anything
+            // else with accumulated bytes is message text. A slot with
+            // nothing accumulated has nothing to salvage.
+            if (!item->call_id.empty() || !item->name.empty() ||
+                !item->arguments.empty()) {
+                as_call(*item);
+            } else if (!join_summary_parts(item->summary_parts).empty()) {
+                as_reasoning(*item);
+            } else if (!item->text.empty() || !item->refusal.empty()) {
+                as_message(*item);
             }
-            if (item->done_item.is_object()) query.extras = item->done_item;
-            invokes.push_back(std::move(query));
         }
         // Every completed item — handled kind or not — is recorded for
         // round-tripping; the interpreter re-emits the kinds it maps.
