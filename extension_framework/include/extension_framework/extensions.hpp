@@ -418,8 +418,9 @@ FactorySignature* resolve_factory_alias(
  *                      caller convenience; converted internally to `std::string`
  *                      because Boost.DLL's `has()` / `import_alias()` accept
  *                      only `const char*` / `const std::string&`.
- * @return The extension object (never null on success — a null factory result is
- *         surfaced as a thrown exception by the unique_ptr→shared_ptr move).
+ * @return The extension object (never null on success — a null factory result
+ *         throws std::runtime_error, wrapped with the library location like
+ *         every other factory fault).
  * @throw std::runtime_error if the handle is null, the alias is missing, the
  *               factory throws, or the import fails. The owning library's
  *        location (via its non-throwing `location(ec)`) is included in the
@@ -440,6 +441,17 @@ std::shared_ptr<ExtensionObject> create_object_from_library(
 
     try {
         auto new_object = factory_function();
+
+        // The doc contract above: a null factory result is a load failure, not
+        // a null-object success. Checked BEFORE either ownership branch runs —
+        // both would otherwise produce a null-stored-pointer shared_ptr (no
+        // throw), and callers like load_modules_directory would dereference
+        // it (bind through a null object) before any guard could fire.
+        if (!new_object) {
+            throw std::runtime_error(
+                std::format("factory \"{}\" returned null", target_field)
+            );
+        }
 
         if constexpr (bind_library_ref_deleter) {
             // Pin the library to this object: the deleter captures the handle and

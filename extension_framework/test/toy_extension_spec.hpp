@@ -26,6 +26,11 @@ inline constexpr std::uint32_t TOY_EXTENSION_ABI_VERSION = 1;
 /// The BOOST_DLL_ALIAS name the toy extension exports.
 inline constexpr const char* TOY_EXTENSION_FACTORY_NAME = "create_toy_extension";
 
+/// A deliberately broken factory alias: returns null instead of an object, so
+/// the host's null-result guard (create_object_from_library must throw) can be
+/// exercised over a real DSO.
+inline constexpr const char* TOY_NULL_FACTORY_NAME = "create_null_extension";
+
 /// The name() the toy extension reports.
 inline constexpr const char* TOY_EXTENSION_NAME = "Toy";
 

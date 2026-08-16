@@ -102,6 +102,44 @@ BOOST_AUTO_TEST_CASE(wrong_alias_is_rejected) {
         std::runtime_error);
 }
 
+// A factory that returns null must be rejected as a load failure. Before the
+// null guard this produced a null-stored-pointer shared_ptr (unique_ptr→
+// shared_ptr does NOT throw), which load_modules_directory then dereferenced
+// (bind through a null object) — one broken module crashed the whole host
+// instead of being recorded as a per-file error.
+BOOST_AUTO_TEST_CASE(null_factory_result_is_rejected) {
+    namespace ext = extension;
+    auto library_ref = ext::get_library_ref(toy_extension_path());
+
+    BOOST_CHECK_THROW(
+        (ext::create_object_from_library<ext::ExtensionContext, false>(
+            library_ref, ext_test::TOY_NULL_FACTORY_NAME)),
+        std::runtime_error);
+    // Same through the deleter-pinned mode load_modules_directory uses.
+    BOOST_CHECK_THROW(
+        (ext::create_object_from_library<ext::ExtensionContext, true>(
+            library_ref, ext_test::TOY_NULL_FACTORY_NAME)),
+        std::runtime_error);
+}
+
+// The directory pipeline turns the same broken factory into a per-file error
+// slot (module skipped, neighbours unaffected) — no crash, no null slot
+// sneaking past as a success.
+BOOST_AUTO_TEST_CASE(directory_pipeline_records_null_factory_as_error) {
+    namespace ext = extension;
+
+    std::vector<std::optional<std::string>> errors;
+    auto loaded = ext::load_modules_directory(
+        TOY_EXTENSION_DIR, ext::is_likely_dynamic_library,
+        ext::same_tag_always{ext_test::TOY_NULL_FACTORY_NAME}, errors);
+
+    BOOST_REQUIRE_EQUAL(loaded.size(), 1u);
+    BOOST_CHECK(loaded[0] == nullptr);
+    BOOST_REQUIRE_EQUAL(errors.size(), 1u);
+    BOOST_REQUIRE(errors[0].has_value());
+    BOOST_CHECK_NE(errors[0]->find("returned null"), std::string::npos);
+}
+
 // Full directory pipeline: load + verify yields exactly the one good extension,
 // correctly ordered.
 BOOST_AUTO_TEST_CASE(directory_pipeline_loads_and_verifies_toy) {
