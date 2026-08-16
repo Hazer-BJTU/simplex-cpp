@@ -101,3 +101,26 @@ BOOST_AUTO_TEST_CASE(model_endpoint_defaults_and_omitted_optionals) {
     BOOST_CHECK(b.extra_headers.empty());
     BOOST_CHECK(!b.extras.has_value());
 }
+
+// The never-null protocol: optionals are emitted only when engaged and
+// never as JSON null, so a lax producer's explicit "extras": null must read
+// as ABSENT — an engaged optional holding null would re-emit null through
+// to_json's engagement gate and break the round-trip invariant.
+BOOST_AUTO_TEST_CASE(json_null_extras_reads_as_absent) {
+    EndpointAuth a;
+    nlohmann::json{{"scheme", "bearer"},
+                   {"api_key", "k"},
+                   {"extras", nullptr}}
+        .get_to(a);
+    BOOST_CHECK(!a.extras.has_value());
+    nlohmann::json j = a;   // and it serialises back without the key
+    BOOST_CHECK(!j.contains("extras"));
+
+    ModelEndpoint e;
+    nlohmann::json{{"base_url", "https://api.deepseek.com"},
+                   {"extras", nullptr}}
+        .get_to(e);
+    BOOST_CHECK(!e.extras.has_value());
+    nlohmann::json je = e;
+    BOOST_CHECK(!je.contains("extras"));
+}

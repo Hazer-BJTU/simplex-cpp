@@ -73,7 +73,12 @@ inline void from_json(const nlohmann::json& j, EndpointAuth& a) {
     if (auto it = j.find("api_key"); it != j.end()) it->get_to(a.api_key);
     if (auto it = j.find("header_name"); it != j.end())
         it->get_to(a.header_name);
-    if (auto it = j.find("extras"); it != j.end()) a.extras = *it;
+    // JSON null reads as ABSENT: an engaged optional must never hold null,
+    // or to_json's engagement gate would re-emit "extras": null and break
+    // the never-null round-trip (the same guard detail::read_optional
+    // applies in model_io.hpp).
+    if (auto it = j.find("extras"); it != j.end() && !it->is_null())
+        a.extras = *it;
     else a.extras.reset();
 }
 
@@ -118,7 +123,9 @@ inline void from_json(const nlohmann::json& j, ModelEndpoint& e) {
         it->get_to(e.user_agent);
     if (auto it = j.find("extra_headers"); it != j.end())
         it->get_to(e.extra_headers);
-    if (auto it = j.find("extras"); it != j.end()) e.extras = *it;
+    // JSON null reads as ABSENT — see EndpointAuth::from_json's extras note.
+    if (auto it = j.find("extras"); it != j.end() && !it->is_null())
+        e.extras = *it;
     else e.extras.reset();
 }
 
