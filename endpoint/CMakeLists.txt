@@ -25,13 +25,16 @@ target_link_libraries(endpoint_lib INTERFACE
 # ========================================== #
 #
 # The OpenAI Responses-API compatibility layer: a concrete
-# ModelRequestInterpreter (AgentInputState -> POST /responses body) and a
+# ModelRequestInterpreter (AgentInputState -> POST /responses body), a
 # dedicated SSEResponseHandler decoding the event stream into ResponsesDelta
-# blocks while accumulating the model_io contract record. Asio/Beast are used
-# header-only, so no compiled Boost components are needed here.
+# blocks (decode only), and a ModelResponseReader consuming those deltas —
+# accumulation, assembly into the model_io contract record, hooks and the
+# handler lifecycle. Asio/Beast are used header-only, so no compiled Boost
+# components are needed here.
 add_library(responses_api_lib STATIC
     src/responses/interpreter.cpp
     src/responses/stream_handler.cpp
+    src/responses/reader.cpp
 )
 target_include_directories(responses_api_lib PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"

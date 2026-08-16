@@ -48,13 +48,26 @@ struct ResponsesDelta {
     std::string item_id;
     /// The increment bytes — or, for Marker/Ignored, the event type name.
     std::string text;
-    /// Wire indices, when the event carried them. Reasoning-summary deltas
-    /// carry `summary_index` instead of a content index — left unset there.
+    /// Wire indices, when the event carried them. For ReasoningSummary
+    /// deltas this is the RESOLVED summary part index (content_index, else
+    /// summary_index, else 0) — the decoder resolves it so the delta alone
+    /// identifies the part it belongs to.
     std::optional<std::size_t> output_index, content_index;
     /// Full event JSON. Populated on Marker/Ignored only (hot increments
     /// stay lean); markers for output_item events expose e.g. the tool name.
     std::optional<nlohmann::json> extras;
 };
+
+/// True when this marker delta is a terminal lifecycle event
+/// (completed / incomplete / failed / error) — the consumer's break, i.e.
+/// ModelResponseReader::_is_terminal for this delta type.
+inline bool is_terminal(const ResponsesDelta& delta) {
+    if (delta.kind != DeltaKind::Marker) return false;
+    return delta.text == "response.completed" ||
+           delta.text == "response.incomplete" ||
+           delta.text == "response.failed" ||
+           delta.text == "error";
+}
 
 // Streaming for diagnostics (Boost.Test assertions, logging).
 inline std::ostream& operator<<(std::ostream& os, DeltaKind kind) {

@@ -456,6 +456,30 @@ BOOST_AUTO_TEST_CASE(consumed_history_is_trimmed_to_the_retention_window) {
     BOOST_TEST(handler.base() == 92u);
 }
 
+// Keep-alive comment frames (": ping\n\n") leave nothing in _lines but the
+// blank delimiter. _next_message used to step over those blanks in a local
+// variable without advancing the cursor, so trim counted them as unconsumed
+// forever: an idle keep-alive stream grew _lines without bound despite the
+// window. The cursor now commits the skipped delimiters, so they trim like
+// any consumed line.
+BOOST_AUTO_TEST_CASE(keepalive_delimiters_are_trimmed_not_hoarded) {
+    asio::io_context io;
+    InspectableHandler handler(io.get_executor(), 8);
+
+    for (std::size_t i = 0; i < 100; ++i) {
+        exchange(io, handler, ": ping\n\n", 0);   // no events, no consumers
+    }
+
+    // 100 delimiters consumed; the 8 most recent retained — not 100 hoarded.
+    BOOST_TEST(handler.line_count() == 8u);
+    BOOST_TEST(handler.base() == 92u);
+
+    // And the stream still decodes a real event afterwards.
+    auto events = exchange(io, handler, "data: alive\n\n", 1);
+    BOOST_REQUIRE_EQUAL(events.size(), 1u);
+    BOOST_TEST(data_value(events[0]) == "alive");
+}
+
 BOOST_AUTO_TEST_CASE(suspend_reset_round_trip_survives_rolling_trim) {
     asio::io_context io;
     InspectableHandler handler(io.get_executor(), 8);

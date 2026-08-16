@@ -125,9 +125,10 @@ template<typename Product>
 class SSEResponseHandler: public AsyncResponseHandler<Product> {
 public:
     using LineInfo = std::pair<std::string, std::string>;
-    // The decoded event type this handler produces, named so wrapping
-    // templates (e.g. PeekingHandler) can refer to it without knowing the
-    // concrete Product parameter a handler was specialised with.
+    // The decoded event type this handler produces, named so consuming
+    // templates (e.g. ModelResponseReader's Delta parameter) can refer to
+    // it without knowing the concrete Product parameter a handler was
+    // specialised with.
     using product_type = Product;
     // Lifecycle states. Aliased to the namespace-scope enum so call sites can
     // keep writing SSEResponseHandler<Product>::State while SSEAborted carries
@@ -217,6 +218,14 @@ protected:
         while (first < _lines.size() && _lines[first].first == BLANK_LINE) {
             ++first;
         }
+        // Commit the skipped delimiters to the cursor immediately. They are
+        // consumed the moment they are stepped over: leaving _next_line
+        // behind them counts them as unconsumed, so rolling trim can never
+        // reclaim them — and a keep-alive-heavy idle stream (": ping\n\n"
+        // leaves nothing but the blank delimiter in _lines) would grow the
+        // buffer without bound despite the window. The skipped lines precede
+        // any span returned below, so committing cannot invalidate one.
+        _next_line = _base + first;
 
         std::size_t last_line = first;
         while (last_line < _lines.size() && _lines[last_line].first != BLANK_LINE) {

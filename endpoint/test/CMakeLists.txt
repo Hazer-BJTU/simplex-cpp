@@ -78,8 +78,9 @@ target_link_libraries(test_model_request PRIVATE
 add_test(NAME test_model_request COMMAND test_model_request)
 
 # Offline tests for the Responses-API compatibility layer: the request
-# interpreter's body/header mapping, and the stream handler's event decode,
-# delta products, assembly and peeker semantics (io_context, no sockets).
+# interpreter's body/header mapping, the stream handler's event decode, and
+# the reader's consume loop — accumulation/assembly, statuses and the
+# sync/async hooks (io_context, no sockets).
 add_executable(test_responses_interpreter test_responses_interpreter.cpp)
 target_link_libraries(test_responses_interpreter PRIVATE
     responses_api_lib
@@ -93,6 +94,16 @@ target_link_libraries(test_responses_stream PRIVATE
     Boost::unit_test_framework
 )
 add_test(NAME test_responses_stream COMMAND test_responses_stream)
+
+# The reader tests also drive the pump() producer wrapper against the
+# one-shot loopback server (plain HTTP, offline).
+add_executable(test_responses_reader test_responses_reader.cpp)
+target_link_libraries(test_responses_reader PRIVATE
+    responses_api_lib
+    endpoint_lib
+    Boost::unit_test_framework
+)
+add_test(NAME test_responses_reader COMMAND test_responses_reader)
 
 # Manual end-to-end HTTPS check. It is intentionally not registered with CTest
 # so ordinary test runs remain deterministic and work offline.
