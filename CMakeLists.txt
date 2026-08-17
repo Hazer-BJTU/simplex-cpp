@@ -121,5 +121,20 @@ option(BUILD_TESTS "Build unit tests" ON)
 #     not by the header dependency.
 add_subdirectory(versioning)
 add_subdirectory(logging)
+# extension_framework after logging + the top-level interface targets: it is a
+# header-only module (extension_framework_iface) that links boost_dll_iface,
+# logging_lib, and simplex_thirdparty_iface. indextools' language layer is now
+# built on it (LangPlugin derives from extension::ExtensionContext), so it must
+# be added before indextools/languages.
+add_subdirectory(extension_framework)
 add_subdirectory(languages)
 add_subdirectory(indextools)
+# endpoint after logging: endpoint_lib links logging_lib (the public
+# https_connection.hpp uses logging::Logger) and the shared Boost/OpenSSL.
+add_subdirectory(endpoint)
+# dataclass after the shared third-party interface: a header-only module
+# (dataclass_iface) defining the model_io data contract. Every record is a
+# plain aggregate serialised through nlohmann ADL to_json/from_json free
+# functions, so the module depends only on simplex_thirdparty_iface
+# (for <nlohmann/json.hpp>).
+add_subdirectory(dataclass)

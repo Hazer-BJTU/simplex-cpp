@@ -2,8 +2,14 @@
 
 namespace indextools {
 
-CacheSystem::CacheSystem(size_t num_tasks, boost::asio::any_io_executor executor): 
-_num_tasks(std::max<size_t>(num_tasks, 1u)), _executor(executor), _cache_strand(executor), _cache() {}
+CacheSystem::CacheSystem(size_t num_tasks, boost::asio::any_io_executor executor):
+_num_tasks(std::max<size_t>(num_tasks, 1u)), _executor(executor), _cache_strand(executor), _cache() {
+    // Load language plugins from <exe>/plugins once, at construction.
+    // load_default_plugins() tolerates a missing directory (returns 0). This is
+    // the single-threaded load; afterwards the dispatcher is immutable, so the
+    // parallel make_analyzer() calls in launch_search are race-free.
+    _lang_plugins.load_default_plugins();
+}
 
 boost::asio::awaitable<CacheSystem::AnalyzePtr> CacheSystem::_get_entry(const std::filesystem::path& absolute_path) const noexcept {
     co_await boost::asio::dispatch(_cache_strand, boost::asio::use_awaitable);

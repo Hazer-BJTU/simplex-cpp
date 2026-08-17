@@ -31,20 +31,23 @@ public:
     std::string_view file_pattern() const noexcept override {
         return R"(\.py[wi]?$)";
     }
-
-    std::unique_ptr<LangAnalyze> create() const override {
-        return std::make_unique<PythonLanguage>();
-    }
 };
 
 } // namespace
 
-// Exported factory: minted inside the plugin module so the returned object's
-// vtable/code belong to this library.
-std::shared_ptr<LangPlugin> create_lang_plugin() {
-    return std::make_shared<PythonPlugin>();
+// Descriptor factory: returns the LangPlugin as its base ExtensionContext so the
+// generic extension loader needs no language-specific type.
+std::unique_ptr<extension::ExtensionContext> create_lang_plugin() {
+    return std::make_unique<PythonPlugin>();
+}
+
+// Analyzer factory: mints a fresh per-file analyzer. Resolved once per plugin
+// into a cached product_factory by LangPlugin::warm().
+std::unique_ptr<LangAnalyze> create_lang_analyze() {
+    return std::make_unique<PythonLanguage>();
 }
 
 } // namespace indextools
 
 BOOST_DLL_ALIAS(indextools::create_lang_plugin, create_lang_plugin)
+BOOST_DLL_ALIAS(indextools::create_lang_analyze, create_lang_analyze)

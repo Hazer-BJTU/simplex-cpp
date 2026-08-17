@@ -31,11 +31,13 @@ target_compile_options(${LIB_NAME} PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
-# logger.cpp selects the default LogLevel via #ifdef DEBUG_BUILD, mirroring
-# indextools_lib's convention.
-target_compile_definitions(${LIB_NAME} PRIVATE
-    $<$<CONFIG:Debug>:DEBUG_BUILD>
-    $<$<CONFIG:Release>:NDEBUG>
+# Expose the build's debug status as a PUBLIC compile definition so that
+# logger.hpp — included by consumers — can seed the compile-time constant
+# kDebugBuild without any macros at call sites.  LOGGING_DEBUG is treated as a
+# plain flag (defined = on), so it is emitted bare, only in the Debug
+# configuration; in every other configuration it is simply absent.
+target_compile_definitions(${LIB_NAME} PUBLIC
+    $<$<CONFIG:Debug>:LOGGING_DEBUG>
 )
 # No external link deps — the logger uses only the standard library.
 if(LTO_SUPPORT)

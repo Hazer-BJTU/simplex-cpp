@@ -1,0 +1,285 @@
+#pragma once
+
+#include <chrono>
+#include <cstddef>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
+#include <boost/beast/core.hpp>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+
+namespace endpoint {
+
+/**
+ * @brief TLS client stream built on Beast's timeout-aware TCP stream.
+ *
+ * The lowest layer can be accessed with `boost::beast::get_lowest_layer()`
+ * when callers need to change a deadline or close the socket.
+ *
+ * Ownership of a live connection is always exclusive: `create_https_connection_stream`
+ * returns a `std::unique_ptr<https_stream>`, and the underlying `ssl::stream` is
+ * non-copyable. A connection therefore has a single owner at any time and may only
+ * be handed off by moving it. This guarantees a stream is never shared across
+ * threads — any future pooling or transfer logic must preserve this move-only
+ * discipline and never expose shared access to one connection.
+ */
+using https_stream = boost::asio::ssl::stream<boost::beast::tcp_stream>;
+using ssl_context = boost::asio::ssl::context;
+
+/**
+ * @brief Plain-HTTP client stream: Beast's timeout-aware TCP stream without a
+ *        TLS layer on top.
+ *
+ * Everything the module's HTTP machinery does through
+ * `boost::beast::get_lowest_layer()` — deadlines, cancellation, teardown —
+ * applies to this flavour unchanged, because `get_lowest_layer` returns the
+ * tcp_stream itself. The same exclusive-ownership discipline as `https_stream`
+ * applies: `create_http_connection_stream` returns a `std::unique_ptr`, and a
+ * connection is moved, never shared across threads.
+ */
+using http_stream = boost::beast::tcp_stream;
+
+/**
+ * @brief Return the process-wide TLS client context.
+ *
+ * The context loads the operating system's default trust store and requires
+ * peer-certificate verification. Initialization is thread-safe. The returned
+ * object is owned by the process and must not be destroyed by the caller.
+ *
+ * @throws boost::system::system_error if the system trust store cannot be
+ *         configured.
+ */
+inline ssl_context& get_global_ssl_context() {
+    static std::once_flag initialize_ssl_context_flag;
+    static std::unique_ptr<ssl_context> global_ssl_context;
+    std::call_once(initialize_ssl_context_flag, []() -> void {
+        // tls_client negotiates the best protocol supported by both peers
+        // (including TLS 1.3), rather than artificially pinning TLS 1.2.
+        global_ssl_context =
+            std::make_unique<ssl_context>(boost::asio::ssl::context::tls_client);
+        global_ssl_context->set_default_verify_paths();
+        global_ssl_context->set_verify_mode(boost::asio::ssl::verify_peer);
+    });
+    return *global_ssl_context;
+}
+
+/// Deadline applied independently to the TCP connect and TLS handshake.
+inline constexpr std::size_t DEFAULT_TIMEOUT_SEC = 30;
+/// Deadline for writing one complete request (headers + body). Deliberately
+/// longer than the connect/handshake deadline so a large request body — a
+/// multi-MB conversation context over a slow uplink — is not prematurely
+/// treated as unreachable.
+inline constexpr std::size_t DEFAULT_WRITE_TIMEOUT_SEC = 60;
+/// Default read deadline for a bounded (non-SSE) HTTP response — deliberately
+/// far above DEFAULT_TIMEOUT_SEC: a model backend may compute for minutes
+/// before its first response byte. Per-call configurable on http_request,
+/// where 0 disables the deadline.
+inline constexpr std::size_t DEFAULT_HTTP_READ_TIMEOUT_SEC = 300;
+/// Standard service port used by HTTPS.
+inline constexpr std::string_view DEFAULT_HTTPS_PORT = "443";
+/// Standard service port used by plain HTTP.
+inline constexpr std::string_view DEFAULT_HTTP_PORT = "80";
+
+/**
+ * @brief Resolve a host and complete the TCP connection on a stream's lowest
+ *        layer with the standard connect deadline.
+ *
+ * The shared prefix of both connection factories below: it applies to any
+ * stream whose lowest layer is a timeout-aware `boost::beast::tcp_stream`,
+ * which is what both `https_stream` and `http_stream` are built on
+ * (`get_lowest_layer` returns the tcp_stream itself for a bare `http_stream`).
+ *
+ * @param executor Executor on which DNS and socket operations run.
+ * @param stream   Stream whose lowest layer receives the connection.
+ * @param host     DNS name used for resolution.
+ * @param port     Numeric port or service name.
+ * @throws boost::system::system_error on DNS, TCP, or timeout failure.
+ */
+template<typename Stream>
+boost::asio::awaitable<void> connect_tcp(
+    boost::asio::any_io_executor executor,
+    Stream& stream,
+    const std::string& host,
+    std::string_view port)
+{
+    auto resolver = boost::asio::ip::tcp::resolver{ executor };
+    const auto endpoints = co_await resolver.async_resolve(host, port, boost::asio::use_awaitable);
+
+    boost::beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(DEFAULT_TIMEOUT_SEC));
+    co_await boost::beast::get_lowest_layer(stream).async_connect(endpoints, boost::asio::use_awaitable);
+}
+
+/**
+ * @brief Resolve a host, establish TCP, and complete a verified TLS handshake.
+ *
+ * SNI is set before the handshake, and the certificate is checked against
+ * `host`. The returned `std::unique_ptr` grants the caller exclusive ownership
+ * of the stream; it keeps the connection alive across subsequent asynchronous
+ * HTTP operations and must be moved (never copied) when transferred between
+ * scopes or coroutines, so the connection is never shared across threads.
+ *
+ * This overload accepts an explicit context, primarily for applications with a
+ * private CA or a custom trust policy. The context must outlive the stream.
+ *
+ * @param executor Executor on which DNS and socket operations run.
+ * @param context Configured TLS client context.
+ * @param host DNS name used for resolution, SNI, and certificate verification.
+ * @param port Numeric port or service name.
+ * @return A connected stream with a completed TLS client handshake.
+ * @throws boost::system::system_error on SNI, DNS, TCP, timeout, certificate,
+ *         or TLS-handshake failure.
+ */
+inline boost::asio::awaitable<std::unique_ptr<https_stream>>
+create_https_connection_stream(
+    boost::asio::any_io_executor executor,
+    ssl_context& context,
+    std::string host,
+    std::string_view port = DEFAULT_HTTPS_PORT
+) {
+    auto stream = std::make_unique<https_stream>(executor, context);
+
+    // SNI lets a server select the correct certificate on shared endpoints.
+    if (!SSL_set_tlsext_host_name(stream->native_handle(), host.c_str())) {
+        throw boost::beast::system_error(
+            static_cast<int>(::ERR_get_error()),
+            boost::asio::error::get_ssl_category());
+    }
+    // SNI alone is not authentication: verify the certificate's SAN/CN too.
+    stream->set_verify_callback(boost::asio::ssl::host_name_verification(host));
+
+    co_await connect_tcp(executor, *stream, host, port);
+
+    boost::beast::get_lowest_layer(*stream).expires_after(std::chrono::seconds(DEFAULT_TIMEOUT_SEC));
+    co_await stream->async_handshake(boost::asio::ssl::stream_base::client);
+
+    co_return stream;
+}
+
+/**
+ * @brief Connect using the verified process-wide TLS context.
+ *
+ * This is the normal entry point for public HTTPS services. See the context
+ * overload for parameter and error details.
+ */
+inline boost::asio::awaitable<std::unique_ptr<https_stream>>
+create_https_connection_stream(
+    boost::asio::any_io_executor executor,
+    std::string host,
+    std::string_view port = DEFAULT_HTTPS_PORT
+) {
+    co_return co_await create_https_connection_stream(
+        executor, get_global_ssl_context(), std::move(host), port);
+}
+
+/**
+ * @brief Connect on the calling coroutine's executor with an explicit context.
+ *
+ * This convenience overload must be called from an Asio coroutine. It obtains
+ * that coroutine's executor with `boost::asio::this_coro::executor` and then
+ * delegates to the executor-taking overload.
+ */
+inline boost::asio::awaitable<std::unique_ptr<https_stream>>
+create_https_connection_stream(
+    ssl_context& context,
+    std::string host,
+    std::string_view port = DEFAULT_HTTPS_PORT
+) {
+    auto executor = co_await boost::asio::this_coro::executor;
+    co_return co_await create_https_connection_stream(
+        executor, context, std::move(host), port);
+}
+
+/**
+ * @brief Connect on the calling coroutine's executor using the global context.
+ *
+ * This is the shortest form for callers already executing inside an Asio
+ * coroutine.
+ */
+inline boost::asio::awaitable<std::unique_ptr<https_stream>>
+create_https_connection_stream(
+    std::string host,
+    std::string_view port = DEFAULT_HTTPS_PORT
+) {
+    auto executor = co_await boost::asio::this_coro::executor;
+    co_return co_await create_https_connection_stream(
+        executor, get_global_ssl_context(), std::move(host), port);
+}
+
+/**
+ * @brief Resolve a host and establish a plain TCP connection (no TLS).
+ *
+ * The unencrypted counterpart of `create_https_connection_stream`, for
+ * `http://` endpoints such as local model backends. The returned
+ * `std::unique_ptr` carries the same exclusive, move-only ownership as the
+ * HTTPS flavour, and the connect deadline stays armed until the caller (e.g.
+ * sse_request) sets its own.
+ *
+ * @param executor Executor on which DNS and socket operations run.
+ * @param host     DNS name used for resolution.
+ * @param port     Numeric port or service name.
+ * @return A connected plain stream.
+ * @throws boost::system::system_error on DNS, TCP, or timeout failure.
+ */
+inline boost::asio::awaitable<std::unique_ptr<http_stream>>
+create_http_connection_stream(
+    boost::asio::any_io_executor executor,
+    std::string host,
+    std::string_view port = DEFAULT_HTTP_PORT
+) {
+    auto stream = std::make_unique<http_stream>(executor);
+    co_await connect_tcp(executor, *stream, host, port);
+    co_return stream;
+}
+
+/**
+ * @brief Connect on the calling coroutine's executor.
+ *
+ * Convenience overload for callers already inside an Asio coroutine; see the
+ * executor-taking overload for details.
+ */
+inline boost::asio::awaitable<std::unique_ptr<http_stream>>
+create_http_connection_stream(
+    std::string host,
+    std::string_view port = DEFAULT_HTTP_PORT
+) {
+    auto executor = co_await boost::asio::this_coro::executor;
+    co_return co_await create_http_connection_stream(
+        executor, std::move(host), port);
+}
+
+/**
+ * @brief Tear a connection stream down at the end of an exchange.
+ *
+ * Works for both stream flavours by asking the stream itself which teardown it
+ * supports: a TLS-flavoured stream — one exposing `async_shutdown`, i.e.
+ * `https_stream` — receives a best-effort `close_notify` (a peer may drop the
+ * connection before answering it, so shutdown errors are captured and
+ * ignored); a plain stream has no shutdown handshake, so the socket is merely
+ * half-closed — the peer sees a FIN instead of a reset. Both branches finish
+ * with the lowest-layer close, which is best-effort and never throws.
+ *
+ * @tparam Stream A stream whose lowest layer is a timeout-aware
+ *                `boost::beast::tcp_stream` (both endpoint stream aliases
+ *                qualify).
+ */
+template<typename Stream>
+boost::asio::awaitable<void> shutdown_stream(Stream& stream) {
+    boost::system::error_code ec;
+    if constexpr (requires(Stream& s) { s.async_shutdown(boost::asio::use_awaitable); }) {
+        co_await stream.async_shutdown(
+            boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+    } else {
+        boost::beast::get_lowest_layer(stream).socket().shutdown(
+            boost::asio::ip::tcp::socket::shutdown_both, ec);
+    }
+    boost::beast::get_lowest_layer(stream).close();
+    co_return;
+}
+
+} // namespace endpoint

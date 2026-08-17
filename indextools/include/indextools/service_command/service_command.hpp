@@ -69,12 +69,6 @@
 
 #include <nlohmann/json.hpp>
 
-#if defined(DEBUG_BUILD)
-inline constexpr bool PRINT_CMD_DEBUG_INFO = true;
-#else
-inline constexpr bool PRINT_CMD_DEBUG_INFO = false;
-#endif
-
 namespace indextools {
 
 // Logger lives in the sibling `logging` module (namespace `logging`). Pull the
@@ -140,8 +134,10 @@ public:
      *    returned.
      * 3. Otherwise, the result from execute() is returned to the caller.
      *
-     * In debug builds (PRINT_CMD_DEBUG_INFO), every error path also logs the
-     * command name and the full error JSON via Logger::error().
+     * In debug builds, every error path also logs the command name and the
+     * full error JSON via Logger::debug() — which is itself compile-time
+     * gated (see logging::kDebugBuild), so the call is a no-op in release
+     * builds with no wrapper needed at the call site.
      *
      * @param params  Raw request parameters (moved in).
      * @return        A JSON value — either the command result or a structured
@@ -160,9 +156,7 @@ public:
         }
 
         if (!error.empty()) {
-            if constexpr (PRINT_CMD_DEBUG_INFO) {
-                Logger::error("ensure_params failed for command {}: {}", name(), error.dump());
-            }
+            Logger::debug("ensure_params failed for command {}: {}", name(), error.dump());
             co_return error;
         }
 
@@ -177,9 +171,7 @@ public:
         }
 
         if (!error.empty()) {
-            if constexpr (PRINT_CMD_DEBUG_INFO) {
-                Logger::error("execute failed for command {}: {}", name(), error.dump());
-            }
+            Logger::debug("execute failed for command {}: {}", name(), error.dump());
             co_return error;
         }
         co_return result;

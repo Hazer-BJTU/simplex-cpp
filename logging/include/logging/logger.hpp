@@ -59,6 +59,31 @@ inline std::ostream& operator<<(std::ostream& os, LogLevel lvl) {
 }
 
 // =============================================================================
+// Compile-time debug switch
+// =============================================================================
+
+/**
+ * @brief Compile-time constant: true in Debug builds, false otherwise.
+ *
+ * `LOGGING_DEBUG` is treated as a plain on/off flag: defined (by any means —
+ * `-DLOGGING_DEBUG`, `-DLOGGING_DEBUG=1`, or the CMake Debug config) means true;
+ * absent means false.  This avoids the pitfalls of inspecting the macro's
+ * value, which would break for a bare `-DLOGGING_DEBUG` (an empty expansion).
+ *
+ * Drives the `if constexpr (kDebugBuild)` gate inside the verbose level
+ * methods (trace/debug).  When false those method bodies are discarded at
+ * compile time, so the formatting and I/O never run.  (Argument expressions at
+ * the call site are still evaluated as usual for an inline call — keep debug
+ * arguments cheap, or hoist expensive work into the call only when it matters.)
+ */
+inline constexpr bool kDebugBuild =
+#ifdef LOGGING_DEBUG
+    true;
+#else
+    false;
+#endif
+
+// =============================================================================
 // Logger
 // =============================================================================
 
@@ -88,7 +113,8 @@ public:
      *
      * Messages whose level is **strictly less** than @p min_level are
      * silently dropped.  The default is LogLevel::info in release builds
-     * and LogLevel::debug in debug builds (guarded by `#ifdef DEBUG_BUILD`).
+     * and LogLevel::debug in debug builds (selected at compile time via
+     * @ref kDebugBuild).
      */
     static void set_level(LogLevel min_level) noexcept;
 
@@ -98,17 +124,28 @@ public:
     // -------------------------------------------------------------------------
     // Formatted logging (variadic, std::format)
     // -------------------------------------------------------------------------
+    //
+    // The verbose levels — trace and debug — are compile-time gated by
+    // kDebugBuild: in non-debug builds their bodies are discarded, so the
+    // std::format call and the underlying I/O never happen.  info and above
+    // are always available (runtime level-filtered only).  Call sites can thus
+    // write `Logger::debug(...)` directly with no wrapper and pay nothing in
+    // release builds.
 
-    /** @brief Log a TRACE-level message. */
+    /** @brief Log a TRACE-level message (debug-build only). */
     template <typename... Args>
     static void trace(std::format_string<Args...> fmt, Args&&... args) {
-        log(LogLevel::trace, std::format(fmt, std::forward<Args>(args)...));
+        if constexpr (kDebugBuild) {
+            log(LogLevel::trace, std::format(fmt, std::forward<Args>(args)...));
+        }
     }
 
-    /** @brief Log a DEBUG-level message. */
+    /** @brief Log a DEBUG-level message (debug-build only). */
     template <typename... Args>
     static void debug(std::format_string<Args...> fmt, Args&&... args) {
-        log(LogLevel::debug, std::format(fmt, std::forward<Args>(args)...));
+        if constexpr (kDebugBuild) {
+            log(LogLevel::debug, std::format(fmt, std::forward<Args>(args)...));
+        }
     }
 
     /** @brief Log an INFO-level message. */
@@ -139,8 +176,8 @@ public:
     // Pre-formatted string logging (when the caller already has a string)
     // -------------------------------------------------------------------------
 
-    static void trace(std::string_view msg) { log(LogLevel::trace, msg); }
-    static void debug(std::string_view msg) { log(LogLevel::debug, msg); }
+    static void trace(std::string_view msg) { if constexpr (kDebugBuild) { log(LogLevel::trace, msg); } }
+    static void debug(std::string_view msg) { if constexpr (kDebugBuild) { log(LogLevel::debug, msg); } }
     static void info(std::string_view msg)  { log(LogLevel::info,  msg); }
     static void warning(std::string_view msg){ log(LogLevel::warning, msg); }
     static void error(std::string_view msg)  { log(LogLevel::error, msg); }

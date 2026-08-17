@@ -52,21 +52,26 @@ public:
     }
 
     // Lowest priority: any dedicated language plugin outranks the catch-all.
-    int priority() const noexcept override {
+    long priority() const noexcept override {
         return LANG_PLUGIN_FALLBACK_PRIORITY;
-    }
-
-    std::unique_ptr<LangAnalyze> create() const override {
-        return std::make_unique<FallbackLanguage>();
     }
 };
 
 } // namespace
 
-std::shared_ptr<LangPlugin> create_lang_plugin() {
-    return std::make_shared<FallbackPlugin>();
+// Descriptor factory: returns the LangPlugin as its base ExtensionContext so the
+// generic extension loader needs no language-specific type.
+std::unique_ptr<extension::ExtensionContext> create_lang_plugin() {
+    return std::make_unique<FallbackPlugin>();
+}
+
+// Analyzer factory: mints a fresh per-file analyzer. Resolved once per plugin
+// into a cached product_factory by LangPlugin::warm().
+std::unique_ptr<LangAnalyze> create_lang_analyze() {
+    return std::make_unique<FallbackLanguage>();
 }
 
 } // namespace indextools
 
 BOOST_DLL_ALIAS(indextools::create_lang_plugin, create_lang_plugin)
+BOOST_DLL_ALIAS(indextools::create_lang_analyze, create_lang_analyze)

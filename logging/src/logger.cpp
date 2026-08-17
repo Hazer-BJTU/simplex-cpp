@@ -11,11 +11,10 @@ namespace logging {
 
 std::mutex Logger::_mutex;
 
-#ifdef DEBUG_BUILD
-LogLevel Logger::_min_level = LogLevel::debug;
-#else
-LogLevel Logger::_min_level = LogLevel::info;
-#endif
+// Default threshold follows the build config: debug in Debug builds (so every
+// level is visible by default), info otherwise. Driven by the compile-time
+// kDebugBuild constant rather than a local #ifdef.
+LogLevel Logger::_min_level = kDebugBuild ? LogLevel::debug : LogLevel::info;
 
 // =============================================================================
 // Configuration
