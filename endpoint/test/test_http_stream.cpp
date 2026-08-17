@@ -11,6 +11,12 @@
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 
+// The unified factory's flavour selection is a compile-time property.
+static_assert(!endpoint::is_tls_stream_v<endpoint::http_stream>);
+static_assert(
+    endpoint::default_connection_port_v<endpoint::http_stream> ==
+    endpoint::DEFAULT_HTTP_PORT);
+
 BOOST_AUTO_TEST_CASE(connection_refusal_is_reported)
 {
     asio::io_context reservation_io;
@@ -68,6 +74,54 @@ BOOST_AUTO_TEST_CASE(unknown_service_is_reported)
     auto operation = []() -> asio::awaitable<void> {
         // this_coro::executor convenience overload.
         co_await endpoint::create_http_connection_stream(
+            "localhost", "not-a-real-service-name");
+    }();
+    auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
+    io.run();
+
+    BOOST_CHECK_THROW(result.get(), boost::system::system_error);
+}
+
+BOOST_AUTO_TEST_CASE(unified_factory_connects_the_plain_flavour)
+{
+    asio::io_context server_io;
+    tcp::acceptor acceptor(
+        server_io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    const auto port = acceptor.local_endpoint().port();
+
+    std::thread server([&acceptor] {
+        tcp::socket socket(acceptor.get_executor());
+        acceptor.accept(socket);
+        boost::system::error_code ignored;
+        socket.shutdown(tcp::socket::shutdown_both, ignored);
+        socket.close(ignored);
+    });
+
+    asio::io_context io;
+    auto operation = endpoint::create_connection_stream<endpoint::http_stream>(
+        io.get_executor(), "localhost", std::to_string(port));
+    auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
+    io.run();
+    auto stream = result.get();   // rethrows a connect failure, if any
+
+    BOOST_REQUIRE(stream != nullptr);
+    boost::system::error_code endpoint_ec;
+    const tcp::endpoint peer = stream->socket().remote_endpoint(endpoint_ec);
+    BOOST_CHECK(!endpoint_ec);
+    BOOST_CHECK_EQUAL(peer.port(), port);
+
+    stream->close();
+    server.join();
+}
+
+BOOST_AUTO_TEST_CASE(unified_factory_reports_unknown_service)
+{
+    asio::io_context io;
+    auto operation = []() -> asio::awaitable<void> {
+        // this_coro::executor convenience form of the unified factory; the
+        // context parameter keeps the single call shape and is ignored by the
+        // plain flavour.
+        co_await endpoint::create_connection_stream<endpoint::http_stream>(
             "localhost", "not-a-real-service-name");
     }();
     auto result = asio::co_spawn(io, std::move(operation), asio::use_future);

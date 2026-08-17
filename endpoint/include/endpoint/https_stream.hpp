@@ -90,8 +90,9 @@ inline constexpr std::string_view DEFAULT_HTTP_PORT = "80";
  * @brief Resolve a host and complete the TCP connection on a stream's lowest
  *        layer with the standard connect deadline.
  *
- * The shared prefix of both connection factories below: it applies to any
- * stream whose lowest layer is a timeout-aware `boost::beast::tcp_stream`,
+ * The shared prefix of the connection factories below — the unified
+ * `create_connection_stream` and its flavour-specific wrappers: it applies to
+ * any stream whose lowest layer is a timeout-aware `boost::beast::tcp_stream`,
  * which is what both `https_stream` and `http_stream` are built on
  * (`get_lowest_layer` returns the tcp_stream itself for a bare `http_stream`).
  *
@@ -116,13 +117,123 @@ boost::asio::awaitable<void> connect_tcp(
 }
 
 /**
+ * @brief Whether a connection-stream flavour carries a TLS layer.
+ *
+ * Detected the same way `shutdown_stream` specialises teardown: a stream that
+ * can perform an SSL client handshake — `https_stream` — is TLS-flavoured; a
+ * bare `http_stream` has no such operation and is not. `if constexpr` on this
+ * trait is what lets one factory body serve both flavours.
+ */
+template<typename Stream>
+inline constexpr bool is_tls_stream_v =
+    requires(Stream& stream) {
+        stream.async_handshake(
+            boost::asio::ssl::stream_base::client, boost::asio::use_awaitable);
+    };
+
+/**
+ * @brief The flavour's standard service port: 443 for TLS, 80 for plain.
+ */
+template<typename Stream>
+inline constexpr std::string_view default_connection_port_v =
+    is_tls_stream_v<Stream> ? DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
+
+/**
+ * @brief Resolve a host and establish a connection of either stream flavour.
+ *
+ * The single implementation behind `create_https_connection_stream` and
+ * `create_http_connection_stream`, selected at compile time by @p Stream:
+ * instantiate with `https_stream` for the full TLS path — SNI before the
+ * handshake, certificate verification against @p host, then the handshake —
+ * or with `http_stream` for plain TCP only. Generic code that is already
+ * parameterised on its stream flavour can create its connections here without
+ * naming a flavour-specific factory.
+ *
+ * @p context participates only in the TLS flavour, where it must outlive the
+ * stream; the plain flavour accepts and ignores it, so one call shape serves
+ * both. The default is the process-wide verified context.
+ *
+ * The returned `std::unique_ptr` grants the caller exclusive ownership of the
+ * stream; it keeps the connection alive across subsequent asynchronous HTTP
+ * operations and must be moved (never copied) when transferred between scopes
+ * or coroutines, so the connection is never shared across threads. The connect
+ * deadline stays armed until the caller sets its own.
+ *
+ * @tparam Stream  https_stream, http_stream, or another stream whose lowest
+ *                 layer is a timeout-aware `boost::beast::tcp_stream`.
+ * @param executor Executor on which DNS and socket operations run.
+ * @param host     DNS name used for resolution, SNI, and certificate
+ *                 verification (the latter two TLS flavour only).
+ * @param port     Numeric port or service name; defaults to the flavour's
+ *                 standard port.
+ * @param context  TLS client context; TLS flavour only.
+ * @return A connected stream, with the TLS client handshake completed for
+ *         https_stream.
+ * @throws boost::system::system_error on SNI, DNS, TCP, timeout, certificate,
+ *         or TLS-handshake failure, as applicable to the flavour.
+ */
+template<typename Stream>
+boost::asio::awaitable<std::unique_ptr<Stream>>
+create_connection_stream(
+    boost::asio::any_io_executor executor,
+    std::string host,
+    std::string_view port = default_connection_port_v<Stream>,
+    [[maybe_unused]] ssl_context& context = get_global_ssl_context())
+{
+    std::unique_ptr<Stream> stream;
+    if constexpr (is_tls_stream_v<Stream>) {
+        stream = std::make_unique<Stream>(executor, context);
+
+        // SNI lets a server select the correct certificate on shared endpoints.
+        if (!SSL_set_tlsext_host_name(stream->native_handle(), host.c_str())) {
+            throw boost::beast::system_error(
+                static_cast<int>(::ERR_get_error()),
+                boost::asio::error::get_ssl_category());
+        }
+        // SNI alone is not authentication: verify the certificate's SAN/CN too.
+        stream->set_verify_callback(
+            boost::asio::ssl::host_name_verification(host));
+    } else {
+        stream = std::make_unique<Stream>(executor);
+    }
+
+    co_await connect_tcp(executor, *stream, host, port);
+
+    if constexpr (is_tls_stream_v<Stream>) {
+        boost::beast::get_lowest_layer(*stream).expires_after(
+            std::chrono::seconds(DEFAULT_TIMEOUT_SEC));
+        co_await stream->async_handshake(
+            boost::asio::ssl::stream_base::client);
+    }
+
+    co_return stream;
+}
+
+/**
+ * @brief Connect on the calling coroutine's executor, either flavour.
+ *
+ * Convenience overload for callers already inside an Asio coroutine; same
+ * parameters, in the same order, as the executor-taking overload.
+ */
+template<typename Stream>
+boost::asio::awaitable<std::unique_ptr<Stream>>
+create_connection_stream(
+    std::string host,
+    std::string_view port = default_connection_port_v<Stream>,
+    [[maybe_unused]] ssl_context& context = get_global_ssl_context())
+{
+    auto executor = co_await boost::asio::this_coro::executor;
+    co_return co_await create_connection_stream<Stream>(
+        executor, std::move(host), port, context);
+}
+
+/**
  * @brief Resolve a host, establish TCP, and complete a verified TLS handshake.
  *
- * SNI is set before the handshake, and the certificate is checked against
- * `host`. The returned `std::unique_ptr` grants the caller exclusive ownership
- * of the stream; it keeps the connection alive across subsequent asynchronous
- * HTTP operations and must be moved (never copied) when transferred between
- * scopes or coroutines, so the connection is never shared across threads.
+ * The TLS flavour of `create_connection_stream` — a thin wrapper kept for
+ * flavour-specific call sites — so SNI, verification against `host`, the
+ * handshake ordering, and the exclusive move-only ownership of the returned
+ * `std::unique_ptr` are documented there.
  *
  * This overload accepts an explicit context, primarily for applications with a
  * private CA or a custom trust policy. The context must outlive the stream.
@@ -142,23 +253,8 @@ create_https_connection_stream(
     std::string host,
     std::string_view port = DEFAULT_HTTPS_PORT
 ) {
-    auto stream = std::make_unique<https_stream>(executor, context);
-
-    // SNI lets a server select the correct certificate on shared endpoints.
-    if (!SSL_set_tlsext_host_name(stream->native_handle(), host.c_str())) {
-        throw boost::beast::system_error(
-            static_cast<int>(::ERR_get_error()),
-            boost::asio::error::get_ssl_category());
-    }
-    // SNI alone is not authentication: verify the certificate's SAN/CN too.
-    stream->set_verify_callback(boost::asio::ssl::host_name_verification(host));
-
-    co_await connect_tcp(executor, *stream, host, port);
-
-    boost::beast::get_lowest_layer(*stream).expires_after(std::chrono::seconds(DEFAULT_TIMEOUT_SEC));
-    co_await stream->async_handshake(boost::asio::ssl::stream_base::client);
-
-    co_return stream;
+    co_return co_await create_connection_stream<https_stream>(
+        executor, std::move(host), port, context);
 }
 
 /**
@@ -214,10 +310,10 @@ create_https_connection_stream(
 /**
  * @brief Resolve a host and establish a plain TCP connection (no TLS).
  *
- * The unencrypted counterpart of `create_https_connection_stream`, for
- * `http://` endpoints such as local model backends. The returned
- * `std::unique_ptr` carries the same exclusive, move-only ownership as the
- * HTTPS flavour, and the connect deadline stays armed until the caller (e.g.
+ * The plain flavour of `create_connection_stream` — a thin wrapper kept for
+ * flavour-specific call sites — for `http://` endpoints such as local model
+ * backends. Ownership and deadline discipline are documented there; in
+ * particular the connect deadline stays armed until the caller (e.g.
  * sse_request) sets its own.
  *
  * @param executor Executor on which DNS and socket operations run.
@@ -232,9 +328,8 @@ create_http_connection_stream(
     std::string host,
     std::string_view port = DEFAULT_HTTP_PORT
 ) {
-    auto stream = std::make_unique<http_stream>(executor);
-    co_await connect_tcp(executor, *stream, host, port);
-    co_return stream;
+    co_return co_await create_connection_stream<http_stream>(
+        executor, std::move(host), port);
 }
 
 /**
