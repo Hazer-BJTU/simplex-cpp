@@ -24,9 +24,8 @@
 // built request plugs straight into the existing pipeline:
 //
 //   interpreter->build_request(state, endpoint, generation)
-//     -> resolve_endpoint(...) picks the factory by scheme:
-//        tls ? create_https_connection_stream(host, port)
-//            : create_http_connection_stream(host, port)
+//     -> resolve_endpoint(...) -> create_connection_stream(resolved) picks
+//        the flavour by the resolved scheme (tls ? https_stream : http_stream)
 //     -> sse_request(reader->handler(), std::move(stream), std::move(request))
 //        (or http_request for a bounded, non-streaming exchange — directly
 //        returning the response, or through an AsyncResponseHandler)
@@ -80,6 +79,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <boost/beast/http.hpp>
@@ -88,7 +88,10 @@
 #include "dataclass/endpoint_config.hpp"
 #include "dataclass/model_io.hpp"
 #include "endpoint/http_request_exception.hpp"
+#include "endpoint/https_stream.hpp"
 #include "endpoint/request.hpp"
+
+#include "logging/logger.hpp"
 
 namespace endpoint {
 
@@ -349,7 +352,8 @@ public:
      * @tparam Stream   Connection stream flavour: endpoint::https_stream or
      *                  endpoint::http_stream; deduced from the argument.
      * @param stream    Single-use connection stream; created by the caller
-     *                  (create_https/http_connection_stream).
+     *                  (create_connection_stream, directly or from a
+     *                  ResolvedEndpoint).
      * @param request   Fully constructed SSE request (an interpreter's
      *                  build_request product).
      */
@@ -439,8 +443,8 @@ struct ResolvedEndpoint {
     std::string host;
     std::string port = "443";
     std::string target;
-    /// Whether the transport must use TLS: pick create_https_connection_stream
-    /// when true, create_http_connection_stream when false.
+    /// Whether the transport must use TLS — create_connection_stream(*this)
+    /// turns this flag into the matching stream flavour.
     bool tls = true;
 
     /// host[:port] for the request's Host header — RFC 9110 §7.2 requires the
@@ -556,6 +560,70 @@ inline void apply_transport_headers(
     for (const auto& [name, value] : endpoint.extra_headers) {
         request.set(name, value);
     }
+}
+
+/// The flavour-erased product of the runtime scheme choice: whichever
+/// alternative is active owns exactly one live connection, under the same
+/// exclusive move-only discipline as each concrete flavour — move the variant
+/// to move the connection; it cannot be copied.
+using connection_stream = std::variant<
+    std::unique_ptr<https_stream>,
+    std::unique_ptr<http_stream>>;
+
+/**
+ * @brief Establish the connection a ResolvedEndpoint asks for.
+ *
+ * The scheme-to-factory step of this module's canonical wiring (header
+ * block): ResolvedEndpoint records its scheme as a runtime bool, while the
+ * transport (sse_request, reader->pump) is flavour-generic at compile time.
+ * This bridge turns the bool into the right alternative of a
+ * connection_stream — verified TLS (SNI, certificate check, handshake) when
+ * tls, plain TCP otherwise — by delegating to create_connection_stream<Stream>
+ * with the endpoint's own host and port.
+ *
+ * The alternatives differ in type, so hand the stream to flavour-generic code
+ * with std::visit and one generic lambda:
+ *
+ *     auto stream = co_await create_connection_stream(resolved);
+ *     co_await std::visit(
+ *         [&](auto&& s) { return reader->pump(std::move(s), request); },
+ *         std::move(stream));
+ *
+ * @param executor Executor on which DNS and socket operations run.
+ * @param resolved Where to connect: host/port/tls exactly as resolve_endpoint
+ *                 parsed them from the ModelEndpoint's base_url.
+ * @param context  TLS client context; TLS flavour only, global by default.
+ * @return A connected stream of the flavour the resolved scheme selected.
+ * @throws boost::system::system_error on DNS, TCP, timeout, certificate, or
+ *         TLS-handshake failure, as applicable to the flavour.
+ */
+inline boost::asio::awaitable<connection_stream>
+create_connection_stream(
+    boost::asio::any_io_executor executor,
+    const ResolvedEndpoint& resolved,
+    [[maybe_unused]] ssl_context& context = get_global_ssl_context())
+{
+    if (resolved.tls) {
+        co_return co_await create_connection_stream<https_stream>(
+            executor, resolved.host, resolved.port, context);
+    }
+    co_return co_await create_connection_stream<http_stream>(
+        executor, resolved.host, resolved.port);
+}
+
+/**
+ * @brief Connect on the calling coroutine's executor.
+ *
+ * Convenience overload for callers already inside an Asio coroutine; see the
+ * executor-taking overload for details.
+ */
+inline boost::asio::awaitable<connection_stream>
+create_connection_stream(
+    const ResolvedEndpoint& resolved,
+    [[maybe_unused]] ssl_context& context = get_global_ssl_context())
+{
+    auto executor = co_await boost::asio::this_coro::executor;
+    co_return co_await create_connection_stream(executor, resolved, context);
 }
 
 } // namespace endpoint
