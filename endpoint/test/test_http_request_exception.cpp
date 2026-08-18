@@ -34,6 +34,7 @@ BOOST_AUTO_TEST_CASE(optional_context_defaults_to_empty)
     BOOST_TEST(exception.method().empty());
     BOOST_TEST(exception.target().empty());
     BOOST_TEST(exception.host().empty());
+    BOOST_TEST(exception.status() == 0u);
 }
 
 BOOST_AUTO_TEST_CASE(timeout_flavour_is_stage_read_and_catchable_as_base)
@@ -72,8 +73,25 @@ BOOST_AUTO_TEST_CASE(to_string_renders_failure_context)
     // The expected ec text comes from the same error_code, so the assertion
     // stays locale-independent.
     BOOST_TEST(exception.to_string() ==
-               "stage=write what=\"request write failed\" ec=" + ec.message() +
-                   " method=POST target=/v1/messages host=example.com");
+               "Failed while sending the request: request write failed (" +
+                   ec.message() + "; POST /v1/messages to example.com)");
+}
+
+BOOST_AUTO_TEST_CASE(http_status_is_retained_and_rendered)
+{
+    const HttpRequestException exception(
+        HttpRequestException::Stage::HandleResponse,
+        "SSE request rejected",
+        {},
+        "POST",
+        "/chat/completions",
+        "api.deepseek.com",
+        401);
+
+    BOOST_TEST(exception.status() == 401u);
+    BOOST_TEST(exception.to_string() ==
+               "Failed while handling the response: SSE request rejected "
+               "(HTTP status 401; POST /chat/completions to api.deepseek.com)");
 }
 
 BOOST_AUTO_TEST_CASE(to_string_omits_absent_context)
@@ -81,9 +99,9 @@ BOOST_AUTO_TEST_CASE(to_string_omits_absent_context)
     const HttpRequestException exception(
         HttpRequestException::Stage::Unknown, "unknown failure");
 
-    BOOST_TEST(exception.to_string() == "stage=unknown what=\"unknown failure\"");
+    BOOST_TEST(exception.to_string() == "Failed at an unknown stage: unknown failure");
 
     // The timeout flavour renders through the same path, stage pinned to read.
     BOOST_TEST(HttpRequestTimeoutException("read timed out").to_string() ==
-               "stage=read what=\"read timed out\"");
+               "Failed while reading the response: read timed out");
 }

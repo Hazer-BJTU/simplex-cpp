@@ -438,12 +438,15 @@ public:
  *                 reported one, a clear one otherwise.
  * @param request  The failing request; only its metadata is read, never the
  *                 body.
+ * @param status   HTTP status of the response for response-carried failures
+ *                 (a non-200 SSE rejection); 0 when there is none.
  */
 inline HttpRequestException wrap_request_failure(
     HttpRequestException::Stage stage,
     std::string message,
     const boost::system::error_code& ec,
-    const boost::beast::http::request<boost::beast::http::string_body>& request)
+    const boost::beast::http::request<boost::beast::http::string_body>& request,
+    unsigned status = 0)
 {
     namespace http = boost::beast::http;
     return HttpRequestException(
@@ -452,7 +455,8 @@ inline HttpRequestException wrap_request_failure(
         ec,
         std::string(request.method_string()),
         std::string(request.target()),
-        std::string(request[http::field::host]));
+        std::string(request[http::field::host]),
+        status);
 }
 
 /**
@@ -533,10 +537,10 @@ boost::asio::awaitable<void> sse_request(
         if (parser.get().result() != http::status::ok) {
             throw wrap_request_failure(
                 stage,
-                "SSE request rejected with status " +
-                    std::to_string(parser.get().result_int()),
+                "SSE request rejected",
                 {},
-                request);
+                request,
+                parser.get().result_int());
         }
 
         // SSE connections sit idle between events, so the body phase must not be

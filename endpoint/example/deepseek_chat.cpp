@@ -215,7 +215,7 @@ static asio::awaitable<std::string> chat_turn(
     // error_text) are safe for the whole turn.
     co_await (producer() && consumer());
 
-    if (!error_text.empty()) std::cerr << "\n[request failed " << error_text << "]\n";
+    if (!error_text.empty()) std::cerr << "\n[" << error_text << "]\n";
     co_return reply;
 }
 

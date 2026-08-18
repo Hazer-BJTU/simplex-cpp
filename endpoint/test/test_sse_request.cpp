@@ -54,6 +54,7 @@ static std::string data_value(const std::vector<Field>& event) {
 struct Exchange {
     std::vector<std::vector<Field>> events;
     std::optional<HttpRequestException::Stage> put_stage;
+    std::optional<unsigned> put_status;
     std::optional<std::string> put_error;
     std::optional<SSEHandlerState> consumer_end;
 };
@@ -80,6 +81,7 @@ static Exchange run_exchange(unsigned short port) {
                     handler, std::move(stream), std::move(request));
             } catch (const HttpRequestException& error) {
                 results.put_stage = error.stage();
+                results.put_status = error.status();
                 results.put_error = error.what();
             } catch (const boost::system::system_error& error) {
                 results.put_error = error.what();
@@ -142,6 +144,8 @@ BOOST_AUTO_TEST_CASE(rejected_status_surfaces_as_handle_response_error)
 
     BOOST_REQUIRE(results.put_stage.has_value());
     BOOST_CHECK(*results.put_stage == HttpRequestException::Stage::HandleResponse);
+    BOOST_REQUIRE(results.put_status.has_value());
+    BOOST_CHECK_EQUAL(*results.put_status, 500u);
     BOOST_CHECK(results.events.empty());
     BOOST_REQUIRE(results.consumer_end.has_value());
     BOOST_CHECK(*results.consumer_end == SSEHandlerState::DONE);
