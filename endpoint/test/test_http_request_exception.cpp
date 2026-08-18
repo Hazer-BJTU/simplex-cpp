@@ -57,3 +57,33 @@ BOOST_AUTO_TEST_CASE(timeout_flavour_is_stage_read_and_catchable_as_base)
         BOOST_TEST(caught.what() == std::string("read timed out"));
     }
 }
+
+BOOST_AUTO_TEST_CASE(to_string_renders_failure_context)
+{
+    const auto ec = make_error_code(boost::system::errc::connection_refused);
+    const HttpRequestException exception(
+        HttpRequestException::Stage::Write,
+        "request write failed",
+        ec,
+        "POST",
+        "/v1/messages",
+        "example.com");
+
+    // The expected ec text comes from the same error_code, so the assertion
+    // stays locale-independent.
+    BOOST_TEST(exception.to_string() ==
+               "stage=write what=\"request write failed\" ec=" + ec.message() +
+                   " method=POST target=/v1/messages host=example.com");
+}
+
+BOOST_AUTO_TEST_CASE(to_string_omits_absent_context)
+{
+    const HttpRequestException exception(
+        HttpRequestException::Stage::Unknown, "unknown failure");
+
+    BOOST_TEST(exception.to_string() == "stage=unknown what=\"unknown failure\"");
+
+    // The timeout flavour renders through the same path, stage pinned to read.
+    BOOST_TEST(HttpRequestTimeoutException("read timed out").to_string() ==
+               "stage=read what=\"read timed out\"");
+}

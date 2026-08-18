@@ -29,7 +29,6 @@
 #include <iostream>
 #include <memory>
 #include <cstdlib>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -138,21 +137,6 @@ static const char* model_name() {
     return "deepseek-v4-flash";
 }
 
-static std::string describe(const HttpRequestException& error) {
-    std::ostringstream oss;
-    oss << "stage="; // HttpRequestException::Stage names inline for readability.
-    switch (error.stage()) {
-        case HttpRequestException::Stage::CreateRequest:  oss << "create"; break;
-        case HttpRequestException::Stage::Write:           oss << "write";  break;
-        case HttpRequestException::Stage::Read:            oss << "read";   break;
-        case HttpRequestException::Stage::HandleResponse:  oss << "handle";  break;
-        case HttpRequestException::Stage::Unknown:         oss << "unknown"; break;
-    }
-    oss << " what=\"" << error.what() << "\"";
-    if (auto ec = error.error_code()) oss << " ec=" << ec.message();
-    return oss.str();
-}
-
 // Build the POST request for one chat turn over the already-resolved history.
 static http::request<http::string_body> build_request(
     const ServiceEndpoint& endpoint, const std::string& api_key,
@@ -204,7 +188,7 @@ static asio::awaitable<std::string> chat_turn(
             co_await endpoint::sse_request<Delta>(
                 handler, std::move(stream), std::move(request));
         } catch (const HttpRequestException& error) {
-            error_text = describe(error);
+            error_text = error.to_string();
         }
         handler->finish(SSEHandlerState::DONE);
     };

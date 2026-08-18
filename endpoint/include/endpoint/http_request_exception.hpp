@@ -4,6 +4,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 /**
@@ -40,6 +41,43 @@ public:
     [[nodiscard]] const std::string& method() const noexcept { return method_; }
     [[nodiscard]] const std::string& target() const noexcept { return target_; }
     [[nodiscard]] const std::string& host() const noexcept { return host_; }
+
+    /** The stage's short name as rendered by to_string(): "create", "write", … */
+    [[nodiscard]] static constexpr std::string_view stage_name(Stage stage) noexcept
+    {
+        switch (stage) {
+            case Stage::CreateRequest:  return "create";
+            case Stage::Write:          return "write";
+            case Stage::Read:           return "read";
+            case Stage::HandleResponse: return "handle";
+            case Stage::Unknown:        return "unknown";
+        }
+        return "unknown"; // unreachable; keeps -Wreturn-type quiet
+    }
+
+    /**
+     * One-line, log-friendly rendering of the failure: the stage name and the
+     * message, plus whichever context fields are set, e.g.
+     *   stage=write what="request write failed" ec=Connection refused \
+     * method=POST target=/v1/messages host=example.com
+     * Absent fields (no error code, no request context) are omitted.
+     */
+    [[nodiscard]] std::string to_string() const
+    {
+        std::string rendered = "stage=";
+        rendered += stage_name(stage_);
+        rendered += " what=\"";
+        rendered += what();
+        rendered += '"';
+        if (ec_) {
+            rendered += " ec=";
+            rendered += ec_.message();
+        }
+        if (!method_.empty()) rendered += " method=" + method_;
+        if (!target_.empty()) rendered += " target=" + target_;
+        if (!host_.empty())   rendered += " host=" + host_;
+        return rendered;
+    }
 
 private:
     Stage stage_;
