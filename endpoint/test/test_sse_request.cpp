@@ -49,6 +49,21 @@ static std::string data_value(const std::vector<Field>& event) {
     return {};
 }
 
+// The same driver-as-callable contract, pinned to sse_request for this
+// suite's handler and both stream flavours (see test_http_request.cpp).
+static_assert(endpoint::RequestDriver<
+              decltype(&endpoint::sse_request<std::vector<Field>, endpoint::http_stream>),
+              endpoint::SSEResponseHandler<std::vector<Field>>,
+              endpoint::http_stream>);
+static_assert(endpoint::RequestDriver<
+              decltype(&endpoint::sse_request<std::vector<Field>, endpoint::http_stream>),
+              FieldHandler,
+              endpoint::http_stream>);
+static_assert(endpoint::RequestDriver<
+              decltype(&endpoint::sse_request<std::vector<Field>, endpoint::https_stream>),
+              FieldHandler,
+              endpoint::https_stream>);
+
 // --- client-side driver ------------------------------------------------------
 
 struct Exchange {

@@ -19,23 +19,24 @@
 //                     configuration, not contract data that flows or is
 //                     stored and loaded
 //
-// The product is exactly what this module's transport consumes:
-// endpoint::sse_request(handler, stream, request) takes it by value, so a
-// built request plugs straight into the existing pipeline:
+// The product is exactly what this module's transport consumes — the request
+// drivers (sse_request, HttpRequestDriver) take it by value, so a built
+// request plugs straight into the existing pipeline:
 //
 //   interpreter->build_request(state, endpoint, generation)
 //     -> resolve_endpoint(...) -> create_connection_stream(resolved) picks
 //        the flavour by the resolved scheme (tls ? https_stream : http_stream)
-//     -> sse_request(reader->handler(), std::move(stream), std::move(request))
-//        (or http_request for a bounded, non-streaming exchange — directly
-//        returning the response, or through an AsyncResponseHandler)
+//     -> reader->pump(sse_request<Delta, Stream>, std::move(stream),
+//                     std::move(request))
+//        (or HttpRequestDriver<Delta, Stream> for a bounded, whole-body
+//        exchange through the same pump)
 //
 // The response half is ModelResponseReader below: the single consumer that
 // drains the SSE handler's get() side, folds each decoded delta into the
 // provider's accumulators, offers every delta to observation hooks, and —
 // on the terminal event — assembles the final model_io::MessageItem. Its
-// pump() member drives the matching producer side (sse_request plus the
-// finish-on-exit the transport deliberately leaves to the caller, so a
+// pump() member drives the matching producer side (any RequestDriver plus
+// the finish-on-exit the transport deliberately leaves to the caller, so a
 // stream ending without the terminal event cannot strand the consumer).
 // Where the interpreter maps contract data onto the wire, the reader maps
 // the streamed wire back onto contract data; its dedicated SSE handler does
@@ -159,8 +160,10 @@ public:
  *         if (d.kind == responses::DeltaKind::ReasoningText)
  *             std::cerr << d.text << std::flush;   // watch it think
  *     });
- *     // producer, one co_spawn: pump() = sse_request + finish on exit.
+ *     // producer, one co_spawn: pump() = driver + finish on exit.
  *     //   co_spawn(io, [reader]() { return reader->pump(
+ *     //       endpoint::sse_request<responses::ResponsesDelta,
+ *     //                               endpoint::https_stream>,
  *     //       create_https_connection_stream(host, port),
  *     //       interpreter->build_request(...)); }, asio::detached);
  *     while (auto delta = co_await reader->next()) { ... live view ... }
@@ -331,19 +334,20 @@ public:
     }
 
     /**
-     * @brief Drive this reader's producer side to its end.
+     * @brief Drive this reader's producer side to its end, with any request
+     *        driver.
      *
-     * sse_request() alone leaves the handler unfinished when it returns —
-     * by its own contract, the caller decides the lifecycle. For the
-     * canonical wiring that is a hang waiting to happen: when the stream
-     * ends WITHOUT the terminal event (transport EOF or truncation, a
-     * non-200 rejection, a proxy ending on `[DONE]`), a consumer blocked in
-     * next() would wait on the never-closed channel forever. This wrapper
-     * closes the gap: it runs the SSE pump and, on ANY exit — clean server
-     * close, cooperative stop, or a transport fault (finished first, then
-     * rethrown) — finishes the handler when the reader has not already, so
-     * the consumer wakes and classifies the end itself (status() reports
-     * Aborted unless the terminal event had already completed the stream).
+     * The driver alone leaves the handler unfinished when it returns — by
+     * its own contract, the caller decides the lifecycle. For the canonical
+     * wiring that is a hang waiting to happen: when the stream ends WITHOUT
+     * the terminal event (transport EOF or truncation, a non-200 rejection,
+     * a proxy ending on `[DONE]`), a consumer blocked in next() would wait
+     * on the never-closed channel forever. This wrapper closes the gap: it
+     * runs the driver and, on ANY exit — clean server close, cooperative
+     * stop, or a transport fault (finished first, then rethrown) — finishes
+     * the handler when the reader has not already, so the consumer wakes
+     * and classifies the end itself (status() reports Aborted unless the
+     * terminal event had already completed the stream).
      *
      * This coroutine IS the handler's one producer (see the concurrency
      * note); the consumer side is next()/consume() elsewhere, on the same
@@ -351,19 +355,25 @@ public:
      *
      * @tparam Stream   Connection stream flavour: endpoint::https_stream or
      *                  endpoint::http_stream; deduced from the argument.
+     * @tparam Driver   The request driver for THIS exchange, constrained by
+     *                  RequestDriver: sse_request<Delta, Stream> passed by
+     *                  value (it decays to a pointer) for streaming, or
+     *                  HttpRequestDriver<Delta, Stream> for a bounded
+     *                  whole-body exchange; deduced from the argument.
+     * @param driver    The driver to run the exchange with.
      * @param stream    Single-use connection stream; created by the caller
      *                  (create_connection_stream, directly or from a
      *                  ResolvedEndpoint).
-     * @param request   Fully constructed SSE request (an interpreter's
+     * @param request   Fully constructed request (an interpreter's
      *                  build_request product).
      */
-    template<typename Stream>
+    template<typename Stream, RequestDriver<Handler, Stream> Driver>
     boost::asio::awaitable<void> pump(
+        Driver driver,
         std::unique_ptr<Stream> stream,
         ModelRequestInterpreter::HttpRequest request) {
         try {
-            co_await sse_request<Delta>(
-                _handler, std::move(stream), std::move(request));
+            co_await driver(_handler, std::move(stream), std::move(request));
         } catch (...) {
             // Transport fault: the stream can produce nothing more — abort
             // the consumer too (it would otherwise block forever), then
@@ -575,18 +585,25 @@ using connection_stream = std::variant<
  *
  * The scheme-to-factory step of this module's canonical wiring (header
  * block): ResolvedEndpoint records its scheme as a runtime bool, while the
- * transport (sse_request, reader->pump) is flavour-generic at compile time.
- * This bridge turns the bool into the right alternative of a
+ * transport (a RequestDriver, reader->pump) is flavour-generic at compile
+ * time. This bridge turns the bool into the right alternative of a
  * connection_stream — verified TLS (SNI, certificate check, handshake) when
  * tls, plain TCP otherwise — by delegating to create_connection_stream<Stream>
  * with the endpoint's own host and port.
  *
  * The alternatives differ in type, so hand the stream to flavour-generic code
- * with std::visit and one generic lambda:
+ * with std::visit and one generic lambda (the driver's type names the flavour
+ * too, so it is instantiated per alternative):
  *
  *     auto stream = co_await create_connection_stream(resolved);
  *     co_await std::visit(
- *         [&](auto&& s) { return reader->pump(std::move(s), request); },
+ *         [&](auto&& s) {
+ *             using Flavour =
+ *                 typename std::remove_reference_t<decltype(s)>::element_type;
+ *             return reader->pump(
+ *                 &endpoint::sse_request<Delta, Flavour>,
+ *                 std::move(s), request);
+ *         },
  *         std::move(stream));
  *
  * @param executor Executor on which DNS and socket operations run.

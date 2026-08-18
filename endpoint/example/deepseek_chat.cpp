@@ -7,7 +7,8 @@
 // arrives, using the same machinery the rest of the module relies on:
 //
 //   * endpoint::https_stream (a verified TLS connection via the global context)
-//   * endpoint::sse_request   (the put-side driver)
+//   * a RequestDriver (endpoint::sse_request here), injected into chat_turn
+//     as a type parameter
 //   * endpoint::SSEResponseHandler, specialised here to decode SSE deltas
 //
 // The DeepSeek streaming format is OpenAI-compatible: each event is one
@@ -57,7 +58,7 @@ static std::string string_or_empty(const nlohmann::json& obj, const char* key) {
     return {};
 }
 
-// Frames the raw SSE byte stream (driven by sse_request's put side) and decodes
+// Frames the raw SSE byte stream (driven by the driver's put side) and decodes
 // each OpenAI-style event into a Delta for the consumer to print.
 class DeepSeekDeltaHandler final : public SSEResponseHandler<Delta> {
 public:
@@ -167,12 +168,17 @@ static http::request<http::string_body> build_request(
 
 // One chat turn: connect, stream the response, return the full assistant reply.
 //
-// The producer (sse_request) and the consumer (the get() loop) must run
-// concurrently because the underlying channel is rendezvous. They are launched
-// together via make_parallel_group and both are awaited, so the captured locals
-// stay alive for the whole turn.
+// The request driver is a type parameter constrained by RequestDriver, so the
+// turn machinery is agnostic to the exchange flavour; this example drives it
+// with the SSE driver. The producer (the driver) and the consumer (the get()
+// loop) must run concurrently because the underlying channel is rendezvous.
+// They are launched together via make_parallel_group and both are awaited, so
+// the captured locals stay alive for the whole turn.
+template<endpoint::RequestDriver<DeepSeekDeltaHandler, endpoint::https_stream> Driver>
 static asio::awaitable<std::string> chat_turn(
-    const ServiceEndpoint& endpoint, const std::string& api_key,
+    Driver driver,
+    const ServiceEndpoint& endpoint,
+    const std::string& api_key,
     const std::vector<Message>& history) {
     auto executor = co_await asio::this_coro::executor;
     auto handler = std::make_shared<DeepSeekDeltaHandler>(executor);
@@ -185,8 +191,7 @@ static asio::awaitable<std::string> chat_turn(
             auto stream = co_await endpoint::create_https_connection_stream(
                 endpoint.host, endpoint.port);
             auto request = build_request(endpoint, api_key, history);
-            co_await endpoint::sse_request<Delta>(
-                handler, std::move(stream), std::move(request));
+            co_await driver(handler, std::move(stream), std::move(request));
         } catch (const HttpRequestException& error) {
             error_text = error.to_string();
         }
@@ -252,7 +257,8 @@ int main() {
             asio::io_context io;
             auto future = asio::co_spawn(
                 io,
-                chat_turn(endpoint, api_key, history),
+                chat_turn(&endpoint::sse_request<Delta, endpoint::https_stream>,
+                          endpoint, api_key, history),
                 asio::use_future);
             io.run();
             reply = future.get();

@@ -63,6 +63,37 @@ private:
         _channel;
 };
 
+// --- driver-as-callable contract ---------------------------------------------
+// The layer above (full-flow + retry) takes the request driver as a type
+// parameter constrained by RequestDriver. Pin the concept to the functor
+// form — base and derived handler, plain and TLS stream — so a signature
+// drift fails here, loudly, instead of silently at the wrapper.
+static_assert(endpoint::RequestDriver<
+              endpoint::HttpRequestDriver<std::string, endpoint::http_stream>,
+              endpoint::AsyncResponseHandler<std::string>,
+              endpoint::http_stream>);
+static_assert(endpoint::RequestDriver<
+              endpoint::HttpRequestDriver<std::string, endpoint::http_stream>,
+              BodyHandler,
+              endpoint::http_stream>);
+static_assert(endpoint::RequestDriver<
+              endpoint::HttpRequestDriver<std::string, endpoint::https_stream>,
+              BodyHandler,
+              endpoint::https_stream>);
+// The direct (response-returning) overload is deliberately NOT a RequestDriver:
+// it takes no handler. And the raw pointer to the handler overload is not one
+// either — its defaulted read_timeout_sec is unreachable through a pointer to
+// a function template specialization, which is exactly why HttpRequestDriver
+// exists.
+static_assert(!endpoint::RequestDriver<
+              decltype(&endpoint::http_request<endpoint::http_stream>),
+              endpoint::AsyncResponseHandler<std::string>,
+              endpoint::http_stream>);
+static_assert(!endpoint::RequestDriver<
+              decltype(&endpoint::http_request<std::string, endpoint::http_stream>),
+              endpoint::AsyncResponseHandler<std::string>,
+              endpoint::http_stream>);
+
 // --- client-side drivers -----------------------------------------------------
 
 struct DirectOutcome {
@@ -116,19 +147,22 @@ static DirectOutcome run_direct(
 struct HandlerOutcome {
     std::optional<std::string> body;
     std::optional<HttpRequestException::Stage> stage;
+    std::optional<unsigned> status;
     std::optional<std::string> error;
 };
 
-// Same exchange through the AsyncResponseHandler overload: the producer
-// drives http_request, the consumer drains get() once.
-static HandlerOutcome run_with_handler(unsigned short port) {
+// Same exchange through any RequestDriver: the producer calls the driver
+// with the uniform three-argument shape — no per-driver branches — while the
+// consumer drains get() once.
+template<endpoint::RequestDriver<BodyHandler, endpoint::http_stream> Driver>
+static HandlerOutcome run_with_handler(unsigned short port, Driver driver) {
     asio::io_context io;
     HandlerOutcome outcome;
     auto handler = std::make_shared<BodyHandler>(io.get_executor());
 
     asio::co_spawn(
         io,
-        [&outcome, handler, port]() mutable -> asio::awaitable<void> {
+        [&outcome, handler, port, driver]() mutable -> asio::awaitable<void> {
             try {
                 auto stream = co_await endpoint::create_http_connection_stream(
                     "127.0.0.1", std::to_string(port));
@@ -137,12 +171,10 @@ static HandlerOutcome run_with_handler(unsigned short port) {
                 request.set(http::field::host, "localhost");
                 request.body() = "{\"model\":\"m\"}";
                 request.prepare_payload();
-                // Product is named explicitly, mirroring sse_request call
-                // sites: a shared_ptr<Derived> cannot deduce it.
-                co_await endpoint::http_request<std::string>(
-                    handler, std::move(stream), std::move(request));
+                co_await driver(handler, std::move(stream), std::move(request));
             } catch (const HttpRequestException& error) {
                 outcome.stage = error.stage();
+                outcome.status = error.status();
                 outcome.error = error.what();
                 // No product will ever arrive; unblock the consumer.
                 handler->close();
@@ -220,7 +252,8 @@ BOOST_AUTO_TEST_CASE(handler_delivers_the_body_via_get)
     });
     const unsigned short port = server.wait_listening();
 
-    HandlerOutcome outcome = run_with_handler(port);
+    HandlerOutcome outcome = run_with_handler(
+        port, endpoint::HttpRequestDriver<std::string, endpoint::http_stream>{});
     server.join();
 
     BOOST_CHECK(!outcome.error.has_value());
@@ -230,21 +263,48 @@ BOOST_AUTO_TEST_CASE(handler_delivers_the_body_via_get)
     BOOST_CHECK_EQUAL(*outcome.body, "payload");
 }
 
-BOOST_AUTO_TEST_CASE(handler_receives_error_bodies_too)
+BOOST_AUTO_TEST_CASE(handler_rejects_non_ok_status)
 {
-    // No status gating on the handler path either: an error body still
-    // becomes one Product on the get() side.
+    // The handler path gates on the status, unlike the direct overload: a
+    // non-200 never becomes a Product — it surfaces as a HandleResponse
+    // failure carrying the status code.
     OneShotServer server([](tcp::socket& socket) {
         loopback::serve_fixed_response(
             socket, http::status::too_many_requests, "{\"error\":\"slow down\"}");
     });
     const unsigned short port = server.wait_listening();
 
-    HandlerOutcome outcome = run_with_handler(port);
+    HandlerOutcome outcome = run_with_handler(
+        port, endpoint::HttpRequestDriver<std::string, endpoint::http_stream>{});
     server.join();
 
-    BOOST_REQUIRE(outcome.body.has_value());
-    BOOST_CHECK_EQUAL(*outcome.body, "{\"error\":\"slow down\"}");
+    BOOST_REQUIRE(outcome.stage.has_value());
+    BOOST_CHECK(*outcome.stage == HttpRequestException::Stage::HandleResponse);
+    BOOST_REQUIRE(outcome.status.has_value());
+    BOOST_CHECK_EQUAL(*outcome.status, 429u);
+    BOOST_CHECK_EQUAL(*outcome.error, "HTTP request rejected");
+    BOOST_CHECK(!outcome.body.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(handler_driver_timeout_is_baked_in)
+{
+    // The deadline is a constructor argument of the driver functor, and it
+    // reaches the bounded exchange: a silent server plus a 1s baked-in
+    // deadline ends in the read-timeout exception.
+    OneShotServer server([](tcp::socket& socket) {
+        loopback::serve_silent_delay(socket, std::chrono::seconds(2));
+    });
+    const unsigned short port = server.wait_listening();
+
+    HandlerOutcome outcome = run_with_handler(
+        port, endpoint::HttpRequestDriver<std::string, endpoint::http_stream>{1});
+    server.join();
+
+    BOOST_REQUIRE(outcome.stage.has_value());
+    BOOST_CHECK(*outcome.stage == HttpRequestException::Stage::Read);
+    BOOST_REQUIRE(outcome.error.has_value());
+    BOOST_CHECK(outcome.error->find("after 1s") != std::string::npos);
+    BOOST_CHECK(!outcome.body.has_value());
 }
 
 BOOST_AUTO_TEST_CASE(transport_failure_surfaces_as_read_stage_error)

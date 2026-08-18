@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <array>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -40,10 +41,87 @@ inline constexpr std::size_t DEFAULT_SSE_LINE_WINDOW = 1024;
 template<typename Product>
 class AsyncResponseHandler {
 public:
+    // The decoded event type this handler produces, named so consuming
+    // templates can refer to it without knowing the concrete Product a
+    // handler was specialised with (SSEResponseHandler re-exposes the same
+    // alias; the ResponseHandler concept keys off it).
+    using product_type = Product;
+
     virtual ~AsyncResponseHandler() = default;
 
     virtual boost::asio::awaitable<void> put(std::string_view payload) = 0;
     virtual boost::asio::awaitable<Product> get() = 0;
+};
+
+/**
+ * @brief Unified, structural contract of a response handler: a callable
+ *        object with a producer side and a consumer side.
+ *
+ * Both handler-driven request drivers — sse_request and the AsyncResponseHandler
+ * overload of http_request — pump a response body into the handler's put()
+ * chunk by chunk and never touch anything else; the matching get() is what a
+ * consumer task drains on the other side of the handler. This concept captures
+ * exactly that shared, callable-shaped surface for the layers built on top,
+ * structurally: any type with these two callables models it. Inheriting from
+ * AsyncResponseHandler is sufficient (both it and SSEResponseHandler satisfy
+ * the concept) but not required.
+ *
+ * Deliberately NOT part of the contract: the SSE lifecycle controls
+ * (suspend()/reset()/finish()) and the framing callback (_handle_message) —
+ * those belong to SSEResponseHandler specifically, and a bounded-exchange
+ * handler has no use for them.
+ *
+ * @tparam Handler  The handler type itself, not its shared_ptr wrapper.
+ */
+template<typename Handler>
+concept ResponseHandler = requires(Handler& handler, std::string_view chunk) {
+    // The decoded event type this handler produces.
+    typename Handler::product_type;
+    // Producer side (what the request drivers call): feed one body chunk.
+    { handler.put(chunk) } -> std::same_as<boost::asio::awaitable<void>>;
+    // Consumer side (what the layer above drains): await the next product.
+    { handler.get() }
+        -> std::same_as<boost::asio::awaitable<typename Handler::product_type>>;
+};
+
+/**
+ * @brief Unified, structural contract of a request driver: the callable the
+ *        full-flow layers above (whole exchange + retry) pump a response
+ *        through, taken as a type parameter.
+ *
+ * Both handler-driven drivers model it — sse_request<Product, Stream> (passed
+ * by value it decays to a pointer to the specialization) and
+ * HttpRequestDriver<Product, Stream>, the functor form of the handler-driven
+ * http_request. The three arguments are what every (re)attempt needs: the
+ * shared handler (the driver pumps its put() side; the consumer drains get()
+ * elsewhere), a single-use connection stream for THIS attempt, and the fully
+ * built request. The exchange is the returned coroutine: awaitable<void> —
+ * products come out of the handler, failures out of the coroutine as
+ * HttpRequestException carrying the failing stage.
+ *
+ * The shape carries no timeout parameter by design: a defaulted parameter
+ * cannot be reached through a pointer to a function template specialization,
+ * so a driver that needs one carries it inside — HttpRequestDriver below is
+ * the handler-driven http_request wrapped exactly that way, which is why
+ * both drivers share sse_request's exact call shape.
+ *
+ * @tparam Driver  The driver as a callable type parameter — a function
+ *                 template specialization (by value it decays to a pointer,
+ *                 e.g. passing sse_request<Delta, https_stream>), a function
+ *                 pointer, or a functor.
+ * @tparam Handler The handler type the layer above will pass: the driver's
+ *                 own base or any handler whose shared_ptr converts to it.
+ * @tparam Stream  Connection stream flavour the layer above will pass.
+ */
+template<typename Driver, typename Handler, typename Stream>
+concept RequestDriver = requires(
+    Driver&& driver,
+    std::shared_ptr<Handler>& handler,
+    std::unique_ptr<Stream>& stream,
+    boost::beast::http::request<boost::beast::http::string_body>& request)
+{
+    { driver(handler, std::move(stream), request) }
+        -> std::same_as<boost::asio::awaitable<void>>;
 };
 
 // Lifecycle state of an SSEResponseHandler, hoisted to namespace scope so it
@@ -502,6 +580,12 @@ boost::asio::awaitable<void> sse_request(
 {
     namespace http = boost::beast::http;
 
+    // The SSE handler requirement must stay in lockstep with the shared
+    // ResponseHandler contract that the layers above constrain against.
+    static_assert(
+        ResponseHandler<SSEResponseHandler<Product>>,
+        "SSEResponseHandler drifted from the ResponseHandler concept");
+
     if (!stream) {
         throw HttpRequestException(
             HttpRequestException::Stage::Unknown,
@@ -631,11 +715,12 @@ boost::asio::awaitable<void> sse_request(
  * default body limit — tears the single-use stream down, and returns the whole
  * message (status, headers, and body).
  *
- * Unlike sse_request this performs **no status gating**: every status carries
- * its body back to the caller, because provider error payloads arrive in
- * non-2xx bodies and discarding them would hide exactly what the caller needs
- * to diagnose. Only transport-level faults (write, read, timeout, network)
- * throw, as HttpRequestException with the failing stage.
+ * Unlike sse_request and the handler overload below this performs **no status
+ * gating**: every status carries its body back to the caller, because provider
+ * error payloads arrive in non-2xx bodies and discarding them would hide
+ * exactly what the caller needs to diagnose. Only transport-level faults
+ * (write, read, timeout, network) throw, as HttpRequestException with the
+ * failing stage.
  *
  * Timeouts: the write phase runs under DEFAULT_WRITE_TIMEOUT_SEC (deliberately
  * longer than the connect deadline), while the response read runs under
@@ -743,12 +828,19 @@ http_request(
  * the handler; status and headers stay with the producer — use the direct
  * overload when they matter.
  *
- * Status handling matches the direct overload: never gated, so an error body
- * still becomes one Product. put()'s own failures surface as
- * HttpRequestException{HandleResponse}; an SSEAborted (the channel was closed
- * via finish() from elsewhere) is a cooperative stop, exactly as in
+ * Status handling diverges from the direct overload: the response must be 200
+ * OK, and anything else throws HttpRequestException{HandleResponse} carrying
+ * the status — the handler consumes decoded Products, never a provider error
+ * payload, so the body is dropped unread (callers that need error bodies use
+ * the direct overload). put()'s own failures surface as
+ * HttpRequestException{HandleResponse} too; an SSEAborted (the channel was
+ * closed via finish() from elsewhere) is a cooperative stop, exactly as in
  * sse_request's pump. On return the handler is *not* finished — the caller
  * decides that, like on every other path.
+ *
+ * To hand this overload to a layer that constrains RequestDriver (a retrying
+ * exchange, say), wrap it in HttpRequestDriver below — the functor bakes the
+ * read timeout into a callable with sse_request's exact shape.
  *
  * @tparam Product  The handler's decoded event type. Like sse_request's, this
  *                  parameter is usually named explicitly at the call site —
@@ -770,6 +862,12 @@ boost::asio::awaitable<void> http_request(
 {
     namespace http = boost::beast::http;
 
+    // The bounded handler requirement must stay in lockstep with the shared
+    // ResponseHandler contract that the layers above constrain against.
+    static_assert(
+        ResponseHandler<AsyncResponseHandler<Product>>,
+        "AsyncResponseHandler drifted from the ResponseHandler concept");
+
     if (!handler) {
         throw HttpRequestException(
             HttpRequestException::Stage::Unknown,
@@ -777,13 +875,26 @@ boost::asio::awaitable<void> http_request(
     }
 
     // The exchange below consumes the request; keep the log context for the
-    // put() failure path, which outlives it.
+    // status-gate and put() failure paths, which outlive it.
     const std::string method = std::string(request.method_string());
     const std::string target = std::string(request.target());
     const std::string host = std::string(request[http::field::host]);
 
     http::response<http::string_body> response =
         co_await http_request(std::move(stream), std::move(request), read_timeout_sec);
+
+    // The handler consumes decoded Products, not provider error payloads, so a
+    // non-200 exchange is a failure here (the direct overload returns it).
+    if (response.result() != http::status::ok) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::HandleResponse,
+            "HTTP request rejected",
+            {},
+            method,
+            target,
+            host,
+            response.result_int());
+    }
 
     try {
         co_await handler->put(response.body());
@@ -802,5 +913,49 @@ boost::asio::awaitable<void> http_request(
     }
     co_return;
 }
+
+/**
+ * @brief Functor form of the handler-driven http_request with the read
+ *        timeout captured at construction: sse_request's exact call shape.
+ *
+ * The RequestDriver contract is three arguments with no timeout — the plain
+ * function cannot offer that shape (its default argument is unreachable
+ * through a pointer, which is how a driver is held as a type parameter), so
+ * bake the deadline in instead, at runtime, when the driver object is built,
+ * and call it exactly like sse_request:
+ *
+ *   HttpRequestDriver<Product, Stream> driver{read_timeout_sec};
+ *   co_await driver(handler, std::move(stream), std::move(request));
+ *
+ * Status gating, exception types, and teardown are the wrapped overload's,
+ * unchanged.
+ *
+ * @tparam Product  The handler's decoded event type.
+ * @tparam Stream   Connection stream flavour: endpoint::https_stream or
+ *                  endpoint::http_stream.
+ */
+template<typename Product, typename Stream>
+class HttpRequestDriver {
+public:
+    explicit HttpRequestDriver(
+        std::size_t read_timeout_sec = DEFAULT_HTTP_READ_TIMEOUT_SEC)
+        : _read_timeout_sec(read_timeout_sec)
+    {}
+
+    boost::asio::awaitable<void> operator()(
+        std::shared_ptr<AsyncResponseHandler<Product>> handler,
+        std::unique_ptr<Stream> stream,
+        boost::beast::http::request<boost::beast::http::string_body> request) const
+    {
+        return http_request(
+            std::move(handler),
+            std::move(stream),
+            std::move(request),
+            _read_timeout_sec);
+    }
+
+private:
+    std::size_t _read_timeout_sec;
+};
 
 }
