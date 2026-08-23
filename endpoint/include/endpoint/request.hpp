@@ -235,9 +235,16 @@ protected:
     std::size_t _line_window;
 
     std::atomic<State> _state;
+    // Kept from construction so clear() can rebuild _queue: a closed channel
+    // cannot be reopened, so a reset replaces it wholesale, and a fresh one
+    // needs the executor to run on.
+    boost::asio::any_io_executor _executor;
     // The leading error_code is the per-message status: clear for a normal
     // event, set when the producer reports a fault or closes the stream.
-    boost::asio::experimental::concurrent_channel<void(boost::system::error_code, Product)> _queue;
+    using queue_type =
+        boost::asio::experimental::concurrent_channel<
+            void(boost::system::error_code, Product)>;
+    queue_type _queue;
 
     // Frame _buffer into complete (newline-terminated) lines per the SSE
     // field syntax (WHATWG §9.2 "Interpretting an event stream"):
@@ -367,7 +374,8 @@ public:
         , _base(0)
         , _line_window(line_window)
         , _state(State::RUNNING)
-        , _queue(executor) {}
+        , _executor(std::move(executor))
+        , _queue(_executor) {}
 
     ~SSEResponseHandler() override = default;
 
@@ -501,6 +509,27 @@ public:
     void finish(State state = State::DONE) {
         set_state(state);
         _queue.close();
+    }
+
+    // Rewind the handler to its just-constructed state for a fresh stream:
+    // framing state (buffer, lines, cursor, base) emptied, state RUNNING, and
+    // the channel REPLACED with a fresh one on the stored executor — a closed
+    // channel cannot be reopened, so reset-through-reuse (a retry layer
+    // re-reading a whole response through the same handler) rebuilds it
+    // instead. Configuration (line window, executor) survives.
+    //
+    // Same serialization as reset(): no put()/get() may be in flight, and it
+    // must not race suspend()/reset()/finish(). Pending queue contents are
+    // dropped with the old channel. Subclasses with decode state of their own
+    // (a cached restart checkpoint, say) override this, call the base first,
+    // then clear theirs.
+    virtual void clear() {
+        _buffer.clear();
+        _lines.clear();
+        _next_line = 0;
+        _base = 0;
+        set_state(State::RUNNING);
+        _queue = queue_type{_executor};
     }
 };
 

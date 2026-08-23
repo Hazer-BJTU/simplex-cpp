@@ -205,8 +205,7 @@ public:
     /// Type-erased sync observer: receives each delta by const reference.
     using Hook = std::function<void(const Delta&)>;
     /// Type-erased async observer: co_awaited inline per delta, may do I/O.
-    using AsyncHook =
-        std::function<boost::asio::awaitable<void>(const Delta&)>;
+    using AsyncHook = std::function<boost::asio::awaitable<void>(const Delta&)>;
 
     virtual ~ModelResponseReader() = default;
 
@@ -290,7 +289,10 @@ public:
         } catch (...) {
             // Hook or accumulation fault: same policy as put()'s catch(...)
             // — drive the handler to ERROR (unblocking/aborting the producer
-            // side), mark the stream over, and surface the bug.
+            // side), mark the stream over, and surface the bug. Recorded as
+            // a Faulted end (the exception itself already propagates) so a
+            // post-mortem end_state() cannot mistake this for Completed.
+            _faulted = true;
             _handler->finish(Handler::State::ERROR);
             _done = true;
             throw;
@@ -315,6 +317,54 @@ public:
     /// ended (see the concurrency note in the class doc).
     virtual const model_io::MessageItem& response() const = 0;
 
+    /// How the stream ended — the post-mortem the consumer side owns. See
+    /// end_state() below; kept beside response() because the two are only
+    /// meaningful together (a returned record is trustworthy iff Completed).
+    enum class EndState {
+        Streaming,   ///< Still open: next() would deliver more.
+        Completed,   ///< The terminal event was seen and _assemble() ran.
+        Faulted,     ///< Ended without the terminal event: a producer fault
+                     ///< (end_error() carries the exception), a stream that
+                     ///< ended truncated (server close / external finish —
+                     ///< end_error() null), or a consumer-side hook fault
+                     ///< (whose exception already propagated out of next()).
+        Aborted,     ///< The consumer itself called abort(): stop, do not
+                     ///< classify as recoverable — the caller asked out.
+    };
+
+    /**
+     * @brief The stream's terminal state, for post-mortem classification.
+     *
+     * Meaningful only once finished() (mid-stream it is Streaming). The
+     * distinction retry layers need: Completed returned a real response;
+     * Faulted ended early — end_error() non-null means the producer side
+     * failed with that exception (rethrow and classify it), null means the
+     * stream simply ended without the terminal event (truncation — for a
+     * provider without stream resume, recoverable by re-reading from
+     * scratch); Aborted was the consumer's own abort().
+     */
+    EndState end_state() const noexcept {
+        if (!_done) return EndState::Streaming;
+        if (_faulted) return EndState::Faulted;
+        if (_self_aborted) return EndState::Aborted;
+        if (_abort) return EndState::Faulted;
+        return EndState::Completed;
+    }
+
+    /**
+     * @brief The exception that ended the producer side, when one did.
+     *
+     * Set by pump()'s fault path (the same exception it rethrows — which the
+     * spawned producer logs, not propagates): a stream classified Faulted
+     * with a non-null end_error() should std::rethrow_exception this and
+     * classify the caught failure. Null when the stream Completed, was
+     * Aborted by the consumer, or ended truncated without a producer
+     * exception.
+     */
+    const std::exception_ptr& end_error() const noexcept {
+        return _producer_error;
+    }
+
     /// Whether the stream is over — the terminal event was seen or the
     /// channel closed; next() would return nullopt.
     bool finished() const noexcept { return _done; }
@@ -331,8 +381,51 @@ public:
      * in-flight next(); the one after returns nullopt.
      */
     void abort() {
+        // Record the self-abort FIRST so end_state() reads Aborted even when
+        // no next() is in flight to observe the closed channel (next()'s
+        // top-of-loop _done short-circuit would skip the SSEAborted absorb
+        // that otherwise sets _abort). Guarded: once the terminal event
+        // completed the stream, a late abort() must not overwrite Completed.
+        if (!_done) {
+            _self_aborted = true;
+            _abort = Handler::State::ERROR;
+            _abort_reason = "aborted by the consumer";
+        }
         _done = true;
         _handler->finish(Handler::State::ERROR);
+    }
+
+    /**
+     * @brief Rewind this reader — and its handler — to the just-constructed
+     *        state, for a fresh stream over the same objects.
+     *
+     * One reader per response, but not one reader per PROCESS: a retry layer
+     * (complete()) re-reads the whole response through the SAME reader, and
+     * this is the reset that makes the object reusable — the end-state flags,
+     * the post-mortem exception, and the handler's framing buffer and channel
+     * (rebuilt, since a closed channel cannot reopen) all go back to their
+     * initial values. The accumulated response and the subclass's decoder
+     * state are cleared by the subclass override (ResponsesReader::clear),
+     * which must call this base first.
+     *
+     * Hooks and async hooks SURVIVE: they are configuration registered once
+     * — pre-wire a monitor and let every retry stream flow through it. Note
+     * the flip side for hook authors: a surviving hook observes the deltas of
+     * EVERY attempt, not just the last one.
+     *
+     * Same serialization as abort(): not concurrent with next()/consume()
+     * (both must have returned), and only after the producer side (pump) has
+     * exited — the reader the retry loop hands complete() is between
+     * exchanges there.
+     */
+    virtual void clear() {
+        _done = false;
+        _self_aborted = false;
+        _faulted = false;
+        _abort.reset();
+        _abort_reason.clear();
+        _producer_error = nullptr;
+        _handler->clear();
     }
 
     /**
@@ -378,7 +471,11 @@ public:
         } catch (...) {
             // Transport fault: the stream can produce nothing more — abort
             // the consumer too (it would otherwise block forever), then
-            // surface the failure.
+            // surface the failure. The exception is also captured for the
+            // post-mortem: the spawned producer's wrapper logs it instead of
+            // propagating it, so end_error() is the only place a retry layer
+            // can still reach it (rethrow and classify).
+            _producer_error = std::current_exception();
             _handler->finish(Handler::State::ERROR);
             throw;
         }
@@ -441,8 +538,13 @@ protected:
 
 private:
     bool _done = false;
+    bool _self_aborted = false;   // set iff ended via abort()
+    bool _faulted = false;        // set iff a hook/_accumulate fault ended it
     std::optional<SSEHandlerState> _abort;   // set iff ended via SSEAborted
     std::string _abort_reason;
+    // The producer-side exception pump() rethrew (null on a clean producer
+    // exit): see end_error(). Unsynchronized, like every post-mortem field.
+    std::exception_ptr _producer_error;
     std::vector<Hook> _hooks;
     std::vector<AsyncHook> _async_hooks;
 };
