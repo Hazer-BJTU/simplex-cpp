@@ -886,8 +886,11 @@ static PumpResult run_pumped(
         io,
         [&]() -> asio::awaitable<void> {
             try {
-                auto stream = co_await endpoint::create_http_connection_stream(
-                    "127.0.0.1", std::to_string(port));
+                auto stream = co_await endpoint::create_connection_stream(
+                    endpoint::ResolvedEndpoint{
+                        .host = "127.0.0.1",
+                        .port = std::to_string(port),
+                        .tls = false});
                 co_await reader.pump(driver, std::move(stream), sse_post());
             } catch (const HttpRequestException& error) {
                 result.pump_stage = error.stage();
@@ -916,8 +919,7 @@ BOOST_AUTO_TEST_CASE(pump_completes_the_stream_with_a_terminal_event) {
     asio::io_context io;
     ResponsesReader reader(io.get_executor());
     PumpResult result = run_pumped(
-        &endpoint::sse_request<ResponsesDelta, endpoint::http_stream>,
-        port, reader, io);
+        &endpoint::sse_request<ResponsesDelta>, port, reader, io);
     server.join();
 
     BOOST_REQUIRE(!result.pump_stage);
@@ -942,8 +944,7 @@ BOOST_AUTO_TEST_CASE(pump_runs_equally_with_the_bounded_driver) {
     asio::io_context io;
     ResponsesReader reader(io.get_executor());
     PumpResult result = run_pumped(
-        endpoint::HttpRequestDriver<ResponsesDelta, endpoint::http_stream>{},
-        port, reader, io);
+        endpoint::HttpRequestDriver<ResponsesDelta>{}, port, reader, io);
     server.join();
 
     BOOST_REQUIRE(!result.pump_stage);
@@ -970,8 +971,7 @@ BOOST_AUTO_TEST_CASE(pump_wakes_the_consumer_when_the_stream_ends_without_termin
     asio::io_context io;
     ResponsesReader reader(io.get_executor());
     PumpResult result = run_pumped(
-        &endpoint::sse_request<ResponsesDelta, endpoint::http_stream>,
-        port, reader, io);
+        &endpoint::sse_request<ResponsesDelta>, port, reader, io);
     server.join();
 
     BOOST_REQUIRE(!result.pump_stage);
@@ -993,8 +993,7 @@ BOOST_AUTO_TEST_CASE(pump_surfaces_rejection_and_wakes_the_consumer) {
     asio::io_context io;
     ResponsesReader reader(io.get_executor());
     PumpResult result = run_pumped(
-        &endpoint::sse_request<ResponsesDelta, endpoint::http_stream>,
-        port, reader, io);
+        &endpoint::sse_request<ResponsesDelta>, port, reader, io);
     server.join();
 
     BOOST_REQUIRE(result.pump_stage);

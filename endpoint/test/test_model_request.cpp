@@ -244,17 +244,19 @@ BOOST_AUTO_TEST_CASE(resolved_stream_factory_connects_the_plain_flavour) {
     e.base_url = "http://localhost:" + std::to_string(port);
     const auto resolved = resolve_endpoint(e);
 
-    // this_coro::executor convenience overload, driven by co_spawn.
+    // this_coro::executor convenience overload, driven by co_spawn. The
+    // http:// scheme selects the plain flavour INSIDE the returned
+    // connection_stream — the runtime choice this factory exists for.
     asio::io_context io;
     auto operation = endpoint::create_connection_stream(resolved);
     auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
     io.run();
     auto stream = result.get();   // rethrows a connect failure, if any
 
-    // The http:// scheme selected the plain alternative of the variant.
-    BOOST_REQUIRE(std::holds_alternative<std::unique_ptr<endpoint::http_stream>>(
-        stream));
-    std::get<std::unique_ptr<endpoint::http_stream>>(stream)->close();
+    // A connected, non-TLS stream came back behind the facade.
+    BOOST_REQUIRE(!stream.empty());
+    BOOST_CHECK(!stream.is_tls());
+    stream.close();
     server.join();
 }
 

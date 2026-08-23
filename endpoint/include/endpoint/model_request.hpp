@@ -20,15 +20,18 @@
 //                     stored and loaded
 //
 // The product is exactly what this module's transport consumes — the request
-// drivers (sse_request, HttpRequestDriver) take it by value, so a built
-// request plugs straight into the existing pipeline:
+// drivers (sse_request, HttpRequestDriver) take it by value, and the
+// connection flows between them as one flavour-agnostic connection_stream
+// value, so a built request plus a resolved endpoint plug straight into the
+// existing pipeline:
 //
 //   interpreter->build_request(state, endpoint, generation)
-//     -> resolve_endpoint(...) -> create_connection_stream(resolved) picks
-//        the flavour by the resolved scheme (tls ? https_stream : http_stream)
-//     -> reader->pump(sse_request<Delta, Stream>, std::move(stream),
+//     -> resolve_endpoint(...) -> create_connection_stream(executor, resolved)
+//        — one RUNTIME flavour choice (tls ? TLS : plain) behind the
+//        move-only connection_stream facade
+//     -> reader->pump(sse_request<Delta>, std::move(stream),
 //                     std::move(request))
-//        (or HttpRequestDriver<Delta, Stream> for a bounded, whole-body
+//        (or HttpRequestDriver<Delta> for a bounded, whole-body
 //        exchange through the same pump)
 //
 // The response half is ModelResponseReader below: the single consumer that
@@ -80,7 +83,6 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <boost/beast/http.hpp>
@@ -161,11 +163,11 @@ public:
  *             std::cerr << d.text << std::flush;   // watch it think
  *     });
  *     // producer, one co_spawn: pump() = driver + finish on exit.
- *     //   co_spawn(io, [reader]() { return reader->pump(
- *     //       endpoint::sse_request<responses::ResponsesDelta,
- *     //                               endpoint::https_stream>,
- *     //       create_https_connection_stream(host, port),
- *     //       interpreter->build_request(...)); }, asio::detached);
+ *     //   co_spawn(io, [reader, resolved]() {
+ *     //       return reader->pump(
+ *     //           endpoint::sse_request<responses::ResponsesDelta>,
+ *     //           create_connection_stream(resolved),
+ *     //           interpreter->build_request(...)); }, asio::detached);
  *     while (auto delta = co_await reader->next()) { ... live view ... }
  *     consume(reader->response());         // the assembled MessageItem
  *
@@ -353,24 +355,23 @@ public:
      * note); the consumer side is next()/consume() elsewhere, on the same
      * shared reader.
      *
-     * @tparam Stream   Connection stream flavour: endpoint::https_stream or
-     *                  endpoint::http_stream; deduced from the argument.
      * @tparam Driver   The request driver for THIS exchange, constrained by
-     *                  RequestDriver: sse_request<Delta, Stream> passed by
-     *                  value (it decays to a pointer) for streaming, or
-     *                  HttpRequestDriver<Delta, Stream> for a bounded
-     *                  whole-body exchange; deduced from the argument.
+     *                  RequestDriver: sse_request<Delta> passed by value
+     *                  (it decays to a pointer) for streaming, or
+     *                  HttpRequestDriver<Delta> for a bounded whole-body
+     *                  exchange; deduced from the argument.
      * @param driver    The driver to run the exchange with.
-     * @param stream    Single-use connection stream; created by the caller
-     *                  (create_connection_stream, directly or from a
+     * @param stream    Single-use connection of either flavour (the
+     *                  connection_stream facade); created by the caller
+     *                  (create_connection_stream, directly from a
      *                  ResolvedEndpoint).
      * @param request   Fully constructed request (an interpreter's
      *                  build_request product).
      */
-    template<typename Stream, RequestDriver<Handler, Stream> Driver>
+    template<RequestDriver<Handler> Driver>
     boost::asio::awaitable<void> pump(
         Driver driver,
-        std::unique_ptr<Stream> stream,
+        connection_stream stream,
         ModelRequestInterpreter::HttpRequest request) {
         try {
             co_await driver(_handler, std::move(stream), std::move(request));
@@ -452,9 +453,10 @@ private:
 struct ResolvedEndpoint {
     std::string host;
     std::string port = "443";
-    std::string target;
+    std::string target{};
     /// Whether the transport must use TLS — create_connection_stream(*this)
-    /// turns this flag into the matching stream flavour.
+    /// turns this runtime flag into the matching flavour inside the returned
+    /// connection_stream (verified TLS when true, plain TCP when false).
     bool tls = true;
 
     /// host[:port] for the request's Host header — RFC 9110 §7.2 requires the
@@ -572,45 +574,28 @@ inline void apply_transport_headers(
     }
 }
 
-/// The flavour-erased product of the runtime scheme choice: whichever
-/// alternative is active owns exactly one live connection, under the same
-/// exclusive move-only discipline as each concrete flavour — move the variant
-/// to move the connection; it cannot be copied.
-using connection_stream = std::variant<
-    std::unique_ptr<https_stream>,
-    std::unique_ptr<http_stream>>;
-
 /**
  * @brief Establish the connection a ResolvedEndpoint asks for.
  *
  * The scheme-to-factory step of this module's canonical wiring (header
  * block): ResolvedEndpoint records its scheme as a runtime bool, while the
- * transport (a RequestDriver, reader->pump) is flavour-generic at compile
- * time. This bridge turns the bool into the right alternative of a
- * connection_stream — verified TLS (SNI, certificate check, handshake) when
- * tls, plain TCP otherwise — by delegating to create_connection_stream<Stream>
- * with the endpoint's own host and port.
- *
- * The alternatives differ in type, so hand the stream to flavour-generic code
- * with std::visit and one generic lambda (the driver's type names the flavour
- * too, so it is instantiated per alternative):
+ * transport above (a RequestDriver, reader->pump) consumes one
+ * flavour-agnostic connection_stream value. This factory makes the choice at
+ * RUNTIME — verified TLS (SNI, certificate check, handshake) when tls, plain
+ * TCP otherwise — and returns the connected stream behind the move-only
+ * facade, so no flavour (and no std::visit) ever leaks into a caller's
+ * types:
  *
  *     auto stream = co_await create_connection_stream(resolved);
- *     co_await std::visit(
- *         [&](auto&& s) {
- *             using Flavour =
- *                 typename std::remove_reference_t<decltype(s)>::element_type;
- *             return reader->pump(
- *                 &endpoint::sse_request<Delta, Flavour>,
- *                 std::move(s), request);
- *         },
- *         std::move(stream));
+ *     co_await reader->pump(driver, std::move(stream), request);
  *
  * @param executor Executor on which DNS and socket operations run.
  * @param resolved Where to connect: host/port/tls exactly as resolve_endpoint
  *                 parsed them from the ModelEndpoint's base_url.
- * @param context  TLS client context; TLS flavour only, global by default.
- * @return A connected stream of the flavour the resolved scheme selected.
+ * @param context  TLS client context; TLS flavour only, global by default —
+ *                 pass a custom context for a private CA.
+ * @return A connected connection_stream of the flavour the resolved scheme
+ *         selected.
  * @throws boost::system::system_error on DNS, TCP, timeout, certificate, or
  *         TLS-handshake failure, as applicable to the flavour.
  */
@@ -618,14 +603,16 @@ inline boost::asio::awaitable<connection_stream>
 create_connection_stream(
     boost::asio::any_io_executor executor,
     const ResolvedEndpoint& resolved,
-    [[maybe_unused]] ssl_context& context = get_global_ssl_context())
+    ssl_context& context = get_global_ssl_context())
 {
     if (resolved.tls) {
-        co_return co_await create_connection_stream<https_stream>(
-            executor, resolved.host, resolved.port, context);
+        co_return connection_stream{
+            co_await detail::connect_flavour<https_stream>::connect(
+                executor, resolved.host, resolved.port, context)};
     }
-    co_return co_await create_connection_stream<http_stream>(
-        executor, resolved.host, resolved.port);
+    co_return connection_stream{
+        co_await detail::connect_flavour<http_stream>::connect(
+            executor, resolved.host, resolved.port, context)};
 }
 
 /**
@@ -637,7 +624,7 @@ create_connection_stream(
 inline boost::asio::awaitable<connection_stream>
 create_connection_stream(
     const ResolvedEndpoint& resolved,
-    [[maybe_unused]] ssl_context& context = get_global_ssl_context())
+    ssl_context& context = get_global_ssl_context())
 {
     auto executor = co_await boost::asio::this_coro::executor;
     co_return co_await create_connection_stream(executor, resolved, context);

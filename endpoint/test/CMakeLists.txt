@@ -1,10 +1,27 @@
 # Deterministic unit tests use loopback sockets only and require no Internet
 # access. Boost.Test supplies the executable's test runner.
-add_executable(test_https_stream test_https_stream.cpp)
+#
+# test_https_stream and test_http_stream deliberately keep exercising the
+# DEPRECATED flavour factories (that is what they pin), so their deprecation
+# warnings are silenced below.
 
+# The runtime-flavour facade + the scheme-selecting factory behind it.
+add_executable(test_connection_stream test_connection_stream.cpp)
+target_compile_options(test_connection_stream PRIVATE
+    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG>
+)
+target_link_libraries(test_connection_stream PRIVATE
+    endpoint_lib
+    Boost::unit_test_framework
+)
+add_test(NAME test_connection_stream COMMAND test_connection_stream)
+
+add_executable(test_https_stream test_https_stream.cpp)
 target_compile_options(test_https_stream PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>
+    -Wno-deprecated-declarations
 )
 
 target_link_libraries(test_https_stream PRIVATE
@@ -28,12 +45,13 @@ target_link_libraries(test_sse_response_handler PRIVATE
 )
 add_test(NAME test_sse_response_handler COMMAND test_sse_response_handler)
 
-# Plain-HTTP flavour of the connection factory: same loopback-only shape as
-# test_https_stream, minus the TLS handshake.
+# Plain-HTTP flavour of the deprecated connection factory: same loopback-only
+# shape as test_https_stream, minus the TLS handshake.
 add_executable(test_http_stream test_http_stream.cpp)
 target_compile_options(test_http_stream PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>
+    -Wno-deprecated-declarations
 )
 target_link_libraries(test_http_stream PRIVATE
     endpoint_lib

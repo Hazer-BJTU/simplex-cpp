@@ -6,8 +6,8 @@
 #define BOOST_TEST_MODULE HttpRequestTests
 #include <boost/test/unit_test.hpp>
 
-#include "endpoint/https_stream.hpp"
 #include "endpoint/http_request_exception.hpp"
+#include "endpoint/model_request.hpp"
 #include "endpoint/request.hpp"
 #include "loopback_server.hpp"
 
@@ -66,33 +66,22 @@ private:
 // --- driver-as-callable contract ---------------------------------------------
 // The layer above (full-flow + retry) takes the request driver as a type
 // parameter constrained by RequestDriver. Pin the concept to the functor
-// form — base and derived handler, plain and TLS stream — so a signature
-// drift fails here, loudly, instead of silently at the wrapper.
+// form — base and derived handler — so a signature drift fails here, loudly,
+// instead of silently at the wrapper.
 static_assert(endpoint::RequestDriver<
-              endpoint::HttpRequestDriver<std::string, endpoint::http_stream>,
-              endpoint::AsyncResponseHandler<std::string>,
-              endpoint::http_stream>);
+              endpoint::HttpRequestDriver<std::string>,
+              endpoint::AsyncResponseHandler<std::string>>);
 static_assert(endpoint::RequestDriver<
-              endpoint::HttpRequestDriver<std::string, endpoint::http_stream>,
-              BodyHandler,
-              endpoint::http_stream>);
-static_assert(endpoint::RequestDriver<
-              endpoint::HttpRequestDriver<std::string, endpoint::https_stream>,
-              BodyHandler,
-              endpoint::https_stream>);
-// The direct (response-returning) overload is deliberately NOT a RequestDriver:
-// it takes no handler. And the raw pointer to the handler overload is not one
-// either — its defaulted read_timeout_sec is unreachable through a pointer to
-// a function template specialization, which is exactly why HttpRequestDriver
-// exists.
+              endpoint::HttpRequestDriver<std::string>,
+              BodyHandler>);
+// The direct (response-returning) overload takes no handler, so it is not
+// nameable as a driver at all. And the raw pointer to the handler overload is
+// not one either — its defaulted read_timeout_sec is unreachable through a
+// pointer to a function template specialization, which is exactly why
+// HttpRequestDriver exists.
 static_assert(!endpoint::RequestDriver<
-              decltype(&endpoint::http_request<endpoint::http_stream>),
-              endpoint::AsyncResponseHandler<std::string>,
-              endpoint::http_stream>);
-static_assert(!endpoint::RequestDriver<
-              decltype(&endpoint::http_request<std::string, endpoint::http_stream>),
-              endpoint::AsyncResponseHandler<std::string>,
-              endpoint::http_stream>);
+              decltype(&endpoint::http_request<std::string>),
+              endpoint::AsyncResponseHandler<std::string>>);
 
 // --- client-side drivers -----------------------------------------------------
 
@@ -115,8 +104,11 @@ static DirectOutcome run_direct(
         io,
         [&outcome, port, read_timeout_sec]() mutable -> asio::awaitable<void> {
             try {
-                auto stream = co_await endpoint::create_http_connection_stream(
-                    "127.0.0.1", std::to_string(port));
+                auto stream = co_await endpoint::create_connection_stream(
+                    endpoint::ResolvedEndpoint{
+                        .host = "127.0.0.1",
+                        .port = std::to_string(port),
+                        .tls = false});
                 http::request<http::string_body> request{
                     http::verb::post, "/v1/responses", 11};
                 request.set(http::field::host, "localhost");
@@ -154,7 +146,7 @@ struct HandlerOutcome {
 // Same exchange through any RequestDriver: the producer calls the driver
 // with the uniform three-argument shape — no per-driver branches — while the
 // consumer drains get() once.
-template<endpoint::RequestDriver<BodyHandler, endpoint::http_stream> Driver>
+template<endpoint::RequestDriver<BodyHandler> Driver>
 static HandlerOutcome run_with_handler(unsigned short port, Driver driver) {
     asio::io_context io;
     HandlerOutcome outcome;
@@ -164,8 +156,11 @@ static HandlerOutcome run_with_handler(unsigned short port, Driver driver) {
         io,
         [&outcome, handler, port, driver]() mutable -> asio::awaitable<void> {
             try {
-                auto stream = co_await endpoint::create_http_connection_stream(
-                    "127.0.0.1", std::to_string(port));
+                auto stream = co_await endpoint::create_connection_stream(
+                    endpoint::ResolvedEndpoint{
+                        .host = "127.0.0.1",
+                        .port = std::to_string(port),
+                        .tls = false});
                 http::request<http::string_body> request{
                     http::verb::post, "/v1/responses", 11};
                 request.set(http::field::host, "localhost");
@@ -253,7 +248,7 @@ BOOST_AUTO_TEST_CASE(handler_delivers_the_body_via_get)
     const unsigned short port = server.wait_listening();
 
     HandlerOutcome outcome = run_with_handler(
-        port, endpoint::HttpRequestDriver<std::string, endpoint::http_stream>{});
+        port, endpoint::HttpRequestDriver<std::string>{});
     server.join();
 
     BOOST_CHECK(!outcome.error.has_value());
@@ -275,7 +270,7 @@ BOOST_AUTO_TEST_CASE(handler_rejects_non_ok_status)
     const unsigned short port = server.wait_listening();
 
     HandlerOutcome outcome = run_with_handler(
-        port, endpoint::HttpRequestDriver<std::string, endpoint::http_stream>{});
+        port, endpoint::HttpRequestDriver<std::string>{});
     server.join();
 
     BOOST_REQUIRE(outcome.stage.has_value());
@@ -297,7 +292,7 @@ BOOST_AUTO_TEST_CASE(handler_driver_timeout_is_baked_in)
     const unsigned short port = server.wait_listening();
 
     HandlerOutcome outcome = run_with_handler(
-        port, endpoint::HttpRequestDriver<std::string, endpoint::http_stream>{1});
+        port, endpoint::HttpRequestDriver<std::string>{1});
     server.join();
 
     BOOST_REQUIRE(outcome.stage.has_value());
@@ -343,22 +338,23 @@ BOOST_AUTO_TEST_CASE(read_timeout_throws_the_specific_exception)
         BOOST_TEST_MESSAGE("timeout error: " << *outcome.error);
 }
 
-BOOST_AUTO_TEST_CASE(null_arguments_are_rejected)
+BOOST_AUTO_TEST_CASE(empty_and_null_arguments_are_rejected)
 {
     asio::io_context io;
     http::request<http::string_body> request{http::verb::get, "/events", 11};
     request.set(http::field::host, "localhost");
 
-    // A nullptr stream cannot deduce the Stream template parameter, so the
-    // explicit-argument forms are used; the https flavour is instantiated too.
-    auto null_stream = asio::co_spawn(
+    // An empty connection_stream (no connection) is rejected by the facade's
+    // own guard — the same HttpRequestException{Unknown} the old null-pointer
+    // check produced.
+    auto empty_stream = asio::co_spawn(
         io,
-        endpoint::http_request<endpoint::http_stream>(nullptr, request),
+        endpoint::http_request(endpoint::connection_stream{}, request),
         asio::use_future);
     io.run();
     try {
-        null_stream.get();
-        BOOST_FAIL("expected HttpRequestException for a null stream");
+        empty_stream.get();
+        BOOST_FAIL("expected HttpRequestException for an empty stream");
     } catch (const HttpRequestException& error) {
         BOOST_CHECK(error.stage() == HttpRequestException::Stage::Unknown);
     }
@@ -366,11 +362,8 @@ BOOST_AUTO_TEST_CASE(null_arguments_are_rejected)
     io.restart();
     auto null_handler = asio::co_spawn(
         io,
-        endpoint::http_request<std::string, endpoint::https_stream>(
-            nullptr,
-            std::make_unique<endpoint::https_stream>(
-                io.get_executor(), endpoint::get_global_ssl_context()),
-            request),
+        endpoint::http_request<std::string>(
+            nullptr, endpoint::connection_stream{}, request),
         asio::use_future);
     io.run();
     try {

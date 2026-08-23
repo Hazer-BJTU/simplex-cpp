@@ -6,7 +6,8 @@
 // /chat/completions request with stream=true and prints the streamed reply as it
 // arrives, using the same machinery the rest of the module relies on:
 //
-//   * endpoint::https_stream (a verified TLS connection via the global context)
+//   * a connection_stream (a verified TLS connection via the global context,
+//     chosen at runtime from the base_url's scheme)
 //   * a RequestDriver (endpoint::sse_request here), injected into chat_turn
 //     as a type parameter
 //   * endpoint::SSEResponseHandler, specialised here to decode SSE deltas
@@ -18,7 +19,7 @@
 //
 // Build target only; not registered with CTest (it needs a live API key).
 #include "endpoint/http_request_exception.hpp"
-#include "endpoint/https_stream.hpp"
+#include "endpoint/model_request.hpp"
 #include "endpoint/request.hpp"
 
 #include <boost/asio.hpp>
@@ -106,16 +107,23 @@ struct ServiceEndpoint {
     std::string host;
     std::string port = "443";
     std::string target = "/chat/completions";
+    bool tls = true;
 };
 
-// Split "https://host[:port][/prefix]" into host/port and the /chat/completions
-// target. The OpenAI base_url has no prefix; the Anthropic one carries /anthropic.
+// Split "https://host[:port][/prefix]" (or the http:// form) into host/port
+// and the /chat/completions target. The OpenAI base_url has no prefix; the
+// Anthropic one carries /anthropic. The scheme decides the transport flavour.
 ServiceEndpoint parse_base_url(std::string base_url) {
     const std::string scheme = "https://";
-    if (base_url.rfind(scheme, 0) == 0) base_url.erase(0, scheme.size());
-    else if (base_url.rfind("http://", 0) == 0) base_url.erase(0, std::string("http://").size());
-
     ServiceEndpoint endpoint;
+    if (base_url.rfind(scheme, 0) == 0) {
+        base_url.erase(0, scheme.size());
+    } else if (base_url.rfind("http://", 0) == 0) {
+        base_url.erase(0, std::string("http://").size());
+        endpoint.tls = false;
+        endpoint.port = "80";
+    }
+
     const auto slash = base_url.find('/');
     std::string authority = (slash == std::string::npos) ? base_url : base_url.substr(0, slash);
     std::string prefix = (slash == std::string::npos) ? std::string{} : base_url.substr(slash);
@@ -174,7 +182,7 @@ static http::request<http::string_body> build_request(
 // loop) must run concurrently because the underlying channel is rendezvous.
 // They are launched together via make_parallel_group and both are awaited, so
 // the captured locals stay alive for the whole turn.
-template<endpoint::RequestDriver<DeepSeekDeltaHandler, endpoint::https_stream> Driver>
+template<endpoint::RequestDriver<DeepSeekDeltaHandler> Driver>
 static asio::awaitable<std::string> chat_turn(
     Driver driver,
     const ServiceEndpoint& endpoint,
@@ -188,8 +196,11 @@ static asio::awaitable<std::string> chat_turn(
 
     auto producer = [&]() -> asio::awaitable<void> {
         try {
-            auto stream = co_await endpoint::create_https_connection_stream(
-                endpoint.host, endpoint.port);
+            auto stream = co_await endpoint::create_connection_stream(
+                endpoint::ResolvedEndpoint{
+                    .host = endpoint.host,
+                    .port = endpoint.port,
+                    .tls = endpoint.tls});
             auto request = build_request(endpoint, api_key, history);
             co_await driver(handler, std::move(stream), std::move(request));
         } catch (const HttpRequestException& error) {
@@ -257,7 +268,7 @@ int main() {
             asio::io_context io;
             auto future = asio::co_spawn(
                 io,
-                chat_turn(&endpoint::sse_request<Delta, endpoint::https_stream>,
+                chat_turn(&endpoint::sse_request<Delta>,
                           endpoint, api_key, history),
                 asio::use_future);
             io.run();

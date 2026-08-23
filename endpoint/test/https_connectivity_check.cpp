@@ -1,4 +1,5 @@
-#include "endpoint/https_stream.hpp"
+#include "endpoint/connection_stream.hpp"
+#include "endpoint/model_request.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/beast/http.hpp>
@@ -9,34 +10,35 @@
 #include <string>
 
 namespace asio = boost::asio;
-namespace beast = boost::beast;
-namespace http = beast::http;
+namespace http = boost::beast::http;
 
 asio::awaitable<unsigned> check_connection(std::string host)
 {
-    auto stream = co_await endpoint::create_https_connection_stream(host);
+    // TLS is the runtime choice implied by an https:// endpoint; the global
+    // verified context is the default.
+    endpoint::ResolvedEndpoint resolved{.host = host};
+    endpoint::connection_stream stream =
+        co_await endpoint::create_connection_stream(resolved);
 
     http::request<http::empty_body> request{http::verb::head, "/", 11};
     request.set(http::field::host, host);
     request.set(http::field::user_agent, "simplex-cpp-connectivity-check");
-    beast::get_lowest_layer(*stream).expires_after(std::chrono::seconds(30));
-    co_await http::async_write(*stream, request, asio::use_awaitable);
+    stream.expires_after(std::chrono::seconds(30));
+    co_await stream.write(request);
 
-    beast::flat_buffer buffer;
+    boost::beast::flat_buffer buffer;
     // HEAD may advertise the GET representation's Content-Length while
     // carrying no body. Tell Beast not to wait for those nonexistent bytes.
     http::response_parser<http::empty_body> parser;
     parser.skip(true);
-    beast::get_lowest_layer(*stream).expires_after(std::chrono::seconds(30));
-    co_await http::async_read(*stream, buffer, parser, asio::use_awaitable);
+    stream.expires_after(std::chrono::seconds(30));
+    co_await stream.read(buffer, parser);
     const auto status = parser.get().result_int();
 
     // A peer may omit close_notify, so shutdown errors are irrelevant after a
     // complete HTTP response. The handshake and request have already proved
     // end-to-end connectivity.
-    boost::system::error_code ignored;
-    co_await stream->async_shutdown(asio::redirect_error(
-        asio::use_awaitable, ignored));
+    co_await stream.shutdown();
 
     co_return status;
 }

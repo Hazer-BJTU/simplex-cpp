@@ -23,7 +23,7 @@
 #include <boost/asio.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
 
-#include "endpoint/https_stream.hpp"
+#include "endpoint/connection_stream.hpp"
 #include "endpoint/http_request_exception.hpp"
 
 namespace endpoint {
@@ -89,15 +89,16 @@ concept ResponseHandler = requires(Handler& handler, std::string_view chunk) {
  *        full-flow layers above (whole exchange + retry) pump a response
  *        through, taken as a type parameter.
  *
- * Both handler-driven drivers model it — sse_request<Product, Stream> (passed
- * by value it decays to a pointer to the specialization) and
- * HttpRequestDriver<Product, Stream>, the functor form of the handler-driven
+ * Both handler-driven drivers model it — sse_request<Product> (passed by
+ * value it decays to a pointer to the specialization) and
+ * HttpRequestDriver<Product>, the functor form of the handler-driven
  * http_request. The three arguments are what every (re)attempt needs: the
  * shared handler (the driver pumps its put() side; the consumer drains get()
- * elsewhere), a single-use connection stream for THIS attempt, and the fully
- * built request. The exchange is the returned coroutine: awaitable<void> —
- * products come out of the handler, failures out of the coroutine as
- * HttpRequestException carrying the failing stage.
+ * elsewhere), a single-use connection_stream (the runtime-flavour facade)
+ * for THIS attempt, and the fully built request. The exchange is the
+ * returned coroutine: awaitable<void> — products come out of the handler,
+ * failures out of the coroutine as HttpRequestException carrying the
+ * failing stage.
  *
  * The shape carries no timeout parameter by design: a defaulted parameter
  * cannot be reached through a pointer to a function template specialization,
@@ -107,17 +108,16 @@ concept ResponseHandler = requires(Handler& handler, std::string_view chunk) {
  *
  * @tparam Driver  The driver as a callable type parameter — a function
  *                 template specialization (by value it decays to a pointer,
- *                 e.g. passing sse_request<Delta, https_stream>), a function
- *                 pointer, or a functor.
+ *                 e.g. passing sse_request<Delta>), a function pointer, or a
+ *                 functor.
  * @tparam Handler The handler type the layer above will pass: the driver's
  *                 own base or any handler whose shared_ptr converts to it.
- * @tparam Stream  Connection stream flavour the layer above will pass.
  */
-template<typename Driver, typename Handler, typename Stream>
+template<typename Driver, typename Handler>
 concept RequestDriver = requires(
     Driver&& driver,
     std::shared_ptr<Handler>& handler,
-    std::unique_ptr<Stream>& stream,
+    connection_stream& stream,
     boost::beast::http::request<boost::beast::http::string_body>& request)
 {
     { driver(handler, std::move(stream), request) }
@@ -538,8 +538,7 @@ inline HttpRequestException wrap_request_failure(
 }
 
 /**
- * @brief Drive the put side of an SSEResponseHandler over a single connection
- *        stream.
+ * @brief Drive the put side of an SSEResponseHandler over a single connection.
  *
  * Sends @p request, then pumps the streamed response body into @p handler->put()
  * chunk by chunk until the server closes the connection or the handler is
@@ -561,21 +560,19 @@ inline HttpRequestException wrap_request_failure(
  * and returns. Any other failure (bad HTTP status, network error, or a
  * framing/decode fault raised by the handler — which will already have driven it
  * to ERROR) surfaces as an HttpRequestException carrying the failing stage.
+ * An empty @p stream (no connection) surfaces the same way, as
+ * HttpRequestException{Stage::Unknown} out of the facade's own guard.
  *
  * @tparam Product  The handler's decoded event type.
- * @tparam Stream   Connection stream flavour: endpoint::https_stream (from
- *                  create_https_connection_stream) or endpoint::http_stream
- *                  (from create_http_connection_stream). Deduced from the
- *                  argument; the body is flavour-agnostic except for the
- *                  teardown, which shutdown_stream specialises per flavour.
  * @param handler   Shared with the consumer task; put() is the only method used.
- * @param stream    Single-use connection stream; torn down on a clean end.
+ * @param stream    Single-use connection of either flavour (the
+ *                  connection_stream facade); torn down on a clean end.
  * @param request   Fully constructed SSE request to send.
  */
-template<typename Product, typename Stream>
+template<typename Product>
 boost::asio::awaitable<void> sse_request(
     std::shared_ptr<SSEResponseHandler<Product>> handler,
-    std::unique_ptr<Stream> stream,
+    connection_stream stream,
     boost::beast::http::request<boost::beast::http::string_body> request)
 {
     namespace http = boost::beast::http;
@@ -586,11 +583,6 @@ boost::asio::awaitable<void> sse_request(
         ResponseHandler<SSEResponseHandler<Product>>,
         "SSEResponseHandler drifted from the ResponseHandler concept");
 
-    if (!stream) {
-        throw HttpRequestException(
-            HttpRequestException::Stage::Unknown,
-            "invalid stream pointer (= nullptr)");
-    }
     if (!handler) {
         throw HttpRequestException(
             HttpRequestException::Stage::Unknown,
@@ -598,15 +590,16 @@ boost::asio::awaitable<void> sse_request(
     }
 
     // The request was built by the caller, so the first real stage is the write.
+    // An empty stream reports itself here (the facade's guard), still Unknown.
     HttpRequestException::Stage stage = HttpRequestException::Stage::Write;
 
     try {
         // Send the caller-constructed request on the existing stream. The
         // write deadline is deliberately longer than the connect one: a large
         // request body on a slow uplink is not an unreachable service.
-        boost::beast::get_lowest_layer(*stream).expires_after(
+        stream.expires_after(
             std::chrono::seconds(DEFAULT_WRITE_TIMEOUT_SEC));
-        co_await http::async_write(*stream, request, boost::asio::use_awaitable);
+        co_await stream.write(request);
 
         // Read only the header so the status can be checked before any event
         // bytes reach the handler. buffer_body delivers the body incrementally.
@@ -615,7 +608,7 @@ boost::asio::awaitable<void> sse_request(
         http::response_parser<http::buffer_body> parser;
         // SSE streams have no bound on length; disable Beast's 8 MiB default.
         parser.body_limit(boost::none);
-        co_await http::async_read_header(*stream, buffer, parser, boost::asio::use_awaitable);
+        co_await stream.read_header(buffer, parser);
 
         stage = HttpRequestException::Stage::HandleResponse;
         if (parser.get().result() != http::status::ok) {
@@ -629,7 +622,7 @@ boost::asio::awaitable<void> sse_request(
 
         // SSE connections sit idle between events, so the body phase must not be
         // aborted by the per-operation deadline set above.
-        boost::beast::get_lowest_layer(*stream).expires_never();
+        stream.expires_never();
 
         // Feed body bytes to the handler's put side. buffer_body writes directly
         // into `chunk`; `written` is how many bytes Beast produced this round.
@@ -639,13 +632,8 @@ boost::asio::awaitable<void> sse_request(
             body.data = chunk.data();
             body.size = chunk.size();
 
-            boost::system::error_code ec;
-            co_await http::async_read_some(
-                *stream,
-                buffer,
-                parser,
-                boost::asio::redirect_error(boost::asio::use_awaitable, ec)
-            );
+            boost::system::error_code ec =
+                co_await stream.read_some(buffer, parser);
 
             // buffer_body reports "output full, hand me another buffer" rather
             // than a genuine failure.
@@ -683,7 +671,7 @@ boost::asio::awaitable<void> sse_request(
 
         // Clean end (server closed) or cooperative stop: tear the stream down,
         // flavour-appropriately (close_notify for TLS, FIN for plain).
-        co_await shutdown_stream(*stream);
+        co_await stream.shutdown();
         co_return;
     }
     catch (const boost::system::system_error& exception) {
@@ -707,20 +695,21 @@ boost::asio::awaitable<void> sse_request(
 }
 
 /**
- * @brief Exchange one complete HTTP request/response over a connection stream
- *        and return the full response message.
+ * @brief Exchange one complete HTTP request/response over a connection and
+ *        return the full response message.
  *
  * The bounded counterpart of sse_request: sends @p request, reads one
  * complete response — header plus the entire body, kept bounded by Beast's
- * default body limit — tears the single-use stream down, and returns the whole
- * message (status, headers, and body).
+ * default body limit — tears the single-use connection down, and returns the
+ * whole message (status, headers, and body).
  *
  * Unlike sse_request and the handler overload below this performs **no status
  * gating**: every status carries its body back to the caller, because provider
  * error payloads arrive in non-2xx bodies and discarding them would hide
  * exactly what the caller needs to diagnose. Only transport-level faults
  * (write, read, timeout, network) throw, as HttpRequestException with the
- * failing stage.
+ * failing stage; an empty @p stream (no connection) throws
+ * HttpRequestException{Stage::Unknown} out of the facade's own guard.
  *
  * Timeouts: the write phase runs under DEFAULT_WRITE_TIMEOUT_SEC (deliberately
  * longer than the connect deadline), while the response read runs under
@@ -733,50 +722,43 @@ boost::asio::awaitable<void> sse_request(
  * module connections are single-use, so the stream is torn down after the one
  * exchange regardless of the server's offer.
  *
- * @tparam Stream  Connection stream flavour: endpoint::https_stream or
- *                 endpoint::http_stream; deduced from the argument.
- * @param stream   Single-use connection stream; torn down before returning.
+ * @param stream   Single-use connection of either flavour (the
+ *                 connection_stream facade); torn down before returning.
  * @param request  Fully constructed request to send.
  * @param read_timeout_sec  Deadline for reading the complete response, in
  *                 seconds; 0 waits indefinitely.
  * @return The complete response message (result(), headers, body()).
  */
-template<typename Stream>
-boost::asio::awaitable<boost::beast::http::response<boost::beast::http::string_body>>
+inline boost::asio::awaitable<boost::beast::http::response<boost::beast::http::string_body>>
 http_request(
-    std::unique_ptr<Stream> stream,
+    connection_stream stream,
     boost::beast::http::request<boost::beast::http::string_body> request,
     std::size_t read_timeout_sec = DEFAULT_HTTP_READ_TIMEOUT_SEC)
 {
     namespace http = boost::beast::http;
-
-    if (!stream) {
-        throw HttpRequestException(
-            HttpRequestException::Stage::Unknown,
-            "invalid stream pointer (= nullptr)");
-    }
 
     HttpRequestException::Stage stage = HttpRequestException::Stage::Write;
 
     try {
         // The write deadline is deliberately longer than the connect one: a
         // large request body on a slow uplink is not an unreachable service.
-        boost::beast::get_lowest_layer(*stream).expires_after(
+        // An empty stream reports itself here (the facade's guard), Unknown.
+        stream.expires_after(
             std::chrono::seconds(DEFAULT_WRITE_TIMEOUT_SEC));
-        co_await http::async_write(*stream, request, boost::asio::use_awaitable);
+        co_await stream.write(request);
 
         stage = HttpRequestException::Stage::Read;
         if (read_timeout_sec == 0) {
-            boost::beast::get_lowest_layer(*stream).expires_never();
+            stream.expires_never();
         } else {
-            boost::beast::get_lowest_layer(*stream).expires_after(
+            stream.expires_after(
                 std::chrono::seconds(read_timeout_sec));
         }
         boost::beast::flat_buffer buffer;
         http::response_parser<http::string_body> parser;
-        co_await http::async_read(*stream, buffer, parser, boost::asio::use_awaitable);
+        co_await stream.read(buffer, parser);
 
-        co_await shutdown_stream(*stream);
+        co_await stream.shutdown();
         co_return parser.release();
     }
     catch (const boost::system::system_error& exception) {
@@ -845,18 +827,18 @@ http_request(
  * @tparam Product  The handler's decoded event type. Like sse_request's, this
  *                  parameter is usually named explicitly at the call site —
  *                  a shared_ptr<DerivedHandler> cannot deduce it.
- * @tparam Stream   Connection stream flavour; deduced from the argument.
  * @param handler   Shared with the consumer task; put() is the only method
  *                  used.
- * @param stream    Single-use connection stream; torn down before put() runs.
+ * @param stream    Single-use connection of either flavour (the
+ *                  connection_stream facade); torn down before put() runs.
  * @param request   Fully constructed request to send.
  * @param read_timeout_sec  Read deadline forwarded to the direct overload,
  *                  in seconds; see there (0 waits indefinitely).
  */
-template<typename Product, typename Stream>
+template<typename Product>
 boost::asio::awaitable<void> http_request(
     std::shared_ptr<AsyncResponseHandler<Product>> handler,
-    std::unique_ptr<Stream> stream,
+    connection_stream stream,
     boost::beast::http::request<boost::beast::http::string_body> request,
     std::size_t read_timeout_sec = DEFAULT_HTTP_READ_TIMEOUT_SEC)
 {
@@ -924,17 +906,15 @@ boost::asio::awaitable<void> http_request(
  * bake the deadline in instead, at runtime, when the driver object is built,
  * and call it exactly like sse_request:
  *
- *   HttpRequestDriver<Product, Stream> driver{read_timeout_sec};
+ *   HttpRequestDriver<Product> driver{read_timeout_sec};
  *   co_await driver(handler, std::move(stream), std::move(request));
  *
  * Status gating, exception types, and teardown are the wrapped overload's,
  * unchanged.
  *
  * @tparam Product  The handler's decoded event type.
- * @tparam Stream   Connection stream flavour: endpoint::https_stream or
- *                  endpoint::http_stream.
  */
-template<typename Product, typename Stream>
+template<typename Product>
 class HttpRequestDriver {
 public:
     explicit HttpRequestDriver(
@@ -944,7 +924,7 @@ public:
 
     boost::asio::awaitable<void> operator()(
         std::shared_ptr<AsyncResponseHandler<Product>> handler,
-        std::unique_ptr<Stream> stream,
+        connection_stream stream,
         boost::beast::http::request<boost::beast::http::string_body> request) const
     {
         return http_request(

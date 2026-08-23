@@ -7,8 +7,8 @@
 #define BOOST_TEST_MODULE SSERequestTests
 #include <boost/test/unit_test.hpp>
 
-#include "endpoint/https_stream.hpp"
 #include "endpoint/http_request_exception.hpp"
+#include "endpoint/model_request.hpp"
 #include "endpoint/request.hpp"
 #include "loopback_server.hpp"
 
@@ -50,19 +50,14 @@ static std::string data_value(const std::vector<Field>& event) {
 }
 
 // The same driver-as-callable contract, pinned to sse_request for this
-// suite's handler and both stream flavours (see test_http_request.cpp).
+// suite's handler and the base/derived handler forms (see
+// test_http_request.cpp).
 static_assert(endpoint::RequestDriver<
-              decltype(&endpoint::sse_request<std::vector<Field>, endpoint::http_stream>),
-              endpoint::SSEResponseHandler<std::vector<Field>>,
-              endpoint::http_stream>);
+              decltype(&endpoint::sse_request<std::vector<Field>>),
+              endpoint::SSEResponseHandler<std::vector<Field>>>);
 static_assert(endpoint::RequestDriver<
-              decltype(&endpoint::sse_request<std::vector<Field>, endpoint::http_stream>),
-              FieldHandler,
-              endpoint::http_stream>);
-static_assert(endpoint::RequestDriver<
-              decltype(&endpoint::sse_request<std::vector<Field>, endpoint::https_stream>),
-              FieldHandler,
-              endpoint::https_stream>);
+              decltype(&endpoint::sse_request<std::vector<Field>>),
+              FieldHandler>);
 
 // --- client-side driver ------------------------------------------------------
 
@@ -87,8 +82,11 @@ static Exchange run_exchange(unsigned short port) {
         io,
         [&results, handler, port]() mutable -> asio::awaitable<void> {
             try {
-                auto stream = co_await endpoint::create_http_connection_stream(
-                    "127.0.0.1", std::to_string(port));
+                auto stream = co_await endpoint::create_connection_stream(
+                    endpoint::ResolvedEndpoint{
+                        .host = "127.0.0.1",
+                        .port = std::to_string(port),
+                        .tls = false});
                 http::request<http::string_body> request{http::verb::get, "/events", 11};
                 request.set(http::field::host, "localhost");
                 request.set(http::field::accept, "text/event-stream");
@@ -166,24 +164,25 @@ BOOST_AUTO_TEST_CASE(rejected_status_surfaces_as_handle_response_error)
     BOOST_CHECK(*results.consumer_end == SSEHandlerState::DONE);
 }
 
-BOOST_AUTO_TEST_CASE(null_arguments_are_rejected)
+BOOST_AUTO_TEST_CASE(empty_and_null_arguments_are_rejected)
 {
     asio::io_context io;
     auto handler = std::make_shared<FieldHandler>(io.get_executor());
     http::request<http::string_body> request{http::verb::get, "/events", 11};
     request.set(http::field::host, "localhost");
 
-    // A nullptr stream cannot deduce the Stream template parameter, so both
-    // flavours of sse_request's explicit-argument form are exercised here.
-    auto null_stream = asio::co_spawn(
+    // An empty connection_stream (no connection) is rejected by the facade's
+    // own guard — the same HttpRequestException{Unknown} the old null-pointer
+    // check produced, now thrown from the first stream operation.
+    auto empty_stream = asio::co_spawn(
         io,
-        endpoint::sse_request<std::vector<Field>, endpoint::http_stream>(
-            handler, nullptr, request),
+        endpoint::sse_request<std::vector<Field>>(
+            handler, endpoint::connection_stream{}, request),
         asio::use_future);
     io.run();
     try {
-        null_stream.get();
-        BOOST_FAIL("expected HttpRequestException for a null stream");
+        empty_stream.get();
+        BOOST_FAIL("expected HttpRequestException for an empty stream");
     } catch (const HttpRequestException& error) {
         BOOST_CHECK(error.stage() == HttpRequestException::Stage::Unknown);
     }
@@ -191,11 +190,8 @@ BOOST_AUTO_TEST_CASE(null_arguments_are_rejected)
     io.restart();
     auto null_handler = asio::co_spawn(
         io,
-        endpoint::sse_request<std::vector<Field>, endpoint::https_stream>(
-            nullptr,
-            std::make_unique<endpoint::https_stream>(
-                io.get_executor(), endpoint::get_global_ssl_context()),
-            request),
+        endpoint::sse_request<std::vector<Field>>(
+            nullptr, endpoint::connection_stream{}, request),
         asio::use_future);
     io.run();
     try {
