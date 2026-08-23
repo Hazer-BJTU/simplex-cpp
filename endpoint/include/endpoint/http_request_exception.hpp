@@ -15,6 +15,7 @@ class HttpRequestException : public std::runtime_error {
 public:
     enum class Stage {
         CreateRequest,
+        Connect,
         Write,
         Read,
         HandleResponse,
@@ -53,6 +54,7 @@ public:
     {
         switch (stage) {
             case Stage::CreateRequest:  return "while building the request";
+            case Stage::Connect:        return "while establishing the connection";
             case Stage::Write:          return "while sending the request";
             case Stage::Read:           return "while reading the response";
             case Stage::HandleResponse: return "while handling the response";

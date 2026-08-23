@@ -86,6 +86,21 @@ target_link_libraries(test_http_request PRIVATE
 )
 add_test(NAME test_http_request COMMAND test_http_request)
 
+# complete_once — the whole-exchange convenience: the Connect-stage wrapping
+# of connect failures (transport error code kept), the log-only exception
+# policy of the spawned producer task, and the inline consumer drain. Same
+# one-shot loopback shape; the refused-connect case needs no server at all.
+add_executable(test_complete_once test_complete_once.cpp)
+target_compile_options(test_complete_once PRIVATE
+    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG>
+)
+target_link_libraries(test_complete_once PRIVATE
+    endpoint_lib
+    Boost::unit_test_framework
+)
+add_test(NAME test_complete_once COMMAND test_complete_once)
+
 # Offline tests for the model request interpreter interface: lenient endpoint
 # resolution plus the contract's implementability through a stub.
 add_executable(test_model_request test_model_request.cpp)

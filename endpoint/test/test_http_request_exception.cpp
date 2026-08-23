@@ -94,6 +94,26 @@ BOOST_AUTO_TEST_CASE(http_status_is_retained_and_rendered)
                "(HTTP status 401; POST /chat/completions to api.deepseek.com)");
 }
 
+BOOST_AUTO_TEST_CASE(connect_stage_renders_connection_failure)
+{
+    // The shape a connection-establishment failure takes: an error code and
+    // the host, but no request line yet — nothing was sent.
+    const auto ec = make_error_code(boost::system::errc::connection_refused);
+    const HttpRequestException exception(
+        HttpRequestException::Stage::Connect,
+        "connection refused",
+        ec,
+        {},
+        {},
+        "example.com");
+
+    BOOST_CHECK(exception.stage() == HttpRequestException::Stage::Connect);
+    BOOST_TEST(exception.status() == 0u);
+    BOOST_TEST(exception.to_string() ==
+               "Failed while establishing the connection: connection refused (" +
+                   ec.message() + "; to example.com)");
+}
+
 BOOST_AUTO_TEST_CASE(to_string_omits_absent_context)
 {
     const HttpRequestException exception(
