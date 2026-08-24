@@ -641,9 +641,35 @@ boost::asio::awaitable<void> sse_request(
 
         stage = HttpRequestException::Stage::HandleResponse;
         if (parser.get().result() != http::status::ok) {
+            // A non-200 SSE reply is a rejection whose BODY carries the
+            // provider's diagnosis (the same rationale as the direct
+            // overload's no-gating policy: discarding it would hide exactly
+            // what the caller needs). Drain a bounded slice and fold it
+            // into the failure message — the stream is single-use and about
+            // to be torn down, so leaving the rest unread is fine.
+            constexpr std::size_t kMaxErrorBody = 2048;
+            std::string error_body;
+            std::array<char, 512> sink;
+            while (!parser.is_done() && error_body.size() < kMaxErrorBody) {
+                auto& body = parser.get().body();
+                body.data = sink.data();
+                body.size = sink.size();
+                boost::system::error_code ec =
+                    co_await stream.read_some(buffer, parser);
+                if (ec == http::error::need_buffer) {
+                    ec = {};
+                }
+                error_body.append(sink.data(), sink.size() - body.size);
+                if (ec) break;   // eof / truncation: keep what we have
+            }
+            std::string message = "SSE request rejected";
+            if (!error_body.empty()) {
+                message += ": ";
+                message += error_body.substr(0, kMaxErrorBody);
+            }
             throw wrap_request_failure(
                 stage,
-                "SSE request rejected",
+                std::move(message),
                 {},
                 request,
                 parser.get().result_int());
