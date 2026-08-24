@@ -97,8 +97,47 @@ BOOST_AUTO_TEST_CASE(message_item_optionals_omitted_when_empty) {
     BOOST_CHECK(!j.contains("reasoning"));
     BOOST_CHECK(!j.contains("action_status"));
     BOOST_CHECK(!j.contains("invokes"));
+    BOOST_CHECK(!j.contains("cost"));
     BOOST_CHECK(!j.contains("invoke_return"));
     BOOST_CHECK(!j.contains("extras"));
+}
+
+// The usage accounting a provider's final usage block maps onto: prompt /
+// generated / cache_hit as plain counts (cache_hit a subset of prompt).
+BOOST_AUTO_TEST_CASE(token_cost_roundtrips_on_a_model_response) {
+    MessageItem m;
+    m.type = MessageItemType::ModelResponse;
+    m.role = "assistant";
+    m.content.raw = "hi";
+    m.cost = TokenCost{.prompt = 100, .generated = 7, .cache_hit = 64};
+
+    nlohmann::json j = m;
+    BOOST_REQUIRE(j.contains("cost"));
+    BOOST_CHECK_EQUAL(j["cost"]["prompt"], 100);
+    BOOST_CHECK_EQUAL(j["cost"]["generated"], 7);
+    BOOST_CHECK_EQUAL(j["cost"]["cache_hit"], 64);
+
+    auto m2 = roundtrip(m);
+    BOOST_REQUIRE(m2.cost.has_value());
+    BOOST_CHECK_EQUAL(m2.cost->prompt, 100);
+    BOOST_CHECK_EQUAL(m2.cost->generated, 7);
+    BOOST_CHECK_EQUAL(m2.cost->cache_hit, 64);
+}
+
+// Partial cost objects keep the counting fields' zero defaults (protocol
+// rule 6), and a null under the key reads as absent (rule 3 hardening).
+BOOST_AUTO_TEST_CASE(token_cost_partial_and_null_read) {
+    TokenCost partial;
+    nlohmann::json{{"generated", 3}}.get_to(partial);
+    BOOST_CHECK_EQUAL(partial.prompt, 0);
+    BOOST_CHECK_EQUAL(partial.generated, 3);
+    BOOST_CHECK_EQUAL(partial.cache_hit, 0);
+
+    MessageItem m;
+    nlohmann::json{{"type", "model_response"}, {"role", "assistant"},
+                   {"cost", nullptr}}
+        .get_to(m);
+    BOOST_CHECK(!m.cost.has_value());
 }
 
 BOOST_AUTO_TEST_CASE(message_item_optionals_restored_when_set) {
