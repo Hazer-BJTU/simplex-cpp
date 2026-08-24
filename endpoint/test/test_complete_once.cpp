@@ -1,12 +1,12 @@
-// Deterministic, offline tests for complete_once and complete — the
-// whole-exchange conveniences: the Connect-stage wrapping of connect
+// Deterministic, offline tests for complete_once and the complete functor —
+// the whole-exchange conveniences: the Connect-stage wrapping of connect
 // failures (including the transport error code), the log-only exception
 // policy of the spawned producer task, the inline consumer drain to the
 // assembled model_io::MessageItem, the reader's post-mortem end states, and
-// complete's plain-retry classification. A loopback server accepts the
-// connect (the exchange never touches the socket — the fake drivers talk to
-// the handler only), and a released loopback port supplies the
-// refused-connect case. Every test runs its io_context to quiescence, so
+// the complete functor's plain-retry classification. A loopback server
+// accepts the connect (the exchange never touches the socket — the fake
+// drivers talk to the handler only), and a released loopback port supplies
+// the refused-connect case. Every test runs its io_context to quiescence, so
 // nothing here hangs on network timing.
 #define BOOST_TEST_MODULE complete_once
 #include <boost/test/unit_test.hpp>
@@ -157,6 +157,14 @@ static unsigned short refused_port() {
     probe.close();
     return port;
 }
+
+// Exposes complete's protected classification for the table test below.
+struct RecoverabilityProbe : endpoint::complete {
+    using endpoint::complete::complete;
+    bool recoverable(const HttpRequestException& failure) noexcept {
+        return _recoverable(failure);
+    }
+};
 
 // --- tests ----------------------------------------------------------------------
 
@@ -388,9 +396,12 @@ BOOST_AUTO_TEST_CASE(eof_without_terminal_is_faulted_with_no_error) {
 
 // --- the default recoverability table --------------------------------------------
 
-// Pins is_recoverable_by_default's verdicts: status first, then stage, then
-// the connect error-code categories.
+// Pins complete's default _recoverable verdicts: status first, then stage,
+// then the connect error-code categories.
 BOOST_AUTO_TEST_CASE(default_recoverability_table) {
+    asio::io_context io;
+    RecoverabilityProbe probe{io.get_executor()};
+
     using Stage = HttpRequestException::Stage;
     const auto failure = [](Stage stage, unsigned status = 0,
                             boost::system::error_code ec = {}) {
@@ -399,52 +410,52 @@ BOOST_AUTO_TEST_CASE(default_recoverability_table) {
     };
 
     // Status-led: the provider answered.
-    BOOST_CHECK(endpoint::is_recoverable_by_default(
+    BOOST_CHECK(probe.recoverable(
         failure(Stage::HandleResponse, 429)));
-    BOOST_CHECK(endpoint::is_recoverable_by_default(
+    BOOST_CHECK(probe.recoverable(
         failure(Stage::HandleResponse, 408)));
-    BOOST_CHECK(endpoint::is_recoverable_by_default(
+    BOOST_CHECK(probe.recoverable(
         failure(Stage::HandleResponse, 503)));
-    BOOST_CHECK(!endpoint::is_recoverable_by_default(
+    BOOST_CHECK(!probe.recoverable(
         failure(Stage::HandleResponse, 401)));
-    BOOST_CHECK(!endpoint::is_recoverable_by_default(
+    BOOST_CHECK(!probe.recoverable(
         failure(Stage::HandleResponse, 400)));
-    BOOST_CHECK(!endpoint::is_recoverable_by_default(
+    BOOST_CHECK(!probe.recoverable(
         failure(Stage::HandleResponse, 404)));
 
     // Stage-led (no status): mid-exchange transport is transient, our own
     // build bugs and the unclassifiable are not.
-    BOOST_CHECK(endpoint::is_recoverable_by_default(failure(Stage::Write)));
-    BOOST_CHECK(endpoint::is_recoverable_by_default(failure(Stage::Read)));
-    BOOST_CHECK(endpoint::is_recoverable_by_default(
+    BOOST_CHECK(probe.recoverable(failure(Stage::Write)));
+    BOOST_CHECK(probe.recoverable(failure(Stage::Read)));
+    BOOST_CHECK(probe.recoverable(
         failure(Stage::HandleResponse)));
-    BOOST_CHECK(!endpoint::is_recoverable_by_default(
+    BOOST_CHECK(!probe.recoverable(
         failure(Stage::CreateRequest)));
-    BOOST_CHECK(!endpoint::is_recoverable_by_default(failure(Stage::Unknown)));
+    BOOST_CHECK(!probe.recoverable(failure(Stage::Unknown)));
 
     // The bounded driver's timeout flavour classifies as its Read stage.
     const HttpRequestTimeoutException timeout("read timed out");
-    BOOST_CHECK(endpoint::is_recoverable_by_default(timeout));
+    BOOST_CHECK(probe.recoverable(timeout));
 
     // Connect error-code categories.
-    BOOST_CHECK(endpoint::is_recoverable_by_default(failure(
+    BOOST_CHECK(probe.recoverable(failure(
         Stage::Connect, 0, asio::error::connection_refused)));
-    BOOST_CHECK(endpoint::is_recoverable_by_default(failure(
+    BOOST_CHECK(probe.recoverable(failure(
         Stage::Connect, 0, asio::error::connection_reset)));
-    BOOST_CHECK(endpoint::is_recoverable_by_default(failure(
+    BOOST_CHECK(probe.recoverable(failure(
         Stage::Connect, 0, asio::error::timed_out)));
-    BOOST_CHECK(endpoint::is_recoverable_by_default(failure(
+    BOOST_CHECK(probe.recoverable(failure(
         Stage::Connect, 0, boost::beast::error::timeout)));
     // Resolver: TRY_AGAIN is transient, authoritative not-found is config.
-    BOOST_CHECK(endpoint::is_recoverable_by_default(failure(
+    BOOST_CHECK(probe.recoverable(failure(
         Stage::Connect, 0, asio::error::host_not_found_try_again)));
-    BOOST_CHECK(!endpoint::is_recoverable_by_default(failure(
+    BOOST_CHECK(!probe.recoverable(failure(
         Stage::Connect, 0, asio::error::host_not_found)));
     // TLS: a cut handshake may be a middlebox hiccup; anything else in the
     // SSL category (e.g. verification outcomes) is not retryable material.
-    BOOST_CHECK(endpoint::is_recoverable_by_default(failure(
+    BOOST_CHECK(probe.recoverable(failure(
         Stage::Connect, 0, asio::ssl::error::stream_truncated)));
-    BOOST_CHECK(!endpoint::is_recoverable_by_default(failure(
+    BOOST_CHECK(!probe.recoverable(failure(
         Stage::Connect, 0,
         boost::system::error_code(2, asio::ssl::error::get_stream_category()))));
 }
@@ -493,30 +504,21 @@ private:
     std::thread _thread;
 };
 
-// The fast-test retry budget: 1ms steps keep the suite snappy.
-static endpoint::RetryPolicy fast_policy(unsigned attempts) {
-    endpoint::RetryPolicy policy;
-    policy.max_attempts = attempts;
-    policy.initial_backoff = std::chrono::milliseconds(1);
-    policy.max_backoff = std::chrono::milliseconds(2);
-    return policy;
-}
-
-// Drives complete() on a fresh io_context; rethrows what it surfaced.
-// The reader is created once by the caller and reused across attempts —
-// complete()'s clear() rewinds it per attempt.
+// Drives one complete-functor exchange on a fresh io_context; rethrows what
+// it surfaced. The completer is the CALLER'S object and must outlive io.run()
+// (the coroutine holds `this`); the reader is created once and reused across
+// attempts — complete's clear() rewinds it per attempt.
 template<typename Driver>
 std::future<model_io::MessageItem> run_retry(
     asio::io_context& io,
+    endpoint::complete& completer,
     const endpoint::ResolvedEndpoint& where,
     std::shared_ptr<FakeReader> reader,
-    Driver driver,
-    endpoint::RetryPolicy policy = fast_policy(3))
+    Driver driver)
 {
-    auto operation = endpoint::complete<FakeDelta>(
-        io.get_executor(), where,
-        [] { return Request{http::verb::post, "/v1/complete", 11}; },
-        std::move(reader), std::move(driver), std::move(policy));
+    Request request{http::verb::post, "/v1/complete", 11};
+    auto operation = completer.operator()<FakeDelta>(
+        where, std::move(request), std::move(reader), std::move(driver));
     return asio::co_spawn(io, std::move(operation), asio::use_future);
 }
 
@@ -553,8 +555,12 @@ BOOST_AUTO_TEST_CASE(complete_retries_a_transient_fault_and_succeeds) {
 
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
+    // Fast backoffs for the test; budget = initial + 2 retries.
+    endpoint::complete completer(
+        io.get_executor(), std::chrono::milliseconds(1),
+        std::chrono::milliseconds(2), 2);
     const auto driver_calls = std::make_shared<int>(0);
-    auto result = run_retry(io, where, reader,
+    auto result = run_retry(io, completer, where, reader,
                              FlakyDriver{driver_calls});
     io.run();
 
@@ -595,8 +601,11 @@ BOOST_AUTO_TEST_CASE(complete_does_not_retry_a_non_recoverable_rejection) {
 
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
+    endpoint::complete completer(
+        io.get_executor(), std::chrono::milliseconds(1),
+        std::chrono::milliseconds(2), 2);
     const auto calls = std::make_shared<int>(0);
-    auto result = run_retry(io, where, reader, RejectedDriver{calls});
+    auto result = run_retry(io, completer, where, reader, RejectedDriver{calls});
     io.run();
 
     try {
@@ -635,8 +644,12 @@ BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {
 
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
+    // Budget: initial + 2 retries = 3 exchanges, all truncated.
+    endpoint::complete completer(
+        io.get_executor(), std::chrono::milliseconds(1),
+        std::chrono::milliseconds(2), 2);
     const auto calls = std::make_shared<int>(0);
-    auto result = run_retry(io, where, reader, EofDriver{calls});
+    auto result = run_retry(io, completer, where, reader, EofDriver{calls});
     io.run();
 
     try {
@@ -650,12 +663,12 @@ BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {
     server.join();
 }
 
-// A consumer abort is not a failure to retry — even a policy that calls
-// everything recoverable must not outvote the caller's abort(). The abort is
-// injected MID-attempt (a watchdog coroutine after 2ms of a 50ms idle
-// exchange — the real shape, a deadline firing from outside): complete()'s
-// loop-top clear() would wipe a pre-abort, so the old factory trick cannot
-// inject it anymore.
+// A consumer abort is not a failure to retry — even a classification that
+// calls everything recoverable must not outvote the caller's abort(). The
+// abort is injected MID-attempt (a watchdog coroutine after 2ms of a 50ms
+// idle exchange — the real shape, a deadline firing from outside):
+// complete's loop-top clear() would wipe a pre-abort, so the abort must
+// land inside the exchange itself.
 BOOST_AUTO_TEST_CASE(complete_never_retries_a_consumer_abort) {
     AcceptAllServer server(1);   // the abort ends it after one connect
 
@@ -684,14 +697,21 @@ BOOST_AUTO_TEST_CASE(complete_never_retries_a_consumer_abort) {
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
 
-    auto policy = fast_policy(3);
-    policy.is_recoverable = [](const HttpRequestException&) { return true; };
+    // The permissive verdict: everything recoverable — abort must still win.
+    struct AlwaysRetryable : endpoint::complete {
+        using endpoint::complete::complete;
+        bool _recoverable(const HttpRequestException&) noexcept override {
+            return true;
+        }
+    };
+    AlwaysRetryable completer(
+        io.get_executor(), std::chrono::milliseconds(1),
+        std::chrono::milliseconds(2), 2);
 
     const auto calls = std::make_shared<int>(0);
-    auto operation = endpoint::complete<FakeDelta>(
-        io.get_executor(), where,
-        [] { return Request{http::verb::post, "/v1/complete", 11}; },
-        reader, IdleDriver{calls}, std::move(policy));
+    Request request{http::verb::post, "/v1/complete", 11};
+    auto operation = completer.operator()<FakeDelta>(
+        where, std::move(request), reader, IdleDriver{calls});
     auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
 
     // The watchdog: the consumer's own deadline, firing mid-exchange.
