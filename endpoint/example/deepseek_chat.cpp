@@ -660,7 +660,7 @@ constexpr std::size_t kMaxAgentSteps = 8;
 /// whole turn a growing AgentInputState the interpreter flattens per
 /// exchange (which is how the tool history rides along).
 asio::awaitable<void> run_turn(
-    endpoint::complete& complete_model,
+    endpoint::complete<chat::ChatDelta>& complete_model,
     chat::ChatInterpreter& interpreter,
     const model_io::ModelEndpoint& endpoint_config,
     const endpoint::ResolvedEndpoint& resolved,
@@ -688,7 +688,7 @@ asio::awaitable<void> run_turn(
             state, endpoint_config, generation);
 
         model_io::MessageItem item =
-            co_await complete_model.operator()<chat::ChatDelta>(
+            co_await complete_model(
                 resolved, std::move(request), reader,
                 endpoint::sse_request<chat::ChatDelta>);
 
@@ -781,7 +781,7 @@ int main() {
     // The retry engine: one instance for the whole session, called once per
     // exchange (fresh connect + reader reset + request re-send per attempt).
     asio::io_context io;
-    endpoint::complete complete_model{io.get_executor()};
+    endpoint::complete<chat::ChatDelta> complete_model{io.get_executor()};
     chat::ChatInterpreter interpreter;
 
     std::string line;

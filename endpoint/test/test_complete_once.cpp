@@ -159,8 +159,8 @@ static unsigned short refused_port() {
 }
 
 // Exposes complete's protected classification for the table test below.
-struct RecoverabilityProbe : endpoint::complete {
-    using endpoint::complete::complete;
+struct RecoverabilityProbe : endpoint::complete<FakeDelta> {
+    using endpoint::complete<FakeDelta>::complete;
     bool recoverable(const HttpRequestException& failure) noexcept {
         return _recoverable(failure);
     }
@@ -511,13 +511,13 @@ private:
 template<typename Driver>
 std::future<model_io::MessageItem> run_retry(
     asio::io_context& io,
-    endpoint::complete& completer,
+    endpoint::complete<FakeDelta>& completer,
     const endpoint::ResolvedEndpoint& where,
     std::shared_ptr<FakeReader> reader,
     Driver driver)
 {
     Request request{http::verb::post, "/v1/complete", 11};
-    auto operation = completer.operator()<FakeDelta>(
+    auto operation = completer(
         where, std::move(request), std::move(reader), std::move(driver));
     return asio::co_spawn(io, std::move(operation), asio::use_future);
 }
@@ -556,7 +556,7 @@ BOOST_AUTO_TEST_CASE(complete_retries_a_transient_fault_and_succeeds) {
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
     // Fast backoffs for the test; budget = initial + 2 retries.
-    endpoint::complete completer(
+    endpoint::complete<FakeDelta> completer(
         io.get_executor(), std::chrono::milliseconds(1),
         std::chrono::milliseconds(2), 2);
     const auto driver_calls = std::make_shared<int>(0);
@@ -601,7 +601,7 @@ BOOST_AUTO_TEST_CASE(complete_does_not_retry_a_non_recoverable_rejection) {
 
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
-    endpoint::complete completer(
+    endpoint::complete<FakeDelta> completer(
         io.get_executor(), std::chrono::milliseconds(1),
         std::chrono::milliseconds(2), 2);
     const auto calls = std::make_shared<int>(0);
@@ -645,7 +645,7 @@ BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
     // Budget: initial + 2 retries = 3 exchanges, all truncated.
-    endpoint::complete completer(
+    endpoint::complete<FakeDelta> completer(
         io.get_executor(), std::chrono::milliseconds(1),
         std::chrono::milliseconds(2), 2);
     const auto calls = std::make_shared<int>(0);
@@ -698,8 +698,8 @@ BOOST_AUTO_TEST_CASE(complete_never_retries_a_consumer_abort) {
         std::make_shared<TerminalHandler>(io.get_executor()));
 
     // The permissive verdict: everything recoverable — abort must still win.
-    struct AlwaysRetryable : endpoint::complete {
-        using endpoint::complete::complete;
+    struct AlwaysRetryable : endpoint::complete<FakeDelta> {
+        using endpoint::complete<FakeDelta>::complete;
         bool _recoverable(const HttpRequestException&) noexcept override {
             return true;
         }
@@ -710,7 +710,7 @@ BOOST_AUTO_TEST_CASE(complete_never_retries_a_consumer_abort) {
 
     const auto calls = std::make_shared<int>(0);
     Request request{http::verb::post, "/v1/complete", 11};
-    auto operation = completer.operator()<FakeDelta>(
+    auto operation = completer(
         where, std::move(request), reader, IdleDriver{calls});
     auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
 

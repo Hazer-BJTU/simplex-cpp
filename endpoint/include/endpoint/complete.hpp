@@ -184,15 +184,22 @@ boost::asio::awaitable<model_io::MessageItem> complete_once(
  *        recoverable failure, reset the reader and re-read the WHOLE
  *        response from scratch.
  *
- * A stateful retry engine bound to one executor — construct it once and call
- * it per exchange, exactly like a driver:
+ * A stateful retry engine bound to one executor and one reader Delta —
+ * construct it once and call it per exchange, exactly like a driver:
  *
- *     endpoint::complete complete_model{io.get_executor()};
+ *     endpoint::complete<my::Delta> complete_model{io.get_executor()};
  *     auto response = co_await complete_model(
  *         resolved_endpoint,
  *         interpreter->build_request(state, endpoint, generation),
  *         reader,
  *         endpoint::sse_request<my::Delta>);
+ *
+ * Delta rides on the CLASS, not the call: a shared_ptr to a reader
+ * SUBCLASS converts to shared_ptr<ModelResponseReader<Delta>> at the
+ * parameter, but template argument deduction cannot see through that
+ * conversion — with Delta on operator() every call site had to spell it
+ * out (completer.operator()<my::Delta>(...)). Fixed at construction, the
+ * call is a plain function call and only the driver stays deduced.
  *
  * One call is up to _max_retry_attempts + 1 complete_once exchanges: the
  * INITIAL exchange plus, while failures classify as recoverable, one retry
@@ -234,7 +241,12 @@ boost::asio::awaitable<model_io::MessageItem> complete_once(
  * Concurrency: ONE operator() in flight per instance — the retry state
  * (_backoff, _timer) is shared and unsynchronized. Run concurrent exchanges
  * on separate instances (they share nothing but the executor).
+ *
+ * @tparam Delta The reader's decoded event type every exchange of this
+ *               engine drives (see the note above on why it is a class
+ *               parameter).
  */
+template<typename Delta>
 class complete {
 protected:
     boost::asio::any_io_executor _executor;
@@ -389,9 +401,6 @@ public:
      * and the concurrency contract; the parameters are one attempt's wiring,
      * reused verbatim every attempt.
      *
-     * @tparam Delta         The reader's decoded event type — usually named
-     *                       explicitly at the call site (a shared_ptr to a
-     *                       READER SUBCLASS cannot deduce it).
      * @tparam Driver        The request driver per exchange; deduced, must
      *                       be copyable (reused across attempts).
      * @param model_endpoint Where to connect, every attempt.
@@ -401,12 +410,14 @@ public:
      * @param reader         The consumer half, REUSED across attempts:
      *                       clear() rewinds it (and its handler) before
      *                       every attempt, so hand in a fresh one or a
-     *                       previously drained one.
+     *                       previously drained one — a READER SUBCLASS
+     *                       pointer converts here, no base-pointer cast
+     *                       needed at the call site.
      * @param driver         The exchange driver, every attempt.
      * @return The assembled model_io::MessageItem of the first attempt that
      *         reached the terminal event.
      */
-    template<typename Delta, RequestDriver<typename ModelResponseReader<Delta>::Handler> Driver>
+    template<RequestDriver<typename ModelResponseReader<Delta>::Handler> Driver>
     boost::asio::awaitable<model_io::MessageItem> operator () (
         ResolvedEndpoint model_endpoint,
         ModelRequestInterpreter::HttpRequest request,
