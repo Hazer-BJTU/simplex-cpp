@@ -28,7 +28,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace endpoint::responses {
+namespace llm::responses {
 
 /// Which incremental channel a ResponsesDelta belongs to.
 enum class DeltaKind {
@@ -59,13 +59,14 @@ struct ResponsesDelta {
 };
 
 /// True when this marker delta is a terminal lifecycle event
-/// (completed / incomplete / failed / error) — the consumer's break, i.e.
+/// (completed / incomplete / failed / cancelled / error) — the consumer's break, i.e.
 /// ModelResponseReader::_is_terminal for this delta type.
 inline bool is_terminal(const ResponsesDelta& delta) {
     if (delta.kind != DeltaKind::Marker) return false;
     return delta.text == "response.completed" ||
            delta.text == "response.incomplete" ||
            delta.text == "response.failed" ||
+           delta.text == "response.cancelled" ||
            delta.text == "error";
 }
 
@@ -83,4 +84,4 @@ inline std::ostream& operator<<(std::ostream& os, DeltaKind kind) {
     return os << "DeltaKind(?)";
 }
 
-} // namespace endpoint::responses
+} // namespace llm::responses

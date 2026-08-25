@@ -27,18 +27,18 @@
 #include "endpoint/http_request_exception.hpp"
 #include "endpoint/https_stream.hpp"
 #include "endpoint/request.hpp"
-#include "endpoint/responses/delta.hpp"
-#include "endpoint/responses/reader.hpp"
+#include "llm/responses/delta.hpp"
+#include "llm/responses/reader.hpp"
 #include "loopback_server.hpp"
 
 namespace asio = boost::asio;
 namespace http = boost::beast::http;
 
-using endpoint::responses::DeltaKind;
-using endpoint::responses::ResponsesDelta;
-using endpoint::responses::ResponsesReader;
-using endpoint::responses::StreamStatus;
-using endpoint::responses::is_terminal;
+using llm::responses::DeltaKind;
+using llm::responses::ResponsesDelta;
+using llm::responses::ResponsesReader;
+using llm::responses::StreamStatus;
+using llm::responses::is_terminal;
 
 // --- helpers ------------------------------------------------------------------
 
@@ -552,6 +552,58 @@ BOOST_AUTO_TEST_CASE(terminal_states_map_to_statuses_and_details) {
             BOOST_CHECK_EQUAL(extras["error"]["code"], "server_error");
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(cancelled_status_is_terminal_even_on_completed_event) {
+    asio::io_context io;
+    ResponsesReader reader(io.get_executor());
+    const std::string chunk = sse(nlohmann::json{
+        {"type", "response.completed"},
+        {"response", {
+            {"id", "r_cancelled"},
+            {"status", "cancelled"},
+            {"output", nlohmann::json::array()},
+        }},
+    });
+    read_all(io, reader, chunk);
+    BOOST_CHECK(reader.finished());
+    BOOST_CHECK(reader.status() == StreamStatus::Cancelled);
+}
+
+BOOST_AUTO_TEST_CASE(terminal_output_is_authoritative_per_content_part) {
+    asio::io_context io;
+    ResponsesReader reader(io.get_executor());
+    const nlohmann::json item = {
+        {"id", "msg_parts"},
+        {"type", "message"},
+        {"role", "assistant"},
+        {"status", "completed"},
+        {"content", nlohmann::json::array({
+            {{"type", "output_text"}, {"text", "first "}},
+            {{"type", "output_text"}, {"text", "second"}},
+        })},
+    };
+    const nlohmann::json unknown_item = {
+        {"id", "future_1"},
+        {"type", "future_tool_call"},
+        {"status", "completed"},
+        {"payload", {{"kept", true}}},
+    };
+    const std::string chunk = sse(nlohmann::json{
+        {"type", "response.completed"},
+        {"response", {
+            {"id", "r_parts"},
+            {"status", "completed"},
+            {"output", nlohmann::json::array({item, unknown_item})},
+        }},
+    });
+    read_all(io, reader, chunk);
+
+    BOOST_CHECK_EQUAL(reader.response().content.raw, "first second");
+    BOOST_REQUIRE(reader.response().extras);
+    const auto& output_items = (*reader.response().extras)["output_items"];
+    BOOST_REQUIRE_EQUAL(output_items.size(), 2u);
+    BOOST_CHECK_EQUAL(output_items[1], unknown_item);
 }
 
 // --- hooks (the PeekingHandler replacement) --------------------------------------

@@ -1,7 +1,8 @@
 # =============================================================================
 # llm — module
 #
-# Header-only contract between the llm host and model-provider plugins:
+# Contract between the llm host and model-provider plugins plus the compiled
+# canonical Responses-API model adapter.
 # LLMModel (the three-stage model interface), LLMModelExtensionContext (the
 # plugin descriptor + signed model factory), LLMDispatcher (loader + router).
 # Concrete providers are plugin .so libraries of their own (installed under
@@ -23,6 +24,27 @@ target_link_libraries(llm_iface INTERFACE
     dataclass_iface
     simplex_versioning
     Boost::headers)
+
+add_library(llm_responses STATIC
+    src/responses/model.cpp
+    src/responses/interpreter.cpp
+    src/responses/stream_handler.cpp
+    src/responses/reader.cpp
+)
+target_include_directories(llm_responses PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(llm_responses PUBLIC llm_iface endpoint_lib)
+target_compile_options(llm_responses PRIVATE
+    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+set_target_properties(llm_responses PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(LTO_SUPPORT)
+    set_target_properties(llm_responses PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+endif()
+
+add_subdirectory(providers/openai)
 
 if(BUILD_TESTS)
     add_subdirectory(test)

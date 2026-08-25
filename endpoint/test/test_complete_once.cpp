@@ -618,11 +618,56 @@ BOOST_AUTO_TEST_CASE(complete_does_not_retry_a_non_recoverable_rejection) {
     server.join();
 }
 
+// A budget of 0 retries is legitimate: exactly one exchange, and even a
+// classification that says recoverable cannot conjure a retry out of an
+// empty budget — the failure propagates after the initial attempt.
+BOOST_AUTO_TEST_CASE(complete_with_zero_retries_runs_a_single_exchange) {
+    AcceptAllServer server(1);
+
+    asio::io_context io;
+    endpoint::ResolvedEndpoint where{
+        .host = "127.0.0.1",
+        .port = std::to_string(server.wait_listening()),
+        .target = "/v1/complete",
+        .tls = false};
+
+    struct FlakyDriver {
+        std::shared_ptr<int> invocations;
+        boost::asio::awaitable<void> operator()(
+            std::shared_ptr<FakeHandlerBase> handler,
+            endpoint::connection_stream,
+            Request) const {
+            ++*invocations;
+            co_await handler->put("");
+            throw HttpRequestException(
+                HttpRequestException::Stage::Read, "transient read fault");
+        }
+    };
+
+    auto reader = std::make_shared<FakeReader>(
+        std::make_shared<TerminalHandler>(io.get_executor()));
+    // Budget: 0 retries — the initial exchange is the whole budget.
+    endpoint::complete<FakeDelta> completer(
+        io.get_executor(), std::chrono::milliseconds(1),
+        std::chrono::milliseconds(2), 0);
+    const auto calls = std::make_shared<int>(0);
+    auto result = run_retry(io, completer, where, reader, FlakyDriver{calls});
+    io.run();
+
+    try {
+        result.get();
+        BOOST_FAIL("the read fault did not propagate");
+    } catch (const HttpRequestException& e) {
+        BOOST_CHECK(e.stage() == HttpRequestException::Stage::Read);
+    }
+    BOOST_CHECK_EQUAL(*calls, 1);   // one exchange, budget spent
+    server.join();
+}
+
 // Every attempt ends truncated (server closes, no terminal event, no
 // exception): the budget is spent re-reading, then the truncation wrap
 // surfaces as the report.
-BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {
-    AcceptAllServer server(3);
+BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {    AcceptAllServer server(3);
 
     asio::io_context io;
     endpoint::ResolvedEndpoint where{

@@ -6,16 +6,16 @@
 // accumulation of these deltas into the contract record lives in
 // responses/reader.cpp (ResponsesReader).
 
-#include "endpoint/responses/stream_handler.hpp"
+#include "llm/responses/stream_handler.hpp"
 
 #include <algorithm>
 #include <array>
 #include <optional>
 #include <utility>
 
-#include "endpoint/responses/event_access.hpp"
+#include "llm/responses/event_access.hpp"
 
-namespace endpoint::responses {
+namespace llm::responses {
 
 namespace {
 
@@ -109,22 +109,6 @@ const std::array<const char*, 35> kIgnoredEventTypes = {
     "response.shell_call_output_content.done",
 };
 
-const std::array<const char*, 13> kIgnoredItemTypes = {
-    "file_search_call",
-    "web_search_call",
-    "mcp_call",
-    "mcp_list_tools",
-    "code_interpreter_call",
-    "image_generation_call",
-    "shell_call",
-    "custom_tool_call",
-    "custom_tool_call_output",
-    "computer_call",
-    "tool_search_call",
-    "compaction",
-    "item_reference",
-};
-
 template<std::size_t N>
 bool listed(const std::array<const char*, N>& names, const std::string& what) {
     return std::find(names.begin(), names.end(), what) != names.end();
@@ -168,9 +152,16 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
         return ignored("[DONE]");
     }
 
-    const nlohmann::json event =
+    nlohmann::json event =
         nlohmann::json::parse(data, nullptr, false);   // non-throwing
     if (event.is_discarded()) return ignored("unparsable-data");
+    const nlohmann::json raw_event = event;
+    try {
+        event = _dialect->normalize_event(std::move(event));
+    } catch (...) {
+        return ignored("dialect-normalization-error", raw_event);
+    }
+    if (!event.is_object()) return ignored("non-object-event");
     const std::string type = get_string(event, "type");
     if (type.empty()) return ignored("missing-type");
 
@@ -227,19 +218,11 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
     if (type == "response.output_item.added" || type == "response.output_item.done") {
         const nlohmann::json* item_json = find_object(event, "item");
         if (!item_json) return marker(event);   // lifecycle event, no payload
-        const std::string item_type = get_string(*item_json, "type");
 
-        if (item_type == "message" || item_type == "reasoning" ||
-            item_type == "function_call") {
-            // Handled kinds: the reader seeds/refreshes its accumulators
-            // from the marker's event JSON (item id, type, indices, and on
-            // done the authoritative item — encrypted_content included —
-            // for round-tripping).
-            return marker(event);
-        }
-
-        if (listed(kIgnoredItemTypes, item_type)) return ignored(type, event);
-        return ignored("unknown-item:" + item_type, event);
+        // All item lifecycle records reach the reader. It strongly maps the
+        // ReAct core and preserves every other completed item verbatim for
+        // forward-compatible round-tripping.
+        return marker(event);
     }
 
     if (type == "response.content_part.added" || type == "response.content_part.done") {
@@ -262,7 +245,8 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
     if (type == "response.queued" || type == "response.created" ||
         type == "response.in_progress" ||
         type == "response.completed" || type == "response.incomplete" ||
-        type == "response.failed" || type == "error") {
+        type == "response.failed" || type == "response.cancelled" ||
+        type == "error") {
         return marker(event);
     }
 
@@ -280,4 +264,4 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
     return ignored("unknown:" + type, event);
 }
 
-} // namespace endpoint::responses
+} // namespace llm::responses

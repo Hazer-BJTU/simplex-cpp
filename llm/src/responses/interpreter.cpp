@@ -1,7 +1,7 @@
 // responses/interpreter.cpp — AgentInputState -> POST /responses body.
 // Pure data mapping, no I/O; see interpreter.hpp for the layout contract.
 
-#include "endpoint/responses/interpreter.hpp"
+#include "llm/responses/interpreter.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace endpoint::responses {
+namespace llm::responses {
 
 namespace {
 
@@ -34,6 +34,48 @@ json content_part(const model_io::Content& content, const char* wire_type) {
         : json::object();
     part["type"] = wire_type;
     part["text"] = content.raw;
+    return part;
+}
+
+json input_content_part(const model_io::Content& content) {
+    json part = (content.extras && content.extras->is_object())
+        ? *content.extras
+        : json::object();
+    const std::string explicit_type = part.value("type", std::string());
+
+    if (content.type == model_io::ContentType::Text) {
+        part["type"] = "input_text";
+        part["text"] = content.raw;
+        return part;
+    }
+
+    if (explicit_type == "input_image") {
+        part["type"] = "input_image";
+        if (!part.contains("image_url") && !part.contains("file_id")) {
+            part["image_url"] = content.raw;
+        }
+        return part;
+    }
+    if (explicit_type == "input_file") {
+        part["type"] = "input_file";
+        if (!part.contains("file_data") && !part.contains("file_id") &&
+            !part.contains("file_url")) {
+            if (content.type == model_io::ContentType::ExternalRef) {
+                part["file_url"] = content.raw;
+            } else {
+                part["file_data"] = content.raw;
+            }
+        }
+        return part;
+    }
+
+    if (content.type == model_io::ContentType::ExternalRef) {
+        part["type"] = "input_image";
+        part["image_url"] = content.raw;
+    } else {
+        part["type"] = "input_file";
+        part["file_data"] = content.raw;
+    }
     return part;
 }
 
@@ -197,13 +239,13 @@ void emit_message_item(json::array_t& input, const model_io::MessageItem& item) 
     json message;
     message["type"] = "message";
     message["role"] = derived_role(item);
-    message["content"] = json::array({content_part(item.content, "input_text")});
+    message["content"] = json::array({input_content_part(item.content)});
     input.push_back(std::move(message));
 }
 
 } // namespace
 
-ModelRequestInterpreter::HttpRequest ResponsesInterpreter::build_request(
+endpoint::ModelRequestInterpreter::HttpRequest ResponsesInterpreter::build_request(
     const model_io::AgentInputState& conversation,
     const model_io::ModelEndpoint& endpoint,
     const nlohmann::json& generation) {
@@ -216,7 +258,7 @@ ModelRequestInterpreter::HttpRequest ResponsesInterpreter::build_request(
             "generation carries no non-empty \"model\"");
     }
     // Hard error #2 comes with the resolver.
-    const ResolvedEndpoint where = resolve_endpoint(endpoint);
+    const endpoint::ResolvedEndpoint where = endpoint::resolve_endpoint(endpoint);
 
     json body = generation;   // verbatim passthrough; builder keys below win
 
@@ -291,11 +333,13 @@ ModelRequestInterpreter::HttpRequest ResponsesInterpreter::build_request(
         }
     }
 
+    _dialect->transform_request(body);
+
     HttpRequest request{http::verb::post, where.target, 11};
     // RFC 9110 §7.2: the Host authority carries the port when non-default —
     // vhost-routing proxies match on it.
     request.set(http::field::host, where.authority());
-    apply_transport_headers(request, endpoint);
+    endpoint::apply_transport_headers(request, endpoint);
     // SSE-specific headers live here, not in the shared helper.
     request.set(http::field::accept, "text/event-stream");
     request.set(http::field::content_type, "application/json");
@@ -304,4 +348,4 @@ ModelRequestInterpreter::HttpRequest ResponsesInterpreter::build_request(
     return request;
 }
 
-} // namespace endpoint::responses
+} // namespace llm::responses

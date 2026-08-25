@@ -144,9 +144,8 @@ add_subdirectory(dataclass)
 # as the llm model plugins' config JSON.
 add_subdirectory(yamlconfig)
 # llm after dataclass + extension_framework + versioning: the model-plugin
-# contract (LLMModel / LLMModelExtensionContext / LLMDispatcher) is header-only
-# (llm_iface) and builds on the generic extension framework (contexts, factory
-# resolution, dispatcher), the model_io data contract, and the build-generated
-# LLM_PLUGIN_ABI_VERSION. Concrete provider plugins are separate libraries of
-# their own (installed under <exe>/plugins/llm) and do not live in this module.
+# contract (LLMModel / LLMModelExtensionContext / LLMDispatcher), canonical
+# Responses adapter, and provider plugins build on the generic extension
+# framework, endpoint transport and model_io data contract. Runtime providers
+# are emitted under <exe>/plugins/llm.
 add_subdirectory(llm)

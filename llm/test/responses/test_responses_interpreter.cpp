@@ -17,10 +17,10 @@
 #include "dataclass/model_io.hpp"
 #include "endpoint/http_request_exception.hpp"
 #include "endpoint/model_request.hpp"
-#include "endpoint/responses/interpreter.hpp"
+#include "llm/responses/interpreter.hpp"
 
 namespace http = boost::beast::http;
-using endpoint::responses::ResponsesInterpreter;
+using llm::responses::ResponsesInterpreter;
 using model_io::AgentInputState;
 using model_io::ModelEndpoint;
 

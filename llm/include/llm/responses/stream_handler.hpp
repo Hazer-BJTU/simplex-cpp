@@ -58,9 +58,10 @@
 #include <nlohmann/json.hpp>
 
 #include "endpoint/request.hpp"
-#include "endpoint/responses/delta.hpp"
+#include "llm/responses/dialect.hpp"
+#include "llm/responses/delta.hpp"
 
-namespace endpoint::responses {
+namespace llm::responses {
 
 /**
  * @brief Decodes a Responses-API SSE stream into one delta per event.
@@ -71,13 +72,22 @@ namespace endpoint::responses {
  * final by design: the consumer half of this layer is ResponsesReader, not
  * a subclass.
  */
-class ResponsesStreamHandler final
+class ResponsesStreamHandler
     : public endpoint::SSEResponseHandler<ResponsesDelta> {
 public:
-    using endpoint::SSEResponseHandler<ResponsesDelta>::SSEResponseHandler;
+    explicit ResponsesStreamHandler(
+        boost::asio::any_io_executor executor,
+        std::size_t line_window = endpoint::DEFAULT_SSE_LINE_WINDOW,
+        ResponsesDialectPtr dialect = default_dialect())
+        : endpoint::SSEResponseHandler<ResponsesDelta>(
+              std::move(executor), line_window),
+          _dialect(dialect ? std::move(dialect) : default_dialect()) {}
 
 protected:
     ResponsesDelta _handle_message(std::span<const LineInfo> message) override;
+
+private:
+    ResponsesDialectPtr _dialect;
 };
 
-} // namespace endpoint::responses
+} // namespace llm::responses

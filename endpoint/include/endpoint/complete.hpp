@@ -365,11 +365,15 @@ public:
      *                            fleet-level thundering herds matter.
      * @param max_backoff         Backoff ceiling; clamped up to
      *                            initial_backoff when smaller.
-     * @param max_retry_attempts  RETRIES after the initial exchange — the
-     *                            initial exchange is not counted. A retry
+     * @param max_retry_attempts  The MAXIMUM number of RETRIES after the
+     *                            initial exchange — only retries count
+     *                            (the initial exchange does not, so the
+     *                            count starts at 0), and a successful
+     *                            exchange returns immediately. A retry
      *                            re-sends the request and re-bills its
-     *                            tokens, so keep this small; 0 is clamped
-     *                            to 1.
+     *                            tokens, so keep this small; 0 means no
+     *                            retry at all: one exchange, whose failure
+     *                            propagates immediately.
      */
     complete(
         boost::asio::any_io_executor executor,
@@ -379,7 +383,7 @@ public:
     ): _executor(std::move(executor)),
        _initial_backoff(initial_backoff),
        _max_backoff(max_backoff > initial_backoff ? max_backoff : initial_backoff),
-       _max_retry_attempts(std::max(max_retry_attempts, 1u)),
+       _max_retry_attempts(std::max(max_retry_attempts, 0u)),
        _backoff(_initial_backoff),
        _timer(_executor) {}
 

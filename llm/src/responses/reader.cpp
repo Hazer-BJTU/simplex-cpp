@@ -5,14 +5,14 @@
 // only, never throws — a throw is a reader bug that next() escalates to a
 // stream fault (finish(ERROR)) after the fact.
 
-#include "endpoint/responses/reader.hpp"
+#include "llm/responses/reader.hpp"
 
 #include <algorithm>
 #include <utility>
 
-#include "endpoint/responses/event_access.hpp"
+#include "llm/responses/event_access.hpp"
 
-namespace endpoint::responses {
+namespace llm::responses {
 
 namespace {
 
@@ -39,18 +39,93 @@ std::string join_summary_parts(
     return joined;
 }
 
+std::string join_content_parts(
+    const std::map<std::size_t, std::string>& parts) {
+    std::string joined;
+    for (const auto& [index, text] : parts) joined += text;
+    return joined;
+}
+
+std::optional<std::uint64_t> get_uint64(
+    const nlohmann::json& object, const char* key) {
+    if (!object.is_object()) return std::nullopt;
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_number_unsigned()) return std::nullopt;
+    return it->get<std::uint64_t>();
+}
+
 } // namespace
 
-ResponsesReader::ItemState& ResponsesReader::_item(const std::string& id) {
+ResponsesReader::ItemState& ResponsesReader::_item(
+    const std::string& id, std::optional<std::size_t> output_index) {
     // Deltas may legitimately arrive before output_item.added (or without it
     // ever coming): open an untyped slot rather than losing the bytes.
-    ItemState& slot = _items[id];
+    const std::string key = !id.empty()
+        ? id
+        : output_index
+            ? std::string("@output:") + std::to_string(*output_index)
+            : std::string("@orphan");
+    ItemState& slot = _items[key];
     if (slot.arrival == ItemState::kUnstamped) {
         // First touch: record the creation order _assemble uses to break
         // output_index ties.
         slot.arrival = _next_arrival++;
     }
+    if (output_index) slot.output_index = *output_index;
     return slot;
+}
+
+void ResponsesReader::_accumulate_output_item(
+    const nlohmann::json& item_json,
+    std::optional<std::size_t> output_index,
+    bool authoritative) {
+    if (!item_json.is_object()) return;
+    ItemState& item = _item(get_string(item_json, "id"), output_index);
+    const std::string item_type = get_string(item_json, "type");
+    if (!item_type.empty()) item.type = item_type;
+
+    if (item_type == "message") {
+        const auto content = item_json.find("content");
+        if (content != item_json.end() && content->is_array()) {
+            for (std::size_t index = 0; index < content->size(); ++index) {
+                const auto& part = (*content)[index];
+                const std::string part_type = get_string(part, "type");
+                if (part_type == "output_text") {
+                    const std::string text = get_string(part, "text");
+                    if (authoritative || !text.empty()) item.text_parts[index] = text;
+                } else if (part_type == "refusal") {
+                    const std::string refusal = get_string(part, "refusal");
+                    if (authoritative || !refusal.empty()) {
+                        item.refusal_parts[index] = refusal;
+                    }
+                }
+            }
+        }
+    } else if (item_type == "reasoning") {
+        const auto summary = item_json.find("summary");
+        if (summary != item_json.end() && summary->is_array()) {
+            for (std::size_t index = 0; index < summary->size(); ++index) {
+                const std::string text = get_string((*summary)[index], "text");
+                if (authoritative || !text.empty()) item.summary_parts[index] = text;
+            }
+        }
+        const auto content = item_json.find("content");
+        if (content != item_json.end() && content->is_array()) {
+            for (std::size_t index = 0; index < content->size(); ++index) {
+                const std::string text = get_string((*content)[index], "text");
+                if (authoritative || !text.empty()) item.text_parts[index] = text;
+            }
+        }
+    } else if (item_type == "function_call") {
+        const std::string call_id = get_string(item_json, "call_id");
+        const std::string name = get_string(item_json, "name");
+        const std::string arguments = get_string(item_json, "arguments");
+        if (authoritative || !call_id.empty()) item.call_id = call_id;
+        if (authoritative || !name.empty()) item.name = name;
+        if (authoritative || !arguments.empty()) item.arguments = arguments;
+    }
+
+    if (authoritative) item.done_item = item_json;
 }
 
 void ResponsesReader::_accumulate(const ResponsesDelta& delta) {
@@ -61,26 +136,22 @@ void ResponsesReader::_accumulate(const ResponsesDelta& delta) {
         // orphan item ever gets.
         case DeltaKind::Text:
         case DeltaKind::ReasoningText: {
-            ItemState& item = _item(delta.item_id);
-            if (delta.output_index) item.output_index = *delta.output_index;
-            item.text += delta.text;
+            ItemState& item = _item(delta.item_id, delta.output_index);
+            item.text_parts[delta.content_index.value_or(0)] += delta.text;
             return;
         }
         case DeltaKind::Refusal: {
-            ItemState& item = _item(delta.item_id);
-            if (delta.output_index) item.output_index = *delta.output_index;
-            item.refusal += delta.text;
+            ItemState& item = _item(delta.item_id, delta.output_index);
+            item.refusal_parts[delta.content_index.value_or(0)] += delta.text;
             return;
         }
         case DeltaKind::ToolCallArgs: {
-            ItemState& item = _item(delta.item_id);
-            if (delta.output_index) item.output_index = *delta.output_index;
+            ItemState& item = _item(delta.item_id, delta.output_index);
             item.arguments += delta.text;
             return;
         }
         case DeltaKind::ReasoningSummary: {
-            ItemState& item = _item(delta.item_id);
-            if (delta.output_index) item.output_index = *delta.output_index;
+            ItemState& item = _item(delta.item_id, delta.output_index);
             item.summary_parts[delta.content_index.value_or(0)] += delta.text;
             return;
         }
@@ -108,6 +179,9 @@ void ResponsesReader::_set_terminal_status(const std::string& type) {
     if (type == "response.completed") _status = StreamStatus::Completed;
     else if (type == "response.incomplete") _status = StreamStatus::Incomplete;
     else if (type == "response.failed") _status = StreamStatus::Failed;
+    else if (type == "response.cancelled" || type == "cancelled") {
+        _status = StreamStatus::Cancelled;
+    }
     else if (type == "error") _status = StreamStatus::Errored;
 }
 
@@ -121,26 +195,39 @@ void ResponsesReader::_accumulate_marker(const nlohmann::json& event) {
     // overwrites nothing: absent fields are not declarations of emptiness.)
 
     if (type == "response.output_text.done") {
-        ItemState& item = _item(get_string(event, "item_id"));
+        ItemState& item = _item(get_string(event, "item_id"),
+                                get_index(event, "output_index"));
         std::string full = get_string(event, "text");
-        if (!full.empty()) item.text = std::move(full);
+        if (!full.empty()) {
+            item.text_parts[get_index(event, "content_index").value_or(0)] =
+                std::move(full);
+        }
         return;
     }
     if (type == "response.refusal.done") {
-        ItemState& item = _item(get_string(event, "item_id"));
+        ItemState& item = _item(get_string(event, "item_id"),
+                                get_index(event, "output_index"));
         std::string full = get_string(event, "refusal");
-        if (!full.empty()) item.refusal = std::move(full);
+        if (!full.empty()) {
+            item.refusal_parts[get_index(event, "content_index").value_or(0)] =
+                std::move(full);
+        }
         return;
     }
     if (type == "response.reasoning_text.done") {
-        ItemState& item = _item(get_string(event, "item_id"));
+        ItemState& item = _item(get_string(event, "item_id"),
+                                get_index(event, "output_index"));
         std::string full = get_string(event, "text");
-        if (!full.empty()) item.text = std::move(full);
+        if (!full.empty()) {
+            item.text_parts[get_index(event, "content_index").value_or(0)] =
+                std::move(full);
+        }
         return;
     }
     if (type == "response.reasoning_summary_text.done") {
         // Authoritative for ITS part only; other parts keep their own text.
-        ItemState& item = _item(get_string(event, "item_id"));
+        ItemState& item = _item(get_string(event, "item_id"),
+                                get_index(event, "output_index"));
         std::string full = get_string(event, "text");
         if (!full.empty()) {
             item.summary_parts[summary_part_index(event)] = std::move(full);
@@ -148,7 +235,8 @@ void ResponsesReader::_accumulate_marker(const nlohmann::json& event) {
         return;
     }
     if (type == "response.function_call_arguments.done") {
-        ItemState& item = _item(get_string(event, "item_id"));
+        ItemState& item = _item(get_string(event, "item_id"),
+                                get_index(event, "output_index"));
         std::string arguments = get_string(event, "arguments");
         if (!arguments.empty()) item.arguments = std::move(arguments);
         std::string name = get_string(event, "name");
@@ -158,7 +246,8 @@ void ResponsesReader::_accumulate_marker(const nlohmann::json& event) {
     if (type == "response.reasoning_summary_part.done") {
         // The part lifecycle's done event carries the part's authoritative
         // text; capture it into its indexed slot.
-        ItemState& item = _item(get_string(event, "item_id"));
+        ItemState& item = _item(get_string(event, "item_id"),
+                                get_index(event, "output_index"));
         if (const nlohmann::json* part = find_object(event, "part")) {
             std::string text = get_string(*part, "text");
             if (!text.empty()) {
@@ -174,32 +263,8 @@ void ResponsesReader::_accumulate_marker(const nlohmann::json& event) {
     if (type == "response.output_item.added" || type == "response.output_item.done") {
         const nlohmann::json* item_json = find_object(event, "item");
         if (!item_json) return;   // lifecycle event, no payload
-        const std::string item_type = get_string(*item_json, "type");
-        if (item_type != "message" && item_type != "reasoning" &&
-            item_type != "function_call") {
-            return;   // ignored/unknown kinds never reach a Marker anyway
-        }
-
-        ItemState& item = _item(get_string(*item_json, "id"));
-        item.type = item_type;
-        if (auto index = get_index(event, "output_index")) {
-            item.output_index = *index;
-        }
-        if (item_type == "function_call") {
-            // Seed/refresh the correlation + name from the item json.
-            std::string call_id = get_string(*item_json, "call_id");
-            if (!call_id.empty()) item.call_id = std::move(call_id);
-            std::string name = get_string(*item_json, "name");
-            if (!name.empty()) item.name = std::move(name);
-            std::string arguments = get_string(*item_json, "arguments");
-            if (!arguments.empty()) item.arguments = std::move(arguments);
-        }
-        if (type == "response.output_item.done") {
-            // The completed item is the authoritative version (the
-            // `added` reasoning item may lack encrypted_content) —
-            // capture it whole for round-tripping in later requests.
-            item.done_item = *item_json;
-        }
+        _accumulate_output_item(*item_json, get_index(event, "output_index"),
+                                type == "response.output_item.done");
         return;
     }
 
@@ -208,7 +273,8 @@ void ResponsesReader::_accumulate_marker(const nlohmann::json& event) {
     if (type == "response.queued" || type == "response.created" ||
         type == "response.in_progress" ||
         type == "response.completed" || type == "response.incomplete" ||
-        type == "response.failed" || type == "error") {
+        type == "response.failed" || type == "response.cancelled" ||
+        type == "error") {
         if (const nlohmann::json* response = find_object(event, "response")) {
             std::string id = get_string(*response, "id");
             if (!id.empty()) _response_id = std::move(id);
@@ -222,12 +288,23 @@ void ResponsesReader::_accumulate_marker(const nlohmann::json& event) {
             if (const nlohmann::json* error = find_object(*response, "error")) {
                 _terminal_details = *error;
             }
+            if (const auto output = response->find("output");
+                output != response->end() && output->is_array()) {
+                for (std::size_t index = 0; index < output->size(); ++index) {
+                    _accumulate_output_item((*output)[index], index, true);
+                }
+            }
+            const std::string response_status = get_string(*response, "status");
+            if (response_status == "completed") _status = StreamStatus::Completed;
+            else if (response_status == "incomplete") _status = StreamStatus::Incomplete;
+            else if (response_status == "failed") _status = StreamStatus::Failed;
+            else if (response_status == "cancelled") _status = StreamStatus::Cancelled;
         }
         if (type == "error") {
             // A bare error event IS the error record (code/message/param).
             _terminal_details = event;
         }
-        _set_terminal_status(type);
+        if (_status == StreamStatus::Streaming) _set_terminal_status(type);
         return;
     }
 
@@ -262,11 +339,11 @@ void ResponsesReader::_assemble() {
 
     // Per-kind folding of one item into the single assembled message.
     const auto as_message = [&](const ItemState& item) {
-        text += item.text;
-        refusal += item.refusal;
+        text += join_content_parts(item.text_parts);
+        refusal += join_content_parts(item.refusal_parts);
     };
     const auto as_reasoning = [&](const ItemState& item) {
-        reasoning_text += item.text;
+        reasoning_text += join_content_parts(item.text_parts);
         summary += join_summary_parts(item.summary_parts);
         if (item.done_item.is_object()) reasoning_items.push_back(item.done_item);
     };
@@ -306,7 +383,8 @@ void ResponsesReader::_assemble() {
                 as_call(*item);
             } else if (!join_summary_parts(item->summary_parts).empty()) {
                 as_reasoning(*item);
-            } else if (!item->text.empty() || !item->refusal.empty()) {
+            } else if (!join_content_parts(item->text_parts).empty() ||
+                       !join_content_parts(item->refusal_parts).empty()) {
                 as_message(*item);
             }
         }
@@ -339,6 +417,27 @@ void ResponsesReader::_assemble() {
 
     if (!invokes.empty()) result.invokes = std::move(invokes);
 
+    if (_usage && _usage->is_object()) {
+        model_io::TokenCost cost;
+        bool has_cost = false;
+        if (auto value = get_uint64(*_usage, "input_tokens")) {
+            cost.prompt = *value;
+            has_cost = true;
+        }
+        if (auto value = get_uint64(*_usage, "output_tokens")) {
+            cost.generated = *value;
+            has_cost = true;
+        }
+        if (const auto details = _usage->find("input_tokens_details");
+            details != _usage->end() && details->is_object()) {
+            if (auto value = get_uint64(*details, "cached_tokens")) {
+                cost.cache_hit = *value;
+                has_cost = true;
+            }
+        }
+        if (has_cost) result.cost = cost;
+    }
+
     nlohmann::json extras = nlohmann::json::object();
     if (!_response_id.empty()) extras["response_id"] = _response_id;
     if (_usage) extras["usage"] = *_usage;
@@ -353,4 +452,4 @@ void ResponsesReader::_assemble() {
     _response = std::move(result);
 }
 
-} // namespace endpoint::responses
+} // namespace llm::responses

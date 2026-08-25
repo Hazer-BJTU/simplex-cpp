@@ -2,8 +2,8 @@
  * @file test_models.cpp
  * @brief In-memory unit tests for the llm model-plugin contract (llm/models.hpp).
  *
- * Covers the contract without a real provider .so (the dynamic path is
- * deferred with the first concrete provider):
+ * Covers the core contract with in-memory contexts. The concrete provider
+ * dynamic path is exercised separately by test_openai_plugin.cpp.
  *
  *   - LLMModelType vocabulary: every value distinct, tail-appendable policy.
  *   - LLMModel defaults: converse() throws LLMUnsupportedOperation; the

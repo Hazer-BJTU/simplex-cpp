@@ -30,7 +30,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace endpoint::responses::detail {
+namespace llm::responses::detail {
 
 /// The nested object under @p key, or null when absent/not an object.
 inline const nlohmann::json* find_object(
@@ -70,4 +70,4 @@ inline std::size_t summary_part_index(const nlohmann::json& event) {
     return 0;
 }
 
-} // namespace endpoint::responses::detail
+} // namespace llm::responses::detail

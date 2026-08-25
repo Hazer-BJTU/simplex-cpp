@@ -59,34 +59,15 @@
 #include "dataclass/model_io.hpp"
 #include "endpoint/model_request.hpp"
 #include "endpoint/request.hpp"
-#include "endpoint/responses/delta.hpp"
-#include "endpoint/responses/stream_handler.hpp"
+#include "llm/responses/delta.hpp"
+#include "llm/responses/dialect.hpp"
+#include "llm/responses/status.hpp"
+#include "llm/responses/stream_handler.hpp"
 
-namespace endpoint::responses {
+namespace llm::responses {
 
 /// Terminal state of one streamed response (see status()).
-enum class StreamStatus {
-    Streaming,  ///< no terminal event yet.
-    Completed,  ///< response.completed.
-    Incomplete, ///< response.incomplete (truncation etc.).
-    Failed,     ///< response.failed.
-    Errored,    ///< a bare `error` event.
-    Aborted,    ///< ended without a terminal event: transport fault,
-                ///< external finish(), abort(), or a reader-side exception.
-};
-
-// Streaming for diagnostics (Boost.Test assertions, logging).
-inline std::ostream& operator<<(std::ostream& os, StreamStatus status) {
-    switch (status) {
-        case StreamStatus::Streaming:  return os << "Streaming";
-        case StreamStatus::Completed:  return os << "Completed";
-        case StreamStatus::Incomplete: return os << "Incomplete";
-        case StreamStatus::Failed:     return os << "Failed";
-        case StreamStatus::Errored:    return os << "Errored";
-        case StreamStatus::Aborted:    return os << "Aborted";
-    }
-    return os << "StreamStatus(?)";
-}
+using StreamStatus = ResponseStatus;
 
 /**
  * @brief Consumes a Responses-API delta stream into one MessageItem.
@@ -97,14 +78,20 @@ inline std::ostream& operator<<(std::ostream& os, StreamStatus status) {
  * adopts) the ResponsesStreamHandler whose stream it is the sole consumer
  * of — hand reader->handler() to sse_request on the producer side.
  */
-class ResponsesReader final
+class ResponsesReader
     : public endpoint::ModelResponseReader<ResponsesDelta> {
 public:
     /// Create the decoder this reader will drain, and adopt it.
     explicit ResponsesReader(boost::asio::any_io_executor executor,
-                             std::size_t line_window = DEFAULT_SSE_LINE_WINDOW)
+                             std::size_t line_window = endpoint::DEFAULT_SSE_LINE_WINDOW,
+                             ResponsesDialectPtr dialect = default_dialect())
         : ModelResponseReader(std::make_shared<ResponsesStreamHandler>(
-              std::move(executor), line_window)) {}
+              std::move(executor), line_window, std::move(dialect))) {}
+
+    explicit ResponsesReader(boost::asio::any_io_executor executor,
+                             ResponsesDialectPtr dialect,
+                             std::size_t line_window = endpoint::DEFAULT_SSE_LINE_WINDOW)
+        : ResponsesReader(std::move(executor), line_window, std::move(dialect)) {}
 
     /// Adopt an already-created decoder (e.g. wired into a custom producer).
     explicit ResponsesReader(std::shared_ptr<ResponsesStreamHandler> handler)
@@ -124,6 +111,12 @@ public:
             return StreamStatus::Aborted;
         }
         return _status;
+    }
+
+    ResponseStatus response_status() const noexcept { return status(); }
+
+    const std::optional<nlohmann::json>& terminal_details() const noexcept {
+        return _terminal_details;
     }
 
     /// The reuse reset: the base's stream/handler rewind plus this layer's
@@ -161,8 +154,10 @@ private:
         // orders deterministically by (output_index, arrival) instead of the
         // id-lexicographic map order. Stamped on first touch by _item().
         std::size_t arrival = kUnstamped;
-        std::string text;          // message output_text / reasoning_text channel
-        std::string refusal;       // message refusal part
+        // Content is independently indexed. A `.done` event is authoritative
+        // only for its own part and must not overwrite sibling parts.
+        std::map<std::size_t, std::string> text_parts;
+        std::map<std::size_t, std::string> refusal_parts;
         // Reasoning summaries arrive as INDEXED parts (summary_index on part
         // lifecycle events, content_index on the text channel): kept separate
         // so one part's text (and its .done overwrite) cannot clobber
@@ -174,7 +169,12 @@ private:
         nlohmann::json done_item;
     };
 
-    ItemState& _item(const std::string& id);   // find-or-create, lenient
+    ItemState& _item(
+        const std::string& id,
+        std::optional<std::size_t> output_index = std::nullopt);
+    void _accumulate_output_item(const nlohmann::json& item,
+                                 std::optional<std::size_t> output_index,
+                                 bool authoritative);
     void _accumulate_marker(const nlohmann::json& event);
     void _set_terminal_status(const std::string& type);   // name -> StreamStatus
 
@@ -187,4 +187,4 @@ private:
     std::optional<nlohmann::json> _terminal_details; // incomplete_details | error
 };
 
-} // namespace endpoint::responses
+} // namespace llm::responses

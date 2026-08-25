@@ -76,11 +76,13 @@
 //
 
 #include <nlohmann/json.hpp>
+#include <utility>
 
 #include "dataclass/model_io.hpp"
 #include "endpoint/model_request.hpp"
+#include "llm/responses/dialect.hpp"
 
-namespace endpoint::responses {
+namespace llm::responses {
 
 /**
  * @brief Builds one complete POST /responses request from the conversation.
@@ -88,12 +90,18 @@ namespace endpoint::responses {
  * See the header block for the body layout and the round-trip conventions
  * shared with ResponsesStreamHandler.
  */
-class ResponsesInterpreter final : public endpoint::ModelRequestInterpreter {
+class ResponsesInterpreter : public endpoint::ModelRequestInterpreter {
 public:
+    explicit ResponsesInterpreter(ResponsesDialectPtr dialect = default_dialect())
+        : _dialect(dialect ? std::move(dialect) : default_dialect()) {}
+
     HttpRequest build_request(
         const model_io::AgentInputState& conversation,
         const model_io::ModelEndpoint& endpoint,
         const nlohmann::json& generation) override;
+
+private:
+    ResponsesDialectPtr _dialect;
 };
 
-} // namespace endpoint::responses
+} // namespace llm::responses

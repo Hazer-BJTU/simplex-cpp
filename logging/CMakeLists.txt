@@ -24,6 +24,7 @@ set(LIB_NAME "logging_lib")
 add_library(${LIB_NAME} STATIC
     "${LOGGING_SOURCE_DIR}/src/logger.cpp"
 )
+set_target_properties(${LIB_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(${LIB_NAME} PUBLIC
     "${LOGGING_SOURCE_DIR}/include"
 )

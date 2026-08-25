@@ -23,15 +23,15 @@
 #include <nlohmann/json.hpp>
 
 #include "endpoint/request.hpp"
-#include "endpoint/responses/delta.hpp"
-#include "endpoint/responses/stream_handler.hpp"
+#include "llm/responses/delta.hpp"
+#include "llm/responses/stream_handler.hpp"
 
 namespace asio = boost::asio;
 
-using endpoint::responses::DeltaKind;
-using endpoint::responses::ResponsesDelta;
-using endpoint::responses::ResponsesStreamHandler;
-using endpoint::responses::is_terminal;
+using llm::responses::DeltaKind;
+using llm::responses::ResponsesDelta;
+using llm::responses::ResponsesStreamHandler;
+using llm::responses::is_terminal;
 
 // --- helpers ------------------------------------------------------------------
 
@@ -339,7 +339,9 @@ BOOST_AUTO_TEST_CASE(unhandled_categories_surface_as_ignored_deltas) {
     BOOST_CHECK(deltas[2].kind == DeltaKind::Ignored);
     BOOST_CHECK(deltas[3].kind == DeltaKind::Ignored);
     BOOST_CHECK(deltas[4].kind == DeltaKind::Ignored);
-    BOOST_CHECK(deltas[5].kind == DeltaKind::Ignored);
+    // Item lifecycles are markers even for unsupported item kinds so the
+    // reader can retain the authoritative item for future round-tripping.
+    BOOST_CHECK(deltas[5].kind == DeltaKind::Marker);
     BOOST_CHECK_EQUAL(deltas[5].text, "response.output_item.added");
     BOOST_CHECK(deltas[6].kind == DeltaKind::Ignored);
     BOOST_CHECK_EQUAL(deltas[6].text, "unknown:response.novel_event");
