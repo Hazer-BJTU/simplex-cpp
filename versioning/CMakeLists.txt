@@ -37,6 +37,16 @@
 #       layout/vtable, so rebuilt plugins must report v4.
 set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 
+# LLM model-plugin ABI contract version. Bump on binary-incompatible
+# llm::LLMModel / llm::LLMModelExtensionContext changes (llm/include/llm/models.hpp
+# aliases it as llm::LLM_PLUGIN_ABI_VERSION, mirroring the lang-plugin pattern).
+#
+# History:
+#   v1: first llm plugin contract. LLMModel (executor + config ctor, build/release
+#       lifecycle hooks, converse/integrate virtuals) and LLMModelExtensionContext
+#       (get_type/warm/create_model + the signed create_llm_model factory alias).
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 1)
+
 # ---- Render the generated header --------------------------------------------
 # Generated under build/generated/ so it is found as "versioning/version.hpp"
 # once build/generated/ is on the include path (carried by simplex_versioning).

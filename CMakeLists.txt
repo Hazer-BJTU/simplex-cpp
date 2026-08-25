@@ -138,3 +138,10 @@ add_subdirectory(endpoint)
 # functions, so the module depends only on simplex_thirdparty_iface
 # (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
+# llm after dataclass + extension_framework + versioning: the model-plugin
+# contract (LLMModel / LLMModelExtensionContext / LLMDispatcher) is header-only
+# (llm_iface) and builds on the generic extension framework (contexts, factory
+# resolution, dispatcher), the model_io data contract, and the build-generated
+# LLM_PLUGIN_ABI_VERSION. Concrete provider plugins are separate libraries of
+# their own (installed under <exe>/plugins/llm) and do not live in this module.
+add_subdirectory(llm)

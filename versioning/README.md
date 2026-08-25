@@ -12,11 +12,14 @@ Single source of truth for project version constants. A parallel sibling of
 | `simplex::VERSION_MAJOR/MINOR/PATCH` | top-level `project(simplex_cpp VERSION …)` |
 | `simplex::VERSION_STRING` | `PROJECT_VERSION` |
 | `simplex::LANG_PLUGIN_ABI_VERSION` | `SIMPLEX_LANG_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
+| `simplex::LLM_PLUGIN_ABI_VERSION` | `SIMPLEX_LLM_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
 
 The plugin ABI version was migrated here from
 `indextools/include/lang_plugin.hpp`; that header now `#include`s the generated
 header and keeps an `indextools::` namespace alias, so existing references are
-unchanged.
+unchanged. The LLM model-plugin ABI constant follows the same pattern:
+`llm/include/llm/models.hpp` includes the generated header and aliases
+`simplex::LLM_PLUGIN_ABI_VERSION` as `llm::LLM_PLUGIN_ABI_VERSION`.
 
 ## Consuming the generated header
 
