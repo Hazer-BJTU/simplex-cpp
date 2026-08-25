@@ -260,3 +260,88 @@ BOOST_AUTO_TEST_CASE(invocables_embed_through_a_custom_renderer) {
     BOOST_CHECK_NE(r.markdown.find("Full-text search over the index"),
                    std::string::npos);
 }
+
+// ---- JSON contract -------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(template_round_trips_through_json) {
+    PromptTemplate t = three_tier_template();
+    t.heading_level = 3;
+    const std::string markdown_before = t.render().markdown;
+
+    PromptTemplate copy = nlohmann::json(t).get<PromptTemplate>();
+
+    BOOST_CHECK_EQUAL(copy.heading_level, 3);
+    BOOST_REQUIRE_EQUAL(copy.size(), t.size());
+    // Section-by-section identity, in stored order.
+    for (auto a = t.begin(), b = copy.begin(); a != t.end(); ++a, ++b) {
+        BOOST_CHECK_EQUAL(a->name, b->name);
+        BOOST_CHECK_EQUAL(a->title, b->title);
+        BOOST_CHECK(a->stability == b->stability);
+        BOOST_CHECK_EQUAL(a->text, b->text);
+    }
+    // The structure is the durable artefact: the restored template renders
+    // the identical bytes again.
+    BOOST_CHECK_EQUAL(copy.render().markdown, markdown_before);
+}
+
+BOOST_AUTO_TEST_CASE(stored_layout_reenters_through_the_admission_rules) {
+    // A stability regression in stored sections is rejected, not smuggled
+    // in — from_json rebuilds through add_section().
+    nlohmann::json backwards = nlohmann::json::parse(R"json({
+      "heading_level": 2,
+      "sections": [
+        {"name": "a", "title": "", "stability": "volatile", "text": "x"},
+        {"name": "b", "title": "", "stability": "immutable", "text": "y"}
+      ]
+    })json");
+    PromptTemplate untouched;
+    untouched.add_section("kept", "Kept", "original");
+    BOOST_CHECK_THROW(backwards.get_to(untouched), std::logic_error);
+    // Strong guarantee: the rejected document left the destination alone.
+    BOOST_REQUIRE_EQUAL(untouched.size(), 1u);
+    BOOST_CHECK_EQUAL(untouched.begin()->name, "kept");
+
+    // Duplicate section names are rejected the same way.
+    nlohmann::json duplicate = nlohmann::json::parse(R"json({
+      "sections": [
+        {"name": "a", "title": "", "stability": "immutable", "text": "x"},
+        {"name": "a", "title": "", "stability": "immutable", "text": "y"}
+      ]
+    })json");
+    BOOST_CHECK_THROW(duplicate.get<PromptTemplate>(), std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(from_json_keeps_defaults_and_canonicalises_bodies) {
+    // No heading_level key: member default (2) survives.
+    nlohmann::json j = nlohmann::json::parse(R"json({
+      "sections": [
+        {"name": "s", "title": "S", "stability": "growing",
+         "text": "line  \n\nnext\n\n"}
+      ]
+    })json");
+    PromptTemplate t = j.get<PromptTemplate>();
+
+    BOOST_CHECK_EQUAL(t.heading_level, 2);
+    BOOST_REQUIRE_EQUAL(t.size(), 1u);
+    // Hand-edited bodies enter through the same canonicalisation as live
+    // ones: per-line trailing whitespace stripped, edge blank lines dropped,
+    // interior blank lines kept.
+    BOOST_CHECK_EQUAL(t.begin()->text, "line\n\nnext");
+    BOOST_CHECK(t.begin()->stability == SectionStability::Growing);
+
+    // An unrecognised tier string fails closed to Immutable.
+    nlohmann::json odd_tier = nlohmann::json::parse(R"json({
+      "sections": [{"name": "s", "stability": "sometimes", "text": "x"}]
+    })json");
+    BOOST_CHECK(odd_tier.get<PromptTemplate>().begin()->stability
+                == SectionStability::Immutable);
+}
+
+BOOST_AUTO_TEST_CASE(empty_template_round_trips_to_empty_sections) {
+    PromptTemplate t;
+    nlohmann::json j = t;
+    BOOST_CHECK_EQUAL(j["heading_level"], 2);
+    BOOST_CHECK(j["sections"].is_array());
+    BOOST_CHECK(j["sections"].empty());
+    BOOST_CHECK(j.get<PromptTemplate>().size() == 0u);
+}

@@ -48,6 +48,15 @@
 // future model adapter) can tell how far a previous prompt's prefix
 // survived a mutation.
 //
+// JSON form: the STRUCTURE is the durable artefact — heading_level plus the
+// ordered sections (name / title / stability / text), serialised under the
+// same protocol as dataclass/model_io.hpp (snake_case keys, unknown keys
+// ignored, missing keys keep defaults). Stored text is already canonical,
+// so a round-trip re-enters the bodies through add_section()'s admission
+// rules and comes back byte-identical; render() stays the on-the-fly
+// assembly into the markdown a provider request embeds. SectionSpan stays
+// deliberately unserialised: it is a render artifact, not contract data.
+//
 // Thread safety: no internal locking. Concurrent render() calls are safe
 // (all reads); mutations must be externally serialised against reads and
 // each other. Iterators point into internal storage and are invalidated by
@@ -62,6 +71,8 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace model_io {
 
 // ---- stability tiers ---------------------------------------------------------
@@ -74,6 +85,14 @@ enum class SectionStability {
     Volatile,  // rewrite()/erase() allowed; expected at the tail.
 };
 
+// Immutable first: an unrecognised tier string fails closed to the tier
+// that can never invalidate cached bytes.
+NLOHMANN_JSON_SERIALIZE_ENUM(SectionStability, {
+    {SectionStability::Immutable, "immutable"},
+    {SectionStability::Growing, "growing"},
+    {SectionStability::Volatile, "volatile"},
+})
+
 // ---- records -----------------------------------------------------------------
 
 // One named piece of the prompt. Plain data: no methods, no invariants
@@ -84,6 +103,23 @@ struct PromptSection {
     SectionStability stability = SectionStability::Immutable;
     std::string text;        // canonicalised body, verbatim at render.
 };
+
+inline void to_json(nlohmann::json& j, const PromptSection& s) {
+    j = nlohmann::json{
+        {"name", s.name},
+        {"title", s.title},
+        {"stability", s.stability},
+        {"text", s.text},
+    };
+}
+
+inline void from_json(const nlohmann::json& j, PromptSection& s) {
+    if (auto it = j.find("name"); it != j.end()) it->get_to(s.name);
+    if (auto it = j.find("title"); it != j.end()) it->get_to(s.title);
+    if (auto it = j.find("stability"); it != j.end())
+        it->get_to(s.stability);
+    if (auto it = j.find("text"); it != j.end()) it->get_to(s.text);
+}
 
 // A section's byte range in RenderedPrompt::markdown — separators and the
 // final newline excluded. Deliberately NOT a serialized record: it is a
@@ -318,6 +354,37 @@ PromptTemplate::locate_(std::string_view name, const char* who) {
                                ": no section named '" + std::string(name) +
                                "'");
     return it;
+}
+
+// ---- JSON contract --------------------------------------------------------------
+//
+// The structured form is what round-trips: heading_level plus the sections
+// in order, exactly as stored. from_json rebuilds through add_section(), so
+// a stored layout re-passes the same admission rules the live API enforces
+// (duplicate names and stability regressions throw std::logic_error instead
+// of smuggling an invalid layout in) and bodies re-enter through the same
+// canonicalisation — idempotent on stored text, normalising on hand-edited
+// JSON. Both functions work on a side template and move it in place, so a
+// rejected or partially-read document leaves the destination untouched.
+
+inline void to_json(nlohmann::json& j, const PromptTemplate& t) {
+    j = nlohmann::json{{"heading_level", t.heading_level}};
+    j["sections"] = nlohmann::json::array();
+    for (const auto& s : t) j["sections"].push_back(s);
+}
+
+inline void from_json(const nlohmann::json& j, PromptTemplate& t) {
+    PromptTemplate rebuilt;
+    if (auto it = j.find("heading_level"); it != j.end())
+        it->get_to(rebuilt.heading_level);
+    if (auto it = j.find("sections"); it != j.end() && it->is_array()) {
+        for (const auto& entry : *it) {
+            PromptSection s = entry.get<PromptSection>();
+            rebuilt.add_section(std::move(s.name), std::move(s.title),
+                                std::move(s.text), s.stability);
+        }
+    }
+    t = std::move(rebuilt);
 }
 
 } // namespace model_io
