@@ -20,10 +20,11 @@
 // before any type that embeds the record by value, so each struct is followed
 // immediately by its to_json/from_json and the types are ordered so
 // dependencies come first: Content -> InvokeQuery -> InvokeReturn ->
-// MessageItem -> AgentLoopStep -> UserLoopStep -> Invocable. The session
-// container AgentInputState closes the file and is the ONE composite without
-// a serialisation pair: it embeds PromptTemplate (prompt_template.hpp), which
-// is text management only and deliberately outside the JSON contract.
+// TokenCost -> MessageItem -> AgentLoopStep -> UserLoopStep -> Invocable. The
+// session container AgentInputState closes the file and is the ONE composite
+// without a serialisation pair: it embeds PromptTemplate
+// (prompt_template.hpp), which is text management only and deliberately
+// outside the JSON contract.
 //
 // The tool-definition record is part of the contract: Invocable (tool
 // registration section) names a tool and carries its argument schema; the
@@ -90,6 +91,7 @@
 //  7. Round-trip invariant: json(x).get<X>() reproduces x.
 //
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -229,6 +231,34 @@ inline void from_json(const nlohmann::json& j, InvokeReturn& r) {
     detail::read_optional(j, "extras", r.extras);
 }
 
+// Token accounting for one model exchange, as reported by the provider's
+// usage block (e.g. the Responses API's `usage`: input_tokens /
+// output_tokens / input_tokens_details.cached_tokens). Plain integer counts;
+// `cache_hit` counts the prompt tokens served from the provider's cache and
+// is a SUBSET of `prompt`, not additive to it. Carried on
+// MessageItem::cost, which only ModelResponse items populate.
+struct TokenCost {
+    std::uint64_t prompt = 0;    // tokens the request fed the model.
+    std::uint64_t generated = 0; // tokens the model produced.
+    std::uint64_t cache_hit = 0; // prompt tokens served from cache (subset).
+};
+
+inline void to_json(nlohmann::json& j, const TokenCost& c) {
+    j = nlohmann::json{
+        {"prompt", c.prompt},
+        {"generated", c.generated},
+        {"cache_hit", c.cache_hit},
+    };
+}
+
+inline void from_json(const nlohmann::json& j, TokenCost& c) {
+    if (auto it = j.find("prompt"); it != j.end()) it->get_to(c.prompt);
+    if (auto it = j.find("generated"); it != j.end())
+        it->get_to(c.generated);
+    if (auto it = j.find("cache_hit"); it != j.end())
+        it->get_to(c.cache_hit);
+}
+
 // What kind of conversational item a MessageItem represents.
 enum class MessageItemType {
     UserInput,     // a user message (`role` typically "user").
@@ -244,19 +274,23 @@ NLOHMANN_JSON_SERIALIZE_ENUM(MessageItemType, {
 
 // A single message. Overloaded across the three MessageItemType roles via
 // `type`; the optional fields are populated as the role demands (e.g.
-// `reasoning`/`invokes` on model responses, the result in `content` for invoke
-// returns). An invoke-return item may additionally embed its originating
-// InvokeReturn record in `invoke_return`: the query inside carries the id that
-// correlates the result back to the entry in the model_response's `invokes`
-// (the wire-level "tool call id" providers require on tool-result messages).
-// `content` stays the canonical payload position; the record's `output` is
-// expected to carry the same bytes when both are set.
+// `reasoning`/`invokes`/`cost` on model responses, the result in `content`
+// for invoke returns). An invoke-return item may additionally embed its
+// originating InvokeReturn record in `invoke_return`: the query inside
+// carries the id that correlates the result back to the entry in the
+// model_response's `invokes` (the wire-level "tool call id" providers
+// require on tool-result messages). `content` stays the canonical payload
+// position; the record's `output` is expected to carry the same bytes when
+// both are set.
 struct MessageItem {
     MessageItemType type = MessageItemType::UserInput;
     std::string role;
     Content content;
     std::optional<Content> reasoning, action_status;
     std::optional<std::vector<InvokeQuery>> invokes;
+    // On a ModelResponse item: the exchange's token accounting as the
+    // provider reported it (nullopt when the provider reported none).
+    std::optional<TokenCost> cost;
     // On an InvokeReturn item: the originating call + result as one record —
     // provenance for correlating the result to the call that produced it.
     std::optional<InvokeReturn> invoke_return;
@@ -272,6 +306,7 @@ inline void to_json(nlohmann::json& j, const MessageItem& m) {
     if (m.reasoning) j["reasoning"] = *m.reasoning;
     if (m.action_status) j["action_status"] = *m.action_status;
     if (m.invokes) j["invokes"] = *m.invokes;
+    if (m.cost) j["cost"] = *m.cost;
     if (m.invoke_return) j["invoke_return"] = *m.invoke_return;
     if (m.extras) j["extras"] = *m.extras;
 }
@@ -283,6 +318,7 @@ inline void from_json(const nlohmann::json& j, MessageItem& m) {
     detail::read_optional(j, "reasoning", m.reasoning);
     detail::read_optional(j, "action_status", m.action_status);
     detail::read_optional(j, "invokes", m.invokes);
+    detail::read_optional(j, "cost", m.cost);
     detail::read_optional(j, "invoke_return", m.invoke_return);
     detail::read_optional(j, "extras", m.extras);
 }
@@ -501,6 +537,10 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
 //   |                            arguments: json satisfying that Invocable's
 //   |                                      argument_schema
 //   |                            extras?  : optional<json>
+//   |        cost?          : optional<TokenCost> — on model_response items,
+//   |                          the exchange's token counts (prompt /
+//   |                          generated / cache_hit) as the provider
+//   |                          reported them
 //   |        invoke_return? : optional<InvokeReturn> — on an invoke_return
 //   |                          item, the originating call + result as one
 //   |                          record; query.id correlates the result back to

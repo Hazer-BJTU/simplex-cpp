@@ -11,6 +11,12 @@
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 
+// The unified factory's flavour selection is a compile-time property.
+static_assert(endpoint::is_tls_stream_v<endpoint::https_stream>);
+static_assert(
+    endpoint::default_connection_port_v<endpoint::https_stream> ==
+    endpoint::DEFAULT_HTTPS_PORT);
+
 BOOST_AUTO_TEST_CASE(global_context_is_a_thread_safe_singleton)
 {
     constexpr std::size_t thread_count = 8;
@@ -42,6 +48,25 @@ BOOST_AUTO_TEST_CASE(connection_refusal_is_reported)
 
     asio::io_context io;
     auto operation = endpoint::create_https_connection_stream(
+        io.get_executor(), "127.0.0.1", std::to_string(unused_port));
+    auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
+    io.run();
+
+    BOOST_CHECK_THROW(result.get(), boost::system::system_error);
+}
+
+BOOST_AUTO_TEST_CASE(unified_factory_reports_tls_connection_refusal)
+{
+    asio::io_context reservation_io;
+    tcp::acceptor reservation(
+        reservation_io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    const auto unused_port = reservation.local_endpoint().port();
+    reservation.close();
+
+    asio::io_context io;
+    // Direct instantiation of the TLS flavour; the default context argument
+    // selects the global verified context.
+    auto operation = endpoint::create_connection_stream<endpoint::https_stream>(
         io.get_executor(), "127.0.0.1", std::to_string(unused_port));
     auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
     io.run();

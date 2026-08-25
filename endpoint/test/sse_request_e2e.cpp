@@ -5,8 +5,9 @@
 // drives sse_request + a get() consumer and checks the delivered events and the
 // handler lifecycle. Like https_connectivity_check it is a plain executable and
 // is not registered with CTest.
-#include "endpoint/https_stream.hpp"
+#include "endpoint/connection_stream.hpp"
 #include "endpoint/http_request_exception.hpp"
+#include "endpoint/https_stream.hpp"
 #include "endpoint/request.hpp"
 
 #include <boost/asio.hpp>
@@ -186,7 +187,7 @@ int main() {
 
     asio::io_context io;
     const unsigned short port = port_future.get();  // server is now listening
-    auto stream = connect_client(io, client_ctx, port);
+    endpoint::connection_stream stream{connect_client(io, client_ctx, port)};
 
     http::request<http::string_body> request{http::verb::get, "/events", 11};
     request.set(http::field::host, "localhost");

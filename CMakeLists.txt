@@ -138,3 +138,15 @@ add_subdirectory(endpoint)
 # functions, so the module depends only on simplex_thirdparty_iface
 # (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
+# yamlconfig after dataclass: header-only YAML->JSON config bridge
+# (yamlconfig_iface), consuming only the vendored third-party tree
+# (yaml-cpp + nlohmann/json). It feeds JSON-shaped config consumers such
+# as the llm model plugins' config JSON.
+add_subdirectory(yamlconfig)
+# llm after dataclass + extension_framework + versioning: the model-plugin
+# contract (LLMModel / LLMModelExtensionContext / LLMDispatcher) is header-only
+# (llm_iface) and builds on the generic extension framework (contexts, factory
+# resolution, dispatcher), the model_io data contract, and the build-generated
+# LLM_PLUGIN_ABI_VERSION. Concrete provider plugins are separate libraries of
+# their own (installed under <exe>/plugins/llm) and do not live in this module.
+add_subdirectory(llm)

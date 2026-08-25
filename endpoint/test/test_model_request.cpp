@@ -1,10 +1,14 @@
 // Offline tests for the model request interpreter interface: the lenient
 // endpoint resolver, and the interface's implementability/callability
-// through a minimal stub. Pure data checks — no network, no filesystem.
+// through a minimal stub. Pure data checks — no network, no filesystem —
+// except the connection-stream factory, which is exercised against a
+// loopback listener (offline, no external network).
 #define BOOST_TEST_MODULE model_request
 #include <boost/test/unit_test.hpp>
 
 #include <array>
+#include <string>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -215,4 +219,65 @@ BOOST_AUTO_TEST_CASE(stub_enforces_the_two_hard_errors) {
     BOOST_CHECK_THROW(
         interpreter.build_request(state, endpoint, nlohmann::json{{"model", "m"}}),
         HttpRequestException);
+}
+
+// ---- create_connection_stream: scheme to flavour -----------------------------
+
+BOOST_AUTO_TEST_CASE(resolved_stream_factory_connects_the_plain_flavour) {
+    namespace asio = boost::asio;
+    using tcp = asio::ip::tcp;
+
+    asio::io_context server_io;
+    tcp::acceptor acceptor(
+        server_io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    const auto port = acceptor.local_endpoint().port();
+
+    std::thread server([&acceptor] {
+        tcp::socket socket(acceptor.get_executor());
+        acceptor.accept(socket);
+        boost::system::error_code ignored;
+        socket.shutdown(tcp::socket::shutdown_both, ignored);
+        socket.close(ignored);
+    });
+
+    ModelEndpoint e;
+    e.base_url = "http://localhost:" + std::to_string(port);
+    const auto resolved = resolve_endpoint(e);
+
+    // this_coro::executor convenience overload, driven by co_spawn. The
+    // http:// scheme selects the plain flavour INSIDE the returned
+    // connection_stream — the runtime choice this factory exists for.
+    asio::io_context io;
+    auto operation = endpoint::create_connection_stream(resolved);
+    auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
+    io.run();
+    auto stream = result.get();   // rethrows a connect failure, if any
+
+    // A connected, non-TLS stream came back behind the facade.
+    BOOST_REQUIRE(!stream.empty());
+    BOOST_CHECK(!stream.is_tls());
+    stream.close();
+    server.join();
+}
+
+BOOST_AUTO_TEST_CASE(resolved_stream_factory_reports_tls_refusal) {
+    namespace asio = boost::asio;
+    using tcp = asio::ip::tcp;
+
+    asio::io_context reservation_io;
+    tcp::acceptor reservation(
+        reservation_io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    const auto unused_port = reservation.local_endpoint().port();
+    reservation.close();
+
+    ModelEndpoint e;
+    e.base_url = "https://127.0.0.1:" + std::to_string(unused_port);
+    const auto resolved = resolve_endpoint(e);
+
+    asio::io_context io;
+    auto operation = endpoint::create_connection_stream(resolved);
+    auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
+    io.run();
+
+    BOOST_CHECK_THROW(result.get(), boost::system::system_error);
 }

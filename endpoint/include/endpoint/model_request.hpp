@@ -19,24 +19,27 @@
 //                     configuration, not contract data that flows or is
 //                     stored and loaded
 //
-// The product is exactly what this module's transport consumes:
-// endpoint::sse_request(handler, stream, request) takes it by value, so a
-// built request plugs straight into the existing pipeline:
+// The product is exactly what this module's transport consumes — the request
+// drivers (sse_request, HttpRequestDriver) take it by value, and the
+// connection flows between them as one flavour-agnostic connection_stream
+// value, so a built request plus a resolved endpoint plug straight into the
+// existing pipeline:
 //
 //   interpreter->build_request(state, endpoint, generation)
-//     -> resolve_endpoint(...) picks the factory by scheme:
-//        tls ? create_https_connection_stream(host, port)
-//            : create_http_connection_stream(host, port)
-//     -> sse_request(reader->handler(), std::move(stream), std::move(request))
-//        (or http_request for a bounded, non-streaming exchange — directly
-//        returning the response, or through an AsyncResponseHandler)
+//     -> resolve_endpoint(...) -> create_connection_stream(executor, resolved)
+//        — one RUNTIME flavour choice (tls ? TLS : plain) behind the
+//        move-only connection_stream facade
+//     -> reader->pump(sse_request<Delta>, std::move(stream),
+//                     std::move(request))
+//        (or HttpRequestDriver<Delta> for a bounded, whole-body
+//        exchange through the same pump)
 //
 // The response half is ModelResponseReader below: the single consumer that
 // drains the SSE handler's get() side, folds each decoded delta into the
 // provider's accumulators, offers every delta to observation hooks, and —
 // on the terminal event — assembles the final model_io::MessageItem. Its
-// pump() member drives the matching producer side (sse_request plus the
-// finish-on-exit the transport deliberately leaves to the caller, so a
+// pump() member drives the matching producer side (any RequestDriver plus
+// the finish-on-exit the transport deliberately leaves to the caller, so a
 // stream ending without the terminal event cannot strand the consumer).
 // Where the interpreter maps contract data onto the wire, the reader maps
 // the streamed wire back onto contract data; its dedicated SSE handler does
@@ -88,7 +91,10 @@
 #include "dataclass/endpoint_config.hpp"
 #include "dataclass/model_io.hpp"
 #include "endpoint/http_request_exception.hpp"
+#include "endpoint/https_stream.hpp"
 #include "endpoint/request.hpp"
+
+#include "logging/logger.hpp"
 
 namespace endpoint {
 
@@ -156,10 +162,12 @@ public:
  *         if (d.kind == responses::DeltaKind::ReasoningText)
  *             std::cerr << d.text << std::flush;   // watch it think
  *     });
- *     // producer, one co_spawn: pump() = sse_request + finish on exit.
- *     //   co_spawn(io, [reader]() { return reader->pump(
- *     //       create_https_connection_stream(host, port),
- *     //       interpreter->build_request(...)); }, asio::detached);
+ *     // producer, one co_spawn: pump() = driver + finish on exit.
+ *     //   co_spawn(io, [reader, resolved]() {
+ *     //       return reader->pump(
+ *     //           endpoint::sse_request<responses::ResponsesDelta>,
+ *     //           create_connection_stream(resolved),
+ *     //           interpreter->build_request(...)); }, asio::detached);
  *     while (auto delta = co_await reader->next()) { ... live view ... }
  *     consume(reader->response());         // the assembled MessageItem
  *
@@ -197,8 +205,7 @@ public:
     /// Type-erased sync observer: receives each delta by const reference.
     using Hook = std::function<void(const Delta&)>;
     /// Type-erased async observer: co_awaited inline per delta, may do I/O.
-    using AsyncHook =
-        std::function<boost::asio::awaitable<void>(const Delta&)>;
+    using AsyncHook = std::function<boost::asio::awaitable<void>(const Delta&)>;
 
     virtual ~ModelResponseReader() = default;
 
@@ -282,7 +289,10 @@ public:
         } catch (...) {
             // Hook or accumulation fault: same policy as put()'s catch(...)
             // — drive the handler to ERROR (unblocking/aborting the producer
-            // side), mark the stream over, and surface the bug.
+            // side), mark the stream over, and surface the bug. Recorded as
+            // a Faulted end (the exception itself already propagates) so a
+            // post-mortem end_state() cannot mistake this for Completed.
+            _faulted = true;
             _handler->finish(Handler::State::ERROR);
             _done = true;
             throw;
@@ -307,6 +317,54 @@ public:
     /// ended (see the concurrency note in the class doc).
     virtual const model_io::MessageItem& response() const = 0;
 
+    /// How the stream ended — the post-mortem the consumer side owns. See
+    /// end_state() below; kept beside response() because the two are only
+    /// meaningful together (a returned record is trustworthy iff Completed).
+    enum class EndState {
+        Streaming,   ///< Still open: next() would deliver more.
+        Completed,   ///< The terminal event was seen and _assemble() ran.
+        Faulted,     ///< Ended without the terminal event: a producer fault
+                     ///< (end_error() carries the exception), a stream that
+                     ///< ended truncated (server close / external finish —
+                     ///< end_error() null), or a consumer-side hook fault
+                     ///< (whose exception already propagated out of next()).
+        Aborted,     ///< The consumer itself called abort(): stop, do not
+                     ///< classify as recoverable — the caller asked out.
+    };
+
+    /**
+     * @brief The stream's terminal state, for post-mortem classification.
+     *
+     * Meaningful only once finished() (mid-stream it is Streaming). The
+     * distinction retry layers need: Completed returned a real response;
+     * Faulted ended early — end_error() non-null means the producer side
+     * failed with that exception (rethrow and classify it), null means the
+     * stream simply ended without the terminal event (truncation — for a
+     * provider without stream resume, recoverable by re-reading from
+     * scratch); Aborted was the consumer's own abort().
+     */
+    EndState end_state() const noexcept {
+        if (!_done) return EndState::Streaming;
+        if (_faulted) return EndState::Faulted;
+        if (_self_aborted) return EndState::Aborted;
+        if (_abort) return EndState::Faulted;
+        return EndState::Completed;
+    }
+
+    /**
+     * @brief The exception that ended the producer side, when one did.
+     *
+     * Set by pump()'s fault path (the same exception it rethrows — which the
+     * spawned producer logs, not propagates): a stream classified Faulted
+     * with a non-null end_error() should std::rethrow_exception this and
+     * classify the caught failure. Null when the stream Completed, was
+     * Aborted by the consumer, or ended truncated without a producer
+     * exception.
+     */
+    const std::exception_ptr& end_error() const noexcept {
+        return _producer_error;
+    }
+
     /// Whether the stream is over — the terminal event was seen or the
     /// channel closed; next() would return nullopt.
     bool finished() const noexcept { return _done; }
@@ -323,47 +381,101 @@ public:
      * in-flight next(); the one after returns nullopt.
      */
     void abort() {
+        // Record the self-abort FIRST so end_state() reads Aborted even when
+        // no next() is in flight to observe the closed channel (next()'s
+        // top-of-loop _done short-circuit would skip the SSEAborted absorb
+        // that otherwise sets _abort). Guarded: once the terminal event
+        // completed the stream, a late abort() must not overwrite Completed.
+        if (!_done) {
+            _self_aborted = true;
+            _abort = Handler::State::ERROR;
+            _abort_reason = "aborted by the consumer";
+        }
         _done = true;
         _handler->finish(Handler::State::ERROR);
     }
 
     /**
-     * @brief Drive this reader's producer side to its end.
+     * @brief Rewind this reader — and its handler — to the just-constructed
+     *        state, for a fresh stream over the same objects.
      *
-     * sse_request() alone leaves the handler unfinished when it returns —
-     * by its own contract, the caller decides the lifecycle. For the
-     * canonical wiring that is a hang waiting to happen: when the stream
-     * ends WITHOUT the terminal event (transport EOF or truncation, a
-     * non-200 rejection, a proxy ending on `[DONE]`), a consumer blocked in
-     * next() would wait on the never-closed channel forever. This wrapper
-     * closes the gap: it runs the SSE pump and, on ANY exit — clean server
-     * close, cooperative stop, or a transport fault (finished first, then
-     * rethrown) — finishes the handler when the reader has not already, so
-     * the consumer wakes and classifies the end itself (status() reports
-     * Aborted unless the terminal event had already completed the stream).
+     * One reader per response, but not one reader per PROCESS: a retry layer
+     * (complete()) re-reads the whole response through the SAME reader, and
+     * this is the reset that makes the object reusable — the end-state flags,
+     * the post-mortem exception, and the handler's framing buffer and channel
+     * (rebuilt, since a closed channel cannot reopen) all go back to their
+     * initial values. The accumulated response and the subclass's decoder
+     * state are cleared by the subclass override (ResponsesReader::clear),
+     * which must call this base first.
+     *
+     * Hooks and async hooks SURVIVE: they are configuration registered once
+     * — pre-wire a monitor and let every retry stream flow through it. Note
+     * the flip side for hook authors: a surviving hook observes the deltas of
+     * EVERY attempt, not just the last one.
+     *
+     * Same serialization as abort(): not concurrent with next()/consume()
+     * (both must have returned), and only after the producer side (pump) has
+     * exited — the reader the retry loop hands complete() is between
+     * exchanges there.
+     */
+    virtual void clear() {
+        _done = false;
+        _self_aborted = false;
+        _faulted = false;
+        _abort.reset();
+        _abort_reason.clear();
+        _producer_error = nullptr;
+        _handler->clear();
+    }
+
+    /**
+     * @brief Drive this reader's producer side to its end, with any request
+     *        driver.
+     *
+     * The driver alone leaves the handler unfinished when it returns — by
+     * its own contract, the caller decides the lifecycle. For the canonical
+     * wiring that is a hang waiting to happen: when the stream ends WITHOUT
+     * the terminal event (transport EOF or truncation, a non-200 rejection,
+     * a proxy ending on `[DONE]`), a consumer blocked in next() would wait
+     * on the never-closed channel forever. This wrapper closes the gap: it
+     * runs the driver and, on ANY exit — clean server close, cooperative
+     * stop, or a transport fault (finished first, then rethrown) — finishes
+     * the handler when the reader has not already, so the consumer wakes
+     * and classifies the end itself (status() reports Aborted unless the
+     * terminal event had already completed the stream).
      *
      * This coroutine IS the handler's one producer (see the concurrency
      * note); the consumer side is next()/consume() elsewhere, on the same
      * shared reader.
      *
-     * @tparam Stream   Connection stream flavour: endpoint::https_stream or
-     *                  endpoint::http_stream; deduced from the argument.
-     * @param stream    Single-use connection stream; created by the caller
-     *                  (create_https/http_connection_stream).
-     * @param request   Fully constructed SSE request (an interpreter's
+     * @tparam Driver   The request driver for THIS exchange, constrained by
+     *                  RequestDriver: sse_request<Delta> passed by value
+     *                  (it decays to a pointer) for streaming, or
+     *                  HttpRequestDriver<Delta> for a bounded whole-body
+     *                  exchange; deduced from the argument.
+     * @param driver    The driver to run the exchange with.
+     * @param stream    Single-use connection of either flavour (the
+     *                  connection_stream facade); created by the caller
+     *                  (create_connection_stream, directly from a
+     *                  ResolvedEndpoint).
+     * @param request   Fully constructed request (an interpreter's
      *                  build_request product).
      */
-    template<typename Stream>
+    template<RequestDriver<Handler> Driver>
     boost::asio::awaitable<void> pump(
-        std::unique_ptr<Stream> stream,
+        Driver driver,
+        connection_stream stream,
         ModelRequestInterpreter::HttpRequest request) {
         try {
-            co_await sse_request<Delta>(
-                _handler, std::move(stream), std::move(request));
+            co_await driver(_handler, std::move(stream), std::move(request));
         } catch (...) {
             // Transport fault: the stream can produce nothing more — abort
             // the consumer too (it would otherwise block forever), then
-            // surface the failure.
+            // surface the failure. The exception is also captured for the
+            // post-mortem: the spawned producer's wrapper logs it instead of
+            // propagating it, so end_error() is the only place a retry layer
+            // can still reach it (rethrow and classify).
+            _producer_error = std::current_exception();
             _handler->finish(Handler::State::ERROR);
             throw;
         }
@@ -426,8 +538,13 @@ protected:
 
 private:
     bool _done = false;
+    bool _self_aborted = false;   // set iff ended via abort()
+    bool _faulted = false;        // set iff a hook/_accumulate fault ended it
     std::optional<SSEHandlerState> _abort;   // set iff ended via SSEAborted
     std::string _abort_reason;
+    // The producer-side exception pump() rethrew (null on a clean producer
+    // exit): see end_error(). Unsynchronized, like every post-mortem field.
+    std::exception_ptr _producer_error;
     std::vector<Hook> _hooks;
     std::vector<AsyncHook> _async_hooks;
 };
@@ -438,9 +555,10 @@ private:
 struct ResolvedEndpoint {
     std::string host;
     std::string port = "443";
-    std::string target;
-    /// Whether the transport must use TLS: pick create_https_connection_stream
-    /// when true, create_http_connection_stream when false.
+    std::string target{};
+    /// Whether the transport must use TLS — create_connection_stream(*this)
+    /// turns this runtime flag into the matching flavour inside the returned
+    /// connection_stream (verified TLS when true, plain TCP when false).
     bool tls = true;
 
     /// host[:port] for the request's Host header — RFC 9110 §7.2 requires the
@@ -556,6 +674,62 @@ inline void apply_transport_headers(
     for (const auto& [name, value] : endpoint.extra_headers) {
         request.set(name, value);
     }
+}
+
+/**
+ * @brief Establish the connection a ResolvedEndpoint asks for.
+ *
+ * The scheme-to-factory step of this module's canonical wiring (header
+ * block): ResolvedEndpoint records its scheme as a runtime bool, while the
+ * transport above (a RequestDriver, reader->pump) consumes one
+ * flavour-agnostic connection_stream value. This factory makes the choice at
+ * RUNTIME — verified TLS (SNI, certificate check, handshake) when tls, plain
+ * TCP otherwise — and returns the connected stream behind the move-only
+ * facade, so no flavour (and no std::visit) ever leaks into a caller's
+ * types:
+ *
+ *     auto stream = co_await create_connection_stream(resolved);
+ *     co_await reader->pump(driver, std::move(stream), request);
+ *
+ * @param executor Executor on which DNS and socket operations run.
+ * @param resolved Where to connect: host/port/tls exactly as resolve_endpoint
+ *                 parsed them from the ModelEndpoint's base_url.
+ * @param context  TLS client context; TLS flavour only, global by default —
+ *                 pass a custom context for a private CA.
+ * @return A connected connection_stream of the flavour the resolved scheme
+ *         selected.
+ * @throws boost::system::system_error on DNS, TCP, timeout, certificate, or
+ *         TLS-handshake failure, as applicable to the flavour.
+ */
+inline boost::asio::awaitable<connection_stream>
+create_connection_stream(
+    boost::asio::any_io_executor executor,
+    const ResolvedEndpoint& resolved,
+    ssl_context& context = get_global_ssl_context())
+{
+    if (resolved.tls) {
+        co_return connection_stream{
+            co_await detail::connect_flavour<https_stream>::connect(
+                executor, resolved.host, resolved.port, context)};
+    }
+    co_return connection_stream{
+        co_await detail::connect_flavour<http_stream>::connect(
+            executor, resolved.host, resolved.port, context)};
+}
+
+/**
+ * @brief Connect on the calling coroutine's executor.
+ *
+ * Convenience overload for callers already inside an Asio coroutine; see the
+ * executor-taking overload for details.
+ */
+inline boost::asio::awaitable<connection_stream>
+create_connection_stream(
+    const ResolvedEndpoint& resolved,
+    ssl_context& context = get_global_ssl_context())
+{
+    auto executor = co_await boost::asio::this_coro::executor;
+    co_return co_await create_connection_stream(executor, resolved, context);
 }
 
 } // namespace endpoint

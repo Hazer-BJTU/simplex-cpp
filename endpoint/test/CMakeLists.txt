@@ -1,10 +1,27 @@
 # Deterministic unit tests use loopback sockets only and require no Internet
 # access. Boost.Test supplies the executable's test runner.
-add_executable(test_https_stream test_https_stream.cpp)
+#
+# test_https_stream and test_http_stream deliberately keep exercising the
+# DEPRECATED flavour factories (that is what they pin), so their deprecation
+# warnings are silenced below.
 
+# The runtime-flavour facade + the scheme-selecting factory behind it.
+add_executable(test_connection_stream test_connection_stream.cpp)
+target_compile_options(test_connection_stream PRIVATE
+    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG>
+)
+target_link_libraries(test_connection_stream PRIVATE
+    endpoint_lib
+    Boost::unit_test_framework
+)
+add_test(NAME test_connection_stream COMMAND test_connection_stream)
+
+add_executable(test_https_stream test_https_stream.cpp)
 target_compile_options(test_https_stream PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>
+    -Wno-deprecated-declarations
 )
 
 target_link_libraries(test_https_stream PRIVATE
@@ -28,12 +45,13 @@ target_link_libraries(test_sse_response_handler PRIVATE
 )
 add_test(NAME test_sse_response_handler COMMAND test_sse_response_handler)
 
-# Plain-HTTP flavour of the connection factory: same loopback-only shape as
-# test_https_stream, minus the TLS handshake.
+# Plain-HTTP flavour of the deprecated connection factory: same loopback-only
+# shape as test_https_stream, minus the TLS handshake.
 add_executable(test_http_stream test_http_stream.cpp)
 target_compile_options(test_http_stream PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>
+    -Wno-deprecated-declarations
 )
 target_link_libraries(test_http_stream PRIVATE
     endpoint_lib
@@ -67,6 +85,21 @@ target_link_libraries(test_http_request PRIVATE
     Boost::unit_test_framework
 )
 add_test(NAME test_http_request COMMAND test_http_request)
+
+# complete_once — the whole-exchange convenience: the Connect-stage wrapping
+# of connect failures (transport error code kept), the log-only exception
+# policy of the spawned producer task, and the inline consumer drain. Same
+# one-shot loopback shape; the refused-connect case needs no server at all.
+add_executable(test_complete_once test_complete_once.cpp)
+target_compile_options(test_complete_once PRIVATE
+    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG>
+)
+target_link_libraries(test_complete_once PRIVATE
+    endpoint_lib
+    Boost::unit_test_framework
+)
+add_test(NAME test_complete_once COMMAND test_complete_once)
 
 # Offline tests for the model request interpreter interface: lenient endpoint
 # resolution plus the contract's implementability through a stub.

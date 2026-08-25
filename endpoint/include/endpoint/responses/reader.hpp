@@ -126,6 +126,20 @@ public:
         return _status;
     }
 
+    /// The reuse reset: the base's stream/handler rewind plus this layer's
+    /// accumulation state (per-item accumulators, the assembled response, the
+    /// terminal status/usage/details). Hooks survive — see the base's clear().
+    void clear() override {
+        endpoint::ModelResponseReader<ResponsesDelta>::clear();
+        _items.clear();
+        _next_arrival = 0;
+        _response = model_io::MessageItem{};
+        _status = StreamStatus::Streaming;
+        _response_id.clear();
+        _usage.reset();
+        _terminal_details.reset();
+    }
+
 protected:
     void _accumulate(const ResponsesDelta& delta) override;
     bool _is_terminal(const ResponsesDelta& delta) const override {

@@ -866,26 +866,32 @@ static endpoint::ModelRequestInterpreter::HttpRequest sse_post() {
 }
 
 // Drive one reader against a one-shot loopback server: pump() as the
-// producer (one co_spawn) and the canonical next() loop as the consumer.
-// Returns once BOTH sides have ended — with pump() finishing the handler on
-// exit, a stream that ends without its terminal event cannot hang the
-// consumer (the pre-pump wiring did exactly that).
+// producer (one co_spawn), taking the request driver as a parameter, and the
+// canonical next() loop as the consumer. Returns once BOTH sides have ended —
+// with pump() finishing the handler on exit, a stream that ends without its
+// terminal event cannot hang the consumer (the pre-pump wiring did exactly
+// that).
 struct PumpResult {
     std::vector<ResponsesDelta> deltas;
     std::optional<HttpRequestException::Stage> pump_stage;
     std::string pump_error;
 };
 
+template<typename Driver>
 static PumpResult run_pumped(
-    unsigned short port, ResponsesReader& reader, asio::io_context& io) {
+    Driver driver, unsigned short port, ResponsesReader& reader,
+    asio::io_context& io) {
     PumpResult result;
     asio::co_spawn(
         io,
         [&]() -> asio::awaitable<void> {
             try {
-                auto stream = co_await endpoint::create_http_connection_stream(
-                    "127.0.0.1", std::to_string(port));
-                co_await reader.pump(std::move(stream), sse_post());
+                auto stream = co_await endpoint::create_connection_stream(
+                    endpoint::ResolvedEndpoint{
+                        .host = "127.0.0.1",
+                        .port = std::to_string(port),
+                        .tls = false});
+                co_await reader.pump(driver, std::move(stream), sse_post());
             } catch (const HttpRequestException& error) {
                 result.pump_stage = error.stage();
                 result.pump_error = error.what();
@@ -912,7 +918,8 @@ BOOST_AUTO_TEST_CASE(pump_completes_the_stream_with_a_terminal_event) {
 
     asio::io_context io;
     ResponsesReader reader(io.get_executor());
-    PumpResult result = run_pumped(port, reader, io);
+    PumpResult result = run_pumped(
+        &endpoint::sse_request<ResponsesDelta>, port, reader, io);
     server.join();
 
     BOOST_REQUIRE(!result.pump_stage);
@@ -924,9 +931,33 @@ BOOST_AUTO_TEST_CASE(pump_completes_the_stream_with_a_terminal_event) {
     BOOST_CHECK(reader.handler()->get_state() == endpoint::SSEHandlerState::DONE);
 }
 
+BOOST_AUTO_TEST_CASE(pump_runs_equally_with_the_bounded_driver) {
+    // Same reader, same canonical wiring, different driver flavour:
+    // HttpRequestDriver instead of sse_request. pump() depends on the
+    // RequestDriver contract, not the streaming flavour — and the whole SSE
+    // body arriving as one put() frames into exactly the same deltas.
+    loopback::OneShotServer server([](tcp::socket& socket) {
+        loopback::serve_fixed_response(socket, http::status::ok, text_stream());
+    });
+    const unsigned short port = server.wait_listening();
+
+    asio::io_context io;
+    ResponsesReader reader(io.get_executor());
+    PumpResult result = run_pumped(
+        endpoint::HttpRequestDriver<ResponsesDelta>{}, port, reader, io);
+    server.join();
+
+    BOOST_REQUIRE(!result.pump_stage);
+    if (result.pump_stage) BOOST_TEST_MESSAGE("pump error: " << result.pump_error);
+    BOOST_REQUIRE_EQUAL(result.deltas.size(), 10u);
+    BOOST_CHECK(reader.status() == StreamStatus::Completed);
+    BOOST_CHECK_EQUAL(reader.response().content.raw, "The answer is 42");
+    BOOST_CHECK(reader.handler()->get_state() == endpoint::SSEHandlerState::DONE);
+}
+
 BOOST_AUTO_TEST_CASE(pump_wakes_the_consumer_when_the_stream_ends_without_terminal) {
     // Server sends one delta, then closes: no response.completed ever
-    // arrives. sse_request returns WITHOUT finishing the handler (its
+    // arrives. The driver returns WITHOUT finishing the handler (its
     // contract) — pump() finishes it, so next() ends in nullopt instead of
     // blocking forever, and the reader classifies the end as Aborted.
     loopback::OneShotServer server([](tcp::socket& socket) {
@@ -939,7 +970,8 @@ BOOST_AUTO_TEST_CASE(pump_wakes_the_consumer_when_the_stream_ends_without_termin
 
     asio::io_context io;
     ResponsesReader reader(io.get_executor());
-    PumpResult result = run_pumped(port, reader, io);
+    PumpResult result = run_pumped(
+        &endpoint::sse_request<ResponsesDelta>, port, reader, io);
     server.join();
 
     BOOST_REQUIRE(!result.pump_stage);
@@ -960,7 +992,8 @@ BOOST_AUTO_TEST_CASE(pump_surfaces_rejection_and_wakes_the_consumer) {
 
     asio::io_context io;
     ResponsesReader reader(io.get_executor());
-    PumpResult result = run_pumped(port, reader, io);
+    PumpResult result = run_pumped(
+        &endpoint::sse_request<ResponsesDelta>, port, reader, io);
     server.join();
 
     BOOST_REQUIRE(result.pump_stage);
