@@ -5,7 +5,7 @@
  *
  * The exchange runs against a scripted SSE stream on 127.0.0.1: the server
  * captures the request body, so every dialect policy is asserted on the wire
- * (thinking default, effort clamp, parameter stripping, reasoning replay,
+ * (thinking default, effort pass-through, parameter stripping, reasoning replay,
  * the usage-trailer request), and the assembled MessageItem is asserted on
  * the way back (reasoning slot, parsed invokes, cache-hit cost accounting).
  * The error-chunk path covers the chat layer's ApiException surfacing.
@@ -212,7 +212,7 @@ BOOST_AUTO_TEST_CASE(converse_drives_the_full_deepseek_exchange) {
     const nlohmann::json body = nlohmann::json::parse(server.captured);
     BOOST_CHECK_EQUAL(body["model"], "deepseek-v4-flash");
     BOOST_CHECK_EQUAL(body["thinking"]["type"], "enabled");
-    BOOST_CHECK_EQUAL(body["reasoning_effort"], "high"); // low → high
+    BOOST_CHECK_EQUAL(body["reasoning_effort"], "low"); // verbatim, no clamp
     BOOST_CHECK(!body.contains("n"));
     BOOST_CHECK(!body.contains("frequency_penalty"));
     BOOST_CHECK_EQUAL(body["stream_options"]["include_usage"], true);
@@ -262,11 +262,13 @@ BOOST_AUTO_TEST_CASE(converse_drives_the_full_deepseek_exchange) {
 }
 
 BOOST_AUTO_TEST_CASE(converse_surfaces_api_error_chunks_as_chat_completions_api_exception) {
+    // The verbatim body of a live 401 (2026-08): string code, null param.
     const std::string stream =
         sse({{"error",
-              {{"message", "Insufficient Balance"},
-               {"type", "insufficient_balance"},
-               {"code", 402}}}});
+              {{"message", "Authentication Fails, Your api key: ****d000 is invalid"},
+               {"type", "authentication_error"},
+               {"param", nullptr},
+               {"code", "invalid_request_error"}}}});
     CapturingServer server(stream);
     const auto port = server.wait_listening();
 
@@ -296,7 +298,11 @@ BOOST_AUTO_TEST_CASE(converse_surfaces_api_error_chunks_as_chat_completions_api_
     } catch (const llm::chat_completions::ChatCompletionsApiException& error) {
         BOOST_CHECK(error.status() ==
                     llm::chat_completions::ChatCompletionStatus::Failed);
-        BOOST_CHECK_EQUAL(error.details()["message"], "Insufficient Balance");
-        BOOST_CHECK_EQUAL(error.what(), "Insufficient Balance");
+        BOOST_CHECK_EQUAL(
+            error.details()["message"],
+            "Authentication Fails, Your api key: ****d000 is invalid");
+        BOOST_CHECK_EQUAL(error.details()["type"], "authentication_error");
+        BOOST_CHECK_EQUAL(error.what(),
+                          "Authentication Fails, Your api key: ****d000 is invalid");
     }
 }

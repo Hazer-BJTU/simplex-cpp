@@ -13,14 +13,20 @@
  *     `{"type": "enabled" | "disabled"}` — an explicit native object in the
  *     config passes through verbatim, otherwise the dialect emits it:
  *     efforts "none"/"minimal" mean disabled, anything else enabled;
- *   - `reasoning_effort` only recognises "high"/"max" (the API maps
- *     low/medium→high and xhigh→max itself; this dialect applies the same
- *     documented mapping client-side so the wire value is always in
- *     vocabulary);
- *   - thinking mode + tools requires every intermediate assistant message
- *     to replay its reasoning_content verbatim or the API answers 400 —
- *     hence replay_assistant_reasoning();
- *   - `n` is undocumented and frequency_penalty/presence_penalty are
+ *   - `reasoning_effort` passes through verbatim. Live 2026-08 the server's
+ *     own vocabulary is none|minimal|low|medium|high|xhigh|max (an
+ *     out-of-vocabulary value is rejected with that enumeration in the 400
+ *     body), so an earlier client-side clamp to high/max — based on docs
+ *     that have since been restructured — only distorted the caller's
+ *     intent and is gone;
+ *   - intermediate assistant messages replay their reasoning_content
+ *     (replay_assistant_reasoning): the endpoint prototype era documented a
+ *     hard 400 when thinking+tools omitted it; live 2026-08 the omission is
+ *     accepted, and replay is kept because it is the canonical multi-turn
+ *     shape the docs' samples use and it keeps the replayed prefix
+ *     byte-stable for DeepSeek's automatic context cache;
+ *   - `n` is rejected server-side ("Invalid n value (currently only n = 1 is
+ *     supported)", live 2026-08) and frequency_penalty/presence_penalty are
  *     deprecated no-ops: all three are stripped;
  *   - usage reports cache hits as prompt_cache_hit_tokens (not OpenAI's
  *     prompt_tokens_details.cached_tokens): normalize_chunk bridges the
@@ -59,10 +65,14 @@ public:
     std::string_view provider_name() const override { return "deepseek"; }
 
     bool replay_assistant_reasoning() const override {
-        // Thinking mode + tools rejects (400) a request whose intermediate
-        // assistant messages omit reasoning_content; a no-tools request
-        // simply ignores the field, so replaying unconditionally is safe.
-        // Verified against endpoint/example/deepseek_chat.cpp.
+        // The endpoint prototype (endpoint/example/deepseek_chat.cpp)
+        // recorded a hard rule: thinking+tools answers 400 when an
+        // intermediate assistant message omits reasoning_content. A 2026-08
+        // live probe shows the omission is accepted now, so this is no
+        // longer load-bearing correctness — replay stays because it is the
+        // canonical multi-turn shape the docs' samples use, and because the
+        // replayed prefix stays byte-stable, which DeepSeek's automatic
+        // context cache rewards (observed: cache_hit grows turn over turn).
         return true;
     }
 
@@ -82,19 +92,15 @@ public:
             body["thinking"] = {{"type", disable ? "disabled" : "enabled"}};
             if (disable) body.erase("reasoning_effort");
         }
-        // The documented vocabulary clamp: only "high" and "max" exist, with
-        // low/medium folded to high and xhigh raised to max.
-        if (const auto effort = body.find("reasoning_effort");
-            effort != body.end() && effort->is_string()) {
-            const std::string& value = effort->get_ref<const std::string&>();
-            if (value == "low" || value == "medium") {
-                *effort = "high";
-            } else if (value == "xhigh") {
-                *effort = "max";
-            }
-        }
-        // n is undocumented on DeepSeek; the two penalties are deprecated
-        // no-ops. Stripped so a stale config cannot silently do nothing.
+        // reasoning_effort passes through verbatim: live 2026-08 the server
+        // accepts none|minimal|low|medium|high|xhigh|max and rejects anything
+        // else with a 400 that enumerates the vocabulary, so an invalid value
+        // fails loudly at the server instead of being silently reshaped here.
+        // (An earlier clamp low/medium→high, xhigh→max mirrored since-
+        // restructured docs and distorted the caller's intent.)
+        // n is rejected server-side ("currently only n = 1 is supported");
+        // the two penalties are deprecated no-ops. All three stripped so a
+        // stale config cannot fail the request or silently do nothing.
         body.erase("n");
         body.erase("frequency_penalty");
         body.erase("presence_penalty");

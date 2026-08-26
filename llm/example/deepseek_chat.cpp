@@ -241,8 +241,8 @@ int main() {
     }
 
     std::string effort = "high";
-    std::cout << "reasoning effort [high] (high|max|none; none disables "
-                 "thinking): ";
+    std::cout << "reasoning effort [high] (none|minimal|low|medium|high|xhigh|"
+                 "max; none/minimal disable thinking): ";
     if (std::string line; std::getline(std::cin, line) && !line.empty()) {
         effort = line;
     }

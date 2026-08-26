@@ -163,14 +163,20 @@ the neutral wire:
 - thinking mode: the dialect always emits `thinking` — `enabled` by default,
   `disabled` when the effort is `none`/`minimal` — unless the config already
   carries a native `thinking` object, which passes through verbatim;
-- `reasoning_effort` vocabulary clamp to DeepSeek's `high`/`max`:
-  `low`/`medium` → `high`, `xhigh` → `max`;
-- `n` (undocumented on DeepSeek) and the deprecated no-op
-  `frequency_penalty`/`presence_penalty` are stripped from every request;
-- thinking mode + tools requires each intermediate assistant message to
-  replay its `reasoning_content` verbatim or the API answers 400, so the
-  dialect opts into `replay_assistant_reasoning` and the adapter re-emits
-  `MessageItem::reasoning` on the wire;
+- `reasoning_effort` passes through verbatim: live 2026-08 the server accepts
+  `none|minimal|low|medium|high|xhigh|max` and rejects anything else with a
+  400 that enumerates the vocabulary, so an invalid value fails loudly at
+  the server instead of being silently reshaped;
+- `n` is rejected server-side ("currently only n = 1 is supported", live
+  2026-08) and the deprecated no-op `frequency_penalty`/
+  `presence_penalty` are stripped from every request;
+- intermediate assistant messages replay their `reasoning_content`: the
+  endpoint-prototype era documented a hard 400 when thinking+tools omitted
+  it, which live 2026-08 probing no longer reproduces — replay is kept as
+  the canonical multi-turn shape (and it keeps the replayed prefix
+  byte-stable, which DeepSeek's automatic context cache rewards: cache hits
+  grow turn over turn in live sessions), so the dialect opts into
+  `replay_assistant_reasoning`;
 - usage reports cache hits as `prompt_cache_hit_tokens`; the dialect bridges
   that spelling into `prompt_tokens_details.cached_tokens` so
   `MessageItem::cost.cache_hit` is populated, while `extras.usage` keeps the

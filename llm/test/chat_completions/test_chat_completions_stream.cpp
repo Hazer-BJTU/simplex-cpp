@@ -398,3 +398,134 @@ BOOST_AUTO_TEST_CASE(clear_resets_the_reasoning_accumulator) {
     BOOST_CHECK(!reader.response().reasoning);
     BOOST_CHECK_EQUAL(reader.response().content[0].raw, "plain");
 }
+
+// --- DeepSeek live wire shapes (captured 2026-08-27, api.deepseek.com) ---------
+//
+// The two streams below are the byte shapes a live deepseek-v4-flash
+// exchange produced (ids trimmed, fields otherwise verbatim). They pin the
+// deviations that matter to the decoder:
+//   - `usage` is null on ordinary chunks and arrives ON the finish_reason
+//     chunk, whose choices array is NON-empty — DeepSeek never sends the
+//     separate empty-choices usage trailer this suite's synthetic fixtures
+//     use (both shapes must decode);
+//   - the first chunk's delta carries role plus an EMPTY content string;
+//     reasoning deltas carry content: null alongside reasoning_content;
+//   - a tool call's first fragment carries index/id/type/name and
+//     arguments as an EMPTY STRING (not null); later fragments are bare
+//     index+arguments pieces, sometimes one character long.
+
+nlohmann::json live_frame(nlohmann::json delta,
+                          nlohmann::json finish_reason = nullptr,
+                          nlohmann::json usage = nullptr) {
+    return {
+        {"id", "bc1a4c5b-361c-4f22-998b-2ace33c6b5e3"},
+        {"object", "chat.completion.chunk"},
+        {"created", 1787766372},
+        {"model", "deepseek-v4-flash"},
+        {"system_fingerprint", "a26a7955944dc5c60445bff77fac9c8e"},
+        {"choices", nlohmann::json::array({{
+            {"index", 0},
+            {"delta", std::move(delta)},
+            {"logprobs", nullptr},
+            {"finish_reason", std::move(finish_reason)},
+        }})},
+        {"usage", std::move(usage)},
+    };
+}
+
+BOOST_AUTO_TEST_CASE(deepseek_live_minimal_stream_usage_rides_the_finish_chunk) {
+    asio::io_context io;
+    ChatCompletionsReader reader(io.get_executor());
+    read_all(io, reader,
+             sse(live_frame({{"role", "assistant"}, {"content", ""}})) +
+                 sse(live_frame({{"content", "OK"}})) +
+                 sse(live_frame({{"content", ""}}, "stop", {
+                     {"prompt_tokens", 9},
+                     {"completion_tokens", 1},
+                     {"total_tokens", 10},
+                     {"prompt_tokens_details", {{"cached_tokens", 0}}},
+                     {"prompt_cache_hit_tokens", 0},
+                     {"prompt_cache_miss_tokens", 9},
+                 })) +
+                 done());
+
+    BOOST_CHECK(reader.status() == ChatCompletionStatus::Completed);
+    const auto& response = reader.response();
+    BOOST_CHECK_EQUAL(response.content[0].raw, "OK");
+    // Cost assembled from a usage object that arrived on the finish chunk.
+    BOOST_REQUIRE(response.cost);
+    BOOST_CHECK_EQUAL(response.cost->prompt, 9u);
+    BOOST_CHECK_EQUAL(response.cost->generated, 1u);
+    BOOST_CHECK_EQUAL(response.cost->cache_hit, 0u);
+    BOOST_REQUIRE(response.extras);
+    BOOST_CHECK_EQUAL((*response.extras)["finish_reason"], "stop");
+    BOOST_CHECK_EQUAL((*response.extras)["model"], "deepseek-v4-flash");
+    // The native cache spelling survives verbatim in extras for consumers.
+    BOOST_CHECK_EQUAL((*response.extras)["usage"]["prompt_cache_miss_tokens"], 9);
+}
+
+BOOST_AUTO_TEST_CASE(deepseek_live_reasoning_and_fragmented_tool_call_shape) {
+    asio::io_context io;
+    ChatCompletionsReader reader(io.get_executor());
+    const auto call_fragment = [](nlohmann::json function) {
+        return live_frame({{"tool_calls", nlohmann::json::array({
+            {{"index", 0}, {"function", std::move(function)}},
+        })}});
+    };
+    read_all(io, reader,
+             // role frame: content null, reasoning_content empty string
+             sse(live_frame({{"role", "assistant"},
+                             {"content", nullptr},
+                             {"reasoning_content", ""}})) +
+                 // reasoning frames: content null alongside every increment
+                 sse(live_frame({{"content", nullptr},
+                                 {"reasoning_content", "The user wants 2 + 3. "}})) +
+                 sse(live_frame({{"content", nullptr},
+                                 {"reasoning_content", "Call the tool."}})) +
+                 // first tool fragment: id/type/name + arguments EMPTY STRING
+                 sse(live_frame({{"tool_calls", nlohmann::json::array({
+                     {{"index", 0},
+                      {"id", "call_00_yVK46xe3ZVlUsOHa3jzk2841"},
+                      {"type", "function"},
+                      {"function", {{"name", "calculate"}, {"arguments", ""}}}},
+                 })}})) +
+                 // then bare index + one-character argument pieces
+                 sse(call_fragment({{"arguments", "{"}})) +
+                 sse(call_fragment({{"arguments", "\""}})) +
+                 sse(call_fragment({{"arguments", "a"}})) +
+                 sse(call_fragment({{"arguments", "\": 2, \"b\": 3, \"operation\": \"add\"}"}})) +
+                 // finish frame: content empty, reasoning null, usage attached
+                 sse(live_frame({{"content", ""}, {"reasoning_content", nullptr}},
+                                "tool_calls", {
+                                    {"prompt_tokens", 423},
+                                    {"completion_tokens", 100},
+                                    {"total_tokens", 523},
+                                    {"prompt_tokens_details", {{"cached_tokens", 384}}},
+                                    {"completion_tokens_details",
+                                     {{"reasoning_tokens", 25}}},
+                                    {"prompt_cache_hit_tokens", 384},
+                                    {"prompt_cache_miss_tokens", 39},
+                                })) +
+                 done());
+
+    BOOST_CHECK(reader.status() == ChatCompletionStatus::Completed);
+    const auto& response = reader.response();
+    // The leading empty-string increment must not corrupt the assembly.
+    BOOST_REQUIRE(response.reasoning);
+    BOOST_CHECK_EQUAL(response.reasoning->raw,
+                      "The user wants 2 + 3. Call the tool.");
+    // Fragmented arguments reconstruct into parsed JSON.
+    BOOST_REQUIRE(response.invokes);
+    BOOST_REQUIRE_EQUAL(response.invokes->size(), 1u);
+    BOOST_CHECK_EQUAL((*response.invokes)[0].id,
+                      "call_00_yVK46xe3ZVlUsOHa3jzk2841");
+    BOOST_CHECK_EQUAL((*response.invokes)[0].name, "calculate");
+    BOOST_CHECK_EQUAL((*response.invokes)[0].arguments["a"], 2);
+    BOOST_CHECK_EQUAL((*response.invokes)[0].arguments["operation"], "add");
+    // Native cached_tokens spelling feeds cache_hit (no dialect needed).
+    BOOST_REQUIRE(response.cost);
+    BOOST_CHECK_EQUAL(response.cost->cache_hit, 384u);
+    BOOST_REQUIRE(response.extras);
+    BOOST_CHECK_EQUAL((*response.extras)["usage"]["completion_tokens_details"]
+                                    ["reasoning_tokens"], 25);
+}
