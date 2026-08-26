@@ -67,6 +67,7 @@ if(LTO_SUPPORT)
 endif()
 
 add_subdirectory(providers/openai)
+add_subdirectory(providers/deepseek)
 
 if(BUILD_TESTS)
     add_subdirectory(test)

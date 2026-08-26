@@ -1,0 +1,35 @@
+#define BOOST_TEST_MODULE deepseek_llm_plugin
+#include <boost/test/unit_test.hpp>
+
+#include <boost/asio/io_context.hpp>
+
+#include <filesystem>
+
+#include "llm/models.hpp"
+
+#ifndef DEEPSEEK_PLUGIN_DIR
+#error DEEPSEEK_PLUGIN_DIR must name the built provider-plugin directory
+#endif
+
+BOOST_AUTO_TEST_CASE(dispatcher_loads_and_mints_deepseek_chat_model) {
+    llm::LLMDispatcher dispatcher;
+    // The plugins/llm directory carries every bundled provider .so — openai
+    // and deepseek today; keep this count in sync when a provider joins.
+    BOOST_CHECK_EQUAL(
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+
+    boost::asio::io_context io;
+    auto model = dispatcher.create_model(
+        "deepseek", io.get_executor(),
+        nlohmann::json{{"model", "deepseek-v4-flash"}});
+    BOOST_REQUIRE(model);
+    BOOST_CHECK(model->model_type() == llm::LLMModelType::Conversation);
+
+    // The neighbours coexist: both providers stay routable after loading.
+    BOOST_CHECK(dispatcher.create_model(
+        "openai", io.get_executor(),
+        nlohmann::json{{"model", "test-model"}}));
+    BOOST_CHECK(!dispatcher.create_model(
+        "unknown", io.get_executor(),
+        nlohmann::json{{"model", "test-model"}}));
+}

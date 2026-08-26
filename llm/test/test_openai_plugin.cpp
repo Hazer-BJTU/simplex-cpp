@@ -13,8 +13,10 @@
 
 BOOST_AUTO_TEST_CASE(dispatcher_loads_and_mints_openai_responses_model) {
     llm::LLMDispatcher dispatcher;
+    // The plugins/llm directory carries every bundled provider .so — openai
+    // and deepseek today; keep this count in sync when a provider joins.
     BOOST_CHECK_EQUAL(
-        dispatcher.load_models(std::filesystem::path(OPENAI_PLUGIN_DIR)), 1u);
+        dispatcher.load_models(std::filesystem::path(OPENAI_PLUGIN_DIR)), 2u);
 
     boost::asio::io_context io;
     auto model = dispatcher.create_model(

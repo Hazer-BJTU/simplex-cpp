@@ -63,5 +63,15 @@ target_link_libraries(test_openai_plugin PRIVATE
     llm_iface Boost::unit_test_framework)
 target_compile_definitions(test_openai_plugin PRIVATE
     OPENAI_PLUGIN_DIR="$<TARGET_FILE_DIR:llm_openai>")
-add_dependencies(test_openai_plugin llm_openai)
+# Both bundled provider .so share the plugins/llm directory the test counts;
+# the dependency keeps a single-target build from racing a missing library.
+add_dependencies(test_openai_plugin llm_openai llm_deepseek)
 add_test(NAME test_openai_plugin COMMAND test_openai_plugin)
+
+add_executable(test_deepseek_plugin test_deepseek_plugin.cpp)
+target_link_libraries(test_deepseek_plugin PRIVATE
+    llm_iface Boost::unit_test_framework)
+target_compile_definitions(test_deepseek_plugin PRIVATE
+    DEEPSEEK_PLUGIN_DIR="$<TARGET_FILE_DIR:llm_deepseek>")
+add_dependencies(test_deepseek_plugin llm_openai llm_deepseek)
+add_test(NAME test_deepseek_plugin COMMAND test_deepseek_plugin)
