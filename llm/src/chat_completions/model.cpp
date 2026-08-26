@@ -1,12 +1,16 @@
 #include "llm/chat_completions/model.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <ostream>
+#include <string>
 #include <utility>
 
 #include "endpoint/complete.hpp"
 #include "endpoint/request.hpp"
+#include "eventbus/event_bus.hpp"
+#include "llm/chat_completions/events.hpp"
 #include "llm/chat_completions/interpreter.hpp"
 #include "llm/chat_completions/reader.hpp"
 
@@ -133,6 +137,31 @@ boost::asio::awaitable<model_io::MessageItem> ChatCompletionsModel::converse(
     auto request = interpreter.build_request(
         conversation, _endpoint, _generation);
     auto reader = std::make_shared<ChatCompletionsReader>(_executor, _dialect);
+
+    // The default live-view hook: every streamed reasoning increment is
+    // broadcast on the process-wide bus, synchronously, in wire order (see
+    // llm/chat_completions/events.hpp for the full contract). The id is
+    // minted once per exchange so a retried attempt re-broadcasts its
+    // increments under the same id; subscribers correlate by it. The hook
+    // survives the retry functor's reader clear(), and a bus with no
+    // subscriber is a no-op — unobserved exchanges behave identically.
+    const std::string reasoning_id = [&] {
+        static std::atomic<std::uint64_t> sequence{0};
+        return "reasoning-" +
+               std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
+    }();
+    const std::string provider{_dialect->provider_name()};
+    std::string model;
+    if (const auto it = _generation.find("model");
+        it != _generation.end() && it->is_string()) {
+        model = it->get_ref<const std::string&>();
+    }
+    reader->add_hook([reasoning_id, provider, model](
+                         const ChatCompletionsDelta& delta) {
+        if (delta.reasoning.empty()) return;
+        eventbus::default_bus().publish(ReasoningDeltaEvent{
+            delta.reasoning, reasoning_id, provider, model});
+    });
 
     endpoint::complete<ChatCompletionsDelta> exchange(
         _executor, _initial_backoff, _max_backoff, _max_retry_attempts);

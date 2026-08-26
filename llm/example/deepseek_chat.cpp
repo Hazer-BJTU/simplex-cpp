@@ -12,20 +12,22 @@
 // vocabulary, reasoning replay, cache-hit accounting) stays inside the
 // dialect; this file never mentions it.
 //
-// One deliberate difference from the endpoint example: no live streaming.
-// converse() owns its SSE reader internally, so per-delta observation is not
-// reachable from a plugin-minted model (and dynamic_cast across the .so
-// boundary is unreliable — the host statically links its own copy of the
-// adapter). Output therefore prints per exchange: reasoning to stderr,
-// content to stdout, tool calls and results inline. The sanctioned live view
-// is the process-wide event sink the LLMModel contract plans for (see the
-// class doc in llm/models.hpp); when that lands, this example grows the
-// streaming view without changing its structure.
+// Live observation rides the process-wide event bus: converse() broadcasts
+// every streamed reasoning increment as a ReasoningDeltaEvent (llm/
+// chat_completions/events.hpp), and this executable subscribes once on
+// eventbus::default_bus() to mirror the thinking to stderr as it arrives.
+// Visible content still prints per exchange — converse() owns its SSE
+// reader, so content-side live view is a later bus event. The bus singleton
+// lives in the SHARED eventbus library, so this executable and the dlopened
+// provider .so bind the same SONAME — one bus per process by construction,
+// with no host-side symbol-export convention to remember.
 //
 // The registered tool is parameterised (calculate: a, b, operation) so the
 // full schema → wire arguments → parse → execute → correlated-result cycle
 // is exercised, unlike the endpoint example's zero-argument get_current_time.
 
+#include "eventbus/event_bus.hpp"
+#include "llm/chat_completions/events.hpp"
 #include "llm/models.hpp"
 
 #include <boost/asio.hpp>
@@ -184,11 +186,8 @@ asio::awaitable<void> run_turn(llm::LLMModel& model,
         model_io::MessageItem item = co_await model.converse(state);
         model.integrate(state, item);
 
-        // The thinking-mode channel arrives in the dedicated slot; print it
-        // ahead of the visible answer so the exchange reads naturally.
-        if (item.reasoning && !item.reasoning->raw.empty()) {
-            std::cerr << "[think] " << item.reasoning->raw << "\n";
-        }
+        // Reasoning already streamed live through the bus subscription in
+        // main(); the visible answer prints here, per exchange.
         for (const model_io::Content& part : item.content) {
             if (!part.raw.empty()) std::cout << part.raw << "\n";
         }
@@ -290,9 +289,19 @@ int main() {
               << ", effort " << effort << ")\n";
     std::cout << "tool registered: calculate (a, b, operation) — try: "
                  "\"what is 1234 * 5678?\"\n";
-    std::cout << "reasoning prints per exchange to stderr; no live "
-                 "streaming at this layer yet.\n";
+    std::cout << "reasoning streams live to stderr via the process event "
+                 "bus; content prints per exchange.\n";
     std::cout << "empty line to quit.\n";
+
+    // The live view: every provider's reasoning increments, mirrored to
+    // stderr as they stream. Synchronous bus — the slot runs inline on the
+    // exchange's I/O thread in wire order (and must not throw).
+    eventbus::EventBus::ScopedSubscription reasoning_view =
+        eventbus::default_bus()
+            .subscribe<llm::chat_completions::ReasoningDeltaEvent>(
+                [](const llm::chat_completions::ReasoningDeltaEvent& event) {
+                    std::cerr << event.reasoning << std::flush;
+                });
 
     std::string line;
     while (std::cout << "\nyou> " && std::getline(std::cin, line)) {

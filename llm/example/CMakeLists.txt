@@ -18,5 +18,9 @@ add_executable(llm_deepseek_chat deepseek_chat.cpp)
 target_compile_options(llm_deepseek_chat PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
-target_link_libraries(llm_deepseek_chat PRIVATE llm_iface)
+target_link_libraries(llm_deepseek_chat PRIVATE llm_iface eventbus_iface)
+# No ENABLE_EXPORTS needed: the plugin's converse() publishes on
+# eventbus::default_bus(), whose singleton lives in the SHARED eventbus
+# library — this executable and the dlopened provider both bind that same
+# SONAME, hence the same bus, with no host-side symbol-export convention.
 add_dependencies(llm_deepseek_chat llm_deepseek)

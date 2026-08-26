@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
@@ -19,6 +20,13 @@ public:
         endpoint.auth.scheme = model_io::AuthScheme::Bearer;
         return endpoint;
     }
+
+    /**
+     * The provider's name as broadcast in llm/chat_completions/events.hpp
+     * (empty for a generic no-dialect model). Purely informational — one
+     * word identifying who generated the output.
+     */
+    virtual std::string_view provider_name() const { return {}; }
 
     /**
      * Whether replayed assistant messages re-emit MessageItem::reasoning as

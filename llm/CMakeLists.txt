@@ -55,7 +55,12 @@ add_library(llm_chat_completions STATIC
 )
 target_include_directories(llm_chat_completions PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(llm_chat_completions PUBLIC llm_iface endpoint_lib)
+# eventbus_iface: converse() broadcasts live reasoning increments on the
+# process-wide bus (PUBLIC — the adapter references default_bus(), now a
+# shared-library symbol, so every final link of this static library must
+# pull libeventbus.so too; subscribers want the headers anyway).
+target_link_libraries(llm_chat_completions
+    PUBLIC llm_iface endpoint_lib eventbus_iface)
 target_compile_options(llm_chat_completions PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)

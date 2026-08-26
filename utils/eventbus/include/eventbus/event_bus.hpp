@@ -51,7 +51,10 @@
  * on the default bus should hold a plain Connection and disconnect
  * explicitly before main returns rather than rely on scope handles.
  *
- * Header-only, stateless apart from the per-bus registry.
+ * The EventBus class itself is header-inline and stateless apart from the
+ * per-bus registry; the default_bus() singleton alone is compiled — into
+ * the shared eventbus library — so every executable and dlopened module
+ * binds one bus per process (see default_bus() below).
  */
 
 #include <atomic>       // std::atomic (group counter)
@@ -270,15 +273,17 @@ private:
  * @brief Process-wide default bus.
  * @return reference to the shared EventBus instance.
  *
- * Function-local static: initialised on first use (thread-safe, immune to
- * static-init-order fiasco) and destroyed during static destruction — see
- * the file contract for the shutdown caveat. Prefer constructing your own
- * EventBus when the bus's lifetime should follow a component instead of
- * the process.
+ * Deliberately NOT inline: the definition lives in the eventbus shared
+ * library (src/default_bus.cpp), so every executable AND every dlopened
+ * plugin that links that library binds to ONE bus instance — the loader
+ * guarantees uniqueness by SONAME. An inline singleton would give each
+ * module its own private bus and events would silently vanish at the
+ * boundary. Function-local static semantics are unchanged: initialised on
+ * first use (thread-safe, immune to static-init-order fiasco) and destroyed
+ * during static destruction — see the file contract for the shutdown
+ * caveat. Prefer constructing your own EventBus when the bus's lifetime
+ * should follow a component instead of the process.
  */
-inline EventBus& default_bus() {
-    static EventBus bus;
-    return bus;
-}
+EventBus& default_bus();
 
 } // namespace eventbus

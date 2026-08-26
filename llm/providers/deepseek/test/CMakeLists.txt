@@ -28,5 +28,6 @@ target_compile_options(test_deepseek_model PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
 target_link_libraries(test_deepseek_model PRIVATE
-    llm_chat_completions endpoint_lib Boost::unit_test_framework)
+    llm_chat_completions endpoint_lib eventbus_iface
+    Boost::unit_test_framework)
 add_test(NAME test_deepseek_model COMMAND test_deepseek_model)

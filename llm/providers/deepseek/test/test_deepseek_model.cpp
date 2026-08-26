@@ -24,6 +24,8 @@
 #include <utility>
 #include <vector>
 
+#include "eventbus/event_bus.hpp"
+#include "llm/chat_completions/events.hpp"
 #include "llm/chat_completions/model.hpp"
 #include "llm/deepseek/dialect.hpp"
 #include "loopback_server.hpp"
@@ -182,6 +184,17 @@ BOOST_AUTO_TEST_CASE(converse_drives_the_full_deepseek_exchange) {
     });
     BOOST_REQUIRE(model.build());
 
+    // The live-view contract: converse() broadcasts each reasoning increment
+    // on the process-wide bus, synchronously in wire order, tagged with one
+    // id per exchange plus the provider and model names.
+    std::vector<llm::chat_completions::ReasoningDeltaEvent> broadcast;
+    eventbus::EventBus::ScopedSubscription view =
+        eventbus::default_bus()
+            .subscribe<llm::chat_completions::ReasoningDeltaEvent>(
+                [&](const llm::chat_completions::ReasoningDeltaEvent& e) {
+                    broadcast.push_back(e);
+                });
+
     std::optional<model_io::MessageItem> result;
     std::exception_ptr failure;
     asio::co_spawn(io, [&]() -> asio::awaitable<void> {
@@ -237,6 +250,15 @@ BOOST_AUTO_TEST_CASE(converse_drives_the_full_deepseek_exchange) {
     BOOST_REQUIRE(result->extras);
     BOOST_CHECK_EQUAL((*result->extras)["finish_reason"], "tool_calls");
     BOOST_CHECK_EQUAL((*result->extras)["model"], "deepseek-v4-flash");
+
+    // --- the broadcast side: the live view saw the same increments ----------
+    BOOST_REQUIRE_EQUAL(broadcast.size(), 2u);
+    BOOST_CHECK_EQUAL(broadcast[0].reasoning, "thinking ");
+    BOOST_CHECK_EQUAL(broadcast[1].reasoning, "hard");
+    BOOST_CHECK(!broadcast[0].reasoning_id.empty());
+    BOOST_CHECK_EQUAL(broadcast[1].reasoning_id, broadcast[0].reasoning_id);
+    BOOST_CHECK_EQUAL(broadcast[0].provider, "deepseek");
+    BOOST_CHECK_EQUAL(broadcast[0].model, "deepseek-v4-flash");
 }
 
 BOOST_AUTO_TEST_CASE(converse_surfaces_api_error_chunks_as_chat_completions_api_exception) {

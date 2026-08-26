@@ -13,10 +13,12 @@ reentrancy discipline.
 
 ```text
 utils/eventbus/
-├── CMakeLists.txt        # builds eventbus_iface
+├── CMakeLists.txt        # builds eventbus_lib (SHARED) + eventbus_iface
 ├── README.md             # this file
 ├── include/eventbus/
 │   └── event_bus.hpp     # public header — #include "eventbus/event_bus.hpp"
+├── src/
+│   └── default_bus.cpp   # the one definition of default_bus() (the singleton)
 └── test/
     ├── CMakeLists.txt
     └── test_event_bus.cpp  # unit tests
@@ -24,9 +26,9 @@ utils/eventbus/
 
 ## Consuming
 
-Link `eventbus_iface`. Its INTERFACE include dir brings
-`eventbus/event_bus.hpp`; header-only, nothing else on the link line
-(Boost::headers arrives transitively).
+Link `eventbus_iface`; its INTERFACE include dir brings
+`eventbus/event_bus.hpp` and it links `eventbus_lib` (SHARED) — the
+compiled home of the `default_bus()` singleton.
 
 ```cmake
 target_link_libraries(my_target PRIVATE eventbus_iface)
@@ -71,13 +73,18 @@ process-wide shared instance.
   are not invoked.
 - **`clear()`**: disconnects everything; a concurrent in-flight
   `publish()` finishes against the pre-clear slot set.
-- **Default bus**: initialised on first use, destroyed during static
+- **Default bus**: the singleton is deliberately NOT inline — it lives in
+  `eventbus_lib` (SHARED), so executables and dlopened plugins alike bind
+  to one bus per process by SONAME, and a module that forgets to link it
+  fails loudly at link time instead of silently publishing into a private
+  second bus. Initialised on first use, destroyed during static
   destruction — long-lived subscribers on it should disconnect explicitly
   before `main` returns rather than rely on scope handles.
 
 ## Dependencies
 
-Boost.Signals2 headers only, via the project's single top-level
-`find_package(Boost)` (`Boost::headers`). Deliberately no `logging_lib`
-dependency: slot exceptions are the publisher's problem, and the bus
-stays usable from anywhere, including before logger setup.
+Boost.Signals2 headers only (via the project's single top-level
+`find_package(Boost)` — `Boost::headers`), plus one compiled TU for the
+shared singleton. Deliberately no `logging_lib` dependency: slot
+exceptions are the publisher's problem, and the bus stays usable from
+anywhere, including before logger setup.

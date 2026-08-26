@@ -120,6 +120,20 @@ and multiple choices are outside this initial layer. Their raw chunk remains
 available in `ChatCompletionsDelta::extras`, and a future provider dialect can
 normalize compatible extensions without changing the shared model I/O ABI.
 
+### Live observation
+
+Streamed reasoning is observable live: `converse()` broadcasts every
+reasoning increment as `llm::chat_completions::ReasoningDeltaEvent` on
+`eventbus::default_bus()` (`llm/chat_completions/events.hpp` carries the full
+contract) — synchronous, wire-ordered, one stable `reasoning_id` per exchange
+(retries re-broadcast under the same id), with `provider` (the dialect's
+`provider_name()`) and `model` attached. No subscribers means a silent no-op;
+subscribers run inline on the exchange's I/O thread and must not throw. Bus
+uniqueness across the plugin boundary comes from the SHARED eventbus library
+(`default_bus()` is deliberately not inline): a host executable and its
+dlopened providers bind the same SONAME, hence one bus per process.
+`llm/example` subscribes to mirror the thinking to stderr as it streams.
+
 Configuration follows the Responses adapter's host envelope. The endpoint
 must be supplied by the eventual provider or caller:
 

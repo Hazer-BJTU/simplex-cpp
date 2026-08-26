@@ -56,6 +56,8 @@ public:
         return endpoint;
     }
 
+    std::string_view provider_name() const override { return "deepseek"; }
+
     bool replay_assistant_reasoning() const override {
         // Thinking mode + tools rejects (400) a request whose intermediate
         // assistant messages omit reasoning_content; a no-tools request

@@ -8,9 +8,12 @@
 #   - yamlconfig/ `yamlconfig_iface` (INTERFACE, header-only): one-way
 #                 YAML -> nlohmann JSON config bridge (yamlconfig::*) over
 #                 the vendored yaml-cpp + nlohmann/json tree.
-#   - eventbus/   `eventbus_iface` (INTERFACE, header-only): type-dispatched
+#   - eventbus/   `eventbus_lib` (SHARED, the default_bus() singleton) +
+#                 `eventbus_iface` (INTERFACE wrapper): type-dispatched
 #                 synchronous publish/subscribe bus over boost::signals2
-#                 (eventbus::EventBus / eventbus::default_bus).
+#                 (eventbus::EventBus / eventbus::default_bus). The shared
+#                 singleton gives executables and dlopened plugins one bus
+#                 per process by SONAME.
 #
 # The sub-modules keep their own CMake targets and directory layout, so
 # consumers keep linking `logging_lib` / `yamlconfig_iface` and including
