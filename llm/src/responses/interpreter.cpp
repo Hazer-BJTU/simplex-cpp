@@ -246,8 +246,12 @@ void emit_tool_results(
         std::string call_id;
         if (record && !record->query.id.empty()) {
             call_id = record->query.id;
-        } else if (invokes && index < invokes->size() &&
+        } else if (invokes && results.size() == invokes->size() &&
+                   index < invokes->size() &&
                    !(*invokes)[index].id.empty()) {
+            // Positional alignment only when the results map one-to-one onto
+            // the invokes — with fewer results than calls it would bind the
+            // wrong call_id; omitting the key is the honest failure.
             call_id = (*invokes)[index].id;
         }
         if (!call_id.empty()) out["call_id"] = std::move(call_id);

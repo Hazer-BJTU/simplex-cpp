@@ -394,3 +394,21 @@ BOOST_AUTO_TEST_CASE(malformed_frames_are_ignored_without_killing_the_stream) {
     BOOST_CHECK(deltas[0].kind == DeltaKind::Marker);
     BOOST_CHECK(is_terminal(deltas[0]));
 }
+
+// Spec-legal framing where the event type lives ONLY in the `event:` field
+// and the payload carries no embedded "type": the frame must still decode
+// as its named event (a terminal, here), not degrade to an Ignored
+// "missing-type" placeholder.
+BOOST_AUTO_TEST_CASE(event_field_names_typeless_data_frames) {
+    asio::io_context io;
+    ResponsesStreamHandler handler(io.get_executor());
+
+    std::vector<ResponsesDelta> deltas = exchange(
+        io, handler,
+        "event: response.completed\ndata: {\"response\":{\"id\":\"r\"}}\n\n",
+        1);
+    BOOST_CHECK(deltas[0].kind == DeltaKind::Marker);
+    BOOST_CHECK_EQUAL(deltas[0].text, "response.completed");
+    BOOST_CHECK(is_terminal(deltas[0]));
+    BOOST_CHECK(deltas[0].extras->at("response").at("id") == "r");
+}

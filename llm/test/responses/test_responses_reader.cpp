@@ -882,6 +882,78 @@ BOOST_AUTO_TEST_CASE(dataless_error_frame_reports_errored_not_aborted) {
     BOOST_CHECK(reader.status() == StreamStatus::Errored);
 }
 
+// Same data-less framing with the bare `cancelled` spelling the reader's
+// _set_terminal_status accepts: is_terminal() must agree, or the consume
+// loop never terminates on it and the response assembles to nothing.
+BOOST_AUTO_TEST_CASE(dataless_cancelled_frame_terminates) {
+    asio::io_context io;
+    ResponsesReader reader(io.get_executor());
+
+    auto deltas = read_all(io, reader, "event: cancelled\n\n");
+    BOOST_REQUIRE_EQUAL(deltas.size(), 1u);
+    BOOST_CHECK(reader.finished());
+    BOOST_CHECK(reader.status() == StreamStatus::Cancelled);
+}
+
+// Id-less deltas (keyed "@output:N") followed by the id-bearing done item
+// are ONE logical item: the done payload must overwrite the delta bytes in
+// the same accumulator, not assemble both and double the text.
+BOOST_AUTO_TEST_CASE(idless_deltas_are_adopted_by_the_id_bearing_done_item) {
+    asio::io_context io;
+    ResponsesReader reader(io.get_executor());
+    const std::string chunk =
+        sse(nlohmann::json{{"type", "response.output_text.delta"},
+                           {"output_index", 0},
+                           {"content_index", 0},
+                           {"delta", "Hello"}}) +
+        sse(nlohmann::json{{"type", "response.output_item.done"},
+                           {"output_index", 0},
+                           {"item", {{"id", "msg_1"},
+                                     {"type", "message"},
+                                     {"role", "assistant"},
+                                     {"content", nlohmann::json::array({
+                                         {{"type", "output_text"},
+                                          {"text", "Hello"}}})}}}}) +
+        sse(nlohmann::json{{"type", "response.completed"},
+                           {"response", {{"id", "r"}}}});
+    read_all(io, reader, chunk);
+    BOOST_CHECK_EQUAL(reader.response().content.at(0).raw, "Hello");
+    // The adopted slot is the id-keyed one: exactly one round-tripped item.
+    BOOST_CHECK_EQUAL(reader.response().extras->at("output_items").size(), 1u);
+}
+
+// An authoritative payload (output_item.done) whose content carries no text
+// is not a declaration of emptiness: the bytes the deltas fed must survive
+// (the same invariant the *.done marker handlers enforce).
+BOOST_AUTO_TEST_CASE(authoritative_item_without_text_keeps_delta_bytes) {
+    asio::io_context io;
+    ResponsesReader reader(io.get_executor());
+    const nlohmann::json textless_done_item =
+        nlohmann::json{{"id", "msg_1"},
+                       {"type", "message"},
+                       {"role", "assistant"},
+                       {"content", nlohmann::json::array({
+                           {{"type", "output_text"}, {"text", ""}}})}};
+    const std::string chunk =
+        sse(nlohmann::json{{"type", "response.output_text.delta"},
+                           {"item_id", "msg_1"},
+                           {"output_index", 0},
+                           {"content_index", 0},
+                           {"delta", "kept "}}) +
+        sse(nlohmann::json{{"type", "response.output_text.delta"},
+                           {"item_id", "msg_1"},
+                           {"output_index", 0},
+                           {"content_index", 0},
+                           {"delta", "bytes"}}) +
+        sse(nlohmann::json{{"type", "response.output_item.done"},
+                           {"output_index", 0},
+                           {"item", textless_done_item}}) +
+        sse(nlohmann::json{{"type", "response.completed"},
+                           {"response", {{"id", "r"}}}});
+    read_all(io, reader, chunk);
+    BOOST_CHECK_EQUAL(reader.response().content.at(0).raw, "kept bytes");
+}
+
 // Orphan items (no output_item.added/done — the leniency path) order by the
 // wire output_index the deltas themselves carry; arrival order must not win
 // (positional tool-result correlation depends on it).

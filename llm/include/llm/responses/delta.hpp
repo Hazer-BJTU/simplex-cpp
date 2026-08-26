@@ -67,6 +67,10 @@ inline bool is_terminal(const ResponsesDelta& delta) {
            delta.text == "response.incomplete" ||
            delta.text == "response.failed" ||
            delta.text == "response.cancelled" ||
+           // Bare spellings, accepted by the reader's _set_terminal_status
+           // for data-less `event:`-only frames — keep the two tables in
+           // lockstep or the stream terminates without assembling.
+           delta.text == "cancelled" ||
            delta.text == "error";
 }
 

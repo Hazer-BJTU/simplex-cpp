@@ -121,6 +121,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -378,8 +379,10 @@ public:
 
     /**
      * @brief Resolve and cache the model factory. Call once after the
-     *        descriptor exists (single-threaded, at load or first use);
-     *        idempotent.
+     *        descriptor exists (at load or first use); idempotent and
+     *        thread-safe — concurrent first calls (e.g. create_model racing
+     *        on an add()-registered context) serialise here, so the cached
+     *        factory and flags are always published before any mint().
      *
      * With a bound library, resolves the signed create_llm_model alias once
      * (the hot minting path is then a single indirect call). Without a
@@ -390,6 +393,7 @@ public:
      *         the in-memory mint() path).
      */
     bool warm() noexcept {
+        std::lock_guard<std::mutex> lock(_warm_mutex);
         if (_warmed) {
             return _valid;
         }
@@ -486,6 +490,9 @@ private:
     /// Library the factory lives in (pins it for the descriptor's lifetime
     /// and is captured by every minted model's deleter).
     std::shared_ptr<boost::dll::shared_library> _library_ref;
+    /// Serialises warm()'s lazy first run (create_model may race on an
+    /// add()-registered context); the mutex hand-off publishes _factory.
+    std::mutex _warm_mutex;
     /// Guards against re-warming.
     bool _warmed = false;
     /// Whether warm() produced a usable minting path.

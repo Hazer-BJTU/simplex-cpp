@@ -65,6 +65,25 @@ ResponsesReader::ItemState& ResponsesReader::_item(
         : output_index
             ? std::string("@output:") + std::to_string(*output_index)
             : std::string("@orphan");
+    if (!id.empty() && output_index) {
+        // An id-bearing event for an output_index only lifecycle-less deltas
+        // have touched so far names the SAME logical item: fold the orphan
+        // slot's bytes into the id-keyed slot (keeping its earlier arrival
+        // stamp) so the authoritative payload overwrites what the deltas fed
+        // — instead of _assemble folding both and doubling the text.
+        const std::string orphan_key =
+            std::string("@output:") + std::to_string(*output_index);
+        const auto orphan = _items.find(orphan_key);
+        if (orphan != _items.end() && key != orphan_key) {
+            ItemState& slot = _items[key];
+            _adopt_orphan(slot, std::move(orphan->second));
+            _items.erase(orphan);
+            if (slot.arrival == ItemState::kUnstamped) {
+                slot.arrival = _next_arrival++;
+            }
+            return slot;
+        }
+    }
     ItemState& slot = _items[key];
     if (slot.arrival == ItemState::kUnstamped) {
         // First touch: record the creation order _assemble uses to break
@@ -73,6 +92,28 @@ ResponsesReader::ItemState& ResponsesReader::_item(
     }
     if (output_index) slot.output_index = *output_index;
     return slot;
+}
+
+void ResponsesReader::_adopt_orphan(ItemState& slot, ItemState&& orphan) {
+    // The orphan holds only increments (a lifecycle payload would have
+    // opened an id-keyed slot): append its bytes, so a later authoritative
+    // overwrite still lands complete while a missing one keeps the deltas.
+    for (auto& [index, text] : orphan.text_parts) {
+        slot.text_parts[index] += std::move(text);
+    }
+    for (auto& [index, text] : orphan.refusal_parts) {
+        slot.refusal_parts[index] += std::move(text);
+    }
+    for (auto& [index, text] : orphan.summary_parts) {
+        slot.summary_parts[index] += std::move(text);
+    }
+    slot.arguments += orphan.arguments;
+    if (slot.type.empty()) slot.type = std::move(orphan.type);
+    if (slot.call_id.empty()) slot.call_id = std::move(orphan.call_id);
+    if (slot.name.empty()) slot.name = std::move(orphan.name);
+    if (slot.arrival == ItemState::kUnstamped) {
+        slot.arrival = orphan.arrival;
+    }
 }
 
 void ResponsesReader::_accumulate_output_item(
@@ -92,10 +133,10 @@ void ResponsesReader::_accumulate_output_item(
                 const std::string part_type = get_string(part, "type");
                 if (part_type == "output_text") {
                     const std::string text = get_string(part, "text");
-                    if (authoritative || !text.empty()) item.text_parts[index] = text;
+                    if (!text.empty()) item.text_parts[index] = text;
                 } else if (part_type == "refusal") {
                     const std::string refusal = get_string(part, "refusal");
-                    if (authoritative || !refusal.empty()) {
+                    if (!refusal.empty()) {
                         item.refusal_parts[index] = refusal;
                     }
                 }
@@ -106,23 +147,23 @@ void ResponsesReader::_accumulate_output_item(
         if (summary != item_json.end() && summary->is_array()) {
             for (std::size_t index = 0; index < summary->size(); ++index) {
                 const std::string text = get_string((*summary)[index], "text");
-                if (authoritative || !text.empty()) item.summary_parts[index] = text;
+                if (!text.empty()) item.summary_parts[index] = text;
             }
         }
         const auto content = item_json.find("content");
         if (content != item_json.end() && content->is_array()) {
             for (std::size_t index = 0; index < content->size(); ++index) {
                 const std::string text = get_string((*content)[index], "text");
-                if (authoritative || !text.empty()) item.text_parts[index] = text;
+                if (!text.empty()) item.text_parts[index] = text;
             }
         }
     } else if (item_type == "function_call") {
         const std::string call_id = get_string(item_json, "call_id");
         const std::string name = get_string(item_json, "name");
         const std::string arguments = get_string(item_json, "arguments");
-        if (authoritative || !call_id.empty()) item.call_id = call_id;
-        if (authoritative || !name.empty()) item.name = name;
-        if (authoritative || !arguments.empty()) item.arguments = arguments;
+        if (!call_id.empty()) item.call_id = call_id;
+        if (!name.empty()) item.name = name;
+        if (!arguments.empty()) item.arguments = arguments;
     }
 
     if (authoritative) item.done_item = item_json;

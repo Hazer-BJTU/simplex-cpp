@@ -172,6 +172,10 @@ private:
     ItemState& _item(
         const std::string& id,
         std::optional<std::size_t> output_index = std::nullopt);
+    // Fold a lifecycle-less "@output:N" slot into the id-keyed slot of the
+    // same logical item (see _item): append increments, fill only-empty
+    // scalars, keep the earlier arrival stamp.
+    void _adopt_orphan(ItemState& slot, ItemState&& orphan);
     void _accumulate_output_item(const nlohmann::json& item,
                                  std::optional<std::size_t> output_index,
                                  bool authoritative);

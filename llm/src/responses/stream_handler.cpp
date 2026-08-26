@@ -38,19 +38,21 @@ ResponsesDelta text_delta(DeltaKind kind, const nlohmann::json& event) {
     return delta;
 }
 
-ResponsesDelta marker(const nlohmann::json& event) {
+// By value + move: every call site hands over a local `event` it never
+// reads again, so the full-event JSON rides into extras without a deep copy.
+ResponsesDelta marker(nlohmann::json event) {
     ResponsesDelta delta;
     delta.kind = DeltaKind::Marker;
     delta.text = get_string(event, "type");
-    delta.extras = event;
+    delta.extras = std::move(event);
     return delta;
 }
 
-ResponsesDelta ignored(std::string what, const nlohmann::json& event = {}) {
+ResponsesDelta ignored(std::string what, nlohmann::json event = {}) {
     ResponsesDelta delta;
     delta.kind = DeltaKind::Ignored;
     delta.text = std::move(what);
-    if (event.is_object()) delta.extras = event;
+    if (event.is_object()) delta.extras = std::move(event);
     return delta;
 }
 
@@ -123,7 +125,7 @@ bool is_ignored_event_type(const std::string& type) {
 ResponsesDelta ResponsesStreamHandler::_handle_message(
     std::span<const LineInfo> message) {
     // Frame: per the SSE spec all `data:` lines join with '\n'; `event:`
-    // names the type for frames that carry no data.
+    // names the event type, with or without data.
     std::string data;
     bool has_data = false;
     std::string event_name;
@@ -155,13 +157,21 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
     nlohmann::json event =
         nlohmann::json::parse(data, nullptr, false);   // non-throwing
     if (event.is_discarded()) return ignored("unparsable-data");
-    const nlohmann::json raw_event = event;
     try {
         event = _dialect->normalize_event(std::move(event));
     } catch (...) {
-        return ignored("dialect-normalization-error", raw_event);
+        // The pre-normalization event is reconstructable from the still-live
+        // data string, so the rare error path re-parses instead of every
+        // frame paying a defensive deep copy up front.
+        return ignored("dialect-normalization-error",
+                       nlohmann::json::parse(data, nullptr, false));
     }
     if (!event.is_object()) return ignored("non-object-event");
+    // A payload without an embedded "type" inherits the frame's `event:`
+    // name (spec-legal framing: the type may live only in the event field).
+    if (!event_name.empty() && get_string(event, "type").empty()) {
+        event["type"] = event_name;
+    }
     const std::string type = get_string(event, "type");
     if (type.empty()) return ignored("missing-type");
 
@@ -176,21 +186,21 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
         return text_delta(DeltaKind::Text, event);
     }
     if (type == "response.output_text.done") {
-        return marker(event);
+        return marker(std::move(event));
     }
 
     if (type == "response.refusal.delta") {
         return text_delta(DeltaKind::Refusal, event);
     }
     if (type == "response.refusal.done") {
-        return marker(event);
+        return marker(std::move(event));
     }
 
     if (type == "response.reasoning_text.delta") {
         return text_delta(DeltaKind::ReasoningText, event);
     }
     if (type == "response.reasoning_text.done") {
-        return marker(event);
+        return marker(std::move(event));
     }
 
     if (type == "response.reasoning_summary_text.delta") {
@@ -203,26 +213,23 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
         return delta;
     }
     if (type == "response.reasoning_summary_text.done") {
-        return marker(event);
+        return marker(std::move(event));
     }
 
     if (type == "response.function_call_arguments.delta") {
         return text_delta(DeltaKind::ToolCallArgs, event);
     }
     if (type == "response.function_call_arguments.done") {
-        return marker(event);
+        return marker(std::move(event));
     }
 
     // ---- item lifecycle ------------------------------------------------------
 
     if (type == "response.output_item.added" || type == "response.output_item.done") {
-        const nlohmann::json* item_json = find_object(event, "item");
-        if (!item_json) return marker(event);   // lifecycle event, no payload
-
-        // All item lifecycle records reach the reader. It strongly maps the
-        // ReAct core and preserves every other completed item verbatim for
-        // forward-compatible round-tripping.
-        return marker(event);
+        // All item lifecycle records reach the reader, payload or not. It
+        // strongly maps the ReAct core and preserves every other completed
+        // item verbatim for forward-compatible round-tripping.
+        return marker(std::move(event));
     }
 
     if (type == "response.content_part.added" || type == "response.content_part.done") {
@@ -230,9 +237,9 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
         const std::string part_type = part ? get_string(*part, "type") : std::string();
         if (part_type.empty() || part_type == "output_text" ||
             part_type == "refusal" || part_type == "reasoning_text") {
-            return marker(event);
+            return marker(std::move(event));
         }
-        return ignored(type, event);
+        return ignored(type, std::move(event));
     }
 
     // ---- response lifecycle ----------------------------------------------------
@@ -247,21 +254,21 @@ ResponsesDelta ResponsesStreamHandler::_handle_message(
         type == "response.completed" || type == "response.incomplete" ||
         type == "response.failed" || type == "response.cancelled" ||
         type == "error") {
-        return marker(event);
+        return marker(std::move(event));
     }
 
     if (type == "response.reasoning_summary_part.added" ||
         type == "response.reasoning_summary_part.done") {
         // The part lifecycle's done event carries the part's authoritative
         // text, indexed for the reader by summary_index/content_index.
-        return marker(event);
+        return marker(std::move(event));
     }
 
     // ---- explicit placeholders ---------------------------------------------------
 
-    if (is_ignored_event_type(type)) return ignored(type, event);
+    if (is_ignored_event_type(type)) return ignored(type, std::move(event));
 
-    return ignored("unknown:" + type, event);
+    return ignored("unknown:" + type, std::move(event));
 }
 
 } // namespace llm::responses
