@@ -44,6 +44,28 @@ if(LTO_SUPPORT)
         INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
 endif()
 
+# Provider-neutral OpenAI-compatible Chat Completions adapter. Providers may
+# derive from ChatCompletionsModel and inject a dialect; this target itself
+# intentionally exports no plugin.
+add_library(llm_chat_completions STATIC
+    src/chat_completions/model.cpp
+    src/chat_completions/interpreter.cpp
+    src/chat_completions/stream_handler.cpp
+    src/chat_completions/reader.cpp
+)
+target_include_directories(llm_chat_completions PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(llm_chat_completions PUBLIC llm_iface endpoint_lib)
+target_compile_options(llm_chat_completions PRIVATE
+    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+set_target_properties(llm_chat_completions PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(LTO_SUPPORT)
+    set_target_properties(llm_chat_completions PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+endif()
+
 add_subdirectory(providers/openai)
 
 if(BUILD_TESTS)

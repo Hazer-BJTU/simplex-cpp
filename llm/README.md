@@ -77,3 +77,49 @@ and `0` disables retrying — one exchange whose failure propagates as-is.
 When `store` is false or omitted, the adapter requests
 `reasoning.encrypted_content` so completed reasoning items can be replayed in a
 later stateless turn.
+
+## Chat Completions adapter
+
+`llm::chat_completions::ChatCompletionsModel` is the provider-neutral,
+OpenAI-compatible `POST /chat/completions` counterpart. It is built as
+`llm_chat_completions`, but deliberately has no bundled provider plugin. A
+provider derives from the model and may inject a `ChatCompletionsDialect` to
+overlay endpoint defaults or rewrite the completed request and each decoded
+stream chunk.
+
+The adapter intentionally covers the ReAct core:
+
+- system, user, assistant, and tool messages;
+- text and input-image content parts;
+- function tool definitions, `tool_choice` passthrough, parallel
+  `tool_calls`, and correlated `tool_call_id` results;
+- streamed text/refusal deltas, `finish_reason`, optional usage accounting,
+  API error chunks, and the `[DONE]` sentinel.
+
+One model exchange produces one `MessageItem`, so the interpreter owns
+`stream: true` and `n: 1`. Generation fields otherwise pass through, while
+`messages` and `tools` are rebuilt from `AgentInputState`. A finish reason of
+`stop`, `tool_calls`, or the deprecated `function_call` is successful;
+`length`, `content_filter`, an API error, or a truncated stream is surfaced as
+`ChatCompletionsApiException` by the model.
+
+Audio output, legacy request-side `functions`, hosted tools, log probabilities,
+and multiple choices are outside this initial layer. Their raw chunk remains
+available in `ChatCompletionsDelta::extras`, and a future provider dialect can
+normalize compatible extensions without changing the shared model I/O ABI.
+
+Configuration follows the Responses adapter's host envelope. The endpoint
+must be supplied by the eventual provider or caller:
+
+```json
+{
+  "model": "provider-model-id",
+  "endpoint": {
+    "base_url": "https://provider.example.com",
+    "request_path": "/v1/chat/completions",
+    "auth": { "scheme": "bearer", "api_key": "..." }
+  },
+  "stream_options": { "include_usage": true },
+  "retry": { "max_attempts": 3 }
+}
+```

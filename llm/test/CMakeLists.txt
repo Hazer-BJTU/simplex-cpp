@@ -44,6 +44,20 @@ target_link_libraries(test_responses_model PRIVATE
     llm_responses endpoint_lib Boost::unit_test_framework)
 add_test(NAME test_responses_model COMMAND test_responses_model)
 
+add_executable(test_chat_completions_interpreter
+    chat_completions/test_chat_completions_interpreter.cpp)
+target_link_libraries(test_chat_completions_interpreter PRIVATE
+    llm_chat_completions Boost::unit_test_framework)
+add_test(NAME test_chat_completions_interpreter
+    COMMAND test_chat_completions_interpreter)
+
+add_executable(test_chat_completions_stream
+    chat_completions/test_chat_completions_stream.cpp)
+target_link_libraries(test_chat_completions_stream PRIVATE
+    llm_chat_completions Boost::unit_test_framework)
+add_test(NAME test_chat_completions_stream
+    COMMAND test_chat_completions_stream)
+
 add_executable(test_openai_plugin test_openai_plugin.cpp)
 target_link_libraries(test_openai_plugin PRIVATE
     llm_iface Boost::unit_test_framework)
