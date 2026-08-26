@@ -68,9 +68,15 @@ target_compile_definitions(test_openai_plugin PRIVATE
 add_dependencies(test_openai_plugin llm_openai llm_deepseek)
 add_test(NAME test_openai_plugin COMMAND test_openai_plugin)
 
+# The deepseek plugin test drives one exchange through the dlopened .so
+# against a loopback server: endpoint_lib (transport + loopback fixture) and
+# eventbus_iface (the host-side reasoning subscriber) are part of what the
+# cross-boundary wiring test exercises.
 add_executable(test_deepseek_plugin test_deepseek_plugin.cpp)
+target_include_directories(test_deepseek_plugin PRIVATE
+    "${PROJECT_SOURCE_DIR}/endpoint/test")
 target_link_libraries(test_deepseek_plugin PRIVATE
-    llm_iface Boost::unit_test_framework)
+    llm_iface endpoint_lib eventbus_iface Boost::unit_test_framework)
 target_compile_definitions(test_deepseek_plugin PRIVATE
     DEEPSEEK_PLUGIN_DIR="$<TARGET_FILE_DIR:llm_deepseek>")
 add_dependencies(test_deepseek_plugin llm_openai llm_deepseek)

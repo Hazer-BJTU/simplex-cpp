@@ -7,7 +7,11 @@ target_include_directories(endpoint_lib INTERFACE
 )
 
 target_link_libraries(endpoint_lib INTERFACE
-    Boost::headers
+    # asio_iface (not raw Boost::headers): endpoint is an Asio consumer, and
+    # every consumer in the process must bind the single shared Asio runtime
+    # (see utils/asio) — the transport runs inside dlopened provider plugins
+    # against host-created io_contexts.
+    asio_iface
     openssl_iface
     logging_lib
     simplex_thirdparty_iface

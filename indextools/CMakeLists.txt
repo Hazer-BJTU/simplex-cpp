@@ -95,6 +95,11 @@ target_link_libraries(${LIB_NAME} PUBLIC
     logging_lib
     Boost::process
     boost_dll_iface
+    # The public headers also use Boost.Asio (subprocess / cache_system /
+    # service_command). asio_iface — not raw Boost::headers — so every
+    # consumer binds the one shared Asio runtime (utils/asio) and the
+    # separate-compilation switch travels with the include.
+    asio_iface
 )
 # Ensure every discovered language plugin is built whenever the lib's tests are,
 # without naming any language here (the list is populated by languages/

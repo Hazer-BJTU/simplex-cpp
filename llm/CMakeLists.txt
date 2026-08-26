@@ -14,8 +14,10 @@
 #     third-party nlohmann/json, and the logger).
 #   - dataclass_iface: the model_io data contract the interface speaks in.
 #   - simplex_versioning: the build-generated LLM_PLUGIN_ABI_VERSION.
-#   - Boost::headers: Boost.Asio (awaitable / any_io_executor), explicitly
-#     named because this module's own signatures use it directly.
+#   - asio_iface: Boost.Asio (awaitable / any_io_executor) with the shared
+#     runtime — explicitly named because this module's own signatures use
+#     asio directly, and every consumer must bind the one process-wide
+#     runtime (utils/asio).
 # =============================================================================
 add_library(llm_iface INTERFACE)
 target_include_directories(llm_iface INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -23,7 +25,7 @@ target_link_libraries(llm_iface INTERFACE
     extension_framework_iface
     dataclass_iface
     simplex_versioning
-    Boost::headers)
+    asio_iface)
 
 add_library(llm_responses STATIC
     src/responses/model.cpp
