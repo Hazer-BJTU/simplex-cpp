@@ -21,6 +21,13 @@ public:
     }
 };
 
+// The thinking-mode provider stance: assistant reasoning is replayed.
+class ReplayingDialect final
+    : public llm::chat_completions::ChatCompletionsDialect {
+public:
+    bool replay_assistant_reasoning() const override { return true; }
+};
+
 struct Fixture {
     model_io::ModelEndpoint endpoint;
     nlohmann::json generation{{"model", "chat-test"}};
@@ -269,4 +276,100 @@ BOOST_AUTO_TEST_CASE(assistant_refusal_is_replayed_as_refusal_not_text) {
     BOOST_REQUIRE_EQUAL(messages.size(), 2u);
     BOOST_CHECK(messages[1]["content"].is_null());
     BOOST_CHECK_EQUAL(messages[1]["refusal"], "cannot comply");
+}
+
+// --- the shared envelope, the usage trailer, and reasoning replay --------------
+
+model_io::AgentInputState reasoning_state() {
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content.push_back(
+        {model_io::ContentType::Text, "think hard"});
+
+    model_io::AgentLoopStep step;
+    step.model_response.type =
+        model_io::MessageItemType::ModelResponse;
+    step.model_response.role = "assistant";
+    step.model_response.content.push_back(
+        {model_io::ContentType::Text, "the answer"});
+    model_io::Content reasoning;
+    reasoning.type = model_io::ContentType::Text;
+    reasoning.raw = "chain of thought";
+    step.model_response.reasoning = std::move(reasoning);
+    turn.agent_loop_step.push_back(std::move(step));
+    state.turns.push_back(std::move(turn));
+    return state;
+}
+
+BOOST_AUTO_TEST_CASE(stream_options_include_usage_is_builder_owned) {
+    Fixture fixture;
+    fixture.generation = {
+        {"model", "chat-test"},
+        {"stream_options",
+         {{"include_usage", false}, {"continuous_usage_stats", true}}},
+    };
+    const auto body = body_of(ChatCompletionsInterpreter{}.build_request(
+        {}, fixture.endpoint, fixture.generation));
+    // The reader's cost accounting lives on the usage trailer, so a stale
+    // false cannot turn it off — but key-level setting keeps siblings.
+    BOOST_CHECK_EQUAL(body["stream_options"]["include_usage"], true);
+    BOOST_CHECK_EQUAL(body["stream_options"]["continuous_usage_stats"], true);
+
+    const auto plain = body_of(ChatCompletionsInterpreter{}.build_request(
+        {}, fixture.endpoint, Fixture{}.generation));
+    BOOST_CHECK_EQUAL(plain["stream_options"]["include_usage"], true);
+}
+
+BOOST_AUTO_TEST_CASE(reasoning_effort_translates_from_the_shared_config_envelope) {
+    Fixture fixture;
+    fixture.generation = {
+        {"model", "chat-test"},
+        {"reasoning", {{"effort", "medium"}}},
+    };
+    const auto body = body_of(ChatCompletionsInterpreter{}.build_request(
+        {}, fixture.endpoint, fixture.generation));
+    BOOST_CHECK_EQUAL(body["reasoning_effort"], "medium");
+    // The envelope object has no chat-completions wire form; consumed.
+    BOOST_CHECK(!body.contains("reasoning"));
+}
+
+BOOST_AUTO_TEST_CASE(explicit_reasoning_effort_wins_and_the_envelope_is_erased) {
+    Fixture fixture;
+    fixture.generation = {
+        {"model", "chat-test"},
+        {"reasoning", {{"effort", "low"}}},
+        {"reasoning_effort", "high"},
+    };
+    const auto body = body_of(ChatCompletionsInterpreter{}.build_request(
+        {}, fixture.endpoint, fixture.generation));
+    BOOST_CHECK_EQUAL(body["reasoning_effort"], "high");
+    BOOST_CHECK(!body.contains("reasoning"));
+}
+
+BOOST_AUTO_TEST_CASE(reasoning_envelope_without_effort_is_erased) {
+    Fixture fixture;
+    fixture.generation = {
+        {"model", "chat-test"},
+        {"reasoning", {{"summary", "auto"}}},
+    };
+    const auto body = body_of(ChatCompletionsInterpreter{}.build_request(
+        {}, fixture.endpoint, fixture.generation));
+    BOOST_CHECK(!body.contains("reasoning"));
+    BOOST_CHECK(!body.contains("reasoning_effort"));
+}
+
+BOOST_AUTO_TEST_CASE(assistant_reasoning_replays_only_when_the_dialect_opts_in) {
+    Fixture fixture;
+    const auto state = reasoning_state();
+
+    const auto neutral = body_of(ChatCompletionsInterpreter{}.build_request(
+        state, fixture.endpoint, fixture.generation))["messages"];
+    // Strict servers reject the unknown field: the default stays off.
+    BOOST_CHECK(!neutral[1].contains("reasoning_content"));
+
+    const auto replaying =
+        body_of(ChatCompletionsInterpreter(std::make_shared<ReplayingDialect>())
+                    .build_request(state, fixture.endpoint,
+                                   fixture.generation))["messages"];
+    BOOST_CHECK_EQUAL(replaying[1]["reasoning_content"], "chain of thought");
 }

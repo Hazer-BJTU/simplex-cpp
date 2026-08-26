@@ -71,7 +71,8 @@ json tool_call(const model_io::InvokeQuery& query) {
     };
 }
 
-json assistant_message(const model_io::MessageItem& response) {
+json assistant_message(const model_io::MessageItem& response,
+                       bool replay_reasoning) {
     json message{{"role", "assistant"}};
     std::string content;
     std::string refusal;
@@ -98,6 +99,12 @@ json assistant_message(const model_io::MessageItem& response) {
         message["content"] = content;
     }
     if (!refusal.empty()) message["refusal"] = std::move(refusal);
+    // Thinking-mode providers (dialect opt-in) require the intermediate
+    // reasoning replayed verbatim; strict servers reject the unknown field.
+    if (replay_reasoning && response.reasoning &&
+        !response.reasoning->raw.empty()) {
+        message["reasoning_content"] = response.reasoning->raw;
+    }
     if (response.invokes && !response.invokes->empty()) {
         json::array_t calls;
         calls.reserve(response.invokes->size());
@@ -143,6 +150,24 @@ void emit_message(json::array_t& messages,
     });
 }
 
+// Translate the shared host config envelope ("reasoning": {"effort": ...},
+// the Responses-API spelling) into the chat-completions top-level
+// reasoning_effort. An explicit top-level value wins; the envelope object is
+// then consumed either way — chat servers reject unknown top-level params,
+// so leaving it behind would turn every configured conversation into a 400.
+void translate_reasoning_envelope(json& body) {
+    const auto envelope = body.find("reasoning");
+    if (envelope == body.end()) return;
+    if (envelope->is_object()) {
+        const auto effort = envelope->find("effort");
+        if (effort != envelope->end() && effort->is_string() &&
+            !body.contains("reasoning_effort")) {
+            body["reasoning_effort"] = *effort;
+        }
+    }
+    body.erase("reasoning");
+}
+
 } // namespace
 
 endpoint::ModelRequestInterpreter::HttpRequest
@@ -170,7 +195,8 @@ ChatCompletionsInterpreter::build_request(
     for (const auto& turn : conversation.turns) {
         emit_message(messages, turn.user_input);
         for (const auto& step : turn.agent_loop_step) {
-            messages.push_back(assistant_message(step.model_response));
+            messages.push_back(assistant_message(
+                step.model_response, _dialect->replay_assistant_reasoning()));
             if (step.invoke_returns) {
                 emit_tool_results(messages, *step.invoke_returns,
                                   step.model_response.invokes);
@@ -203,6 +229,14 @@ ChatCompletionsInterpreter::build_request(
 
     body["stream"] = true;
     body["n"] = 1; // AgentInputState has one model-response slot per exchange.
+    translate_reasoning_envelope(body);
+    // The reader's cost accounting lives on the empty-choices usage trailer,
+    // so the builder always requests it. Key-level: sibling stream_options
+    // survive, and a dialect may still strip the whole object.
+    if (!body["stream_options"].is_object()) {
+        body["stream_options"] = json::object();
+    }
+    body["stream_options"]["include_usage"] = true;
     _dialect->transform_request(body);
 
     HttpRequest request{http::verb::post, where.target, 11};

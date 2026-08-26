@@ -314,3 +314,87 @@ BOOST_AUTO_TEST_CASE(dialect_can_normalize_provider_chunk_envelopes) {
     BOOST_CHECK_EQUAL(deltas[0].content, "normalized");
     BOOST_CHECK(deltas[1].done);
 }
+
+// --- the thinking-mode reasoning channel ---------------------------------------
+
+BOOST_AUTO_TEST_CASE(reasoning_deltas_assemble_into_reasoning_not_content) {
+    asio::io_context io;
+    ChatCompletionsStreamHandler handler(io.get_executor());
+    auto deltas = decode(io, handler,
+                         sse(chunk({{"reasoning_content", "think "}})) +
+                             sse(chunk({{"reasoning_content", "hard"}})) + done(),
+                         3);
+    BOOST_CHECK_EQUAL(deltas[0].reasoning, "think ");
+    BOOST_CHECK_EQUAL(deltas[1].reasoning, "hard");
+    BOOST_CHECK(deltas[2].done);
+
+    ChatCompletionsReader reader(io.get_executor());
+    read_all(io, reader,
+             sse(chunk({{"role", "assistant"},
+                        {"reasoning_content", "think "}})) +
+                 sse(chunk({{"reasoning_content", "hard"}})) +
+                 sse(chunk({{"content", "Answer"}}, "stop")) + done());
+
+    BOOST_CHECK(reader.status() == ChatCompletionStatus::Completed);
+    const auto& response = reader.response();
+    BOOST_REQUIRE(response.reasoning);
+    BOOST_CHECK_EQUAL(response.reasoning->raw, "think hard");
+    BOOST_CHECK_EQUAL(response.content[0].raw, "Answer");
+}
+
+BOOST_AUTO_TEST_CASE(reasoning_tool_and_usage_assemble_together) {
+    asio::io_context io;
+    ChatCompletionsReader reader(io.get_executor());
+    read_all(io, reader,
+             sse(chunk({{"role", "assistant"},
+                        {"reasoning_content", "call the tool"}})) +
+                 sse(chunk({{"tool_calls", nlohmann::json::array({
+                     {{"index", 0}, {"id", "call_x"}, {"type", "function"},
+                      {"function", {{"name", "weather"},
+                                    {"arguments", "{\"city\":\"Paris\"}"}}}},
+                 })}})) +
+                 sse(chunk(nlohmann::json::object(), "tool_calls")) +
+                 sse({
+                     {"id", "chatcmpl_r"},
+                     {"object", "chat.completion.chunk"},
+                     {"model", "chat-test"},
+                     {"choices", nlohmann::json::array()},
+                     {"usage", {
+                         {"prompt_tokens", 12},
+                         {"completion_tokens", 4},
+                         {"total_tokens", 16},
+                         {"prompt_tokens_details", {{"cached_tokens", 3}}},
+                     }},
+                 }) +
+                 done());
+
+    BOOST_CHECK(reader.status() == ChatCompletionStatus::Completed);
+    const auto& response = reader.response();
+    BOOST_REQUIRE(response.reasoning);
+    BOOST_CHECK_EQUAL(response.reasoning->raw, "call the tool");
+    BOOST_REQUIRE(response.invokes);
+    BOOST_REQUIRE_EQUAL(response.invokes->size(), 1u);
+    BOOST_CHECK_EQUAL((*response.invokes)[0].name, "weather");
+    BOOST_CHECK_EQUAL((*response.invokes)[0].arguments["city"], "Paris");
+    BOOST_REQUIRE(response.cost);
+    BOOST_CHECK_EQUAL(response.cost->cache_hit, 3u);
+    BOOST_REQUIRE(response.extras);
+    BOOST_CHECK_EQUAL((*response.extras)["finish_reason"], "tool_calls");
+}
+
+BOOST_AUTO_TEST_CASE(clear_resets_the_reasoning_accumulator) {
+    asio::io_context io;
+    ChatCompletionsReader reader(io.get_executor());
+    read_all(io, reader,
+             sse(chunk({{"reasoning_content", "first"}})) +
+                 sse(chunk({{"content", "answer"}}, "stop")) + done());
+    BOOST_REQUIRE(reader.response().reasoning);
+
+    reader.clear();
+    read_all(io, reader,
+             sse(chunk({{"content", "plain"}})) +
+                 sse(chunk(nlohmann::json::object(), "stop")) + done());
+    BOOST_CHECK(reader.status() == ChatCompletionStatus::Completed);
+    BOOST_CHECK(!reader.response().reasoning);
+    BOOST_CHECK_EQUAL(reader.response().content[0].raw, "plain");
+}

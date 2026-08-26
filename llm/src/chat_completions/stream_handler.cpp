@@ -104,6 +104,7 @@ ChatCompletionsDelta ChatCompletionsStreamHandler::_handle_message(
     if (!delta) return result;
     result.role = get_string(*delta, "role");
     result.content = get_string(*delta, "content");
+    result.reasoning = get_string(*delta, "reasoning_content");
     result.refusal = get_string(*delta, "refusal");
 
     const auto calls = delta->find("tool_calls");

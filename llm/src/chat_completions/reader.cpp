@@ -29,6 +29,7 @@ void ChatCompletionsReader::clear() {
     endpoint::ModelResponseReader<ChatCompletionsDelta>::clear();
     _role = "assistant";
     _content.clear();
+    _reasoning.clear();
     _refusal.clear();
     _tool_calls.clear();
     _finish_reason.clear();
@@ -44,6 +45,7 @@ void ChatCompletionsReader::_accumulate(
     const ChatCompletionsDelta& delta) {
     if (!delta.role.empty()) _role = delta.role;
     _content += delta.content;
+    _reasoning += delta.reasoning;
     _refusal += delta.refusal;
     if (!delta.finish_reason.empty()) _finish_reason = delta.finish_reason;
     if (delta.usage) _usage = delta.usage;
@@ -101,6 +103,17 @@ void ChatCompletionsReader::_assemble() {
         content.extras = nlohmann::json{{"refusal", _refusal}};
     }
     result.content.push_back(std::move(content));
+
+    // The thinking-mode channel assembles into the dedicated reasoning slot
+    // (mirroring the Responses reader); default integrate() then keeps it in
+    // replayed history, where dialects that must re-emit reasoning_content
+    // find it.
+    if (!_reasoning.empty()) {
+        model_io::Content reasoning;
+        reasoning.type = model_io::ContentType::Text;
+        reasoning.raw = _reasoning;
+        result.reasoning = std::move(reasoning);
+    }
 
     if (!_tool_calls.empty()) {
         std::vector<model_io::InvokeQuery> invokes;

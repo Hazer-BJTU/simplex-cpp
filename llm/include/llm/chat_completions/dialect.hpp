@@ -20,6 +20,15 @@ public:
         return endpoint;
     }
 
+    /**
+     * Whether replayed assistant messages re-emit MessageItem::reasoning as
+     * the wire's reasoning_content field. DeepSeek thinking mode rejects
+     * (400) a tools request whose intermediate assistant messages omit it,
+     * while strict OpenAI-compatible servers reject the unknown field — so
+     * the shared default stays off and only thinking-mode providers opt in.
+     */
+    virtual bool replay_assistant_reasoning() const { return false; }
+
     virtual void transform_request(nlohmann::json&) const {}
 
     virtual nlohmann::json normalize_chunk(nlohmann::json chunk) const {

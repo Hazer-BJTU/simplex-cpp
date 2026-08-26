@@ -70,6 +70,7 @@ private:
 
     std::string _role = "assistant";
     std::string _content;
+    std::string _reasoning;
     std::string _refusal;
     std::map<std::size_t, ToolCallState> _tool_calls;
     std::string _finish_reason;

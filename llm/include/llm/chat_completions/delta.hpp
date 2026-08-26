@@ -22,6 +22,10 @@ struct ChatCompletionsDelta {
     std::size_t choice_index = 0;
     std::string role;
     std::string content;
+    /// delta.reasoning_content — the thinking-mode channel (DeepSeek-style
+    /// de-facto compat spelling), streamed before the visible answer.
+    /// Empty for providers that never send it.
+    std::string reasoning;
     std::string refusal;
     std::vector<ToolCallDelta> tool_calls;
     std::string finish_reason;
