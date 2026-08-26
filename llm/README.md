@@ -4,6 +4,254 @@
 `endpoint` module below it is transport-only: HTTP/HTTPS, SSE framing and retry
 drivers do not know which model protocol they carry.
 
+## Architecture and responsibility boundaries
+
+The central abstraction is deliberately an **exchange**, not an agent. A
+conversation model consumes the complete, provider-independent
+`model_io::AgentInputState` and returns exactly one finished
+`model_io::MessageItem`:
+
+```text
+host/session                                      provider wire
+────────────                                      ─────────────
+AgentInputState
+  ├─ meta                 (host only; never sent)
+  ├─ system_prompt ─┐
+  ├─ tools ─────────┼─> Interpreter ─> HTTP request ─> endpoint transport
+  ├─ turns ─────────┘                                      │ SSE frames
+  └─ extras              (reserved host regions excluded)  v
+MessageItem <──────── Reader <──────── typed deltas <─ StreamHandler
+     │
+     └─ LLMModel::integrate() ─> updated AgentInputState
+```
+
+The layers have intentionally narrow ownership:
+
+| Layer | Owns | Must not own |
+| --- | --- | --- |
+| Host/session loop | user turns, tool execution and authorization, step limits, persistence, compaction, cancellation policy | provider JSON and SSE parsing |
+| `LLMDispatcher` / plugin context | plugin discovery, ABI gating, factory lookup, library lifetime | conversations and network exchanges |
+| `LLMModel` | one configured provider client, one `converse()` exchange, result integration/retention policy | agent loops, tool execution, durable storage |
+| Protocol adapter | canonical-data-to-wire mapping and wire-to-canonical assembly | provider-specific deviations that can be expressed by a dialect |
+| Dialect | endpoint defaults and small JSON-level provider rewrites | transport, session state, a second model abstraction |
+| `endpoint` | DNS/TCP/TLS/HTTP, SSE framing, retry/backoff and producer/consumer plumbing | LLM messages, tools, reasoning semantics |
+
+This boundary is important for retries: a retry repeats the same already-built
+request and clears the attempt-local reader. It does not append partial output
+to the conversation, execute a tool twice, or rebuild session state. Only a
+successfully assembled result returned by `converse()` may be integrated.
+
+## Conversation model: canonical input and output
+
+### Input: `AgentInputState`
+
+`AgentInputState` is the durable, provider-neutral session value. It contains:
+
+- `meta`: host bookkeeping such as session status and errors. An interpreter
+  must never send it to a provider.
+- `system_prompt`: a structured `PromptTemplate`. The interpreter renders it
+  at request-build time; the rendered string is not the persisted source of
+  truth.
+- `tools`: `Invocable` definitions (`name`, `description`, JSON Schema, plus
+  optional remote/provider metadata). Registration advertises a tool; it does
+  not authorize or execute it.
+- `turns`: oldest-first `UserLoopStep` values. Each turn contains one
+  `user_input`, followed by zero or more `AgentLoopStep`s. An agent step is one
+  model response plus the tool results produced for its calls.
+- `extras`: experimental session data. The reserved `external_status` and
+  `events` regions are host/plugin exchange state and must not reach the model.
+  Other fields are only consumed when an adapter explicitly defines a mapping;
+  normal generation configuration comes from the model config, not this value.
+
+The nested shape preserves the causal relation that a flat chat array loses:
+
+```text
+UserLoopStep
+├─ user_input
+└─ AgentLoopStep[]
+   ├─ model_response (possibly containing invokes[])
+   └─ invoke_returns[] (correlated by invoke_return.query.id)
+```
+
+`MessageItem::content` is an ordered heterogeneous list. `ContentType::Text`
+stores UTF-8, `Binary` stores base64 text, and `ExternalRef` stores a URI or
+other out-of-band reference. `extras` retains protocol details that do not
+deserve a new shared ABI field. An adapter must preserve content order and
+must document unsupported content types instead of silently changing their
+meaning.
+
+### Output: one `MessageItem`
+
+For a conversation exchange, `converse()` returns a `ModelResponse` item:
+
+- `content`: visible assistant output, in provider order;
+- `reasoning`: a separate reasoning/thinking channel when supplied;
+- `invokes`: zero or more tool requests. Each `InvokeQuery` carries the wire
+  call `id`, tool `name`, parsed `arguments`, execution/security hints, and
+  optional raw metadata;
+- `cost`: prompt, generated, and cached-prompt token counts when reported;
+- `extras`: loss-minimizing protocol metadata such as response id, model,
+  terminal reason, native usage, annotations, or unknown compatible fields.
+
+An empty `invokes` value means the host may treat the item as the final answer
+for that user turn. A non-empty value means only “the model requested tools”;
+the host still validates the name/schema, applies `InvokeSecurity`, schedules
+according to `InvokeType`, executes the tool, and creates `InvokeReturn`
+messages. Tool failures should normally be represented as tool-result content
+so the next model exchange can recover.
+
+`InvokeReturn` duplicates the result in two useful forms: `content` is the
+canonical message payload, while `invoke_return.query.id` is provenance and
+wire correlation. When constructing one, keep `invoke_return.output` equal to
+the first content part. Adapters may use positional correlation only as a
+compatibility fallback when provenance is absent.
+
+### Complete ReAct data flow
+
+One user turn can contain several model exchanges:
+
+```cpp
+model.integrate(state, user_message); // opens a UserLoopStep
+
+for (std::size_t step = 0; step != max_steps; ++step) {
+    model_io::MessageItem response = co_await model.converse(state);
+    model.integrate(state, response); // appends an AgentLoopStep
+
+    if (!response.invokes || response.invokes->empty()) {
+        co_return;                    // final assistant response
+    }
+
+    for (const auto& call : *response.invokes) {
+        model_io::MessageItem result = co_await execute_with_policy(call);
+        model.integrate(state, result); // attaches to current AgentLoopStep
+    }
+}
+```
+
+The host owns the loop and its maximum-step guard. `integrate()` supplies only
+the structural placement rule:
+
+| Item type | Placement |
+| --- | --- |
+| `UserInput` | append a new `UserLoopStep` |
+| `ModelResponse` | append an `AgentLoopStep` to the current user turn |
+| `InvokeReturn` | append to the current agent step's `invoke_returns` |
+
+It creates missing parent containers for restored or imperfect state rather
+than dropping data. It does not deduplicate, compact, persist, or decide that a
+turn is complete. A provider may override integration to change retention of
+provider-required replay data, but should not change these placement semantics.
+
+### One exchange, end to end
+
+1. `LLMDispatcher::create_model(provider, executor, config)` finds an
+   ABI-compatible plugin and atomically constructs a configured model.
+2. `create_model()` invokes `build()` once. The model overlays the configured
+   endpoint on dialect defaults, validates it, separates host-only keys
+   (`provider`, `endpoint`, `retry`) from generation JSON, and initializes
+   immutable exchange state.
+3. `converse(state)` asks the protocol Interpreter to render the prompt,
+   flatten turns in causal order, map tools and multimodal parts, and rebuild
+   builder-owned wire fields.
+4. The Dialect applies the last provider-specific request rewrite.
+5. `endpoint::complete` resolves/connects, sends the request, and pumps the
+   response. Retryable failure starts a fresh connection and resets all
+   attempt-local decoding/accumulation state.
+6. The StreamHandler performs framing and stateless event/chunk decoding. A
+   dialect may normalize the decoded JSON before it becomes a typed delta.
+7. The Reader consumes deltas in wire order, invokes observation hooks,
+   accumulates fragmented text/reasoning/tool arguments/usage, recognizes the
+   terminal state, and assembles one canonical `MessageItem`.
+8. The model rejects non-success terminal states with a protocol exception;
+   otherwise it returns the item without mutating `state`.
+9. The host calls `integrate()` only after accepting that result. At session
+   teardown the plugin-owned deleter calls `release()` and then destroys the
+   model while its dynamic library is still pinned.
+
+Streaming deltas are deliberately not the return type of `LLMModel`: they are
+attempt-local and protocol-specific, whereas `MessageItem` is stable and
+persistable. Live UI/telemetry attaches through reader hooks or process-wide
+events. Observers must account for retries: hooks survive `clear()` and can see
+more than one attempt, while only the final successful assembly is returned.
+
+## Designing a complete LLM interface
+
+Use the following order when adding a new conversation protocol or provider.
+It keeps the shared ABI small and makes most behavior testable without a live
+service.
+
+1. **Choose the canonical shape first.** Reuse `AgentInputState ->
+   MessageItem` for conversational protocols, including multimodal input. Add
+   a new `LLMModelType` and a new appended virtual entry point only when the
+   input/output data shape is genuinely different (embedding vectors, image
+   generation, transcription, and so on). Never force those products into a
+   chat message merely to reuse `converse()`.
+2. **Define loss and ownership explicitly.** Specify role mapping, supported
+   content parts, tool-call correlation, reasoning replay, terminal success
+   states, usage mapping, unknown-field retention, and which component owns
+   each request key. Reject impossible mappings; retain harmless unknown data
+   in `extras`.
+3. **Implement a pure Interpreter.** Its inputs are state, endpoint, and
+   generation JSON; its output is a complete HTTP request. It performs no I/O,
+   derives empty roles from item type, tolerates sparse restored state, and
+   lets builder-owned history/tool/stream keys override stale config values.
+4. **Define a typed delta and decoder.** The StreamHandler should only turn
+   wire events into deltas and identify `[DONE]`/terminal/error events. It
+   should not build conversation objects or own cross-event accumulation.
+5. **Implement a per-exchange Reader.** Accumulate fragmented fields by their
+   stable wire index/id, parse tool arguments only after completion, preserve
+   refusal/reasoning separately, assemble token cost, retain useful native
+   metadata, and expose an unambiguous status for completed, truncated,
+   filtered, length-limited, cancelled, and failed streams.
+6. **Compose the model.** In `build()`, validate config and endpoint without
+   throwing across the lifecycle boundary. In `converse()`, create fresh
+   interpreter/reader/completer state, run the exchange, translate terminal
+   failure to a typed exception, and return only a complete canonical item.
+   Keep the instance sequential unless concurrent use is explicitly designed
+   and documented.
+7. **Isolate provider variance in a Dialect.** Prefer endpoint defaults plus
+   `transform_request()` and event/chunk normalization. Derive a new model only
+   when behavior cannot be expressed by that narrow policy object. Provider
+   types must not cross the plugin ABI.
+8. **Export and register the plugin.** Export `create_llm_plugin` for the
+   descriptor and the signed `create_llm_model(executor, config)` factory.
+   Report the shared `LLM_PLUGIN_ABI_VERSION`; let the context own `build()`,
+   `release()`, and dynamic-library pinning.
+9. **Test by layer.** Interpreter golden tests cover exact JSON and history
+   order; decoder tests cover fragmented/unknown/error events; reader tests
+   cover assembly and every terminal status; model tests cover config overlay,
+   retries and exception mapping; plugin tests cover aliases, ABI admission and
+   factory lifetime. Finally add one multi-turn tool round trip that serializes
+   and restores `AgentInputState` between exchanges.
+
+A minimal protocol model therefore has this composition (names are examples):
+
+```cpp
+class MyModel final : public llm::LLMModel {
+public:
+    LLMModelType model_type() const noexcept final {
+        return LLMModelType::Conversation;
+    }
+    bool build() noexcept override; // parse/validate config once
+    boost::asio::awaitable<model_io::MessageItem> converse(
+        const model_io::AgentInputState&) override;
+
+private:
+    model_io::ModelEndpoint endpoint_;
+    nlohmann::json generation_;
+    std::shared_ptr<const MyDialect> dialect_;
+};
+
+// converse():
+// MyInterpreter -> complete<MyDelta> -> MyStreamHandler -> MyReader
+```
+
+Before calling an interface complete, verify four invariants: canonical state
+round-trips through JSON; a failed or retried exchange cannot mutate it; every
+tool result can be correlated after restore; and every successful provider
+terminal form produces exactly one `ModelResponse`. These invariants are more
+important than matching any one provider's vocabulary.
+
 ## Responses adapter
 
 `llm::responses::ResponsesModel` is a complete `LLMModel` implementation for
