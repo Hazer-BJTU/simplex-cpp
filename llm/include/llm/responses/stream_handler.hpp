@@ -21,7 +21,7 @@
 // every Marker/Ignored carries the full event JSON in `extras` — enough
 // for the reader to reconstruct everything this layer round-trips:
 //
-//   output_text parts      -> Text deltas            (content.raw)
+//   output_text parts      -> Text deltas            (content[0].raw)
 //   reasoning_text channel -> ReasoningText deltas   (reasoning.raw, §10)
 //   reasoning summaries    -> ReasoningSummary deltas (§9, per part index)
 //   function_call args     -> ToolCallArgs deltas    (JSON string fragments)

@@ -182,7 +182,7 @@ BOOST_AUTO_TEST_CASE(text_stream_assembles_the_contract_record) {
     const auto& response = reader.response();
     BOOST_CHECK(response.type == model_io::MessageItemType::ModelResponse);
     BOOST_CHECK_EQUAL(response.role, "assistant");
-    BOOST_CHECK_EQUAL(response.content.raw, "The answer is 42");
+    BOOST_CHECK_EQUAL(response.content.at(0).raw, "The answer is 42");
     BOOST_CHECK(!response.reasoning);
     BOOST_CHECK(!response.invokes);
     BOOST_REQUIRE(response.extras);
@@ -271,7 +271,7 @@ BOOST_AUTO_TEST_CASE(function_call_stream_assembles_invokes) {
     BOOST_REQUIRE(response.invokes->at(0).extras);
     BOOST_CHECK_EQUAL((*response.invokes->at(0).extras)["id"], "fc_1");
     // Text-less response: content is empty but the record is well-formed.
-    BOOST_CHECK_EQUAL(response.content.raw, "");
+    BOOST_CHECK_EQUAL(response.content.at(0).raw, "");
 }
 
 BOOST_AUTO_TEST_CASE(malformed_call_arguments_fall_back_to_the_raw_string) {
@@ -414,7 +414,7 @@ BOOST_AUTO_TEST_CASE(untyped_item_bytes_are_salvaged) {
         sse(nlohmann::json{{"type", "response.completed"},
                            {"response", {{"id", "r"}}}});
     read_all(io, reader, chunk);
-    BOOST_CHECK_EQUAL(reader.response().content.raw, "the full answer");
+    BOOST_CHECK_EQUAL(reader.response().content.at(0).raw, "the full answer");
 
     // Argument deltas alone make the slot a salvaged function call.
     asio::io_context io2;
@@ -454,8 +454,8 @@ BOOST_AUTO_TEST_CASE(refusal_placement_depends_on_accompanying_text) {
                            {"response", {{"id", "r"}}}});
     read_all(io, reader, refusal_only);
     const auto& response = reader.response();
-    BOOST_CHECK_EQUAL(response.content.raw, "I cannot help with that.");
-    BOOST_CHECK(!response.content.extras);
+    BOOST_CHECK_EQUAL(response.content.at(0).raw, "I cannot help with that.");
+    BOOST_CHECK(!response.content.at(0).extras);
 
     // Refusal alongside output text: it rides in content.extras, kept out of
     // the visible text.
@@ -478,9 +478,9 @@ BOOST_AUTO_TEST_CASE(refusal_placement_depends_on_accompanying_text) {
                            {"response", {{"id", "r"}}}});
     read_all(io2, mixed, refusal_and_text);
     const auto& mixed_response = mixed.response();
-    BOOST_CHECK_EQUAL(mixed_response.content.raw, "Partial answer.");
-    BOOST_REQUIRE(mixed_response.content.extras);
-    BOOST_CHECK_EQUAL((*mixed_response.content.extras)["refusal"],
+    BOOST_CHECK_EQUAL(mixed_response.content.at(0).raw, "Partial answer.");
+    BOOST_REQUIRE(mixed_response.content.at(0).extras);
+    BOOST_CHECK_EQUAL((*mixed_response.content.at(0).extras)["refusal"],
                       "...but no more.");
 }
 
@@ -502,7 +502,7 @@ BOOST_AUTO_TEST_CASE(ignored_categories_leave_the_assembled_record_untouched) {
     read_all(io, reader, chunk);
     BOOST_CHECK(reader.status() == StreamStatus::Completed);
     const auto& response = reader.response();
-    BOOST_CHECK_EQUAL(response.content.raw, "");
+    BOOST_CHECK_EQUAL(response.content.at(0).raw, "");
     BOOST_CHECK(!response.invokes);
 }
 
@@ -599,7 +599,7 @@ BOOST_AUTO_TEST_CASE(terminal_output_is_authoritative_per_content_part) {
     });
     read_all(io, reader, chunk);
 
-    BOOST_CHECK_EQUAL(reader.response().content.raw, "first second");
+    BOOST_CHECK_EQUAL(reader.response().content.at(0).raw, "first second");
     BOOST_REQUIRE(reader.response().extras);
     const auto& output_items = (*reader.response().extras)["output_items"];
     BOOST_REQUIRE_EQUAL(output_items.size(), 2u);
@@ -637,7 +637,7 @@ BOOST_AUTO_TEST_CASE(hooks_observe_every_delta_without_consuming) {
         BOOST_CHECK_EQUAL(seen_second[index].text, deltas[index].text);
     }
     // Observation did not disturb the consumption: the record assembled.
-    BOOST_CHECK_EQUAL(reader.response().content.raw, "The answer is 42");
+    BOOST_CHECK_EQUAL(reader.response().content.at(0).raw, "The answer is 42");
 
     // "Print the thinking process": a monitor filtering the reasoning
     // channels — and the same functor type on a second reader.
@@ -655,7 +655,7 @@ BOOST_AUTO_TEST_CASE(hooks_observe_every_delta_without_consuming) {
     read_all(io2, other, text_stream());
     BOOST_CHECK_EQUAL(other_seen.size(), 10u);
     BOOST_CHECK_EQUAL(other_seen[3].text, "The");
-    BOOST_CHECK_EQUAL(other.response().content.raw, "The answer is 42");
+    BOOST_CHECK_EQUAL(other.response().content.at(0).raw, "The answer is 42");
 }
 
 // Sync hooks run first, then async hooks, each in registration order, and
@@ -749,7 +749,7 @@ BOOST_AUTO_TEST_CASE(producer_fault_ends_the_stream_as_aborted) {
     BOOST_REQUIRE_EQUAL(out.size(), 1u);
     BOOST_CHECK(reader.finished());
     BOOST_CHECK(reader.status() == StreamStatus::Aborted);
-    BOOST_CHECK_EQUAL(reader.response().content.raw, "");   // no assembly
+    BOOST_CHECK(reader.response().content.empty()); // no assembly
 }
 
 // A consumer that will not drain to the terminal event calls abort(): the
@@ -824,7 +824,7 @@ BOOST_AUTO_TEST_CASE(consume_drains_and_returns_the_assembled_item) {
     io.run();
 
     BOOST_REQUIRE(item);
-    BOOST_CHECK_EQUAL(item->content.raw, "The answer is 42");
+    BOOST_CHECK_EQUAL(item->content.at(0).raw, "The answer is 42");
     BOOST_CHECK_EQUAL(item->role, "assistant");
     BOOST_CHECK_EQUAL(hook_count, 10u);   // hooks still monitored the drain
     BOOST_CHECK(reader.finished());
@@ -847,7 +847,7 @@ BOOST_AUTO_TEST_CASE(a_hook_fault_on_the_terminal_delta_keeps_the_record_final) 
     BOOST_CHECK_THROW(read_all(io, reader, text_stream()), std::runtime_error);
 
     BOOST_CHECK(reader.status() == StreamStatus::Completed);
-    BOOST_CHECK_EQUAL(reader.response().content.raw, "The answer is 42");
+    BOOST_CHECK_EQUAL(reader.response().content.at(0).raw, "The answer is 42");
     BOOST_CHECK(reader.handler()->get_state() == endpoint::SSEHandlerState::ERROR);
 }
 
@@ -977,7 +977,7 @@ BOOST_AUTO_TEST_CASE(pump_completes_the_stream_with_a_terminal_event) {
     BOOST_REQUIRE(!result.pump_stage);
     BOOST_REQUIRE_EQUAL(result.deltas.size(), 10u);
     BOOST_CHECK(reader.status() == StreamStatus::Completed);
-    BOOST_CHECK_EQUAL(reader.response().content.raw, "The answer is 42");
+    BOOST_CHECK_EQUAL(reader.response().content.at(0).raw, "The answer is 42");
     // The reader finished DONE on the terminal marker; pump's exit sees a
     // non-RUNNING handler and leaves that state alone.
     BOOST_CHECK(reader.handler()->get_state() == endpoint::SSEHandlerState::DONE);
@@ -1003,7 +1003,7 @@ BOOST_AUTO_TEST_CASE(pump_runs_equally_with_the_bounded_driver) {
     if (result.pump_stage) BOOST_TEST_MESSAGE("pump error: " << result.pump_error);
     BOOST_REQUIRE_EQUAL(result.deltas.size(), 10u);
     BOOST_CHECK(reader.status() == StreamStatus::Completed);
-    BOOST_CHECK_EQUAL(reader.response().content.raw, "The answer is 42");
+    BOOST_CHECK_EQUAL(reader.response().content.at(0).raw, "The answer is 42");
     BOOST_CHECK(reader.handler()->get_state() == endpoint::SSEHandlerState::DONE);
 }
 

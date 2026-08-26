@@ -113,8 +113,7 @@ model_io::MessageItem user_item(std::string text) {
     model_io::MessageItem item;
     item.type = model_io::MessageItemType::UserInput;
     item.role = "user";
-    item.content.type = model_io::ContentType::Text;
-    item.content.raw = std::move(text);
+    item.content.emplace_back().raw = std::move(text);
     return item;
 }
 
@@ -123,8 +122,7 @@ model_io::MessageItem response_item(std::string text) {
     model_io::MessageItem item;
     item.type = model_io::MessageItemType::ModelResponse;
     item.role = "assistant";
-    item.content.type = model_io::ContentType::Text;
-    item.content.raw = std::move(text);
+    item.content.emplace_back().raw = std::move(text);
     return item;
 }
 
@@ -133,8 +131,7 @@ model_io::MessageItem result_item(std::string text) {
     model_io::MessageItem item;
     item.type = model_io::MessageItemType::InvokeReturn;
     item.role = "tool";
-    item.content.type = model_io::ContentType::Text;
-    item.content.raw = std::move(text);
+    item.content.emplace_back().raw = std::move(text);
     return item;
 }
 
@@ -196,14 +193,14 @@ BOOST_AUTO_TEST_CASE(integrate_places_each_item_type) {
     // User input -> a fresh turn.
     model.integrate(state, user_item("hello"));
     BOOST_REQUIRE_EQUAL(state.turns.size(), 1u);
-    BOOST_CHECK_EQUAL(state.turns[0].user_input.content.raw, "hello");
+    BOOST_CHECK_EQUAL(state.turns[0].user_input.content.at(0).raw, "hello");
     BOOST_CHECK(state.turns[0].agent_loop_step.empty());
 
     // Model response -> a new agent step on that same turn.
     model.integrate(state, response_item("thinking..."));
     BOOST_REQUIRE_EQUAL(state.turns.size(), 1u);
     BOOST_REQUIRE_EQUAL(state.turns[0].agent_loop_step.size(), 1u);
-    BOOST_CHECK_EQUAL(state.turns[0].agent_loop_step[0].model_response.content.raw,
+    BOOST_CHECK_EQUAL(state.turns[0].agent_loop_step[0].model_response.content.at(0).raw,
                       "thinking...");
     BOOST_CHECK(!state.turns[0].agent_loop_step[0].invoke_returns.has_value());
 
@@ -213,7 +210,8 @@ BOOST_AUTO_TEST_CASE(integrate_places_each_item_type) {
     BOOST_REQUIRE(state.turns[0].agent_loop_step[0].invoke_returns.has_value());
     BOOST_REQUIRE_EQUAL(state.turns[0].agent_loop_step[0].invoke_returns->size(), 1u);
     BOOST_CHECK_EQUAL(
-        (*state.turns[0].agent_loop_step[0].invoke_returns)[0].content.raw, "12:00");
+        (*state.turns[0].agent_loop_step[0].invoke_returns)[0].content.at(0).raw,
+        "12:00");
 
     // A second user input starts a SECOND turn; nothing bleeds into the first.
     model.integrate(state, user_item("and now?"));
@@ -254,11 +252,12 @@ BOOST_AUTO_TEST_CASE(integrated_state_stays_serialisable) {
     nlohmann::json j = state.turns.back();
     model_io::UserLoopStep back = j.get<model_io::UserLoopStep>();
     BOOST_REQUIRE_EQUAL(back.agent_loop_step.size(), 2u);
-    BOOST_CHECK_EQUAL(back.user_input.content.raw, "hello");
-    BOOST_CHECK_EQUAL(back.agent_loop_step[0].model_response.content.raw,
+    BOOST_CHECK_EQUAL(back.user_input.content.at(0).raw, "hello");
+    BOOST_CHECK_EQUAL(back.agent_loop_step[0].model_response.content.at(0).raw,
                       "hi — checking the time");
     BOOST_REQUIRE(back.agent_loop_step[0].invoke_returns.has_value());
-    BOOST_CHECK_EQUAL(back.agent_loop_step[1].model_response.content.raw, "it is 12:00");
+    BOOST_CHECK_EQUAL(back.agent_loop_step[1].model_response.content.at(0).raw,
+                      "it is 12:00");
 }
 
 // ---------------------------------------------------------------------------

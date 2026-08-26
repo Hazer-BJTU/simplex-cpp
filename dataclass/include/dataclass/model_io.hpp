@@ -284,13 +284,14 @@ NLOHMANN_JSON_SERIALIZE_ENUM(MessageItemType, {
 // originating InvokeReturn record in `invoke_return`: the query inside
 // carries the id that correlates the result back to the entry in the
 // model_response's `invokes` (the wire-level "tool call id" providers
-// require on tool-result messages). `content` stays the canonical payload
-// position; the record's `output` is expected to carry the same bytes when
-// both are set.
+// require on tool-result messages). `content` is an ordered list so one
+// message can carry heterogeneous parts (for example text followed by an
+// image). For invoke returns, the record's `output` is expected to match the
+// first content part when both are set.
 struct MessageItem {
     MessageItemType type = MessageItemType::UserInput;
     std::string role;
-    Content content;
+    std::vector<Content> content;
     std::optional<Content> reasoning, action_status;
     std::optional<std::vector<InvokeQuery>> invokes;
     // On a ModelResponse item: the exchange's token accounting as the
@@ -319,7 +320,18 @@ inline void to_json(nlohmann::json& j, const MessageItem& m) {
 inline void from_json(const nlohmann::json& j, MessageItem& m) {
     if (auto it = j.find("type"); it != j.end()) it->get_to(m.type);
     if (auto it = j.find("role"); it != j.end()) it->get_to(m.role);
-    if (auto it = j.find("content"); it != j.end()) it->get_to(m.content);
+    if (auto it = j.find("content"); it != j.end()) {
+        // Read the former single-object representation as a one-element list
+        // so persisted conversations remain loadable after the protocol
+        // migration. New writes always use the array representation.
+        if (it->is_array()) {
+            it->get_to(m.content);
+        } else if (!it->is_null()) {
+            m.content = {it->get<Content>()};
+        } else {
+            m.content.clear();
+        }
+    }
     detail::read_optional(j, "reasoning", m.reasoning);
     detail::read_optional(j, "action_status", m.action_status);
     detail::read_optional(j, "invokes", m.invokes);
@@ -599,7 +611,8 @@ inline void from_json(const nlohmann::json& j, MetaInfo& m) {
 //   |        type           : MessageItemType  user_input | model_response |
 //   |                                           invoke_return
 //   |        role           : string   "user" / "assistant" / "tool"
-//   |        content        : Content  type : ContentType (text | binary |
+//   |        content        : vector<Content>  ordered, heterogeneous parts;
+//   |                          each part has type : ContentType (text | binary |
 //   |                               external_ref) — how `raw` is encoded;
 //   |                               raw  : string payload;
 //   |                               extras? : optional<json> content-part

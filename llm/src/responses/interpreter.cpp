@@ -4,6 +4,7 @@
 #include "llm/responses/interpreter.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <utility>
@@ -99,6 +100,27 @@ json::array_t synthesized_content(const model_io::Content& content) {
     return parts;
 }
 
+json::array_t synthesized_content(
+    const std::vector<model_io::Content>& content) {
+    json::array_t parts;
+    for (const auto& value : content) {
+        json::array_t next = synthesized_content(value);
+        parts.insert(parts.end(),
+                     std::make_move_iterator(next.begin()),
+                     std::make_move_iterator(next.end()));
+    }
+    return parts;
+}
+
+json::array_t input_content(const std::vector<model_io::Content>& content) {
+    json::array_t parts;
+    parts.reserve(content.size());
+    for (const auto& value : content) {
+        parts.push_back(input_content_part(value));
+    }
+    return parts;
+}
+
 // The wire item captured in an extras record, if it is one of the wanted
 // type — the round-trip fast path the stream handler sets up.
 const json* captured_item(const std::optional<json>& extras,
@@ -170,7 +192,10 @@ void emit_assistant_message(json::array_t& input,
             }
         }
     }
-    if (!emitted && !response.content.raw.empty()) {
+    if (!emitted && std::any_of(response.content.begin(), response.content.end(),
+                                [](const auto& part) {
+                                    return !part.raw.empty();
+                                })) {
         json message;
         message["type"] = "message";
         message["role"] = "assistant";
@@ -226,11 +251,19 @@ void emit_tool_results(
             call_id = (*invokes)[index].id;
         }
         if (!call_id.empty()) out["call_id"] = std::move(call_id);
-        // content is the contract's canonical payload position; the embedded
-        // record's output carries the same bytes and serves as fallback.
-        out["output"] = (item.content.raw.empty() && record)
-            ? record->output.raw
-            : item.content.raw;
+        // Preserve the Responses API's compact string form for a single text
+        // result. Multiple or non-text parts use its heterogeneous output
+        // array. The embedded record remains the fallback for an empty list.
+        if (item.content.empty()) {
+            out["output"] = record ? record->output.raw : std::string();
+        } else if (item.content.size() == 1 &&
+                   item.content.front().type == model_io::ContentType::Text) {
+            out["output"] = (item.content.front().raw.empty() && record)
+                ? record->output.raw
+                : item.content.front().raw;
+        } else {
+            out["output"] = input_content(item.content);
+        }
         input.push_back(std::move(out));
     }
 }
@@ -239,7 +272,7 @@ void emit_message_item(json::array_t& input, const model_io::MessageItem& item) 
     json message;
     message["type"] = "message";
     message["role"] = derived_role(item);
-    message["content"] = json::array({input_content_part(item.content)});
+    message["content"] = input_content(item.content);
     input.push_back(std::move(message));
 }
 

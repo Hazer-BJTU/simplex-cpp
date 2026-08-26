@@ -28,11 +28,12 @@
 //
 // `input` flattening, per turn, in order:
 //
-//   user_input           -> {type:"message", role:"user", content:[part]}
-//                           part = content.extras (object) overlaid with
-//                           {type:"input_text", text:raw}; binary/external_ref
-//                           content is sent as the text it is (contract
-//                           leniency — no transcoding)
+//   user_input           -> {type:"message", role:"user", content:[parts...]}
+//                           one provider part per ordered Content entry:
+//                           text -> input_text, external_ref -> input_image,
+//                           binary -> input_file; extras.type may explicitly
+//                           select input_image/input_file and extras fields
+//                           (detail, filename, file_id, ...) are preserved
 //   model_response       -> up to three groups, in this order:
 //     reasoning          extras.items (captured done items) re-emitted
 //                       VERBATIM — ids, summaries and encrypted_content must
@@ -52,8 +53,9 @@
 //                       with the parent response's invokes[i].id, else the
 //                       key is omitted (legal on the wire); a captured
 //                       function_call_output item in extras wins verbatim
-//     output             content.raw (the contract's canonical payload
-//                       position), falling back to output.raw
+//     output             a single text content's raw string, or a provider
+//                       content array for multiple/non-text entries; an empty
+//                       content list falls back to output.raw
 //
 // action_status is deliberately NOT mapped (explicit placeholder; the wire
 // `phase` annotation is future work). A MessageItem of type InvokeReturn in

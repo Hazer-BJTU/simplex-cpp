@@ -393,17 +393,19 @@ void ResponsesReader::_assemble() {
         if (item->done_item.is_object()) output_items.push_back(item->done_item);
     }
 
-    result.content.type = model_io::ContentType::Text;
-    result.content.raw = std::move(text);
+    model_io::Content content;
+    content.type = model_io::ContentType::Text;
+    content.raw = std::move(text);
     if (!refusal.empty()) {
         // Refusal is a distinct part kind: keep it out of the visible text
         // when there is any; only a refusal-only response surfaces it there.
-        if (result.content.raw.empty()) {
-            result.content.raw = std::move(refusal);
+        if (content.raw.empty()) {
+            content.raw = std::move(refusal);
         } else {
-            result.content.extras = nlohmann::json{{"refusal", std::move(refusal)}};
+            content.extras = nlohmann::json{{"refusal", std::move(refusal)}};
         }
     }
+    result.content.push_back(std::move(content));
 
     if (!reasoning_text.empty() || !summary.empty() || !reasoning_items.empty()) {
         model_io::Content reasoning;

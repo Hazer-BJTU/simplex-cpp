@@ -56,7 +56,7 @@ model_io::AgentInputState one_user_turn() {
     auto& item = state.turns.emplace_back().user_input;
     item.type = model_io::MessageItemType::UserInput;
     item.role = "user";
-    item.content.raw = "hello";
+    item.content.emplace_back().raw = "hello";
     return state;
 }
 
@@ -174,16 +174,15 @@ BOOST_AUTO_TEST_CASE(interpreter_maps_multimodal_content_and_runs_dialect) {
         std::make_shared<const FixtureDialect>());
     model_io::AgentInputState state;
 
-    auto& binary = state.turns.emplace_back().user_input;
-    binary.type = model_io::MessageItemType::UserInput;
-    binary.content.type = model_io::ContentType::Binary;
-    binary.content.raw = "ZmFrZS1wZGY=";
-    binary.content.extras = nlohmann::json{{"filename", "sample.pdf"}};
-
-    auto& image = state.turns.emplace_back().user_input;
-    image.type = model_io::MessageItemType::UserInput;
-    image.content.type = model_io::ContentType::ExternalRef;
-    image.content.raw = "https://example.invalid/image.png";
+    auto& message = state.turns.emplace_back().user_input;
+    message.type = model_io::MessageItemType::UserInput;
+    auto& binary = message.content.emplace_back();
+    binary.type = model_io::ContentType::Binary;
+    binary.raw = "ZmFrZS1wZGY=";
+    binary.extras = nlohmann::json{{"filename", "sample.pdf"}};
+    auto& image = message.content.emplace_back();
+    image.type = model_io::ContentType::ExternalRef;
+    image.raw = "https://example.invalid/image.png";
 
     model_io::ModelEndpoint endpoint;
     endpoint.base_url = "https://example.invalid";
@@ -196,8 +195,9 @@ BOOST_AUTO_TEST_CASE(interpreter_maps_multimodal_content_and_runs_dialect) {
     BOOST_CHECK_EQUAL(body["input"][0]["content"][0]["type"], "input_file");
     BOOST_CHECK_EQUAL(body["input"][0]["content"][0]["file_data"],
                       "ZmFrZS1wZGY=");
-    BOOST_CHECK_EQUAL(body["input"][1]["content"][0]["type"], "input_image");
-    BOOST_CHECK_EQUAL(body["input"][1]["content"][0]["image_url"],
+    BOOST_REQUIRE_EQUAL(body["input"][0]["content"].size(), 2u);
+    BOOST_CHECK_EQUAL(body["input"][0]["content"][1]["type"], "input_image");
+    BOOST_CHECK_EQUAL(body["input"][0]["content"][1]["image_url"],
                       "https://example.invalid/image.png");
 }
 
@@ -256,7 +256,7 @@ BOOST_AUTO_TEST_CASE(converse_runs_llm_model_to_terminal_response_fallback) {
 
     if (failure) std::rethrow_exception(failure);
     BOOST_REQUIRE(result);
-    BOOST_CHECK_EQUAL(result->content.raw, "hello back");
+    BOOST_CHECK_EQUAL(result->content.at(0).raw, "hello back");
     BOOST_REQUIRE(result->cost);
     BOOST_CHECK_EQUAL(result->cost->prompt, 7u);
     BOOST_CHECK_EQUAL(result->cost->generated, 3u);

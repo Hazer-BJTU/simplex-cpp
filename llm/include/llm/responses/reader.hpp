@@ -11,7 +11,7 @@
 // terminal marker — assembles the contract record, a model_io::MessageItem
 // shaped as one ReAct model_response:
 //
-//   output_text parts      -> content.raw          (+ refusal, see below)
+//   output_text parts      -> content[0].raw       (+ refusal, see below)
 //   reasoning_text channel -> reasoning.raw        (§10, raw thinking)
 //   reasoning summaries    -> reasoning (fallback) (§9)
 //   function_call items    -> invokes[] (id=call_id, arguments parsed)
@@ -22,8 +22,8 @@
 //                             authoritative form is the output_item.done one)
 //
 // Refusal placement: when the response also produced output_text the refusal
-// rides in content.extras["refusal"]; with no output_text it becomes
-// content.raw. Ordering across kinds is inherently lossy (a MessageItem is
+// rides in content[0].extras["refusal"]; with no output_text it becomes
+// content[0].raw. Ordering across kinds is inherently lossy (a MessageItem is
 // one message): text concatenates, calls keep their output_index order.
 //
 // Accumulation runs purely off the delta stream — the lossless view the

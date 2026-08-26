@@ -16,6 +16,10 @@ static T roundtrip(const T& in) {
     return j.get<T>();
 }
 
+static Content& add_content(MessageItem& item) {
+    return item.content.emplace_back();
+}
+
 BOOST_AUTO_TEST_CASE(content_roundtrips) {
     Content c;
     c.type = ContentType::Text;
@@ -58,6 +62,32 @@ BOOST_AUTO_TEST_CASE(content_extras_roundtrip) {
     BOOST_CHECK(!bare.extras.has_value());
 }
 
+BOOST_AUTO_TEST_CASE(message_content_list_roundtrips_heterogeneous_parts) {
+    MessageItem message;
+    message.type = MessageItemType::UserInput;
+    message.role = "user";
+    message.content = {
+        Content{ContentType::Text, "describe this image"},
+        Content{ContentType::ExternalRef,
+                "https://example.invalid/photo.png",
+                nlohmann::json{{"type", "input_image"}, {"detail", "high"}}},
+    };
+
+    nlohmann::json j = message;
+    BOOST_REQUIRE(j["content"].is_array());
+    BOOST_REQUIRE_EQUAL(j["content"].size(), 2u);
+    BOOST_CHECK_EQUAL(j["content"][1]["type"], "external_ref");
+
+    MessageItem copy = j.get<MessageItem>();
+    BOOST_REQUIRE_EQUAL(copy.content.size(), 2u);
+    BOOST_CHECK(copy.content[0].type == ContentType::Text);
+    BOOST_CHECK(copy.content[1].type == ContentType::ExternalRef);
+    BOOST_CHECK_EQUAL(copy.content[1].raw,
+                      "https://example.invalid/photo.png");
+    BOOST_REQUIRE(copy.content[1].extras.has_value());
+    BOOST_CHECK_EQUAL(copy.content[1].extras->at("detail"), "high");
+}
+
 BOOST_AUTO_TEST_CASE(invoke_query_roundtrips_with_arguments) {
     InvokeQuery q;
     q.type = InvokeType::SerialWrite;
@@ -91,9 +121,9 @@ BOOST_AUTO_TEST_CASE(message_item_optionals_omitted_when_empty) {
     MessageItem m;
     m.type = MessageItemType::ModelResponse;
     m.role = "assistant";
-    m.content.type = ContentType::Text;
-    m.content.raw = "hi";
+    add_content(m).raw = "hi";
     nlohmann::json j = m;
+    BOOST_REQUIRE(j["content"].is_array());
     BOOST_CHECK(!j.contains("reasoning"));
     BOOST_CHECK(!j.contains("action_status"));
     BOOST_CHECK(!j.contains("invokes"));
@@ -108,7 +138,7 @@ BOOST_AUTO_TEST_CASE(token_cost_roundtrips_on_a_model_response) {
     MessageItem m;
     m.type = MessageItemType::ModelResponse;
     m.role = "assistant";
-    m.content.raw = "hi";
+    add_content(m).raw = "hi";
     m.cost = TokenCost{.prompt = 100, .generated = 7, .cache_hit = 64};
 
     nlohmann::json j = m;
@@ -144,8 +174,7 @@ BOOST_AUTO_TEST_CASE(message_item_optionals_restored_when_set) {
     MessageItem m;
     m.type = MessageItemType::ModelResponse;
     m.role = "assistant";
-    m.content.type = ContentType::Text;
-    m.content.raw = "hi";
+    add_content(m).raw = "hi";
     m.reasoning = Content{};
     m.reasoning->type = ContentType::Text;
     m.reasoning->raw = "thinking...";
@@ -160,7 +189,7 @@ BOOST_AUTO_TEST_CASE(agent_loop_step_retain_priority_defaults_and_roundtrips) {
     AgentLoopStep s;
     s.model_response.type = MessageItemType::ModelResponse;
     s.model_response.role = "assistant";
-    s.model_response.content.raw = "answer";
+    add_content(s.model_response).raw = "answer";
     // Default member initializer -> Normal.
     BOOST_CHECK(s.retain_priority == RetainPriority::Normal);
     nlohmann::json j = s;
@@ -174,7 +203,7 @@ BOOST_AUTO_TEST_CASE(agent_loop_step_invoke_returns_roundtrip) {
     AgentLoopStep s;
     s.model_response.type = MessageItemType::ModelResponse;
     s.model_response.role = "assistant";
-    s.model_response.content.raw = "calling tools";
+    add_content(s.model_response).raw = "calling tools";
     InvokeQuery call;
     call.id = "c0";
     call.name = "ls";
@@ -184,7 +213,7 @@ BOOST_AUTO_TEST_CASE(agent_loop_step_invoke_returns_roundtrip) {
     MessageItem ret;
     ret.type = MessageItemType::InvokeReturn;
     ret.role = "tool";
-    ret.content.raw = "a.txt";
+    add_content(ret).raw = "a.txt";
     // Embed the originating record: query.id "c0" correlates the result back
     // to the call above (the wire tool_call_id).
     InvokeReturn record;
@@ -198,7 +227,7 @@ BOOST_AUTO_TEST_CASE(agent_loop_step_invoke_returns_roundtrip) {
     BOOST_REQUIRE(s2.model_response.invokes.has_value());
     BOOST_CHECK_EQUAL(s2.model_response.invokes->at(0).name, "ls");
     BOOST_REQUIRE(s2.invoke_returns.has_value());
-    BOOST_CHECK_EQUAL(s2.invoke_returns->at(0).content.raw, "a.txt");
+    BOOST_CHECK_EQUAL(s2.invoke_returns->at(0).content.at(0).raw, "a.txt");
     BOOST_REQUIRE(s2.invoke_returns->at(0).invoke_return.has_value());
     BOOST_CHECK_EQUAL(s2.invoke_returns->at(0).invoke_return->query.id, "c0");
 }
@@ -212,7 +241,7 @@ BOOST_AUTO_TEST_CASE(message_item_embeds_invoke_return) {
     MessageItem m;
     m.type = MessageItemType::InvokeReturn;
     m.role = "tool";
-    m.content.raw = "a.txt";
+    add_content(m).raw = "a.txt";
     InvokeReturn record;
     record.query.type = InvokeType::ReadOnly;
     record.query.security = InvokeSecurity::Trusted;
@@ -266,7 +295,8 @@ BOOST_AUTO_TEST_CASE(json_null_under_optional_keys_reads_as_absent) {
 
     MessageItem m = external.get<MessageItem>();
     BOOST_CHECK(m.type == MessageItemType::ModelResponse);
-    BOOST_CHECK_EQUAL(m.content.raw, "hi");
+    BOOST_REQUIRE_EQUAL(m.content.size(), 1u);
+    BOOST_CHECK_EQUAL(m.content.at(0).raw, "hi");
     BOOST_CHECK(!m.reasoning.has_value());
     BOOST_CHECK(!m.action_status.has_value());
     BOOST_CHECK(!m.invokes.has_value());
@@ -308,7 +338,7 @@ BOOST_AUTO_TEST_CASE(user_loop_step_compact_preference_roundtrips) {
     UserLoopStep u;
     u.user_input.type = MessageItemType::UserInput;
     u.user_input.role = "user";
-    u.user_input.content.raw = "hi";
+    add_content(u.user_input).raw = "hi";
     u.retain_priority = RetainPriority::Discardable;
     nlohmann::json j = u;
     BOOST_CHECK_EQUAL(j["retain_priority"], "discardable");
@@ -501,7 +531,7 @@ BOOST_AUTO_TEST_CASE(agent_input_state_holds_the_session_together) {
 
     UserLoopStep turn;
     turn.user_input.role = "user";
-    turn.user_input.content.raw = "list the files";
+    add_content(turn.user_input).raw = "list the files";
     AgentLoopStep cycle;
     cycle.model_response.type = MessageItemType::ModelResponse;
     cycle.model_response.role = "assistant";
@@ -512,7 +542,7 @@ BOOST_AUTO_TEST_CASE(agent_input_state_holds_the_session_together) {
     MessageItem result;
     result.type = MessageItemType::InvokeReturn;
     result.role = "tool";
-    result.content.raw = "a.txt";
+    add_content(result).raw = "a.txt";
     InvokeReturn record;   // provenance: query.id "c0" names the call above
     record.query = q;
     record.output.type = ContentType::Text;
@@ -537,12 +567,13 @@ BOOST_AUTO_TEST_CASE(agent_input_state_holds_the_session_together) {
 
     auto turns2 = nlohmann::json(state.turns).get<std::vector<UserLoopStep>>();
     BOOST_REQUIRE_EQUAL(turns2.size(), 1u);
-    BOOST_CHECK_EQUAL(turns2[0].user_input.content.raw, "list the files");
+    BOOST_CHECK_EQUAL(turns2[0].user_input.content.at(0).raw,
+                      "list the files");
     const auto& step = turns2[0].agent_loop_step.at(0);
     BOOST_REQUIRE(step.model_response.invokes.has_value());
     BOOST_CHECK_EQUAL(step.model_response.invokes->at(0).name, "ls");
     BOOST_REQUIRE(step.invoke_returns.has_value());
-    BOOST_CHECK_EQUAL(step.invoke_returns->at(0).content.raw, "a.txt");
+    BOOST_CHECK_EQUAL(step.invoke_returns->at(0).content.at(0).raw, "a.txt");
     // The embedded record survives, correlating the result to its call.
     BOOST_REQUIRE(step.invoke_returns->at(0).invoke_return.has_value());
     BOOST_CHECK_EQUAL(step.invoke_returns->at(0).invoke_return->query.id, "c0");
@@ -570,7 +601,7 @@ BOOST_AUTO_TEST_CASE(agent_input_state_round_trips_through_json) {
 
     UserLoopStep turn;
     turn.user_input.role = "user";
-    turn.user_input.content.raw = "list the files";
+    add_content(turn.user_input).raw = "list the files";
     AgentLoopStep cycle;
     cycle.model_response.type = MessageItemType::ModelResponse;
     cycle.model_response.role = "assistant";
@@ -609,7 +640,8 @@ BOOST_AUTO_TEST_CASE(agent_input_state_round_trips_through_json) {
     BOOST_REQUIRE_EQUAL(copy.tools.size(), 1u);
     BOOST_CHECK_EQUAL(copy.tools[0].name, "ls");
     BOOST_REQUIRE_EQUAL(copy.turns.size(), 1u);
-    BOOST_CHECK_EQUAL(copy.turns[0].user_input.content.raw, "list the files");
+    BOOST_CHECK_EQUAL(copy.turns[0].user_input.content.at(0).raw,
+                      "list the files");
     const auto& response = copy.turns[0].agent_loop_step.at(0).model_response;
     BOOST_REQUIRE(response.cost.has_value());
     BOOST_CHECK_EQUAL(response.cost->prompt, 120u);

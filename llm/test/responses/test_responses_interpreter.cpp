@@ -48,6 +48,10 @@ bool json_array_contains(const nlohmann::json& array, const std::string& value) 
            array.end();
 }
 
+model_io::Content& add_content(model_io::MessageItem& item) {
+    return item.content.emplace_back();
+}
+
 // A minimal ReAct conversation: weather question -> tool call -> tool result
 // -> final answer, plus a trailing thank-you turn.
 AgentInputState react_conversation() {
@@ -56,7 +60,7 @@ AgentInputState react_conversation() {
     model_io::UserLoopStep turn;
     turn.user_input.type = model_io::MessageItemType::UserInput;
     turn.user_input.role = "user";
-    turn.user_input.content.raw = "What's the weather in London?";
+    add_content(turn.user_input).raw = "What's the weather in London?";
 
     model_io::AgentLoopStep step;
     step.model_response.type = model_io::MessageItemType::ModelResponse;
@@ -64,7 +68,7 @@ AgentInputState react_conversation() {
     model_io::Content reasoning;
     reasoning.raw = "thinking about the weather";
     step.model_response.reasoning = std::move(reasoning);
-    step.model_response.content.raw = "Let me check.";
+    add_content(step.model_response).raw = "Let me check.";
 
     model_io::InvokeQuery call;
     call.id = "call_1";
@@ -75,7 +79,7 @@ AgentInputState react_conversation() {
     model_io::MessageItem result;
     result.type = model_io::MessageItemType::InvokeReturn;
     result.role = "tool";
-    result.content.raw = "sunny, 21C";
+    add_content(result).raw = "sunny, 21C";
     model_io::InvokeReturn record;
     record.query = call;
     record.output.raw = "sunny, 21C";
@@ -86,7 +90,7 @@ AgentInputState react_conversation() {
     model_io::AgentLoopStep final_step;
     final_step.model_response.type = model_io::MessageItemType::ModelResponse;
     final_step.model_response.role = "assistant";
-    final_step.model_response.content.raw = "It's sunny in London.";
+    add_content(final_step.model_response).raw = "It's sunny in London.";
     turn.agent_loop_step.push_back(std::move(final_step));
 
     state.turns.push_back(std::move(turn));
@@ -94,7 +98,7 @@ AgentInputState react_conversation() {
     model_io::UserLoopStep thanks;
     thanks.user_input.type = model_io::MessageItemType::UserInput;
     thanks.user_input.role = "user";
-    thanks.user_input.content.raw = "thanks!";
+    add_content(thanks.user_input).raw = "thanks!";
     state.turns.push_back(std::move(thanks));
     return state;
 }
@@ -225,7 +229,7 @@ BOOST_AUTO_TEST_CASE(captured_wire_items_reemit_verbatim) {
     ResponsesInterpreter interpreter;
     AgentInputState state;
     model_io::UserLoopStep turn;
-    turn.user_input.content.raw = "go";
+    add_content(turn.user_input).raw = "go";
 
     model_io::AgentLoopStep step;
     step.model_response.role = "assistant";
@@ -251,7 +255,7 @@ BOOST_AUTO_TEST_CASE(captured_wire_items_reemit_verbatim) {
         {"content", nlohmann::json::array()},
         {"phase", "commentary"},
     };
-    step.model_response.content.raw = "spoken";
+    add_content(step.model_response).raw = "spoken";
     step.model_response.extras = nlohmann::json{
         {"output_items", nlohmann::json::array({reasoning_item, message_item})}};
 
@@ -306,7 +310,7 @@ BOOST_AUTO_TEST_CASE(call_id_falls_back_positionally_then_omits) {
     ResponsesInterpreter interpreter;
     AgentInputState state;
     model_io::UserLoopStep turn;
-    turn.user_input.content.raw = "go";
+    add_content(turn.user_input).raw = "go";
 
     model_io::AgentLoopStep step;
     step.model_response.role = "assistant";
@@ -318,11 +322,11 @@ BOOST_AUTO_TEST_CASE(call_id_falls_back_positionally_then_omits) {
     // No embedded record: positional alignment with the parent's call wins.
     model_io::MessageItem positional;
     positional.type = model_io::MessageItemType::InvokeReturn;
-    positional.content.raw = "positional result";
+    add_content(positional).raw = "positional result";
     // And one result whose parent call id is empty: the key is omitted.
     model_io::MessageItem orphan;
     orphan.type = model_io::MessageItemType::InvokeReturn;
-    orphan.content.raw = "orphan result";
+    add_content(orphan).raw = "orphan result";
     model_io::InvokeQuery empty_id = call;
     empty_id.id.clear();
     step.model_response.invokes =
@@ -341,6 +345,33 @@ BOOST_AUTO_TEST_CASE(call_id_falls_back_positionally_then_omits) {
     BOOST_CHECK_EQUAL(input[3]["call_id"], "call_pos");
     BOOST_CHECK_EQUAL(input[4]["output"], "orphan result");
     BOOST_CHECK(!input[4].contains("call_id"));
+}
+
+BOOST_AUTO_TEST_CASE(empty_content_falls_back_to_embedded_tool_output) {
+    Fixture f;
+    ResponsesInterpreter interpreter;
+    AgentInputState state;
+    model_io::UserLoopStep turn;
+    add_content(turn.user_input).raw = "go";
+
+    model_io::AgentLoopStep step;
+    model_io::MessageItem result;
+    result.type = model_io::MessageItemType::InvokeReturn;
+    // A migrated producer may have materialized the former default Content
+    // as one empty list entry. Preserve the pre-list fallback behavior.
+    result.content.emplace_back();
+    result.invoke_return.emplace();
+    result.invoke_return->query.id = "call_1";
+    result.invoke_return->output.raw = "record output";
+    step.invoke_returns = std::vector<model_io::MessageItem>{result};
+    turn.agent_loop_step.push_back(std::move(step));
+    state.turns.push_back(std::move(turn));
+
+    const auto input =
+        body_of(interpreter.build_request(state, f.endpoint, f.generation))
+            ["input"];
+    BOOST_REQUIRE_EQUAL(input.size(), 2u);
+    BOOST_CHECK_EQUAL(input[1]["output"], "record output");
 }
 
 // ---- generation passthrough / builder keys --------------------------------------
@@ -421,7 +452,7 @@ BOOST_AUTO_TEST_CASE(string_arguments_pass_through_undouble_encoded) {
     ResponsesInterpreter interpreter;
     AgentInputState state;
     model_io::UserLoopStep turn;
-    turn.user_input.content.raw = "go";
+    add_content(turn.user_input).raw = "go";
     model_io::AgentLoopStep step;
     step.model_response.role = "assistant";
     model_io::InvokeQuery call;
@@ -569,12 +600,13 @@ BOOST_AUTO_TEST_CASE(synthesized_refusal_becomes_its_own_part) {
     model_io::UserLoopStep turn;
     turn.user_input.type = model_io::MessageItemType::UserInput;
     turn.user_input.role = "user";
-    turn.user_input.content.raw = "q";
+    add_content(turn.user_input).raw = "q";
     model_io::AgentLoopStep step;
     step.model_response.type = model_io::MessageItemType::ModelResponse;
     step.model_response.role = "assistant";
-    step.model_response.content.raw = "partial answer";
-    step.model_response.content.extras =
+    auto& response_content = add_content(step.model_response);
+    response_content.raw = "partial answer";
+    response_content.extras =
         nlohmann::json{{"refusal", "cannot help with that"}};
     turn.agent_loop_step.push_back(std::move(step));
     state.turns.push_back(std::move(turn));
