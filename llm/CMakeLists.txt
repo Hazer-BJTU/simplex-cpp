@@ -69,6 +69,10 @@ endif()
 add_subdirectory(providers/openai)
 add_subdirectory(providers/deepseek)
 
+# Manual demos of the provider stack; built always, not CTest-registered
+# (live API key required).
+add_subdirectory(example)
+
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
