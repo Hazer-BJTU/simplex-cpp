@@ -1,14 +1,14 @@
 # logging
 
-A standalone global module: a thread-safe, `std::format`-based console logger
-(`logging::Logger`) shared across the whole `simplex-cpp` project. It was split
-out of `indextools/` so any module can log without linking the indextools host
-library.
+A module of the `utils` package: a thread-safe, `std::format`-based console
+logger (`logging::Logger`) shared across the whole `simplex-cpp` project. It
+was split out of `indextools/` so any module can log without linking the
+indextools host library.
 
 ## Layout
 
 ```
-logging/
+utils/logging/
 ├── CMakeLists.txt        # builds logging_lib
 ├── README.md             # this file
 ├── include/logging/

@@ -110,8 +110,12 @@ option(BUILD_TESTS "Build unit tests" ON)
 #   - versioning first: its `simplex_versioning` INTERFACE target feeds the
 #     indextools plugin contract (lang_plugin.hpp) and, through indextools_iface,
 #     the languages/ analyzers/plugins.
-#   - logging before indextools: indextools_lib links `logging_lib` (the public
-#     service_command.hpp header uses logging::Logger).
+#   - utils before indextools: the small shared utilities package. Its
+#     logging/ member exports `logging_lib`, which indextools_lib links (the
+#     public service_command.hpp header uses logging::Logger); its yamlconfig/
+#     member is the header-only YAML->JSON config bridge (yamlconfig_iface)
+#     feeding JSON-shaped config consumers such as the llm model plugins'
+#     config JSON.
 #   - languages before indextools: languages registers INDEX_LANG_PLUGINS /
 #     INDEX_LANG_ANALYZER_LIBS, which indextools reads to make plugins build deps
 #     of indextools_lib and which indextools' runtime-loader tests depend on.
@@ -120,16 +124,16 @@ option(BUILD_TESTS "Build unit tests" ON)
 #     generate time, so the add order is driven by the dependency/property flow,
 #     not by the header dependency.
 add_subdirectory(versioning)
-add_subdirectory(logging)
-# extension_framework after logging + the top-level interface targets: it is a
-# header-only module (extension_framework_iface) that links boost_dll_iface,
-# logging_lib, and simplex_thirdparty_iface. indextools' language layer is now
-# built on it (LangPlugin derives from extension::ExtensionContext), so it must
-# be added before indextools/languages.
+add_subdirectory(utils)
+# extension_framework after utils' logging + the top-level interface targets:
+# it is a header-only module (extension_framework_iface) that links
+# boost_dll_iface, logging_lib, and simplex_thirdparty_iface. indextools'
+# language layer is now built on it (LangPlugin derives from
+# extension::ExtensionContext), so it must be added before indextools/languages.
 add_subdirectory(extension_framework)
 add_subdirectory(languages)
 add_subdirectory(indextools)
-# endpoint after logging: endpoint_lib links logging_lib (the public
+# endpoint after utils: endpoint_lib links logging_lib (the public
 # https_connection.hpp uses logging::Logger) and the shared Boost/OpenSSL.
 add_subdirectory(endpoint)
 # dataclass after the shared third-party interface: a header-only module
@@ -138,11 +142,6 @@ add_subdirectory(endpoint)
 # functions, so the module depends only on simplex_thirdparty_iface
 # (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
-# yamlconfig after dataclass: header-only YAML->JSON config bridge
-# (yamlconfig_iface), consuming only the vendored third-party tree
-# (yaml-cpp + nlohmann/json). It feeds JSON-shaped config consumers such
-# as the llm model plugins' config JSON.
-add_subdirectory(yamlconfig)
 # llm after dataclass + extension_framework + versioning: the model-plugin
 # contract (LLMModel / LLMModelExtensionContext / LLMDispatcher), canonical
 # Responses adapter, and provider plugins build on the generic extension

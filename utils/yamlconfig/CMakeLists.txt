@@ -1,9 +1,12 @@
 # =============================================================================
-# yamlconfig — module
+# yamlconfig — module (utils package)
 #
 # One-way bridge from human-written YAML configuration to the nlohmann JSON
 # the project's config contracts speak (llm model configs first). Header-only
 # (yamlconfig_iface): to_json/parse/load_file plus the YamlConfigError type.
+# Lives under the utils/ package; target and include paths are unchanged, so
+# consumers keep linking `yamlconfig_iface` and including
+# "yamlconfig/yaml_json.hpp".
 #
 # Dependencies: the vendored third-party tree only — yaml-cpp (headers +
 # static lib) and nlohmann/json, both carried by simplex_thirdparty_iface.
