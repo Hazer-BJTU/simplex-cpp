@@ -18,7 +18,7 @@
 //
 //   * chat::ChatReader — a ModelResponseReader folding those deltas into
 //     accumulators and, on the `data: [DONE]` sentinel, assembling the
-//     contract record: one model_io::MessageItem with content.raw,
+//     contract record: one model_io::MessageItem with content[0].raw,
 //     reasoning.raw, invokes[] (streamed tool calls, arguments parsed) and
 //     cost (the usage trailer: prompt/completion/prompt_cache_hit tokens).
 //
@@ -274,7 +274,7 @@ std::uint64_t uint_field(const nlohmann::json& parent, const char* key) {
  * record — the same shape the Responses layer produces, minus the parts the
  * chat dialect has no wire form for:
  *
- *   delta.content           -> content.raw
+ *   delta.content           -> content[0].raw
  *   delta.reasoning_content -> reasoning.raw           (thinking models)
  *   tool_calls fragments    -> invokes[] (id/name/arguments parsed)
  *   usage trailer           -> cost (TokenCost: DeepSeek reports
@@ -344,8 +344,10 @@ protected:
         _response = model_io::MessageItem{};
         _response.type = model_io::MessageItemType::ModelResponse;
         _response.role = "assistant";
-        _response.content.type = model_io::ContentType::Text;
-        _response.content.raw = _content;
+        _response.content.push_back(model_io::Content{
+            .type = model_io::ContentType::Text,
+            .raw = _content,
+        });
 
         if (!_reasoning.empty()) {
             _response.reasoning = model_io::Content{};
@@ -433,7 +435,9 @@ json assistant_message(const model_io::MessageItem& response) {
     // Mirror the SDK replay of response.choices[0].message: content rides
     // as a plain string, empty on pure tool-call turns (the docs' own
     // multi-turn samples replay exactly this shape).
-    message["content"] = response.content.raw;
+    message["content"] = response.content.empty()
+        ? std::string()
+        : response.content.front().raw;
     // Thinking mode is ON by default, and the thinking-mode guide is
     // explicit: a request carrying tools MUST replay every intermediate
     // assistant message's reasoning_content verbatim — even when that
@@ -472,9 +476,10 @@ json tool_message(
         message["tool_call_id"] = std::move(id);
     // content is the contract's canonical payload position; the embedded
     // record's output carries the same bytes and serves as fallback.
-    message["content"] = (result.content.raw.empty() && record)
+    message["content"] = (result.content.empty() && record)
         ? record->output.raw
-        : result.content.raw;
+        : (result.content.empty() ? std::string()
+                                  : result.content.front().raw);
     return message;
 }
 
@@ -530,7 +535,9 @@ endpoint::ModelRequestInterpreter::HttpRequest ChatInterpreter::build_request(
         } else {
             messages.push_back(json{
                 {"role", derived_role(turn.user_input)},
-                {"content", turn.user_input.content.raw},
+                {"content", turn.user_input.content.empty()
+                    ? std::string()
+                    : turn.user_input.content.front().raw},
             });
         }
         for (const model_io::AgentLoopStep& step : turn.agent_loop_step) {
@@ -645,7 +652,7 @@ model_io::MessageItem execute_tool(const model_io::InvokeQuery& query) {
     model_io::MessageItem item;
     item.type = model_io::MessageItemType::InvokeReturn;
     item.role = "tool";
-    item.content = record.output;
+    item.content.push_back(record.output);
     item.invoke_return = std::move(record);
     return item;
 }
@@ -660,7 +667,7 @@ constexpr std::size_t kMaxAgentSteps = 8;
 /// whole turn a growing AgentInputState the interpreter flattens per
 /// exchange (which is how the tool history rides along).
 asio::awaitable<void> run_turn(
-    endpoint::complete& complete_model,
+    endpoint::complete<chat::ChatDelta>& complete_model,
     chat::ChatInterpreter& interpreter,
     const model_io::ModelEndpoint& endpoint_config,
     const endpoint::ResolvedEndpoint& resolved,
@@ -688,7 +695,7 @@ asio::awaitable<void> run_turn(
             state, endpoint_config, generation);
 
         model_io::MessageItem item =
-            co_await complete_model.operator()<chat::ChatDelta>(
+            co_await complete_model(
                 resolved, std::move(request), reader,
                 endpoint::sse_request<chat::ChatDelta>);
 
@@ -716,7 +723,11 @@ asio::awaitable<void> run_turn(
                       << query.name << "\" arguments="
                       << query.arguments.dump();
             model_io::MessageItem result = execute_tool(query);
-            std::cout << " -> " << result.content.raw << "\n";
+            std::cout << " -> "
+                      << (result.content.empty()
+                              ? std::string()
+                              : result.content.front().raw)
+                      << "\n";
             results.push_back(std::move(result));
         }
 
@@ -781,7 +792,7 @@ int main() {
     // The retry engine: one instance for the whole session, called once per
     // exchange (fresh connect + reader reset + request re-send per attempt).
     asio::io_context io;
-    endpoint::complete complete_model{io.get_executor()};
+    endpoint::complete<chat::ChatDelta> complete_model{io.get_executor()};
     chat::ChatInterpreter interpreter;
 
     std::string line;
@@ -791,7 +802,10 @@ int main() {
         model_io::UserLoopStep turn;
         turn.user_input.type = model_io::MessageItemType::UserInput;
         turn.user_input.role = "user";
-        turn.user_input.content.raw = line;
+        turn.user_input.content.push_back(model_io::Content{
+            .type = model_io::ContentType::Text,
+            .raw = line,
+        });
         state.turns.push_back(std::move(turn));
 
         try {

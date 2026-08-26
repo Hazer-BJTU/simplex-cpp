@@ -10,6 +10,13 @@
 /**
  * Describes a failure in one stage of an HTTP request and retains enough
  * request context for callers to log or classify the failure.
+ *
+ * what() already IS the full one-line rendering (stage, message, status,
+ * request line) that to_string() documents — not just the bare message.
+ * That equivalence is deliberate: a host that catches this type only as
+ * std::exception — the only dependable catch across a dlopen boundary,
+ * where each module carries its own typeinfo copy — still sees the whole
+ * context in what().
  */
 class HttpRequestException : public std::runtime_error {
 public:
@@ -30,7 +37,8 @@ public:
         std::string target = {},
         std::string host = {},
         unsigned status = 0)
-        : std::runtime_error(std::move(message)),
+        : std::runtime_error(
+              render(stage, message, ec, method, target, host, status)),
           stage_(stage),
           ec_(ec),
           method_(std::move(method)),
@@ -70,13 +78,32 @@ public:
      *   Failed while handling the response: SSE request rejected \
      * (HTTP status 401; POST /chat/completions to api.deepseek.com)
      * Absent fields (no error code, no status, no request context) are omitted.
+     *
+     * Identical to what(): the rendering is baked in at construction (see
+     * the class doc for why what() must carry it).
      */
     [[nodiscard]] std::string to_string() const
     {
+        return what();
+    }
+
+private:
+    /// The one-line rendering baked into the runtime_error base at
+    /// construction, so what() carries the full context everywhere (the
+    /// format is the one to_string() documents).
+    static std::string render(
+        Stage stage,
+        const std::string& message,
+        const boost::system::error_code& ec,
+        const std::string& method,
+        const std::string& target,
+        const std::string& host,
+        unsigned status)
+    {
         std::string rendered = "Failed ";
-        rendered += stage_phrase(stage_);
+        rendered += stage_phrase(stage);
         rendered += ": ";
-        rendered += what();
+        rendered += message;
 
         // Context pieces join into a single parenthetical, "; "-separated.
         bool opened = false;
@@ -85,17 +112,17 @@ public:
             opened = true;
             rendered += piece;
         };
-        if (ec_) append(ec_.message());
-        if (status_ != 0) append("HTTP status " + std::to_string(status_));
-        if (!method_.empty() || !target_.empty() || !host_.empty()) {
-            std::string request_line = method_;
-            if (!target_.empty()) {
+        if (ec) append(ec.message());
+        if (status != 0) append("HTTP status " + std::to_string(status));
+        if (!method.empty() || !target.empty() || !host.empty()) {
+            std::string request_line = method;
+            if (!target.empty()) {
                 if (!request_line.empty()) request_line += ' ';
-                request_line += target_;
+                request_line += target;
             }
-            if (!host_.empty()) {
+            if (!host.empty()) {
                 if (!request_line.empty()) request_line += ' ';
-                request_line += "to " + host_;
+                request_line += "to " + host;
             }
             append(request_line);
         }
@@ -103,7 +130,6 @@ public:
         return rendered;
     }
 
-private:
     Stage stage_;
     boost::system::error_code ec_;
     std::string method_;

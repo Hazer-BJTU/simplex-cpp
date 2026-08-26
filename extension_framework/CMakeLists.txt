@@ -16,7 +16,7 @@
 #                              + ${CMAKE_DL_LIBS}. Needed for the shared_library
 #                              / import_alias usage and for BOOST_DLL_ALIAS in
 #                              any extension module built against this target.
-#   - logging_lib            (sibling `logging/`): verify_after_loaded() calls
+#   - logging_lib            (utils/logging): verify_after_loaded() calls
 #                              logging::Logger::info/warning, whose definitions
 #                              live in logging/src/logger.cpp. Linked PUBLIC so a
 #                              consumer of this header resolves them transparently.

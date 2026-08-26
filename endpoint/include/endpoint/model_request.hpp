@@ -47,10 +47,9 @@
 // live in the reader, so one handler stays a pure function of its events).
 //
 // Both interfaces are provider-neutral and this header-only module carries
-// no concrete interpreter: implementations (with their dedicated SSE
-// handlers and readers) are compiled libraries of their own — e.g. the
-// Responses-API compatibility layer. Provider-agnostic building blocks that
-// prove out across implementations (endpoint resolution today) live here.
+// no concrete interpreter. Protocol implementations live with their model
+// package; the canonical Responses adapter is llm::responses. Provider-
+// agnostic building blocks that prove out across implementations live here.
 //
 // Implementation contract
 // -----------------------
@@ -102,8 +101,7 @@ namespace endpoint {
  * @brief Turns one model invocation's inputs into a complete provider request.
  *
  * Pure interface — see the header contract above. Concrete interpreters are
- * compiled libraries (Responses-API layer first); this header-only module
- * defines only the contract they share.
+ * compiled with their model adapters; this header defines only their contract.
  */
 class ModelRequestInterpreter {
 public:
@@ -157,15 +155,15 @@ public:
  * which finishes the handler on exit so a stream that ends without the
  * terminal event cannot leave next() blocked forever):
  *
- *     auto reader = std::make_shared<responses::ResponsesReader>(executor);
- *     reader->add_hook([](const responses::ResponsesDelta& d) {
- *         if (d.kind == responses::DeltaKind::ReasoningText)
+ *     auto reader = std::make_shared<llm::responses::ResponsesReader>(executor);
+ *     reader->add_hook([](const llm::responses::ResponsesDelta& d) {
+ *         if (d.kind == llm::responses::DeltaKind::ReasoningText)
  *             std::cerr << d.text << std::flush;   // watch it think
  *     });
  *     // producer, one co_spawn: pump() = driver + finish on exit.
  *     //   co_spawn(io, [reader, resolved]() {
  *     //       return reader->pump(
- *     //           endpoint::sse_request<responses::ResponsesDelta>,
+ *     //           endpoint::sse_request<llm::responses::ResponsesDelta>,
  *     //           create_connection_stream(resolved),
  *     //           interpreter->build_request(...)); }, asio::detached);
  *     while (auto delta = co_await reader->next()) { ... live view ... }

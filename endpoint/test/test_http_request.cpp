@@ -277,7 +277,10 @@ BOOST_AUTO_TEST_CASE(handler_rejects_non_ok_status)
     BOOST_CHECK(*outcome.stage == HttpRequestException::Stage::HandleResponse);
     BOOST_REQUIRE(outcome.status.has_value());
     BOOST_CHECK_EQUAL(*outcome.status, 429u);
-    BOOST_CHECK_EQUAL(*outcome.error, "HTTP request rejected");
+    // what() is the full rendering now: the rejection phrase plus the status
+    // and request context a bare catch would otherwise lose.
+    BOOST_CHECK(outcome.error->find("HTTP request rejected") != std::string::npos);
+    BOOST_CHECK(outcome.error->find("HTTP status 429") != std::string::npos);
     BOOST_CHECK(!outcome.body.has_value());
 }
 

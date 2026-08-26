@@ -159,8 +159,8 @@ static unsigned short refused_port() {
 }
 
 // Exposes complete's protected classification for the table test below.
-struct RecoverabilityProbe : endpoint::complete {
-    using endpoint::complete::complete;
+struct RecoverabilityProbe : endpoint::complete<FakeDelta> {
+    using endpoint::complete<FakeDelta>::complete;
     bool recoverable(const HttpRequestException& failure) noexcept {
         return _recoverable(failure);
     }
@@ -511,13 +511,13 @@ private:
 template<typename Driver>
 std::future<model_io::MessageItem> run_retry(
     asio::io_context& io,
-    endpoint::complete& completer,
+    endpoint::complete<FakeDelta>& completer,
     const endpoint::ResolvedEndpoint& where,
     std::shared_ptr<FakeReader> reader,
     Driver driver)
 {
     Request request{http::verb::post, "/v1/complete", 11};
-    auto operation = completer.operator()<FakeDelta>(
+    auto operation = completer(
         where, std::move(request), std::move(reader), std::move(driver));
     return asio::co_spawn(io, std::move(operation), asio::use_future);
 }
@@ -556,7 +556,7 @@ BOOST_AUTO_TEST_CASE(complete_retries_a_transient_fault_and_succeeds) {
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
     // Fast backoffs for the test; budget = initial + 2 retries.
-    endpoint::complete completer(
+    endpoint::complete<FakeDelta> completer(
         io.get_executor(), std::chrono::milliseconds(1),
         std::chrono::milliseconds(2), 2);
     const auto driver_calls = std::make_shared<int>(0);
@@ -601,7 +601,7 @@ BOOST_AUTO_TEST_CASE(complete_does_not_retry_a_non_recoverable_rejection) {
 
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
-    endpoint::complete completer(
+    endpoint::complete<FakeDelta> completer(
         io.get_executor(), std::chrono::milliseconds(1),
         std::chrono::milliseconds(2), 2);
     const auto calls = std::make_shared<int>(0);
@@ -618,11 +618,56 @@ BOOST_AUTO_TEST_CASE(complete_does_not_retry_a_non_recoverable_rejection) {
     server.join();
 }
 
+// A budget of 0 retries is legitimate: exactly one exchange, and even a
+// classification that says recoverable cannot conjure a retry out of an
+// empty budget — the failure propagates after the initial attempt.
+BOOST_AUTO_TEST_CASE(complete_with_zero_retries_runs_a_single_exchange) {
+    AcceptAllServer server(1);
+
+    asio::io_context io;
+    endpoint::ResolvedEndpoint where{
+        .host = "127.0.0.1",
+        .port = std::to_string(server.wait_listening()),
+        .target = "/v1/complete",
+        .tls = false};
+
+    struct FlakyDriver {
+        std::shared_ptr<int> invocations;
+        boost::asio::awaitable<void> operator()(
+            std::shared_ptr<FakeHandlerBase> handler,
+            endpoint::connection_stream,
+            Request) const {
+            ++*invocations;
+            co_await handler->put("");
+            throw HttpRequestException(
+                HttpRequestException::Stage::Read, "transient read fault");
+        }
+    };
+
+    auto reader = std::make_shared<FakeReader>(
+        std::make_shared<TerminalHandler>(io.get_executor()));
+    // Budget: 0 retries — the initial exchange is the whole budget.
+    endpoint::complete<FakeDelta> completer(
+        io.get_executor(), std::chrono::milliseconds(1),
+        std::chrono::milliseconds(2), 0);
+    const auto calls = std::make_shared<int>(0);
+    auto result = run_retry(io, completer, where, reader, FlakyDriver{calls});
+    io.run();
+
+    try {
+        result.get();
+        BOOST_FAIL("the read fault did not propagate");
+    } catch (const HttpRequestException& e) {
+        BOOST_CHECK(e.stage() == HttpRequestException::Stage::Read);
+    }
+    BOOST_CHECK_EQUAL(*calls, 1);   // one exchange, budget spent
+    server.join();
+}
+
 // Every attempt ends truncated (server closes, no terminal event, no
 // exception): the budget is spent re-reading, then the truncation wrap
 // surfaces as the report.
-BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {
-    AcceptAllServer server(3);
+BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {    AcceptAllServer server(3);
 
     asio::io_context io;
     endpoint::ResolvedEndpoint where{
@@ -645,7 +690,7 @@ BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {
     auto reader = std::make_shared<FakeReader>(
         std::make_shared<TerminalHandler>(io.get_executor()));
     // Budget: initial + 2 retries = 3 exchanges, all truncated.
-    endpoint::complete completer(
+    endpoint::complete<FakeDelta> completer(
         io.get_executor(), std::chrono::milliseconds(1),
         std::chrono::milliseconds(2), 2);
     const auto calls = std::make_shared<int>(0);
@@ -657,7 +702,9 @@ BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {
         BOOST_FAIL("the truncated stream did not surface");
     } catch (const HttpRequestException& e) {
         BOOST_CHECK(e.stage() == HttpRequestException::Stage::Read);
-        BOOST_CHECK_EQUAL(e.what(), "stream ended without the terminal event");
+        BOOST_CHECK_NE(std::string(e.what()).find(
+                           "stream ended without the terminal event"),
+                       std::string::npos);
     }
     BOOST_CHECK_EQUAL(*calls, 3);   // the whole budget re-read
     server.join();
@@ -698,8 +745,8 @@ BOOST_AUTO_TEST_CASE(complete_never_retries_a_consumer_abort) {
         std::make_shared<TerminalHandler>(io.get_executor()));
 
     // The permissive verdict: everything recoverable — abort must still win.
-    struct AlwaysRetryable : endpoint::complete {
-        using endpoint::complete::complete;
+    struct AlwaysRetryable : endpoint::complete<FakeDelta> {
+        using endpoint::complete<FakeDelta>::complete;
         bool _recoverable(const HttpRequestException&) noexcept override {
             return true;
         }
@@ -710,7 +757,7 @@ BOOST_AUTO_TEST_CASE(complete_never_retries_a_consumer_abort) {
 
     const auto calls = std::make_shared<int>(0);
     Request request{http::verb::post, "/v1/complete", 11};
-    auto operation = completer.operator()<FakeDelta>(
+    auto operation = completer(
         where, std::move(request), reader, IdleDriver{calls});
     auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
 
@@ -732,8 +779,10 @@ BOOST_AUTO_TEST_CASE(complete_never_retries_a_consumer_abort) {
         BOOST_FAIL("the consumer abort did not surface");
     } catch (const HttpRequestException& e) {
         BOOST_CHECK(e.stage() == HttpRequestException::Stage::Unknown);
-        BOOST_CHECK_EQUAL(
-            e.what(), "stream aborted by the consumer before the terminal event");
+        BOOST_CHECK_NE(std::string(e.what()).find(
+                           "stream aborted by the consumer before the terminal "
+                           "event"),
+                       std::string::npos);
     }
     BOOST_CHECK_EQUAL(*calls, 1);   // abort wins over the permissive policy
     // And the post-mortem survives the throw: the reader's own record of the

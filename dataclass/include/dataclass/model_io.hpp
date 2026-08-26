@@ -20,11 +20,14 @@
 // before any type that embeds the record by value, so each struct is followed
 // immediately by its to_json/from_json and the types are ordered so
 // dependencies come first: Content -> InvokeQuery -> InvokeReturn ->
-// TokenCost -> MessageItem -> AgentLoopStep -> UserLoopStep -> Invocable. The
-// session container AgentInputState closes the file and is the ONE composite
-// without a serialisation pair: it embeds PromptTemplate
-// (prompt_template.hpp), which is text management only and deliberately
-// outside the JSON contract.
+// TokenCost -> MessageItem -> AgentLoopStep -> UserLoopStep -> Invocable ->
+// MetaInfo.
+// PromptTemplate (prompt_template.hpp) carries its own pair under this same
+// protocol, which is what lets the session container AgentInputState close
+// the file WITH one: the whole session — the STRUCTURED system prompt
+// included, sections not rendered markdown — round-trips as JSON, while
+// render() stays the in-memory assembly into the text a provider request
+// finally embeds.
 //
 // The tool-definition record is part of the contract: Invocable (tool
 // registration section) names a tool and carries its argument schema; the
@@ -93,7 +96,9 @@
 
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -279,13 +284,14 @@ NLOHMANN_JSON_SERIALIZE_ENUM(MessageItemType, {
 // originating InvokeReturn record in `invoke_return`: the query inside
 // carries the id that correlates the result back to the entry in the
 // model_response's `invokes` (the wire-level "tool call id" providers
-// require on tool-result messages). `content` stays the canonical payload
-// position; the record's `output` is expected to carry the same bytes when
-// both are set.
+// require on tool-result messages). `content` is an ordered list so one
+// message can carry heterogeneous parts (for example text followed by an
+// image). For invoke returns, the record's `output` is expected to match the
+// first content part when both are set.
 struct MessageItem {
     MessageItemType type = MessageItemType::UserInput;
     std::string role;
-    Content content;
+    std::vector<Content> content;
     std::optional<Content> reasoning, action_status;
     std::optional<std::vector<InvokeQuery>> invokes;
     // On a ModelResponse item: the exchange's token accounting as the
@@ -314,7 +320,18 @@ inline void to_json(nlohmann::json& j, const MessageItem& m) {
 inline void from_json(const nlohmann::json& j, MessageItem& m) {
     if (auto it = j.find("type"); it != j.end()) it->get_to(m.type);
     if (auto it = j.find("role"); it != j.end()) it->get_to(m.role);
-    if (auto it = j.find("content"); it != j.end()) it->get_to(m.content);
+    if (auto it = j.find("content"); it != j.end()) {
+        // Read the former single-object representation as a one-element list
+        // so persisted conversations remain loadable after the protocol
+        // migration. New writes always use the array representation.
+        if (it->is_array()) {
+            it->get_to(m.content);
+        } else if (!it->is_null()) {
+            m.content = {it->get<Content>()};
+        } else {
+            m.content.clear();
+        }
+    }
     detail::read_optional(j, "reasoning", m.reasoning);
     detail::read_optional(j, "action_status", m.action_status);
     detail::read_optional(j, "invokes", m.invokes);
@@ -433,6 +450,74 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
     detail::read_optional(j, "extras", v.extras);
 }
 
+// ---- session bookkeeping --------------------------------------------------------
+
+// Session lifecycle as the HOST sees it. The model never sees any of this:
+// interpreters never map MetaInfo into provider requests.
+enum class SessionStatus {
+    Active,    // live; no terminal outcome yet (default, and the fallback
+               // for an unrecognised status string on read).
+    Completed, // ended normally.
+    Failed,    // terminated by an unrecoverable error; MetaInfo::error
+               // carries the record.
+};
+
+NLOHMANN_JSON_SERIALIZE_ENUM(SessionStatus, {
+    {SessionStatus::Active, "active"},
+    {SessionStatus::Completed, "completed"},
+    {SessionStatus::Failed, "failed"},
+})
+
+// System-written session bookkeeping — identity and outcome, not
+// conversation. Written by the HOST only: the user and the model never
+// write it, plugins included. created_at / updated_at are REQUIRED in the
+// persistence sense — to_json always emits them, the host mints created_at
+// at session start and refreshes updated_at on every write; an empty
+// string on read flags a misbehaving host, not an absent value.
+struct MetaInfo {
+    // Format version of THIS record — so a restored session can be told
+    // apart from an older shape. Bump when the fields below change
+    // meaning; readers stay lenient (unknown keys ignored).
+    std::uint32_t schema_version = 1;
+    // Host-minted stable identity of the session (e.g. a uuid); "" until
+    // the host mints one.
+    std::string session_id;
+    // ISO-8601 (RFC 3339) timestamp of session creation; host-maintained.
+    std::string created_at;
+    // ISO-8601 (RFC 3339) timestamp of the last write; host-maintained.
+    std::string updated_at;
+    // Lifecycle status; Active until the session ends one way or another.
+    SessionStatus status = SessionStatus::Active;
+    // The unrecoverable error that ended the session, as a free-form
+    // object (conventionally {"kind", "message", "at"}); absent while the
+    // session is healthy. When present, status is Failed.
+    std::optional<nlohmann::json> error;
+};
+
+inline void to_json(nlohmann::json& j, const MetaInfo& m) {
+    j = nlohmann::json{
+        {"schema_version", m.schema_version},
+        {"session_id", m.session_id},
+        {"created_at", m.created_at},
+        {"updated_at", m.updated_at},
+        {"status", m.status},
+    };
+    if (m.error) j["error"] = *m.error;
+}
+
+inline void from_json(const nlohmann::json& j, MetaInfo& m) {
+    if (auto it = j.find("schema_version"); it != j.end())
+        it->get_to(m.schema_version);
+    if (auto it = j.find("session_id"); it != j.end())
+        it->get_to(m.session_id);
+    if (auto it = j.find("created_at"); it != j.end())
+        it->get_to(m.created_at);
+    if (auto it = j.find("updated_at"); it != j.end())
+        it->get_to(m.updated_at);
+    if (auto it = j.find("status"); it != j.end()) it->get_to(m.status);
+    detail::read_optional(j, "error", m.error);
+}
+
 // ---- session input container ---------------------------------------------------
 
 // AgentInputState — everything one model invocation needs
@@ -459,9 +544,17 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
 //
 //   AgentInputState
 //   |
+//   +-- meta : MetaInfo
+//   |      Host-written session bookkeeping: identity (session_id),
+//   |      REQUIRED timestamps (created_at / updated_at), the record's
+//   |      schema_version, the lifecycle status, and the terminal error
+//   |      record when the session cannot continue. Never mapped into
+//   |      provider requests — the model never sees it.
+//   |
 //   +-- system_prompt : PromptTemplate
-//   |      The system prompt as managed markdown (prompt_template.hpp — text
-//   |      management only, deliberately outside the JSON contract). Laid
+//   |      The system prompt as managed markdown (prompt_template.hpp —
+//   |      structured storage with cache-stable tiering; serialises as its
+//   |      ordered sections under this file's protocol). Laid
 //   |      out for byte-prefix provider caches: immutable regions first,
 //   |      growing regions next, volatile regions last; the class enforces
 //   |      both the order and the per-tier mutation rules.
@@ -518,7 +611,8 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
 //   |        type           : MessageItemType  user_input | model_response |
 //   |                                           invoke_return
 //   |        role           : string   "user" / "assistant" / "tool"
-//   |        content        : Content  type : ContentType (text | binary |
+//   |        content        : vector<Content>  ordered, heterogeneous parts;
+//   |                          each part has type : ContentType (text | binary |
 //   |                               external_ref) — how `raw` is encoded;
 //   |                               raw  : string payload;
 //   |                               extras? : optional<json> content-part
@@ -552,14 +646,22 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
 //   |
 //   +-- extras : optional<json>
 //          Escape hatch for the session state itself (provider-specific or
-//          experimental knobs the interpreter should pass through).
+//          experimental knobs the interpreter should pass through) —
+//          EXCEPT two reserved regions: "external_status" (per-writer
+//          state slots hooks/plugins sync for persistence) and "events"
+//          (the append-only broadcast they publish to). The serial event
+//          exchange those regions form is the ONE persistence entry/exit
+//          for external information, and it never reaches a provider
+//          request; mutation of AgentInputState is strictly serialised, so
+//          positions in "events" carry that order (see the external
+//          exchange section at the end of this file).
 //
-// Serialisation: NONE, deliberately. Every other composite in this file has
-// an ADL to_json/from_json pair; AgentInputState does not, because it embeds
-// PromptTemplate, which by design has no JSON form. It is an in-memory
-// assembly point: to persist a session, serialise the members that have
-// pairs (tools, turns) and store system_prompt.render().markdown — not this
-// struct.
+// Serialisation: the full ADL pair below — the STRUCTURED form is the
+// durable one. system_prompt serialises as its ordered sections
+// (prompt_template.hpp, same protocol), never as rendered markdown:
+// rendering is the in-memory assembly this container defers to
+// request-build time, so a restored session renders the identical bytes
+// again. json(state).get<AgentInputState>() reproduces the session whole.
 //
 // Interpreter consumption (why this type exists): before each model call the
 // interpreter flattens an AgentInputState straight into a provider request
@@ -574,21 +676,255 @@ inline void from_json(const nlohmann::json& j, Invocable& v) {
 //     message (its invokes -> tool_calls) and its invoke_returns become
 //     tool-result messages, correlated to their calls by the embedded
 //     invoke_return's query.id (the wire "tool_call_id" providers require)
-//   - extras -> interpreter/provider-specific request parameters
+//   - extras -> interpreter/provider-specific request parameters, MINUS
+//     the reserved "external_status" and "events" regions: those are
+//     host-side exchange for hooks/plugins, never model context (the same
+//     exemption meta enjoys)
 //   Everything else a request needs — model name, base_url, temperature,
 //   stream, max_tokens, ... — comes from the interpreter's provider/endpoint
 //   configuration, NOT from this struct (see Scope above).
 // The mapping lives in the interpreter, never here: this struct is pure data.
 struct AgentInputState {
+    // Host-written session bookkeeping: identity, timestamps, format
+    // version, lifecycle status, terminal error — never part of what the
+    // model sees.
+    MetaInfo meta;
     // The system prompt: managed markdown, rendered by the interpreter at
-    // request-build time (never serialised).
+    // request-build time (serialises as its structured sections, never as
+    // rendered markdown — the structure is the reusable artefact).
     PromptTemplate system_prompt;
     // Tools registered for this session — what the model may invoke.
     std::vector<Invocable> tools;
     // The conversation so far, oldest user turn first.
     std::vector<UserLoopStep> turns;
-    // Escape hatch: provider-specific / experimental session-level fields.
+    // Escape hatch: provider-specific / experimental session-level fields —
+    // except the reserved "external_status" and "events" regions (see the
+    // external exchange section at the end of this file).
     std::optional<nlohmann::json> extras;
 };
+
+inline void to_json(nlohmann::json& j, const AgentInputState& s) {
+    j = nlohmann::json{
+        {"meta", s.meta},
+        {"system_prompt", s.system_prompt},
+        {"tools", s.tools},
+        {"turns", s.turns},
+    };
+    if (s.extras) j["extras"] = *s.extras;
+}
+
+inline void from_json(const nlohmann::json& j, AgentInputState& s) {
+    if (auto it = j.find("meta"); it != j.end()) it->get_to(s.meta);
+    if (auto it = j.find("system_prompt"); it != j.end())
+        it->get_to(s.system_prompt);
+    if (auto it = j.find("tools"); it != j.end()) it->get_to(s.tools);
+    if (auto it = j.find("turns"); it != j.end()) it->get_to(s.turns);
+    detail::read_optional(j, "extras", s.extras);
+}
+
+// ---- external exchange regions (external_status + events) ------------------------
+//
+// Two fixed regions inside AgentInputState::extras where loop hooks and
+// plugins exchange host-side information with the serial agent loop — the
+// ONE entry/exit through which external (non-contract) information becomes
+// persistent, because both regions ride extras' serialisation:
+//
+//   extras["external_status"]  an object keyed by writer identity — each
+//                              writer's OWN state slot, OVERWRITTEN on
+//                              sync. The durable "where I left off" a
+//                              plugin restores after a session round-trip.
+//   extras["events"]           an append-only array of HookEvent records —
+//                              broadcast messages, in the order they were
+//                              published.
+//
+// Region protocol — what keeps parallel writers from crosstalk:
+//
+//   1. OWNERSHIP. external_status is written ONLY through
+//      sync_external_status, events ONLY through publish_hook_event, both
+//      by hooks/plugins (and the host). Everything else in extras stays
+//      interpreter pass-through parameters: hooks never write outside the
+//      two regions, and nobody else writes inside them.
+//   2. IDENTITY ON EVERY WRITE. Every write names a non-empty `source`
+//      (the writer's registration identity — a plugin id, a hook name);
+//      the APIs reject empty ones with std::logic_error. In
+//      external_status the source IS the slot: a writer's permit covers
+//      exactly its own slot and nothing else. In events the source rides
+//      on every record, so the history stays attributable.
+//   3. DIFFERENT SEMANTICS PER REGION. external_status is per-source
+//      LATEST state: sync overwrites the slot, no history kept. events is
+//      append-only broadcast: no edit or remove API exists (deliberately)
+//      — a changed state is a NEW event; readers take the latest match
+//      (latest_hook_event), so per-key semantics are last-writer-wins
+//      without ever rewriting history. Publish to events when others must
+//      SEE something happened; sync to external_status when the writer
+//      itself must REMEMBER where it stood.
+//   4. STRICTLY SERIAL MUTATION, ORDER DEPENDS ON IT. Every mutation of
+//      AgentInputState — appending turns, refreshing meta, syncing
+//      external_status, publishing events — is strictly serialised by the
+//      host: ONE total order, no concurrent writers, no locks (none are
+//      needed). Order is therefore MEANINGFUL: an event's position in
+//      `events` is its exact place among all session mutations, and an
+//      external_status slot reflects the last sync in that same order —
+//      reading both regions together yields a coherent history. Multi-
+//      threaded mutation is out of contract.
+//   5. PRUNING BELONGS TO THE HOST. The host may shed old entries from
+//      `events` under a budget; readers must tolerate their older events
+//      disappearing. external_status slots are never shed — dropping a
+//      writer's latest state would defeat its persistence.
+//   6. THE WIRE NEVER SEES EITHER REGION. Interpreters map extras into
+//      provider requests MINUS external_status and events: the regions
+//      are host-side exchange, never model context (the same exemption
+//      meta enjoys).
+
+// The reserved regions' keys inside AgentInputState::extras.
+inline constexpr char kExternalStatusKey[] = "external_status";
+inline constexpr char kEventsKey[] = "events";
+
+// One broadcast record: an attributed, named, timestamped payload. Plain
+// data.
+struct HookEvent {
+    std::string source; // the writer's identity (registration name / plugin
+                        // id); required, enforced by publish_hook_event.
+    std::string key;    // the event name, e.g. "model_switched"; required.
+    std::string at;     // ISO-8601 (RFC 3339) time of writing.
+    nlohmann::json detail = nlohmann::json::object(); // free-form payload.
+};
+
+inline void to_json(nlohmann::json& j, const HookEvent& e) {
+    j = nlohmann::json{
+        {"source", e.source},
+        {"key", e.key},
+        {"at", e.at},
+        {"detail", e.detail},
+    };
+}
+
+inline void from_json(const nlohmann::json& j, HookEvent& e) {
+    if (auto it = j.find("source"); it != j.end()) it->get_to(e.source);
+    if (auto it = j.find("key"); it != j.end()) it->get_to(e.key);
+    if (auto it = j.find("at"); it != j.end()) it->get_to(e.at);
+    // Absent or null detail keeps the (empty) object default.
+    if (auto it = j.find("detail"); it != j.end() && !it->is_null())
+        it->get_to(e.detail);
+}
+
+// ---- events: append-only broadcast ------------------------------------------------
+
+// Append one event to the `events` region, creating extras / the region on
+// first use. Throws std::logic_error on an empty source or key (protocol
+// rule 2), and when extras or the region exists with a wrong shape (a
+// corrupt reserved region is reported, never silently repaired). The
+// append lands at the tail — its position is the event's place in the
+// session's total mutation order (protocol rule 4).
+inline void publish_hook_event(AgentInputState& state, HookEvent event) {
+    if (event.source.empty())
+        throw std::logic_error(
+            "publish_hook_event: every event needs a non-empty source — "
+            "the identity that owns the write");
+    if (event.key.empty())
+        throw std::logic_error(
+            "publish_hook_event: every event needs a non-empty key — "
+            "the name of what happened");
+    if (!state.extras) state.extras = nlohmann::json::object();
+    if (!state.extras->is_object())
+        throw std::logic_error("publish_hook_event: extras is not an object");
+    nlohmann::json& events = (*state.extras)[kEventsKey];
+    if (events.is_null()) {
+        events = nlohmann::json::array();
+    } else if (!events.is_array()) {
+        throw std::logic_error(std::string("publish_hook_event: extras[")
+                               + kEventsKey + "] is not an array — the "
+                               "reserved region is corrupt");
+    }
+    events.push_back(nlohmann::json(std::move(event)));
+}
+
+// The latest event matching @p key (optionally also @p source), scanning
+// from the tail — the read side of last-writer-wins. nullopt when nothing
+// matches or the region is absent; malformed entries are skipped, a
+// malformed region reads as empty.
+inline std::optional<HookEvent> latest_hook_event(
+    const AgentInputState& state, std::string_view key,
+    std::string_view source = {}) {
+    if (!state.extras || !state.extras->is_object()) return std::nullopt;
+    const auto region = state.extras->find(kEventsKey);
+    if (region == state.extras->end() || !region->is_array())
+        return std::nullopt;
+    for (auto entry = region->rbegin(); entry != region->rend(); ++entry) {
+        if (!entry->is_object()) continue;
+        const HookEvent e = entry->get<HookEvent>();
+        if (e.key != key) continue;
+        if (!source.empty() && e.source != source) continue;
+        return e;
+    }
+    return std::nullopt;
+}
+
+// All events in publication order — the session's ordered history,
+// optionally filtered by @p source. Same leniency as latest_hook_event on
+// malformed regions and entries.
+inline std::vector<HookEvent> hook_events(
+    const AgentInputState& state, std::string_view source = {}) {
+    std::vector<HookEvent> out;
+    if (!state.extras || !state.extras->is_object()) return out;
+    const auto region = state.extras->find(kEventsKey);
+    if (region == state.extras->end() || !region->is_array()) return out;
+    for (const auto& entry : *region) {
+        if (!entry.is_object()) continue;
+        HookEvent e = entry.get<HookEvent>();
+        if (!source.empty() && e.source != source) continue;
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
+// ---- external_status: per-writer state slots --------------------------------------
+
+// Overwrite @p source's slot in the `external_status` region with @p status
+// — the writer's own latest state, persisted with the session. Creating
+// extras / the region on first use. Throws std::logic_error on an empty
+// @p source, a non-object @p status (a state document is structured), or a
+// corrupt region/extras shape (reported, never silently repaired). A
+// writer syncs ONLY its own slot: crosstalk between writers is impossible
+// by construction (protocol rule 2).
+inline void sync_external_status(AgentInputState& state,
+                                 std::string_view source,
+                                 nlohmann::json status) {
+    if (source.empty())
+        throw std::logic_error(
+            "sync_external_status: a status sync needs a non-empty source — "
+            "the identity that owns the slot");
+    if (!status.is_object())
+        throw std::logic_error(
+            "sync_external_status: a status document must be a JSON object");
+    if (!state.extras) state.extras = nlohmann::json::object();
+    if (!state.extras->is_object())
+        throw std::logic_error(
+            "sync_external_status: extras is not an object");
+    nlohmann::json& region = (*state.extras)[kExternalStatusKey];
+    if (region.is_null()) {
+        region = nlohmann::json::object();
+    } else if (!region.is_object()) {
+        throw std::logic_error(std::string("sync_external_status: extras[")
+                               + kExternalStatusKey + "] is not an object — "
+                               "the reserved region is corrupt");
+    }
+    region[source] = std::move(status);
+}
+
+// @p source's latest status, or nullopt when the writer never synced (or
+// the region is absent/malformed — leniency as everywhere on the read
+// side).
+inline std::optional<nlohmann::json> external_status(
+    const AgentInputState& state, std::string_view source) {
+    if (!state.extras || !state.extras->is_object()) return std::nullopt;
+    const auto region = state.extras->find(kExternalStatusKey);
+    if (region == state.extras->end() || !region->is_object())
+        return std::nullopt;
+    const auto slot = region->find(source);
+    if (slot == region->end() || slot->is_null() || !slot->is_object())
+        return std::nullopt;
+    return *slot;
+}
 
 } // namespace model_io
