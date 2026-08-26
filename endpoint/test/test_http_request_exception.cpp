@@ -18,7 +18,10 @@ BOOST_AUTO_TEST_CASE(retains_failure_context)
         "example.com");
 
     BOOST_CHECK(exception.stage() == HttpRequestException::Stage::Write);
-    BOOST_TEST(exception.what() == std::string("request write failed"));
+    // what() carries the full rendering, not the bare message: a host that
+    // can only catch std::exception (e.g. across a dlopen boundary) still
+    // sees the whole context.
+    BOOST_TEST(exception.what() == exception.to_string());
     BOOST_TEST(exception.error_code() == ec);
     BOOST_TEST(exception.method() == "POST");
     BOOST_TEST(exception.target() == "/v1/messages");
@@ -55,7 +58,8 @@ BOOST_AUTO_TEST_CASE(timeout_flavour_is_stage_read_and_catchable_as_base)
     try {
         throw HttpRequestTimeoutException("read timed out");
     } catch (const HttpRequestException& caught) {
-        BOOST_TEST(caught.what() == std::string("read timed out"));
+        BOOST_TEST(caught.what() ==
+                   std::string("Failed while reading the response: read timed out"));
     }
 }
 

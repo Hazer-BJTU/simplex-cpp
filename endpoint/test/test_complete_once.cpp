@@ -702,7 +702,9 @@ BOOST_AUTO_TEST_CASE(complete_retries_truncation_to_the_budget_then_reports) {  
         BOOST_FAIL("the truncated stream did not surface");
     } catch (const HttpRequestException& e) {
         BOOST_CHECK(e.stage() == HttpRequestException::Stage::Read);
-        BOOST_CHECK_EQUAL(e.what(), "stream ended without the terminal event");
+        BOOST_CHECK_NE(std::string(e.what()).find(
+                           "stream ended without the terminal event"),
+                       std::string::npos);
     }
     BOOST_CHECK_EQUAL(*calls, 3);   // the whole budget re-read
     server.join();
@@ -777,8 +779,10 @@ BOOST_AUTO_TEST_CASE(complete_never_retries_a_consumer_abort) {
         BOOST_FAIL("the consumer abort did not surface");
     } catch (const HttpRequestException& e) {
         BOOST_CHECK(e.stage() == HttpRequestException::Stage::Unknown);
-        BOOST_CHECK_EQUAL(
-            e.what(), "stream aborted by the consumer before the terminal event");
+        BOOST_CHECK_NE(std::string(e.what()).find(
+                           "stream aborted by the consumer before the terminal "
+                           "event"),
+                       std::string::npos);
     }
     BOOST_CHECK_EQUAL(*calls, 1);   // abort wins over the permissive policy
     // And the post-mortem survives the throw: the reader's own record of the
