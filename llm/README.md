@@ -4,6 +4,16 @@
 `endpoint` module below it is transport-only: HTTP/HTTPS, SSE framing and retry
 drivers do not know which model protocol they carry.
 
+The plugin boundary is **live-object**: a provider `.so` mints model objects
+(`create_llm_model(executor, config)` receives an `asio::any_io_executor` and
+a `nlohmann::json`; `converse()` returns an `asio::awaitable` whose frame the
+host resumes). Those types have no stable ABI, so safety rests on the
+**same-execution-context strategy** — the toolchain-fingerprint admission
+gate in `extension_framework`, the shared runtime stack
+(`libasio`/`libeventbus`/`liblogging`/`libllm_chat_completions`/
+`libllm_responses`), and `-rdynamic` hosts. The full contract, its mechanisms,
+and their structural tests live in `docs/abi-context.md`.
+
 ## Architecture and responsibility boundaries
 
 The central abstraction is deliberately an **exchange**, not an agent. A

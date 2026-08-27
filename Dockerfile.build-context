@@ -1,0 +1,45 @@
+# Dockerfile.build-context — the reproducible "same execution context" build.
+#
+# The plugin ABI strategy (docs/abi-context.md) is not stable interfaces but
+# identical build contexts: host executables and dlopened plugin modules must
+# come from the same compiler, the same Boost, and the same configure. This
+# image constructs that guarantee: one compiler, one Boost, one tree, one
+# configure+build producing the host AND every plugin.
+#
+# Build (from the repository root):
+#   docker build -f Dockerfile.build-context -t simplex-cpp-build .
+# Run the full test suite inside the same context:
+#   docker run --rm simplex-cpp-build
+# Extract artifacts if needed:
+#   docker run --rm simplex-cpp-build tar C /src/build -cf - . | tar C build -xf -
+#
+# The local WSL build does NOT depend on this file; it exists so the context
+# can be reproduced (and the admission fingerprint's inputs explained) on any
+# machine. Keep the versions in sync with the top-level CMakeLists.txt pins
+# when they move.
+
+FROM gcc:14
+
+# Boost for the pinned version (headers are what the fingerprint covers;
+# Boost::filesystem/dll are header-driven here too). 1.91 per the tree.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cmake \
+        libssl-dev \
+        ca-certificates \
+        wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && wget -q -O /tmp/boost.tar.gz \
+        https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz \
+    && tar -xzf /tmp/boost.tar.gz -C /usr/local --strip-components=1 \
+        boost_1_91_0/boost \
+    && rm /tmp/boost.tar.gz
+
+WORKDIR /src
+COPY . .
+
+# -j4 mirrors the repo's WSL constraint; one configure builds host + plugins,
+# which is the entire point of the image.
+RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
+        -DBOOST_ROOT=/usr/local \
+    && cmake --build /src/build -j4 \
+    && ctest --test-dir /src/build --output-on-failure

@@ -52,6 +52,17 @@ silently falls back to header-only semantics and re-splits the runtime in
 that process. Currently wired through `endpoint_lib`, `llm_iface`, and
 `indextools_lib` (all PUBLIC), which covers every asio consumer in the tree.
 
+## Where this sits in the boundary strategy
+
+The one-shared-runtime idea did not stop here; the full strategy is
+"same execution context", documented in `docs/abi-context.md`. The stack of
+process-wide unifiers is now: `libasio.so` and `libeventbus.so` (this module
+and utils/eventbus), `liblogging.so` (utils/logging), the shared protocol
+adapters `libllm_chat_completions.so` / `libllm_responses.so`, and the host
+executables' `-rdynamic` export of the header-only contract classes — with
+the toolchain-fingerprint admission gate in extension_framework refusing any
+module not built in this context before its code can run.
+
 ## Dependencies
 
 - Boost headers (`Boost::headers`, top-level find_package)
