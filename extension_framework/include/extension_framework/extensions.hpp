@@ -270,6 +270,14 @@ struct same_tag_always {
  * The actual load uses `boost::dll::load_mode::append_decorations`, so a bare
  * stem ("foo") and a fully-decorated name ("libfoo.so") both work.
  *
+ * `rtld_local` is stated explicitly even though it matches Boost.DLL's POSIX
+ * default: it makes the loading semantics a written mechanism rather than an
+ * assumed convention. A loaded module's symbols never enter the process-wide
+ * lookup scope, so a plugin can never interpose its own template/static copies
+ * over the host's or over another plugin's — the only interposition direction
+ * is the intended one (host executable and shared runtime libraries bind
+ * first, which is what unifies the vague-linkage contract symbols).
+ *
  * @param target_path Filesystem path to the library; must already exist.
  * @return A `shared_ptr` to the loaded `boost::dll::shared_library`.
  * @throw std::runtime_error if the path is missing or the library cannot be
@@ -288,7 +296,9 @@ inline std::shared_ptr<boost::dll::shared_library> get_library_ref(
 
     try {
         auto library_ref = std::make_shared<boost::dll::shared_library>(
-            target_path, boost::dll::load_mode::append_decorations
+            target_path,
+            boost::dll::load_mode::rtld_local
+                | boost::dll::load_mode::append_decorations
         );
 
         return library_ref;

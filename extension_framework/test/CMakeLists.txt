@@ -58,5 +58,11 @@ target_compile_options(test_extensions_dynamic PRIVATE ${_ext_test_opts})
 target_link_libraries(test_extensions_dynamic PRIVATE extension_framework_iface Boost::unit_test_framework)
 target_compile_definitions(test_extensions_dynamic PRIVATE
     "TOY_EXTENSION_DIR=\"${CMAKE_BINARY_DIR}/bin/extension_test_modules\"")
+# ENABLE_EXPORTS (-rdynamic): exports the executable's symbols into the
+# process-wide lookup scope, so the dlopened toy module binds the exe's
+# authoritative copies of the header-only ExtensionContext typeinfo/vtable
+# (type identity, not the libstdc++ name-comparison fallback). The same
+# treatment is applied to every host that dlopens plugins.
+set_target_properties(test_extensions_dynamic PROPERTIES ENABLE_EXPORTS ON)
 add_dependencies(test_extensions_dynamic toyextension)
 add_test(NAME test_extensions_dynamic COMMAND test_extensions_dynamic)
