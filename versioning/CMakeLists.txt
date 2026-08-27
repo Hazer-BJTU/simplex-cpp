@@ -47,6 +47,17 @@ set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 #       (get_type/warm/create_model + the signed create_llm_model factory alias).
 set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 1)
 
+# ---- Toolchain identity for the plugin admission fingerprint -----------------
+# Rendered into version.hpp and hashed by extension_framework/plugin_magic.hpp
+# (consteval FNV-1a, together with _GLIBCXX_USE_CXX11_ABI, sizeof(void*) and the
+# build profile injected as a compile definition on extension_framework_iface).
+# find_package(Boost) at the top level runs before this subdirectory, so
+# Boost_VERSION is available here.
+set(SIMPLEX_PLUGIN_TOOLCHAIN_ID
+    "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}")
+set(SIMPLEX_PLUGIN_CXX_STANDARD "C++${CMAKE_CXX_STANDARD}")
+set(SIMPLEX_PLUGIN_BOOST_VERSION "${Boost_VERSION}")
+
 # ---- Render the generated header --------------------------------------------
 # Generated under build/generated/ so it is found as "versioning/version.hpp"
 # once build/generated/ is on the include path (carried by simplex_versioning).

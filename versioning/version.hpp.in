@@ -42,4 +42,14 @@ inline constexpr std::uint32_t LANG_PLUGIN_ABI_VERSION = @SIMPLEX_LANG_PLUGIN_AB
 /// any plugin whose abi_version() differs. See llm/models.hpp for the contract.
 inline constexpr std::uint32_t LLM_PLUGIN_ABI_VERSION = @SIMPLEX_LLM_PLUGIN_ABI_VERSION@;
 
+/// Toolchain identity strings baked into every plugin's admission magic block
+/// (extension_framework/plugin_magic.hpp): compiler id+version, language
+/// standard, and the Boost version (which pins the whole Boost tree, including
+/// the Asio the plugins instantiate templates from). Compiled in the same
+/// execution context, host and plugin read identical values — which is what
+/// the loader's fingerprint check asserts before running any plugin code.
+inline constexpr const char* PLUGIN_TOOLCHAIN_ID = "@SIMPLEX_PLUGIN_TOOLCHAIN_ID@";
+inline constexpr const char* PLUGIN_CXX_STANDARD = "@SIMPLEX_PLUGIN_CXX_STANDARD@";
+inline constexpr const char* PLUGIN_BOOST_VERSION = "@SIMPLEX_PLUGIN_BOOST_VERSION@";
+
 } // namespace simplex

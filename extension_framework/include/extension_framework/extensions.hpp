@@ -98,6 +98,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "extension_framework/plugin_magic.hpp"
 #include "logging/logger.hpp"
 
 namespace extension {
@@ -300,6 +301,21 @@ inline std::shared_ptr<boost::dll::shared_library> get_library_ref(
             boost::dll::load_mode::rtld_local
                 | boost::dll::load_mode::append_decorations
         );
+
+        // Admission gate, before any alias is resolved or plugin code runs:
+        // the module's toolchain magic block must match this build's own
+        // (extension_framework/plugin_magic.hpp). A module from any other
+        // execution context is rejected with a diagnostic naming both.
+        std::string magic_diagnostic;
+        switch (check_module_magic(*library_ref, magic_diagnostic)) {
+        case MagicVerdict::Ok:
+            break;
+        case MagicVerdict::Absent:
+        case MagicVerdict::Mismatch:
+            throw std::runtime_error(std::format(
+                "{}: {}", target_path.string(), magic_diagnostic
+            ));
+        }
 
         return library_ref;
     } catch (const std::exception& e) {
