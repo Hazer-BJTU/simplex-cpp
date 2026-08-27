@@ -29,6 +29,13 @@ public:
     virtual std::string_view provider_name() const { return {}; }
 
     /**
+     * The catalogue path provider_info() queries (OpenAI-compatible
+     * "list models"), sibling of the default exchange path's /v1 prefix.
+     * Override when the provider drops the prefix (e.g. DeepSeek: /models).
+     */
+    virtual std::string models_path() const { return "/v1/models"; }
+
+    /**
      * Whether replayed assistant messages re-emit MessageItem::reasoning as
      * the wire's reasoning_content field. DeepSeek thinking mode rejects
      * (400) a tools request whose intermediate assistant messages omit it,

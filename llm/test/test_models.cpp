@@ -11,6 +11,10 @@
  *     new agent step on the current turn, InvokeReturn -> current step's
  *     invoke_returns, orphan folds create host structures) and the
  *     persistence guarantee (folded state stays to_json-serialisable).
+ *   - The runtime services: provider_info()'s default body throws
+ *     LLMUnsupportedOperation; the set_generation() tiers (RFC 7386 merge
+ *     semantics, host-owned-key and model-invariant guards, atomicity, the
+ *     typed GenerationPreset envelope) against a seeded generation object.
  *   - The create_model lifecycle guarantee: build() exactly once before use,
  *     release() exactly once before destruction, config injected verbatim,
  *     build() failure -> nullptr with no release().
@@ -45,6 +49,16 @@ struct BareModel : llm::LLMModel {
     }
     /// Test access to the protected injected configuration.
     const nlohmann::json& config() const { return _config; }
+};
+
+/// A model with a seeded generation object, for the set_generation() tiers:
+/// exercises the contract's merge core independently of any adapter's
+/// build() derivation.
+struct KnobModel : BareModel {
+    using BareModel::BareModel;
+    void seed_generation(nlohmann::json generation) {
+        _generation = std::move(generation);
+    }
 };
 
 /// A model that records the lifecycle calls (counters are static: the test
@@ -184,6 +198,125 @@ BOOST_AUTO_TEST_CASE(default_converse_throws_unsupported) {
         boost::asio::detached);
     io.run();
     BOOST_CHECK(threw_unsupported);
+}
+
+BOOST_AUTO_TEST_CASE(default_provider_info_throws_unsupported) {
+    boost::asio::io_context io;
+    bool threw_unsupported = false;
+    boost::asio::co_spawn(io,
+        [&]() -> boost::asio::awaitable<void> {
+            BareModel model{io.get_executor(), nlohmann::json::object()};
+            try {
+                co_await model.provider_info();
+            } catch (const llm::LLMUnsupportedOperation&) {
+                threw_unsupported = true;
+            }
+        },
+        boost::asio::detached);
+    io.run();
+    BOOST_CHECK(threw_unsupported);
+}
+
+// ---------------------------------------------------------------------------
+// set_generation tiers (against a seeded generation object)
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(reasoning_effort_wire_spellings) {
+    using llm::ReasoningEffort;
+    BOOST_CHECK_EQUAL(llm::to_string(ReasoningEffort::Minimal), "minimal");
+    BOOST_CHECK_EQUAL(llm::to_string(ReasoningEffort::Low), "low");
+    BOOST_CHECK_EQUAL(llm::to_string(ReasoningEffort::Medium), "medium");
+    BOOST_CHECK_EQUAL(llm::to_string(ReasoningEffort::High), "high");
+    // The value order is part of the plugin ABI: fixed width, Minimal first.
+    static_assert(std::is_same_v<std::underlying_type_t<ReasoningEffort>,
+                                 std::uint8_t>);
+    BOOST_CHECK_EQUAL(static_cast<std::uint8_t>(ReasoningEffort::Minimal), 0);
+}
+
+BOOST_AUTO_TEST_CASE(set_generation_json_tier_merges_and_guards) {
+    KnobModel model{boost::asio::any_io_executor{}, nlohmann::json::object()};
+    model.seed_generation(nlohmann::json{
+        {"model", "keep-me"},
+        {"temperature", 0.2},
+        {"reasoning", nlohmann::json{{"effort", "low"}, {"budget", 512}}},
+    });
+
+    // Absent keys keep their values, present keys overwrite, null erases,
+    // nested objects merge recursively.
+    model.set_generation(nlohmann::json{
+        {"temperature", 0.9},
+        {"top_p", 0.95},
+        {"reasoning", nlohmann::json{{"effort", "high"}}},
+    });
+    BOOST_CHECK_EQUAL(model.generation()["model"], "keep-me");
+    BOOST_CHECK_EQUAL(model.generation()["temperature"], 0.9);
+    BOOST_CHECK_EQUAL(model.generation()["top_p"], 0.95);
+    BOOST_CHECK_EQUAL(model.generation()["reasoning"]["effort"], "high");
+    BOOST_CHECK_EQUAL(model.generation()["reasoning"]["budget"], 512);
+
+    model.set_generation(nlohmann::json{{"reasoning", nullptr}});
+    BOOST_CHECK(!model.generation().contains("reasoning"));
+
+    // Host-owned keys are configuration, not knobs: rejected.
+    for (const char* host_key : {"endpoint", "provider", "retry"}) {
+        BOOST_CHECK_THROW(
+            model.set_generation(
+                nlohmann::json{{host_key, nlohmann::json::object()}}),
+            std::invalid_argument);
+    }
+    // A non-object patch is rejected...
+    BOOST_CHECK_THROW(model.set_generation(nlohmann::json::array()),
+                      std::invalid_argument);
+    // ... and so is one that would erase or empty "model".
+    BOOST_CHECK_THROW(model.set_generation(nlohmann::json{{"model", nullptr}}),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(model.set_generation(nlohmann::json{{"model", ""}}),
+                      std::invalid_argument);
+
+    // Atomicity: every rejected patch above left the knobs untouched, and
+    // the construction record stayed verbatim.
+    BOOST_CHECK_EQUAL(model.generation()["model"], "keep-me");
+    BOOST_CHECK_EQUAL(model.generation()["temperature"], 0.9);
+    BOOST_CHECK(model.config().empty());
+}
+
+BOOST_AUTO_TEST_CASE(set_generation_preset_tier_writes_the_envelope) {
+    KnobModel model{boost::asio::any_io_executor{}, nlohmann::json::object()};
+    model.seed_generation(nlohmann::json{
+        {"model", "old-model"},
+        {"reasoning", nlohmann::json{{"effort", "low"}, {"budget", 512}}},
+    });
+
+    model.set_generation(llm::GenerationPreset{
+        .model = "new-model",
+        .effort = llm::ReasoningEffort::High,
+    });
+    BOOST_CHECK_EQUAL(model.generation()["model"], "new-model");
+    BOOST_CHECK_EQUAL(model.generation()["reasoning"]["effort"], "high");
+    // The envelope merges: a sibling key survives the typed tier too.
+    BOOST_CHECK_EQUAL(model.generation()["reasoning"]["budget"], 512);
+
+    // An empty preset is a no-op, not an error.
+    model.set_generation(llm::GenerationPreset{});
+    BOOST_CHECK_EQUAL(model.generation()["model"], "new-model");
+
+    // An empty model name is rejected exactly like in the JSON tier.
+    BOOST_CHECK_THROW(
+        model.set_generation(llm::GenerationPreset{
+            .model = std::string{}, .effort = std::nullopt}),
+        std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(set_generation_refuses_before_build_populates) {
+    // A model whose build() never derived a generation object: both tiers
+    // refuse loudly instead of silently doing nothing.
+    BareModel model{boost::asio::any_io_executor{}, nlohmann::json::object()};
+    BOOST_CHECK_THROW(
+        model.set_generation(nlohmann::json{{"temperature", 0.9}}),
+        std::logic_error);
+    BOOST_CHECK_THROW(
+        model.set_generation(llm::GenerationPreset{
+            .model = std::nullopt, .effort = llm::ReasoningEffort::Low}),
+        std::logic_error);
 }
 
 BOOST_AUTO_TEST_CASE(integrate_places_each_item_type) {

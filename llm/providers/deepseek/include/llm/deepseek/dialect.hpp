@@ -64,6 +64,10 @@ public:
 
     std::string_view provider_name() const override { return "deepseek"; }
 
+    // No /v1 prefix anywhere on this host (see default_endpoint) — the
+    // catalogue is https://api.deepseek.com/models.
+    std::string models_path() const override { return "/models"; }
+
     bool replay_assistant_reasoning() const override {
         // The endpoint prototype (endpoint/example/deepseek_chat.cpp)
         // recorded a hard rule: thinking+tools answers 400 when an

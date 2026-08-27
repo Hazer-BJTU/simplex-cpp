@@ -303,3 +303,82 @@ BOOST_AUTO_TEST_CASE(converse_honours_zero_retry_budget) {
     }
     BOOST_CHECK_EQUAL(server.connections(), 1);   // initial exchange only
 }
+
+// ---------------------------------------------------------------------------
+// set_generation + provider_info on the responses adapter (the contract's
+// shared core is covered in test_models.cpp; here it is the adapter's
+// derivation + the native-envelope passthrough that matter)
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(set_generation_layers_and_the_envelope_rides_verbatim) {
+    asio::io_context io;
+    FixtureModel model(io.get_executor(), nlohmann::json{
+        {"provider", "fixture"},
+        {"model", "fixture-model"},
+        {"temperature", 0.2},
+        {"endpoint", {{"base_url", "http://127.0.0.1:8123"}}},  // never dialed
+    });
+    BOOST_REQUIRE(model.build());
+    BOOST_CHECK_EQUAL(model.generation()["temperature"], 0.2);
+
+    model.set_generation(llm::GenerationPreset{
+        .model = std::nullopt, .effort = llm::ReasoningEffort::Low,
+    });
+    BOOST_CHECK_EQUAL(model.generation()["reasoning"]["effort"], "low");
+
+    // The Responses API carries the envelope natively: no top-level
+    // translation, build_request passes it through verbatim.
+    llm::responses::ResponsesInterpreter interpreter(
+        std::make_shared<const FixtureDialect>());
+    model_io::AgentInputState state;
+    const auto request = interpreter.build_request(
+        state, model.endpoint(), model.generation());
+    const auto body = nlohmann::json::parse(request.body());
+    BOOST_CHECK_EQUAL(body["reasoning"]["effort"], "low");
+    BOOST_CHECK_EQUAL(body["model"], "fixture-model");
+
+    // The idempotent second build() must not reset the knobs.
+    BOOST_CHECK(model.build());
+    BOOST_CHECK_EQUAL(model.generation()["reasoning"]["effort"], "low");
+}
+
+BOOST_AUTO_TEST_CASE(provider_info_normalises_the_catalogue_envelope) {
+    const std::string catalogue = nlohmann::json{
+        {"object", "list"},
+        {"data", nlohmann::json::array({
+            {{"id", "gpt-fixture-mini"}, {"object", "model"},
+             {"owned_by", "fixture"}},
+        })},
+    }.dump();
+    loopback::OneShotServer server([&](asio::ip::tcp::socket& socket) {
+        loopback::serve_fixed_response(socket, http::status::ok, catalogue);
+    });
+    const auto port = server.wait_listening();
+
+    asio::io_context io;
+    FixtureModel model(io.get_executor(), nlohmann::json{
+        {"model", "fixture-model"},
+        {"endpoint", {
+            {"base_url", "http://127.0.0.1:" + std::to_string(port)},
+            {"request_path", "/responses"},
+        }},
+    });
+    BOOST_REQUIRE(model.build());
+
+    std::optional<nlohmann::json> result;
+    std::exception_ptr failure;
+    asio::co_spawn(io, [&]() -> asio::awaitable<void> {
+        try {
+            result = co_await model.provider_info();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    }, asio::detached);
+    io.run();
+    server.join();
+
+    if (failure) std::rethrow_exception(failure);
+    BOOST_REQUIRE(result);
+    BOOST_REQUIRE(result->is_array());
+    BOOST_REQUIRE_EQUAL(result->size(), 1u);
+    BOOST_CHECK_EQUAL((*result)[0]["id"], "gpt-fixture-mini");
+}

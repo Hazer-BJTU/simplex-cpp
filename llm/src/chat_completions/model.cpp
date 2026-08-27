@@ -13,6 +13,7 @@
 #include "llm/chat_completions/events.hpp"
 #include "llm/chat_completions/interpreter.hpp"
 #include "llm/chat_completions/reader.hpp"
+#include "llm/provider_models.hpp"
 
 namespace llm::chat_completions {
 
@@ -176,6 +177,15 @@ boost::asio::awaitable<model_io::MessageItem> ChatCompletionsModel::converse(
             status, details, failure_message(status, details));
     }
     co_return result;
+}
+
+boost::asio::awaitable<nlohmann::json> ChatCompletionsModel::provider_info() {
+    if (!_built) {
+        throw std::logic_error(
+            "ChatCompletionsModel used before successful build()");
+    }
+    co_return co_await llm::fetch_provider_models(
+        _executor, _endpoint, _dialect->models_path());
 }
 
 } // namespace llm::chat_completions

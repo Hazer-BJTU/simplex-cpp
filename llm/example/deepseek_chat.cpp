@@ -25,6 +25,10 @@
 // The registered tool is parameterised (calculate: a, b, operation) so the
 // full schema → wire arguments → parse → execute → correlated-result cycle
 // is exercised, unlike the endpoint example's zero-argument get_current_time.
+//
+// `--list-models` is the catalogue smoke entry: provider_info()'s one GET
+// over the same endpoint/auth, printing the provider's live model list and
+// exiting before any conversation wiring.
 
 #include "eventbus/event_bus.hpp"
 #include "llm/chat_completions/events.hpp"
@@ -38,6 +42,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -224,9 +229,12 @@ asio::awaitable<void> run_turn(llm::LLMModel& model,
 
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
     std::cout << "=== DeepSeek chat via the llm provider stack "
                  "(plugin + converse/integrate, one parameterised tool) ===\n";
+
+    const bool list_models_only =
+        argc > 1 && std::string_view(argv[1]) == "--list-models";
 
     std::string api_key;
     std::cout << "api_key [env DEEPSEEK_API_KEY]: ";
@@ -241,10 +249,12 @@ int main() {
     }
 
     std::string effort = "high";
-    std::cout << "reasoning effort [high] (none|minimal|low|medium|high|xhigh|"
-                 "max; none/minimal disable thinking): ";
-    if (std::string line; std::getline(std::cin, line) && !line.empty()) {
-        effort = line;
+    if (!list_models_only) {
+        std::cout << "reasoning effort [high] (none|minimal|low|medium|high|"
+                     "xhigh|max; none/minimal disable thinking): ";
+        if (std::string line; std::getline(std::cin, line) && !line.empty()) {
+            effort = line;
+        }
     }
 
     // Load the provider plugins the build emits next to this executable.
@@ -273,6 +283,38 @@ int main() {
         std::cerr << "provider \"deepseek\" did not load; is the plugin "
                      "built and ABI-matched?\n";
         return 1;
+    }
+
+    // The catalogue mode: the provider's live model list over the same
+    // endpoint/auth, then exit — no conversation wiring, no tool.
+    if (list_models_only) {
+        try {
+            std::size_t count = 0;
+            auto future = asio::co_spawn(
+                io,
+                [&]() -> asio::awaitable<void> {
+                    nlohmann::json catalogue = co_await model->provider_info();
+                    if (!catalogue.is_array()) {
+                        std::cerr << "provider_info returned a non-array "
+                                     "payload\n";
+                        co_return;
+                    }
+                    count = catalogue.size();
+                    for (const auto& entry : catalogue) {
+                        std::cout << "  " << entry.dump() << "\n";
+                    }
+                },
+                asio::use_future);
+            io.run();
+            future.get();
+            std::cout << count << " model(s) offered by deepseek\n";
+        } catch (const std::exception& error) {
+            // Base catch only: the chain runs inside the provider .so (same
+            // rationale as the turn loop below).
+            std::cerr << "provider_info failed: " << error.what() << "\n";
+            return 1;
+        }
+        return 0;
     }
 
     // The conversation half (dataclass/model_io.hpp): system prompt,

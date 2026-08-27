@@ -13,8 +13,9 @@
 // the conversation does.
 //
 // Generation settings (temperature, stream, ...) are intentionally NOT here
-// either: they are read-only per-call parameters, not contract data that
-// flows or is stored/loaded, so callers pass them as a plain nlohmann::json.
+// either: they are caller-owned runtime parameters — adjustable at runtime
+// through llm::LLMModel::set_generation(), not contract data that flows or
+// is stored/loaded, so callers pass them as a plain nlohmann::json.
 //
 // Same contract rules as model_io.hpp: plain aggregates serialised through
 // nlohmann ADL (a to_json/from_json pair next to each struct), snake_case

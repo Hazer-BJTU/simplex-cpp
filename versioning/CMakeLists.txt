@@ -45,7 +45,13 @@ set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 #   v1: first llm plugin contract. LLMModel (executor + config ctor, build/release
 #       lifecycle hooks, converse/integrate virtuals) and LLMModelExtensionContext
 #       (get_type/warm/create_model + the signed create_llm_model factory alias).
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 1)
+#   v2: LLMModel gained provider_info() (async catalogue query returning a JSON
+#       array), the two set_generation() tiers (typed GenerationPreset + JSON
+#       merge-patch), and the generation() accessor; the _generation member and
+#       its derivation moved from the protocol adapters up into the base (new
+#       contract types: ReasoningEffort, GenerationPreset). New virtuals reorder
+#       the vtable, so rebuilt plugins must report v2.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 2)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
 # Rendered into version.hpp and hashed by extension_framework/plugin_magic.hpp

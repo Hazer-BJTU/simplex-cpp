@@ -37,8 +37,9 @@ public:
     boost::asio::awaitable<model_io::MessageItem> converse(
         const model_io::AgentInputState& conversation) override;
 
+    boost::asio::awaitable<nlohmann::json> provider_info() override;
+
     const model_io::ModelEndpoint& endpoint() const noexcept { return _endpoint; }
-    const nlohmann::json& generation() const noexcept { return _generation; }
 
 protected:
     ChatCompletionsModel(
@@ -50,7 +51,6 @@ protected:
 
 private:
     model_io::ModelEndpoint _endpoint;
-    nlohmann::json _generation = nlohmann::json::object();
     ChatCompletionsDialectPtr _dialect;
     std::chrono::milliseconds _initial_backoff{500};
     std::chrono::milliseconds _max_backoff{120000};

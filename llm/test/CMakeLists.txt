@@ -58,6 +58,19 @@ target_link_libraries(test_chat_completions_stream PRIVATE
 add_test(NAME test_chat_completions_stream
     COMMAND test_chat_completions_stream)
 
+# The chat-completions adapter's LLMModel surface: set_generation() layering
+# on the build() derivation (and its survival across the idempotent second
+# build), the GenerationPreset envelope folded into reasoning_effort by the
+# interpreter, and provider_info() over the loopback transport (catalogue
+# envelope unwrapping, array passthrough, non-200 and bad-shape failures).
+add_executable(test_chat_completions_model
+    chat_completions/test_chat_completions_model.cpp)
+target_include_directories(test_chat_completions_model PRIVATE
+    "${PROJECT_SOURCE_DIR}/endpoint/test")
+target_link_libraries(test_chat_completions_model PRIVATE
+    llm_chat_completions endpoint_lib Boost::unit_test_framework)
+add_test(NAME test_chat_completions_model COMMAND test_chat_completions_model)
+
 add_executable(test_openai_plugin test_openai_plugin.cpp)
 target_link_libraries(test_openai_plugin PRIVATE
     llm_iface Boost::unit_test_framework)
