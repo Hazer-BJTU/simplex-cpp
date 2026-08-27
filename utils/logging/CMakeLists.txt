@@ -6,9 +6,10 @@
 # include paths are unchanged from the standalone-module era, so consumers keep
 # linking `logging_lib` and including "logging/logger.hpp".
 #
-# Produces `logging_lib` (STATIC), whose PUBLIC include dir exposes
-# logging/logger.hpp (included as "logging/logger.hpp"). The Logger class lives
-# in namespace `logging`. It depends only on the C++ standard library.
+# Produces `logging_lib` (SHARED, output name `logging` → liblogging.so), whose
+# PUBLIC include dir exposes logging/logger.hpp (included as
+# "logging/logger.hpp"). The Logger class lives in namespace `logging`. It
+# depends only on the C++ standard library.
 #
 # Header management is interface-target-only: consumers link `logging_lib` and
 # get its include dir transitively (PUBLIC). No directory-scope includes, no
@@ -18,13 +19,20 @@
 set(LOGGING_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # ========================================== #
-# Build logging_lib (static library)         #
+# Build logging_lib (shared library)         #
 # ========================================== #
+# SHARED for the same reason as libasio/libeventbus (utils/asio, utils/eventbus):
+# the Logger's static mutex and level state must exist exactly once per
+# process. As a static archive, every executable and every dlopened plugin
+# linked its own copy — a host-side level change would leave plugins logging
+# at the old level, and each module would serialize on its own mutex. The
+# SONAME makes uniqueness a loader guarantee.
 set(LIB_NAME "logging_lib")
 
-add_library(${LIB_NAME} STATIC
+add_library(${LIB_NAME} SHARED
     "${LOGGING_SOURCE_DIR}/src/logger.cpp"
 )
+set_target_properties(${LIB_NAME} PROPERTIES OUTPUT_NAME logging)
 set_target_properties(${LIB_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(${LIB_NAME} PUBLIC
     "${LOGGING_SOURCE_DIR}/include"
