@@ -22,7 +22,7 @@ struct Charset {
     int h_width;            // total width for horizontal rules
 };
 
-Charset make_charset(bool use_ascii, int width) {
+[[maybe_unused]] Charset make_charset(bool use_ascii, int width) {
     if (use_ascii) {
         return {
             std::string(width, '-'),
@@ -727,7 +727,8 @@ namespace {
  * @brief Split a glob pattern into path segments by '/'.
  *
  * Consecutive '/' are collapsed. A trailing '/' is ignored.
- * Example: "src/**\/*.cpp" → {"src", "**", "*.cpp"}
+ * Example: a pattern of "src", a double-star catch-all, and "*.cpp"
+ * splits to {"src", "**", "*.cpp"}
  */
 std::vector<std::string> split_glob_segments(const std::string& pattern) {
     std::vector<std::string> segments;

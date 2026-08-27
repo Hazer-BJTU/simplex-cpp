@@ -34,7 +34,7 @@ public:
         return nlohmann::json::array();
     }
 
-    nlohmann::json locate_entity(std::string_view entity_key) const noexcept override {
+    nlohmann::json locate_entity(std::string_view /*entity_key*/) const noexcept override {
         return {};
     }
 
