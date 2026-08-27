@@ -9,6 +9,9 @@
  *
  *   - endpoint: POST https://api.deepseek.com/chat/completions (no /v1
  *     prefix) with Bearer auth;
+ *   - provider_info() attaches the account balance beside the catalogue
+ *     (balance_path): GET https://api.deepseek.com/user/balance, same
+ *     host/auth, its document verbatim;
  *   - thinking mode is ON by default and toggled by `thinking`:
  *     `{"type": "enabled" | "disabled"}` — an explicit native object in the
  *     config passes through verbatim, otherwise the dialect emits it:
@@ -67,6 +70,13 @@ public:
     // No /v1 prefix anywhere on this host (see default_endpoint) — the
     // catalogue is https://api.deepseek.com/models.
     std::string models_path() const override { return "/models"; }
+
+    // The account-balance companion provider_info() attaches after the
+    // catalogue: https://api.deepseek.com/user/balance, same host and auth,
+    // answered with {"is_available": bool, "balance_infos": [{currency,
+    // total_balance, granted_balance, topped_up_balance}, ...]} — attached
+    // verbatim as the "balance" member.
+    std::string balance_path() const override { return "/user/balance"; }
 
     bool replay_assistant_reasoning() const override {
         // The endpoint prototype (endpoint/example/deepseek_chat.cpp)

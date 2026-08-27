@@ -2,18 +2,21 @@
 
 /**
  * @file llm/provider_models.hpp
- * @brief The provider catalogue query shared by the protocol adapters.
+ * @brief The provider-info queries shared by the protocol adapters.
  *
- * LLMModel::provider_info()'s implementation: one OpenAI-compatible "list
- * models" GET over the model's stored endpoint, normalised to the JSON
- * array the contract promises. Header-only so both shared adapters
- * (llm_chat_completions / llm_responses) compile the same coroutine
- * without a new link dependency — under the same-execution-context
- * strategy that is the established pattern for contract-adjacent code.
+ * LLMModel::provider_info()'s implementation: one transport core
+ * (fetch_provider_json — a single-shot GET that returns whatever JSON the
+ * provider answered) plus the catalogue normaliser built on it
+ * (fetch_provider_models — the OpenAI-compatible "list models" shape
+ * reduced to the JSON array the contract promises). Header-only so both
+ * shared adapters (llm_chat_completions / llm_responses) compile the same
+ * coroutines without a new link dependency — under the
+ * same-execution-context strategy that is the established pattern for
+ * contract-adjacent code.
  *
  * Deliberately single-shot, no retry: the endpoint::complete engine is
- * reader-shaped for streaming exchanges, a catalogue query is cheap to
- * re-issue, and its failures surface to the caller unchanged.
+ * reader-shaped for streaming exchanges, these queries are cheap to
+ * re-issue, and their failures surface to the caller unchanged.
  */
 
 #include <cstddef>
@@ -32,36 +35,35 @@
 namespace llm {
 
 /**
- * @brief Fetch the provider's model catalogue as a JSON array.
+ * @brief One provider-info GET, parsed: the transport core both the models
+ *        catalogue and the balance companion ride on.
  *
- * GET <base_url prefix + @p models_path> with the endpoint's transport
- * headers (auth included), then normalise: a top-level array passes
- * through verbatim, the OpenAI-compatible {"object": "list", "data":
- * [...]} envelope unwraps to its "data" array. Every entry is the
- * provider's own model descriptor, untouched.
+ * GET <base_url prefix + @p request_path> with the endpoint's transport
+ * headers (auth included) and co_return whatever JSON the provider
+ * answered — no shape assumptions, the caller interprets.
  *
  * @param executor  Executor the connect and exchange run on.
  * @param endpoint  The model's stored endpoint (base_url/auth/headers);
- *                  its request_path is ignored in favour of @p models_path.
+ *                  its request_path is ignored in favour of @p request_path.
  *                  Caller keeps the endpoint (its model) alive across the
  *                  co_await — a reference parameter, not a frame copy.
- * @param models_path  The dialect's catalogue path ("/v1/models", ...).
+ * @param request_path  The query's path ("/v1/models", "/user/balance", ...).
  *                  BY VALUE on purpose: this is a coroutine, and a
  *                  string_view parameter would dangle across the first
- *                  suspension when the caller passes
- *                  dialect->models_path()'s temporary.
+ *                  suspension when the caller passes a dialect hook's
+ *                  temporary.
  * @param read_timeout_sec  Response read deadline; 0 waits indefinitely.
  * @throws endpoint::HttpRequestException — Stage::Connect when the
  *         connection cannot be established, Stage::HandleResponse for a
- *         non-200 reply (body folded into the message), a body that is
- *         not JSON, or a payload that is neither array nor the {"data":
- *         [...]} shape. Stage::CreateRequest propagates from
- *         resolve_endpoint for a hostless base_url.
+ *         non-200 reply (body folded into the message) or a body that is
+ *         not JSON. Stage::CreateRequest propagates from resolve_endpoint
+ *         for a hostless base_url. what() carries the request line
+ *         (method + target + host), which is what tells the queries apart.
  */
-inline boost::asio::awaitable<nlohmann::json> fetch_provider_models(
+inline boost::asio::awaitable<nlohmann::json> fetch_provider_json(
     boost::asio::any_io_executor executor,
     const model_io::ModelEndpoint& endpoint,
-    std::string models_path,
+    std::string request_path,
     std::size_t read_timeout_sec = endpoint::DEFAULT_HTTP_READ_TIMEOUT_SEC)
 {
     namespace http = boost::beast::http;
@@ -69,12 +71,12 @@ inline boost::asio::awaitable<nlohmann::json> fetch_provider_models(
     // contract predates the namespace (the "endpoint::" qualification in
     // prose around the tree is informal).
 
-    // Route the catalogue through the same prefix-join logic as the
-    // exchange path: copy the endpoint, swap the request path, resolve.
-    model_io::ModelEndpoint catalogue_endpoint = endpoint;
-    catalogue_endpoint.request_path = std::move(models_path);
+    // Route the query through the same prefix-join logic as the exchange
+    // path: copy the endpoint, swap the request path, resolve.
+    model_io::ModelEndpoint query_endpoint = endpoint;
+    query_endpoint.request_path = std::move(request_path);
     endpoint::ResolvedEndpoint resolved =
-        endpoint::resolve_endpoint(catalogue_endpoint);
+        endpoint::resolve_endpoint(query_endpoint);
 
     // create_connection_stream throws boost::system::system_error
     // exclusively; fold into the module's lifecycle exception with the
@@ -111,22 +113,47 @@ inline boost::asio::awaitable<nlohmann::json> fetch_provider_models(
         constexpr std::size_t kMaxErrorBody = 2048;
         std::string body = response.body();
         if (body.size() > kMaxErrorBody) body.resize(kMaxErrorBody);
-        std::string message = "models catalogue request rejected";
+        std::string message = "provider info request rejected";
         if (!body.empty()) message += ": " + body;
         throw HttpRequestException(
             HttpRequestException::Stage::HandleResponse, std::move(message),
             {}, "GET", resolved.target, resolved.host, response.result_int());
     }
 
-    nlohmann::json payload;
     try {
-        payload = nlohmann::json::parse(response.body());
+        co_return nlohmann::json::parse(response.body());
     } catch (const std::exception& e) {
         throw HttpRequestException(
             HttpRequestException::Stage::HandleResponse,
-            std::string("models catalogue body is not JSON: ") + e.what(),
+            std::string("provider info body is not JSON: ") + e.what(),
             {}, "GET", resolved.target, resolved.host);
     }
+}
+
+/**
+ * @brief Fetch the provider's model catalogue as a JSON array.
+ *
+ * fetch_provider_json for the dialect's models_path, then normalise: a
+ * top-level array passes through verbatim, the OpenAI-compatible
+ * {"object": "list", "data": [...]} envelope unwraps to its "data" array.
+ * Every entry is the provider's own model descriptor, untouched.
+ *
+ * @param executor  Executor the connect and exchange run on.
+ * @param endpoint  The model's stored endpoint; see fetch_provider_json.
+ * @param models_path  The dialect's catalogue path ("/v1/models", ...).
+ * @param read_timeout_sec  Response read deadline; 0 waits indefinitely.
+ * @throws endpoint::HttpRequestException — everything fetch_provider_json
+ *         raises, plus Stage::HandleResponse for a payload that is neither
+ *         an array nor the {"data": [...]} catalogue shape.
+ */
+inline boost::asio::awaitable<nlohmann::json> fetch_provider_models(
+    boost::asio::any_io_executor executor,
+    const model_io::ModelEndpoint& endpoint,
+    std::string models_path,
+    std::size_t read_timeout_sec = endpoint::DEFAULT_HTTP_READ_TIMEOUT_SEC)
+{
+    nlohmann::json payload = co_await fetch_provider_json(
+        executor, endpoint, std::move(models_path), read_timeout_sec);
 
     if (payload.is_array()) {
         co_return payload;
@@ -136,11 +163,12 @@ inline boost::asio::awaitable<nlohmann::json> fetch_provider_models(
         // The OpenAI-compatible "list models" envelope.
         co_return payload["data"];
     }
+    // No request line in context here (the transport core owns the
+    // resolution); the message plus the provider_info() call site carry it.
     throw HttpRequestException(
         HttpRequestException::Stage::HandleResponse,
         "unexpected models catalogue payload (neither an array nor the "
-        "{\"data\": [...]} shape)",
-        {}, "GET", resolved.target, resolved.host);
+        "{\"data\": [...]} shape)");
 }
 
 } // namespace llm

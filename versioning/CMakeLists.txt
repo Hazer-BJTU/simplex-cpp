@@ -51,7 +51,13 @@ set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 #       its derivation moved from the protocol adapters up into the base (new
 #       contract types: ReasoningEffort, GenerationPreset). New virtuals reorder
 #       the vtable, so rebuilt plugins must report v2.
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 2)
+#   v3: ChatCompletionsDialect gained balance_path() (the account-balance
+#       companion provider_info() attaches beside the models catalogue). The
+#       dialect vtable is consumed across the plugin boundary — the adapter's
+#       provider_info() calls the hook on an object constructed inside the
+#       provider .so — so the appended slot makes a stale plugin
+#       binary-incompatible; rebuilt plugins must report v3.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 3)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
 # Rendered into version.hpp and hashed by extension_framework/plugin_magic.hpp

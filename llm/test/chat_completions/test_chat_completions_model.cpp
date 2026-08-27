@@ -28,9 +28,11 @@ public:
 
 class FixtureModel final : public llm::chat_completions::ChatCompletionsModel {
 public:
-    FixtureModel(asio::any_io_executor executor, nlohmann::json config)
+    FixtureModel(asio::any_io_executor executor, nlohmann::json config,
+                 llm::chat_completions::ChatCompletionsDialectPtr dialect =
+                     std::make_shared<const FixtureDialect>())
         : ChatCompletionsModel(std::move(executor), std::move(config),
-                               std::make_shared<const FixtureDialect>()) {}
+                               std::move(dialect)) {}
 };
 
 /// One provider_info() drive on its own io_context (the model must be bound
@@ -41,9 +43,12 @@ struct ProviderInfoOutcome {
     std::exception_ptr failure;
 };
 
-ProviderInfoOutcome run_provider_info(const nlohmann::json& config) {
+ProviderInfoOutcome run_provider_info(
+    const nlohmann::json& config,
+    llm::chat_completions::ChatCompletionsDialectPtr dialect =
+        std::make_shared<const FixtureDialect>()) {
     asio::io_context io;
-    FixtureModel model(io.get_executor(), config);
+    FixtureModel model(io.get_executor(), config, std::move(dialect));
     BOOST_REQUIRE(model.build());
 
     ProviderInfoOutcome outcome;
@@ -201,4 +206,58 @@ BOOST_AUTO_TEST_CASE(provider_info_rejects_an_unexpected_payload_shape) {
     } catch (...) {
         BOOST_FAIL("expected an HttpRequestException for the bad shape");
     }
+}
+
+// A dialect exposing a balance companion widens provider_info() to one
+// object: the models array under "models", the provider's balance document
+// verbatim under "balance" — two sequential GETs over the same endpoint,
+// catalogue first (the server's sequence order pins the request order).
+BOOST_AUTO_TEST_CASE(provider_info_attaches_the_balance_companion) {
+    class BalancedDialect final
+        : public llm::chat_completions::ChatCompletionsDialect {
+    public:
+        std::string balance_path() const override { return "/fixture/balance"; }
+    };
+
+    const std::string catalogue = nlohmann::json{
+        {"object", "list"},
+        {"data", nlohmann::json::array({
+            {{"id", "fixture-mini"}, {"object", "model"}, {"owned_by", "fixture"}},
+        })},
+    }.dump();
+    const std::string balance = nlohmann::json{
+        {"is_available", true},
+        {"balance_infos", nlohmann::json::array({
+            {{"currency", "CNY"},
+             {"total_balance", "110.00"},
+             {"granted_balance", "10.00"},
+             {"topped_up_balance", "100.00"}},
+        })},
+    }.dump();
+    loopback::SequenceServer server({
+        [&](asio::ip::tcp::socket& socket) {
+            loopback::serve_fixed_response(socket, http::status::ok, catalogue);
+        },
+        [&](asio::ip::tcp::socket& socket) {
+            loopback::serve_fixed_response(socket, http::status::ok, balance);
+        },
+    });
+
+    auto outcome = run_provider_info(
+        loopback_config(server.wait_listening()),
+        std::make_shared<const BalancedDialect>());
+    server.join();
+
+    if (outcome.failure) std::rethrow_exception(outcome.failure);
+    BOOST_REQUIRE(outcome.result);
+    BOOST_REQUIRE(outcome.result->is_object());
+    BOOST_REQUIRE((*outcome.result)["models"].is_array());
+    BOOST_REQUIRE_EQUAL((*outcome.result)["models"].size(), 1u);
+    BOOST_CHECK_EQUAL((*outcome.result)["models"][0]["id"], "fixture-mini");
+    BOOST_CHECK_EQUAL((*outcome.result)["balance"]["is_available"], true);
+    BOOST_CHECK_EQUAL(
+        (*outcome.result)["balance"]["balance_infos"][0]["currency"], "CNY");
+    BOOST_CHECK_EQUAL(
+        (*outcome.result)["balance"]["balance_infos"][0]["total_balance"],
+        "110.00");
 }

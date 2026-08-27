@@ -13,7 +13,7 @@
  * silently drop the events. Both shared libraries — libasio.so,
  * libeventbus.so — exist to make this test's world hold together.
  *
- * The ABI-v2 surface rides the same guard: provider_info()'s
+ * The ABI-v2/v3 surface rides the same guard: provider_info()'s
  * awaitable<nlohmann::json> crosses back out of the .so by value, and both
  * set_generation() tiers (typed preset + JSON merge-patch) cross in — the
  * captured request body must show the patched knobs.
@@ -210,9 +210,11 @@ BOOST_AUTO_TEST_CASE(dlopened_plugin_drives_a_loopback_exchange) {
 }
 
 // provider_info() across the boundary: the coroutine and its connect+GET
-// chain live behind the plugin's vtable slot, the catalogue result crosses
-// back out of the .so as one nlohmann::json by value.
-BOOST_AUTO_TEST_CASE(dlopened_plugin_serves_provider_info) {
+// chain live behind the plugin's vtable slot, the result crosses back out
+// of the .so as one nlohmann::json by value. DeepSeek's dialect attaches
+// the balance companion, so the object shape — models + balance, two
+// sequential GETs — is what must survive the crossing.
+BOOST_AUTO_TEST_CASE(dlopened_plugin_serves_provider_info_with_balance) {
     llm::LLMDispatcher dispatcher;
     BOOST_REQUIRE_EQUAL(
         dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
@@ -226,9 +228,24 @@ BOOST_AUTO_TEST_CASE(dlopened_plugin_serves_provider_info) {
              {"owned_by", "deepseek"}},
         })},
     }.dump();
-    loopback::OneShotServer server([&](tcp::socket& socket) {
-        loopback::serve_fixed_response(
-            socket, http::status::ok, catalogue);
+    const std::string balance = nlohmann::json{
+        {"is_available", true},
+        {"balance_infos", nlohmann::json::array({
+            {{"currency", "CNY"},
+             {"total_balance", "110.00"},
+             {"granted_balance", "10.00"},
+             {"topped_up_balance", "100.00"}},
+        })},
+    }.dump();
+    loopback::SequenceServer server({
+        [&](tcp::socket& socket) {
+            loopback::serve_fixed_response(
+                socket, http::status::ok, catalogue);
+        },
+        [&](tcp::socket& socket) {
+            loopback::serve_fixed_response(
+                socket, http::status::ok, balance);
+        },
     });
     const auto port = server.wait_listening();
 
@@ -260,10 +277,14 @@ BOOST_AUTO_TEST_CASE(dlopened_plugin_serves_provider_info) {
     if (failure) std::rethrow_exception(failure);
 
     BOOST_REQUIRE(result);
-    BOOST_REQUIRE(result->is_array());
-    BOOST_REQUIRE_EQUAL(result->size(), 2u);
-    BOOST_CHECK_EQUAL((*result)[0]["id"], "deepseek-chat");
-    BOOST_CHECK_EQUAL((*result)[1]["id"], "deepseek-reasoner");
+    BOOST_REQUIRE(result->is_object());
+    BOOST_REQUIRE((*result)["models"].is_array());
+    BOOST_REQUIRE_EQUAL((*result)["models"].size(), 2u);
+    BOOST_CHECK_EQUAL((*result)["models"][0]["id"], "deepseek-chat");
+    BOOST_CHECK_EQUAL((*result)["models"][1]["id"], "deepseek-reasoner");
+    BOOST_CHECK_EQUAL((*result)["balance"]["is_available"], true);
+    BOOST_CHECK_EQUAL(
+        (*result)["balance"]["balance_infos"][0]["currency"], "CNY");
 }
 
 // set_generation() across the boundary — both tiers — then converse(): the

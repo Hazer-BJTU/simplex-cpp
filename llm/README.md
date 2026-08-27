@@ -58,7 +58,10 @@ Two ABI-v2 entry points serve the host between exchanges:
 - **`provider_info()`** — the provider's live catalogue: one OpenAI-compatible
   `GET /models` over the model's own endpoint (auth included, path from the
   dialect's `models_path()`), returned as a JSON array whose entries are the
-  provider's own model descriptors, verbatim. No retry: a catalogue query is
+  provider's own model descriptors, verbatim. A dialect exposing an
+  account-balance companion (`balance_path()`) widens the return to one
+  object — DeepSeek attaches its live balance (`GET /user/balance`) as a
+  `"balance"` member beside `"models"`. No retry: a catalogue query is
   cheap to re-issue. `llm_deepseek_chat --list-models` is the smoke entry.
 - **`set_generation()`** — two tiers over one validated merge core. The typed
   tier takes an `llm::GenerationPreset` (the pair hosts adjust most often:

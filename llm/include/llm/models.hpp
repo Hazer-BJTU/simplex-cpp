@@ -406,13 +406,20 @@ public:
      * Richer per-model metadata (context window, pricing) appears in the
      * same entries when the provider supplies it.
      *
+     * A dialect with provider-level extras to attach widens the return to
+     * one OBJECT: the models array under "models" plus one sibling member
+     * per extra — the chat adapters attach the account balance as
+     * {"balance": <the provider's document verbatim>} when the dialect
+     * exposes a balance path (DeepSeek: GET /user/balance). Consumers
+     * accept both shapes: array, or object carrying "models".
+     *
      * Like converse(), the coroutine runs on the stored executor and the
      * caller spawns. There is deliberately no retry: a catalogue query is
      * cheap to re-issue, and the retry engine is reader-shaped.
      *
      * @throws LLMUnsupportedOperation  on the default body — this model does
      *         not implement catalogue queries.
-     * @throws endpoint::HttpRequestException-family failures once the query
+     * @throws endpoint::HttpRequestException-family failures once a query
      *         is attempted (connect, transport, non-200, or a payload that
      *         is neither an array nor the {"data": [...]} catalogue shape).
      */

@@ -26,9 +26,10 @@
 // full schema → wire arguments → parse → execute → correlated-result cycle
 // is exercised, unlike the endpoint example's zero-argument get_current_time.
 //
-// `--list-models` is the catalogue smoke entry: provider_info()'s one GET
-// over the same endpoint/auth, printing the provider's live model list and
-// exiting before any conversation wiring.
+// `--list-models` is the catalogue smoke entry: provider_info()'s GET(s)
+// over the same endpoint/auth, printing the provider's live model list —
+// and, because the DeepSeek dialect attaches the account-balance companion,
+// the live balance beside it — then exiting before any conversation wiring.
 
 #include "eventbus/event_bus.hpp"
 #include "llm/chat_completions/events.hpp"
@@ -285,8 +286,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // The catalogue mode: the provider's live model list over the same
-    // endpoint/auth, then exit — no conversation wiring, no tool.
+    // The catalogue mode: the provider's live model list (plus the balance
+    // companion the DeepSeek dialect attaches) over the same endpoint/auth,
+    // then exit — no conversation wiring, no tool.
     if (list_models_only) {
         try {
             std::size_t count = 0;
@@ -294,14 +296,22 @@ int main(int argc, char* argv[]) {
                 io,
                 [&]() -> asio::awaitable<void> {
                     nlohmann::json catalogue = co_await model->provider_info();
-                    if (!catalogue.is_array()) {
-                        std::cerr << "provider_info returned a non-array "
-                                     "payload\n";
-                        co_return;
-                    }
-                    count = catalogue.size();
-                    for (const auto& entry : catalogue) {
+                    // Array = the bare models list; an object carries the
+                    // models under "models" with provider extras (the
+                    // balance companion) as siblings.
+                    const nlohmann::json models =
+                        catalogue.is_array()
+                            ? catalogue
+                            : catalogue.value(
+                                  "models", nlohmann::json::array());
+                    count = models.size();
+                    for (const auto& entry : models) {
                         std::cout << "  " << entry.dump() << "\n";
+                    }
+                    if (catalogue.is_object() &&
+                        catalogue.contains("balance")) {
+                        std::cout << "balance:\n"
+                                  << catalogue["balance"].dump(2) << "\n";
                     }
                 },
                 asio::use_future);
