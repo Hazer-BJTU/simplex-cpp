@@ -78,7 +78,14 @@ target_link_libraries(openssl_iface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 # Used by the indextools host (process / program_options / DLL) and by the
 # unit-test layer (unit_test_framework). Future modules (model adapter,
 # agentloop) are expected to reuse Boost.Asio/Process, so the find lives here.
-set(Boost_USE_STATIC_LIBS ON)
+#
+# Linked SHARED deliberately: the whole tree now standardizes on shared
+# libraries (the plugin-boundary strategy in docs/abi-context.md — one copy of
+# every compiled runtime per process), and the Boost runtime objects are
+# distributed dependencies that a later packaging step bundles alongside the
+# project's own .so files. Static Boost would silently give every executable
+# its own private copy of the compiled components again.
+set(Boost_USE_STATIC_LIBS OFF)
 
 find_package(Boost REQUIRED COMPONENTS
     unit_test_framework process program_options filesystem)
