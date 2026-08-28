@@ -1,10 +1,17 @@
-# Dockerfile.build-context — the reproducible "same execution context" build.
+# Dockerfile.build-context — the reference "same execution context" build.
 #
 # The plugin ABI strategy (docs/abi-context.md) is not stable interfaces but
 # identical build contexts: host executables and dlopened plugin modules must
 # come from the same compiler, the same Boost, and the same configure. This
-# image constructs that guarantee: one compiler, one Boost, one tree, one
-# configure+build producing the host AND every plugin.
+# image is the VISION of that guarantee: one compiler, one Boost, one tree,
+# one configure+build producing the host AND every plugin.
+#
+# NOT YET COMPLETE — do not read it as a working reproducibility guarantee.
+# The tree links Boost SHARED (Boost_USE_STATIC_LIBS OFF) and requires
+# compiled components (unit_test_framework, process, program_options,
+# filesystem), but this image provisions Boost HEADERS only; a build here
+# fails at find_package/link time until the matching shared Boost libraries
+# are built in or fetched. Finalizing that environment is future work.
 #
 # Build (from the repository root):
 #   docker build -f Dockerfile.build-context -t simplex-cpp-build .
@@ -13,10 +20,11 @@
 # Extract artifacts if needed:
 #   docker run --rm simplex-cpp-build tar C /src/build -cf - . | tar C build -xf -
 #
-# The local WSL build does NOT depend on this file; it exists so the context
-# can be reproduced (and the admission fingerprint's inputs explained) on any
-# machine. Keep the versions in sync with the top-level CMakeLists.txt pins
-# when they move.
+# The local WSL build does NOT depend on this file; it exists as the
+# reference for how the context is meant to be constructed once the
+# shared-Boost environment is finalized (and the admission fingerprint's
+# inputs explained) on any machine. Keep the versions in sync with the
+# top-level CMakeLists.txt pins when they move.
 
 FROM gcc:14
 

@@ -325,10 +325,13 @@ inline std::shared_ptr<boost::dll::shared_library> get_library_ref(
                 | nodelete
         );
 
-        // Admission gate, before any alias is resolved or plugin code runs:
+        // Admission gate, before any alias is resolved or factory called:
         // the module's toolchain magic block must match this build's own
-        // (extension_framework/plugin_magic.hpp). A module from any other
-        // execution context is rejected with a diagnostic naming both.
+        // (extension_framework/plugin_magic.hpp). The check necessarily
+        // runs after dlopen() — ELF constructors and relocations have
+        // already executed; what it guarantees is that no plugin LOGIC
+        // runs. A module from any other execution context is rejected with
+        // a diagnostic naming both.
         std::string magic_diagnostic;
         switch (check_module_magic(*library_ref, magic_diagnostic)) {
         case MagicVerdict::Ok:

@@ -61,7 +61,10 @@ and utils/eventbus), `liblogging.so` (utils/logging), the shared protocol
 adapters `libllm_chat_completions.so` / `libllm_responses.so`, and the host
 executables' `-rdynamic` export of the header-only contract classes — with
 the toolchain-fingerprint admission gate in extension_framework refusing any
-module not built in this context before its code can run.
+module not built in this context before an alias is resolved or a factory
+is called (the gate itself runs after dlopen; see
+`extension_framework/plugin_magic.hpp` for exactly what it does and does
+not claim).
 
 ## Dependencies
 

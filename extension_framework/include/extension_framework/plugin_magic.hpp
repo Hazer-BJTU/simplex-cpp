@@ -11,8 +11,14 @@
  * that assumption into a load-time fact, following PostgreSQL's
  * PG_MODULE_MAGIC pattern: each plugin DSO embeds one exported data symbol
  * describing the toolchain it was built with, and the loader refuses the
- * module — before resolving any alias or running any plugin code — when it
+ * module — before any alias is resolved or any factory is called — when it
  * does not match the host's own.
+ *
+ * Timing honesty: the check runs AFTER dlopen() returns, so the module's ELF
+ * constructors and relocations have already executed by then. What the gate
+ * guarantees is that no plugin LOGIC runs — no factory, no model, no
+ * dialect — not that zero instructions executed. That is the strongest a
+ * dlopen-based gate can claim.
  *
  * The fingerprint itself is computed at compile time (consteval FNV-1a) from
  * values CMake injects as identity strings (compiler id+version, C++ standard,
@@ -21,6 +27,15 @@
  * plugin compiled in the same context agree bit-for-bit; anything else fails
  * loudly instead of crashing intermittently the way a forked asio runtime
  * did (see utils/asio/src/asio_runtime.cpp for that post-mortem).
+ *
+ * It is an engineering safeguard, not a proof of ABI compatibility: the
+ * hash covers the identity inputs named above, not every build input that
+ * can change layout or codegen (absent, deliberately: vendored header-only
+ * third parties such as nlohmann/json, exception/sanitizer flags, -march,
+ * LTO settings). It catches the mismatch classes this project has actually
+ * met, at load time instead of as intermittent crashes; completeness is
+ * not claimed. The real guarantee remains the deployment model — host and
+ * plugins from one build context — which this check polices.
  *
  * Usage — exactly one TU of every plugin module:
  *
