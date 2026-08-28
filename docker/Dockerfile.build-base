@@ -11,7 +11,7 @@
 # Dockerfile.build-context builds the actual tree FROM this image. Publish it
 # first (manual, from the repository root):
 #
-#   docker build -f Dockerfile.build-base \
+#   docker build -f docker/Dockerfile.build-base \
 #       -t ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14 \
 #       -t ghcr.io/hazer-bjtu/simplex-cpp/build-base:latest .
 #   docker push ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14

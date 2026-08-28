@@ -13,12 +13,19 @@
 #
 #   ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14
 #
+# Before the base is published, debug locally by building it under a local
+# tag and overriding BASE_IMAGE:
+#
+#   docker build -f docker/Dockerfile.build-base -t simplex-build-base:local .
+#   docker build -f docker/Dockerfile.build-context \
+#       --build-arg BASE_IMAGE=simplex-build-base:local -t simplex-cpp-build .
+#
 # This builds the CORE tree only: the legacy language-index domain
 # (languages/, indextools/) is no longer wired into the top-level build, so
 # neither tree-sitter nor Boost process/program_options is needed.
 #
 # Build (from the repository root):
-#   docker build -f Dockerfile.build-context -t simplex-cpp-build .
+#   docker build -f docker/Dockerfile.build-context -t simplex-cpp-build .
 # Run the full test suite inside the same context:
 #   docker run --rm simplex-cpp-build
 # Extract artifacts if needed:
@@ -32,7 +39,10 @@
 #
 # The local WSL build does NOT depend on this file.
 
-FROM ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14
+# BASE_IMAGE defaults to the published registry tag; pass a local tag via
+# --build-arg while the base is not yet on ghcr.
+ARG BASE_IMAGE=ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14
+FROM ${BASE_IMAGE}
 
 WORKDIR /src
 COPY . .
