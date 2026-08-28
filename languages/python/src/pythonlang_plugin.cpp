@@ -13,6 +13,8 @@
 
 #include <boost/dll/alias.hpp>
 
+#include "extension_framework/plugin_magic.hpp"
+
 namespace indextools {
 
 namespace {
@@ -51,3 +53,7 @@ std::unique_ptr<LangAnalyze> create_lang_analyze() {
 
 BOOST_DLL_ALIAS(indextools::create_lang_plugin, create_lang_plugin)
 BOOST_DLL_ALIAS(indextools::create_lang_analyze, create_lang_analyze)
+
+// Admission block: toolchain fingerprint, checked by the loader before any
+// alias is resolved (a module from any other build context is rejected).
+SIMPLEX_EXPORT_PLUGIN_MAGIC;

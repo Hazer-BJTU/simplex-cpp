@@ -15,8 +15,10 @@
  * ## The three responsibilities of a model (and nothing else)
  *
  * A model instance is a *client bound to one provider configuration* — not an
- * agent, not a loop, not storage. Its interface covers exactly three stages
- * of one model invocation:
+ * agent, not a loop, not storage. Its interface covers the three stages of
+ * one model invocation, plus the two runtime services every host needs from
+ * such a client: the provider's live catalogue (provider_info) and the
+ * generation knobs' adjustment (set_generation):
  *
  *   1. **Input translation** — model_io::AgentInputState (plus its stored
  *      config) into a provider request, via the plugin's own
@@ -99,6 +101,12 @@
  * (build() returns false). Everything past "endpoint" is provider-defined;
  * the host's config file passes the whole object through verbatim.
  *
+ * The model derives its generation knobs from that config in build() —
+ * everything except the host-owned "endpoint"/"provider"/"retry" keys.
+ * set_generation() then adjusts those knobs at runtime (merge-patch style,
+ * or the typed GenerationPreset for the model + reasoning-effort pair),
+ * never touching the stored config itself; generation() reads them back.
+ *
  * ## Lifetime
  *
  * Descriptor and every minted model live inside the loaded plugin library
@@ -122,6 +130,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -189,6 +198,54 @@ public:
 };
 
 /**
+ * @brief The thinking-effort knob's cross-provider common vocabulary.
+ *
+ * The typed tier of set_generation() covers the levels every major provider
+ * agrees on; provider-private spellings beyond them (e.g. DeepSeek's
+ * "xhigh"/"max") go through the JSON merge-patch tier verbatim and are the
+ * provider's business. The wire spelling is the lowercase name.
+ *
+ * APPEND-ONLY like LLMModelType: the underlying value order is part of the
+ * plugin ABI (it crosses the DSO boundary inside GenerationPreset).
+ */
+enum class ReasoningEffort : std::uint8_t {
+    Minimal,
+    Low,
+    Medium,
+    High,
+};
+
+/// The lowercase wire spelling of one effort level ("minimal", ...).
+inline constexpr std::string_view to_string(ReasoningEffort effort) noexcept {
+    switch (effort) {
+        case ReasoningEffort::Minimal: return "minimal";
+        case ReasoningEffort::Low:     return "low";
+        case ReasoningEffort::Medium:  return "medium";
+        case ReasoningEffort::High:    return "high";
+    }
+    return "minimal";
+}
+
+/**
+ * @brief The typed tier of set_generation(): the pair of knobs every provider
+ *        model shares and that hosts adjust most often.
+ *
+ * Which model to run, and how hard it may think. Both fields are optional —
+ * nullopt leaves that knob untouched, so a preset may change either, both,
+ * or nothing. The canonical spelling the contract writes is the
+ * "reasoning": {"effort": ...} envelope, which both protocol adapters
+ * already translate (chat-completions interpreters fold it into
+ * reasoning_effort; the Responses API carries it natively).
+ */
+struct GenerationPreset {
+    /// The provider model name (the "model" key). An empty string is
+    /// rejected by the shared validation core.
+    std::optional<std::string> model;
+    /// The thinking-effort level (the "reasoning"/"effort" envelope).
+    std::optional<ReasoningEffort> effort;
+};
+
+/**
  * @brief One model instance: a client bound to one provider configuration.
  *
  * The interface covers the three stages in the file header — input
@@ -219,9 +276,12 @@ public:
  *      release() the object must not be used again.
  *
  * Concurrency: one instance serves one conversation sequentially. State set
- * in build() is immutable afterwards; converse() does I/O through the stored
- * executor. Thread-safety of concurrent converse() calls is the plugin's
- * choice and not guaranteed by this contract.
+ * in build() is immutable afterwards — the one deliberate exception being
+ * the generation knobs, which set_generation() mutates between exchanges
+ * (never concurrent with an in-flight converse()/provider_info());
+ * converse() does I/O through the stored executor. Thread-safety of
+ * concurrent converse() calls is the plugin's choice and not guaranteed by
+ * this contract.
  */
 class LLMModel {
 public:
@@ -336,6 +396,99 @@ public:
         }
     }
 
+    /**
+     * @brief The provider's catalogue, live: one GET over the stored endpoint.
+     *
+     * Asks the provider what it currently offers — the OpenAI-compatible
+     * "list models" query — and returns a JSON ARRAY, one object per offered
+     * model, each the provider's own descriptor verbatim (typically "id",
+     * "object", "owned_by", "created"; provider-specific fields ride along).
+     * Richer per-model metadata (context window, pricing) appears in the
+     * same entries when the provider supplies it.
+     *
+     * A dialect with provider-level extras to attach widens the return to
+     * one OBJECT: the models array under "models" plus one sibling member
+     * per extra — the chat adapters attach the account balance as
+     * {"balance": <the provider's document verbatim>} when the dialect
+     * exposes a balance path (DeepSeek: GET /user/balance). Consumers
+     * accept both shapes: array, or object carrying "models".
+     *
+     * Like converse(), the coroutine runs on the stored executor and the
+     * caller spawns. There is deliberately no retry: a catalogue query is
+     * cheap to re-issue, and the retry engine is reader-shaped.
+     *
+     * @throws LLMUnsupportedOperation  on the default body — this model does
+     *         not implement catalogue queries.
+     * @throws endpoint::HttpRequestException-family failures once a query
+     *         is attempted (connect, transport, non-200, or a payload that
+     *         is neither an array nor the {"data": [...]} catalogue shape).
+     */
+    virtual boost::asio::awaitable<nlohmann::json> provider_info() {
+        throw LLMUnsupportedOperation(
+            "provider_info() is not implemented by this model");
+    }
+
+    /**
+     * @brief Set generation knobs — typed tier: model + reasoning effort.
+     *
+     * The common path: the one pair hosts adjust most often, with a clear
+     * type instead of JSON spelling. Translates into the same validated
+     * merge as the JSON tier below — the "reasoning" envelope merges
+     * recursively (sibling keys survive), an absent field leaves its knob
+     * untouched. See set_generation(nlohmann::json) for the shared
+     * contract (preconditions, rejected keys, atomicity).
+     */
+    virtual void set_generation(GenerationPreset preset) {
+        nlohmann::json patch = nlohmann::json::object();
+        if (preset.model) {
+            patch["model"] = std::move(*preset.model);
+        }
+        if (preset.effort) {
+            patch["reasoning"] = nlohmann::json{
+                {"effort", std::string(to_string(*preset.effort))}};
+        }
+        apply_generation_patch(std::move(patch));
+    }
+
+    /**
+     * @brief Set generation knobs — JSON tier: RFC 7386 merge-patch.
+     *
+     * Keys present in @p patch are written (nested objects merge
+     * recursively), JSON null erases its key, keys absent from the patch
+     * keep their current values — callers state only what changes:
+     *
+     *     model->set_generation(nlohmann::json{{"temperature", 0.9}});
+     *     model->set_generation(nlohmann::json{{"reasoning", nullptr}});
+     *
+     * The patch must be an object. The three host-owned keys ("endpoint",
+     * "provider", "retry") are configuration, not generation knobs, and
+     * are rejected; so is a patch that would leave "model" missing or
+     * empty. Interpreter-owned keys ("messages", "tools", "stream", ...)
+     * may be set but are forced by the request builder at exchange time.
+     *
+     * _config is never touched: it stays the verbatim construction record
+     * and these knobs are runtime overlays. Validation is atomic — a
+     * rejected patch changes nothing. The idempotent second build() an
+     * adapter allows does not reset the knobs (its _built guard returns
+     * early), so patches survive.
+     *
+     * @throws std::logic_error        before build() populated the
+     *                                generation object (or on a model type
+     *                                that has none).
+     * @throws std::invalid_argument   on a non-object patch, a host-owned
+     *                                key, or a patch that would leave
+     *                                "model" missing or empty.
+     */
+    virtual void set_generation(nlohmann::json patch) {
+        apply_generation_patch(std::move(patch));
+    }
+
+    /// The generation knobs currently in effect: config minus the
+    /// host-owned keys as build() derived it, plus whatever
+    /// set_generation() has layered on. Read-only; mutation goes through
+    /// the set_generation() tiers.
+    const nlohmann::json& generation() const noexcept { return _generation; }
+
 protected:
     /**
      * @brief Construct a model bound to one executor and one configuration.
@@ -350,10 +503,53 @@ protected:
     LLMModel(boost::asio::any_io_executor executor, nlohmann::json config)
         : _executor(std::move(executor)), _config(std::move(config)) {}
 
+    /**
+     * @brief The validated merge core both set_generation() tiers funnel
+     *        through (and overrides may reuse after their own checks).
+     *
+     * Preconditions, the RFC 7386 merge, the "model" invariant, and the
+     * atomic commit — exactly the contract on set_generation(nlohmann::json).
+     */
+    void apply_generation_patch(nlohmann::json patch) {
+        if (!_generation.is_object()) {
+            throw std::logic_error(
+                "set_generation(): this model has no generation object "
+                "(not built, or not a generation-knob model)");
+        }
+        if (!patch.is_object()) {
+            throw std::invalid_argument(
+                "set_generation(): the patch must be a JSON object");
+        }
+        for (const char* host_key : {"endpoint", "provider", "retry"}) {
+            if (patch.contains(host_key)) {
+                throw std::invalid_argument(
+                    std::string("set_generation(): '") + host_key +
+                    "' is host-owned configuration, not a generation knob");
+            }
+        }
+        // nlohmann's merge_patch applies RFC 7386 in place and returns void,
+        // so merge on a copy and commit only if every check below passes.
+        nlohmann::json merged = _generation;
+        merged.merge_patch(patch);
+        const auto model = merged.find("model");
+        if (model == merged.end() || !model->is_string() ||
+            model->get_ref<const std::string&>().empty()) {
+            throw std::invalid_argument(
+                "set_generation(): the patch would leave \"model\" "
+                "missing or empty");
+        }
+        _generation = std::move(merged);
+    }
+
     /// Executor every exchange coroutine of this model runs on.
     boost::asio::any_io_executor _executor;
     /// The whole model configuration, verbatim as create_model received it.
     nlohmann::json _config;
+    /// Generation knobs in effect: build()'s derivation of _config (minus
+    /// the host-owned keys) plus the set_generation() overlays. Null until
+    /// build() populates it, which is what makes set_generation() refuse
+    /// pre-build use.
+    nlohmann::json _generation;
 };
 
 /**

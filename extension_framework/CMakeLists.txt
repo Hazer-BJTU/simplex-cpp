@@ -36,7 +36,16 @@ target_include_directories(extension_framework_iface INTERFACE
 target_link_libraries(extension_framework_iface INTERFACE
     boost_dll_iface
     logging_lib
-    simplex_thirdparty_iface)
+    simplex_thirdparty_iface
+    simplex_versioning)
+# Build profile for the plugin admission fingerprint (plugin_magic.hpp):
+# Debug hashes 0, every other configuration 1, and a TU compiled outside this
+# CMake (no define at all) hashes 2 — which never matches a host built here.
+# Host executables and plugin modules both link this interface target, and the
+# build is single-config, so both sides always agree.
+target_compile_definitions(extension_framework_iface INTERFACE
+    $<$<CONFIG:Debug>:SIMPLEX_PLUGIN_BUILD_PROFILE=0>
+    $<$<NOT:$<CONFIG:Debug>>:SIMPLEX_PLUGIN_BUILD_PROFILE=1>)
 
 if(BUILD_TESTS)
     add_subdirectory(test)

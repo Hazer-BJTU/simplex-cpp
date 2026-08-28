@@ -19,8 +19,14 @@ target_compile_options(llm_deepseek_chat PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
 target_link_libraries(llm_deepseek_chat PRIVATE llm_iface eventbus_iface)
-# No ENABLE_EXPORTS needed: the plugin's converse() publishes on
-# eventbus::default_bus(), whose singleton lives in the SHARED eventbus
-# library — this executable and the dlopened provider both bind that same
-# SONAME, hence the same bus, with no host-side symbol-export convention.
+# ENABLE_EXPORTS (-rdynamic / --export-dynamic): the host executable's symbols
+# open the process-wide lookup scope, so its emissions of the header-only
+# contract classes (ExtensionContext / LLMModelExtensionContext / LLMModel
+# typeinfo, vtables, inline members) become the authoritative copies every
+# dlopened plugin binds to. Without it, exe and plugin each keep their own
+# weak copy and cross-boundary dynamic_pointer_cast only works through
+# libstdc++'s name-comparison fallback (name equality, not type identity).
+# The shared runtime SONAMEs (libasio/libeventbus/libllm_*) unify the
+# library-defined symbols; this flag unifies the header-defined ones.
+set_target_properties(llm_deepseek_chat PROPERTIES ENABLE_EXPORTS ON)
 add_dependencies(llm_deepseek_chat llm_deepseek)

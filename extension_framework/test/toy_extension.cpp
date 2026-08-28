@@ -20,6 +20,7 @@
 #include "toy_extension_spec.hpp"
 
 #include "extension_framework/extensions.hpp"
+#include "extension_framework/plugin_magic.hpp"
 
 #include <boost/dll/alias.hpp>
 
@@ -79,3 +80,7 @@ std::unique_ptr<extension::ExtensionContext> create_null_extension() {
 BOOST_DLL_ALIAS(ext_test::create_toy_extension, create_toy_extension)
 BOOST_DLL_ALIAS(ext_test::create_toy_product, create_toy_product)
 BOOST_DLL_ALIAS(ext_test::create_null_extension, create_null_extension)
+
+// Admission block: toolchain fingerprint, checked by the loader before any
+// alias is resolved (a module from any other build context is rejected).
+SIMPLEX_EXPORT_PLUGIN_MAGIC;

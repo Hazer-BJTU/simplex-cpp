@@ -46,6 +46,20 @@ std::filesystem::path toy_extension_path() {
     return std::filesystem::path(TOY_EXTENSION_DIR) / "libtoyextension.so";
 }
 
+#ifndef TOY_BAD_MAGIC_DIR
+#error "TOY_BAD_MAGIC_DIR must be defined by the build system"
+#endif
+
+/// Path to the fixture whose magic block fingerprints a different toolchain.
+std::filesystem::path bad_magic_path() {
+    return std::filesystem::path(TOY_BAD_MAGIC_DIR) / "libtoyextension_bad_magic.so";
+}
+
+/// Path to the fixture with no magic block at all (legacy/hand-rolled shape).
+std::filesystem::path legacy_module_path() {
+    return std::filesystem::path(TOY_BAD_MAGIC_DIR) / "libtoyextension_legacy.so";
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(ExtensionDynamicSuite)
@@ -283,6 +297,43 @@ BOOST_AUTO_TEST_CASE(product_factory_default_product_survives_factory_destructio
         BOOST_REQUIRE(product != nullptr);
     } // factory + library_ref destroyed here; product still holds a library ref
     BOOST_CHECK_EQUAL(product->compute(), ext_test::TOY_PRODUCT_VALUE);
+}
+
+// ---- admission gate: the toolchain-fingerprint magic block -------------------
+
+// A module whose magic block fingerprints a different execution context is
+// refused inside get_library_ref — before any alias is resolved and before any
+// code in the module runs — with a diagnostic naming both contexts and the
+// remedy. This is the gate that turns "same toolchain" from a convention into
+// a checked fact (see extension_framework/plugin_magic.hpp).
+BOOST_AUTO_TEST_CASE(module_with_wrong_toolchain_fingerprint_is_rejected) {
+    auto path = bad_magic_path();
+    BOOST_REQUIRE(std::filesystem::exists(path));
+    try {
+        (void)extension::get_library_ref(path);
+        BOOST_FAIL("expected the bad-fingerprint module to be rejected");
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        BOOST_CHECK_NE(what.find("toolchain mismatch"), std::string::npos);
+        BOOST_CHECK_NE(what.find("rebuild the plugin"), std::string::npos);
+    }
+}
+
+// A module without a magic block at all is the legacy shape. Under the
+// same-execution-context strategy there is no acceptable unmarked module
+// (host and plugins are always rebuilt together), so it is rejected with the
+// diagnostic that names the missing macro.
+BOOST_AUTO_TEST_CASE(module_without_magic_block_is_rejected) {
+    auto path = legacy_module_path();
+    BOOST_REQUIRE(std::filesystem::exists(path));
+    try {
+        (void)extension::get_library_ref(path);
+        BOOST_FAIL("expected the legacy module to be rejected");
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        BOOST_CHECK_NE(what.find("no plugin magic block"), std::string::npos);
+        BOOST_CHECK_NE(what.find("SIMPLEX_EXPORT_PLUGIN_MAGIC"), std::string::npos);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -27,7 +27,22 @@ target_link_libraries(llm_iface INTERFACE
     simplex_versioning
     asio_iface)
 
-add_library(llm_responses STATIC
+# The two protocol adapters are SHARED on purpose (the same treatment as
+# utils/asio and utils/eventbus): statically linking them into every host
+# executable *and* every provider plugin would give each module its own copy
+# of the adapter code, its file-level statics, and its weak typeinfo/vtable
+# emissions. Built once as libllm_responses.so / libllm_chat_completions.so:
+#   - the model and exception classes' typeinfo are STRONG symbols defined in
+#     exactly one object per process, so a host catching
+#     ChatCompletionsApiException across the dlopen boundary matches by type
+#     identity, not by the libstdc++ name-comparison fallback;
+#   - the whole async stack (libasio -> libllm_* -> libeventbus) is a single
+#     instance per process;
+#   - plugins bind the adapter by SONAME (DT_NEEDED) instead of embedding a
+#     ~MB static copy, shrinking each provider .so to its thin dialect shell.
+# Visibility stays at the GCC default: hosts and plugins both subclass these
+# model classes and catch their exception types, so the symbols must export.
+add_library(llm_responses SHARED
     src/responses/model.cpp
     src/responses/interpreter.cpp
     src/responses/stream_handler.cpp
@@ -49,7 +64,7 @@ endif()
 # Provider-neutral OpenAI-compatible Chat Completions adapter. Providers may
 # derive from ChatCompletionsModel and inject a dialect; this target itself
 # intentionally exports no plugin.
-add_library(llm_chat_completions STATIC
+add_library(llm_chat_completions SHARED
     src/chat_completions/model.cpp
     src/chat_completions/interpreter.cpp
     src/chat_completions/stream_handler.cpp
@@ -58,9 +73,9 @@ add_library(llm_chat_completions STATIC
 target_include_directories(llm_chat_completions PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # eventbus_iface: converse() broadcasts live reasoning increments on the
-# process-wide bus (PUBLIC — the adapter references default_bus(), now a
-# shared-library symbol, so every final link of this static library must
-# pull libeventbus.so too; subscribers want the headers anyway).
+# process-wide bus (PUBLIC — the adapter publishes through default_bus(),
+# whose singleton lives in the SHARED eventbus library; subscribers want the
+# headers anyway).
 target_link_libraries(llm_chat_completions
     PUBLIC llm_iface endpoint_lib eventbus_iface)
 target_compile_options(llm_chat_completions PRIVATE

@@ -44,6 +44,26 @@ set_target_properties(toyextension PROPERTIES
     PREFIX "lib"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/extension_test_modules")
 
+# --- admission-gate fixtures --------------------------------------------------
+# Modules for the toolchain-fingerprint admission tests: one carrying a
+# deliberately wrong fingerprint, one with no magic block at all (the
+# legacy/hand-rolled shape). Kept in their own directory so the
+# directory-scan tests above still see exactly one module.
+foreach(_fixture bad_magic legacy)
+    set(_fixture_target toyextension_${_fixture})
+    set(_fixture_source toy_extension_${_fixture}.cpp)
+    add_library(${_fixture_target} MODULE ${_fixture_source})
+    target_include_directories(${_fixture_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_options(${_fixture_target} PRIVATE ${_ext_test_opts})
+    target_link_libraries(${_fixture_target} PRIVATE extension_framework_iface)
+    set_target_properties(${_fixture_target} PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        PREFIX "lib"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/extension_test_modules_bad")
+    unset(_fixture_target)
+    unset(_fixture_source)
+endforeach()
+
 # --- pure-logic tests --------------------------------------------------------
 add_executable(test_extensions test_extensions.cpp)
 target_include_directories(test_extensions PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -57,6 +77,13 @@ target_include_directories(test_extensions_dynamic PRIVATE "${CMAKE_CURRENT_SOUR
 target_compile_options(test_extensions_dynamic PRIVATE ${_ext_test_opts})
 target_link_libraries(test_extensions_dynamic PRIVATE extension_framework_iface Boost::unit_test_framework)
 target_compile_definitions(test_extensions_dynamic PRIVATE
-    "TOY_EXTENSION_DIR=\"${CMAKE_BINARY_DIR}/bin/extension_test_modules\"")
-add_dependencies(test_extensions_dynamic toyextension)
+    "TOY_EXTENSION_DIR=\"${CMAKE_BINARY_DIR}/bin/extension_test_modules\""
+    "TOY_BAD_MAGIC_DIR=\"${CMAKE_BINARY_DIR}/bin/extension_test_modules_bad\"")
+# ENABLE_EXPORTS (-rdynamic): exports the executable's symbols into the
+# process-wide lookup scope, so the dlopened toy module binds the exe's
+# authoritative copies of the header-only ExtensionContext typeinfo/vtable
+# (type identity, not the libstdc++ name-comparison fallback). The same
+# treatment is applied to every host that dlopens plugins.
+set_target_properties(test_extensions_dynamic PROPERTIES ENABLE_EXPORTS ON)
+add_dependencies(test_extensions_dynamic toyextension toyextension_bad_magic toyextension_legacy)
 add_test(NAME test_extensions_dynamic COMMAND test_extensions_dynamic)

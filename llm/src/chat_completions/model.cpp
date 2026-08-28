@@ -13,6 +13,7 @@
 #include "llm/chat_completions/events.hpp"
 #include "llm/chat_completions/interpreter.hpp"
 #include "llm/chat_completions/reader.hpp"
+#include "llm/provider_models.hpp"
 
 namespace llm::chat_completions {
 
@@ -176,6 +177,29 @@ boost::asio::awaitable<model_io::MessageItem> ChatCompletionsModel::converse(
             status, details, failure_message(status, details));
     }
     co_return result;
+}
+
+boost::asio::awaitable<nlohmann::json> ChatCompletionsModel::provider_info() {
+    if (!_built) {
+        throw std::logic_error(
+            "ChatCompletionsModel used before successful build()");
+    }
+    nlohmann::json models = co_await llm::fetch_provider_models(
+        _executor, _endpoint, _dialect->models_path());
+    // A dialect exposing an account-balance companion (DeepSeek:
+    // /user/balance) widens the return to one object — the models array
+    // under "models", the provider's balance document verbatim under
+    // "balance" — over a second single-shot GET on the same endpoint.
+    if (std::string balance_path = _dialect->balance_path();
+        !balance_path.empty()) {
+        nlohmann::json balance = co_await llm::fetch_provider_json(
+            _executor, _endpoint, std::move(balance_path));
+        co_return nlohmann::json{
+            {"models", std::move(models)},
+            {"balance", std::move(balance)},
+        };
+    }
+    co_return models;
 }
 
 } // namespace llm::chat_completions

@@ -45,7 +45,30 @@ set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 #   v1: first llm plugin contract. LLMModel (executor + config ctor, build/release
 #       lifecycle hooks, converse/integrate virtuals) and LLMModelExtensionContext
 #       (get_type/warm/create_model + the signed create_llm_model factory alias).
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 1)
+#   v2: LLMModel gained provider_info() (async catalogue query returning a JSON
+#       array), the two set_generation() tiers (typed GenerationPreset + JSON
+#       merge-patch), and the generation() accessor; the _generation member and
+#       its derivation moved from the protocol adapters up into the base (new
+#       contract types: ReasoningEffort, GenerationPreset). New virtuals reorder
+#       the vtable, so rebuilt plugins must report v2.
+#   v3: ChatCompletionsDialect gained balance_path() (the account-balance
+#       companion provider_info() attaches beside the models catalogue). The
+#       dialect vtable is consumed across the plugin boundary — the adapter's
+#       provider_info() calls the hook on an object constructed inside the
+#       provider .so — so the appended slot makes a stale plugin
+#       binary-incompatible; rebuilt plugins must report v3.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 3)
+
+# ---- Toolchain identity for the plugin admission fingerprint -----------------
+# Rendered into version.hpp and hashed by extension_framework/plugin_magic.hpp
+# (consteval FNV-1a, together with _GLIBCXX_USE_CXX11_ABI, sizeof(void*) and the
+# build profile injected as a compile definition on extension_framework_iface).
+# find_package(Boost) at the top level runs before this subdirectory, so
+# Boost_VERSION is available here.
+set(SIMPLEX_PLUGIN_TOOLCHAIN_ID
+    "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}")
+set(SIMPLEX_PLUGIN_CXX_STANDARD "C++${CMAKE_CXX_STANDARD}")
+set(SIMPLEX_PLUGIN_BOOST_VERSION "${Boost_VERSION}")
 
 # ---- Render the generated header --------------------------------------------
 # Generated under build/generated/ so it is found as "versioning/version.hpp"

@@ -27,6 +27,12 @@ public:
         return endpoint;
     }
 
+    /**
+     * The catalogue path provider_info() queries (OpenAI-compatible
+     * "list models"), sibling of the default exchange path's /v1 prefix.
+     */
+    virtual std::string models_path() const { return "/v1/models"; }
+
     virtual void transform_request(nlohmann::json&) const {}
 
     virtual nlohmann::json normalize_event(nlohmann::json event) const {

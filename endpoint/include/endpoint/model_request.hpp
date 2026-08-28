@@ -15,9 +15,10 @@
 //                     base_url, auth, transport headers
 //   generation       (nlohmann::json)                 the per-call generation
 //                     parameters (model, stream, temperature, ...) — plain
-//                     JSON, deliberately not a struct: read-only caller
-//                     configuration, not contract data that flows or is
-//                     stored and loaded
+//                     JSON, deliberately not a struct: caller-owned
+//                     configuration (runtime-adjustable through
+//                     llm::LLMModel::set_generation()), not contract data
+//                     that flows or is stored and loaded
 //
 // The product is exactly what this module's transport consumes — the request
 // drivers (sse_request, HttpRequestDriver) take it by value, and the

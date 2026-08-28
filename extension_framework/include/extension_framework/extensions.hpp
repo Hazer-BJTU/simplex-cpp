@@ -98,6 +98,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "extension_framework/plugin_magic.hpp"
 #include "logging/logger.hpp"
 
 namespace extension {
@@ -270,6 +271,26 @@ struct same_tag_always {
  * The actual load uses `boost::dll::load_mode::append_decorations`, so a bare
  * stem ("foo") and a fully-decorated name ("libfoo.so") both work.
  *
+ * `rtld_local` is stated explicitly even though it matches Boost.DLL's POSIX
+ * default: it makes the loading semantics a written mechanism rather than an
+ * assumed convention. A loaded module's symbols never enter the process-wide
+ * lookup scope, so a plugin can never interpose its own template/static copies
+ * over the host's or over another plugin's — the only interposition direction
+ * is the intended one (host executable and shared runtime libraries bind
+ * first, which is what unifies the vague-linkage contract symbols).
+ *
+ * The library is also loaded PROCESS-RESIDENT (RTLD_NODELETE): once mapped it
+ * is never unmapped, even when the last handle goes away. Unloading a C++
+ * module whose cross-module bindings were established at load (the same
+ * vague-linkage unification) and re-dlopening it later is not a supported
+ * operation — optimized builds break on stale bindings into the unmapped
+ * copy (observed: the second dlopen cycle in a RelWithDebInfo host crashed
+ * or failed model creation, while glibc itself had already pinned
+ * libllm_responses with NODELETE for exactly this relocation-dependency
+ * reason). Nothing in this project unloads a provider at runtime; residency
+ * makes that a mechanism instead of an assumption. Boost.DLL 1.91 has no
+ * rtld_nodelete alias, so the platform macro widens the flag set.
+ *
  * @param target_path Filesystem path to the library; must already exist.
  * @return A `shared_ptr` to the loaded `boost::dll::shared_library`.
  * @throw std::runtime_error if the path is missing or the library cannot be
@@ -286,10 +307,41 @@ inline std::shared_ptr<boost::dll::shared_library> get_library_ref(
         );
     }
 
+    // RTLD_NODELETE where the loader offers it (glibc, musl); a plain 0
+    // widens nothing elsewhere, so the residency rule degrades to "handles
+    // decide" only on platforms without the flag.
+#ifdef RTLD_NODELETE
+    constexpr auto nodelete =
+        static_cast<boost::dll::load_mode::type>(RTLD_NODELETE);
+#else
+    constexpr auto nodelete = boost::dll::load_mode::default_mode;
+#endif
+
     try {
         auto library_ref = std::make_shared<boost::dll::shared_library>(
-            target_path, boost::dll::load_mode::append_decorations
+            target_path,
+            boost::dll::load_mode::rtld_local
+                | boost::dll::load_mode::append_decorations
+                | nodelete
         );
+
+        // Admission gate, before any alias is resolved or factory called:
+        // the module's toolchain magic block must match this build's own
+        // (extension_framework/plugin_magic.hpp). The check necessarily
+        // runs after dlopen() — ELF constructors and relocations have
+        // already executed; what it guarantees is that no plugin LOGIC
+        // runs. A module from any other execution context is rejected with
+        // a diagnostic naming both.
+        std::string magic_diagnostic;
+        switch (check_module_magic(*library_ref, magic_diagnostic)) {
+        case MagicVerdict::Ok:
+            break;
+        case MagicVerdict::Absent:
+        case MagicVerdict::Mismatch:
+            throw std::runtime_error(std::format(
+                "{}: {}", target_path.string(), magic_diagnostic
+            ));
+        }
 
         return library_ref;
     } catch (const std::exception& e) {

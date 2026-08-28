@@ -7,6 +7,7 @@
 
 #include "endpoint/complete.hpp"
 #include "endpoint/request.hpp"
+#include "llm/provider_models.hpp"
 #include "llm/responses/interpreter.hpp"
 #include "llm/responses/reader.hpp"
 
@@ -157,6 +158,14 @@ boost::asio::awaitable<model_io::MessageItem> ResponsesModel::converse(
             status, details, terminal_message(status, details));
     }
     co_return result;
+}
+
+boost::asio::awaitable<nlohmann::json> ResponsesModel::provider_info() {
+    if (!_built) {
+        throw std::logic_error("ResponsesModel used before successful build()");
+    }
+    co_return co_await llm::fetch_provider_models(
+        _executor, _endpoint, _dialect->models_path());
 }
 
 } // namespace llm::responses

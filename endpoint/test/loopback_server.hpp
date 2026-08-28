@@ -80,6 +80,88 @@ private:
     std::thread _thread;
 };
 
+// Serve a fixed SEQUENCE of accepted clients, synchronously, one Serve per
+// connection in order — for tests whose client makes a known number of
+// connections in a known order (provider_info's catalogue-then-balance
+// pair). The sequence length IS the expected connection count: a shortfall
+// must not wedge the suite, so the deadline bounds the wait for the next
+// expected connection (the test's own assertions report what went missing);
+// connections beyond the sequence are not accepted. Same port/done contract
+// as OneShotServer.
+class SequenceServer {
+public:
+    explicit SequenceServer(
+        std::vector<Serve> sequence,
+        std::chrono::seconds grace = std::chrono::seconds(5))
+        : _port_promise(std::make_shared<std::promise<unsigned short>>())
+        , _done_promise(std::make_shared<std::promise<void>>())
+        , _port(_port_promise->get_future())
+        , _done(_done_promise->get_future())
+        , _thread([this, sequence = std::move(sequence), grace] {
+              try {
+                  asio::io_context io;
+                  tcp::acceptor acceptor(
+                      io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+                  _port_promise->set_value(acceptor.local_endpoint().port());
+
+                  asio::steady_timer deadline(io, grace);
+                  deadline.async_wait(
+                      [&acceptor](const boost::system::error_code&) {
+                          acceptor.cancel();
+                      });
+
+                  auto next = sequence.begin();
+                  std::function<void()> accept_next = [&] {
+                      if (next == sequence.end()) return;
+                      auto socket = std::make_shared<tcp::socket>(io);
+                      acceptor.async_accept(
+                          *socket, [&, socket](
+                                       const boost::system::error_code& ec) {
+                              if (ec) return;   // cancelled: time is up
+                              (*next)(*socket);
+                              ++next;
+                              boost::system::error_code ignored;
+                              socket->shutdown(tcp::socket::shutdown_both,
+                                               ignored);
+                              socket->close(ignored);
+                              // Sequence complete: stop the grace deadline so
+                              // io.run() (and join()) return promptly.
+                              if (next == sequence.end()) deadline.cancel();
+                              accept_next();
+                          });
+                  };
+                  accept_next();
+                  io.run();
+                  _done_promise->set_value();
+              } catch (...) {
+                  try {
+                      _done_promise->set_exception(std::current_exception());
+                  } catch (...) {}
+              }
+          })
+    {}
+
+    SequenceServer(const SequenceServer&) = delete;
+    SequenceServer& operator=(const SequenceServer&) = delete;
+
+    ~SequenceServer() {
+        if (_thread.joinable()) _thread.join();
+    }
+
+    unsigned short wait_listening() { return _port.get(); }
+    void join() {
+        _thread.join();
+        _done.get();
+    }
+
+private:
+    std::shared_ptr<std::promise<unsigned short>> _port_promise;
+    std::shared_ptr<std::promise<void>> _done_promise;
+    std::future<unsigned short> _port;
+    std::future<void> _done;
+    std::thread _thread;
+};
+
 // Responder flavour: read the client's request, answer once with the given
 // status, headers, and body, then let the server close the connection.
 inline void serve_fixed_response(

@@ -33,6 +33,11 @@ foreach(TEST_SRC ${TEST_SOURCES})
         # indextools_lib already links Boost::dll transitively.
         target_compile_definitions(${TEST_EXE} PRIVATE
             "LANG_PLUGIN_DIR=\"${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins\"")
+        # ENABLE_EXPORTS (-rdynamic): export this executable's symbols into the
+        # process-wide lookup scope so the dlopened language plugins bind the
+        # exe's authoritative copies of the header-only contract classes'
+        # typeinfo/vtables (type identity, not name fallback).
+        set_target_properties(${TEST_EXE} PROPERTIES ENABLE_EXPORTS ON)
         if(_lang_plugins)
             add_dependencies(${TEST_EXE} ${_lang_plugins})
         endif()

@@ -21,6 +21,8 @@
 
 #include <boost/dll/alias.hpp>
 
+#include "extension_framework/plugin_magic.hpp"
+
 namespace llm::deepseek {
 
 namespace {
@@ -58,3 +60,7 @@ std::unique_ptr<LLMModel> create_llm_model(
 
 BOOST_DLL_ALIAS(llm::deepseek::create_llm_plugin, create_llm_plugin)
 BOOST_DLL_ALIAS(llm::deepseek::create_llm_model, create_llm_model)
+
+// Admission block: toolchain fingerprint, checked by the loader before any
+// alias is resolved (a module from any other build context is rejected).
+SIMPLEX_EXPORT_PLUGIN_MAGIC;

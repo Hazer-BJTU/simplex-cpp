@@ -4,6 +4,16 @@
 `endpoint` module below it is transport-only: HTTP/HTTPS, SSE framing and retry
 drivers do not know which model protocol they carry.
 
+The plugin boundary is **live-object**: a provider `.so` mints model objects
+(`create_llm_model(executor, config)` receives an `asio::any_io_executor` and
+a `nlohmann::json`; `converse()` returns an `asio::awaitable` whose frame the
+host resumes). Those types have no stable ABI, so safety rests on the
+**same-execution-context strategy** — the toolchain-fingerprint admission
+gate in `extension_framework`, the shared runtime stack
+(`libasio`/`libeventbus`/`liblogging`/`libllm_chat_completions`/
+`libllm_responses`), and `-rdynamic` hosts. The full contract, its mechanisms,
+and their structural tests live in `docs/abi-context.md`.
+
 ## Architecture and responsibility boundaries
 
 The central abstraction is deliberately an **exchange**, not an agent. A
@@ -31,7 +41,7 @@ The layers have intentionally narrow ownership:
 | --- | --- | --- |
 | Host/session loop | user turns, tool execution and authorization, step limits, persistence, compaction, cancellation policy | provider JSON and SSE parsing |
 | `LLMDispatcher` / plugin context | plugin discovery, ABI gating, factory lookup, library lifetime | conversations and network exchanges |
-| `LLMModel` | one configured provider client, one `converse()` exchange, result integration/retention policy | agent loops, tool execution, durable storage |
+| `LLMModel` | one configured provider client, one `converse()` exchange, result integration/retention policy, the runtime services (`provider_info()` catalogue query, `set_generation()` knob adjustment) | agent loops, tool execution, durable storage |
 | Protocol adapter | canonical-data-to-wire mapping and wire-to-canonical assembly | provider-specific deviations that can be expressed by a dialect |
 | Dialect | endpoint defaults and small JSON-level provider rewrites | transport, session state, a second model abstraction |
 | `endpoint` | DNS/TCP/TLS/HTTP, SSE framing, retry/backoff and producer/consumer plumbing | LLM messages, tools, reasoning semantics |
@@ -40,6 +50,28 @@ This boundary is important for retries: a retry repeats the same already-built
 request and clears the attempt-local reader. It does not append partial output
 to the conversation, execute a tool twice, or rebuild session state. Only a
 successfully assembled result returned by `converse()` may be integrated.
+
+## Runtime services on the contract
+
+Two ABI-v2 entry points serve the host between exchanges:
+
+- **`provider_info()`** — the provider's live catalogue: one OpenAI-compatible
+  `GET /models` over the model's own endpoint (auth included, path from the
+  dialect's `models_path()`), returned as a JSON array whose entries are the
+  provider's own model descriptors, verbatim. A dialect exposing an
+  account-balance companion (`balance_path()`) widens the return to one
+  object — DeepSeek attaches its live balance (`GET /user/balance`) as a
+  `"balance"` member beside `"models"`. No retry: a catalogue query is
+  cheap to re-issue. `llm_deepseek_chat --list-models` is the smoke entry.
+- **`set_generation()`** — two tiers over one validated merge core. The typed
+  tier takes an `llm::GenerationPreset` (the pair hosts adjust most often:
+  `model` + `ReasoningEffort`) and writes the canonical
+  `"reasoning": {"effort": ...}` envelope both adapters translate. The JSON
+  tier applies an RFC 7386 merge-patch (present keys written, `null` erases,
+  absent keys kept). Both refuse the host-owned `endpoint`/`provider`/`retry`
+  keys and any patch that would leave `model` missing or empty; validation is
+  atomic and `_config` stays the verbatim construction record — read the
+  effective knobs back through `generation()`.
 
 ## Conversation model: canonical input and output
 

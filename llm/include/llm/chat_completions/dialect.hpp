@@ -29,6 +29,23 @@ public:
     virtual std::string_view provider_name() const { return {}; }
 
     /**
+     * The catalogue path provider_info() queries (OpenAI-compatible
+     * "list models"), sibling of the default exchange path's /v1 prefix.
+     * Override when the provider drops the prefix (e.g. DeepSeek: /models).
+     */
+    virtual std::string models_path() const { return "/v1/models"; }
+
+    /**
+     * The account-balance companion provider_info() attaches: when
+     * non-empty, a second single-shot GET over the same endpoint/auth
+     * whose JSON answer rides back as the "balance" member beside the
+     * models array (DeepSeek: /user/balance). Empty — the default — means
+     * the provider exposes no such endpoint and provider_info() returns
+     * the bare models array.
+     */
+    virtual std::string balance_path() const { return {}; }
+
+    /**
      * Whether replayed assistant messages re-emit MessageItem::reasoning as
      * the wire's reasoning_content field. DeepSeek thinking mode rejects
      * (400) a tools request whose intermediate assistant messages omit it,

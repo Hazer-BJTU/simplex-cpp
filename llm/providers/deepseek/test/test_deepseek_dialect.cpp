@@ -45,6 +45,24 @@ BOOST_AUTO_TEST_CASE(default_endpoint_points_at_deepseek_with_bearer) {
     BOOST_CHECK_EQUAL(endpoint.user_agent, "simplex-cpp/deepseek");
 }
 
+// The catalogue query provider_info() runs — same host, no /v1 prefix
+// (https://api.deepseek.com/models), unlike the base dialect's default.
+BOOST_AUTO_TEST_CASE(models_path_has_no_v1_prefix) {
+    BOOST_CHECK_EQUAL(DeepSeekDialect{}.models_path(), "/models");
+    BOOST_CHECK_EQUAL(
+        llm::chat_completions::ChatCompletionsDialect{}.models_path(),
+        "/v1/models");
+}
+
+// The account-balance companion provider_info() attaches after the
+// catalogue — same host, same auth (https://api.deepseek.com/user/balance).
+// The base default is empty: no companion, bare models array.
+BOOST_AUTO_TEST_CASE(balance_path_is_the_deepseek_account_endpoint) {
+    BOOST_CHECK_EQUAL(DeepSeekDialect{}.balance_path(), "/user/balance");
+    BOOST_CHECK_EQUAL(
+        llm::chat_completions::ChatCompletionsDialect{}.balance_path(), "");
+}
+
 // --- thinking-mode request policy ----------------------------------------------
 
 BOOST_AUTO_TEST_CASE(missing_effort_defaults_thinking_to_enabled) {
