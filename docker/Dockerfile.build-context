@@ -26,7 +26,8 @@
 #
 # Build (from the repository root):
 #   docker build -f docker/Dockerfile.build-context -t simplex-cpp-build .
-# Run the full test suite inside the same context:
+# The full suite already ran during the build; `docker run` re-runs it
+# (the image's CMD points ctest at the baked-in build tree):
 #   docker run --rm simplex-cpp-build
 # Extract artifacts if needed:
 #   docker run --rm simplex-cpp-build tar C /src/build -cf - . | tar C build -xf -
@@ -54,3 +55,8 @@ RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
         -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
     && cmake --build /src/build -j4 \
     && ctest --test-dir /src/build --output-on-failure
+
+# Re-running the suite is the image's default action: the build tree stays
+# baked in, so `docker run --rm simplex-cpp-build` re-executes every test
+# inside the same context that produced the artifacts.
+CMD ["ctest", "--test-dir", "/src/build", "--output-on-failure"]

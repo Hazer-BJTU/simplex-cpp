@@ -21,17 +21,19 @@
 # single source of truth for vendored releases) and with the g++ pin in the
 # top-level CMakeLists.txt.
 #
-# The gcc tag is pinned to a FULL point version on purpose: the plugin
-# admission fingerprint hashes the complete compiler version
+# The gcc tag is pinned to a FULL point version AND its registry digest:
+# the plugin admission fingerprint hashes the complete compiler version
 # (SIMPLEX_PLUGIN_TOOLCHAIN_ID = "GNU-14.3.0"), so a moving tag like gcc:14
 # would silently change the toolchain identity on image rebuilds and make
-# artifacts from different base-image generations mutually incompatible.
-# When bumping this tag, update the gcc LABEL below, retag and republish.
+# artifacts from different base-image generations mutually incompatible;
+# the digest additionally guards against the tag itself being re-pushed.
+# When bumping, update tag + digest and the gcc LABEL below, retag and
+# republish.
 #
 # Build jobs are capped at -j4 deliberately: the container shares the host
 # (WSL) CPUs, and saturating them is known to destabilize the WSL services.
 
-FROM gcc:14.3.0
+FROM gcc:14.3.0@sha256:4e2d22617a3b4af1ad0150ba6ca3cb8a975c44c1abac6f9a09870b93cb5c363b
 
 # Build tooling + OpenSSL development files. binutils (nm/readelf, needed by
 # the llm_plugin_boundary_hygiene ctest) already ships with the gcc image's
@@ -92,6 +94,25 @@ RUN wget -q -O /tmp/yaml-cpp.tar.gz \
         /opt/simplex-thirdparty/libs/ \
     && rm -rf /opt/simplex-thirdparty/lib \
         /tmp/yaml-cpp.tar.gz /tmp/yaml-cpp-yaml-cpp-0.9.0 /tmp/yaml-cpp-build
+
+# The tree's top-level CMakeLists pins CMAKE_CXX_COMPILER to the NAME
+# "g++-14". The gcc image installs its GCC under /usr/local/bin as "g++"
+# only, while the Debian base also ships a distro /usr/bin/g++-14 — a
+# different point release (14.2.0 here). Without this alias the tree's
+# default pin resolves through PATH to the distro compiler, splitting the
+# context in half: project code compiled by 14.2.0 while the shared Boost
+# runtime above was built by 14.3.0. The admission fingerprint cannot
+# catch that split (it hashes only the project-side compiler), so the
+# alias is what actually keeps "one toolchain in this image" true.
+#
+# gcc-ar/gcc-nm/gcc-ranlib get the same treatment: CMake resolves
+# CMAKE_CXX_COMPILER_AR/RANLIB for the same "-14" name, and a Debug build
+# never runs them — but a Release/LTO build would, feeding 14.3.0 LTO
+# bytecode to the distro 14.2.0 plugin tools. Same trap, same fix.
+RUN ln -s g++ /usr/local/bin/g++-14 \
+    && ln -s gcc-ar /usr/local/bin/gcc-ar-14 \
+    && ln -s gcc-nm /usr/local/bin/gcc-nm-14 \
+    && ln -s gcc-ranlib /usr/local/bin/gcc-ranlib-14
 
 LABEL org.opencontainers.image.title="simplex-cpp build-base" \
       org.opencontainers.image.description="Toolchain base image for building simplex-cpp: g++-14, Boost 1.91.0 shared, OpenSSL, vendored nlohmann/json + yaml-cpp" \

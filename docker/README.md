@@ -22,7 +22,7 @@ docker build -f docker/Dockerfile.build-context -t <ctx-tag> .
 
 | Piece | Version | Where | Notes |
 | --- | --- | --- | --- |
-| gcc (g++ included) | **14.3.0**, point-pinned | `FROM gcc:14.3.0` | The admission fingerprint hashes the *complete* compiler version, so a moving tag (`gcc:14`) would drift the toolchain identity across image rebuilds. Bump the tag ⇒ update the `simplex.build.gcc` LABEL and retag. |
+| gcc (g++ included) | **14.3.0**, point-pinned + digest | `FROM gcc:14.3.0@sha256:…` | The admission fingerprint hashes the *complete* compiler version, so a moving tag (`gcc:14`) would drift the toolchain identity across image rebuilds; the digest guards against the point tag itself being re-pushed. The image also aliases `/usr/local/bin/g++-14 → g++` (see below). Bump the tag ⇒ update digest + `simplex.build.gcc` LABEL, retag, republish. |
 | CMake | 3.31 (apt) | PATH | Tree requires ≥ 3.20. |
 | OpenSSL dev | distro version | apt `libssl-dev` | For the asio SSL runtime; no pin by design (`third_party/versions/README.md`). |
 | binutils (nm/readelf) | from the gcc base image | PATH | Needed by the `llm_plugin_boundary_hygiene` ctest. |
@@ -57,7 +57,10 @@ docker build -f docker/Dockerfile.build-context \
     --build-arg BASE_IMAGE=simplex-build-base:local \
     -t simplex-cpp-build:local .
 
-# 3) the build layer already ran the full ctest; to poke at the artifacts:
+# 3) the build layer already ran the full ctest; the image CMD re-runs it
+#    against the baked-in build tree:
+docker run --rm simplex-cpp-build:local
+#    to poke at the artifacts instead:
 docker run --rm -it --entrypoint bash simplex-cpp-build:local
 #    or extract the whole build tree:
 docker run --rm simplex-cpp-build:local tar C /src/build -cf - . | tar C build-image -xf -
@@ -100,6 +103,16 @@ docker build -f docker/Dockerfile.build-base \
 - One image ⇒ one toolchain identity (`GNU-14.3.0` here). Host and every
   plugin built in a single configure+build inside the image are
   self-consistent — that is the whole point.
+- **One toolchain, literally.** The gcc image ships its GCC as
+  `/usr/local/bin/g++` (14.3.0) while the Debian base *also* carries a
+  distro `/usr/bin/g++-14` (14.2.0 here). The tree pins the compiler by
+  the **name** `g++-14`, which PATH would resolve to the distro one —
+  splitting the context into project@14.2.0 + Boost@14.3.0, a split the
+  admission fingerprint cannot see (it hashes only the project-side
+  compiler). The base image therefore aliases
+  `/usr/local/bin/g++-14 → g++`, which is what keeps the tree's default
+  pin on the same compiler that built Boost. Verified by the generated
+  `version.hpp` inside a built image: `GNU-14.3.0`.
 - Artifacts from the image will **not** load against hosts built in any
   other context (e.g. the local WSL g++-14.2.0): the admission gate in
   `extension_framework/plugin_magic.hpp` rejects exactly that mixing, by
