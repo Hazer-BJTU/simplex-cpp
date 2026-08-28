@@ -1,0 +1,15 @@
+# Keep `COPY . .` (Dockerfile.build-context) down to the tracked tree: local
+# build outputs, caches, untracked docs and the heavyweight vendored copies
+# stay out of the image. The build-base image carries its own third-party
+# set under /opt/simplex-thirdparty; third_party/versions and third_party/
+# license are small and informative, so they stay in the context.
+.git
+.claude
+.agents
+.codex
+.vscode
+build*
+docs
+third_party/include
+third_party/libs
+CMakeFiles

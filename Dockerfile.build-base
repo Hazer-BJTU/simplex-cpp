@@ -1,0 +1,100 @@
+# Dockerfile.build-base — the simplex-cpp toolchain base image (no sources).
+#
+# Everything the core tree needs to configure, build and test, and nothing
+# else: g++-14, CMake, OpenSSL dev, Boost 1.91.0 SHARED with exactly the
+# compiled components the tree links (filesystem + unit_test_framework), and
+# the vendored third parties the core consumes (nlohmann/json, yaml-cpp)
+# installed under /opt/simplex-thirdparty in the same include/ + libs/ layout
+# as the in-tree third_party/ (so simplex_thirdparty_iface works unchanged
+# via -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty).
+#
+# Dockerfile.build-context builds the actual tree FROM this image. Publish it
+# first (manual, from the repository root):
+#
+#   docker build -f Dockerfile.build-base \
+#       -t ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14 \
+#       -t ghcr.io/hazer-bjtu/simplex-cpp/build-base:latest .
+#   docker push ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14
+#   docker push ghcr.io/hazer-bjtu/simplex-cpp/build-base:latest
+#
+# Version pins below must stay in sync with third_party/versions/*.md (the
+# single source of truth for vendored releases) and with the g++ pin in the
+# top-level CMakeLists.txt.
+#
+# The gcc tag is pinned to a FULL point version on purpose: the plugin
+# admission fingerprint hashes the complete compiler version
+# (SIMPLEX_PLUGIN_TOOLCHAIN_ID = "GNU-14.3.0"), so a moving tag like gcc:14
+# would silently change the toolchain identity on image rebuilds and make
+# artifacts from different base-image generations mutually incompatible.
+# When bumping this tag, update the gcc LABEL below, retag and republish.
+#
+# Build jobs are capped at -j4 deliberately: the container shares the host
+# (WSL) CPUs, and saturating them is known to destabilize the WSL services.
+
+FROM gcc:14.3.0
+
+# Build tooling + OpenSSL development files. binutils (nm/readelf, needed by
+# the llm_plugin_boundary_hygiene ctest) already ships with the gcc image's
+# buildpack-deps base.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cmake \
+        libssl-dev \
+        ca-certificates \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Boost 1.91.0, shared, release variant, only the compiled components the
+# core tree links (--with-test == unit_test_framework). b2 installs to
+# /usr/local: headers plus libboost_*.so plus the CMake config package under
+# /usr/local/lib/cmake/Boost-1.91.0, which find_package(Boost) picks up
+# without any -DBOOST_ROOT. ldconfig because /usr/local/lib is not in the
+# loader cache of a fresh layer.
+RUN wget -q -O /tmp/boost.tar.gz \
+        https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz \
+    && tar -xzf /tmp/boost.tar.gz -C /tmp \
+    && cd /tmp/boost_1_91_0 \
+    && ./bootstrap.sh --with-libraries=filesystem,test \
+    && ./b2 -j4 link=shared runtime-link=shared variant=release install \
+    && ldconfig \
+    && rm -rf /tmp/boost.tar.gz /tmp/boost_1_91_0
+
+# Vendored third parties -> /opt/simplex-thirdparty, mirroring the tree's
+# third_party/{include,libs} layout. tree-sitter is deliberately absent: its
+# only consumer was the legacy languages/ domain, no longer part of this
+# build.
+#
+# nlohmann/json 3.12.0 — header-only, the release single-header asset.
+RUN mkdir -p /opt/simplex-thirdparty/include/nlohmann \
+    && wget -q -O /opt/simplex-thirdparty/include/nlohmann/json.hpp \
+        https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp
+
+# yaml-cpp 0.9.0 — static library, built PIC because it is consumed through
+# simplex_thirdparty_iface's link directory by MODULE plugin .sos too.
+# Installed flat, then the archive is moved into libs/ to match the layout
+# the interface target's link directory expects.
+RUN wget -q -O /tmp/yaml-cpp.tar.gz \
+        https://github.com/jbeder/yaml-cpp/archive/refs/tags/0.9.0.tar.gz \
+    && tar -xzf /tmp/yaml-cpp.tar.gz -C /tmp \
+    && cmake -S /tmp/yaml-cpp-0.9.0 -B /tmp/yaml-cpp-build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DYAML_BUILD_SHARED_LIBS=OFF \
+        -DYAML_CPP_BUILD_TESTS=OFF \
+        -DYAML_CPP_BUILD_TOOLS=OFF \
+        -DYAML_CPP_BUILD_CONTRIB=OFF \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DCMAKE_INSTALL_PREFIX=/opt/simplex-thirdparty \
+    && cmake --build /tmp/yaml-cpp-build -j4 \
+    && cmake --install /tmp/yaml-cpp-build \
+    && mkdir -p /opt/simplex-thirdparty/libs \
+    && mv /opt/simplex-thirdparty/lib/libyaml-cpp.a \
+        /opt/simplex-thirdparty/libs/ \
+    && rm -rf /opt/simplex-thirdparty/lib \
+        /tmp/yaml-cpp.tar.gz /tmp/yaml-cpp-0.9.0 /tmp/yaml-cpp-build
+
+LABEL org.opencontainers.image.title="simplex-cpp build-base" \
+      org.opencontainers.image.description="Toolchain base image for building simplex-cpp: g++-14, Boost 1.91.0 shared, OpenSSL, vendored nlohmann/json + yaml-cpp" \
+      org.opencontainers.image.source="https://github.com/Hazer-BJTU/simplex-cpp" \
+      simplex.build.gcc="14.3.0" \
+      simplex.build.boost="1.91.0" \
+      simplex.build.nlohmann-json="3.12.0" \
+      simplex.build.yaml-cpp="0.9.0"

@@ -1,17 +1,21 @@
-# Dockerfile.build-context — the reference "same execution context" build.
+# Dockerfile.build-context — build & test the tree inside the reference
+# "same execution context".
 #
 # The plugin ABI strategy (docs/abi-context.md) is not stable interfaces but
 # identical build contexts: host executables and dlopened plugin modules must
 # come from the same compiler, the same Boost, and the same configure. This
-# image is the VISION of that guarantee: one compiler, one Boost, one tree,
-# one configure+build producing the host AND every plugin.
+# image instantiates that guarantee: one container — pinned by the toolchain
+# base image — one configure+build producing the host AND every plugin.
 #
-# NOT YET COMPLETE — do not read it as a working reproducibility guarantee.
-# The tree links Boost SHARED (Boost_USE_STATIC_LIBS OFF) and requires
-# compiled components (unit_test_framework, process, program_options,
-# filesystem), but this image provisions Boost HEADERS only; a build here
-# fails at find_package/link time until the matching shared Boost libraries
-# are built in or fetched. Finalizing that environment is future work.
+# It builds FROM the published toolchain base image (g++-14, Boost 1.91.0
+# shared, OpenSSL, vendored nlohmann/json + yaml-cpp). Build and push that
+# base first — see Dockerfile.build-base for the exact commands:
+#
+#   ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14
+#
+# This builds the CORE tree only: the legacy language-index domain
+# (languages/, indextools/) is no longer wired into the top-level build, so
+# neither tree-sitter nor Boost process/program_options is needed.
 #
 # Build (from the repository root):
 #   docker build -f Dockerfile.build-context -t simplex-cpp-build .
@@ -20,34 +24,23 @@
 # Extract artifacts if needed:
 #   docker run --rm simplex-cpp-build tar C /src/build -cf - . | tar C build -xf -
 #
-# The local WSL build does NOT depend on this file; it exists as the
-# reference for how the context is meant to be constructed once the
-# shared-Boost environment is finalized (and the admission fingerprint's
-# inputs explained) on any machine. Keep the versions in sync with the
-# top-level CMakeLists.txt pins when they move.
+# Fingerprint honesty: artifacts built here carry THIS image's toolchain
+# identity (GNU-14.3.0) and will not load against a host built in a different
+# context (e.g. the local WSL g++-14.2.0) — the admission gate rejects
+# exactly that mixing, by design. Host and plugins built together here are
+# self-consistent.
+#
+# The local WSL build does NOT depend on this file.
 
-FROM gcc:14
-
-# Boost for the pinned version (headers are what the fingerprint covers;
-# Boost::filesystem/dll are header-driven here too). 1.91 per the tree.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        cmake \
-        libssl-dev \
-        ca-certificates \
-        wget \
-    && rm -rf /var/lib/apt/lists/* \
-    && wget -q -O /tmp/boost.tar.gz \
-        https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz \
-    && tar -xzf /tmp/boost.tar.gz -C /usr/local --strip-components=1 \
-        boost_1_91_0/boost \
-    && rm /tmp/boost.tar.gz
+FROM ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14
 
 WORKDIR /src
 COPY . .
 
-# -j4 mirrors the repo's WSL constraint; one configure builds host + plugins,
-# which is the entire point of the image.
+# -j4 mirrors the repo's WSL constraint (the container shares the host
+# CPUs); one configure builds host + plugins, which is the entire point of
+# the image.
 RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
-        -DBOOST_ROOT=/usr/local \
+        -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
     && cmake --build /src/build -j4 \
     && ctest --test-dir /src/build --output-on-failure
