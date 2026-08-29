@@ -1,0 +1,62 @@
+# Dockerfile.build-context — build & test the tree inside the reference
+# "same execution context".
+#
+# The plugin ABI strategy (docs/abi-context.md) is not stable interfaces but
+# identical build contexts: host executables and dlopened plugin modules must
+# come from the same compiler, the same Boost, and the same configure. This
+# image instantiates that guarantee: one container — pinned by the toolchain
+# base image — one configure+build producing the host AND every plugin.
+#
+# It builds FROM the published toolchain base image (g++-14, Boost 1.91.0
+# shared, OpenSSL, vendored nlohmann/json + yaml-cpp). Build and push that
+# base first — see Dockerfile.build-base for the exact commands:
+#
+#   ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14
+#
+# Before the base is published, debug locally by building it under a local
+# tag and overriding BASE_IMAGE:
+#
+#   docker build -f docker/Dockerfile.build-base -t simplex-build-base:local .
+#   docker build -f docker/Dockerfile.build-context \
+#       --build-arg BASE_IMAGE=simplex-build-base:local -t simplex-cpp-build .
+#
+# This builds the CORE tree only: the legacy language-index domain
+# (languages/, indextools/) is no longer wired into the top-level build, so
+# neither tree-sitter nor Boost process/program_options is needed.
+#
+# Build (from the repository root):
+#   docker build -f docker/Dockerfile.build-context -t simplex-cpp-build .
+# The full suite already ran during the build; `docker run` re-runs it
+# (the image's CMD points ctest at the baked-in build tree):
+#   docker run --rm simplex-cpp-build
+# Extract artifacts if needed:
+#   docker run --rm simplex-cpp-build tar C /src/build -cf - . | tar C build -xf -
+#
+# Fingerprint honesty: artifacts built here carry THIS image's toolchain
+# identity (GNU-14.3.0) and will not load against a host built in a different
+# context (e.g. the local WSL g++-14.2.0) — the admission gate rejects
+# exactly that mixing, by design. Host and plugins built together here are
+# self-consistent.
+#
+# The local WSL build does NOT depend on this file.
+
+# BASE_IMAGE defaults to the published registry tag; pass a local tag via
+# --build-arg while the base is not yet on ghcr.
+ARG BASE_IMAGE=ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14
+FROM ${BASE_IMAGE}
+
+WORKDIR /src
+COPY . .
+
+# -j4 mirrors the repo's WSL constraint (the container shares the host
+# CPUs); one configure builds host + plugins, which is the entire point of
+# the image.
+RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
+        -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+    && cmake --build /src/build -j4 \
+    && ctest --test-dir /src/build --output-on-failure
+
+# Re-running the suite is the image's default action: the build tree stays
+# baked in, so `docker run --rm simplex-cpp-build` re-executes every test
+# inside the same context that produced the artifacts.
+CMD ["ctest", "--test-dir", "/src/build", "--output-on-failure"]

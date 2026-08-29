@@ -2,9 +2,8 @@
 # simplex-cpp — top-level build
 #
 # This is a multi-module C++ project. Each module lives in its own
-# subdirectory (currently `indextools/`; future modules such as the native
-# model-request adapter and `agentloop` will live alongside it) and is wired in
-# with `add_subdirectory()` below.
+# subdirectory (utils, extension_framework, endpoint, dataclass, llm, …) and
+# is wired in with `add_subdirectory()` below.
 #
 # What belongs HERE (the top level) and not inside a module:
 #   - the toolchain & language standard           (shared by every module)
@@ -56,7 +55,12 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 # Single source of truth for the vendored headers/static libs shared across
 # modules. Exposed as a variable (propagates to every add_subdirectory child)
 # plus an INTERFACE target that brings the include dir + lib search path.
-set(SIMPLEX_THIRDPARTY_DIR "${CMAKE_SOURCE_DIR}/third_party")
+# Overridable on the command line: container builds point it at the copy the
+# build-base image carries under /opt/simplex-thirdparty (see
+# Dockerfile.build-context) instead of a populated in-tree third_party/.
+if(NOT SIMPLEX_THIRDPARTY_DIR)
+    set(SIMPLEX_THIRDPARTY_DIR "${CMAKE_SOURCE_DIR}/third_party")
+endif()
 
 add_library(simplex_thirdparty_iface INTERFACE)
 target_include_directories(simplex_thirdparty_iface INTERFACE
@@ -75,9 +79,11 @@ add_library(openssl_iface INTERFACE)
 target_link_libraries(openssl_iface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 
 # ---- Shared dependency: Boost ----------------------------------------------
-# Used by the indextools host (process / program_options / DLL) and by the
-# unit-test layer (unit_test_framework). Future modules (model adapter,
-# agentloop) are expected to reuse Boost.Asio/Process, so the find lives here.
+# Compiled components used by the core tree: unit_test_framework (the test
+# layer) and filesystem (the Boost.DLL support target below). The legacy
+# language-index domain (indextools) additionally used process and
+# program_options; it is no longer part of this build (pending extraction into
+# its own module) and takes those requirements with it.
 #
 # Linked SHARED deliberately: the whole tree now standardizes on shared
 # libraries (the plugin-boundary strategy in docs/abi-context.md — one copy of
@@ -87,8 +93,7 @@ target_link_libraries(openssl_iface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 # its own private copy of the compiled components again.
 set(Boost_USE_STATIC_LIBS OFF)
 
-find_package(Boost REQUIRED COMPONENTS
-    unit_test_framework process program_options filesystem)
+find_package(Boost REQUIRED COMPONENTS unit_test_framework filesystem)
 
 # Boost.DLL is header-only (no compiled component / CMake config), but it
 # depends on Boost.Filesystem, Boost.System and, on Linux, libdl. Bundle those
@@ -114,32 +119,26 @@ option(BUILD_TESTS "Build unit tests" ON)
 
 # Module add order matters: each module may consume targets or GLOBAL properties
 # populated by an earlier one.
-#   - versioning first: its `simplex_versioning` INTERFACE target feeds the
-#     indextools plugin contract (lang_plugin.hpp) and, through indextools_iface,
-#     the languages/ analyzers/plugins.
-#   - utils before indextools: the small shared utilities package. Its
-#     logging/ member exports `logging_lib`, which indextools_lib links (the
-#     public service_command.hpp header uses logging::Logger); its yamlconfig/
-#     member is the header-only YAML->JSON config bridge (yamlconfig_iface)
-#     feeding JSON-shaped config consumers such as the llm model plugins'
-#     config JSON.
-#   - languages before indextools: languages registers INDEX_LANG_PLUGINS /
-#     INDEX_LANG_ANALYZER_LIBS, which indextools reads to make plugins build deps
-#     of indextools_lib and which indextools' runtime-loader tests depend on.
-#     languages compiles against indextools' header contract (indextools_iface,
-#     defined inside indextools/) — CMake resolves that forward reference at
-#     generate time, so the add order is driven by the dependency/property flow,
-#     not by the header dependency.
+#   - versioning first: its `simplex_versioning` INTERFACE target feeds every
+#     plugin contract in the tree (the LLM plugin ABI version today).
+#   - utils early: the small shared utilities package. Its logging/ member
+#     exports `logging_lib` (endpoint's public headers use logging::Logger);
+#     its yamlconfig/ member is the header-only YAML->JSON config bridge
+#     (yamlconfig_iface) feeding JSON-shaped config consumers such as the llm
+#     model plugins' config JSON.
+#
+# The legacy language-index domain — languages/ (per-language analyzer
+# plugins) and indextools/ (their host library) — is NOT wired in anymore:
+# nothing in the core tree links or loads it, and it is pending extraction
+# into a standalone module/plugin. The directories stay in the repository
+# untouched; when extracted, they carry their own dependencies (notably Boost
+# process and the vendored tree-sitter libs).
 add_subdirectory(versioning)
 add_subdirectory(utils)
 # extension_framework after utils' logging + the top-level interface targets:
 # it is a header-only module (extension_framework_iface) that links
-# boost_dll_iface, logging_lib, and simplex_thirdparty_iface. indextools'
-# language layer is now built on it (LangPlugin derives from
-# extension::ExtensionContext), so it must be added before indextools/languages.
+# boost_dll_iface, logging_lib, and simplex_thirdparty_iface.
 add_subdirectory(extension_framework)
-add_subdirectory(languages)
-add_subdirectory(indextools)
 # endpoint after utils: endpoint_lib links logging_lib (the public
 # https_connection.hpp uses logging::Logger) and the shared Boost/OpenSSL.
 add_subdirectory(endpoint)
