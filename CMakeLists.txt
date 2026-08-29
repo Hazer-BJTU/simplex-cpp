@@ -148,6 +148,13 @@ add_subdirectory(endpoint)
 # functions, so the module depends only on simplex_thirdparty_iface
 # (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
+# process after dataclass: the child-process management module. Its typed
+# data contract (process_io::ProcessSpec / ProcessExecution / ProcessReport)
+# lives in dataclass; the exception contract lands first, the manager
+# framework (Boost.Process v2 + asio) lands next and will add the process
+# component to the top-level find_package and Boost::process + asio_iface
+# to this target.
+add_subdirectory(process)
 # llm after dataclass + extension_framework + versioning: the model-plugin
 # contract (LLMModel / LLMModelExtensionContext / LLMDispatcher), canonical
 # Responses adapter, and provider plugins build on the generic extension
