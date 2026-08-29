@@ -1,7 +1,7 @@
 #define BOOST_TEST_MODULE ProcessExceptionTests
 #include <boost/test/unit_test.hpp>
 
-#include "process/exceptions.hpp"
+#include "process/process_exceptions.hpp"
 
 #include <boost/system/errc.hpp>
 

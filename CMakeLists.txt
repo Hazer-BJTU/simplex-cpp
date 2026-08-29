@@ -149,7 +149,7 @@ add_subdirectory(endpoint)
 # (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
 # process after dataclass: the child-process management module. Its typed
-# data contract (process_io::ProcessSpec / ProcessExecution / ProcessReport)
+# data contract (process_io::LaunchSpec / ExecutionStatus / ExecutionResult)
 # lives in dataclass; the exception contract lands first, the manager
 # framework (Boost.Process v2 + asio) lands next and will add the process
 # component to the top-level find_package and Boost::process + asio_iface
