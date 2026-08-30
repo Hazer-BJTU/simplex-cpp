@@ -42,6 +42,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ---- Position-independent code (shared) ------------------------------------
+# -fPIC is the rule here, not a per-target opt-in: libraries in this tree end
+# up loaded into processes that also dlopen plugin modules
+# (docs/abi-context.md). SHARED/MODULE targets get PIC from the compiler
+# defaults anyway; this makes STATIC libraries — and executables, as -fPIE —
+# default to it too. No target sets POSITION_INDEPENDENT_CODE individually.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # ---- Build output directories ----------------------------------------------
 # All module artifacts land under the build tree (bin/ + lib/), not in the
 # source tree. The `indextools` host locates its plugins relative to its own

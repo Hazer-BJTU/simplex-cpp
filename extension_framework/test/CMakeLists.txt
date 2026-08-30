@@ -40,7 +40,6 @@ target_include_directories(toyextension PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(toyextension PRIVATE ${_ext_test_opts})
 target_link_libraries(toyextension PRIVATE extension_framework_iface)
 set_target_properties(toyextension PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
     PREFIX "lib"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/extension_test_modules")
 
@@ -57,7 +56,6 @@ foreach(_fixture bad_magic legacy)
     target_compile_options(${_fixture_target} PRIVATE ${_ext_test_opts})
     target_link_libraries(${_fixture_target} PRIVATE extension_framework_iface)
     set_target_properties(${_fixture_target} PROPERTIES
-        POSITION_INDEPENDENT_CODE ON
         PREFIX "lib"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/extension_test_modules_bad")
     unset(_fixture_target)
