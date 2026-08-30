@@ -5,7 +5,7 @@
 
 #include <cstdint>
 #include <sys/types.h>
-#include <unordered_map>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -23,9 +23,9 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
         .pid = pid_t{4212},
         .timeout_milliseconds = std::uint64_t{1500},
         .detach_on_timeout = false,
-        .environment = std::unordered_map<std::string, std::string>{
-            {"PATH", "/usr/bin"},
-            {"LANG", "C"},
+        .environment = std::vector<std::string>{
+            "PATH=/usr/bin",
+            "LANG=C",
         },
     };
 
@@ -50,7 +50,10 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
     BOOST_TEST(j.at("detach_on_timeout") == nlohmann::json(false));
     BOOST_TEST(j.at("inherit_environment") == nlohmann::json(true));
     BOOST_TEST(j.at("pid") == nlohmann::json(4212));
-    BOOST_TEST(j.at("environment").at("PATH") == nlohmann::json("/usr/bin"));
+    // The environment is an execve-style KEY=VALUE list on the wire: a JSON
+    // array of verbatim strings, caller's order preserved.
+    BOOST_TEST(j.at("environment") ==
+               nlohmann::json::array({"PATH=/usr/bin", "LANG=C"}));
 }
 
 BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
@@ -85,13 +88,13 @@ BOOST_AUTO_TEST_CASE(launch_spec_engaged_empty_environment_stays_engaged)
         .arguments = {},
         .description = "no extra entries",
         .timeout_milliseconds = std::uint64_t{100},
-        .environment = std::unordered_map<std::string, std::string>{},
+        .environment = std::vector<std::string>{},
     };
 
     const nlohmann::json j = spec;
-    // An engaged-but-empty map stays engaged: {} means "explicitly no extra
+    // An engaged-but-empty list stays engaged: [] means "explicitly no extra
     // entries", absent means "no environment section in this spec at all".
-    BOOST_TEST(j.at("environment") == nlohmann::json::object());
+    BOOST_TEST(j.at("environment") == nlohmann::json::array());
 
     const process::LaunchSpec back = j.get<process::LaunchSpec>();
     BOOST_TEST(back.environment.has_value());

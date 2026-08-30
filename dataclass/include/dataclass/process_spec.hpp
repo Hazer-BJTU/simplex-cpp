@@ -29,7 +29,6 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include <sys/types.h>
@@ -89,8 +88,12 @@ struct LaunchSpec {
     bool detach_on_timeout = true;
     // Additional environment entries for the child, applied on top of the
     // inherited environment when inherit_environment is true, or as the
-    // whole environment when it is false. Disengaged => no explicit entries.
-    std::optional<std::unordered_map<std::string, std::string>> environment;
+    // whole environment when it is false. Each entry is one "KEY=VALUE"
+    // string — the execve(2) environ shape, carried verbatim (this contract
+    // does not parse or validate the pairs; splitting on the first '=' is
+    // the manager's job). The vector keeps the caller's order, which a map
+    // never could. Disengaged => no explicit entries.
+    std::optional<std::vector<std::string>> environment;
     // true (default) => the child inherits the parent's environment.
     bool inherit_environment = true;
 };
@@ -124,8 +127,7 @@ inline void from_json(const nlohmann::json& j, LaunchSpec& s) {
         s.pid = it->get<pid_t>();
     else s.pid.reset();
     if (auto it = j.find("environment"); it != j.end() && !it->is_null())
-        s.environment =
-            it->get<std::unordered_map<std::string, std::string>>();
+        s.environment = it->get<std::vector<std::string>>();
     else s.environment.reset();
 }
 
