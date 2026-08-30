@@ -36,7 +36,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace process_io {
+namespace process {
 
 // ---- state ----------------------------------------------------------------
 
@@ -199,4 +199,4 @@ inline void from_json(const nlohmann::json& j, ExecutionResult& r) {
     else r.stderr_text.reset();
 }
 
-} // namespace process_io
+} // namespace process

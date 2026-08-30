@@ -9,14 +9,14 @@
 
 #include <nlohmann/json.hpp>
 
-// Round-trip and contract tests for the process_io records: keys match
+// Round-trip and contract tests for the process data records: keys match
 // fields, optionals omit when empty and never round-trip null, enums speak
 // the legacy state vocabulary with Unknown as the fail-safe, unknown keys
 // are ignored, and defaults survive an empty object. Pure data checks.
 
 BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
 {
-    const process_io::LaunchSpec spec{
+    const process::LaunchSpec spec{
         .executable = "wc",
         .arguments = {"-l", "notes.txt"},
         .description = "count lines",
@@ -30,7 +30,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
     };
 
     const nlohmann::json j = spec;
-    const process_io::LaunchSpec back = j.get<process_io::LaunchSpec>();
+    const process::LaunchSpec back = j.get<process::LaunchSpec>();
 
     BOOST_TEST(back.executable == spec.executable);
     BOOST_TEST(back.arguments == spec.arguments);
@@ -55,7 +55,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
 
 BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
 {
-    const process_io::LaunchSpec spec{
+    const process::LaunchSpec spec{
         .executable = "sleep",
         .arguments = {"10"},
         .description = "nap",
@@ -70,7 +70,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
     BOOST_TEST(!j.contains("pid"));
     BOOST_TEST(!j.contains("environment"));
 
-    const process_io::LaunchSpec back = j.get<process_io::LaunchSpec>();
+    const process::LaunchSpec back = j.get<process::LaunchSpec>();
     BOOST_TEST(back.timeout_milliseconds == std::uint64_t{0});
     BOOST_TEST(back.detach_on_timeout == true);
     BOOST_TEST(back.inherit_environment == true);
@@ -80,7 +80,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
 
 BOOST_AUTO_TEST_CASE(launch_spec_engaged_empty_environment_stays_engaged)
 {
-    const process_io::LaunchSpec spec{
+    const process::LaunchSpec spec{
         .executable = "env",
         .arguments = {},
         .description = "no extra entries",
@@ -93,15 +93,15 @@ BOOST_AUTO_TEST_CASE(launch_spec_engaged_empty_environment_stays_engaged)
     // entries", absent means "no environment section in this spec at all".
     BOOST_TEST(j.at("environment") == nlohmann::json::object());
 
-    const process_io::LaunchSpec back = j.get<process_io::LaunchSpec>();
+    const process::LaunchSpec back = j.get<process::LaunchSpec>();
     BOOST_TEST(back.environment.has_value());
     BOOST_TEST(back.environment->empty());
 }
 
 BOOST_AUTO_TEST_CASE(execution_status_round_trips_exit_code_and_state)
 {
-    const process_io::ExecutionStatus status{
-        .state = process_io::ProcessState::Exited,
+    const process::ExecutionStatus status{
+        .state = process::ProcessState::Exited,
         .exit_code = 3,
         .cumulative_execution_milliseconds = std::uint64_t{421},
     };
@@ -112,9 +112,9 @@ BOOST_AUTO_TEST_CASE(execution_status_round_trips_exit_code_and_state)
     BOOST_TEST(j.at("cumulative_execution_milliseconds") ==
                nlohmann::json(421));
 
-    const process_io::ExecutionStatus back =
-        j.get<process_io::ExecutionStatus>();
-    BOOST_CHECK(back.state == process_io::ProcessState::Exited);
+    const process::ExecutionStatus back =
+        j.get<process::ExecutionStatus>();
+    BOOST_CHECK(back.state == process::ProcessState::Exited);
     BOOST_TEST(back.exit_code.has_value());
     BOOST_TEST(*back.exit_code == 3);
     BOOST_TEST(back.cumulative_execution_milliseconds ==
@@ -123,24 +123,24 @@ BOOST_AUTO_TEST_CASE(execution_status_round_trips_exit_code_and_state)
 
 BOOST_AUTO_TEST_CASE(execution_status_defaults_are_unknown_and_pending)
 {
-    const process_io::ExecutionStatus status{};
+    const process::ExecutionStatus status{};
     const nlohmann::json j = status;
     // No exit yet: the key is omitted rather than written as null (the
     // legacy JSON wrote null — a presentation choice this contract drops).
     BOOST_TEST(!j.contains("exit_code"));
 
-    const process_io::ExecutionStatus back =
-        nlohmann::json::object().get<process_io::ExecutionStatus>();
-    BOOST_CHECK(back.state == process_io::ProcessState::Unknown);
+    const process::ExecutionStatus back =
+        nlohmann::json::object().get<process::ExecutionStatus>();
+    BOOST_CHECK(back.state == process::ProcessState::Unknown);
     BOOST_TEST(!back.exit_code.has_value());
     BOOST_TEST(back.cumulative_execution_milliseconds == std::uint64_t{0});
 }
 
 BOOST_AUTO_TEST_CASE(result_round_trips_spec_status_and_streams)
 {
-    const process_io::ExecutionResult result{
+    const process::ExecutionResult result{
         .spec =
-            process_io::LaunchSpec{
+            process::LaunchSpec{
                 .executable = "echo",
                 .arguments = {"hello"},
                 .description = "echo hello",
@@ -148,8 +148,8 @@ BOOST_AUTO_TEST_CASE(result_round_trips_spec_status_and_streams)
                 .timeout_milliseconds = std::uint64_t{500},
             },
         .execution =
-            process_io::ExecutionStatus{
-                .state = process_io::ProcessState::Exited,
+            process::ExecutionStatus{
+                .state = process::ProcessState::Exited,
                 .exit_code = 0,
                 .cumulative_execution_milliseconds = std::uint64_t{12},
             },
@@ -169,15 +169,15 @@ BOOST_AUTO_TEST_CASE(result_round_trips_spec_status_and_streams)
     // absent means "not part of this report".
     BOOST_TEST(j.at("stderr_text") == nlohmann::json(""));
 
-    const process_io::ExecutionResult back =
-        j.get<process_io::ExecutionResult>();
+    const process::ExecutionResult back =
+        j.get<process::ExecutionResult>();
     BOOST_TEST(back.spec.executable == result.spec.executable);
     BOOST_TEST(back.spec.arguments == result.spec.arguments);
     BOOST_TEST(back.spec.description == result.spec.description);
     BOOST_TEST(back.spec.pid.has_value());
     BOOST_TEST(*back.spec.pid == pid_t{7});
     BOOST_TEST(back.spec.timeout_milliseconds == std::uint64_t{500});
-    BOOST_CHECK(back.execution.state == process_io::ProcessState::Exited);
+    BOOST_CHECK(back.execution.state == process::ProcessState::Exited);
     BOOST_TEST(back.execution.exit_code.has_value());
     BOOST_TEST(*back.execution.exit_code == 0);
     BOOST_TEST(back.execution.cumulative_execution_milliseconds ==
@@ -191,9 +191,9 @@ BOOST_AUTO_TEST_CASE(result_round_trips_spec_status_and_streams)
 BOOST_AUTO_TEST_CASE(result_meta_only_shape_omits_stream_keys)
 {
     // A status listing carries spec + execution but no streams.
-    const process_io::ExecutionResult result{
+    const process::ExecutionResult result{
         .spec =
-            process_io::LaunchSpec{
+            process::LaunchSpec{
                 .executable = "sleep",
                 .arguments = {"30"},
                 .description = "sleep 30",
@@ -201,8 +201,8 @@ BOOST_AUTO_TEST_CASE(result_meta_only_shape_omits_stream_keys)
                 .timeout_milliseconds = std::uint64_t{30000},
             },
         .execution =
-            process_io::ExecutionStatus{
-                .state = process_io::ProcessState::Running,
+            process::ExecutionStatus{
+                .state = process::ProcessState::Running,
             },
     };
 
@@ -221,7 +221,7 @@ BOOST_AUTO_TEST_CASE(null_and_absent_optionals_read_as_disengaged)
         {"pid", nullptr},
         {"environment", nullptr},
     };
-    const process_io::LaunchSpec spec = spec_j.get<process_io::LaunchSpec>();
+    const process::LaunchSpec spec = spec_j.get<process::LaunchSpec>();
     BOOST_TEST(!spec.pid.has_value());
     BOOST_TEST(!spec.environment.has_value());
 
@@ -230,8 +230,8 @@ BOOST_AUTO_TEST_CASE(null_and_absent_optionals_read_as_disengaged)
         {"execution", nullptr},
         {"stdout_text", nullptr},
     };
-    const process_io::ExecutionResult result =
-        result_j.get<process_io::ExecutionResult>();
+    const process::ExecutionResult result =
+        result_j.get<process::ExecutionResult>();
     BOOST_TEST(!result.spec.pid.has_value());
     BOOST_TEST(!result.stdout_text.has_value());
 }
@@ -244,9 +244,9 @@ BOOST_AUTO_TEST_CASE(unknown_state_string_falls_back_to_unknown)
         {"state", "hibernating"},
         {"exit_code", 0},
     };
-    const process_io::ExecutionStatus status =
-        j.get<process_io::ExecutionStatus>();
-    BOOST_CHECK(status.state == process_io::ProcessState::Unknown);
+    const process::ExecutionStatus status =
+        j.get<process::ExecutionStatus>();
+    BOOST_CHECK(status.state == process::ProcessState::Unknown);
     BOOST_TEST(status.exit_code.value() == 0);
 }
 
@@ -260,8 +260,8 @@ BOOST_AUTO_TEST_CASE(unknown_keys_are_ignored)
         {"stdout_text", "meow"},
         {"future_field", "dropped on read"},
     };
-    const process_io::ExecutionResult result =
-        j.get<process_io::ExecutionResult>();
+    const process::ExecutionResult result =
+        j.get<process::ExecutionResult>();
     BOOST_TEST(result.spec.executable == std::string("cat"));
     BOOST_TEST(result.spec.pid.value() == pid_t{5});
     BOOST_TEST(result.stdout_text.value() == "meow");
