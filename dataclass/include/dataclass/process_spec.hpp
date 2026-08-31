@@ -91,21 +91,35 @@ struct LaunchSpec {
     // it is measured from.
     std::chrono::system_clock::time_point started_at{};
     // Required on every launch — always present on the wire, unlike the
-    // optional fields. The deadline this launch waits against; 0 disables
-    // the deadline (wait indefinitely). There is no optional
-    // fire-and-forget form anymore.
-    std::uint64_t timeout_milliseconds = 0;
+    // optional fields. 0 disables the deadline (wait indefinitely); there
+    // is no optional fire-and-forget form anymore. Semantics — this is the
+    // INITIAL-WAIT grace window, not a process lifetime cap by itself: the
+    // window opens when ProcessHandle::await_initial_execution() begins
+    // (not at spawn), a child finishing inside it takes the
+    // immediate-completion path, and on expiry the detach_on_timeout
+    // policy applies — under detach that means handing a still-running
+    // child to long-term observation, under kill the window IS a lifetime
+    // limit. Do not reuse this field as a generic execution-time budget.
+    std::uint64_t initial_wait_timeout_milliseconds = 0;
     // Only meaningful at the deadline: true (default) detaches and leaves
     // the child running, false kills it. The negation of the legacy
     // kill_on_timeout switch.
     bool detach_on_timeout = true;
-    // Additional environment entries for the child, applied on top of the
-    // inherited environment when inherit_environment is true, or as the
-    // whole environment when it is false. Each entry is one "KEY=VALUE"
-    // string — the execve(2) environ shape, carried verbatim (this contract
-    // does not parse or validate the pairs; splitting on the first '=' is
-    // the manager's job). The vector keeps the caller's order, which a map
-    // never could. Disengaged => no explicit entries.
+    // Capture cap SHARED by stdout and stderr, in bytes. The handle's
+    // readers keep draining both pipes after the cap is reached and discard
+    // the excess (a reader that stopped would block the child on a full
+    // pipe); ExecutionResult's stdout_truncated/stderr_truncated then say
+    // which captured text stopped at the cap. The default is 4 MiB, sized
+    // for "still fits a model context window"; 0 disables the cap.
+    std::uint64_t max_output_bytes = 4 * 1024 * 1024;
+    // Additional environment entries for the child, merged INTO the
+    // inherited environment by key when inherit_environment is true, or
+    // the whole environment when it is false. Each entry is one
+    // "KEY=VALUE" string — the execve(2) environ shape, carried verbatim
+    // (this contract does not parse or validate the pairs; splitting on
+    // the first '=' and overriding by key is the manager's job). The
+    // vector keeps the caller's order, which a map never could. Disengaged
+    // => no explicit entries.
     std::optional<std::vector<std::string>> environment;
     // true (default) => the child inherits the parent's environment.
     bool inherit_environment = true;
@@ -121,8 +135,10 @@ inline void to_json(nlohmann::json& j, const LaunchSpec& s) {
          std::chrono::duration_cast<std::chrono::milliseconds>(
              s.started_at.time_since_epoch())
              .count()},
-        {"timeout_milliseconds", s.timeout_milliseconds},
+        {"initial_wait_timeout_milliseconds",
+         s.initial_wait_timeout_milliseconds},
         {"detach_on_timeout", s.detach_on_timeout},
+        {"max_output_bytes", s.max_output_bytes},
         {"inherit_environment", s.inherit_environment},
     };
     if (s.environment) j["environment"] = *s.environment;
@@ -132,10 +148,13 @@ inline void from_json(const nlohmann::json& j, LaunchSpec& s) {
     if (auto it = j.find("executable"); it != j.end()) it->get_to(s.executable);
     if (auto it = j.find("arguments"); it != j.end()) it->get_to(s.arguments);
     if (auto it = j.find("description"); it != j.end()) it->get_to(s.description);
-    if (auto it = j.find("timeout_milliseconds"); it != j.end())
-        it->get_to(s.timeout_milliseconds);
+    if (auto it = j.find("initial_wait_timeout_milliseconds");
+        it != j.end())
+        it->get_to(s.initial_wait_timeout_milliseconds);
     if (auto it = j.find("detach_on_timeout"); it != j.end())
         it->get_to(s.detach_on_timeout);
+    if (auto it = j.find("max_output_bytes"); it != j.end())
+        it->get_to(s.max_output_bytes);
     if (auto it = j.find("inherit_environment"); it != j.end())
         it->get_to(s.inherit_environment);
     if (auto it = j.find("pid"); it != j.end()) it->get_to(s.pid);
@@ -144,9 +163,6 @@ inline void from_json(const nlohmann::json& j, LaunchSpec& s) {
             std::chrono::milliseconds{it->get<std::int64_t>()}};
     // JSON null reads as ABSENT — see the never-null round-trip rule in the
     // header comment (same guard detail::read_optional applies in model_io).
-    if (auto it = j.find("environment"); it != j.end() && !it->is_null())
-        s.environment = it->get<std::vector<std::string>>();
-    else s.environment.reset();
     if (auto it = j.find("environment"); it != j.end() && !it->is_null())
         s.environment = it->get<std::vector<std::string>>();
     else s.environment.reset();
@@ -196,17 +212,26 @@ inline void from_json(const nlohmann::json& j, ExecutionStatus& e) {
 // for the usual keys-match-fields rule. Disengaged stream fields mean "not
 // captured for this report" — a meta-only status listing, say — never
 // "empty output".
+//
+// The truncated flags say the captured text stops at the spec's
+// max_output_bytes cap: the stream was still drained to EOF past the cap,
+// the excess was discarded — a truncated flag is the only difference
+// between "all the output" and "the first cap bytes of the output".
 struct ExecutionResult {
     LaunchSpec spec;
     ExecutionStatus execution;
     std::optional<std::string> stdout_text;
     std::optional<std::string> stderr_text;
+    bool stdout_truncated = false;
+    bool stderr_truncated = false;
 };
 
 inline void to_json(nlohmann::json& j, const ExecutionResult& r) {
     j = nlohmann::json{
         {"spec", r.spec},
         {"execution", r.execution},
+        {"stdout_truncated", r.stdout_truncated},
+        {"stderr_truncated", r.stderr_truncated},
     };
     if (r.stdout_text) j["stdout_text"] = *r.stdout_text;
     if (r.stderr_text) j["stderr_text"] = *r.stderr_text;
@@ -221,6 +246,10 @@ inline void from_json(const nlohmann::json& j, ExecutionResult& r) {
     if (auto it = j.find("stderr_text"); it != j.end() && !it->is_null())
         r.stderr_text = it->get<std::string>();
     else r.stderr_text.reset();
+    if (auto it = j.find("stdout_truncated"); it != j.end())
+        it->get_to(r.stdout_truncated);
+    if (auto it = j.find("stderr_truncated"); it != j.end())
+        it->get_to(r.stderr_truncated);
 }
 
 } // namespace process
