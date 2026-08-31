@@ -92,6 +92,8 @@ BOOST_AUTO_TEST_CASE(stage_phrase_covers_every_stage)
     using Stage = process::ProcessException::Stage;
     BOOST_TEST(process::ProcessException::stage_phrase(Stage::ResolveExecutable)
                == std::string_view("while resolving the executable"));
+    BOOST_TEST(process::ProcessException::stage_phrase(Stage::Environment)
+               == std::string_view("while assembling the child environment"));
     BOOST_TEST(process::ProcessException::stage_phrase(Stage::Spawn)
                == std::string_view("while spawning the process"));
     BOOST_TEST(process::ProcessException::stage_phrase(Stage::Terminate)

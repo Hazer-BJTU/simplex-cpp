@@ -103,14 +103,16 @@ BOOST_AUTO_TEST_CASE(full_lifecycle_repeated_leaks_nothing)
     }
     // 300 complete lifecycles (spawn -> io tasks -> exit observed ->
     // destruction), all driven from ONE master coroutine under a single
-    // io_context::run(). The one-run shape is deliberate: re-running a
-    // returned io_context loses strand-posted wakeups (observed with asio
-    // 1.3x + make_strand — round 1 of a run-per-round loop never starts),
-    // so each round is a co_await, not a fresh run(). Warmup rounds absorb
-    // one-time lazy opens before the fd baseline; settle pauses let each
-    // batch's stragglers finish draining so the two measurements are
-    // comparable. Afterwards the count must be exactly back to the
-    // baseline, and no child — living or zombied — may remain.
+    // io_context::run(). The one-run shape avoids the io_context lifecycle
+    // trap: run() returning normally puts the context in the stopped
+    // state, and another run() without a restart() in between returns
+    // immediately (observed as a run-per-round loop hanging on round 1's
+    // never-started future) — so each round here is a co_await, never a
+    // fresh run(). Warmup rounds absorb one-time lazy opens before the fd
+    // baseline; settle pauses let each batch's stragglers finish draining
+    // so the two measurements are comparable. Afterwards the count must be
+    // exactly back to the baseline, and no child — living or zombied — may
+    // remain.
     constexpr int warmups = 3;
     constexpr int rounds = 300;
 
@@ -130,7 +132,7 @@ BOOST_AUTO_TEST_CASE(full_lifecycle_repeated_leaks_nothing)
                 .executable = "echo",
                 .arguments = {"leak", "probe"},
                 .description = "one short life",
-                .timeout_milliseconds = std::uint64_t{0},
+                .initial_wait_timeout_milliseconds = std::uint64_t{0},
             },
             strand);
         co_await handle->start_background_io_tasks();
@@ -186,7 +188,7 @@ BOOST_AUTO_TEST_CASE(destruction_storm_kills_and_reaps_every_child)
                 .executable = "sleep",
                 .arguments = {"30"},
                 .description = "storm member",
-                .timeout_milliseconds = std::uint64_t{0},
+                .initial_wait_timeout_milliseconds = std::uint64_t{0},
             },
             strand));
         pids.push_back(handles.back()->pid());
@@ -222,7 +224,7 @@ BOOST_AUTO_TEST_CASE(stdin_writes_after_close_or_death_are_dropped)
                 .executable = "cat",
                 .arguments = {},
                 .description = "echo stdin back",
-                .timeout_milliseconds = std::uint64_t{5000},
+                .initial_wait_timeout_milliseconds = std::uint64_t{5000},
             },
             [](process::ProcessHandle& handle) {
                 handle.write_input("first\n");
@@ -235,17 +237,22 @@ BOOST_AUTO_TEST_CASE(stdin_writes_after_close_or_death_are_dropped)
 
     // Sent after the child exited and the await task auto-closed the
     // channel: same quiet drop, nothing throws, output untouched. The
-    // extra run() drains the failed send's completion.
+    // restart() is required before the second run() — run_scenario already
+    // ran this io_context to exhaustion, and asio leaves a context stopped
+    // after run() returns, so a bare run() would dispatch nothing and the
+    // case would pass vacuously. Only with the restart does the failed
+    // send's completion handler (the logged drop) actually run.
     {
         auto s = run_scenario(process::LaunchSpec{
             .executable = "echo",
             .arguments = {"done"},
             .description = "exits immediately",
-            .timeout_milliseconds = std::uint64_t{5000},
+            .initial_wait_timeout_milliseconds = std::uint64_t{5000},
         });
         BOOST_TEST(s.finished_on_time);
 
         s.handle->write_input("too late\n");
+        s.io->restart();
         s.io->run();
 
         BOOST_TEST(s.handle->standard_output() == "done\n");

@@ -32,6 +32,7 @@ class ProcessException : public std::runtime_error {
 public:
     enum class Stage {
         ResolveExecutable, // locating the executable (PATH lookup)
+        Environment,       // assembling the child's environment (merge/validation)
         Spawn,             // launching the child process
         Terminate,         // terminating / reaping a running process
         Write,             // feeding the child's stdin
@@ -72,7 +73,8 @@ public:
     {
         switch (stage) {
             case Stage::ResolveExecutable: return "while resolving the executable";
-            case Stage::Spawn:              return "while spawning the process";
+            case Stage::Environment:       return "while assembling the child environment";
+            case Stage::Spawn:             return "while spawning the process";
             case Stage::Terminate:         return "while terminating the process";
             case Stage::Write:             return "while writing to the process";
             case Stage::Read:              return "while reading from the process";

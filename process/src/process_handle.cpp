@@ -1,6 +1,21 @@
 #include "process/process_handle.hpp"
 
+#include <algorithm>
+#include <cassert>
 #include <chrono>
+#include <limits>
+#include <string_view>
+#include <utility>
+
+namespace {
+
+// The key of an execve-style "KEY=VALUE" entry: everything before the
+// first '='. The value side may contain anything, including more '='.
+constexpr std::string_view env_key(std::string_view entry) {
+    return entry.substr(0, entry.find('='));
+}
+
+} // namespace
 
 namespace process {
 
@@ -23,9 +38,66 @@ ProcessHandle::ProcessHandle(
    _final_status(),
    _background_tasks()
 {
+    // Assemble the child's environment BEFORE resolving anything: a
+    // spec-supplied PATH must steer the lookup, and a malformed entry is a
+    // launch failure the caller can act on, not a surprise inside the
+    // child's environ.
+    //
+    // The assembly is a MERGE, never a concatenation. execve entries with
+    // duplicated names are undefined (glibc's getenv returns the FIRST
+    // match, so "inherit FOO=old, append FOO=new" would hand the child
+    // "old"), and v2's process_environment passes entries through verbatim
+    // without deduplicating — so uniqueness is this constructor's job: an
+    // explicit entry replaces the inherited entry of the same key, a later
+    // explicit entry replaces an earlier one.
+    std::vector<boost::process::environment::key_value_pair> used_envs;
+    if (_spec.inherit_environment) {
+        auto current_env = boost::process::environment::current();
+        used_envs.assign(current_env.begin(), current_env.end());
+    }
+    if (_spec.environment) {
+        for (const auto& env_config: *_spec.environment) {
+            const auto eq = env_config.find('=');
+            if (env_config.empty() || eq == std::string::npos || eq == 0 ||
+                env_config.find('\0') != std::string::npos) {
+                throw ProcessException(
+                    ProcessException::Stage::Environment,
+                    std::format(
+                        "invalid environment entry, expected KEY=VALUE: \"{}\"",
+                        env_config),
+                    {},
+                    _spec.executable,
+                    _spec.description
+                );
+            }
+            const auto key = env_key(env_config);
+            std::erase_if(used_envs, [&key](const auto& kv) {
+                const std::string_view existing{kv.data(), kv.size()};
+                return env_key(existing) == key;
+            });
+            used_envs.emplace_back(env_config);
+        }
+    }
+
+    // Executable resolution runs against the SAME environment the child
+    // will get — a spec-supplied PATH is honored (including with
+    // inherit_environment=false, where the spec's PATH is the only one).
+    // When the assembled environment carries no PATH at all, resolution
+    // falls back to the PARENT's PATH: a documented convenience so bare
+    // names still resolve; the child's own environment is unaffected by
+    // the fallback and really does ship without a PATH.
+    const bool child_env_has_path = std::any_of(
+        used_envs.begin(), used_envs.end(), [](const auto& kv) {
+            return std::string_view{kv.data(), kv.size()}
+                .starts_with("PATH=");
+        });
+    auto exec_path = child_env_has_path
+        ? boost::process::environment::find_executable(
+              _spec.executable, used_envs)
+        : boost::process::environment::find_executable(_spec.executable);
+
     // find_executable reports "not found" as an empty path rather than an
     // error, so the check has to happen before the spawn try-block.
-    auto exec_path = boost::process::environment::find_executable(_spec.executable);
     if (exec_path.empty()) {
         throw ProcessException(
             ProcessException::Stage::ResolveExecutable,
@@ -34,21 +106,6 @@ ProcessHandle::ProcessHandle(
             _spec.executable,
             _spec.description
         );
-    }
-
-    // execve-style environment: the parent's entries verbatim, or nothing at
-    // all when the spec opts out of inheritance, then the spec's KEY=VALUE
-    // entries appended — later entries win, same as a real environ.
-    auto current_env = boost::process::environment::current();
-    std::vector<boost::process::environment::key_value_pair> used_envs{current_env.begin(), current_env.end()};
-    if (!_spec.inherit_environment) {
-        used_envs.clear();
-    }
-
-    if (_spec.environment) {
-        for (const auto& env_config: *_spec.environment) {
-            used_envs.push_back(env_config);
-        }
     }
 
     try {
@@ -61,7 +118,14 @@ ProcessHandle::ProcessHandle(
         );
 
         _spec.pid = _process_ptr->id();
+        // Two anchors for the same moment, deliberately different clocks:
+        // started_at is the reportable wall-clock stamp (system_clock,
+        // serializable, ISO-8601-formattable), _started_steady the
+        // monotonic anchor every duration is measured from — system_clock
+        // is not guaranteed monotonic (NTP steps), so it must never be the
+        // base of elapsed-time accounting.
         _spec.started_at = std::chrono::system_clock::now();
+        _started_steady = std::chrono::steady_clock::now();
     } catch(const std::exception& e) {
         throw ProcessException(
             ProcessException::Stage::Spawn,
@@ -102,7 +166,8 @@ ProcessHandle::~ProcessHandle()
         // within-lifetime concept (the deadline policy), and destroying a
         // handle whose child lives is an abandonment this class resolves by
         // killing it, not by leaking it. terminate(ec) SIGKILLs, reaps and
-        // stores the exit status.
+        // stores the exit status. Both probes report their failures — a
+        // destructor cannot throw, but it can at least not stay silent.
         boost::system::error_code run_ec;
         if (_process_ptr->running(run_ec)) {
             logging::Logger::warning(std::format(
@@ -110,6 +175,19 @@ ProcessHandle::~ProcessHandle()
                 "running; terminating it",
                 _spec.executable, static_cast<int>(_spec.pid)));
             _process_ptr->terminate(run_ec);
+            if (run_ec) {
+                logging::Logger::warning(std::format(
+                    "terminating child {} (pid {}) during handle destruction "
+                    "failed: {}",
+                    _spec.executable, static_cast<int>(_spec.pid),
+                    run_ec.message()));
+            }
+        } else if (run_ec) {
+            logging::Logger::warning(std::format(
+                "probing child {} (pid {}) during handle destruction failed: "
+                "{}",
+                _spec.executable, static_cast<int>(_spec.pid),
+                run_ec.message()));
         }
     }
 }
@@ -198,10 +276,17 @@ boost::asio::awaitable<void> ProcessHandle::background_write_task(
 
 boost::asio::awaitable<void> ProcessHandle::background_read_task(
     boost::asio::readable_pipe& pipe,
-    std::string& output
+    std::string& output,
+    bool& truncated
 ) {
     boost::system::error_code ec;
     std::array<char, READBUFFER_SIZE> buffer;
+    // The spec's capture cap, shared by both streams (0 disables it). The
+    // loop below NEVER stops reading at the cap — a reader that quit would
+    // leave the pipe full and block the child on its next write — it just
+    // stops KEEPING what arrived past the cap, and the flag goes up the
+    // first time bytes are actually dropped.
+    const std::size_t cap = static_cast<std::size_t>(_spec.max_output_bytes);
     try {
         while(true) {
             if (!pipe.is_open()) {
@@ -214,7 +299,18 @@ boost::asio::awaitable<void> ProcessHandle::background_read_task(
                 boost::asio::redirect_error(boost::asio::use_awaitable, ec)
             );
             if (readed_size) {
-                output.append(buffer.data(), readed_size);
+                if (cap != 0 && output.size() >= cap) {
+                    // Already at the cap: drain and discard.
+                    truncated = true;
+                } else {
+                    const std::size_t room = (cap == 0)
+                        ? std::numeric_limits<std::size_t>::max()
+                        : cap - output.size();
+                    const std::size_t take =
+                        std::min(room, static_cast<std::size_t>(readed_size));
+                    output.append(buffer.data(), take);
+                    if (take < readed_size) truncated = true;
+                }
             }
             if (ec) {
                 if (pipe.is_open()) {
@@ -251,8 +347,35 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
     constexpr auto probe_interval = std::chrono::milliseconds{100};
 
     boost::system::error_code ec;
-    ExecutionStatus state;
     boost::asio::steady_timer probe{_strand};
+
+    // The unexpected-failure path. The watcher died WITHOUT observing a
+    // terminal state, so _final_status must stay disengaged — an engaged
+    // optional means "observed terminal state" and exited() must not lie.
+    // But the handle still has to quiesce: its background tasks hold
+    // shared_from_this() references, and with the watcher gone nobody else
+    // would ever close the stdin channel or end the read tasks — the
+    // handle would outlive its owner AND leak the child. So: close the
+    // faucet (the write task drains and ends), kill the child (both pipes
+    // hit EOF, the read tasks end). The destructor's running() probe then
+    // reaps whatever is left; exited() stays false, honestly.
+    auto watcher_failed = [&](std::string_view what) {
+        logging::Logger::error(std::format(
+            "process background await task failed: {}", what));
+        boost::system::error_code term_ec;
+        if (_process_ptr->running(term_ec)) {
+            _process_ptr->terminate(term_ec);
+        }
+        if (term_ec) {
+            logging::Logger::warning(std::format(
+                "defensive teardown of child {} (pid {}) after watcher "
+                "failure: {}",
+                _spec.executable, static_cast<int>(_spec.pid),
+                term_ec.message()));
+        }
+        _write_channel.close();
+    };
+
     try {
         // The wait cannot be a plain async_wait: v2's pidfd wait probes
         // waitpid(WNOHANG) and only then arms the pidfd — a child exiting
@@ -322,35 +445,46 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
             }
         }
 
+        // Only the successful terminal path may engage _final_status —
+        // this is the class invariant exited() reports, and a watcher
+        // failure must leave it disengaged (see watcher_failed).
+        ExecutionStatus state;
         state.state = ProcessState::Exited;
         state.exit_code = _process_ptr->exit_code();
-        auto ended_at = std::chrono::system_clock::now();
         state.cumulative_execution_milliseconds =
         std::chrono::duration_cast<std::chrono::milliseconds>(
-            ended_at - _spec.started_at
+            std::chrono::steady_clock::now() - _started_steady
         ).count();
+        _final_status = std::move(state);
+        // A dead child cannot read: close the stdin faucet so the write task
+        // drains and finishes too. This is what lets a handle quiesce without
+        // the owner remembering to close_input() first.
+        _write_channel.close();
+        co_return;
     } catch(const boost::system::system_error& e) {
         if (e.code() == boost::asio::error::operation_aborted) {
             // Cancellation arriving through the probe timer (the side
             // without redirect_error surfaces it as a thrown abort).
             co_return;
         }
-        logging::Logger::error(std::format("process background task exited: {}", e.what()));
+        watcher_failed(e.what());
+        co_return;
     } catch(const std::exception& e) {
-        logging::Logger::error(std::format("process background task exited: {}", e.what()));
+        watcher_failed(e.what());
+        co_return;
     } catch(...) {
-        logging::Logger::error("process background task exited: unknown error");
+        watcher_failed("unknown error");
+        co_return;
     }
-    _final_status = state;
-    // A dead child cannot read: close the stdin faucet so the write task
-    // drains and finishes too. This is what lets a handle quiesce without
-    // the owner remembering to close_input() first.
-    _write_channel.close();
-    co_return;
 }
 
 boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks() {
     co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
+    // The lifecycle contract above: one start per handle. assert, not a
+    // runtime state machine — this is an internal manager-side invariant.
+    assert(!_io_tasks_started);
+    _io_tasks_started = true;
+
     auto stdin_write_task = boost::asio::co_spawn(
         _strand,
         [self = shared_from_this()]() -> boost::asio::awaitable<void> {
@@ -362,7 +496,7 @@ boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks() {
     auto stdout_read_task = boost::asio::co_spawn(
         _strand,
         [self = shared_from_this()]() -> boost::asio::awaitable<void> {
-            co_await self->background_read_task(self->_pipe1, self->_standard_out);
+            co_await self->background_read_task(self->_pipe1, self->_standard_out, self->_stdout_truncated);
         },
         boost::asio::use_future
     );
@@ -370,7 +504,7 @@ boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks() {
     auto stderr_read_task = boost::asio::co_spawn(
         _strand,
         [self = shared_from_this()]() -> boost::asio::awaitable<void> {
-            co_await self->background_read_task(self->_pipe2, self->_standard_err);
+            co_await self->background_read_task(self->_pipe2, self->_standard_err, self->_stderr_truncated);
         },
         boost::asio::use_future
     );
@@ -384,8 +518,11 @@ boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks() {
 boost::asio::awaitable<bool> ProcessHandle::await_initial_execution() {
     using namespace boost::asio::experimental::awaitable_operators;
     co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
+    // Second half of the lifecycle contract: the io tasks must be running
+    // before anyone waits on the child.
+    assert(_io_tasks_started);
 
-    if (_spec.timeout_milliseconds == 0) {
+    if (_spec.initial_wait_timeout_milliseconds == 0) {
         // 0 disables the deadline: no timer to race against, just wait for
         // the terminal observation. "Finished on initial await" is then
         // always true — the wait itself is unbounded.
@@ -394,7 +531,8 @@ boost::asio::awaitable<bool> ProcessHandle::await_initial_execution() {
     }
 
     boost::asio::steady_timer timer{_strand};
-    timer.expires_after(std::chrono::milliseconds(_spec.timeout_milliseconds));
+    timer.expires_after(
+        std::chrono::milliseconds(_spec.initial_wait_timeout_milliseconds));
     std::variant<std::monostate, std::monostate> await_result = co_await (
         timer.async_wait(boost::asio::use_awaitable) ||
         background_await_task() // Cancelled on timeout.
@@ -415,10 +553,22 @@ boost::asio::awaitable<bool> ProcessHandle::await_initial_execution() {
 
         if (!_spec.detach_on_timeout) {
             // terminate() is v2's hard kill (SIGKILL; request_exit() would
-            // be the graceful SIGTERM). The restarted await task records the
-            // signal death — exit_code() == 9 — and closes the stdin
-            // channel.
-            _process_ptr->terminate();
+            // be the graceful SIGTERM). The non-throwing overload on
+            // purpose: the throwing one leaks boost::system::system_error
+            // across a boundary this class defines as ProcessException.
+            // The restarted await task records the signal death —
+            // exit_code() == 9 — and closes the stdin channel.
+            boost::system::error_code terminate_ec;
+            _process_ptr->terminate(terminate_ec);
+            if (terminate_ec) {
+                throw ProcessException(
+                    ProcessException::Stage::Terminate,
+                    "failed to terminate the process after the initial wait deadline",
+                    terminate_ec,
+                    _spec.executable,
+                    _spec.description
+                );
+            }
         }
         // detach_on_timeout: leave the child running; the restarted await
         // task still records its eventual natural exit.
@@ -482,12 +632,13 @@ ExecutionStatus ProcessHandle::status() const {
     }
     // No terminal observation yet: the handle spawned its child in the
     // constructor, so Running is the honest state — not Unknown — and the
-    // duration keeps accumulating off the stamped anchor.
+    // duration keeps accumulating off the monotonic anchor (never
+    // started_at: wall clock is for reports, not for measuring).
     ExecutionStatus live;
     live.state = ProcessState::Running;
     live.cumulative_execution_milliseconds = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now() - _spec.started_at
+            std::chrono::steady_clock::now() - _started_steady
         ).count());
     return live;
 }
@@ -500,12 +651,22 @@ const std::string& ProcessHandle::standard_error() const noexcept {
     return _standard_err;
 }
 
+bool ProcessHandle::stdout_truncated() const noexcept {
+    return _stdout_truncated;
+}
+
+bool ProcessHandle::stderr_truncated() const noexcept {
+    return _stderr_truncated;
+}
+
 ExecutionResult ProcessHandle::snapshot() const {
     ExecutionResult result;
     result.spec = _spec;
     result.execution = status();
     result.stdout_text = _standard_out;
     result.stderr_text = _standard_err;
+    result.stdout_truncated = _stdout_truncated;
+    result.stderr_truncated = _stderr_truncated;
     return result;
 }
 
