@@ -22,4 +22,9 @@ alive until the child's terminal state is observed; see the class comment
 for the full lifetime contract. Tests: the exception contract plus the
 handle lifecycle against side-effect-free coreutils (echo / false / cat /
 env / sleep); richer fixtures follow in the container build. Consumers
-link the `process_iface` INTERFACE target.
+link the `process_iface` INTERFACE target. A destructive-labelled suite
+(`test_process_destructive`: 300-round fd/pid leak audit, a destruction
+storm over live children, stdin-after-death handling) runs wherever the
+environment is disposable — in the build container, or anywhere with
+`SIMPLEX_DESTRUCTIVE_TESTS=1`; on a dev host it passes instantly and
+`ctest -LE destructive` skips it outright.

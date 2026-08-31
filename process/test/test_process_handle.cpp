@@ -1,11 +1,10 @@
 #define BOOST_TEST_MODULE ProcessHandleTests
 #include <boost/test/unit_test.hpp>
 
-#include "process/process_handle.hpp"
+#include "scenario.hpp"
 
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,62 +14,14 @@
 #include <sys/types.h>
 
 #include <boost/asio.hpp>
-#include <boost/asio/use_future.hpp>
 
 // Lifecycle tests for ProcessHandle against real but side-effect-free
 // children: echo / false / cat / env / sleep — coreutils any POSIX system
-// has, nothing that writes files or touches the network. Each case drives
-// one handle on a private io_context + strand (the usage pattern the class
-// comment documents) and runs the io_context to quiescence before
-// asserting, so what the assertions see is the settled aftermath: final
-// status recorded, pipes drained, stdin channel closed. Heavier fixtures
-// (real toolchain invocations) belong to the container build later.
+// has, nothing that writes files or touches the network. Heavier fixtures
+// (leak audits, destruction storms, real toolchain invocations) live in
+// test_process_destructive and belong to disposable environments.
 
-namespace {
-
-// One test run: owns the io_context and the handle, in that order, so the
-// handle (and its asio objects) is destroyed before its io_context —
-// declaration order is destruction order here.
-struct Scenario {
-    std::unique_ptr<boost::asio::io_context> io;
-    std::shared_ptr<process::ProcessHandle> handle;
-    bool finished_on_time = false;
-    std::chrono::system_clock::time_point before_spawn;
-    std::chrono::system_clock::time_point after_spawn;
-};
-
-// Spawns the spec, runs the standard lifecycle (start tasks -> optional
-// mid-life callback while the child is guaranteed alive -> await against the
-// deadline) and waits for full quiescence. The callback is where a case
-// feeds stdin or observes the live (Running) view.
-Scenario run_scenario(
-    process::LaunchSpec spec,
-    std::function<void(process::ProcessHandle&)> on_running = {})
-{
-    Scenario s;
-    s.io = std::make_unique<boost::asio::io_context>();
-    auto strand = boost::asio::make_strand(*s.io);
-
-    s.before_spawn = std::chrono::system_clock::now();
-    s.handle = std::make_shared<process::ProcessHandle>(std::move(spec), strand);
-    s.after_spawn = std::chrono::system_clock::now();
-
-    auto done = boost::asio::co_spawn(
-        strand,
-        [handle = s.handle, &finished = s.finished_on_time, on_running]()
-            -> boost::asio::awaitable<void> {
-            co_await handle->start_background_io_tasks();
-            if (on_running) on_running(*handle);
-            finished = co_await handle->await_initial_execution();
-        },
-        boost::asio::use_future);
-
-    s.io->run();
-    done.get();
-    return s;
-}
-
-} // namespace
+using process_test::run_scenario;
 
 BOOST_AUTO_TEST_CASE(spawns_echo_and_captures_stdout)
 {
