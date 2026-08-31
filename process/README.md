@@ -6,17 +6,20 @@ stdout/stderr incrementally, waiting with optional timeouts (kill or
 detach), and terminating stragglers — built on Boost.Process v2 running as
 asio coroutines. It knows nothing about *what* the children are for; the
 typed data contract it speaks lives in `dataclass/include/dataclass/
-process_spec.hpp` (`process_io::LaunchSpec` / `ExecutionStatus` /
+process_spec.hpp` (`process::LaunchSpec` / `ExecutionStatus` /
 `ExecutionResult`).
 
-**Status — foundations only.** The exception contract
-(`include/process/process_exceptions.hpp`, `process::ProcessException`) is
-the first
-resident: the manager framework lands next and will translate Boost.Process
-spawn failures into it, so no caller ever catches a boost type. When the
-manager arrives this target gains `Boost::process` + `asio_iface`
-dependencies (and the top-level `find_package` regains the `process`
-component).
-
-It is **header-only** today. Consumers link the `process_iface` INTERFACE
-target.
+**Status — the manager core has landed.** `process_lib` (libsubprocess.so)
+carries `ProcessHandle`: one managed child per instance. Construction IS
+the spawn — PATH resolution, execve-style environment assembly (inherit +
+the spec's `KEY=VALUE` entries), pipe wiring, pid + start-time stamps;
+failures there throw `process::ProcessException`, never a boost type.
+Afterwards strand-driven coroutines feed stdin through a thread-safe
+channel, drain stdout/stderr incrementally, and race the spec's deadline
+(kill or detach; a restarted watcher records the aftermath either way).
+The handle must live in a `shared_ptr` — the background tasks keep it
+alive until the child's terminal state is observed; see the class comment
+for the full lifetime contract. Tests: the exception contract plus the
+handle lifecycle against side-effect-free coreutils (echo / false / cat /
+env / sleep); richer fixtures follow in the container build. Consumers
+link the `process_iface` INTERFACE target.

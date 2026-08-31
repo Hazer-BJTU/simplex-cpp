@@ -1,14 +1,21 @@
-# process: the child-process management module (spawn / feed stdin / collect
-# output / terminate, on Boost.Process v2 + asio). Header-only for now — the
-# exception contract below is the first resident; the manager framework lands
-# next and will add Boost.Process + asio_iface to this target's dependencies
-# (and the process component to the top-level find_package).
-add_library(process_iface INTERFACE)
-target_include_directories(process_iface INTERFACE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(process_iface INTERFACE
-    simplex_thirdparty_iface
-    Boost::headers)
+add_library(process_lib SHARED
+    src/process_handle.cpp
+)
+target_include_directories(process_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(process_lib PUBLIC
+    boost_process_iface 
+    dataclass_iface 
+    logging_lib
+    asio_iface)
+target_compile_options(process_lib PRIVATE
+    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+set_target_properties(process_lib PROPERTIES OUTPUT_NAME subprocess)
+if(LTO_SUPPORT)
+    set_target_properties(process_lib PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+endif()
 
 if(BUILD_TESTS)
     add_subdirectory(test)
