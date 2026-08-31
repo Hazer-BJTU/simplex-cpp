@@ -26,6 +26,7 @@
 // guards instead of at(), round-trip invariant json(x).get<X>() reproduces x.
 //
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -74,13 +75,25 @@ struct LaunchSpec {
     // process; the manager never parses it.
     std::string description;
     // The Linux pid of the process this spec refers to — literally pid_t,
-    // not a manager-assigned handle. Absent in a pure launch request; the
-    // manager engages it once the process exists, so a result echoing its
-    // spec carries the pid set.
-    std::optional<pid_t> pid;
+    // not a manager-assigned handle. Required: the handle's constructor
+    // stamps it right after spawn, so any spec that has been through a
+    // handle carries it. A hand-built request before that point carries the
+    // sentinel 0 (never a real userspace pid) — "no pid yet" is a plain
+    // value, not a state worth an optional for.
+    pid_t pid = 0;
+    // Wall-clock start time as a chrono point — callers subtract, format and
+    // compare it directly, no integer unmarshalling. Required like pid, and
+    // stamped by the same constructor: the default epoch point (serialises
+    // as 0) is the "not stamped yet" sentinel. Serialised as Unix epoch
+    // milliseconds (the contract's time unit), so the wire resolution is
+    // milliseconds: a sub-millisecond fresh now() truncates on the way out.
+    // Elapsed-time accounting stays in ExecutionStatus; this is the anchor
+    // it is measured from.
+    std::chrono::system_clock::time_point started_at{};
     // Required on every launch — always present on the wire, unlike the
-    // optional fields. The deadline this launch waits against; there is no
-    // optional fire-and-forget form anymore.
+    // optional fields. The deadline this launch waits against; 0 disables
+    // the deadline (wait indefinitely). There is no optional
+    // fire-and-forget form anymore.
     std::uint64_t timeout_milliseconds = 0;
     // Only meaningful at the deadline: true (default) detaches and leaves
     // the child running, false kills it. The negation of the legacy
@@ -103,11 +116,15 @@ inline void to_json(nlohmann::json& j, const LaunchSpec& s) {
         {"executable", s.executable},
         {"arguments", s.arguments},
         {"description", s.description},
+        {"pid", s.pid},
+        {"started_at",
+         std::chrono::duration_cast<std::chrono::milliseconds>(
+             s.started_at.time_since_epoch())
+             .count()},
         {"timeout_milliseconds", s.timeout_milliseconds},
         {"detach_on_timeout", s.detach_on_timeout},
         {"inherit_environment", s.inherit_environment},
     };
-    if (s.pid) j["pid"] = *s.pid;
     if (s.environment) j["environment"] = *s.environment;
 }
 
@@ -121,11 +138,15 @@ inline void from_json(const nlohmann::json& j, LaunchSpec& s) {
         it->get_to(s.detach_on_timeout);
     if (auto it = j.find("inherit_environment"); it != j.end())
         it->get_to(s.inherit_environment);
+    if (auto it = j.find("pid"); it != j.end()) it->get_to(s.pid);
+    if (auto it = j.find("started_at"); it != j.end())
+        s.started_at = std::chrono::sys_time<std::chrono::milliseconds>{
+            std::chrono::milliseconds{it->get<std::int64_t>()}};
     // JSON null reads as ABSENT — see the never-null round-trip rule in the
     // header comment (same guard detail::read_optional applies in model_io).
-    if (auto it = j.find("pid"); it != j.end() && !it->is_null())
-        s.pid = it->get<pid_t>();
-    else s.pid.reset();
+    if (auto it = j.find("environment"); it != j.end() && !it->is_null())
+        s.environment = it->get<std::vector<std::string>>();
+    else s.environment.reset();
     if (auto it = j.find("environment"); it != j.end() && !it->is_null())
         s.environment = it->get<std::vector<std::string>>();
     else s.environment.reset();
@@ -166,9 +187,10 @@ inline void from_json(const nlohmann::json& j, ExecutionStatus& e) {
 // ---- result ----------------------------------------------------------------
 
 // One process as reported to a caller: the launch spec that started it,
-// echoed verbatim with the pid engaged (spec + pid is the process's
-// identity — the old manager-assigned id and duplicated description are
-// gone), how the execution went, and whichever output streams were captured.
+// echoed verbatim with pid and start time stamped by the handle (spec + pid
+// is the process's identity — the old manager-assigned id and duplicated
+// description are gone), how the execution went, and whichever output
+// streams were captured.
 // The stream fields carry a _text suffix because bare stdout/stderr collide
 // with the <cstdio> macros of the same name; the wire keys keep the suffix
 // for the usual keys-match-fields rule. Disengaged stream fields mean "not

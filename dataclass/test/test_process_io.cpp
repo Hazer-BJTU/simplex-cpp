@@ -3,6 +3,7 @@
 
 #include "dataclass/process_spec.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <sys/types.h>
 #include <vector>
@@ -21,6 +22,8 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
         .arguments = {"-l", "notes.txt"},
         .description = "count lines",
         .pid = pid_t{4212},
+        .started_at = std::chrono::system_clock::time_point{
+            std::chrono::milliseconds{1750000000123}},
         .timeout_milliseconds = std::uint64_t{1500},
         .detach_on_timeout = false,
         .environment = std::vector<std::string>{
@@ -40,8 +43,12 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
     BOOST_TEST(back.inherit_environment == spec.inherit_environment);
     // Boost.Test cannot print std::optional, so engaged values are asserted
     // through their contents, never as optionals.
-    BOOST_TEST(back.pid.has_value());
-    BOOST_TEST(*back.pid == pid_t{4212});
+    BOOST_TEST(back.pid == pid_t{4212});
+    // BOOST_CHECK, not BOOST_TEST: chrono points have no operator<<, so the
+    // value must never reach Boost.Test's printer.
+    BOOST_CHECK(back.started_at ==
+                std::chrono::system_clock::time_point{
+                    std::chrono::milliseconds{1750000000123}});
     BOOST_TEST(back.environment.has_value());
     BOOST_TEST(*back.environment == *spec.environment);
     // The timeout is a required field: always on the wire. Booleans carry
@@ -50,6 +57,8 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
     BOOST_TEST(j.at("detach_on_timeout") == nlohmann::json(false));
     BOOST_TEST(j.at("inherit_environment") == nlohmann::json(true));
     BOOST_TEST(j.at("pid") == nlohmann::json(4212));
+    // On the wire the point is an epoch-milliseconds integer.
+    BOOST_TEST(j.at("started_at") == nlohmann::json(1750000000123));
     // The environment is an execve-style KEY=VALUE list on the wire: a JSON
     // array of verbatim strings, caller's order preserved.
     BOOST_TEST(j.at("environment") ==
@@ -70,14 +79,19 @@ BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
     BOOST_TEST(j.at("timeout_milliseconds") == nlohmann::json(0));
     BOOST_TEST(j.at("detach_on_timeout") == nlohmann::json(true));
     BOOST_TEST(j.at("inherit_environment") == nlohmann::json(true));
-    BOOST_TEST(!j.contains("pid"));
+    // pid and started_at are required: their sentinels (0 / the epoch
+    // point) go on the wire, they are not omitted keys.
+    BOOST_TEST(j.at("pid") == nlohmann::json(0));
+    BOOST_TEST(j.at("started_at") == nlohmann::json(0));
     BOOST_TEST(!j.contains("environment"));
 
     const process::LaunchSpec back = j.get<process::LaunchSpec>();
     BOOST_TEST(back.timeout_milliseconds == std::uint64_t{0});
     BOOST_TEST(back.detach_on_timeout == true);
     BOOST_TEST(back.inherit_environment == true);
-    BOOST_TEST(!back.pid.has_value());
+    BOOST_TEST(back.pid == pid_t{0});
+    BOOST_CHECK(back.started_at ==
+                std::chrono::system_clock::time_point{});
     BOOST_TEST(!back.environment.has_value());
 }
 
@@ -177,8 +191,7 @@ BOOST_AUTO_TEST_CASE(result_round_trips_spec_status_and_streams)
     BOOST_TEST(back.spec.executable == result.spec.executable);
     BOOST_TEST(back.spec.arguments == result.spec.arguments);
     BOOST_TEST(back.spec.description == result.spec.description);
-    BOOST_TEST(back.spec.pid.has_value());
-    BOOST_TEST(*back.spec.pid == pid_t{7});
+    BOOST_TEST(back.spec.pid == pid_t{7});
     BOOST_TEST(back.spec.timeout_milliseconds == std::uint64_t{500});
     BOOST_CHECK(back.execution.state == process::ProcessState::Exited);
     BOOST_TEST(back.execution.exit_code.has_value());
@@ -218,14 +231,15 @@ BOOST_AUTO_TEST_CASE(null_and_absent_optionals_read_as_disengaged)
 {
     // JSON null reads as ABSENT: an engaged optional must never hold null or
     // the never-null round-trip would break (detail::read_optional rule).
+    // (pid and started_at are strict fields now — a JSON null on them throws
+    // like a null on timeout_milliseconds would, so only environment and the
+    // result's optionals take part in this case.)
     const nlohmann::json spec_j = nlohmann::json{
         {"executable", "sleep"},
         {"description", "x"},
-        {"pid", nullptr},
         {"environment", nullptr},
     };
     const process::LaunchSpec spec = spec_j.get<process::LaunchSpec>();
-    BOOST_TEST(!spec.pid.has_value());
     BOOST_TEST(!spec.environment.has_value());
 
     const nlohmann::json result_j = nlohmann::json{
@@ -235,7 +249,7 @@ BOOST_AUTO_TEST_CASE(null_and_absent_optionals_read_as_disengaged)
     };
     const process::ExecutionResult result =
         result_j.get<process::ExecutionResult>();
-    BOOST_TEST(!result.spec.pid.has_value());
+    BOOST_TEST(result.spec.pid == pid_t{0});
     BOOST_TEST(!result.stdout_text.has_value());
 }
 
@@ -266,6 +280,6 @@ BOOST_AUTO_TEST_CASE(unknown_keys_are_ignored)
     const process::ExecutionResult result =
         j.get<process::ExecutionResult>();
     BOOST_TEST(result.spec.executable == std::string("cat"));
-    BOOST_TEST(result.spec.pid.value() == pid_t{5});
+    BOOST_TEST(result.spec.pid == pid_t{5});
     BOOST_TEST(result.stdout_text.value() == "meow");
 }
