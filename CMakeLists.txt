@@ -42,6 +42,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ---- Position-independent code (shared) ------------------------------------
+# -fPIC is the rule here, not a per-target opt-in: libraries in this tree end
+# up loaded into processes that also dlopen plugin modules
+# (docs/abi-context.md). SHARED/MODULE targets get PIC from the compiler
+# defaults anyway; this makes STATIC libraries — and executables, as -fPIE —
+# default to it too. No target sets POSITION_INDEPENDENT_CODE individually.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # ---- Build output directories ----------------------------------------------
 # All module artifacts land under the build tree (bin/ + lib/), not in the
 # source tree. The `indextools` host locates its plugins relative to its own
@@ -80,10 +88,11 @@ target_link_libraries(openssl_iface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 
 # ---- Shared dependency: Boost ----------------------------------------------
 # Compiled components used by the core tree: unit_test_framework (the test
-# layer) and filesystem (the Boost.DLL support target below). The legacy
-# language-index domain (indextools) additionally used process and
-# program_options; it is no longer part of this build (pending extraction into
-# its own module) and takes those requirements with it.
+# layer), filesystem (the Boost.DLL support target below) and process (the
+# boost_process_iface target below — Boost.Process v2 grew a compiled piece,
+# libboost_process, so it needs the component, not just headers). Of the
+# legacy language-index domain's extras only program_options is still gone;
+# it stays with the extraction into a standalone module.
 #
 # Linked SHARED deliberately: the whole tree now standardizes on shared
 # libraries (the plugin-boundary strategy in docs/abi-context.md — one copy of
@@ -93,7 +102,7 @@ target_link_libraries(openssl_iface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 # its own private copy of the compiled components again.
 set(Boost_USE_STATIC_LIBS OFF)
 
-find_package(Boost REQUIRED COMPONENTS unit_test_framework filesystem)
+find_package(Boost REQUIRED COMPONENTS unit_test_framework filesystem process)
 
 # Boost.DLL is header-only (no compiled component / CMake config), but it
 # depends on Boost.Filesystem, Boost.System and, on Linux, libdl. Bundle those
@@ -105,6 +114,16 @@ target_link_libraries(boost_dll_iface INTERFACE
 # with the std::filesystem used throughout the codebase. Must be defined
 # consistently in every TU that includes a Boost.DLL header (host + plugins).
 target_compile_definitions(boost_dll_iface INTERFACE BOOST_DLL_USE_STD_FS)
+
+# Boost.Process v2 is the process/ module's manager foundation. Modern Boost
+# compiles a piece of it (libboost_process), so it joins Boost.DLL as a
+# top-level interface target instead of per-module requirements: consumers
+# link boost_process_iface, never raw Boost::process. Asio stays out of this
+# target on purpose — the manager's coroutine layer takes asio_iface
+# (utils/asio) so every consumer binds the one shared Asio runtime.
+add_library(boost_process_iface INTERFACE)
+target_link_libraries(boost_process_iface INTERFACE
+    Boost::process Boost::headers Boost::filesystem)
 
 # ---- Modules ----------------------------------------------------------------
 # enable_testing() at the top level so `ctest` run from the build root discovers
@@ -148,6 +167,13 @@ add_subdirectory(endpoint)
 # functions, so the module depends only on simplex_thirdparty_iface
 # (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
+# process after dataclass: the child-process management module. Its typed
+# data contract (process::LaunchSpec / ExecutionStatus / ExecutionResult)
+# lives in dataclass; the exception contract lands first. The manager
+# framework (Boost.Process v2 + asio) lands next and links
+# boost_process_iface (top level) + asio_iface (utils/asio) — both are
+# already in place for it.
+add_subdirectory(process)
 # llm after dataclass + extension_framework + versioning: the model-plugin
 # contract (LLMModel / LLMModelExtensionContext / LLMDispatcher), canonical
 # Responses adapter, and provider plugins build on the generic extension

@@ -27,17 +27,14 @@ set(LOGGING_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 # linked its own copy — a host-side level change would leave plugins logging
 # at the old level, and each module would serialize on its own mutex. The
 # SONAME makes uniqueness a loader guarantee.
-set(LIB_NAME "logging_lib")
-
-add_library(${LIB_NAME} SHARED
+add_library(logging_lib SHARED
     "${LOGGING_SOURCE_DIR}/src/logger.cpp"
 )
-set_target_properties(${LIB_NAME} PROPERTIES OUTPUT_NAME logging)
-set_target_properties(${LIB_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(${LIB_NAME} PUBLIC
+set_target_properties(logging_lib PROPERTIES OUTPUT_NAME logging)
+target_include_directories(logging_lib PUBLIC
     "${LOGGING_SOURCE_DIR}/include"
 )
-target_compile_options(${LIB_NAME} PRIVATE
+target_compile_options(logging_lib PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
@@ -46,12 +43,12 @@ target_compile_options(${LIB_NAME} PRIVATE
 # kDebugBuild without any macros at call sites.  LOGGING_DEBUG is treated as a
 # plain flag (defined = on), so it is emitted bare, only in the Debug
 # configuration; in every other configuration it is simply absent.
-target_compile_definitions(${LIB_NAME} PUBLIC
+target_compile_definitions(logging_lib PUBLIC
     $<$<CONFIG:Debug>:LOGGING_DEBUG>
 )
 # No external link deps — the logger uses only the standard library.
 if(LTO_SUPPORT)
-    set_target_properties(${LIB_NAME} PROPERTIES
+    set_target_properties(logging_lib PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
         INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE
     )

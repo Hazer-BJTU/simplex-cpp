@@ -4,7 +4,6 @@ target_compile_options(llm_openai PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
 set_target_properties(llm_openai PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
     PREFIX "lib"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/llm")
 if(LTO_SUPPORT)

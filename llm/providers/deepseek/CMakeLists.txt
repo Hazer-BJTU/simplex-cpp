@@ -19,7 +19,6 @@ target_compile_options(llm_deepseek PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
 set_target_properties(llm_deepseek PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
     PREFIX "lib"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/llm")
 if(LTO_SUPPORT)

@@ -54,7 +54,6 @@ target_link_libraries(llm_responses PUBLIC llm_iface endpoint_lib)
 target_compile_options(llm_responses PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
-set_target_properties(llm_responses PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(LTO_SUPPORT)
     set_target_properties(llm_responses PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
@@ -81,7 +80,6 @@ target_link_libraries(llm_chat_completions
 target_compile_options(llm_chat_completions PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
-set_target_properties(llm_chat_completions PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(LTO_SUPPORT)
     set_target_properties(llm_chat_completions PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE

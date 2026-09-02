@@ -26,7 +26,7 @@ docker build -f docker/Dockerfile.build-context -t <ctx-tag> .
 | CMake | 3.31 (apt) | PATH | Tree requires ≥ 3.20. |
 | OpenSSL dev | distro version | apt `libssl-dev` | For the asio SSL runtime; no pin by design (`third_party/versions/README.md`). |
 | binutils (nm/readelf) | from the gcc base image | PATH | Needed by the `llm_plugin_boundary_hygiene` ctest. |
-| Boost | 1.91.0 **shared** | `/usr/local` | Built with exactly `filesystem` + `test` (= unit_test_framework): headers, `libboost_*.so.1.91.0`, and the CMake config package under `/usr/local/lib/cmake/Boost-1.91.0` — `find_package(Boost)` needs no `BOOST_ROOT`. |
+| Boost | 1.91.0 **shared** | `/usr/local` | Built with exactly `filesystem` + `process` + `test` (= unit_test_framework): headers, `libboost_*.so.1.91.0`, and the CMake config package under `/usr/local/lib/cmake/Boost-1.91.0` — `find_package(Boost)` needs no `BOOST_ROOT`. |
 | nlohmann/json | 3.12.0 (single header) | `/opt/simplex-thirdparty/include/nlohmann/json.hpp` | |
 | yaml-cpp | 0.9.0, static **PIC** | `/opt/simplex-thirdparty/libs/libyaml-cpp.a` | PIC because it reaches MODULE plugin `.so`s through `simplex_thirdparty_iface`. |
 
@@ -37,8 +37,9 @@ layout, so the tree consumes it unchanged via
 truth; when a version moves, both this image and the records move with it.
 
 Deliberately **absent**: any source code; tree-sitter and Boost
-`process`/`program_options` (only consumers were the legacy
-languages/indextools domain, no longer wired into the top-level build).
+`program_options` (their only consumer was the legacy languages/indextools
+domain; `process` is back — the new core `process` module's manager builds
+on it).
 
 Recorded versions are inspectable: `docker inspect <image>` → LABELs
 (`simplex.build.*`).

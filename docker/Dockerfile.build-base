@@ -55,7 +55,7 @@ RUN wget -q -O /tmp/boost.tar.gz \
         https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz \
     && tar -xzf /tmp/boost.tar.gz -C /tmp \
     && cd /tmp/boost_1_91_0 \
-    && ./bootstrap.sh --with-libraries=filesystem,test \
+    && ./bootstrap.sh --with-libraries=filesystem,process,test \
     && ./b2 -j4 link=shared runtime-link=shared variant=release install \
     && ldconfig \
     && rm -rf /tmp/boost.tar.gz /tmp/boost_1_91_0

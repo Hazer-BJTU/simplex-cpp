@@ -22,3 +22,10 @@ target_link_libraries(test_endpoint_config PRIVATE
     dataclass_iface
     Boost::unit_test_framework)
 add_test(NAME dataclass_endpoint_config COMMAND test_endpoint_config)
+
+# Round-trip tests for the process data records (the subprocess data contract).
+add_executable(test_process_io test_process_io.cpp)
+target_link_libraries(test_process_io PRIVATE
+    dataclass_iface
+    Boost::unit_test_framework)
+add_test(NAME dataclass_process_io COMMAND test_process_io)
