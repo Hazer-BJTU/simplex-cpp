@@ -1,12 +1,14 @@
 // Shared test support for the socket-level intercom tests: loopback WebSocket
-// servers. Deterministic and offline — everything runs against 127.0.0.1 over
-// plain ws:// (no TLS) with fixed exchanges, no timing dependence except where
-// a test deliberately drives the read-deadline case. The server publishes its
+// servers. Deterministic and offline — everything runs against 127.0.0.1 with
+// fixed exchanges, over plain ws:// or (for the wss flavour) a loopback TLS
+// listener with a self-signed certificate, no timing dependence except where a
+// test deliberately drives the read-deadline case. The server publishes its
 // port as soon as it is listening and rethrows any server-side failure on
 // join(), so a broken test fails loudly instead of hanging the client.
 #pragma once
 
 #include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
@@ -160,6 +162,82 @@ private:
     std::thread _thread;
 };
 
+// A one-shot TLS WebSocket echo server for the wss:// flavour. Binds loopback,
+// publishes its port, then on the first client: TLS handshake (server),
+// WebSocket upgrade (server), echo one text message, and a normal close. The
+// caller supplies the certificate/key PEM (the test uses a self-signed
+// localhost certificate). Same port/done contract as OneShotServer.
+class TlsEchoServer {
+public:
+    TlsEchoServer(std::string cert_pem, std::string key_pem)
+        : _port_promise(std::make_shared<std::promise<unsigned short>>())
+        , _done_promise(std::make_shared<std::promise<void>>())
+        , _port(_port_promise->get_future())
+        , _done(_done_promise->get_future())
+        , _thread([this, cert = std::move(cert_pem), key = std::move(key_pem)] {
+              try {
+                  asio::io_context io;
+                  asio::ssl::context ctx(asio::ssl::context::tls_server);
+                  ctx.use_certificate(asio::buffer(cert), asio::ssl::context::pem);
+                  ctx.use_private_key(asio::buffer(key), asio::ssl::context::pem);
+
+                  tcp::acceptor acceptor(
+                      io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+                  _port_promise->set_value(acceptor.local_endpoint().port());
+
+                  asio::ssl::stream<tcp::socket> tls(io, ctx);
+                  acceptor.accept(tls.lowest_layer());
+                  boost::system::error_code handshake_ec;
+                  tls.handshake(asio::ssl::stream_base::server, handshake_ec);
+                  if (handshake_ec) {
+                      // The client rejected the certificate/handshake (the
+                      // untrusted-certificate test) — nothing more to serve,
+                      // and the client-side assertion is what matters here.
+                      _done_promise->set_value();
+                      return;
+                  }
+
+                  websocket::stream<asio::ssl::stream<tcp::socket>> ws{
+                      std::move(tls)};
+                  ws.accept();
+                  beast::flat_buffer buffer;
+                  ws.read(buffer);
+                  ws.text(true);
+                  const std::string reply = beast::buffers_to_string(buffer.data());
+                  ws.write(asio::buffer(reply));
+                  boost::system::error_code ignored;
+                  ws.close(websocket::close_code::normal, ignored);
+
+                  _done_promise->set_value();
+              } catch (...) {
+                  try {
+                      _done_promise->set_exception(std::current_exception());
+                  } catch (...) {}
+              }
+          })
+    {}
+
+    TlsEchoServer(const TlsEchoServer&) = delete;
+    TlsEchoServer& operator=(const TlsEchoServer&) = delete;
+
+    ~TlsEchoServer() {
+        if (_thread.joinable()) _thread.join();
+    }
+
+    unsigned short wait_listening() { return _port.get(); }
+    void join() {
+        _thread.join();
+        _done.get();
+    }
+
+private:
+    std::shared_ptr<std::promise<unsigned short>> _port_promise;
+    std::shared_ptr<std::promise<void>> _done_promise;
+    std::future<unsigned short> _port;
+    std::future<void> _done;
+    std::thread _thread;
+};
+
 // --- responder flavours -------------------------------------------------------
 //
 // Each accepts the WebSocket upgrade, reads the client's one message, and then
@@ -177,6 +255,25 @@ inline void serve_echo(tcp::socket& socket, bool* got_text_out = nullptr) {
     if (got_text_out) *got_text_out = ws.got_text();
     ws.text(true);
     const std::string reply = beast::buffers_to_string(buffer.data());
+    ws.write(asio::buffer(reply));
+}
+
+// Read the upgrade request, record its Host header into host_out, then accept
+// (101) and echo the client's message back — the authority/Host-header case
+// (a non-default port must appear in the Host field).
+inline void serve_echo_record_host(tcp::socket& socket, std::string* host_out) {
+    beast::flat_buffer buffer;
+    http::request<http::string_body> request;
+    http::read(socket, buffer, request);
+    if (host_out) *host_out = std::string(request[http::field::host]);
+
+    websocket::stream<tcp::socket> ws{std::move(socket)};
+    ws.accept(request);   // validate + send 101 (the request is already read)
+
+    beast::flat_buffer message;
+    ws.read(message);
+    ws.text(true);
+    const std::string reply = beast::buffers_to_string(message.data());
     ws.write(asio::buffer(reply));
 }
 

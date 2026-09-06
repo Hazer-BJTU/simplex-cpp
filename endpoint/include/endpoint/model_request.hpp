@@ -574,10 +574,11 @@ struct ResolvedEndpoint {
 /**
  * @brief Leniently resolve a ModelEndpoint into host/port/target.
  *
- *   * scheme optional (https assumed); http:// allowed for local backends;
- *     the default port follows the scheme (443 / 80) unless an explicit
- *     :port overrides it, and the tls flag records the scheme so callers can
- *     pick the matching connection factory
+ *   * scheme optional (https assumed); http:// and ws:// allowed for local
+ *     plain-TCP backends, https:// and wss:// for the TLS flavours; the
+ *     default port follows the scheme (443 for TLS, 80 for plain) unless an
+ *     explicit :port overrides it, and the tls flag records the scheme so
+ *     callers can pick the matching connection factory
  *   * any path prefix in base_url is kept and request_path is appended
  *   * trailing slashes in either part are tolerated
  *
@@ -590,7 +591,12 @@ inline ResolvedEndpoint resolve_endpoint(const model_io::ModelEndpoint& endpoint
     std::string rest = endpoint.base_url;
 
     bool tls = true; // https assumed when no scheme is given
-    if (rest.rfind("https://", 0) == 0) {
+    if (rest.rfind("wss://", 0) == 0) {
+        rest.erase(0, 6);
+    } else if (rest.rfind("ws://", 0) == 0) {
+        rest.erase(0, 5);
+        tls = false;
+    } else if (rest.rfind("https://", 0) == 0) {
         rest.erase(0, 8);
     } else if (rest.rfind("http://", 0) == 0) {
         rest.erase(0, 7);
@@ -708,11 +714,11 @@ create_connection_stream(
 {
     if (resolved.tls) {
         co_return connection_stream{
-            co_await detail::connect_flavour<https_stream>::connect(
+            co_await connect_stream_flavour<https_stream>::connect(
                 executor, resolved.host, resolved.port, context)};
     }
     co_return connection_stream{
-        co_await detail::connect_flavour<http_stream>::connect(
+        co_await connect_stream_flavour<http_stream>::connect(
             executor, resolved.host, resolved.port, context)};
 }
 

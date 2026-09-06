@@ -24,10 +24,16 @@
 //                                            message is re-sent verbatim, up
 //                                            to the retry budget.
 //
-// The retry engine inherits endpoint::retry_policy for its backoff/timer
-// machinery (the type-agnostic half) but does NOT reuse its HttpRequestException
-// verdict — intercom failures are WsException, so the recoverability table is
-// the module-local is_recoverable below, keyed on WsException.
+// Retry semantics (see is_recoverable and the fetch constructor):
+//
+//   * Connect-stage failures are retried when the transport error is an
+//     unambiguous transient (refused/reset/timeout/try-again/truncated TLS) —
+//     safe, because the request never reached the server.
+//   * Write/Read failures are AMBIGUOUS: the server may already have
+//     processed the request and lost the reply. They are retried ONLY when
+//     the caller declared the operation idempotent (fetch's constructor flag)
+//     AND the error is an unambiguous transient transport failure — never
+//     cancellation, never a WebSocket protocol/close error.
 
 #include <chrono>
 #include <cstddef>
@@ -48,11 +54,9 @@
 
 namespace intercom {
 
-/// Deadline for sending one message. Mirrors endpoint's write deadline: a
-/// large JSON payload on a slow link is not an unreachable service.
-inline constexpr std::size_t DEFAULT_WS_WRITE_TIMEOUT_SEC = 60;
-/// Deadline for reading one reply. Generous by default — an internal backend
-/// may compute before answering — and per-call configurable (0 = indefinite).
+/// Deadline for reading one reply, applied as the WebSocket idle timeout
+/// (no-activity limit). Generous by default — an internal backend may compute
+/// before answering — and per-call configurable (0 = indefinite).
 inline constexpr std::size_t DEFAULT_WS_READ_TIMEOUT_SEC = 300;
 
 /**
@@ -64,13 +68,22 @@ inline constexpr std::size_t DEFAULT_WS_READ_TIMEOUT_SEC = 300;
  * returns; the frame opcode the peer used is irrelevant — the payload comes
  * back as a std::string either way.
  *
+ * The read deadline is applied as Beast's idle timeout (set_option), NOT as a
+ * lowest-layer tcp_stream deadline: the underlying tcp_stream timer is
+ * disabled by connect_websocket, per Beast's requirement. 0 disables the
+ * timeout (wait indefinitely).
+ *
  * @param executor         Executor the connect and exchange run on.
  * @param endpoint         Where to connect (host/port/tls; endpoint.target is
  *                         the WebSocket path), as endpoint::resolve_endpoint
- *                         parsed it — or constructed directly.
+ *                         parsed it (ws:// wss:// http:// https://) — or
+ *                         constructed directly.
  * @param request          The message to send (a TEXT frame, JSON in
  *                         practice); re-sent verbatim by the retry engine.
- * @param read_timeout_sec Reply read deadline; 0 waits indefinitely.
+ * @param read_timeout_sec Reply read deadline (idle timeout); 0 waits
+ *                         indefinitely.
+ * @param context          TLS client context; wss:// flavour only, global by
+ *                         default — pass a custom context for a private CA.
  * @return The reply message's payload bytes.
  * @throws WsException{Stage::Connect} on connect/upgrade failure (from
  *         connect_websocket); Stage::Write / Stage::Read for a mid-exchange
@@ -81,9 +94,12 @@ inline boost::asio::awaitable<std::string> fetch_once(
     boost::asio::any_io_executor executor,
     endpoint::ResolvedEndpoint endpoint,
     std::string request,
-    std::size_t read_timeout_sec = DEFAULT_WS_READ_TIMEOUT_SEC)
+    std::size_t read_timeout_sec = DEFAULT_WS_READ_TIMEOUT_SEC,
+    endpoint::ssl_context& context = endpoint::get_global_ssl_context())
 {
-    websocket_stream stream = co_await connect_websocket(executor, endpoint);
+    namespace websocket = boost::beast::websocket;
+
+    websocket_stream stream = co_await connect_websocket(executor, endpoint, context);
 
     // The exchange below consumes the request; keep the endpoint context for
     // the error paths, which outlive it.
@@ -92,18 +108,22 @@ inline boost::asio::awaitable<std::string> fetch_once(
 
     WsException::Stage stage = WsException::Stage::Write;
     try {
-        // The write deadline is deliberately longer than the connect one: a
-        // large message on a slow uplink is not an unreachable service.
-        stream.expires_after(
-            std::chrono::seconds(DEFAULT_WS_WRITE_TIMEOUT_SEC));
+        // Configure the session timeout through Beast's own option: the reply
+        // read deadline as the idle timeout. This also bounds a stuck write
+        // on a dead session — the connection is closed after no activity for
+        // the idle interval, failing whichever operation is pending.
+        auto timeout = websocket::stream_base::timeout::suggested(
+            boost::beast::role_type::client);
+        timeout.handshake_timeout =
+            std::chrono::seconds(endpoint::DEFAULT_TIMEOUT_SEC);
+        timeout.idle_timeout = (read_timeout_sec == 0)
+            ? websocket::stream_base::none()
+            : std::chrono::seconds(read_timeout_sec);
+        stream.set_option(timeout);
+
         co_await stream.write(std::move(request));
 
         stage = WsException::Stage::Read;
-        if (read_timeout_sec == 0) {
-            stream.expires_never();
-        } else {
-            stream.expires_after(std::chrono::seconds(read_timeout_sec));
-        }
         boost::beast::flat_buffer buffer;
         co_await stream.read(buffer);
 
@@ -139,51 +159,86 @@ inline boost::asio::awaitable<std::string> fetch_once(
 }
 
 /**
- * @brief The intercom recoverability verdict for one failed attempt.
+ * @brief A Connect-stage error is transient: a fresh attempt could succeed.
  *
- * The module's own table, keyed on WsException (endpoint::retry_policy's
- * default verdict is HttpRequestException-typed and does not apply here). A
- * recoverable failure is one a FRESH attempt could plausibly fix:
- *
- *   * Connect failures classify by error-code category: DNS try-again,
- *     refused / reset / timed-out, the stream-level connect timeout, and a
- *     truncated TLS handshake are transient; authoritative host-not-found and
- *     certificate-verification failures are not. An upgrade rejection
- *     (websocket::error::upgrade_declined, bad_response, ...) is also NOT
- *     recoverable — the same request draws the same answer.
- *   * Write / Read mid-exchange (a dropped session, a read timeout — the
- *     WsTimeoutException included) — recoverable: the request itself was
- *     sound.
- *   * Unknown — NOT: something unwrapped and unclassifiable; fail fast.
+ * The unambiguous half of the retry verdict — the request never reached the
+ * server, so re-sending is always safe when the failure is a network
+ * transient. DNS try-again, refused / reset / timed-out, the connect timeout,
+ * and a truncated TLS handshake qualify; authoritative host-not-found,
+ * certificate-verification failure, and upgrade rejection
+ * (websocket::error::upgrade_declined, ...) do not.
  */
-inline bool is_recoverable(const WsException& failure) noexcept {
+inline bool is_transient_connect_error(
+    const boost::system::error_code& ec) noexcept
+{
     namespace asio = boost::asio;
     namespace ssl = asio::ssl;
 
+    if (ec.category() == asio::error::get_netdb_category()) {
+        return ec == asio::error::host_not_found_try_again;
+    }
+    if (ec == asio::error::connection_refused ||
+        ec == asio::error::connection_reset ||
+        ec == asio::error::timed_out ||
+        ec == boost::beast::error::timeout) {
+        return true;
+    }
+    if (ec.category() == ssl::error::get_stream_category()) {
+        return ec == ssl::error::stream_truncated;
+    }
+    return false;
+}
+
+/**
+ * @brief A Write/Read error is an unambiguous transient transport failure.
+ *
+ * An explicit whitelist, not a stage-wide "recoverable": only these errors
+ * justify re-sending a request. Everything else — cancellation
+ * (operation_aborted), WebSocket protocol errors, application/peer close
+ * conditions, message-too-big — is NOT recoverable, because retrying cannot
+ * help and (for cancellation) would transform the caller's request to stop
+ * into another network attempt.
+ */
+inline bool is_transient_transport_error(
+    const boost::system::error_code& ec) noexcept
+{
+    namespace asio = boost::asio;
+
+    return ec == asio::error::connection_reset ||
+           ec == asio::error::eof ||
+           ec == asio::error::broken_pipe ||
+           ec == asio::error::timed_out ||
+           ec == boost::beast::error::timeout;
+}
+
+/**
+ * @brief The intercom recoverability verdict for one failed attempt.
+ *
+ * The module's own table, keyed on WsException (endpoint::retry_policy's
+ * default verdict is HttpRequestException-typed and does not apply here).
+ *
+ *   * Connect — recoverable iff the transport error is a transient (see
+ *     is_transient_connect_error). Safe to retry unconditionally: the request
+ *     never left the client.
+ *   * Write / Read — AMBIGUOUS: the server may have processed the request
+ *     before the reply was lost. Recoverable ONLY when @p idempotent is true
+ *     (the caller declared the operation safe to re-execute) AND the error is
+ *     an unambiguous transient transport failure (see
+ *     is_transient_transport_error). A non-idempotent operation therefore
+ *     never re-sends after the request may have been acted on.
+ *   * Unknown — never.
+ *
+ * @param idempotent Whether the caller declared the request safe to re-send
+ *                   after an ambiguous Write/Read failure.
+ */
+inline bool is_recoverable(const WsException& failure, bool idempotent) noexcept {
     switch (failure.stage()) {
-        case WsException::Stage::Connect: {
-            const auto& ec = failure.error_code();
-            if (ec.category() == asio::error::get_netdb_category()) {
-                // Authoritative not-found is a config bug; TRY_AGAIN is the
-                // resolver being briefly unable to answer.
-                return ec == asio::error::host_not_found_try_again;
-            }
-            if (ec == asio::error::connection_refused ||
-                ec == asio::error::connection_reset ||
-                ec == asio::error::timed_out ||
-                ec == boost::beast::error::timeout) {
-                return true;
-            }
-            if (ec.category() == ssl::error::get_stream_category()) {
-                // A handshake cut mid-stream may be a middlebox hiccup; a
-                // certificate the client rejects never becomes valid.
-                return ec == ssl::error::stream_truncated;
-            }
-            return false;   // upgrade_declined, host_not_found, cert, ...
-        }
+        case WsException::Stage::Connect:
+            return is_transient_connect_error(failure.error_code());
         case WsException::Stage::Write:
         case WsException::Stage::Read:
-            return true;
+            return idempotent &&
+                   is_transient_transport_error(failure.error_code());
         case WsException::Stage::Unknown:
         default:
             return false;
@@ -203,10 +258,18 @@ inline bool is_recoverable(const WsException& failure) noexcept {
  * One call is up to _max_retry_attempts + 1 fetch_once exchanges: the INITIAL
  * exchange plus, while failures classify as recoverable (is_recoverable),
  * one retry each. Every attempt is a fresh connect/upgrade, the SAME message
- * re-sent verbatim. An attempt SUCCEEDS when fetch_once returns; a
- * non-recoverable failure propagates immediately; a non-WsException (a stray
- * std::exception) is the caller's own bug and surfaces without retry. The
- * final failure propagates as-is, with the give-up recorded in the log.
+ * re-sent verbatim.
+ *
+ * The retry contract (see is_recoverable):
+ *   * Connect-stage transient failures are always retried — safe, the request
+ *     never reached the server.
+ *   * Write/Read failures are retried ONLY when this engine was constructed
+ *     with idempotent = true AND the error is an unambiguous transient
+ *     transport failure. An idempotent request is one the caller declares
+ *     safe to re-execute (e.g. a read-only query); for anything with a side
+ *     effect (create/start/update/commit), leave idempotent false and the
+ *     ambiguous failure propagates immediately, so the caller can dedupe or
+ *     report it. Cancellation and protocol errors are never retried.
  *
  * Concurrency: ONE operator() in flight per instance — the retry state
  * (_backoff, _timer) is shared and unsynchronized. Run concurrent queries on
@@ -214,7 +277,30 @@ inline bool is_recoverable(const WsException& failure) noexcept {
  */
 class fetch : public endpoint::retry_policy {
 public:
-    using endpoint::retry_policy::retry_policy;
+    /**
+     * @brief Construct the retry engine for one executor.
+     *
+     * @param executor            Executor every attempt and backoff runs on.
+     * @param initial_backoff     Backoff before the FIRST retry; doubles per
+     *                            retry up to max_backoff.
+     * @param max_backoff         Backoff ceiling.
+     * @param max_retry_attempts  Maximum number of RETRIES after the initial
+     *                            attempt (the initial attempt does not count).
+     * @param idempotent          Whether the request may be safely re-sent
+     *                            after an ambiguous Write/Read failure (see
+     *                            the class doc). Default false.
+     */
+    explicit fetch(
+        boost::asio::any_io_executor executor,
+        std::chrono::milliseconds initial_backoff = std::chrono::milliseconds{500},
+        std::chrono::milliseconds max_backoff = std::chrono::milliseconds{120000},
+        unsigned int max_retry_attempts = 3,
+        bool idempotent = false)
+        : endpoint::retry_policy(
+              std::move(executor), initial_backoff, max_backoff,
+              max_retry_attempts),
+          _idempotent(idempotent)
+    {}
 
     /**
      * @brief Run one bounded WebSocket query with plain retry.
@@ -222,12 +308,15 @@ public:
      * @param endpoint         Where to connect, every attempt.
      * @param request          The message, re-sent verbatim every attempt.
      * @param read_timeout_sec Read deadline, forwarded to fetch_once.
+     * @param context          TLS client context; wss:// flavour only,
+     *                         forwarded to fetch_once.
      * @return The reply bytes of the first attempt that succeeded.
      */
     boost::asio::awaitable<std::string> operator()(
         endpoint::ResolvedEndpoint endpoint,
         std::string request,
-        std::size_t read_timeout_sec = DEFAULT_WS_READ_TIMEOUT_SEC)
+        std::size_t read_timeout_sec = DEFAULT_WS_READ_TIMEOUT_SEC,
+        endpoint::ssl_context& context = endpoint::get_global_ssl_context())
     {
         // Per-call reset: the shared retry state must not leak a previous
         // call's exhausted backoff into this one.
@@ -238,9 +327,10 @@ public:
         for (unsigned int attempt = 0; attempt <= _max_retry_attempts; ++attempt) {
             try {
                 co_return co_await fetch_once(
-                    _executor, endpoint, request, read_timeout_sec);
+                    _executor, endpoint, request, read_timeout_sec, context);
             } catch (const WsException& failure) {
-                if (!is_recoverable(failure) || attempt == _max_retry_attempts) {
+                if (!is_recoverable(failure, _idempotent) ||
+                    attempt == _max_retry_attempts) {
                     logging::Logger::error(
                         "intercom fetch failed, giving up after "
                         + std::to_string(attempt + 1) + " of "
@@ -272,6 +362,9 @@ public:
         // Unreachable: every path out of the last iteration returns or throws.
         throw std::logic_error("intercom::fetch: retry loop fell through");
     }
+
+private:
+    bool _idempotent;
 };
 
 } // namespace intercom

@@ -15,12 +15,18 @@
 // The flavour is a RUNTIME fact (the endpoint's scheme), exactly as on the
 // HTTP side, so a std::variant dispatches each operation instead of a
 // template parameter. The canonical producer is connect_websocket below: it
-// reuses endpoint's connect_flavour to establish the TCP/TLS connection (SNI,
-// certificate verification, handshake — all unchanged from the HTTP side),
-// wraps the connected stream in a websocket::stream, and completes the
+// reuses endpoint::connect_stream_flavour to establish the TCP/TLS connection
+// (SNI, certificate verification, handshake — all unchanged from the HTTP
+// side), wraps the connected stream in a websocket::stream, and completes the
 // WebSocket upgrade handshake. A caller that wants the plain connection
 // flavour passes tls=false in the ResolvedEndpoint; connect_websocket returns
 // the same facade type either way.
+//
+// Timeouts are Beast's OWN machinery, never the lowest-layer tcp_stream
+// deadline: once a websocket::stream manages the connection, Beast requires
+// the tcp_stream timeout to stay disabled, so connect_websocket disables it
+// and the caller configures handshake/idle limits through
+// websocket::stream_base::timeout (see set_option below and fetch.hpp).
 //
 // Message framing: the module's contract is TEXT frames (the payloads are
 // JSON in practice). write() sets the text option explicitly and sends one
@@ -42,7 +48,7 @@
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/websocket/ssl.hpp>   // async_teardown for ssl::stream
 
-#include "endpoint/model_request.hpp"   // ResolvedEndpoint, connect_flavour, stream aliases
+#include "endpoint/model_request.hpp"   // ResolvedEndpoint, connect_stream_flavour, stream aliases
 #include "intercom/ws_exception.hpp"
 
 // Teardown customization for Beast's timeout-aware tcp_stream. Beast ships
@@ -141,33 +147,27 @@ public:
             _alternative);
     }
 
-    // --- deadline controls (lowest layer) ---------------------------------
+    // --- timeout configuration ---------------------------------------------
 
-    /// Arm the deadline on the lowest layer (the tcp_stream).
-    /// @throws WsException{Stage::Unknown} when empty.
-    void expires_after(std::chrono::steady_clock::duration expiry) {
-        _check("expires_after");
+    /**
+     * @brief Configure the WebSocket timeout options (handshake + idle).
+     *
+     * The ONLY deadline mechanism for the session. The underlying tcp_stream
+     * deadline is disabled by connect_websocket — once a websocket::stream
+     * manages the connection, Beast requires the lower-layer timer to stay
+     * off (re-enabling it underneath an active WebSocket stream is undefined
+     * behaviour); its own stream_base::timeout option is the correct place to
+     * set handshake and idle limits.
+     *
+     * @throws WsException{Stage::Unknown} when empty.
+     */
+    void set_option(boost::beast::websocket::stream_base::timeout option) {
+        _check("set_option");
         std::visit(
             [&](auto& alternative) {
                 using Flavour = std::decay_t<decltype(alternative)>;
                 if constexpr (!std::is_same_v<Flavour, std::monostate>) {
-                    boost::beast::get_lowest_layer(*alternative)
-                        .expires_after(expiry);
-                }
-            },
-            _alternative);
-    }
-
-    /// Disarm the deadline.
-    /// @throws WsException{Stage::Unknown} when empty.
-    void expires_never() {
-        _check("expires_never");
-        std::visit(
-            [&](auto& alternative) {
-                using Flavour = std::decay_t<decltype(alternative)>;
-                if constexpr (!std::is_same_v<Flavour, std::monostate>) {
-                    boost::beast::get_lowest_layer(*alternative)
-                        .expires_never();
+                    alternative->set_option(option);
                 }
             },
             _alternative);
@@ -287,21 +287,29 @@ private:
  * @brief Establish a WebSocket session: connect, upgrade, fold failures.
  *
  * The connect primitive every intercom exchange rides on. It reuses
- * endpoint::detail::connect_flavour — the SAME TCP+TLS connection factory
+ * endpoint::connect_stream_flavour — the SAME TCP+TLS connection factory
  * (SNI, certificate verification, handshake) the HTTP side uses — rather
  * than re-implementing it, then wraps the connected stream in a
- * websocket::stream and completes the upgrade handshake against
- * resolved.target (the WebSocket path) and resolved.host (the Host header).
+ * websocket::stream and completes the upgrade handshake.
  *
- * Every failure — DNS/TCP/TLS from connect_flavour, and the upgrade
+ * The WebSocket upgrade request's Host field is resolved.authority() — the
+ * host plus a non-default port — so virtual-host routing and proxies see the
+ * same authority the HTTP transport sends (see ResolvedEndpoint::authority).
+ * The lowest-layer tcp_stream deadline is DISABLED before the handshake and
+ * the handshake itself runs under Beast's handshake_timeout option, per
+ * Beast's requirement that the lower-layer timer stay off under an active
+ * WebSocket stream.
+ *
+ * Every failure — DNS/TCP/TLS from connect_stream_flavour, and the upgrade
  * handshake's own errors (a 401/403 rejection surfaces as
  * websocket::error::upgrade_declined) — is folded into
  * WsException{Stage::Connect} carrying the transport error_code and the
  * host/target context, so callers classify connect failures uniformly.
  *
  * @param executor Executor on which all connect/handshake I/O runs.
- * @param resolved Where to connect: host/port/tls as endpoint parsed them;
- *                 resolved.target is the WebSocket path.
+ * @param resolved Where to connect: host/port/tls as endpoint parsed them
+ *                 (ws:// wss:// http:// https://); resolved.target is the
+ *                 WebSocket path.
  * @param context  TLS client context; wss:// flavour only, global by default.
  * @return A fully handshaken websocket_stream of the resolved scheme's
  *         flavour.
@@ -312,27 +320,39 @@ inline boost::asio::awaitable<websocket_stream> connect_websocket(
     const endpoint::ResolvedEndpoint& resolved,
     endpoint::ssl_context& context = endpoint::get_global_ssl_context())
 {
+    namespace websocket = boost::beast::websocket;
+
     try {
+        // The handshake deadline, applied through Beast's own option. The
+        // lower-layer tcp_stream deadline is disabled below — once the
+        // websocket::stream is managing the connection, re-enabling it is UB.
+        auto timeout = websocket::stream_base::timeout::suggested(
+            boost::beast::role_type::client);
+        timeout.handshake_timeout =
+            std::chrono::seconds(endpoint::DEFAULT_TIMEOUT_SEC);
+
         if (resolved.tls) {
-            auto tls = co_await endpoint::detail::connect_flavour<
+            auto tls = co_await endpoint::connect_stream_flavour<
                 endpoint::https_stream>::connect(
                     executor, resolved.host, resolved.port, context);
             ws_tls_stream ws{std::move(*tls)};
-            boost::beast::get_lowest_layer(ws).expires_after(
-                std::chrono::seconds(endpoint::DEFAULT_TIMEOUT_SEC));
+            boost::beast::get_lowest_layer(ws).expires_never();
+            ws.set_option(timeout);
             co_await ws.async_handshake(
-                resolved.host, resolved.target, boost::asio::use_awaitable);
+                resolved.authority(), resolved.target,
+                boost::asio::use_awaitable);
             co_return websocket_stream{
                 std::make_unique<ws_tls_stream>(std::move(ws))};
         }
-        auto plain = co_await endpoint::detail::connect_flavour<
+        auto plain = co_await endpoint::connect_stream_flavour<
             endpoint::http_stream>::connect(
                 executor, resolved.host, resolved.port, context);
         ws_plain_stream ws{std::move(*plain)};
-        boost::beast::get_lowest_layer(ws).expires_after(
-            std::chrono::seconds(endpoint::DEFAULT_TIMEOUT_SEC));
+        boost::beast::get_lowest_layer(ws).expires_never();
+        ws.set_option(timeout);
         co_await ws.async_handshake(
-            resolved.host, resolved.target, boost::asio::use_awaitable);
+            resolved.authority(), resolved.target,
+            boost::asio::use_awaitable);
         co_return websocket_stream{
             std::make_unique<ws_plain_stream>(std::move(ws))};
     } catch (const boost::system::system_error& e) {
