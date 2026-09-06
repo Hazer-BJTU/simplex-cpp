@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file extension_framework/plugin_magic.hpp
+ * @file extensions/plugin_magic.hpp
  * @brief Toolchain-fingerprint admission block for dynamic plugin modules.
  *
  * This project keeps *live-object* plugins: executors, coroutine frames and
@@ -39,7 +39,7 @@
  *
  * Usage — exactly one TU of every plugin module:
  *
- *     #include "extension_framework/plugin_magic.hpp"
+ *     #include "extensions/plugin_magic.hpp"
  *     SIMPLEX_EXPORT_PLUGIN_MAGIC
  *
  * Modules without the block are rejected as legacy/broken: there is no
@@ -207,7 +207,7 @@ inline MagicVerdict check_module_magic(
         if (!lib.has("simplex_plugin_magic")) {
             diagnostic =
                 "no plugin magic block — every module must define "
-                "SIMPLEX_EXPORT_PLUGIN_MAGIC (extension_framework/"
+                "SIMPLEX_EXPORT_PLUGIN_MAGIC (extensions/"
                 "plugin_magic.hpp) in exactly one TU";
             return MagicVerdict::Absent;
         }

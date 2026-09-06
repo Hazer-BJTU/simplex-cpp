@@ -60,9 +60,9 @@ set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 3)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
-# Rendered into version.hpp and hashed by extension_framework/plugin_magic.hpp
+# Rendered into version.hpp and hashed by extensions/plugin_magic.hpp
 # (consteval FNV-1a, together with _GLIBCXX_USE_CXX11_ABI, sizeof(void*) and the
-# build profile injected as a compile definition on extension_framework_iface).
+# build profile injected as a compile definition on extensions_iface).
 # find_package(Boost) at the top level runs before this subdirectory, so
 # Boost_VERSION is available here.
 set(SIMPLEX_PLUGIN_TOOLCHAIN_ID

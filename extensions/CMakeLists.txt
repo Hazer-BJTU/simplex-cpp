@@ -1,5 +1,5 @@
 # =============================================================================
-# extension_framework — module
+# extensions — module
 #
 # The generic, domain-agnostic *extension* framework: dynamic-library discovery,
 # loading, verification, and the ExtensionContext base interface. It is the
@@ -7,7 +7,7 @@
 # collapsing the loading pipeline into a single header, extensions.hpp.
 #
 # Header-only (templates + a few inline free functions), exposed as the
-# `extension_framework_iface` INTERFACE target so a consumer links it once and
+# `extensions_iface` INTERFACE target so a consumer links it once and
 # gets the include path plus every transitive dependency.
 #
 # Dependencies (all declared at the top level or in sibling modules, so this
@@ -25,15 +25,15 @@
 #
 # Header management is interface-target-only (the project convention): there are
 # no directory-scope include_directories() calls here. Consumers link
-# `extension_framework_iface` and get `extension_framework/include` transitively.
-# Exported headers live under include/extension_framework/ and are included as
-# "extension_framework/<name>.hpp".
+# `extensions_iface` and get `extensions/include` transitively.
+# Exported headers live under include/extensions/ and are included as
+# "extensions/<name>.hpp".
 # =============================================================================
 
-add_library(extension_framework_iface INTERFACE)
-target_include_directories(extension_framework_iface INTERFACE
+add_library(extensions_iface INTERFACE)
+target_include_directories(extensions_iface INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(extension_framework_iface INTERFACE
+target_link_libraries(extensions_iface INTERFACE
     boost_dll_iface
     logging_lib
     simplex_thirdparty_iface
@@ -43,7 +43,7 @@ target_link_libraries(extension_framework_iface INTERFACE
 # CMake (no define at all) hashes 2 — which never matches a host built here.
 # Host executables and plugin modules both link this interface target, and the
 # build is single-config, so both sides always agree.
-target_compile_definitions(extension_framework_iface INTERFACE
+target_compile_definitions(extensions_iface INTERFACE
     $<$<CONFIG:Debug>:SIMPLEX_PLUGIN_BUILD_PROFILE=0>
     $<$<NOT:$<CONFIG:Debug>>:SIMPLEX_PLUGIN_BUILD_PROFILE=1>)
 

@@ -9,7 +9,7 @@
 # <exe>/plugins/llm) and are NOT part of this target.
 #
 # Dependencies:
-#   - extension_framework_iface: ExtensionContext / factory resolution /
+#   - extensions_iface: ExtensionContext / factory resolution /
 #     ExtensionDispatcher (which also carries Boost.DLL, Boost headers, the
 #     third-party nlohmann/json, and the logger).
 #   - dataclass_iface: the model_io data contract the interface speaks in.
@@ -22,7 +22,7 @@
 add_library(llm_iface INTERFACE)
 target_include_directories(llm_iface INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(llm_iface INTERFACE
-    extension_framework_iface
+    extensions_iface
     dataclass_iface
     simplex_versioning
     asio_iface)

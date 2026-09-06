@@ -6,7 +6,7 @@
  * runtime host scans) and exercises the full path the CacheSystem relies on:
  * load + ABI-gate + warm, route by file-name regex, and mint a working analyzer
  * via the cached product_factory. (Priority tie-breaking among overlapping
- * plugins is covered by the extension_framework's own dispatcher unit tests;
+ * plugins is covered by the extensions' own dispatcher unit tests;
  * the real python/fallback plugins deliberately do not overlap, so it is not
  * asserted here.)
  */

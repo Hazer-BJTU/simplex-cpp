@@ -23,7 +23,7 @@
 #define BOOST_TEST_MODULE ExtensionFrameworkDynamicTests
 #include <boost/test/unit_test.hpp>
 
-#include "extension_framework/extensions.hpp"
+#include "extensions/extensions.hpp"
 #include "toy_extension_spec.hpp"
 
 #include <boost/dll/shared_library.hpp>
@@ -305,7 +305,7 @@ BOOST_AUTO_TEST_CASE(product_factory_default_product_survives_factory_destructio
 // refused inside get_library_ref — before any alias is resolved and before any
 // code in the module runs — with a diagnostic naming both contexts and the
 // remedy. This is the gate that turns "same toolchain" from a convention into
-// a checked fact (see extension_framework/plugin_magic.hpp).
+// a checked fact (see extensions/plugin_magic.hpp).
 BOOST_AUTO_TEST_CASE(module_with_wrong_toolchain_fingerprint_is_rejected) {
     auto path = bad_magic_path();
     BOOST_REQUIRE(std::filesystem::exists(path));

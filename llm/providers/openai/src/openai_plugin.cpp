@@ -17,7 +17,7 @@
 
 #include <boost/dll/alias.hpp>
 
-#include "extension_framework/plugin_magic.hpp"
+#include "extensions/plugin_magic.hpp"
 
 namespace llm::openai {
 

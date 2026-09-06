@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file extension_framework/extensions.hpp
+ * @file extensions/extensions.hpp
  * @brief Generic, domain-agnostic *extension* framework: dynamic-library
  *        discovery, loading, verification, and a base context interface.
  *
@@ -98,7 +98,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "extension_framework/plugin_magic.hpp"
+#include "extensions/plugin_magic.hpp"
 #include "logging/logger.hpp"
 
 namespace extension {
@@ -327,7 +327,7 @@ inline std::shared_ptr<boost::dll::shared_library> get_library_ref(
 
         // Admission gate, before any alias is resolved or factory called:
         // the module's toolchain magic block must match this build's own
-        // (extension_framework/plugin_magic.hpp). The check necessarily
+        // (extensions/plugin_magic.hpp). The check necessarily
         // runs after dlopen() — ELF constructors and relocations have
         // already executed; what it guarantees is that no plugin LOGIC
         // runs. A module from any other execution context is rejected with

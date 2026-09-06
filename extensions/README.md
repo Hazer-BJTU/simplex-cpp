@@ -1,4 +1,4 @@
-# extension_framework
+# extensions
 
 A generic, **domain-agnostic** dynamic-library extension system. It discovers,
 loads, verifies, routes, and creates objects from `.so`/`.dll`/`.dylib` plugin
@@ -7,10 +7,10 @@ greeters, …). A new domain plugs in by including one header and supplying two
 callables.
 
 It is **header-only**: the entire framework lives in
-[`include/extension_framework/extensions.hpp`](include/extension_framework/extensions.hpp).
+[`include/extensions/extensions.hpp`](include/extensions/extensions.hpp).
 It depends on Boost.DLL (loading), nlohmann/json (`extras()`), and the project
 logger (`verify_after_loaded` diagnostics). Consumers link the
-`extension_framework_iface` INTERFACE target.
+`extensions_iface` INTERFACE target.
 
 > This framework supersedes the old `plugin::` framework. The `indextools`
 > language layer is a full real-world example of it — see
@@ -66,7 +66,7 @@ host-side loading/routing. This is a header shared by the host and every plugin.
 #include <cstdint>
 #include <memory>
 #include <string_view>
-#include "extension_framework/extensions.hpp"
+#include "extensions/extensions.hpp"
 
 namespace mydomain {
 
@@ -110,7 +110,7 @@ cleanest place for both:
 
 ```cpp
 #include "mydomain/my_plugin.hpp"
-#include "extension_framework/extensions.hpp"
+#include "extensions/extensions.hpp"
 
 class MyDispatcher : public extension::ExtensionDispatcher {
 public:
@@ -154,13 +154,13 @@ highest-`priority()`-first, overridable with `set_selector(...)`.
 
 ### 1.3 CMake
 
-The contract header needs only `extension_framework_iface` (which transitively
+The contract header needs only `extensions_iface` (which transitively
 brings Boost.DLL, nlohmann/json, the logger):
 
 ```cmake
 add_library(mydomain_iface INTERFACE)
 target_include_directories(mydomain_iface INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(mydomain_iface INTERFACE extension_framework_iface)
+target_link_libraries(mydomain_iface INTERFACE extensions_iface)
 ```
 
 Plugins link `mydomain_iface` (PRIVATE) + `boost_dll_iface`; the host links it too.
@@ -305,7 +305,7 @@ contract.
 
 ## API summary
 
-All in `namespace extension`, in [`extensions.hpp`](include/extension_framework/extensions.hpp).
+All in `namespace extension`, in [`extensions.hpp`](include/extensions/extensions.hpp).
 
 | Entity | Purpose |
 |--------|---------|

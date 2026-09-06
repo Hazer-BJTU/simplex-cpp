@@ -2,7 +2,7 @@
 # simplex-cpp — top-level build
 #
 # This is a multi-module C++ project. Each module lives in its own
-# subdirectory (utils, extension_framework, endpoint, dataclass, llm, …) and
+# subdirectory (utils, extensions, endpoint, dataclass, llm, …) and
 # is wired in with `add_subdirectory()` below.
 #
 # What belongs HERE (the top level) and not inside a module:
@@ -154,10 +154,10 @@ option(BUILD_TESTS "Build unit tests" ON)
 # process and the vendored tree-sitter libs).
 add_subdirectory(versioning)
 add_subdirectory(utils)
-# extension_framework after utils' logging + the top-level interface targets:
-# it is a header-only module (extension_framework_iface) that links
+# extensions after utils' logging + the top-level interface targets:
+# it is a header-only module (extensions_iface) that links
 # boost_dll_iface, logging_lib, and simplex_thirdparty_iface.
-add_subdirectory(extension_framework)
+add_subdirectory(extensions)
 # endpoint after utils: endpoint_lib links logging_lib (the public
 # https_connection.hpp uses logging::Logger) and the shared Boost/OpenSSL.
 add_subdirectory(endpoint)
@@ -178,7 +178,7 @@ add_subdirectory(dataclass)
 # boost_process_iface (top level) + asio_iface (utils/asio) — both are
 # already in place for it.
 add_subdirectory(process)
-# llm after dataclass + extension_framework + versioning: the model-plugin
+# llm after dataclass + extensions + versioning: the model-plugin
 # contract (LLMModel / LLMModelExtensionContext / LLMDispatcher), canonical
 # Responses adapter, and provider plugins build on the generic extension
 # framework, endpoint transport and model_io data contract. Runtime providers

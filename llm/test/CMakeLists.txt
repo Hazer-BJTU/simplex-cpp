@@ -10,7 +10,7 @@
 # the responses/* tests below.
 #
 # llm_iface already carries Boost headers (Asio), nlohmann/json,
-# extension_framework, and the generated versioning header.
+# extensions, and the generated versioning header.
 
 add_executable(test_llm_models test_models.cpp)
 target_compile_options(test_llm_models PRIVATE
