@@ -4,19 +4,22 @@
  * @file llm/provider_models.hpp
  * @brief The provider-info queries shared by the protocol adapters.
  *
- * LLMModel::provider_info()'s implementation: one transport core
- * (fetch_provider_json — a single-shot GET that returns whatever JSON the
- * provider answered) plus the catalogue normaliser built on it
- * (fetch_provider_models — the OpenAI-compatible "list models" shape
- * reduced to the JSON array the contract promises). Header-only so both
- * shared adapters (llm_chat_completions / llm_responses) compile the same
- * coroutines without a new link dependency — under the
- * same-execution-context strategy that is the established pattern for
- * contract-adjacent code.
+ * LLMModel::provider_info()'s implementation: the endpoint→GET adapter
+ * (fetch_provider_json — maps a ModelEndpoint + path onto one bounded GET
+ * that returns whatever JSON the provider answered) plus the catalogue
+ * normaliser built on it (fetch_provider_models — the OpenAI-compatible
+ * "list models" shape reduced to the JSON array the contract promises).
+ * The bounded exchange itself lives in endpoint::fetch_once
+ * (endpoint/fetch.hpp) — the shared single-shot API and complete_once's
+ * bounded sibling, owning connect + whole-body read + the non-200 status
+ * check + the JSON decode. Header-only so both shared adapters
+ * (llm_chat_completions / llm_responses) compile the same coroutines
+ * without a new link dependency — under the same-execution-context strategy
+ * that is the established pattern for contract-adjacent code.
  *
- * Deliberately single-shot, no retry: the endpoint::complete engine is
- * reader-shaped for streaming exchanges, these queries are cheap to
- * re-issue, and their failures surface to the caller unchanged.
+ * Deliberately single-shot, no retry: these queries are cheap to re-issue,
+ * and their failures surface to the caller unchanged (the retry-capable
+ * endpoint::fetch engine exists, but provider_info() stays on fetch_once).
  */
 
 #include <cstddef>
@@ -29,18 +32,21 @@
 #include <boost/beast/http.hpp>
 #include <nlohmann/json.hpp>
 
+#include "endpoint/fetch.hpp"
 #include "endpoint/model_request.hpp"
-#include "endpoint/request.hpp"
 
 namespace llm {
 
 /**
- * @brief One provider-info GET, parsed: the transport core both the models
- *        catalogue and the balance companion ride on.
+ * @brief One provider-info GET, parsed: the endpoint→GET adapter both the
+ *        models catalogue and the balance companion ride on.
  *
- * GET <base_url prefix + @p request_path> with the endpoint's transport
- * headers (auth included) and co_return whatever JSON the provider
- * answered — no shape assumptions, the caller interprets.
+ * Maps a ModelEndpoint + @p request_path onto one bounded GET and returns
+ * whatever JSON the provider answered — no shape assumptions, the caller
+ * interprets. The bounded exchange (connect, whole-body read, non-200 status
+ * check, JSON decode) is endpoint::fetch_once's; this adapter only owns the
+ * provider-specific mapping — copy the endpoint, swap in the query path,
+ * resolve, build the GET, apply the transport headers.
  *
  * @param executor  Executor the connect and exchange run on.
  * @param endpoint  The model's stored endpoint (base_url/auth/headers);
@@ -67,9 +73,6 @@ inline boost::asio::awaitable<nlohmann::json> fetch_provider_json(
     std::size_t read_timeout_sec = endpoint::DEFAULT_HTTP_READ_TIMEOUT_SEC)
 {
     namespace http = boost::beast::http;
-    // HttpRequestException is at global scope — endpoint's exception
-    // contract predates the namespace (the "endpoint::" qualification in
-    // prose around the tree is informal).
 
     // Route the query through the same prefix-join logic as the exchange
     // path: copy the endpoint, swap the request path, resolve.
@@ -78,56 +81,19 @@ inline boost::asio::awaitable<nlohmann::json> fetch_provider_json(
     endpoint::ResolvedEndpoint resolved =
         endpoint::resolve_endpoint(query_endpoint);
 
-    // create_connection_stream throws boost::system::system_error
-    // exclusively; fold into the module's lifecycle exception with the
-    // endpoint context, exactly as complete_once does for exchanges.
-    endpoint::connection_stream stream{};
-    try {
-        stream = co_await endpoint::create_connection_stream(executor, resolved);
-    } catch (const boost::system::system_error& e) {
-        throw HttpRequestException(
-            HttpRequestException::Stage::Connect, e.what(), e.code(), {},
-            resolved.target, resolved.host);
-    } catch (const std::exception& e) {
-        throw HttpRequestException(
-            HttpRequestException::Stage::Connect, e.what(), {}, {},
-            resolved.target, resolved.host);
-    } catch (...) {
-        throw HttpRequestException(
-            HttpRequestException::Stage::Connect, "unknown error", {}, {},
-            resolved.target, resolved.host);
-    }
-
+    // Build the GET (auth + transport headers), then hand the bounded
+    // exchange to endpoint::fetch_once — the shared single-shot that owns
+    // connect (+fold), the whole-body read, the non-200 status check (body
+    // folded into the failure), and the JSON decode.
     http::request<http::string_body> request{
         http::verb::get, resolved.target, 11};
     request.set(http::field::host, resolved.authority());
     request.set(http::field::accept, "application/json");
     endpoint::apply_transport_headers(request, endpoint);
 
-    // The direct bounded overload: no status gating, whole response back —
-    // the caller wants to render non-200 bodies itself, like here.
-    http::response<http::string_body> response = co_await endpoint::http_request(
-        std::move(stream), std::move(request), read_timeout_sec);
-
-    if (response.result() != http::status::ok) {
-        constexpr std::size_t kMaxErrorBody = 2048;
-        std::string body = response.body();
-        if (body.size() > kMaxErrorBody) body.resize(kMaxErrorBody);
-        std::string message = "provider info request rejected";
-        if (!body.empty()) message += ": " + body;
-        throw HttpRequestException(
-            HttpRequestException::Stage::HandleResponse, std::move(message),
-            {}, "GET", resolved.target, resolved.host, response.result_int());
-    }
-
-    try {
-        co_return nlohmann::json::parse(response.body());
-    } catch (const std::exception& e) {
-        throw HttpRequestException(
-            HttpRequestException::Stage::HandleResponse,
-            std::string("provider info body is not JSON: ") + e.what(),
-            {}, "GET", resolved.target, resolved.host);
-    }
+    co_return co_await endpoint::fetch_once(
+        executor, resolved, std::move(request),
+        endpoint::json_handler, read_timeout_sec);
 }
 
 /**

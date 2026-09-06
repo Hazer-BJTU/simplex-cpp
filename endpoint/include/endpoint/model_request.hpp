@@ -731,4 +731,56 @@ create_connection_stream(
     co_return co_await create_connection_stream(executor, resolved, context);
 }
 
+/**
+ * @brief Establish a connection, folding connect failures into the module's
+ *        lifecycle exception.
+ *
+ * The connect primitive both whole-exchange engines share — complete_once
+ * (streaming) and fetch_once (bounded) — and the folding step every
+ * single-shot query needs. create_connection_stream throws
+ * boost::system::system_error exclusively (DNS, TCP, timeout, certificate,
+ * SNI); connect() catches that family and rethrows it as
+ * HttpRequestException{Stage::Connect} carrying the transport error code and
+ * the endpoint's target/host context, so callers classify connect failures
+ * uniformly (the category — netdb / asio.system / ssl / beast timeout — is
+ * what the retry verdict keys off).
+ *
+ * create_connection_stream keeps its raw system_error contract unchanged:
+ * the flavour-pinning test suites assert it directly, so this is a separate
+ * wrapper rather than a behaviour change to the factory.
+ *
+ * @param executor Executor the connect runs on.
+ * @param resolved Where to connect (host/port/tls), as resolve_endpoint
+ *                 parsed them.
+ * @param context  TLS client context; TLS flavour only.
+ * @return A connected connection_stream of the resolved scheme's flavour.
+ * @throws HttpRequestException{Stage::Connect} on any connect failure, with
+ *         the transport error code and target/host context preserved.
+ */
+inline boost::asio::awaitable<connection_stream>
+connect(
+    boost::asio::any_io_executor executor,
+    const ResolvedEndpoint& resolved,
+    ssl_context& context = get_global_ssl_context())
+{
+    try {
+        co_return co_await create_connection_stream(executor, resolved, context);
+    } catch (const boost::system::system_error& e) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::Connect,
+            e.what(), e.code(), {},
+            resolved.target, resolved.host);
+    } catch (const std::exception& e) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::Connect,
+            e.what(), {}, {},
+            resolved.target, resolved.host);
+    } catch (...) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::Connect,
+            "unknown error", {}, {},
+            resolved.target, resolved.host);
+    }
+}
+
 } // namespace endpoint
