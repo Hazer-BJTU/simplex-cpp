@@ -101,6 +101,22 @@ target_link_libraries(test_complete_once PRIVATE
 )
 add_test(NAME test_complete_once COMMAND test_complete_once)
 
+# fetch / fetch_once — the bounded single-shot request API (connect+fold via
+# endpoint::connect, one whole-body exchange, status check, handler decode)
+# and the shared retry_policy both engines inherit. Same one-shot loopback
+# shape plus the retry engine over a fixed connection sequence; the
+# refused-connect case needs no server at all.
+add_executable(test_fetch test_fetch.cpp)
+target_compile_options(test_fetch PRIVATE
+    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG>
+)
+target_link_libraries(test_fetch PRIVATE
+    endpoint_lib
+    Boost::unit_test_framework
+)
+add_test(NAME test_fetch COMMAND test_fetch)
+
 # Offline tests for the model request interpreter interface: lenient endpoint
 # resolution plus the contract's implementability through a stub.
 add_executable(test_model_request test_model_request.cpp)
