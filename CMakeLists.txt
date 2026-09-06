@@ -161,6 +161,10 @@ add_subdirectory(extension_framework)
 # endpoint after utils: endpoint_lib links logging_lib (the public
 # https_connection.hpp uses logging::Logger) and the shared Boost/OpenSSL.
 add_subdirectory(endpoint)
+# intercom after endpoint: internal service-to-service WebSocket transport,
+# which reuses endpoint's connection primitives (connect_flavour, the stream
+# flavours, ResolvedEndpoint, retry_policy backoff).
+add_subdirectory(intercom)
 # dataclass after the shared third-party interface: a header-only module
 # (dataclass_iface) defining the model_io data contract. Every record is a
 # plain aggregate serialised through nlohmann ADL to_json/from_json free
