@@ -271,6 +271,11 @@ public:
         std::shared_ptr<ModelResponseReader<Delta>> reader,
         Driver driver
     ) {
+        // Per-call reset: the shared retry state must not leak a previous
+        // call's exhausted backoff into this one — every operator() call
+        // starts from the initial backoff.
+        _backoff = _initial_backoff;
+
         // Attempt 0 is the initial exchange; 1.._max_retry_attempts are the
         // retries — the initial request is NOT counted against the budget.
         for (unsigned int attempt = 0; attempt <= _max_retry_attempts; ++attempt) {

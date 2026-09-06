@@ -40,25 +40,27 @@ protected:
     boost::asio::steady_timer _timer;
 
     /**
-     * @brief One backoff step: double _backoff (capped at _max_backoff),
-     *        then wait it out.
+     * @brief One backoff step: wait out the CURRENT _backoff, then advance
+     *        it (double, capped at _max_backoff) for the next attempt.
      *
+     * The wait comes FIRST so the first retry sleeps exactly _initial_backoff
+     * (not 2× it) and the sequence is initial, 2×initial, 4×initial, ….
      * Called between attempts only — the budget's last failure throws
-     * instead of sleeping, so _backoff never doubles past its use. Override
-     * to inject jitter or to honour a provider's Retry-After semantics; the
-     * timer wait swallows its error_code (a cancelled wait proceeds to the
-     * retry immediately).
+     * instead of sleeping, so the advance is never used past the last wait.
+     * Override to inject jitter or to honour a provider's Retry-After
+     * semantics; the timer wait swallows its error_code (a cancelled wait
+     * proceeds to the retry immediately).
      */
     virtual boost::asio::awaitable<void> _sleep() {
+        boost::system::error_code ec;
+        _timer.expires_after(_backoff);
+        co_await _timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+
         if (_backoff <= (_max_backoff / 2u)) {
             _backoff *= 2u;
         } else {
             _backoff = _max_backoff;
         }
-
-        boost::system::error_code ec;
-        _timer.expires_after(_backoff);
-        co_await _timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
         co_return;
     }
 

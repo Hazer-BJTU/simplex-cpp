@@ -101,7 +101,7 @@ inline nlohmann::json json_handler(std::string body) {
  *         the underlying HttpRequestTimeoutException for a slow backend.
  */
 template<typename Handler>
-boost::asio::awaitable<std::invoke_result_t<Handler, std::string>>
+boost::asio::awaitable<std::invoke_result_t<Handler&, std::string>>
 fetch_once(
     boost::asio::any_io_executor executor,
     ResolvedEndpoint endpoint,
@@ -197,6 +197,25 @@ inline boost::asio::awaitable<nlohmann::json> fetch_once(
  * separate instances (they share nothing but the executor).
  */
 class fetch : public retry_policy {
+protected:
+    /**
+     * @brief The bounded recoverability verdict: specialize the shared table.
+     *
+     * In the bounded path a status-less HttpRequestException{HandleResponse}
+     * is a LOCAL decoder/handler fault — fetch_once wraps the handler's throw
+     * with the request context and no status — not a provider answer. The
+     * same request draws the same fault, so it must never be retried. A
+     * provider answer always carries a status and falls through to the shared
+     * verdict (429/408/5xx recoverable, anything else not).
+     */
+    bool _recoverable(const HttpRequestException& failure) noexcept override {
+        if (failure.stage() == HttpRequestException::Stage::HandleResponse &&
+            failure.status() == 0) {
+            return false;
+        }
+        return retry_policy::_recoverable(failure);
+    }
+
 public:
     using retry_policy::retry_policy;
 
@@ -212,13 +231,18 @@ public:
      * @return The handler's product of the first attempt that succeeded.
      */
     template<typename Handler>
-    boost::asio::awaitable<std::invoke_result_t<Handler, std::string>>
+    boost::asio::awaitable<std::invoke_result_t<Handler&, std::string>>
     operator()(
         ResolvedEndpoint endpoint,
         ModelRequestInterpreter::HttpRequest request,
         Handler handler,
         std::size_t read_timeout_sec = DEFAULT_HTTP_READ_TIMEOUT_SEC)
     {
+        // Per-call reset: the shared retry state must not leak a previous
+        // call's exhausted backoff into this one — every operator() call
+        // starts from the initial backoff.
+        _backoff = _initial_backoff;
+
         // Attempt 0 is the initial exchange; 1.._max_retry_attempts are the
         // retries — the initial request is NOT counted against the budget.
         for (unsigned int attempt = 0; attempt <= _max_retry_attempts; ++attempt) {

@@ -15,11 +15,13 @@
 
 #include <chrono>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "endpoint/fetch.hpp"
 #include "endpoint/http_request_exception.hpp"
@@ -88,9 +90,11 @@ JsonOutcome run_once_json(
 }
 
 // Handler form: fetch_once(executor, endpoint, request, handler, timeout).
+// The handler is invoked as an lvalue, so the product type is keyed on
+// Handler& (consistent with fetch.hpp's generic signature).
 template<typename Handler>
 struct HandlerOutcome {
-    std::optional<std::invoke_result_t<Handler, std::string>> result;
+    std::optional<std::invoke_result_t<Handler&, std::string>> result;
     std::exception_ptr failure;
 };
 
@@ -132,6 +136,52 @@ JsonOutcome run_fetch_json(
     }, asio::detached);
     io.run();
     return outcome;
+}
+
+// Handler form: engine(endpoint, request, handler), on the same @p io the
+// engine is bound to.
+template<typename Handler>
+HandlerOutcome<Handler> run_fetch(
+    asio::io_context& io, unsigned short port, endpoint::fetch& engine,
+    Handler handler) {
+    HandlerOutcome<Handler> outcome;
+    asio::co_spawn(io, [&]() -> asio::awaitable<void> {
+        try {
+            outcome.result = co_await engine(
+                loopback_endpoint(port, "/v1/models"),
+                build_get_request("/v1/models"), handler);
+        } catch (...) {
+            outcome.failure = std::current_exception();
+        }
+    }, asio::detached);
+    io.run();
+    return outcome;
+}
+
+// Records the backoff value each _sleep() waits (before delegating to the
+// base, which performs the actual wait and the advance), so a test can pin
+// the retry timing without measuring wall-clock time.
+struct RecordingFetch : endpoint::fetch {
+    using endpoint::fetch::fetch;
+    std::vector<std::chrono::milliseconds> waits;
+    boost::asio::awaitable<void> _sleep() override {
+        waits.push_back(_backoff);
+        co_await endpoint::retry_policy::_sleep();
+    }
+};
+
+// A fixed sequence of `n` 503 answers — a recoverable provider overload each
+// attempt, so the engine retries to its budget.
+std::vector<loopback::Serve> serve_503s(std::size_t n) {
+    std::vector<loopback::Serve> sequence;
+    for (std::size_t i = 0; i < n; ++i) {
+        sequence.push_back([](asio::ip::tcp::socket& socket) {
+            loopback::serve_fixed_response(
+                socket, http::status::service_unavailable,
+                R"({"error": "overloaded"})");
+        });
+    }
+    return sequence;
 }
 
 // Exposes the shared retry_policy's protected verdict for the table test.
@@ -405,6 +455,89 @@ BOOST_AUTO_TEST_CASE(fetch_with_zero_retries_runs_a_single_attempt) {
         BOOST_CHECK_EQUAL(e.status(), 503u);
     } catch (...) {
         BOOST_FAIL("expected HttpRequestException for the 503 with no retry");
+    }
+}
+
+// A handler fault (fetch_once wraps the handler's throw as a status-less
+// HandleResponse) is a LOCAL decoder bug, not a provider answer: fetch must
+// NOT retry it, however much budget remains — the same request draws the
+// same fault.
+BOOST_AUTO_TEST_CASE(fetch_does_not_retry_handler_failure) {
+    loopback::OneShotServer server([](asio::ip::tcp::socket& socket) {
+        loopback::serve_fixed_response(socket, http::status::ok, "{}");
+    });
+
+    asio::io_context io;
+    endpoint::fetch engine(
+        io.get_executor(), std::chrono::milliseconds(1),
+        std::chrono::milliseconds(2), 3);
+    const auto calls = std::make_shared<int>(0);
+    auto outcome = run_fetch(
+        io, server.wait_listening(), engine,
+        [calls](std::string) -> std::string {
+            ++*calls;
+            throw std::logic_error("decoder bug");
+        });
+    server.join();
+
+    BOOST_REQUIRE(outcome.failure);
+    try {
+        std::rethrow_exception(outcome.failure);
+    } catch (const HttpRequestException& e) {
+        BOOST_CHECK(e.stage() == HttpRequestException::Stage::HandleResponse);
+        BOOST_CHECK_EQUAL(e.status(), 0u);
+    } catch (...) {
+        BOOST_FAIL("expected HttpRequestException for the handler fault");
+    }
+    BOOST_CHECK_EQUAL(*calls, 1);   // surfaced immediately, no retry
+}
+
+// The backoff sequence: the first retry waits exactly initial_backoff, and
+// each subsequent retry doubles — initial, 2×initial, 4×initial, ….
+BOOST_AUTO_TEST_CASE(fetch_backoff_advances_initial_then_doubles) {
+    loopback::SequenceServer server(serve_503s(4));   // 4 attempts, 3 sleeps
+
+    asio::io_context io;
+    RecordingFetch engine(
+        io.get_executor(), std::chrono::milliseconds(10),
+        std::chrono::milliseconds(100), 3);
+    auto outcome = run_fetch_json(io, server.wait_listening(), engine);
+    server.join();
+
+    BOOST_REQUIRE(outcome.failure);   // the budget is exhausted
+    BOOST_REQUIRE_EQUAL(engine.waits.size(), 3u);
+    BOOST_CHECK_EQUAL(engine.waits[0], std::chrono::milliseconds(10));
+    BOOST_CHECK_EQUAL(engine.waits[1], std::chrono::milliseconds(20));
+    BOOST_CHECK_EQUAL(engine.waits[2], std::chrono::milliseconds(40));
+}
+
+// Two sequential calls on the SAME engine both start from initial_backoff:
+// the per-call reset prevents one call's exhausted backoff from leaking into
+// the next.
+BOOST_AUTO_TEST_CASE(fetch_resets_backoff_between_calls) {
+    asio::io_context io;
+    RecordingFetch engine(
+        io.get_executor(), std::chrono::milliseconds(10),
+        std::chrono::milliseconds(100), 1);   // 2 attempts, 1 sleep per call
+
+    {
+        loopback::SequenceServer server(serve_503s(2));
+        auto outcome = run_fetch_json(io, server.wait_listening(), engine);
+        server.join();
+        BOOST_REQUIRE(outcome.failure);
+        BOOST_REQUIRE_EQUAL(engine.waits.size(), 1u);
+        BOOST_CHECK_EQUAL(engine.waits[0], std::chrono::milliseconds(10));
+    }
+
+    {
+        io.restart();
+        loopback::SequenceServer server(serve_503s(2));
+        auto outcome = run_fetch_json(io, server.wait_listening(), engine);
+        server.join();
+        BOOST_REQUIRE(outcome.failure);
+        BOOST_REQUIRE_EQUAL(engine.waits.size(), 2u);
+        // Started over at initial_backoff — not the 20ms the first call left.
+        BOOST_CHECK_EQUAL(engine.waits[1], std::chrono::milliseconds(10));
     }
 }
 
