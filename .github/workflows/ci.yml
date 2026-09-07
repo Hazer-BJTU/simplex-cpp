@@ -1,0 +1,63 @@
+# CI — configure, build and run the full test suite in the SAME execution
+# context the Docker strategy pins: the ghcr build-base image (g++-14.3.0,
+# Boost 1.91.0 shared, OpenSSL, vendored nlohmann/json + yaml-cpp under
+# /opt/simplex-thirdparty). Running on the runner's stock toolchain instead
+# would split the context (project code vs. Boost built by a different
+# compiler) and break the cross-DSO plugin tests' admission gate — the pinned
+# image is the point.
+#
+# The image is pinned by BOTH tag and digest: the tag tracks the version
+# (must stay in sync with docker/Dockerfile.build-context's BASE_IMAGE
+# default), and the digest makes any change to the reference build
+# environment an explicit, reviewable edit — matching how the upstream GCC
+# image is itself digest-pinned. When the base image is rebuilt, update the
+# digest here (docker buildx imagetools inspect <image> gives it).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: checkout needs contents:read; packages:read is present in
+# case the ghcr image is (or becomes) private and pulls use GITHUB_TOKEN.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14@sha256:28cb39da61cf86dda6859ca2004db445f497654de7fd68d7e354bde3299617ab
+      # If the ghcr package is private, uncomment these:
+      # credentials:
+      #   username: ${{ github.actor }}
+      #   password: ${{ secrets.GITHUB_TOKEN }}
+
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Test
+        # --no-tests=error: registering zero tests must not read as green.
+        # --timeout: per-test backstop so a deadlock regression fails in
+        # minutes instead of hanging until the 45-minute job timeout.
+        run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
