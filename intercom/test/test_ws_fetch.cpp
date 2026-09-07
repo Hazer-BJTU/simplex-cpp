@@ -1,5 +1,5 @@
 // Deterministic, offline tests for the intercom WebSocket fetch API —
-// connect_websocket (connect+upgrade+fold), fetch_once (one bounded exchange:
+// connect_websocket (connect+upgrade+fold), fetch_once (one exchange:
 // connect → send one message → read one reply → close → std::string), the
 // fetch retry engine, and the recoverability verdict. Loopback WebSocket
 // servers (plain ws:// and, for the wss flavour, a loopback TLS listener with
@@ -128,7 +128,7 @@ struct Outcome {
 Outcome run_once(
     endpoint::ResolvedEndpoint endpoint,
     std::string message,
-    std::size_t read_timeout_sec = intercom::DEFAULT_WS_READ_TIMEOUT_SEC,
+    std::size_t idle_timeout_sec = intercom::DEFAULT_WS_IDLE_TIMEOUT_SEC,
     endpoint::ssl_context& context = endpoint::get_global_ssl_context()) {
     asio::io_context io;
     Outcome outcome;
@@ -137,7 +137,7 @@ Outcome run_once(
         [&, message = std::move(message)]() -> asio::awaitable<void> {
             try {
                 outcome.result = co_await intercom::fetch_once(
-                    io.get_executor(), endpoint, message, read_timeout_sec,
+                    io.get_executor(), endpoint, message, idle_timeout_sec,
                     context);
             } catch (...) {
                 outcome.failure = std::current_exception();
@@ -345,7 +345,7 @@ BOOST_AUTO_TEST_CASE(fetch_once_round_trips_over_wss) {
 
     auto outcome = run_once(
         wss_endpoint(server.wait_listening(), "/v1/ws"), "ping",
-        intercom::DEFAULT_WS_READ_TIMEOUT_SEC, client_ctx);
+        intercom::DEFAULT_WS_IDLE_TIMEOUT_SEC, client_ctx);
     server.join();
 
     if (outcome.failure) std::rethrow_exception(outcome.failure);

@@ -4,7 +4,7 @@
 # deliberately does NOT live in endpoint: endpoint's semantic is "application
 # requests to model backends" (HTTP/SSE), while intercom is "internal
 # communication between services". It does reuse endpoint's connection
-# primitives — detail::connect_flavour, the stream flavours, ResolvedEndpoint
+# primitives — connect_stream_flavour, the stream flavours, ResolvedEndpoint
 # and the retry_policy backoff — rather than re-implementing them.
 add_library(intercom_iface INTERFACE)
 

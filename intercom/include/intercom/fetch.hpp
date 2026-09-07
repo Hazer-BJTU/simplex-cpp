@@ -1,7 +1,7 @@
 #pragma once
 
 //
-// fetch.hpp — the bounded single-shot WebSocket request API: fetch_once and
+// fetch.hpp — the single-shot WebSocket request API: fetch_once and
 // the fetch retry engine
 // ====================================================================
 //
@@ -16,9 +16,9 @@
 //
 //   connect_websocket(executor, resolved)  — connection + upgrade + Connect
 //                                            folding (websocket_stream.hpp)
-//   fetch_once(...)                        — ONE bounded exchange: connect,
-//                                            send one message, read one reply,
-//                                            close, return the reply bytes.
+//   fetch_once(...)                        — ONE exchange: connect, send one
+//                                            message, read one reply, close,
+//                                            return the reply bytes.
 //   fetch                                  — fetch_once plus a retry policy:
 //                                            on a recoverable failure the SAME
 //                                            message is re-sent verbatim, up
@@ -34,6 +34,17 @@
 //     the caller declared the operation idempotent (fetch's constructor flag)
 //     AND the error is an unambiguous transient transport failure — never
 //     cancellation, never a WebSocket protocol/close error.
+//
+// Timeout contract (see fetch_once):
+//
+//   * TCP/TLS connect   — bounded (the shared connect timeout).
+//   * WebSocket upgrade — bounded (handshake_timeout).
+//   * session inactivity — bounded (idle_timeout; 0 = indefinite).
+//   * individual write  — NO independent hard deadline. Beast's idle_timeout
+//     is an inactivity limit delivered by the read machinery, so it must not
+//     be relied on to bound a stuck write on a dead session. A caller that
+//     needs a hard write deadline adds its own (e.g. a steady_timer that
+//     cancels or closes the transport).
 
 #include <chrono>
 #include <cstddef>
@@ -54,24 +65,27 @@
 
 namespace intercom {
 
-/// Deadline for reading one reply, applied as the WebSocket idle timeout
-/// (no-activity limit). Generous by default — an internal backend may compute
-/// before answering — and per-call configurable (0 = indefinite).
-inline constexpr std::size_t DEFAULT_WS_READ_TIMEOUT_SEC = 300;
+/// Session inactivity limit, applied as Beast's WebSocket idle timeout
+/// (a no-activity limit, NOT a per-write or hard reply deadline). Generous by
+/// default — an internal backend may compute before answering — and per-call
+/// configurable (0 = indefinite).
+inline constexpr std::size_t DEFAULT_WS_IDLE_TIMEOUT_SEC = 300;
 
 /**
- * @brief One bounded WebSocket exchange: connect, send one message, read one
- *        reply, close, return the reply bytes.
+ * @brief One WebSocket exchange: connect, send one message, read one reply,
+ *        close, return the reply bytes.
  *
  * The single-shot the module's internal queries ride on. The reply is read as
  * ONE complete message (fragmentation reassembled) before the function
  * returns; the frame opcode the peer used is irrelevant — the payload comes
  * back as a std::string either way.
  *
- * The read deadline is applied as Beast's idle timeout (set_option), NOT as a
- * lowest-layer tcp_stream deadline: the underlying tcp_stream timer is
+ * The timeout is applied as Beast's WebSocket idle timeout (set_option), NOT
+ * as a lowest-layer tcp_stream deadline: the underlying tcp_stream timer is
  * disabled by connect_websocket, per Beast's requirement. 0 disables the
- * timeout (wait indefinitely).
+ * timeout (wait indefinitely). The idle timeout bounds session INACTIVITY
+ * only — it is not a per-write deadline, and a stuck write has no independent
+ * hard deadline here (see the timeout contract at the top of this file).
  *
  * @param executor         Executor the connect and exchange run on.
  * @param endpoint         Where to connect (host/port/tls; endpoint.target is
@@ -80,8 +94,8 @@ inline constexpr std::size_t DEFAULT_WS_READ_TIMEOUT_SEC = 300;
  *                         constructed directly.
  * @param request          The message to send (a TEXT frame, JSON in
  *                         practice); re-sent verbatim by the retry engine.
- * @param read_timeout_sec Reply read deadline (idle timeout); 0 waits
- *                         indefinitely.
+ * @param idle_timeout_sec Session inactivity limit (Beast idle timeout); 0
+ *                         waits indefinitely.
  * @param context          TLS client context; wss:// flavour only, global by
  *                         default — pass a custom context for a private CA.
  * @return The reply message's payload bytes.
@@ -94,7 +108,7 @@ inline boost::asio::awaitable<std::string> fetch_once(
     boost::asio::any_io_executor executor,
     endpoint::ResolvedEndpoint endpoint,
     std::string request,
-    std::size_t read_timeout_sec = DEFAULT_WS_READ_TIMEOUT_SEC,
+    std::size_t idle_timeout_sec = DEFAULT_WS_IDLE_TIMEOUT_SEC,
     endpoint::ssl_context& context = endpoint::get_global_ssl_context())
 {
     namespace websocket = boost::beast::websocket;
@@ -108,17 +122,17 @@ inline boost::asio::awaitable<std::string> fetch_once(
 
     WsException::Stage stage = WsException::Stage::Write;
     try {
-        // Configure the session timeout through Beast's own option: the reply
-        // read deadline as the idle timeout. This also bounds a stuck write
-        // on a dead session — the connection is closed after no activity for
-        // the idle interval, failing whichever operation is pending.
+        // Configure the session timeout through Beast's own option. The idle
+        // timeout bounds session INACTIVITY only — it is delivered by Beast's
+        // read machinery, so it must not be treated as a per-write deadline:
+        // a stuck write has no independent hard deadline (documented contract).
         auto timeout = websocket::stream_base::timeout::suggested(
             boost::beast::role_type::client);
         timeout.handshake_timeout =
             std::chrono::seconds(endpoint::DEFAULT_TIMEOUT_SEC);
-        timeout.idle_timeout = (read_timeout_sec == 0)
+        timeout.idle_timeout = (idle_timeout_sec == 0)
             ? websocket::stream_base::none()
-            : std::chrono::seconds(read_timeout_sec);
+            : std::chrono::seconds(idle_timeout_sec);
         stream.set_option(timeout);
 
         co_await stream.write(std::move(request));
@@ -131,15 +145,15 @@ inline boost::asio::awaitable<std::string> fetch_once(
         co_await stream.close();
         co_return reply;
     } catch (const boost::system::system_error& exception) {
-        // A deadline firing during the reply read is the read-timeout case:
-        // report it with the dedicated type so callers can distinguish a slow
-        // backend. (A write-phase timeout keeps the generic path.)
+        // The idle timeout firing during the reply read is the slow-backend
+        // case: report it with the dedicated type so callers can distinguish a
+        // slow backend from a transport fault.
         if (stage == WsException::Stage::Read &&
             (exception.code() == boost::beast::error::timeout ||
              exception.code() == boost::asio::error::timed_out)) {
             throw WsTimeoutException(
-                std::string("reply read timed out after ") +
-                    std::to_string(read_timeout_sec) + "s: " +
+                std::string("idle timeout (") +
+                    std::to_string(idle_timeout_sec) + "s) waiting for a reply: " +
                     exception.what(),
                 exception.code(), host, target);
         }
@@ -246,8 +260,8 @@ inline bool is_recoverable(const WsException& failure, bool idempotent) noexcept
 }
 
 /**
- * @brief fetch_once with plain retry, as a callable object: the bounded
- *        WebSocket counterpart of endpoint::fetch.
+ * @brief fetch_once with plain retry, as a callable object: the WebSocket
+ *        counterpart of endpoint::fetch.
  *
  * A stateful retry engine bound to one executor and one retry policy —
  * construct it once and call it per query:
@@ -303,11 +317,11 @@ public:
     {}
 
     /**
-     * @brief Run one bounded WebSocket query with plain retry.
+     * @brief Run one WebSocket query with plain retry.
      *
      * @param endpoint         Where to connect, every attempt.
      * @param request          The message, re-sent verbatim every attempt.
-     * @param read_timeout_sec Read deadline, forwarded to fetch_once.
+     * @param idle_timeout_sec Session inactivity limit, forwarded to fetch_once.
      * @param context          TLS client context; wss:// flavour only,
      *                         forwarded to fetch_once.
      * @return The reply bytes of the first attempt that succeeded.
@@ -315,7 +329,7 @@ public:
     boost::asio::awaitable<std::string> operator()(
         endpoint::ResolvedEndpoint endpoint,
         std::string request,
-        std::size_t read_timeout_sec = DEFAULT_WS_READ_TIMEOUT_SEC,
+        std::size_t idle_timeout_sec = DEFAULT_WS_IDLE_TIMEOUT_SEC,
         endpoint::ssl_context& context = endpoint::get_global_ssl_context())
     {
         // Per-call reset: the shared retry state must not leak a previous
@@ -327,7 +341,7 @@ public:
         for (unsigned int attempt = 0; attempt <= _max_retry_attempts; ++attempt) {
             try {
                 co_return co_await fetch_once(
-                    _executor, endpoint, request, read_timeout_sec, context);
+                    _executor, endpoint, request, idle_timeout_sec, context);
             } catch (const WsException& failure) {
                 if (!is_recoverable(failure, _idempotent) ||
                     attempt == _max_retry_attempts) {
