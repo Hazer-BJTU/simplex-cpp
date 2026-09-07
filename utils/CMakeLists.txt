@@ -21,15 +21,24 @@
 #                 requirement. Header-only Asio would fork per-module
 #                 thread-local state across a dlopen boundary and crash the
 #                 plugin's reactor callbacks intermittently.
+#   - async_eventbus/ `async_eventbus_lib` (SHARED, the default_async_bus()
+#                 singleton) + `async_eventbus_iface` (INTERFACE wrapper):
+#                 the coroutine counterpart of eventbus — handlers are
+#                 boost::asio::awaitable<Evt>(const Evt&) and publish() folds
+#                 the event through them serially (each handler's co_return
+#                 becomes the next handler's input), with token-selected
+#                 propagate/capture exception modes. Links asio_iface.
 #
 # The sub-modules keep their own CMake targets and directory layout, so
 # consumers keep linking `logging_lib` / `yamlconfig_iface` and including
 # "logging/logger.hpp" / "yamlconfig/yaml_json.hpp" exactly as before; the
 # only change is where the sources live. Add order inside the package:
 # logging first (consumed by tests of both), then yamlconfig (independent),
-# then eventbus (independent), then asio (depends only on top-level targets).
+# then eventbus (independent), then asio (depends only on top-level targets),
+# then async_eventbus (depends on asio_iface).
 # =============================================================================
 add_subdirectory(logging)
 add_subdirectory(yamlconfig)
 add_subdirectory(eventbus)
 add_subdirectory(asio)
+add_subdirectory(async_eventbus)
