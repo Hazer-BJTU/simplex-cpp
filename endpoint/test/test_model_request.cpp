@@ -104,6 +104,41 @@ BOOST_AUTO_TEST_CASE(resolve_http_defaults_to_port_80) {
     BOOST_CHECK(r.tls);
 }
 
+BOOST_AUTO_TEST_CASE(resolve_websocket_schemes_select_tls_and_port) {
+    ModelEndpoint e;
+
+    // wss:// -> TLS, explicit port, path handling.
+    e.base_url = "wss://internal-service:8443";
+    e.request_path = "/v1/ws";
+    auto r = resolve_endpoint(e);
+    BOOST_CHECK_EQUAL(r.host, "internal-service");
+    BOOST_CHECK_EQUAL(r.port, "8443");
+    BOOST_CHECK_EQUAL(r.target, "/v1/ws");
+    BOOST_CHECK(r.tls);
+
+    // ws:// -> plain TCP, explicit port.
+    e.base_url = "ws://localhost:1234";
+    e.request_path = "/v1/ws";
+    r = resolve_endpoint(e);
+    BOOST_CHECK_EQUAL(r.host, "localhost");
+    BOOST_CHECK_EQUAL(r.port, "1234");
+    BOOST_CHECK_EQUAL(r.target, "/v1/ws");
+    BOOST_CHECK(!r.tls);
+
+    // Default ports follow the scheme: wss:// -> 443, ws:// -> 80.
+    e.base_url = "wss://localhost";
+    e.request_path = "";
+    r = resolve_endpoint(e);
+    BOOST_CHECK_EQUAL(r.port, "443");
+    BOOST_CHECK(r.tls);
+
+    e.base_url = "ws://localhost";
+    e.request_path = "";
+    r = resolve_endpoint(e);
+    BOOST_CHECK_EQUAL(r.port, "80");
+    BOOST_CHECK(!r.tls);
+}
+
 BOOST_AUTO_TEST_CASE(resolve_appends_request_path_after_prefix) {
     ModelEndpoint e;
     e.base_url = "https://api.deepseek.com/anthropic";

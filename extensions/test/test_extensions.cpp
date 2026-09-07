@@ -1,6 +1,6 @@
 /**
  * @file test_extensions.cpp
- * @brief Pure-logic / in-memory unit tests for extension_framework/extensions.hpp.
+ * @brief Pure-logic / in-memory unit tests for extensions/extensions.hpp.
  *
  * Covers the parts of the header that do NOT require a real dynamically-loaded
  * module: the platform file predicate, the tag-generator policy, the
@@ -20,7 +20,7 @@
 #define BOOST_TEST_MODULE ExtensionFrameworkStaticTests
 #include <boost/test/unit_test.hpp>
 
-#include "extension_framework/extensions.hpp"
+#include "extensions/extensions.hpp"
 
 #include <boost/dll/shared_library.hpp>
 

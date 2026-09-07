@@ -23,7 +23,7 @@
 # to differ from the test executable names (bin/test_extensions etc.) so the DSO
 # output directory never collides with an executable output path.
 #
-# extension_framework_iface already links boost_dll_iface (BOOST_DLL_USE_STD_FS +
+# extensions_iface already links boost_dll_iface (BOOST_DLL_USE_STD_FS +
 # filesystem + dl), logging_lib, and simplex_thirdparty_iface, so the tests and
 # the toy module need no extra dependency wiring.
 
@@ -38,7 +38,7 @@ set(_ext_test_opts
 add_library(toyextension MODULE toy_extension.cpp)
 target_include_directories(toyextension PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(toyextension PRIVATE ${_ext_test_opts})
-target_link_libraries(toyextension PRIVATE extension_framework_iface)
+target_link_libraries(toyextension PRIVATE extensions_iface)
 set_target_properties(toyextension PROPERTIES
     PREFIX "lib"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/extension_test_modules")
@@ -54,7 +54,7 @@ foreach(_fixture bad_magic legacy)
     add_library(${_fixture_target} MODULE ${_fixture_source})
     target_include_directories(${_fixture_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_options(${_fixture_target} PRIVATE ${_ext_test_opts})
-    target_link_libraries(${_fixture_target} PRIVATE extension_framework_iface)
+    target_link_libraries(${_fixture_target} PRIVATE extensions_iface)
     set_target_properties(${_fixture_target} PROPERTIES
         PREFIX "lib"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/extension_test_modules_bad")
@@ -66,14 +66,14 @@ endforeach()
 add_executable(test_extensions test_extensions.cpp)
 target_include_directories(test_extensions PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(test_extensions PRIVATE ${_ext_test_opts})
-target_link_libraries(test_extensions PRIVATE extension_framework_iface Boost::unit_test_framework)
+target_link_libraries(test_extensions PRIVATE extensions_iface Boost::unit_test_framework)
 add_test(NAME test_extensions COMMAND test_extensions)
 
 # --- dynamic-loading tests ---------------------------------------------------
 add_executable(test_extensions_dynamic test_extensions_dynamic.cpp)
 target_include_directories(test_extensions_dynamic PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(test_extensions_dynamic PRIVATE ${_ext_test_opts})
-target_link_libraries(test_extensions_dynamic PRIVATE extension_framework_iface Boost::unit_test_framework)
+target_link_libraries(test_extensions_dynamic PRIVATE extensions_iface Boost::unit_test_framework)
 target_compile_definitions(test_extensions_dynamic PRIVATE
     "TOY_EXTENSION_DIR=\"${CMAKE_BINARY_DIR}/bin/extension_test_modules\""
     "TOY_BAD_MAGIC_DIR=\"${CMAKE_BINARY_DIR}/bin/extension_test_modules_bad\"")

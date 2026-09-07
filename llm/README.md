@@ -9,7 +9,7 @@ The plugin boundary is **live-object**: a provider `.so` mints model objects
 a `nlohmann::json`; `converse()` returns an `asio::awaitable` whose frame the
 host resumes). Those types have no stable ABI, so safety rests on the
 **same-execution-context strategy** — the toolchain-fingerprint admission
-gate in `extension_framework`, the shared runtime stack
+gate in `extensions`, the shared runtime stack
 (`libasio`/`libeventbus`/`liblogging`/`libllm_chat_completions`/
 `libllm_responses`), and `-rdynamic` hosts. The full contract, its mechanisms,
 and their structural tests live in `docs/abi-context.md`.

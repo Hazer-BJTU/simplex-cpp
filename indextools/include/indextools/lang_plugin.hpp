@@ -17,7 +17,7 @@
  *
  * ## Two exported aliases per plugin
  *
- * A plugin `.so` is loaded through the generic `extension_framework`. It exports
+ * A plugin `.so` is loaded through the generic `extensions`. It exports
  * TWO factory aliases:
  *
  *   - `create_lang_plugin`  -> std::unique_ptr<extension::ExtensionContext>
@@ -76,7 +76,7 @@
 #include <string_view>
 
 #include "indextools/lang.hpp"
-#include "extension_framework/extensions.hpp"
+#include "extensions/extensions.hpp"
 #include "versioning/version.hpp"
 
 namespace indextools {

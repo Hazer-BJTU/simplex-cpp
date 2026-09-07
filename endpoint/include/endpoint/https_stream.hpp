@@ -138,20 +138,22 @@ template<typename Stream>
 inline constexpr std::string_view default_connection_port_v =
     is_tls_stream_v<Stream> ? DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
 
-namespace detail {
-
 /**
- * @brief The flavour-specific connection factory body, internal.
+ * @brief The flavour-specific connection factory — the shared public
+ *        primitive every transport in the tree builds on.
  *
- * The single implementation behind the deprecated public factories below
- * (create_connection_stream<Stream>, create_https_connection_stream,
- * create_http_connection_stream) and behind the runtime-flavour
- * create_connection_stream(executor, resolved) in model_request.hpp, which
- * selects the flavour per the resolved scheme and hands the connected stream
- * back behind a connection_stream. New code must go through the latter.
+ * One implementation behind every connection factory: the deprecated
+ * per-flavour factories below (create_connection_stream<Stream>,
+ * create_https_connection_stream, create_http_connection_stream), the
+ * runtime-flavour create_connection_stream(executor, resolved) in
+ * model_request.hpp (which selects the flavour per the resolved scheme and
+ * returns a connection_stream), and intercom's connect_websocket (which wraps
+ * the same connected stream in a websocket::stream). Public so sibling
+ * modules can reuse the exact TCP/TLS establish logic without depending on a
+ * detail namespace.
  */
 template<typename Stream>
-struct connect_flavour {
+struct connect_stream_flavour {
     /**
      * Resolve a host and establish a connection of the flavour @p Stream:
      * https_stream runs SNI before the handshake, certificate verification
@@ -206,8 +208,6 @@ struct connect_flavour {
     }
 };
 
-} // namespace detail
-
 /**
  * @brief Resolve a host and establish a connection of either stream flavour.
  *
@@ -249,7 +249,7 @@ create_connection_stream(
     std::string_view port = default_connection_port_v<Stream>,
     ssl_context& context = get_global_ssl_context())
 {
-    co_return co_await detail::connect_flavour<Stream>::connect(
+    co_return co_await connect_stream_flavour<Stream>::connect(
         executor, host, port, context);
 }
 
@@ -272,7 +272,7 @@ create_connection_stream(
     ssl_context& context = get_global_ssl_context())
 {
     auto executor = co_await boost::asio::this_coro::executor;
-    co_return co_await detail::connect_flavour<Stream>::connect(
+    co_return co_await connect_stream_flavour<Stream>::connect(
         executor, host, port, context);
 }
 
@@ -287,7 +287,7 @@ create_connection_stream(
  *
  * The TLS flavour of the connection factories — SNI, verification against
  * @p host, the handshake ordering, and the exclusive move-only ownership of
- * the returned std::unique_ptr are documented on detail::connect_flavour.
+ * the returned std::unique_ptr are documented on connect_stream_flavour.
  * This overload accepts an explicit context, primarily for applications with
  * a private CA or a custom trust policy. The context must outlive the stream.
  *
@@ -309,7 +309,7 @@ create_https_connection_stream(
     std::string host,
     std::string_view port = DEFAULT_HTTPS_PORT
 ) {
-    co_return co_await detail::connect_flavour<https_stream>::connect(
+    co_return co_await connect_stream_flavour<https_stream>::connect(
         executor, host, port, context);
 }
 
@@ -330,7 +330,7 @@ create_https_connection_stream(
     std::string host,
     std::string_view port = DEFAULT_HTTPS_PORT
 ) {
-    co_return co_await detail::connect_flavour<https_stream>::connect(
+    co_return co_await connect_stream_flavour<https_stream>::connect(
         executor, host, port, get_global_ssl_context());
 }
 
@@ -353,7 +353,7 @@ create_https_connection_stream(
     std::string_view port = DEFAULT_HTTPS_PORT
 ) {
     auto executor = co_await boost::asio::this_coro::executor;
-    co_return co_await detail::connect_flavour<https_stream>::connect(
+    co_return co_await connect_stream_flavour<https_stream>::connect(
         executor, host, port, context);
 }
 
@@ -374,7 +374,7 @@ create_https_connection_stream(
     std::string_view port = DEFAULT_HTTPS_PORT
 ) {
     auto executor = co_await boost::asio::this_coro::executor;
-    co_return co_await detail::connect_flavour<https_stream>::connect(
+    co_return co_await connect_stream_flavour<https_stream>::connect(
         executor, host, port, get_global_ssl_context());
 }
 
@@ -388,7 +388,7 @@ create_https_connection_stream(
  *
  * The plain flavour of the connection factories — for `http://` endpoints
  * such as local model backends. Ownership and deadline discipline are
- * documented on detail::connect_flavour; in particular the connect deadline
+ * documented on connect_stream_flavour; in particular the connect deadline
  * stays armed until the caller (e.g. sse_request) sets its own.
  *
  * @param executor Executor on which DNS and socket operations run.
@@ -406,7 +406,7 @@ create_http_connection_stream(
     std::string host,
     std::string_view port = DEFAULT_HTTP_PORT
 ) {
-    co_return co_await detail::connect_flavour<http_stream>::connect(
+    co_return co_await connect_stream_flavour<http_stream>::connect(
         executor, host, port, get_global_ssl_context());
 }
 
@@ -427,7 +427,7 @@ create_http_connection_stream(
     std::string_view port = DEFAULT_HTTP_PORT
 ) {
     auto executor = co_await boost::asio::this_coro::executor;
-    co_return co_await detail::connect_flavour<http_stream>::connect(
+    co_return co_await connect_stream_flavour<http_stream>::connect(
         executor, host, port, get_global_ssl_context());
 }
 

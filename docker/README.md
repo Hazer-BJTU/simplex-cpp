@@ -116,7 +116,7 @@ docker build -f docker/Dockerfile.build-base \
   `version.hpp` inside a built image: `GNU-14.3.0`.
 - Artifacts from the image will **not** load against hosts built in any
   other context (e.g. the local WSL g++-14.2.0): the admission gate in
-  `extension_framework/plugin_magic.hpp` rejects exactly that mixing, by
+  `extensions/plugin_magic.hpp` rejects exactly that mixing, by
   design. Same context, not portable.
 - Build jobs are capped at `-j4` even inside the container: it shares the
   host's CPUs, and saturating them destabilizes the WSL services.

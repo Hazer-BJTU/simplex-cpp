@@ -12,7 +12,7 @@
 
 #include "toy_extension_spec.hpp"
 
-#include "extension_framework/extensions.hpp"
+#include "extensions/extensions.hpp"
 
 #include <boost/dll/alias.hpp>
 

@@ -71,7 +71,7 @@ has to name a specific language):
 
 The contract header is `indextools/include/indextools/lang_plugin.hpp` (reached
 via the `indextools_iface` INTERFACE target, which links
-`extension_framework_iface`), shared by the host and every plugin:
+`extensions_iface`), shared by the host and every plugin:
 
 - `LangPlugin` derives from `extension::ExtensionContext`. A concrete plugin
   implements `abi_version()`, `name()`, and `file_pattern()` (an ECMAScript regex

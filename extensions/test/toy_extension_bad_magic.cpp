@@ -12,10 +12,10 @@
  * the fingerprint can be perturbed; everything else matches a real module.
  */
 
-#include "extension_framework/plugin_magic.hpp"
+#include "extensions/plugin_magic.hpp"
 #include "toy_extension_spec.hpp"
 
-#include "extension_framework/extensions.hpp"
+#include "extensions/extensions.hpp"
 
 #include <boost/dll/alias.hpp>
 

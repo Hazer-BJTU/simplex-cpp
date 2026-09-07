@@ -35,7 +35,7 @@
 
 #include "indextools/lang_plugin.hpp"
 #include "indextools/utils.hpp"
-#include "extension_framework/extensions.hpp"
+#include "extensions/extensions.hpp"
 
 #include <ranges>
 #include <system_error>

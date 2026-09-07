@@ -19,8 +19,8 @@
 
 #include "toy_extension_spec.hpp"
 
-#include "extension_framework/extensions.hpp"
-#include "extension_framework/plugin_magic.hpp"
+#include "extensions/extensions.hpp"
+#include "extensions/plugin_magic.hpp"
 
 #include <boost/dll/alias.hpp>
 
