@@ -19,10 +19,23 @@
  *     exchange is unaffected (llm/utils/eventbus guarantees).
  *   - **Slots must not throw**: a throwing slot propagates into the
  *     exchange and fails it — observers are witnesses, not participants.
- *   - **Retry replay**: one converse() exchange keeps one reasoning_id
+ *   - **Concurrency**: converse() is reentrant, so events from SEVERAL
+ *     exchanges interleave arbitrarily — and on a multi-threaded executor
+ *     they are published from different threads INTO THE SAME SLOT (the bus
+ *     releases its registry lock before running slots). A subscriber must
+ *     therefore (a) be thread-safe itself, and (b) demultiplex by
+ *     `exchange_id` rather than assuming one live stream. `provider` and
+ *     `model` do NOT separate concurrent calls on one model — they are
+ *     identical across them; `exchange_id` is the only join key.
+ *   - **Retry replay**: one converse() exchange keeps one exchange_id
  *     across transport retries; a retried attempt re-broadcasts its
- *     increments under the same id. Correlating (and deduplicating) by id
- *     is the subscriber's concern.
+ *     increments under the same id, with `attempt` incremented. A
+ *     subscriber accumulating text should DISCARD what it holds for an
+ *     exchange_id whenever `attempt` advances — the wire is replaying from
+ *     the beginning, so appending would duplicate the prefix.
+ *   - **Binding a stream to its result**: the assembled MessageItem
+ *     converse() returns carries the same id under `extras.exchange_id`, so
+ *     a subscriber's buffer can be matched to the exchange's outcome.
  *   - **Across the plugin boundary**: the event type compiles from this
  *     header on both sides, so type routing is name-based and boundary-
  *     safe. The *bus instance* is unique by construction: default_bus()
@@ -42,13 +55,23 @@ namespace llm::chat_completions {
 struct ReasoningDeltaEvent {
     /// The increment text, verbatim from the wire delta.
     std::string reasoning;
-    /// Identifies the thinking pass: stable across the retries of one
-    /// converse() exchange, fresh per exchange.
-    std::string reasoning_id;
+    /// The exchange this increment belongs to — THE join key under
+    /// concurrency (llm/exchange_id.hpp). Stable across the retries of one
+    /// converse() exchange, unique per exchange process-wide, and repeated
+    /// on the returned MessageItem's `extras.exchange_id`.
+    std::string exchange_id;
+    /// Which transport attempt produced this increment: 0 for the initial
+    /// exchange, 1.. for retries. Advances only when endpoint::complete
+    /// re-reads the stream from scratch — the signal to drop the partial
+    /// text accumulated for this exchange_id and start over.
+    unsigned attempt = 0;
     /// The provider dialect's name ("deepseek"), empty for a generic
-    /// no-dialect model.
+    /// no-dialect model. Informational: it does NOT distinguish concurrent
+    /// exchanges on one model.
     std::string provider;
-    /// The model name the exchange was configured with.
+    /// The model name the exchange was configured with. Informational, as
+    /// above — the snapshot this exchange runs against, so a concurrent
+    /// set_generation() cannot change it mid-stream.
     std::string model;
 };
 

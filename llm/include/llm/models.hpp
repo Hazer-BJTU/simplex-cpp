@@ -131,6 +131,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -275,13 +276,42 @@ struct GenerationPreset {
  *      delete), so overrides may touch their own members freely. After
  *      release() the object must not be used again.
  *
- * Concurrency: one instance serves one conversation sequentially. State set
- * in build() is immutable afterwards — the one deliberate exception being
- * the generation knobs, which set_generation() mutates between exchanges
- * (never concurrent with an in-flight converse()/provider_info());
- * converse() does I/O through the stored executor. Thread-safety of
- * concurrent converse() calls is the plugin's choice and not guaranteed by
- * this contract.
+ * ## Concurrency: converse() is reentrant
+ *
+ * converse() and provider_info() are REENTRANT: any number may be in flight
+ * concurrently on ONE instance, on any threads of the executor. The
+ * guarantee this contract makes, and what each side owes:
+ *
+ *   - **State set in build() is immutable afterwards**, so every in-flight
+ *     exchange reads the same endpoint, dialect and retry policy. All
+ *     per-exchange state (interpreter, reader, retry engine) is constructed
+ *     PER CALL — an override must never hoist it into a member, which is
+ *     exactly what would reintroduce the race (endpoint::complete in
+ *     particular documents one operator() in flight per instance).
+ *
+ *   - **The generation knobs are the one mutable member**, and they are
+ *     guarded: set_generation() commits under _generation_mutex, and
+ *     converse() takes a private SNAPSHOT (generation_snapshot()) before its
+ *     first suspension. A concurrent set_generation() therefore never tears
+ *     a reader's view — an exchange either sees the whole patch or none of
+ *     it, and never observes a half-written value. Which of the two an
+ *     overlapping call sees is deliberately unspecified: order the two
+ *     yourself if it matters.
+ *
+ *   - **The caller owns argument lifetime and its own state.** converse()
+ *     takes its AgentInputState BY VALUE precisely so concurrent callers
+ *     cannot alias one buffer (see the note on that signature); integrate()
+ *     is NOT thread-safe against itself — concurrent exchanges must fold
+ *     into separate AgentInputState objects, or serialise the folds.
+ *
+ *   - **The instance must outlive every in-flight exchange.** These are
+ *     plain coroutines, not shared_ptr-keepalive: destroying a model with an
+ *     exchange still running is a use-after-free. Hold the shared_ptr
+ *     create_model() handed you for at least as long as the last co_await.
+ *
+ * Live observation stays correlatable under concurrency: each exchange mints
+ * a process-unique exchange id, broadcasts it on every event, and reports it
+ * back on the assembled MessageItem (see llm/chat_completions/events.hpp).
  */
 class LLMModel {
 public:
@@ -310,7 +340,7 @@ public:
     virtual void release() noexcept {}
 
     /**
-     * @brief Stages 1+2: run one whole conversation exchange.
+     * @brief Stages 1+2: run one whole conversation exchange. REENTRANT.
      *
      * Builds the provider request from @p conversation plus the stored
      * config (input translation) and drives it to a finished response
@@ -322,6 +352,21 @@ public:
      *
      * NOT this method's job: executing tools, looping, state updates — the
      * caller owns the agent loop; converse() is one exchange of it.
+     *
+     * Concurrency: any number of exchanges may be in flight on one instance
+     * — see "Concurrency: converse() is reentrant" in the class doc for the
+     * full contract. Two obligations stay with the caller: the model must
+     * outlive every in-flight exchange, and concurrent results must be
+     * integrate()d into separate AgentInputState objects.
+     *
+     * @param conversation BY VALUE, deliberately. This is a coroutine, so a
+     *        reference parameter would dangle across the first suspension
+     *        whenever the argument is a temporary and the awaitable is not
+     *        awaited in the same full-expression (`co_spawn(ex,
+     *        m->converse(build_state()), ...)` is the common trap). By value
+     *        the frame owns its copy, which also stops concurrent exchanges
+     *        from aliasing one caller buffer. Pass std::move() when the
+     *        caller is done with its state.
      *
      * Cancellation: co_awaiting code may cancel the operation through the
      * executor; the coroutine should then complete without side effects
@@ -335,7 +380,7 @@ public:
      *         std::exception).
      */
     virtual boost::asio::awaitable<model_io::MessageItem> converse(
-        const model_io::AgentInputState& conversation) {
+        model_io::AgentInputState conversation) {
         (void)conversation;
         throw LLMUnsupportedOperation(
             "converse() is not implemented by this model");
@@ -362,6 +407,13 @@ public:
      * Persistence contract: after any sequence of integrate() calls the state
      * remains serialisable through model_io's existing to_json (per record /
      * per step); the model itself never performs storage.
+     *
+     * Concurrency: NOT thread-safe against itself for one @p state — every
+     * branch reads and appends to `state.turns.back()`. Unlike converse(),
+     * this touches no model member, so concurrent calls on ONE model are
+     * fine as long as they fold into DIFFERENT AgentInputState objects;
+     * folding concurrent exchanges into a shared state must be serialised by
+     * the host (and would interleave two turns' steps in any case).
      */
     virtual void integrate(model_io::AgentInputState& state,
                            const model_io::MessageItem& item) {
@@ -485,9 +537,17 @@ public:
 
     /// The generation knobs currently in effect: config minus the
     /// host-owned keys as build() derived it, plus whatever
-    /// set_generation() has layered on. Read-only; mutation goes through
-    /// the set_generation() tiers.
-    const nlohmann::json& generation() const noexcept { return _generation; }
+    /// set_generation() has layered on. Mutation goes through the
+    /// set_generation() tiers.
+    ///
+    /// Returns BY VALUE (a snapshot under the lock): a reference would race
+    /// a concurrent set_generation() the moment the caller read through it.
+    /// Exchange implementations want generation_snapshot() — same snapshot,
+    /// named for the role it plays inside converse().
+    nlohmann::json generation() const {
+        std::shared_lock<std::shared_mutex> lock(_generation_mutex);
+        return _generation;
+    }
 
 protected:
     /**
@@ -509,8 +569,14 @@ protected:
      *
      * Preconditions, the RFC 7386 merge, the "model" invariant, and the
      * atomic commit — exactly the contract on set_generation(nlohmann::json).
+     *
+     * Concurrency: the read-merge-validate-commit sequence runs under an
+     * exclusive lock, so it is atomic against concurrent set_generation()
+     * calls AND against the snapshots converse() takes. A patch is therefore
+     * never observed half-applied.
      */
     void apply_generation_patch(nlohmann::json patch) {
+        std::unique_lock<std::shared_mutex> lock(_generation_mutex);
         if (!_generation.is_object()) {
             throw std::logic_error(
                 "set_generation(): this model has no generation object "
@@ -541,15 +607,57 @@ protected:
         _generation = std::move(merged);
     }
 
+    /**
+     * @brief The generation knobs an exchange runs against: one snapshot,
+     *        taken under the lock, owned by the caller's coroutine frame.
+     *
+     * The reentrancy primitive for converse() implementations. Take this
+     * ONCE, before the first suspension, and read the copy for the rest of
+     * the exchange — never `_generation` directly, whose every access would
+     * otherwise race a concurrent set_generation(). Retries within one
+     * exchange reuse the same snapshot, so a request is built from one
+     * coherent set of knobs even if the host re-tunes mid-flight.
+     */
+    nlohmann::json generation_snapshot() const {
+        std::shared_lock<std::shared_mutex> lock(_generation_mutex);
+        return _generation;
+    }
+
+    /**
+     * @brief Publish the knobs build() derived, replacing them wholesale.
+     *
+     * build()'s counterpart to the set_generation() tiers: it establishes
+     * the baseline rather than patching it, and skips the "model" invariant
+     * because build() validates that itself (and reports failure by
+     * returning false, not by throwing). Under the same lock, so a
+     * late-running build() cannot tear a concurrent reader's snapshot.
+     */
+    void reset_generation(nlohmann::json generation) noexcept {
+        std::unique_lock<std::shared_mutex> lock(_generation_mutex);
+        _generation = std::move(generation);
+    }
+
     /// Executor every exchange coroutine of this model runs on.
     boost::asio::any_io_executor _executor;
     /// The whole model configuration, verbatim as create_model received it.
     nlohmann::json _config;
+
+private:
     /// Generation knobs in effect: build()'s derivation of _config (minus
     /// the host-owned keys) plus the set_generation() overlays. Null until
     /// build() populates it, which is what makes set_generation() refuse
     /// pre-build use.
+    ///
+    /// PRIVATE on purpose: this is the one member mutable after build(), so
+    /// every access must go through the lock. Subclasses read it with
+    /// generation_snapshot() and publish build()'s derivation with
+    /// reset_generation() — a direct read from a converse() override would
+    /// race set_generation() and defeat the reentrancy guarantee.
     nlohmann::json _generation;
+    /// Guards _generation. Shared: concurrent exchanges snapshot in
+    /// parallel, only set_generation()/reset_generation() take it
+    /// exclusively. Mutable so the const readers can lock.
+    mutable std::shared_mutex _generation_mutex;
 };
 
 /**

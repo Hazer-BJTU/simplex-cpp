@@ -51,6 +51,20 @@ public:
         return _error;
     }
 
+    /**
+     * @brief Which transport attempt this reader is currently accumulating:
+     *        0 for the initial exchange, 1.. for each retry.
+     *
+     * endpoint::complete calls clear() before EVERY attempt (the first
+     * included), so the counter is simply "clears seen so far", and a reader
+     * that has never been cleared reports 0 like the initial attempt it is.
+     * Read from a delta hook, it tells an observer whether the increments
+     * arriving now are a fresh read or a replay of one it already saw — the
+     * distinction a subscriber needs to reset its per-exchange buffer
+     * instead of appending a duplicated prefix.
+     */
+    unsigned attempt() const noexcept { return _attempt; }
+
     void clear() override;
 
 protected:
@@ -80,6 +94,11 @@ private:
     std::optional<nlohmann::json> _error;
     model_io::MessageItem _response;
     ChatCompletionStatus _status = ChatCompletionStatus::Streaming;
+    /// Attempts seen: bumped by every clear() after the first. See attempt().
+    unsigned _attempt = 0;
+    /// Whether clear() has run at all — tells attempt 0's reset apart from a
+    /// retry's, since endpoint::complete clears before the initial exchange too.
+    bool _cleared_once = false;
 };
 
 } // namespace llm::chat_completions

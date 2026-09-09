@@ -57,7 +57,16 @@ set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 #       provider_info() calls the hook on an object constructed inside the
 #       provider .so — so the appended slot makes a stale plugin
 #       binary-incompatible; rebuilt plugins must report v3.
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 3)
+#   v4: converse() became REENTRANT, which changed both its signature and the
+#       base layout. converse(const AgentInputState&) -> converse(AgentInputState)
+#       (a coroutine must own its argument, not borrow it across the first
+#       suspension) is a different vtable slot signature; _generation went
+#       private behind a std::shared_mutex with generation_snapshot() /
+#       reset_generation() accessors, which both grows and reorders LLMModel.
+#       generation() now returns by value (a reference would race a concurrent
+#       set_generation()). A stale plugin would mis-call the virtual and
+#       mis-locate every member past _config, so rebuilt plugins must report v4.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 4)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
 # Rendered into version.hpp and hashed by extensions/plugin_magic.hpp

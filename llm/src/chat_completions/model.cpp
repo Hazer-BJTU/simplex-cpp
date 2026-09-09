@@ -1,6 +1,5 @@
 #include "llm/chat_completions/model.hpp"
 
-#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <ostream>
@@ -13,6 +12,7 @@
 #include "llm/chat_completions/events.hpp"
 #include "llm/chat_completions/interpreter.hpp"
 #include "llm/chat_completions/reader.hpp"
+#include "llm/exchange_id.hpp"
 #include "llm/provider_models.hpp"
 
 namespace llm::chat_completions {
@@ -95,10 +95,14 @@ bool ChatCompletionsModel::build() noexcept {
         _endpoint = endpoint_json.get<model_io::ModelEndpoint>();
         (void)endpoint::resolve_endpoint(_endpoint);
 
-        _generation = _config;
-        _generation.erase("endpoint");
-        _generation.erase("provider");
-        _generation.erase("retry");
+        // Derive the knobs locally, validate, and publish once through
+        // reset_generation() (the guarded setter) — the base class keeps
+        // _generation private so no exchange can ever read a partly derived
+        // object.
+        json generation = _config;
+        generation.erase("endpoint");
+        generation.erase("provider");
+        generation.erase("retry");
 
         if (const auto retry = _config.find("retry");
             retry != _config.end() && retry->is_object()) {
@@ -115,11 +119,12 @@ bool ChatCompletionsModel::build() noexcept {
             }
         }
 
-        const auto model = _generation.find("model");
-        if (model == _generation.end() || !model->is_string() ||
+        const auto model = generation.find("model");
+        if (model == generation.end() || !model->is_string() ||
             model->get_ref<const std::string&>().empty()) {
             return false;
         }
+        reset_generation(std::move(generation));
         _built = true;
         return true;
     } catch (...) {
@@ -128,46 +133,60 @@ bool ChatCompletionsModel::build() noexcept {
 }
 
 boost::asio::awaitable<model_io::MessageItem> ChatCompletionsModel::converse(
-    const model_io::AgentInputState& conversation) {
+    model_io::AgentInputState conversation) {
     if (!_built) {
         throw std::logic_error(
             "ChatCompletionsModel used before successful build()");
     }
 
-    ChatCompletionsInterpreter interpreter(_dialect);
-    auto request = interpreter.build_request(
-        conversation, _endpoint, _generation);
-    auto reader = std::make_shared<ChatCompletionsReader>(_executor, _dialect);
+    // ---- the reentrancy prologue: everything shared, read ONCE, up front ----
+    // Every member touched here is read before the first suspension and never
+    // again, so a concurrent exchange (or a concurrent set_generation()) can
+    // neither tear these values nor be torn by them. The generation knobs are
+    // the one mutable member, hence the snapshot rather than a direct read;
+    // the rest (_endpoint, _dialect, the retry policy) are immutable after
+    // build() and are copied only so nothing below depends on `this`.
+    const json generation = generation_snapshot();
+    const ChatCompletionsDialectPtr dialect = _dialect;
+    const endpoint::ResolvedEndpoint where = endpoint::resolve_endpoint(_endpoint);
+
+    ChatCompletionsInterpreter interpreter(dialect);
+    auto request = interpreter.build_request(conversation, _endpoint, generation);
+    auto reader = std::make_shared<ChatCompletionsReader>(_executor, dialect);
 
     // The default live-view hook: every streamed reasoning increment is
     // broadcast on the process-wide bus, synchronously, in wire order (see
     // llm/chat_completions/events.hpp for the full contract). The id is
-    // minted once per exchange so a retried attempt re-broadcasts its
-    // increments under the same id; subscribers correlate by it. The hook
-    // survives the retry functor's reader clear(), and a bus with no
-    // subscriber is a no-op — unobserved exchanges behave identically.
-    const std::string reasoning_id = [&] {
-        static std::atomic<std::uint64_t> sequence{0};
-        return "reasoning-" +
-               std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
-    }();
-    const std::string provider{_dialect->provider_name()};
+    // minted once per exchange and is process-unique, so concurrent
+    // exchanges — indistinguishable by provider/model, which are identical
+    // across them — stay separable by it, and a retried attempt re-broadcasts
+    // under the SAME id with the attempt counter advanced. The hook survives
+    // the retry functor's reader clear(), and a bus with no subscriber is a
+    // no-op — unobserved exchanges behave identically.
+    const std::string exchange_id = llm::next_exchange_id();
+    const std::string provider{dialect->provider_name()};
     std::string model;
-    if (const auto it = _generation.find("model");
-        it != _generation.end() && it->is_string()) {
+    if (const auto it = generation.find("model");
+        it != generation.end() && it->is_string()) {
         model = it->get_ref<const std::string&>();
     }
-    reader->add_hook([reasoning_id, provider, model](
+    // The reader is captured by raw pointer on purpose: it owns this hook, so
+    // a shared_ptr here would be a cycle, and the hook only ever runs from
+    // inside the reader's own next() — the pointer cannot be stale.
+    reader->add_hook([exchange_id, provider, model, source = reader.get()](
                          const ChatCompletionsDelta& delta) {
         if (delta.reasoning.empty()) return;
         eventbus::default_bus().publish(ReasoningDeltaEvent{
-            delta.reasoning, reasoning_id, provider, model});
+            delta.reasoning, exchange_id, source->attempt(), provider, model});
     });
 
+    // Per-call retry engine. MUST stay a local: endpoint::complete keeps
+    // rolling backoff state and documents one operator() in flight per
+    // instance, so hoisting this into a member would break reentrancy.
     endpoint::complete<ChatCompletionsDelta> exchange(
         _executor, _initial_backoff, _max_backoff, _max_retry_attempts);
     auto result = co_await exchange(
-        endpoint::resolve_endpoint(_endpoint), std::move(request), reader,
+        where, std::move(request), reader,
         endpoint::sse_request<ChatCompletionsDelta>);
 
     const ChatCompletionStatus status = reader->status();
@@ -175,6 +194,14 @@ boost::asio::awaitable<model_io::MessageItem> ChatCompletionsModel::converse(
         json details = reader->error_details().value_or(json::object());
         throw ChatCompletionsApiException(
             status, details, failure_message(status, details));
+    }
+    // Report the correlation id back, so a subscriber that watched the live
+    // stream can bind its buffer to the result the exchange produced.
+    if (!result.extras) {
+        result.extras = json::object();
+    }
+    if (result.extras->is_object()) {
+        (*result.extras)["exchange_id"] = exchange_id;
     }
     co_return result;
 }
@@ -184,16 +211,24 @@ boost::asio::awaitable<nlohmann::json> ChatCompletionsModel::provider_info() {
         throw std::logic_error(
             "ChatCompletionsModel used before successful build()");
     }
+    // Own copies before the first suspension, for the same reason converse()
+    // takes its snapshot: fetch_provider_* hold the endpoint BY REFERENCE
+    // across their co_awaits, so handing them a member would tie the
+    // exchange's safety to the model outliving it by exactly the right
+    // margin. A frame-local copy removes the question.
+    const model_io::ModelEndpoint endpoint = _endpoint;
+    const ChatCompletionsDialectPtr dialect = _dialect;
+
     nlohmann::json models = co_await llm::fetch_provider_models(
-        _executor, _endpoint, _dialect->models_path());
+        _executor, endpoint, dialect->models_path());
     // A dialect exposing an account-balance companion (DeepSeek:
     // /user/balance) widens the return to one object — the models array
     // under "models", the provider's balance document verbatim under
     // "balance" — over a second single-shot GET on the same endpoint.
-    if (std::string balance_path = _dialect->balance_path();
+    if (std::string balance_path = dialect->balance_path();
         !balance_path.empty()) {
         nlohmann::json balance = co_await llm::fetch_provider_json(
-            _executor, _endpoint, std::move(balance_path));
+            _executor, endpoint, std::move(balance_path));
         co_return nlohmann::json{
             {"models", std::move(models)},
             {"balance", std::move(balance)},

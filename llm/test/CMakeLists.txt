@@ -71,6 +71,27 @@ target_link_libraries(test_chat_completions_model PRIVATE
     llm_chat_completions endpoint_lib Boost::unit_test_framework)
 add_test(NAME test_chat_completions_model COMMAND test_chat_completions_model)
 
+# The reentrancy contract of converse(): concurrent exchanges on ONE instance
+# over a multi-threaded executor (answer-to-request pairing, exchange_id as the
+# demultiplexing join key), a concurrent set_generation() that must not tear an
+# in-flight snapshot, the by-value conversation argument surviving the
+# temporary-into-co_spawn trap, and the retry replay's attempt counter.
+# -pthread: the fixture holds one thread per concurrent connection and the test
+# runs the io_context on a pool (the plain compile option, matching
+# utils/eventbus/test — it preserves the project's per-config option sets).
+add_executable(test_chat_completions_concurrency
+    chat_completions/test_chat_completions_concurrency.cpp)
+target_include_directories(test_chat_completions_concurrency PRIVATE
+    "${PROJECT_SOURCE_DIR}/endpoint/test")
+target_compile_options(test_chat_completions_concurrency PRIVATE -pthread
+    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+target_link_libraries(test_chat_completions_concurrency PRIVATE
+    llm_chat_completions endpoint_lib eventbus_iface
+    Boost::unit_test_framework)
+add_test(NAME test_chat_completions_concurrency
+    COMMAND test_chat_completions_concurrency)
+
 add_executable(test_openai_plugin test_openai_plugin.cpp)
 target_link_libraries(test_openai_plugin PRIVATE
     llm_iface Boost::unit_test_framework)

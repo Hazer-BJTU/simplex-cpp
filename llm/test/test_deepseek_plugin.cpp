@@ -203,10 +203,15 @@ BOOST_AUTO_TEST_CASE(dlopened_plugin_drives_a_loopback_exchange) {
     BOOST_REQUIRE_EQUAL(broadcast.size(), 2u);
     BOOST_CHECK_EQUAL(broadcast[0].reasoning, "thinking ");
     BOOST_CHECK_EQUAL(broadcast[1].reasoning, "hard");
-    BOOST_CHECK(!broadcast[0].reasoning_id.empty());
-    BOOST_CHECK_EQUAL(broadcast[0].reasoning_id, broadcast[1].reasoning_id);
+    BOOST_CHECK(!broadcast[0].exchange_id.empty());
+    BOOST_CHECK_EQUAL(broadcast[0].exchange_id, broadcast[1].exchange_id);
     BOOST_CHECK_EQUAL(broadcast[0].provider, "deepseek");
     BOOST_CHECK_EQUAL(broadcast[0].model, "deepseek-v4-flash");
+    // The correlation id also crossed back on the assembled item, so the
+    // host's join key survives the DSO boundary in both directions.
+    BOOST_REQUIRE(result->extras);
+    BOOST_CHECK_EQUAL((*result->extras)["exchange_id"],
+                      broadcast[0].exchange_id);
 }
 
 // provider_info() across the boundary: the coroutine and its connect+GET
