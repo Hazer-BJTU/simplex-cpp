@@ -184,3 +184,38 @@ add_subdirectory(process)
 # framework, endpoint transport and model_io data contract. Runtime providers
 # are emitted under <exe>/plugins/llm.
 add_subdirectory(llm)
+
+# ---- Portability floor (opt-in) ---------------------------------------------
+# Assert that nothing in the build tree references a glibc symbol version newer
+# than the oldest platform a release targets. This is a property of the BUILD
+# IMAGE, not of the source: a successful compile+link+ctest run never reveals
+# it, because the build machine's glibc is new enough by construction. See
+# docker/portability_floor.cmake for what it does and does not prove.
+#
+# Off by default and deliberately so: the ordinary dev build (local WSL, or the
+# Debian-13-based docker/Dockerfile.build-base) sits far above any release
+# floor, and failing those builds over it would be noise. It is enabled in the
+# portable build image only — docker/Dockerfile.build-portable, whose whole
+# purpose is to keep this number low.
+#
+#   -DSIMPLEX_GLIBC_FLOOR=2.34    max allowed glibc version
+#   -DSIMPLEX_STRICT_NEEDED=ON    additionally allowlist DT_NEEDED
+set(SIMPLEX_GLIBC_FLOOR "" CACHE STRING
+    "If set (e.g. 2.34), register a ctest asserting no artifact requires a newer glibc")
+option(SIMPLEX_STRICT_NEEDED
+    "With SIMPLEX_GLIBC_FLOOR, also assert every DT_NEEDED is on the redistributable allowlist" OFF)
+
+if(SIMPLEX_GLIBC_FLOOR)
+    add_test(NAME portability_floor COMMAND ${CMAKE_COMMAND}
+        -DBUILD_DIR=${CMAKE_BINARY_DIR}
+        -DGLIBC_FLOOR=${SIMPLEX_GLIBC_FLOOR}
+        -DSTRICT_NEEDED=${SIMPLEX_STRICT_NEEDED}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/docker/portability_floor.cmake)
+    # The scan reads the built artifacts, so it must not run before they exist.
+    # ctest has no build ordering of its own; RUN_SERIAL keeps it from racing
+    # other tests that could still be writing outputs (none today, but the
+    # scan is cheap and this removes the question).
+    set_tests_properties(portability_floor PROPERTIES RUN_SERIAL ON)
+    message(STATUS "Portability floor test enabled: glibc <= ${SIMPLEX_GLIBC_FLOOR}"
+        " (strict DT_NEEDED: ${SIMPLEX_STRICT_NEEDED})")
+endif()

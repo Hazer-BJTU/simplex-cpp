@@ -61,3 +61,77 @@ jobs:
         # --timeout: per-test backstop so a deadlock regression fails in
         # minutes instead of hanging until the 45-minute job timeout.
         run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+
+  # ---------------------------------------------------------------------------
+  # portable-release — the SAME tree, built in the portable base image, plus one
+  # check the job above structurally cannot perform.
+  #
+  # build-test runs in a Debian 13 image (glibc 2.41). Its artifacts load only
+  # on Ubuntu 25.04+ / Debian 13+ / Fedora 42+, which is fine for testing
+  # in-container and useless for a release. glibc is not forward-compatible, and
+  # the floor is a property of the BUILD IMAGE: no compile, link or test failure
+  # in the job above can reveal it, because that image's glibc is always new
+  # enough. This job builds in the AlmaLinux 9 image (glibc 2.34) and then
+  # asserts the resulting artifacts really do stay under that floor
+  # (SIMPLEX_GLIBC_FLOOR registers the `portability_floor` ctest; see
+  # docker/portability_floor.cmake for what it does and does not prove).
+  #
+  # Why not just replace build-test with this one: the two images are different
+  # execution contexts on purpose. Keeping both means a toolchain-shaped
+  # regression that only manifests on one glibc/libstdc++ generation is caught
+  # by whichever job sees it, instead of being invisible in a single context.
+  # ---------------------------------------------------------------------------
+  portable-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    container:
+      # Pinned by tag and digest for the same reason as build-test above: a
+      # change to the reference release environment must be an explicit,
+      # reviewable edit. Fill in the digest after the first push
+      # (docker buildx imagetools inspect <image> prints it).
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
+      # credentials:
+      #   username: ${{ github.actor }}
+      #   password: ${{ secrets.GITHUB_TOKEN }}
+
+    strategy:
+      matrix:
+        # Release only. Debug is already covered in build-test's matrix, and
+        # what this job adds is a property of the release artifacts — the floor
+        # a Debug build reports is not the one that ships.
+        build_type: [Release]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure
+        # SIMPLEX_GLIBC_FLOOR must match the base image's glibc (LABEL
+        # simplex.build.glibc). SIMPLEX_STRICT_NEEDED additionally asserts every
+        # DT_NEEDED is either universally present, shipped alongside the release
+        # (/opt/simplex-runtime in the image), or a documented external
+        # requirement — so a newly-linked dependency cannot reach a release
+        # unnoticed.
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+            -DSIMPLEX_GLIBC_FLOOR=2.34 \
+            -DSIMPLEX_STRICT_NEEDED=ON
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+
+      - name: Confirm the toolchain is the one the image promises
+        # Cheap guard against a silent base-image swap: the plugin admission
+        # fingerprint hashes the full compiler version, so a different point
+        # release here means artifacts from this job stop being loadable
+        # against ones built in the other image.
+        run: |
+          g++-14 -dumpfullversion
+          test "$(g++-14 -dumpfullversion)" = "14.3.0"
+          ldd --version | head -1
