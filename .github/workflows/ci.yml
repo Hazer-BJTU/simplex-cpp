@@ -87,9 +87,9 @@ jobs:
     container:
       # Pinned by tag and digest for the same reason as build-test above: a
       # change to the reference release environment must be an explicit,
-      # reviewable edit. Fill in the digest after the first push
+      # reviewable edit. When the base image is rebuilt, update the digest
       # (docker buildx imagetools inspect <image> prints it).
-      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3@sha256:911758332795a533364858149b8475a4a2a6743de0a11a947e8e89f40d101eb1
       # credentials:
       #   username: ${{ github.actor }}
       #   password: ${{ secrets.GITHUB_TOKEN }}
