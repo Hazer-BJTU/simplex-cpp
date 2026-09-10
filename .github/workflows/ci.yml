@@ -108,23 +108,52 @@ jobs:
 
       - name: Configure
         # SIMPLEX_GLIBC_FLOOR must match the base image's glibc (LABEL
-        # simplex.build.glibc). SIMPLEX_STRICT_NEEDED additionally asserts every
-        # DT_NEEDED is either universally present, shipped alongside the release
-        # (/opt/simplex-runtime in the image), or a documented external
-        # requirement — so a newly-linked dependency cannot reach a release
-        # unnoticed.
+        # simplex.build.glibc). SIMPLEX_OPENSSL_FLOOR is 3.0.0 rather than the
+        # image's own 3.5.x: the oldest supported target ships OpenSSL 3.0.2,
+        # and OpenSSL 3 versions symbols per minor release under one unchanging
+        # SONAME, so this is the only place that mismatch is visible.
+        # SIMPLEX_STAGING_DIR is what makes SIMPLEX_STRICT_NEEDED mean
+        # something — a DT_NEEDED counts as ours only if it is really in the
+        # release tree, not merely somewhere under build/.
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+            -DSIMPLEX_BUNDLE_RUNTIME=/opt/simplex-runtime \
+            -DCMAKE_INSTALL_PREFIX="$PWD/stage" \
             -DSIMPLEX_GLIBC_FLOOR=2.34 \
-            -DSIMPLEX_STRICT_NEEDED=ON
+            -DSIMPLEX_OPENSSL_FLOOR=3.0.0 \
+            -DSIMPLEX_STRICT_NEEDED=ON \
+            -DSIMPLEX_STAGING_DIR="$PWD/stage"
 
       - name: Build
         run: cmake --build build -j2
 
+      - name: Stage the release
+        # Before ctest, because the floor test scans the staging tree: it is
+        # where the bundled runtime lives and where "shipped by us" is decided.
+        run: cmake --install build
+
       - name: Test
         run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+
+      - name: Pack the build and staging trees
+        # tar before upload-artifact: the artifact format does not preserve the
+        # executable bit, and a test binary that arrives non-executable fails in
+        # the next job for a reason that has nothing to do with portability.
+        #
+        # The build tree travels along with the staging tree because ctest needs
+        # it — CTestTestfile.cmake references absolute paths, and the test
+        # executables themselves are deliberately not part of a release install.
+        run: tar -czf portable-release.tar.gz build stage
+        if: matrix.build_type == 'Release'
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.build_type == 'Release'
+        with:
+          name: portable-release
+          path: portable-release.tar.gz
+          retention-days: 1
 
       - name: Confirm the toolchain is the one the image promises
         # Cheap guard against a silent base-image swap: the plugin admission
@@ -135,3 +164,143 @@ jobs:
           g++-14 -dumpfullversion
           test "$(g++-14 -dumpfullversion)" = "14.3.0"
           ldd --version | head -1
+
+  # ---------------------------------------------------------------------------
+  # staged-runtime — run the release on the oldest platforms it claims.
+  #
+  # Everything above is a static check performed inside the build image, and
+  # that image cannot answer the question that actually matters. Two reasons:
+  #
+  #   1. /usr/local/lib64 is in its ldconfig cache, so the bundled libstdc++ is
+  #      found whether or not the artifacts carry a correct RPATH. Copying
+  #      libraries next to a binary does nothing on Linux by itself; the loader
+  #      never looks beside the executable. A release could ship a complete
+  #      runtime and still resolve libstdc++ from the host.
+  #   2. Its own OpenSSL is 3.5.x, so no static check there exercises the 3.0.2
+  #      that the oldest supported target provides.
+  #
+  # Both legs take the built artifacts to a stock distro of a target family, each
+  # with a libstdc++ OLDER than the GCC 14 one the release bundles (22.04 has
+  # GLIBCXX_3.4.30, AlmaLinux 9 has 3.4.29). That is what keeps the test honest:
+  # if the $ORIGIN RPATHs are wrong, the binaries do not silently fall back to
+  # the host's libstdc++, they fail to load at all. Neither leg can pass by
+  # accident.
+  #
+  # Two legs rather than one, because they are the two halves of the documented
+  # target set and they fail for different reasons:
+  #
+  #   - ubuntu:22.04 — glibc 2.35, OpenSSL 3.0.2. The only leg that exercises
+  #     SIMPLEX_OPENSSL_FLOOR: a symbol added after OpenSSL 3.0 binds a node this
+  #     libssl does not define, while DT_NEEDED still reads exactly libssl.so.3.
+  #   - almalinux:9 — glibc 2.34, i.e. the only leg that actually EXECUTES on the
+  #     floor the release is built for (the build image cannot: its own glibc is
+  #     2.34 with the same backports, but everything there resolves through
+  #     ldconfig). It is also where the exemption in portability_floor.cmake
+  #     earns its keep: `_dl_find_object@GLIBC_2.35` exists on this distro only
+  #     as a backport into its glibc 2.34, so the bundled libgcc_s that
+  #     references it must resolve here. No static scan can show that.
+  #
+  # Neither image is digest-pinned, unlike the build images. They stand in for
+  # "whatever a user's Ubuntu 22.04 / AlmaLinux 9 looks like"; pinning them would
+  # freeze the target distro's own security updates out of the test, which is the
+  # opposite of what a compatibility target is for.
+  # ---------------------------------------------------------------------------
+  staged-runtime:
+    runs-on: ubuntu-latest
+    needs: portable-release
+    timeout-minutes: 30
+    strategy:
+      # Both legs report. A failure on one distro must not hide the other's,
+      # since "which family broke" is the first question a red run raises.
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:22.04
+            install: |
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                cmake binutils ca-certificates
+          - image: almalinux:9
+            install: |
+              dnf -y install --setopt=install_weak_deps=False \
+                cmake binutils ca-certificates
+    container:
+      image: ${{ matrix.image }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install test prerequisites
+        # cmake/ctest to drive the suite, binutils for nm/readelf (the
+        # llm_plugin_boundary_hygiene and portability_floor ctests), and NO
+        # compiler: installing g++ would drag in a newer libstdc++ and quietly
+        # repair the exact failure this job exists to detect.
+        run: |
+          ${{ matrix.install }}
+          ldd --version | head -1
+          openssl version
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable-release
+
+      - name: Unpack
+        run: tar -xzf portable-release.tar.gz
+
+      - name: Assert the release resolves its OWN runtime, not the host's
+        # The core assertion of this job. LD_LIBRARY_PATH is explicitly emptied
+        # so nothing but the artifacts' own RUNPATH is in play, then every
+        # resolved path for the bundled libraries is required to be inside the
+        # staging tree. `ldd -r` also resolves function relocations, so a symbol
+        # the target's older libraries cannot supply fails here rather than at
+        # first call.
+        run: |
+          set -euo pipefail
+          stage="$PWD/stage"
+          fail=0
+          n_exe=0
+          n_plugin=0
+          for f in "$stage"/bin/* "$stage"/bin/plugins/llm/*.so; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              */plugins/llm/*) n_plugin=$((n_plugin + 1)) ;;
+              *)               n_exe=$((n_exe + 1)) ;;
+            esac
+            echo "--- ${f#$stage/}"
+            out=$(env -u LD_LIBRARY_PATH ldd -r "$f")
+            echo "$out" | grep -E 'libstdc\+\+|libgcc_s|libboost|not found|undefined' || true
+            # Bundled runtime must come from the release, not /usr/lib.
+            for lib in libstdc++.so.6 libgcc_s.so.1; do
+              path=$(echo "$out" | awk -v l="$lib" '$1==l {print $3}')
+              case "$path" in
+                "$stage"/*) ;;
+                *) echo "FAIL: $lib resolved to '${path:-<unresolved>}', not the release"; fail=1 ;;
+              esac
+            done
+            if echo "$out" | grep -qE 'not found|undefined symbol'; then
+              echo "FAIL: unresolved symbols or libraries in ${f#$stage/}"; fail=1
+            fi
+          done
+          # Zero matching files is the one way this loop can lie: `fail` stays 0
+          # and the step reads as green while asserting nothing at all. Both
+          # groups are therefore required to be non-empty, which also catches a
+          # release that stopped installing its plugins.
+          echo "asserted ${n_exe} executable(s) and ${n_plugin} plugin(s)"
+          if [ "$n_exe" -eq 0 ] || [ "$n_plugin" -eq 0 ]; then
+            echo "FAIL: nothing staged to assert on"
+            fail=1
+          fi
+          test "$fail" -eq 0
+
+      - name: Run the full test suite against the bundled runtime
+        # The build tree's test binaries keep CMake's absolute build RPATH, which
+        # points at the project's own libraries but not at the bundled
+        # libstdc++/Boost — those live in the staging tree here, not in this
+        # container's ldconfig cache. LD_LIBRARY_PATH is the launcher-style half
+        # of the strategy, and it is legitimate for tests: the release binaries
+        # themselves are covered by the RPATH assertion above, without it.
+        run: |
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
