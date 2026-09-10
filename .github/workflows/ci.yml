@@ -35,6 +35,12 @@ permissions:
 # RHEL family. Steps that use bash-isms (set -o pipefail) therefore pass on
 # AlmaLinux and die on Ubuntu with "Illegal option -o pipefail", which is a
 # distinction no reader should have to hold in their head. Pin the shell once.
+#
+# Note what that pins it TO: `shell: bash` expands to
+# `bash --noprofile --norc -e -o pipefail`, so an early-exiting consumer
+# (`ldd --version | head -1`) now charges the producer's SIGPIPE to the
+# pipeline — exit 141, a failed step. That is the right default for the steps
+# that do real work; a purely cosmetic pipeline trims with `|| true`.
 defaults:
   run:
     shell: bash
@@ -169,10 +175,15 @@ jobs:
         # fingerprint hashes the full compiler version, so a different point
         # release here means artifacts from this job stop being loadable
         # against ones built in the other image.
+        #
+        # `|| true` on the banner: under the pinned shell's -o pipefail, `head`
+        # closing the pipe early makes ldd's SIGPIPE the pipeline's status
+        # (141), and a log line must not be able to fail the step. The strict
+        # check here is the compiler version, which is a test, not a pipeline.
         run: |
           g++-14 -dumpfullversion
           test "$(g++-14 -dumpfullversion)" = "14.3.0"
-          ldd --version | head -1
+          ldd --version | head -1 || true
 
   # ---------------------------------------------------------------------------
   # staged-runtime — run the release on the oldest platforms it claims.
@@ -260,7 +271,7 @@ jobs:
               echo "no package-manager rule for ${{ matrix.image }}"; exit 1
               ;;
           esac
-          ldd --version | head -1
+          ldd --version | head -1 || true
           openssl version
 
       - uses: actions/download-artifact@v4
