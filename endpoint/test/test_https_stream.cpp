@@ -3,6 +3,7 @@
 
 #include "endpoint/https_stream.hpp"
 
+#include <algorithm>
 #include <array>
 #include <string>
 #include <thread>
@@ -72,6 +73,42 @@ BOOST_AUTO_TEST_CASE(unified_factory_reports_tls_connection_refusal)
     io.run();
 
     BOOST_CHECK_THROW(result.get(), boost::system::system_error);
+}
+
+// The TLS flavour owns its service name too — and here the assertion can be
+// EXACT, because losing the port changes which failure comes back: the port
+// below is refused (connection_refused), while a garbage service name never
+// resolves at all. The mechanism (reusing the caller's buffer before the lazy
+// awaitable's body runs) is documented on the http-flavour twin,
+// a_transient_service_name_reaches_the_port_below.
+BOOST_AUTO_TEST_CASE(a_transient_service_name_is_refused_as_a_connection)
+{
+    asio::io_context reservation_io;
+    tcp::acceptor reservation(
+        reservation_io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    const auto unused_port = reservation.local_endpoint().port();
+    reservation.close();
+
+    std::string service = std::to_string(unused_port);
+
+    asio::io_context io;
+    auto operation = endpoint::create_connection_stream<endpoint::https_stream>(
+        io.get_executor(), "127.0.0.1", service);
+    std::fill_n(service.data(), service.size(), 'X');
+
+    auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
+    io.run();
+
+    try {
+        (void)result.get();
+        BOOST_FAIL("connecting to a closed loopback port must not succeed");
+    } catch (const boost::system::system_error& error) {
+        BOOST_CHECK_MESSAGE(
+            error.code() == asio::error::connection_refused,
+            "expected connection_refused, got '" << error.code().message()
+                << "' — a resolution failure instead means the service name the "
+                   "coroutine resolved with was not the one it was handed");
+    }
 }
 
 BOOST_AUTO_TEST_CASE(non_tls_peer_causes_handshake_failure)
