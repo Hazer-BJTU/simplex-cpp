@@ -9,6 +9,137 @@ one configure — inside one container.
 | --- | --- | --- |
 | `Dockerfile.build-base` | `…/build-base` | The toolchain base: everything the core tree needs to configure, build and test, **no sources**. Built rarely, published to ghcr, cached hard. |
 | `Dockerfile.build-context` | `simplex-cpp-build` | `FROM` the base; `COPY`s the tree and runs one configure + build + full ctest. Rebuilt per tree change. |
+| `Dockerfile.build-portable` | `…/build-portable` | Same role as `build-base`, different goal: artifacts that **run on other machines**. See [Which base to use](#which-base-to-use). |
+| `portability_floor.cmake` | — | The ctest that keeps `build-portable` honest: asserts no artifact requires a newer glibc than the release targets. |
+| `../cmake/SimplexRelease.cmake` | — | The release install rules: what a staged tree contains and the `$ORIGIN` RPATHs that make it load its own bundled runtime. See [Building a release](#building-a-release). |
+
+## Which base to use
+
+`build-base` and `build-portable` are both toolchain bases and they are not
+interchangeable:
+
+| | `build-base` | `build-portable` |
+| --- | --- | --- |
+| Distro | Debian 13 (via `gcc:14.3.0`) | AlmaLinux 9 |
+| glibc floor | **2.41** | **2.34** |
+| Artifacts run on | Ubuntu 25.04+, Debian 13+, Fedora 42+ | RHEL/Alma/Rocky 9+, Ubuntu 22.04+, Debian 12+ |
+| GCC | 14.3.0, from the upstream image | 14.3.0, bootstrapped from source |
+| OpenSSL | Debian 13's | AlmaLinux 9's 3.5.x |
+| Build time | minutes | ~1–1.5 h (the bootstrap) |
+| Use for | CI, local dev, in-container testing | **binary releases** |
+
+The single fact behind that table: **glibc is backward- but not
+forward-compatible.** A binary that references `GLIBC_2.41` symbols fails at
+load time on anything older, and the floor is decided by the glibc the image
+was built against — not by anything in the source. So the reach of a release
+is set by choosing a base image, and `build-base`, descending from
+`gcc:14.3.0`, happens to sit on the newest Debian there is. Fine for CI;
+unusable for distribution.
+
+Both are kept because they are two different execution contexts, and a
+toolchain-shaped regression that only shows up on one glibc/libstdc++
+generation is then caught by whichever job sees it.
+
+Why 2.34 and not lower: AlmaLinux **8** (glibc 2.28) reaches further and is
+the manylinux_2_28 baseline, but only ships OpenSSL 1.1.1 — EOL since 2023,
+and linking it stamps a `libssl.so.1.1` SONAME that no current distro
+provides, so compatibility breaks at the other end. Reaching 2.28 means
+building OpenSSL from source as well; 2.34 gets a supported system OpenSSL for
+free. The `manylinux` images themselves were rejected for a different reason:
+7× the size of an `almalinux` base, and the excess is CPython versions and
+`auditwheel`, neither of which a C++ tree consumes.
+
+### Two things this image deliberately does not do
+
+**It does not use `gcc-toolset-14`.** AlmaLinux 9 packages GCC 14.2.1 as an
+SCL, which would be far cheaper than a source bootstrap. It is not used
+because (a) the plugin admission fingerprint hashes the *complete* compiler
+version, so 14.2.1 would make this image a different execution context from
+`build-base`'s `GNU-14.3.0` for no reason, and (b) `gcc-toolset` links new C++
+symbols in statically from `libstdc++_nonshared.a`, leaving artifacts
+dependent on the *host's* old `libstdc++.so.6`. Ordinary programs never
+notice; this tree passes C++ types across `dlopen` boundaries and compares
+typeinfo identity, which is exactly where duplicated library internals bite.
+A source build yields a complete standalone `libstdc++.so.6` to ship instead.
+
+**It does not statically link libstdc++.** `-static-libstdc++` is the usual
+answer to "my binary needs a newer libstdc++ than the target has", and it is
+wrong here for the same reason: host and plugin would each get a private copy
+of the vtables and typeinfo, and cross-DSO RTTI and exception propagation stop
+working. Ship the `.so`, do not embed it. The image collects what a release
+needs to carry in **`/opt/simplex-runtime`** (`libstdc++.so.6`,
+`libgcc_s.so.1`, `libboost_*.so*`), so the release step is a copy rather than
+a hunt, and the dependency set is recorded in the image instead of in
+someone's notes.
+
+### The portability floor test
+
+`portability_floor.cmake` is registered as the `portability_floor` ctest when
+`-DSIMPLEX_GLIBC_FLOOR=<version>` is set (off by default — the local WSL build
+and `build-base` both sit far above any release floor, and failing them over it
+would be noise). `SIMPLEX_STRICT_NEEDED` needs a staged tree to mean anything,
+so the release command line is the only sensible way to run it:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+    -DSIMPLEX_BUNDLE_RUNTIME=/opt/simplex-runtime \
+    -DCMAKE_INSTALL_PREFIX="$PWD/stage" \
+    -DSIMPLEX_GLIBC_FLOOR=2.34 -DSIMPLEX_OPENSSL_FLOOR=3.0.0 \
+    -DSIMPLEX_STRICT_NEEDED=ON -DSIMPLEX_STAGING_DIR="$PWD/stage"
+cmake --build build -j4 && cmake --install build
+ctest --test-dir build -R portability_floor
+```
+
+It scans every ELF in the build tree **and in the staging tree** with `readelf`
+and fails if any references a glibc symbol version above the floor, naming the
+offending symbols — the fix depends on which call pulled the node in. The
+staging tree is scanned too, not instead: it holds the bundled runtime, which
+appears nowhere in the build tree and breaks the release just as thoroughly if it
+needs a newer glibc than the release claims.
+
+`SIMPLEX_OPENSSL_FLOOR` closes the gap a SONAME allowlist cannot: OpenSSL 3
+versions its symbols per *minor* release, so an API added in 3.2 binds
+`OPENSSL_3.2.0` while `DT_NEEDED` still reads exactly `libssl.so.3`. Building
+against the image's 3.5 against a target that ships 3.0.2 fails at load, and only
+a version-node check sees it.
+
+`SIMPLEX_STRICT_NEEDED=ON` additionally asserts every `DT_NEEDED` is either
+provided by any glibc host, a documented external requirement (OpenSSL 3), or
+**present in the staging tree** — the only place where "this library exists" and
+"this library ships" are the same statement. Identity is taken from `DT_SONAME`,
+because that is what `DT_NEEDED` records. Without `SIMPLEX_STAGING_DIR` the check
+refuses to run rather than falling back to the build tree: a weaker check
+answering to the name `STRICT_NEEDED` is worse than no check, since it reports
+green for a property it never tested.
+
+One named exemption from the glibc floor, `_dl_find_object@GLIBC_2.35`. A
+distribution can provide a symbol under a node newer than its glibc version by
+backporting it under the upstream name — the RHEL 9 family and Amazon Linux 2023
+both define `_dl_find_object@@GLIBC_2.35` on top of glibc 2.34, and Ubuntu 22.04
+(2.35) and Debian 12 (2.36) have it natively. GCC 14's `libgcc_s.so.1` references
+it, because whether libgcc takes the fast unwind path is decided by the headers
+of the system GCC was *built* on — this image — and the reference then ships with
+the bundled runtime. It is exempted by name rather than by version, it applies
+only inside the staging tree (so the project's own libraries, which are scanned
+twice, cannot hide behind it), and the count is printed on every run, including
+passing ones.
+
+It catches a real and otherwise-invisible class of regression, e.g. the local
+Ubuntu 24.04 build requires `__isoc23_strtoll@GLIBC_2.38` — a *header-driven
+redirect*, not a source-level choice: building against glibc ≥ 2.38 headers
+silently rewrites `strtoll` to its C23-conformant alias. Nothing about the
+build fails, and the artifact simply will not load on AlmaLinux 9. Only an
+older base image fixes it, which is what this one is.
+
+What it does **not** prove: that the release runs. Symbol versions are
+necessary, not sufficient — kernel requirements and runtime behaviour are out
+of scope. That half is the `staged-runtime` CI job, which takes the same
+artifacts to a stock Ubuntu 22.04 and a stock AlmaLinux 9 and runs the whole
+suite there, with `ldd -r` asserting on the way in that `libstdc++` and
+`libgcc_s` resolve from the release rather than from the host. This script is the
+cheap gate that runs on every commit; that job is the expensive one that runs
+once per build.
 
 The build context for both is the **repository root** (the root
 `.dockerignore` governs `COPY . .`); invoke them as:
@@ -18,7 +149,65 @@ docker build -f docker/Dockerfile.build-base  -t <base-tag> .
 docker build -f docker/Dockerfile.build-context -t <ctx-tag> .
 ```
 
-## What the base image contains
+## Building a release
+
+Inside `build-portable`, one configure produces both the tested tree and the
+release. `SIMPLEX_BUNDLE_RUNTIME` is what turns the second into a self-contained
+one; left empty (the default), a dev build installs nothing extra and picks its
+runtime up from the system.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+    -DSIMPLEX_BUNDLE_RUNTIME=/opt/simplex-runtime \
+    -DCMAKE_INSTALL_PREFIX=/out/stage \
+    -DSIMPLEX_GLIBC_FLOOR=2.34 -DSIMPLEX_OPENSSL_FLOOR=3.0.0 \
+    -DSIMPLEX_STRICT_NEEDED=ON -DSIMPLEX_STAGING_DIR=/out/stage
+cmake --build build -j4
+cmake --install build
+```
+
+`cmake --install` produces the release tree:
+
+```text
+stage/
+├── bin/                  deepseek_chat, llm_deepseek_chat, prompt_template_demo
+│   └── plugins/llm/      libllm_openai.so, libllm_deepseek.so
+└── lib/                  the project's shared libraries
+                          plus libstdc++.so.6, libgcc_s.so.1, libboost_*.so*
+```
+
+Three properties make that tree loadable on a machine that is not this one, and
+all three are decided in `cmake/SimplexRelease.cmake` rather than here:
+
+- **The release set is derived, not enumerated.** Every non-`INTERFACE` target
+  outside a `test/` directory is installed. An explicit list rots quietly: a new
+  module ships nothing until someone remembers to add a line, and nothing fails
+  in the meantime.
+- **`$ORIGIN`-relative RPATHs.** `bin/` gets `$ORIGIN/../lib`, `lib/` gets
+  `$ORIGIN` (so a bundled Boost finds the bundled libstdc++ beside it), and each
+  plugin gets `$ORIGIN/…/lib` with the count taken from its own directory, so
+  moving a plugin's output directory moves its install location with it. Without
+  RPATH the bundled runtime may as well not be there: the loader never looks
+  beside an executable, so the release would resolve `libstdc++.so.6` from the
+  host — silently, because every host has one.
+- **`lib/`, not `lib64/`.** One bundle layout whether the builder was
+  RHEL-family or Debian; the tarball structure and every `$ORIGIN` above depend
+  on it, and nothing about a bundle whose libraries are found `$ORIGIN`-relative
+  benefits from the split.
+
+The bundled runtime is installed, never linked against: `install(DIRECTORY)`
+copies `/opt/simplex-runtime` preserving each versioned `.so` and its `lib*.so*`
+symlink together (one without the other is a dangling link, i.e. the same failure
+as shipping nothing), and skipping the `*-gdb.py` pretty-printer — it matches
+`*.so*` by name and would put a Python file in a release `lib/` that gdb would
+then auto-load from a path the release does not control.
+
+Both CI stages consume exactly this tree. `portable-release` installs into
+`$PWD/stage` and the floor test judges "shipped by us" from it; `staged-runtime`
+unpacks the same build and stage on stock Ubuntu 22.04 and AlmaLinux 9 and runs
+the full suite there.
+
 
 | Piece | Version | Where | Notes |
 | --- | --- | --- | --- |
@@ -81,6 +270,34 @@ docker push ghcr.io/hazer-bjtu/simplex-cpp/build-base:latest
 Once pushed, `Dockerfile.build-context` builds as-is (its `BASE_IMAGE`
 default) and anyone cloning the tree gets a working same-context build
 without provisioning Boost or the vendored headers locally.
+
+### Publishing the portable base to ghcr (manual)
+
+Same flow, one extra step: the CI job that consumes it pins the image by
+digest, so the digest has to be read back after the push and pasted into
+`.github/workflows/ci.yml`.
+
+```bash
+# ~1-1.5 h: the GCC bootstrap dominates. JOBS defaults to 4; raise it only if
+# the host can spare the cores (see the WSL note at the end of this file).
+docker build -f docker/Dockerfile.build-portable \
+    --build-arg JOBS=4 \
+    -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3 .
+
+echo <PAT> | docker login ghcr.io -u Hazer-BJTU --password-stdin   # write:packages
+docker push ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
+
+# then pin it in the workflow:
+docker buildx imagetools inspect \
+    ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
+# -> paste the Digest into the portable-release job's `image:` as @sha256:…
+```
+
+The tag encodes both halves of what the image promises — the glibc floor and
+the compiler — because those are the two things a consumer needs to know and
+the two things a rebuild could silently change. `latest` is deliberately not
+published for this image: "latest portable base" is not a meaningful thing to
+depend on when the whole point is a specific floor.
 
 ### Behind a proxy
 
