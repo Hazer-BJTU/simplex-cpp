@@ -185,6 +185,41 @@ add_subdirectory(process)
 # are emitted under <exe>/plugins/llm.
 add_subdirectory(llm)
 
+# ---- Release install rules --------------------------------------------------
+# Included AFTER every add_subdirectory() above: it derives the release set by
+# walking the buildsystem, so the targets must already exist. Defines the
+# install() rules and the $ORIGIN RPATHs that let a staged release load its own
+# bundled libstdc++/Boost instead of the host's.
+#
+# SIMPLEX_BUNDLE_RUNTIME points at a directory of runtime libraries to install
+# alongside the project's own (the build image collects them into
+# /opt/simplex-runtime). Empty by default: a dev build installs nothing extra
+# and picks the runtime up from the system, which is what a dev wants.
+set(SIMPLEX_BUNDLE_RUNTIME "" CACHE PATH
+    "Directory of runtime libraries (libstdc++, libgcc_s, libboost_*) to install into lib/")
+
+include(cmake/SimplexRelease.cmake)
+
+if(SIMPLEX_BUNDLE_RUNTIME)
+    if(NOT IS_DIRECTORY "${SIMPLEX_BUNDLE_RUNTIME}")
+        message(FATAL_ERROR
+            "SIMPLEX_BUNDLE_RUNTIME=${SIMPLEX_BUNDLE_RUNTIME} is not a directory")
+    endif()
+    # install(DIRECTORY) copies symlinks AS symlinks, which is what we want
+    # here: the source directory holds both libstdc++.so.6 and its target
+    # libstdc++.so.6.0.33 (the image collects them with `cp -P`), so the link
+    # and the real file arrive together. Copying only one would leave the
+    # loader with a dangling symlink — the same failure as shipping nothing.
+    # The *-gdb.py exclusion is not cosmetic: libstdc++ installs a pretty-printer
+    # script next to the library, matching *.so* by name only. Shipping it puts a
+    # Python file in a release lib/ directory that gdb would auto-load from a
+    # path the release does not control.
+    install(DIRECTORY "${SIMPLEX_BUNDLE_RUNTIME}/"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        FILES_MATCHING PATTERN "*.so*" PATTERN "*-gdb.py" EXCLUDE)
+    message(STATUS "Bundling runtime libraries from ${SIMPLEX_BUNDLE_RUNTIME}")
+endif()
+
 # ---- Portability floor (opt-in) ---------------------------------------------
 # Assert that nothing in the build tree references a glibc symbol version newer
 # than the oldest platform a release targets. This is a property of the BUILD
@@ -200,16 +235,34 @@ add_subdirectory(llm)
 #
 #   -DSIMPLEX_GLIBC_FLOOR=2.34    max allowed glibc version
 #   -DSIMPLEX_STRICT_NEEDED=ON    additionally allowlist DT_NEEDED
+#   -DSIMPLEX_OPENSSL_FLOOR=3.0.0 max allowed OPENSSL_3.x.y symbol node
+#   -DSIMPLEX_STAGING_DIR=...     installed release tree; required by STRICT_NEEDED
 set(SIMPLEX_GLIBC_FLOOR "" CACHE STRING
     "If set (e.g. 2.34), register a ctest asserting no artifact requires a newer glibc")
+set(SIMPLEX_OPENSSL_FLOOR "" CACHE STRING
+    "With SIMPLEX_GLIBC_FLOOR, max allowed OpenSSL symbol version node (e.g. 3.0.0)")
+set(SIMPLEX_STAGING_DIR "" CACHE PATH
+    "Installed release tree the floor test treats as the set of shipped libraries")
 option(SIMPLEX_STRICT_NEEDED
-    "With SIMPLEX_GLIBC_FLOOR, also assert every DT_NEEDED is on the redistributable allowlist" OFF)
+    "With SIMPLEX_GLIBC_FLOOR, also assert every DT_NEEDED is allowlisted or staged" OFF)
 
 if(SIMPLEX_GLIBC_FLOOR)
+    # Optional inputs are passed only when set. Forwarding an empty -D would
+    # make the script see them as DEFINED-but-blank and compare against
+    # nothing, which is how an unset floor turns into a floor of zero.
+    set(_floor_args "")
+    if(SIMPLEX_OPENSSL_FLOOR)
+        list(APPEND _floor_args -DOPENSSL_FLOOR=${SIMPLEX_OPENSSL_FLOOR})
+    endif()
+    if(SIMPLEX_STAGING_DIR)
+        list(APPEND _floor_args -DSTAGING_DIR=${SIMPLEX_STAGING_DIR})
+    endif()
+
     add_test(NAME portability_floor COMMAND ${CMAKE_COMMAND}
         -DBUILD_DIR=${CMAKE_BINARY_DIR}
         -DGLIBC_FLOOR=${SIMPLEX_GLIBC_FLOOR}
         -DSTRICT_NEEDED=${SIMPLEX_STRICT_NEEDED}
+        ${_floor_args}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/docker/portability_floor.cmake)
     # The scan reads the built artifacts, so it must not run before they exist.
     # ctest has no build ordering of its own; RUN_SERIAL keeps it from racing

@@ -9,6 +9,11 @@
 .codex
 .vscode
 build*
+# The release install tree (`cmake --install` with SIMPLEX_BUNDLE_RUNTIME set)
+# holds a copy of every built library AND of the bundled runtime — the image
+# would rebuild all of it from source, so shipping it in the context is dead
+# weight measured in hundreds of megabytes.
+stage
 docs
 third_party/include
 third_party/libs
