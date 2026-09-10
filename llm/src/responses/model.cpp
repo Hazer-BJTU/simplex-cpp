@@ -3,10 +3,12 @@
 #include <cstdint>
 #include <memory>
 #include <ostream>
+#include <string>
 #include <utility>
 
 #include "endpoint/complete.hpp"
 #include "endpoint/request.hpp"
+#include "llm/exchange_id.hpp"
 #include "llm/provider_models.hpp"
 #include "llm/responses/interpreter.hpp"
 #include "llm/responses/reader.hpp"
@@ -101,10 +103,13 @@ bool ResponsesModel::build() noexcept {
         _endpoint = endpoint_json.get<model_io::ModelEndpoint>();
         (void)endpoint::resolve_endpoint(_endpoint);
 
-        _generation = _config;
-        _generation.erase("endpoint");
-        _generation.erase("provider");
-        _generation.erase("retry");
+        // Derive locally, validate, publish once through the guarded setter —
+        // the base class keeps _generation private so no in-flight exchange
+        // can read a partly derived object.
+        json generation = _config;
+        generation.erase("endpoint");
+        generation.erase("provider");
+        generation.erase("retry");
 
         if (const auto retry = _config.find("retry");
             retry != _config.end() && retry->is_object()) {
@@ -122,11 +127,12 @@ bool ResponsesModel::build() noexcept {
             }
         }
 
-        const auto model = _generation.find("model");
-        if (model == _generation.end() || !model->is_string() ||
+        const auto model = generation.find("model");
+        if (model == generation.end() || !model->is_string() ||
             model->get_ref<const std::string&>().empty()) {
             return false;
         }
+        reset_generation(std::move(generation));
         _built = true;
         return true;
     } catch (...) {
@@ -135,19 +141,33 @@ bool ResponsesModel::build() noexcept {
 }
 
 boost::asio::awaitable<model_io::MessageItem> ResponsesModel::converse(
-    const model_io::AgentInputState& conversation) {
+    model_io::AgentInputState conversation) {
     if (!_built) {
         throw std::logic_error("ResponsesModel used before successful build()");
     }
 
-    ResponsesInterpreter interpreter(_dialect);
-    auto request = interpreter.build_request(conversation, _endpoint, _generation);
-    auto reader = std::make_shared<ResponsesReader>(_executor, _dialect);
+    // ---- the reentrancy prologue: everything shared, read ONCE, up front ----
+    // Read before the first suspension and never again, so a concurrent
+    // exchange (or a concurrent set_generation()) can neither tear these
+    // values nor be torn by them. The generation knobs are the one mutable
+    // member, hence the snapshot; the rest are immutable after build() and
+    // are copied only so nothing below depends on `this`.
+    const json generation = generation_snapshot();
+    const ResponsesDialectPtr dialect = _dialect;
+    const endpoint::ResolvedEndpoint where = endpoint::resolve_endpoint(_endpoint);
+    const std::string exchange_id = llm::next_exchange_id();
 
+    ResponsesInterpreter interpreter(dialect);
+    auto request = interpreter.build_request(conversation, _endpoint, generation);
+    auto reader = std::make_shared<ResponsesReader>(_executor, dialect);
+
+    // Per-call retry engine. MUST stay a local: endpoint::complete keeps
+    // rolling backoff state and documents one operator() in flight per
+    // instance, so hoisting this into a member would break reentrancy.
     endpoint::complete<ResponsesDelta> exchange(
         _executor, _initial_backoff, _max_backoff, _max_retry_attempts);
     auto result = co_await exchange(
-        endpoint::resolve_endpoint(_endpoint), std::move(request), reader,
+        where, std::move(request), reader,
         endpoint::sse_request<ResponsesDelta>);
 
     const ResponseStatus status = reader->response_status();
@@ -157,6 +177,14 @@ boost::asio::awaitable<model_io::MessageItem> ResponsesModel::converse(
         throw ResponsesApiException(
             status, details, terminal_message(status, details));
     }
+    // The correlation id every adapter reports, so hosts identify an
+    // exchange's result the same way whichever protocol produced it.
+    if (!result.extras) {
+        result.extras = json::object();
+    }
+    if (result.extras->is_object()) {
+        (*result.extras)["exchange_id"] = exchange_id;
+    }
     co_return result;
 }
 
@@ -164,8 +192,13 @@ boost::asio::awaitable<nlohmann::json> ResponsesModel::provider_info() {
     if (!_built) {
         throw std::logic_error("ResponsesModel used before successful build()");
     }
+    // Own copies before the first suspension: fetch_provider_models holds the
+    // endpoint BY REFERENCE across its co_awaits, so a frame-local copy keeps
+    // the exchange independent of the model's lifetime margin.
+    const model_io::ModelEndpoint endpoint = _endpoint;
+    const ResponsesDialectPtr dialect = _dialect;
     co_return co_await llm::fetch_provider_models(
-        _executor, _endpoint, _dialect->models_path());
+        _executor, endpoint, dialect->models_path());
 }
 
 } // namespace llm::responses

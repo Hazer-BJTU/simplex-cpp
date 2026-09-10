@@ -56,8 +56,10 @@ struct BareModel : llm::LLMModel {
 /// build() derivation.
 struct KnobModel : BareModel {
     using BareModel::BareModel;
+    /// Publishes through the guarded setter — _generation is private to the
+    /// base precisely so nothing can write it unlocked.
     void seed_generation(nlohmann::json generation) {
-        _generation = std::move(generation);
+        reset_generation(std::move(generation));
     }
 };
 

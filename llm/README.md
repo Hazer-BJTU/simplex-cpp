@@ -206,6 +206,12 @@ persistable. Live UI/telemetry attaches through reader hooks or process-wide
 events. Observers must account for retries: hooks survive `clear()` and can see
 more than one attempt, while only the final successful assembly is returned.
 
+Reader hooks are per exchange, because the reader is — `converse()` constructs
+one per call. A `ReasoningDeltaEvent` subscriber is not: it sits on one
+process-wide bus that every concurrent exchange of every model publishes into,
+so it must demultiplex by `exchange_id`
+(`llm/chat_completions/events.hpp` carries that contract in full).
+
 ## Designing a complete LLM interface
 
 Use the following order when adding a new conversation protocol or provider.
@@ -239,8 +245,13 @@ service.
    throwing across the lifecycle boundary. In `converse()`, create fresh
    interpreter/reader/completer state, run the exchange, translate terminal
    failure to a typed exception, and return only a complete canonical item.
-   Keep the instance sequential unless concurrent use is explicitly designed
-   and documented.
+   `LLMModel` requires exactly that shape, because `converse()` is
+   **reentrant**: per-exchange state must be constructed per call and never
+   hoisted into a member, and the generation knobs must be read through
+   `generation_snapshot()` (once, before the first suspension) and published
+   through `reset_generation()`, never touched directly. The class doc on
+   `LLMModel` states the whole contract — what is guaranteed, and what the
+   caller and the override each still owe.
 7. **Isolate provider variance in a Dialect.** Prefer endpoint defaults plus
    `transform_request()` and event/chunk normalization. Derive a new model only
    when behavior cannot be expressed by that narrow policy object. Provider
@@ -405,14 +416,30 @@ normalize compatible extensions without changing the shared model I/O ABI.
 Streamed reasoning is observable live: `converse()` broadcasts every
 reasoning increment as `llm::chat_completions::ReasoningDeltaEvent` on
 `eventbus::default_bus()` (`llm/chat_completions/events.hpp` carries the full
-contract) — synchronous, wire-ordered, one stable `reasoning_id` per exchange
-(retries re-broadcast under the same id), with `provider` (the dialect's
-`provider_name()`) and `model` attached. No subscribers means a silent no-op;
-subscribers run inline on the exchange's I/O thread and must not throw. Bus
-uniqueness across the plugin boundary comes from the SHARED eventbus library
-(`default_bus()` is deliberately not inline): a host executable and its
-dlopened providers bind the same SONAME, hence one bus per process.
-`llm/example` subscribes to mirror the thinking to stderr as it streams.
+contract) — synchronous, wire-ordered, with `provider` (the dialect's
+`provider_name()`), `model`, and the exchange's correlation id attached. No
+subscribers means a silent no-op; subscribers run inline on the exchange's I/O
+thread and must not throw. Bus uniqueness across the plugin boundary comes from
+the SHARED eventbus library (`default_bus()` is deliberately not inline): a
+host executable and its dlopened providers bind the same SONAME, hence one bus
+per process. `llm/example` subscribes to mirror the thinking to stderr as it
+streams.
+
+Two fields make the stream usable once `converse()` is reentrant (the contract
+lives on `LLMModel`), because one bus then carries the interleaved events of
+every exchange in flight, published from whichever threads the executor runs
+on:
+
+- **`exchange_id`** is one stable id per exchange, repeated on the
+  `MessageItem` the exchange returns under `extras.exchange_id`, so a
+  subscriber can bind the buffer it accumulated to the result that produced it.
+  It is the *only* join key: `provider` and `model` are identical across
+  concurrent exchanges on one model. A subscriber must therefore be
+  thread-safe itself and demultiplex by id.
+- **`attempt`** counts transport attempts — 0 for the initial exchange, 1… for
+  retries. A retry re-reads the stream from the beginning under the same
+  `exchange_id`, so a subscriber accumulating text must DISCARD what it holds
+  for that id when `attempt` advances instead of appending a duplicated prefix.
 
 Configuration follows the Responses adapter's host envelope. The endpoint
 must be supplied by the eventual provider or caller:

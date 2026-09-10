@@ -54,6 +54,21 @@ private:
  *   }
  *
  * Everything else passes through to the request body verbatim.
+ *
+ * Concurrency: converse() and provider_info() are REENTRANT — any number may
+ * be in flight on one instance, on any threads of the executor. Everything
+ * per-exchange (interpreter, reader, retry engine) is constructed inside the
+ * call, the mutable generation knobs are read once as a snapshot, and the
+ * members read afterwards (_endpoint, _dialect, the retry policy) are
+ * immutable after build(). Each exchange reports its correlation id on the
+ * returned MessageItem's `extras.exchange_id`. The caller keeps the model
+ * alive for the duration of each exchange and folds concurrent results into
+ * separate AgentInputState objects — see the LLMModel class doc for the full
+ * contract.
+ *
+ * NOTE: unlike the chat-completions adapter, this layer publishes no
+ * streaming events on the process-wide bus yet; the exchange id is still
+ * minted and reported so hosts can correlate uniformly once it does.
  */
 class ResponsesModel : public llm::LLMModel {
 public:
@@ -63,8 +78,10 @@ public:
 
     bool build() noexcept override;
 
+    /// One reentrant exchange; @p conversation by value (the base contract
+    /// explains why a coroutine must own its copy).
     boost::asio::awaitable<model_io::MessageItem> converse(
-        const model_io::AgentInputState& conversation) override;
+        model_io::AgentInputState conversation) override;
 
     boost::asio::awaitable<nlohmann::json> provider_info() override;
 

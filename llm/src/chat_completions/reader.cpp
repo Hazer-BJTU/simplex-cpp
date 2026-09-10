@@ -27,6 +27,14 @@ std::optional<std::uint64_t> get_uint64(
 
 void ChatCompletionsReader::clear() {
     endpoint::ModelResponseReader<ChatCompletionsDelta>::clear();
+    // The retry counter is the one thing clear() does NOT rewind — it counts
+    // the rewinds themselves. endpoint::complete clears before every attempt
+    // including the initial one, so the first clear() stays at attempt 0 and
+    // only subsequent ones advance.
+    if (_cleared_once) {
+        ++_attempt;
+    }
+    _cleared_once = true;
     _role = "assistant";
     _content.clear();
     _reasoning.clear();

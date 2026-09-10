@@ -255,10 +255,17 @@ BOOST_AUTO_TEST_CASE(converse_drives_the_full_deepseek_exchange) {
     BOOST_REQUIRE_EQUAL(broadcast.size(), 2u);
     BOOST_CHECK_EQUAL(broadcast[0].reasoning, "thinking ");
     BOOST_CHECK_EQUAL(broadcast[1].reasoning, "hard");
-    BOOST_CHECK(!broadcast[0].reasoning_id.empty());
-    BOOST_CHECK_EQUAL(broadcast[1].reasoning_id, broadcast[0].reasoning_id);
+    BOOST_CHECK(!broadcast[0].exchange_id.empty());
+    BOOST_CHECK_EQUAL(broadcast[1].exchange_id, broadcast[0].exchange_id);
     BOOST_CHECK_EQUAL(broadcast[0].provider, "deepseek");
     BOOST_CHECK_EQUAL(broadcast[0].model, "deepseek-v4-flash");
+    // Both increments came from the initial exchange, so neither is a replay.
+    BOOST_CHECK_EQUAL(broadcast[0].attempt, 0u);
+    BOOST_CHECK_EQUAL(broadcast[1].attempt, 0u);
+    // The id the live view correlated by is reported back on the result, so a
+    // subscriber can bind its buffer to the exchange that produced it.
+    BOOST_CHECK_EQUAL((*result->extras)["exchange_id"],
+                      broadcast[0].exchange_id);
 }
 
 BOOST_AUTO_TEST_CASE(converse_surfaces_api_error_chunks_as_chat_completions_api_exception) {
