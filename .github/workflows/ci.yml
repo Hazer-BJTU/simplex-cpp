@@ -30,6 +30,15 @@ permissions:
   contents: read
   packages: read
 
+# Every job here is a container job, and a container job's default shell is the
+# container's /bin/sh — which is dash on the Debian family and bash on the
+# RHEL family. Steps that use bash-isms (set -o pipefail) therefore pass on
+# AlmaLinux and die on Ubuntu with "Illegal option -o pipefail", which is a
+# distinction no reader should have to hold in their head. Pin the shell once.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
@@ -213,17 +222,12 @@ jobs:
       # Both legs report. A failure on one distro must not hide the other's,
       # since "which family broke" is the first question a red run raises.
       fail-fast: false
+      # One matrix value, so the job shows up as "staged-runtime (ubuntu:22.04)".
+      # The install commands are chosen from it in the step below rather than
+      # carried as a second matrix key, which GitHub would splice into the job
+      # name as a multi-line command.
       matrix:
-        include:
-          - image: ubuntu:22.04
-            install: |
-              apt-get update -qq
-              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-                cmake binutils ca-certificates
-          - image: almalinux:9
-            install: |
-              dnf -y install --setopt=install_weak_deps=False \
-                cmake binutils ca-certificates
+        image: [ubuntu:22.04, almalinux:9]
     container:
       image: ${{ matrix.image }}
 
@@ -237,8 +241,25 @@ jobs:
         # llm_plugin_boundary_hygiene and portability_floor ctests), and NO
         # compiler: installing g++ would drag in a newer libstdc++ and quietly
         # repair the exact failure this job exists to detect.
+        #
+        # The unknown-image case fails rather than skipping the install: a third
+        # leg added without a package rule should be a red run, not a leg that
+        # silently tests nothing.
         run: |
-          ${{ matrix.install }}
+          case "${{ matrix.image }}" in
+            ubuntu:*)
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                cmake binutils ca-certificates
+              ;;
+            almalinux:*)
+              dnf -y install --setopt=install_weak_deps=False \
+                cmake binutils ca-certificates
+              ;;
+            *)
+              echo "no package-manager rule for ${{ matrix.image }}"; exit 1
+              ;;
+          esac
           ldd --version | head -1
           openssl version
 
