@@ -96,6 +96,30 @@ inline constexpr std::string_view DEFAULT_HTTP_PORT = "80";
  * which is what both `https_stream` and `http_stream` are built on
  * (`get_lowest_layer` returns the tcp_stream itself for a bare `http_stream`).
  *
+ * ## Coroutine arguments are copied into the frame, on purpose
+ *
+ * Every coroutine in this file takes its strings BY VALUE. A coroutine's
+ * parameters are copied into its frame when it is CALLED — before the first
+ * suspension — whereas a `const std::string&` or a `std::string_view` only
+ * borrows the caller's object. These awaitables are lazy: the body does not run
+ * until the caller awaits it (or hands it to `co_spawn`), and by then the
+ * caller's full-expression has ended, so a borrowed string can already be gone.
+ * The shape that made this concrete is
+ *
+ *     auto op = create_connection_stream(ex, "host", std::to_string(port));
+ *
+ * where the temporary port string dies at the semicolon while the resolution
+ * that reads it happens later. ASAN reports the borrowed version as
+ * stack-use-after-scope; `a_transient_service_name_reaches_the_port_below` in
+ * endpoint/test/test_http_stream.cpp pins the by-value behaviour without a
+ * sanitizer, and endpoint/test/test_https_stream.cpp does the same for the TLS
+ * flavour. Copying two short strings per connection is the entire cost.
+ *
+ * `ssl_context&` is the one argument deliberately still a reference: a context
+ * owns OpenSSL state and is not copyable, so callers must keep it alive for the
+ * duration of the awaitable — which the default, get_global_ssl_context(),
+ * does by construction.
+ *
  * @param executor Executor on which DNS and socket operations run.
  * @param stream   Stream whose lowest layer receives the connection.
  * @param host     DNS name used for resolution.
@@ -106,8 +130,8 @@ template<typename Stream>
 boost::asio::awaitable<void> connect_tcp(
     boost::asio::any_io_executor executor,
     Stream& stream,
-    const std::string& host,
-    std::string_view port)
+    std::string host,
+    std::string port)
 {
     auto resolver = boost::asio::ip::tcp::resolver{ executor };
     const auto endpoints = co_await resolver.async_resolve(host, port, boost::asio::use_awaitable);
@@ -163,7 +187,10 @@ struct connect_stream_flavour {
      * @param host     DNS name used for resolution, SNI, and certificate
      *                 verification (the latter two TLS flavour only).
      * @param port     Numeric port or service name.
-     * @param context  TLS client context; TLS flavour only.
+     * @param context  TLS client context; TLS flavour only. Held by reference:
+     *                 see "Coroutine arguments are copied into the frame" on
+     *                 connect_tcp — the caller must keep the context alive for
+     *                 the duration of the awaitable.
      * @return A connected stream, with the TLS client handshake completed
      *         for https_stream.
      * @throws boost::system::system_error on SNI, DNS, TCP, timeout,
@@ -171,8 +198,8 @@ struct connect_stream_flavour {
      */
     static boost::asio::awaitable<std::unique_ptr<Stream>> connect(
         boost::asio::any_io_executor executor,
-        const std::string& host,
-        std::string_view port,
+        std::string host,
+        std::string port,
         ssl_context& context)
     {
         std::unique_ptr<Stream> stream;
@@ -246,7 +273,7 @@ boost::asio::awaitable<std::unique_ptr<Stream>>
 create_connection_stream(
     boost::asio::any_io_executor executor,
     std::string host,
-    std::string_view port = default_connection_port_v<Stream>,
+    std::string port = std::string(default_connection_port_v<Stream>),
     ssl_context& context = get_global_ssl_context())
 {
     co_return co_await connect_stream_flavour<Stream>::connect(
@@ -268,7 +295,7 @@ template<typename Stream>
 boost::asio::awaitable<std::unique_ptr<Stream>>
 create_connection_stream(
     std::string host,
-    std::string_view port = default_connection_port_v<Stream>,
+    std::string port = std::string(default_connection_port_v<Stream>),
     ssl_context& context = get_global_ssl_context())
 {
     auto executor = co_await boost::asio::this_coro::executor;
@@ -307,7 +334,7 @@ create_https_connection_stream(
     boost::asio::any_io_executor executor,
     ssl_context& context,
     std::string host,
-    std::string_view port = DEFAULT_HTTPS_PORT
+    std::string port = std::string(DEFAULT_HTTPS_PORT)
 ) {
     co_return co_await connect_stream_flavour<https_stream>::connect(
         executor, host, port, context);
@@ -328,7 +355,7 @@ inline boost::asio::awaitable<std::unique_ptr<https_stream>>
 create_https_connection_stream(
     boost::asio::any_io_executor executor,
     std::string host,
-    std::string_view port = DEFAULT_HTTPS_PORT
+    std::string port = std::string(DEFAULT_HTTPS_PORT)
 ) {
     co_return co_await connect_stream_flavour<https_stream>::connect(
         executor, host, port, get_global_ssl_context());
@@ -350,7 +377,7 @@ inline boost::asio::awaitable<std::unique_ptr<https_stream>>
 create_https_connection_stream(
     ssl_context& context,
     std::string host,
-    std::string_view port = DEFAULT_HTTPS_PORT
+    std::string port = std::string(DEFAULT_HTTPS_PORT)
 ) {
     auto executor = co_await boost::asio::this_coro::executor;
     co_return co_await connect_stream_flavour<https_stream>::connect(
@@ -371,7 +398,7 @@ create_https_connection_stream(
 inline boost::asio::awaitable<std::unique_ptr<https_stream>>
 create_https_connection_stream(
     std::string host,
-    std::string_view port = DEFAULT_HTTPS_PORT
+    std::string port = std::string(DEFAULT_HTTPS_PORT)
 ) {
     auto executor = co_await boost::asio::this_coro::executor;
     co_return co_await connect_stream_flavour<https_stream>::connect(
@@ -404,7 +431,7 @@ inline boost::asio::awaitable<std::unique_ptr<http_stream>>
 create_http_connection_stream(
     boost::asio::any_io_executor executor,
     std::string host,
-    std::string_view port = DEFAULT_HTTP_PORT
+    std::string port = std::string(DEFAULT_HTTP_PORT)
 ) {
     co_return co_await connect_stream_flavour<http_stream>::connect(
         executor, host, port, get_global_ssl_context());
@@ -424,7 +451,7 @@ create_http_connection_stream(
 inline boost::asio::awaitable<std::unique_ptr<http_stream>>
 create_http_connection_stream(
     std::string host,
-    std::string_view port = DEFAULT_HTTP_PORT
+    std::string port = std::string(DEFAULT_HTTP_PORT)
 ) {
     auto executor = co_await boost::asio::this_coro::executor;
     co_return co_await connect_stream_flavour<http_stream>::connect(

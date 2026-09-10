@@ -5,6 +5,7 @@
 
 #include "endpoint/https_stream.hpp"
 
+#include <algorithm>
 #include <string>
 #include <thread>
 
@@ -100,6 +101,61 @@ BOOST_AUTO_TEST_CASE(unified_factory_connects_the_plain_flavour)
     asio::io_context io;
     auto operation = endpoint::create_connection_stream<endpoint::http_stream>(
         io.get_executor(), "localhost", std::to_string(port));
+    auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
+    io.run();
+    auto stream = result.get();   // rethrows a connect failure, if any
+
+    BOOST_REQUIRE(stream != nullptr);
+    boost::system::error_code endpoint_ec;
+    const tcp::endpoint peer = stream->socket().remote_endpoint(endpoint_ec);
+    BOOST_CHECK(!endpoint_ec);
+    BOOST_CHECK_EQUAL(peer.port(), port);
+
+    stream->close();
+    server.join();
+}
+
+// The coroutine owns the strings it connects with.
+//
+// create_connection_stream returns a LAZY awaitable: its body runs when the
+// caller awaits it (or hands it to co_spawn), by which point the caller's
+// full-expression is over. A `std::string_view port` parameter therefore
+// borrowed storage the caller may already have reused — the usual shape being
+// `create_connection_stream(ex, "host", std::to_string(port))`, where the
+// temporary dies at the semicolon.
+//
+// This test reuses the caller's storage deliberately, before the body ever
+// runs, so the defect is visible WITHOUT a sanitizer: with a borrowed view the
+// resolver is handed "XXXXX" and the connect fails; with the by-value parameter
+// the frame's own copy is untouched and the connection lands on the port below.
+// (ASAN reported the borrowed version as stack-use-after-scope inside
+// connect_tcp's async_resolve, which is how it was found.)
+BOOST_AUTO_TEST_CASE(a_transient_service_name_reaches_the_port_below)
+{
+    asio::io_context server_io;
+    tcp::acceptor acceptor(
+        server_io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    const auto port = acceptor.local_endpoint().port();
+
+    std::thread server([&acceptor] {
+        tcp::socket socket(acceptor.get_executor());
+        acceptor.accept(socket);
+        boost::system::error_code ignored;
+        socket.shutdown(tcp::socket::shutdown_both, ignored);
+        socket.close(ignored);
+    });
+
+    // The caller's service-name storage, exactly what std::to_string(port)
+    // leaves behind once the temporary is gone.
+    std::string service = std::to_string(port);
+
+    asio::io_context io;
+    auto operation = endpoint::create_connection_stream<endpoint::http_stream>(
+        io.get_executor(), "localhost", service);
+    // The awaitable exists; its body has NOT run. Reuse the caller's buffer —
+    // which a borrowed view would be reading.
+    std::fill_n(service.data(), service.size(), 'X');
+
     auto result = asio::co_spawn(io, std::move(operation), asio::use_future);
     io.run();
     auto stream = result.get();   // rethrows a connect failure, if any

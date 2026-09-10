@@ -698,9 +698,17 @@ inline void apply_transport_headers(
  *
  * @param executor Executor on which DNS and socket operations run.
  * @param resolved Where to connect: host/port/tls exactly as resolve_endpoint
- *                 parsed them from the ModelEndpoint's base_url.
+ *                 parsed them from the ModelEndpoint's base_url. Taken BY VALUE
+ *                 like the strings on the flavour factories below it: this
+ *                 awaitable is lazy, so a reference would let
+ *                 `create_connection_stream(ex, resolve_endpoint(...))` read a
+ *                 temporary that died at the end of its own statement (see
+ *                 "Coroutine arguments are copied into the frame" in
+ *                 endpoint/https_stream.hpp).
  * @param context  TLS client context; TLS flavour only, global by default —
- *                 pass a custom context for a private CA.
+ *                 pass a custom context for a private CA. Held by reference,
+ *                 so the caller must keep it alive for the duration of the
+ *                 awaitable.
  * @return A connected connection_stream of the flavour the resolved scheme
  *         selected.
  * @throws boost::system::system_error on DNS, TCP, timeout, certificate, or
@@ -709,7 +717,7 @@ inline void apply_transport_headers(
 inline boost::asio::awaitable<connection_stream>
 create_connection_stream(
     boost::asio::any_io_executor executor,
-    const ResolvedEndpoint& resolved,
+    ResolvedEndpoint resolved,
     ssl_context& context = get_global_ssl_context())
 {
     if (resolved.tls) {
@@ -730,7 +738,7 @@ create_connection_stream(
  */
 inline boost::asio::awaitable<connection_stream>
 create_connection_stream(
-    const ResolvedEndpoint& resolved,
+    ResolvedEndpoint resolved,
     ssl_context& context = get_global_ssl_context())
 {
     auto executor = co_await boost::asio::this_coro::executor;
@@ -757,8 +765,11 @@ create_connection_stream(
  *
  * @param executor Executor the connect runs on.
  * @param resolved Where to connect (host/port/tls), as resolve_endpoint
- *                 parsed them.
- * @param context  TLS client context; TLS flavour only.
+ *                 parsed them. By value, for the reason on
+ *                 create_connection_stream above.
+ * @param context  TLS client context; TLS flavour only. Held by reference, so
+ *                 the caller must keep it alive for the duration of the
+ *                 awaitable.
  * @return A connected connection_stream of the resolved scheme's flavour.
  * @throws HttpRequestException{Stage::Connect} on any connect failure, with
  *         the transport error code and target/host context preserved.
@@ -766,7 +777,7 @@ create_connection_stream(
 inline boost::asio::awaitable<connection_stream>
 connect(
     boost::asio::any_io_executor executor,
-    const ResolvedEndpoint& resolved,
+    ResolvedEndpoint resolved,
     ssl_context& context = get_global_ssl_context())
 {
     try {
