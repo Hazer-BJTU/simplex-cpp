@@ -100,6 +100,10 @@ BOOST_AUTO_TEST_CASE(each_stage_renders_its_own_phrase)
 {
     using Stage = tools::InvokeException::Stage;
 
+    BOOST_TEST(tools::InvokeException(Stage::Dispatch, "no such tool \"write_file\"")
+                   .to_string() ==
+               "Failed while dispatching the invocation to a tool: "
+               "no such tool \"write_file\"");
     BOOST_TEST(tools::InvokeException(Stage::ArgumentParse, "missing required property \"path\"")
                    .to_string() ==
                "Failed while parsing the invocation arguments: "
@@ -109,8 +113,36 @@ BOOST_AUTO_TEST_CASE(each_stage_renders_its_own_phrase)
     BOOST_TEST(tools::InvokeException(Stage::ResultCheck, "result is not valid JSON")
                    .to_string() ==
                "Failed while validating the tool result: result is not valid JSON");
-    BOOST_TEST(tools::InvokeException(Stage::Unknown, "no such tool").to_string() ==
-               "Failed at an unknown stage: no such tool");
+    BOOST_TEST(tools::InvokeException(Stage::Unknown, "the handler gave up").to_string() ==
+               "Failed at an unknown stage: the handler gave up");
+}
+
+BOOST_AUTO_TEST_CASE(a_failure_to_dispatch_names_its_own_stage)
+{
+    // The call never reached a tool: nothing was resolved to run, so the
+    // failure is raised at Dispatch — before any security check, argument
+    // parse, or invoke — and the marker says so.
+    const tools::InvokeException failure(
+        tools::InvokeException::Stage::Dispatch,
+        "no such tool \"write_file\"",
+        read_file_query());
+
+    BOOST_CHECK(failure.stage() == tools::InvokeException::Stage::Dispatch);
+    BOOST_TEST(failure.to_string() ==
+               "Failed while dispatching the invocation to a tool: "
+               "no such tool \"write_file\" (tool read_file; call call_1)");
+
+    const model_io::InvokeReturn record = failure;
+    BOOST_TEST(tools::is_error(record));
+    BOOST_REQUIRE(record.extras.has_value());
+    BOOST_TEST(record.extras->at("error").at("stage") == "dispatch");
+    BOOST_TEST(record.extras->at("error").at("message") ==
+               "no such tool \"write_file\"");
+    BOOST_TEST(record.output.raw == failure.what());
+
+    const auto stage = tools::error_stage(record);
+    BOOST_REQUIRE(stage.has_value());
+    BOOST_CHECK(*stage == tools::InvokeException::Stage::Dispatch);
 }
 
 BOOST_AUTO_TEST_CASE(absent_context_is_omitted_from_the_rendering)
@@ -319,6 +351,7 @@ BOOST_AUTO_TEST_CASE(stage_tokens_round_trip)
 {
     using Stage = tools::InvokeException::Stage;
 
+    BOOST_TEST(tools::InvokeException::stage_key(Stage::Dispatch) == "dispatch");
     BOOST_TEST(tools::InvokeException::stage_key(Stage::SecurityCheck) ==
                "security_check");
     BOOST_TEST(tools::InvokeException::stage_key(Stage::ArgumentParse) ==
@@ -328,8 +361,9 @@ BOOST_AUTO_TEST_CASE(stage_tokens_round_trip)
                "result_check");
     BOOST_TEST(tools::InvokeException::stage_key(Stage::Unknown) == "unknown");
 
-    const Stage stages[] = {Stage::SecurityCheck, Stage::ArgumentParse,
-                            Stage::Invoke, Stage::ResultCheck, Stage::Unknown};
+    const Stage stages[] = {Stage::Dispatch, Stage::SecurityCheck,
+                            Stage::ArgumentParse, Stage::Invoke,
+                            Stage::ResultCheck, Stage::Unknown};
     for (const Stage stage : stages) {
         const auto parsed =
             tools::InvokeException::stage_from_key(

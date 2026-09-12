@@ -37,7 +37,7 @@
 // deliberate: a host that catches this type only as std::exception — the one
 // dependable catch across a dlopen boundary, where each module carries its own
 // typeinfo copy — still sees the whole context in what(). What differs here is
-// the staging, cut along the four checkpoints a tool call passes (see Stage),
+// the staging, cut along the five checkpoints a tool call passes (see Stage),
 // and the InvokeReturn bridge, which no transport-level failure needs.
 
 #include <optional>
@@ -64,16 +64,19 @@ namespace tools {
 class InvokeException : public std::runtime_error {
 public:
     /// The checkpoint an invocation failed at. A handler can act on the stage:
+    /// Dispatch means the call never reached a tool (nothing was resolved to
+    /// run, and the model can only fix it by naming a tool that exists),
     /// SecurityCheck is a refusal (not retryable, and not a mistake the model
     /// should be asked to fix), ArgumentParse is worth returning to the model
     /// to correct, Invoke may be worth retrying, and ResultCheck means the
     /// tool ran but its output broke its own contract.
     enum class Stage {
+        Dispatch,      // the call could not be dispatched to a tool (e.g. no such tool)
         SecurityCheck, // refused by the invocation's security policy
         ArgumentParse, // the arguments did not satisfy the tool's contract
         Invoke,        // the tool itself failed while running
         ResultCheck,   // the result did not satisfy the tool's contract
-        Unknown        // failed outside those checkpoints (e.g. no such tool)
+        Unknown        // failed outside those checkpoints (an unclassified throw)
     };
 
     InvokeException(
@@ -110,6 +113,7 @@ public:
     [[nodiscard]] static constexpr std::string_view stage_phrase(Stage stage) noexcept
     {
         switch (stage) {
+            case Stage::Dispatch:      return "while dispatching the invocation to a tool";
             case Stage::SecurityCheck: return "while validating the invocation's security";
             case Stage::ArgumentParse: return "while parsing the invocation arguments";
             case Stage::Invoke:        return "while invoking the tool";
@@ -125,6 +129,7 @@ public:
     [[nodiscard]] static constexpr std::string_view stage_key(Stage stage) noexcept
     {
         switch (stage) {
+            case Stage::Dispatch:      return "dispatch";
             case Stage::SecurityCheck: return "security_check";
             case Stage::ArgumentParse: return "argument_parse";
             case Stage::Invoke:        return "invoke";
@@ -139,6 +144,7 @@ public:
     [[nodiscard]] static constexpr std::optional<Stage> stage_from_key(
         std::string_view key) noexcept
     {
+        if (key == stage_key(Stage::Dispatch)) return Stage::Dispatch;
         if (key == stage_key(Stage::SecurityCheck)) return Stage::SecurityCheck;
         if (key == stage_key(Stage::ArgumentParse)) return Stage::ArgumentParse;
         if (key == stage_key(Stage::Invoke)) return Stage::Invoke;
