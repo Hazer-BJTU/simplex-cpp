@@ -247,9 +247,10 @@ private:
 
     void fail_if(Fail checkpoint) const
     {
-        if (fail_in == checkpoint) {
-            throw std::runtime_error(failure);
+        if (fail_in != checkpoint) {
+            return;
         }
+        throw std::runtime_error(failure);
     }
 
     TracePtr trace_;
@@ -388,45 +389,37 @@ BatchRun run_batch_on_the_callers_executor(
         limit);
 }
 
-/// The same, on a context driven by four threads — the case that makes the
+/// One batch on a context driven by four threads — the case that makes the
 /// report channel a CONCURRENT channel: the parallel branches share the raw
 /// executor with no strand between them, so several of them report at once.
-/// Reaching every record is the property this pins.
-///
-/// `batches` is a vector of batches rather than one batch, because a host may
-/// have more than one model turn in flight: routing is read-only, and two
-/// batches going through one registry at once is part of the contract.
-std::vector<BatchRun> run_batches_on_threads(
-    const ToolRegistry& registry,
-    std::vector<std::vector<model_io::InvokeQuery>> batches,
-    unsigned int threads = 4,
-    std::chrono::milliseconds limit = std::chrono::seconds(5))
+/// Reaching every record is the property this pins, and it says nothing about
+/// running two batches at once: that is outside the registry's contract (one
+/// active execute() per instance, serialised by the loop engine), so this
+/// helper starts exactly one.
+BatchRun run_batch_on_threads(const ToolRegistry& registry,
+                              std::vector<model_io::InvokeQuery> batch,
+                              unsigned int threads = 4,
+                              std::chrono::milliseconds limit = std::chrono::seconds(5))
 {
     asio::io_context io;
-    std::vector<BatchRun> runs(batches.size());
-    // Keeps every worker inside run() until the batches are done, instead of
+    BatchRun run;
+    // Keeps every worker inside run() until the batch is done, instead of
     // letting a thread that momentarily runs out of work return early.
     auto work = asio::make_work_guard(io);
     asio::steady_timer watchdog(io, limit);
-    std::atomic<std::size_t> running{batches.size()};
 
-    for (std::size_t index = 0; index < batches.size(); ++index) {
-        asio::co_spawn(io,
-            [&, index]() -> asio::awaitable<void> {
-                runs[index].results =
-                    co_await registry.execute(std::move(batches[index]), io.get_executor());
-                runs[index].returned = true;
-                if (--running == 0) {
-                    // Cancelled, not merely left behind: a pending timer is
-                    // outstanding work of its own, and the workers below would
-                    // sit in run() until it expired — which is how this case
-                    // first took the whole watchdog limit.
-                    watchdog.cancel();
-                    work.reset();
-                }
-            },
-            asio::detached);
-    }
+    asio::co_spawn(io,
+        [&]() -> asio::awaitable<void> {
+            run.results = co_await registry.execute(std::move(batch), io.get_executor());
+            run.returned = true;
+            // Cancelled, not merely left behind: a pending timer is outstanding
+            // work of its own, and the workers below would sit in run() until it
+            // expired — which is how this case first took the whole watchdog
+            // limit.
+            watchdog.cancel();
+            work.reset();
+        },
+        asio::detached);
 
     watchdog.async_wait([&](const boost::system::error_code& error) {
         if (!error) {
@@ -445,20 +438,7 @@ std::vector<BatchRun> run_batches_on_threads(
     for (std::thread& worker : pool) {
         worker.join();
     }
-    return runs;
-}
-
-/// One batch on the same four-thread context.
-BatchRun run_batch_on_threads(const ToolRegistry& registry,
-                              std::vector<model_io::InvokeQuery> batch,
-                              unsigned int threads = 4,
-                              std::chrono::milliseconds limit = std::chrono::seconds(5))
-{
-    std::vector<std::vector<model_io::InvokeQuery>> batches;
-    batches.push_back(std::move(batch));
-    std::vector<BatchRun> runs =
-        run_batches_on_threads(registry, std::move(batches), threads, limit);
-    return std::move(runs.front());
+    return run;
 }
 
 } // namespace
@@ -536,6 +516,37 @@ BOOST_AUTO_TEST_CASE(add_refuses_a_second_set_that_wants_the_same_name)
         BOOST_TEST(message.find("first_tools") != std::string::npos);
         BOOST_TEST(message.find("second_tools") != std::string::npos);
     }
+}
+
+BOOST_AUTO_TEST_CASE(add_refuses_a_set_that_offers_one_name_twice)
+{
+    // One name must resolve to one tool, and the table can only hold one — so a
+    // set advertising the same name twice would leave the registry showing a
+    // catalogue (get_tools) that routing cannot reach, with the tool actually
+    // selected depending on the set's own dispatch(). Checked against the set's
+    // OWN list, not just against the table: neither copy is in the table yet.
+    auto trace = std::make_shared<Trace>();
+    auto first = std::make_shared<ScriptedTool>("read_file", trace);
+    auto second = std::make_shared<ScriptedTool>("read_file", trace);
+    second->payload = "the other read_file";
+    auto doubled = std::make_shared<ScriptedSet>(
+        "doubled_tools", std::vector<tools::ToolSet::ToolHandle>{first, second});
+
+    ToolRegistry registry;
+    BOOST_CHECK_THROW(registry.add(doubled), std::invalid_argument);
+
+    // Nothing was registered: no half-added set, no name pointing at either.
+    BOOST_TEST(registry.empty());
+    BOOST_CHECK(!registry.contains("read_file"));
+    BOOST_TEST(registry.get_tools().empty());
+
+    // The same set with the duplicate removed registers normally, so the refusal
+    // is about the duplicate and not about the set.
+    auto single = std::make_shared<ScriptedSet>(
+        "doubled_tools", std::vector<tools::ToolSet::ToolHandle>{first});
+    registry.add(single);
+    BOOST_CHECK(registry.contains("read_file"));
+    BOOST_CHECK_EQUAL(registry.get_tools().size(), 1u);
 }
 
 BOOST_AUTO_TEST_CASE(add_refuses_a_null_set_and_a_nameless_tool)
@@ -712,10 +723,11 @@ BOOST_AUTO_TEST_CASE(calls_that_share_an_identity_are_each_answered)
     ToolRegistry registry;
     registry.add(set);
 
-    // mangled_name() is name and id, so two calls agreeing on both are ONE
-    // identity — the most a provider could tell them apart by either. They are
-    // still each answered: the assembly is positional, and answering a call with
-    // nothing loses a tool message and gets the whole turn rejected.
+    // A batch's identity is POSITION, not a derived key: two calls that agree on
+    // name and id are two slots, each with its own record, even though a
+    // provider could not tell them apart and a keyed map would have collapsed
+    // them into one. Answering a call with nothing loses a tool message and gets
+    // the whole turn rejected, so the count is the assertion.
     const BatchRun run = run_batch(registry, {
         call_for("read_file", "call_1"),
         call_for("read_file", "call_1"),
@@ -730,8 +742,8 @@ BOOST_AUTO_TEST_CASE(calls_that_share_an_identity_are_each_answered)
     // Both really ran: the batch executes calls, it does not deduplicate them.
     BOOST_CHECK_EQUAL(reader->invoke_count.load(), 2);
 
-    // The degenerate identity — no name and no id, which mangled_name() reports
-    // as the empty string — is answered the same way.
+    // And the degenerate call — no name and no id, which any derived label would
+    // collapse into the same empty string — is answered twice too.
     const BatchRun anonymous = run_batch(registry, {
         call_for("", ""),
         call_for("", ""),
@@ -908,50 +920,6 @@ BOOST_AUTO_TEST_CASE(a_batch_of_parallel_calls_is_safe_on_a_thread_pool)
     BOOST_CHECK_EQUAL(reader->in_flight.load(), 0);
 }
 
-BOOST_AUTO_TEST_CASE(two_batches_run_at_once_on_one_registry)
-{
-    // Routing reads the table and writes nothing, and that is a contract rather
-    // than an accident: a host with two model turns in flight dispatches both
-    // through the one registry. The two batches here are routed and run from
-    // four threads at once, and neither loses a record to the other.
-    auto trace = std::make_shared<Trace>();
-    auto reader = std::make_shared<ScriptedTool>("read_file", trace);
-    reader->delay = std::chrono::milliseconds(2);
-    auto set = std::make_shared<ScriptedSet>(
-        "local_tools", std::vector<tools::ToolSet::ToolHandle>{reader});
-
-    ToolRegistry registry;
-    registry.add(set);
-
-    std::vector<std::vector<model_io::InvokeQuery>> batches;
-    for (int batch = 0; batch < 2; ++batch) {
-        std::vector<model_io::InvokeQuery> calls;
-        for (int call = 0; call < 3; ++call) {
-            calls.push_back(call_for(
-                "read_file", std::format("batch{}_call{}", batch, call)));
-        }
-        batches.push_back(std::move(calls));
-    }
-
-    const std::vector<BatchRun> runs =
-        run_batches_on_threads(registry, std::move(batches));
-
-    BOOST_REQUIRE_EQUAL(runs.size(), 2u);
-    for (int batch = 0; batch < 2; ++batch) {
-        const auto position = static_cast<std::size_t>(batch);
-        BOOST_REQUIRE(runs[position].returned);
-        BOOST_REQUIRE_EQUAL(runs[position].results.size(), 3u);
-        for (int call = 0; call < 3; ++call) {
-            const auto slot = static_cast<std::size_t>(call);
-            BOOST_TEST(runs[position].results[slot].query.id ==
-                       std::format("batch{}_call{}", batch, call));
-            BOOST_TEST(!tools::is_error(runs[position].results[slot]));
-        }
-    }
-    BOOST_CHECK_EQUAL(reader->invoke_count.load(), 6);
-    BOOST_CHECK_EQUAL(reader->in_flight.load(), 0);
-}
-
 // ===== the failures a batch has to survive ===================================
 
 BOOST_AUTO_TEST_CASE(a_broken_settle_is_a_record_and_not_an_aborted_batch)
@@ -1083,14 +1051,14 @@ BOOST_AUTO_TEST_CASE(a_broken_execute_is_a_record_in_the_parallel_path)
     BOOST_CHECK_EQUAL(reader->invoke_count.load(), 2);
 }
 
-BOOST_AUTO_TEST_CASE(a_record_is_filed_under_the_call_that_was_made)
+BOOST_AUTO_TEST_CASE(a_record_answers_the_call_the_batch_made)
 {
     // A set may answer for a call of its own making — a retry, a nested
-    // invocation, a batching relay — and the record then carries THAT call. The
-    // batch still has to answer the call IT made, so records are filed under the
-    // identity of the call the registry was given, never under the identity that
-    // came back. Both schedules are covered: the parallel report travels with
-    // its key, and the serial path files by the call it is running.
+    // invocation, a batching relay — and the record must STILL answer the call
+    // the model made: query.id is the wire's tool_call_id, so an answer carrying
+    // the nested id would leave the model's own call unanswered and the provider
+    // would reject the turn. The set's call is preserved as extras.cause_query.
+    // Both schedules are covered: the serial path and the parallel one.
     for (const model_io::InvokeType declared : {model_io::InvokeType::ReadOnly,
                                                 model_io::InvokeType::SerialWrite}) {
         auto trace = std::make_shared<Trace>();
@@ -1115,11 +1083,14 @@ BOOST_AUTO_TEST_CASE(a_record_is_filed_under_the_call_that_was_made)
         BOOST_REQUIRE(run.returned);
         BOOST_REQUIRE_EQUAL(run.results.size(), 2u);
 
-        // The set's own answer survives in the record...
-        BOOST_TEST(run.results[0].query.id == "inner_call");
+        // The call the batch made is answered...
+        BOOST_TEST(run.results[0].query.id == "call_1");
+        BOOST_TEST(run.results[0].query.name == "nested_tool");
         BOOST_TEST(!tools::is_error(run.results[0]));
-        // ... and the call it was asked about is answered by it rather than
-        // reported as a record that never arrived.
+        // ... the set's own call is preserved next to it...
+        BOOST_REQUIRE(run.results[0].extras.has_value());
+        BOOST_TEST(run.results[0].extras->at("cause_query").at("id") == "inner_call");
+        // ... and its neighbour was not disturbed by any of it.
         BOOST_TEST(run.results[1].query.id == "call_2");
         BOOST_TEST(!tools::is_error(run.results[1]));
     }

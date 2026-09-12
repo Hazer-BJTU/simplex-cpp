@@ -198,38 +198,39 @@ struct InvokeQuery {
     std::optional<nlohmann::json> extras;
 
     /**
-     * A compact, stable name for THIS call: the tool name and the wire call
+     * A compact, stable LABEL for this call: the tool name and the wire call
      * id, joined by "__" —
      *
      *     "read_file__call_7f3a"
      *
-     * This is the key an asynchronously executed invocation is filed under
-     * and looked up by, so it is built from the two fields that identify the
-     * call and from NOTHING else:
+     * For a human-facing surface — a log line, a file name, a diagnostic dump,
+     * a metrics tag — where the full query is too much and an id alone says
+     * nothing about which tool ran.
      *
-     *   - the arguments are settled IN PLACE by ensure_arguments (defaults
-     *     filled in, values normalised) between the call arriving and the call
-     *     running, so a name derived from them would change under the tool's
-     *     own feet: the key taken when the call was received would no longer
-     *     be the key to look up when it finishes;
-     *   - type, security and extras are host-side metadata resolved per
-     *     dispatch, so the same call under different trust settings keeps its
-     *     name.
-     * Within one response, two calls agreeing on name and id are
-     * indistinguishable to the provider too — one tool_call_id answered
-     * twice — so nothing is lost by not folding more in.
+     * THIS IS NOT AN IDENTITY, and must not be used as a correlation key. It is
+     * deliberately LOSSY, in three ways at once:
      *
-     * Both fields are reduced to the characters a key can safely carry —
-     * anything outside [A-Za-z0-9_-] becomes '_', and each field is capped at
-     * 64 characters (the wire name limit) — so the result is usable as a map
-     * key, a file name or a log field as it stands, with no JSON to dump and
-     * nothing that can throw. The reduction is LOSSY by design: two fields
-     * differing only in characters a key cannot carry mangle alike. A
-     * conforming provider produces neither (its tool names and call ids are
-     * key-safe on the wire already), and the alternative — folding the raw
-     * values into a digest — is what made the name depend on the arguments.
-     * An empty field drops out; with neither field set the result is empty,
-     * which a caller keying by it must treat as "no identity".
+     *   - the separator collides: ("a__b", "c") and ("a", "b__c") both mangle
+     *     to "a__b__c", and both fields may legitimately contain '_';
+     *   - characters outside [A-Za-z0-9_-] all become '_', so ("read file", x)
+     *     and ("read_file", x) mangle alike;
+     *   - each field is capped at 64 characters (the wire name limit), so
+     *     anything past that is dropped.
+     *
+     * A caller that needs to tell two calls apart correlates by query.id (the
+     * wire's tool_call_id) or by the call's position in its batch — which is
+     * what the tool registry does, and why it does not use this
+     * (tools/include/tools/registry.hpp).
+     *
+     * It is stable because it is built from the two fields that do not move:
+     * the arguments are settled IN PLACE by ensure_arguments (defaults filled
+     * in, values normalised) between the call arriving and the call running, and
+     * type/security/extras are host-side metadata resolved per dispatch — so a
+     * name folded from any of those would change under the tool's own feet. An
+     * empty field drops out; with neither field set the result is empty.
+     *
+     * Never throws and never touches the arguments: no JSON is dumped, so it
+     * costs a little string work and nothing else.
      */
     [[nodiscard]] std::string mangled_name() const {
         std::string mangled;

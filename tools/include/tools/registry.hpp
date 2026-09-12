@@ -84,27 +84,38 @@
 //                      toolsets.hpp). This layer only files those records and
 //                      never rewrites one.
 //
-// IDENTITY AND FILING. A record is filed under the identity of the call the
-// registry was GIVEN — InvokeQuery::mangled_name() of the query AS IT ARRIVED,
-// before any hook has run — and the assembly looks every call up by that same
-// key. The key is taken up front for two reasons: prepare() settles the query in
-// place (ensure_arguments fills defaults, write_attributes rewrites the
-// attributes), so an identity read off the settled object is an identity that
-// object can change; and a tool that renamed the query it was handed must not be
-// able to move its own record out of reach. mangled_name() is built from name
-// and id precisely so this holds (dataclass/model_io.hpp), which also means two
-// calls in one batch that agree on name and ID are ONE identity: they share a
-// record — the most a provider could distinguish them by either.
+// IDENTITY AND FILING. A record is filed by the POSITION of the call in the
+// batch, and the assembly reads the positions back in order: results[i] answers
+// queries[i], settled by the call at index i. Position is the one identity a
+// batch always has, it cannot collide, and it needs nothing invented — which is
+// why the registry does not key records by anything derived from the query at
+// all. (InvokeQuery::mangled_name() exists for a host that wants a compact label
+// for a call — logs, filenames, diagnostics — and is deliberately LOSSY, so it
+// is not an identity; dataclass/model_io.hpp says exactly that.)
 //
-// THREADING. add()/remove()/clear() are configuration: they are not synchronised
-// against dispatch, so a host registers everything before it serves calls, the
-// same rule the plugin layer follows. Dispatch itself is read-only and safe on a
-// multi-threaded io_context: the batch reads the table only while ROUTING — the
-// synchronous first step, before its first suspension — and from then on holds a
-// shared_ptr per call, so a batch that has started no longer needs the registry
-// it came from (the registry still has to outlive that first resume, as any
-// `co_await registry.execute(...)` implies). `execute()` is const for the same
-// reason: dispatching changes nothing.
+// What each record then CARRIES is the call it answers: the settled query at its
+// position, whatever the set or the tool put in the record's own query. A
+// producer that answered for a call of its own making (a retry, a nested
+// invocation) keeps that call under extras.cause_query instead of taking over
+// the identity — query.id is the wire's tool_call_id, and a provider rejects a
+// turn whose tool_call_ids do not match the calls it issued
+// (invoke_exception.hpp, correlate()).
+//
+// OWNERSHIP AND REENTRANCY. A ToolRegistry is owned and driven by the agent
+// loop, and execute() is deliberately not a reentrant dispatcher: ONE active
+// execute() per registry instance, which the loop engine guarantees by
+// serialising model turns. That is the contract the scheduling below rests on —
+// SerialWrite means "does not overlap the other calls of ONE batch", and two
+// overlapping batches would each honour it while overlapping each other, which
+// is not what the tool declared. There is no mutex, no queue and no cross-batch
+// gate here on purpose: that belongs to the loop engine, and a turn is the unit
+// it can actually reason about.
+//
+// Nothing else about a single batch is single-threaded: its parallel branches
+// may run on a pool (see step 3), and registration — add()/remove()/clear() — is
+// configuration, not synchronised against dispatch, so a host registers
+// everything before it serves calls, the rule the plugin layer follows too.
+// `execute()` is const for the same reason: dispatching changes nothing.
 //
 // LOGGING. Only what a host cannot otherwise see is logged: a call the table does
 // not know (debug — a model naming a tool that does not exist is ordinary, and
@@ -115,8 +126,9 @@
 //
 // WHAT THIS LAYER DELIBERATELY DOES NOT DO: own a tool's lifecycle (a set does:
 // build()/release() are its business), retry, back off, prioritise, propagate
-// cancellation into a branch, or impose a policy on a set. A host that needs any
-// of those wraps this, and still gets one record per call out of it.
+// cancellation into a branch, impose a policy on a set, or schedule across
+// batches. A host that needs any of those wraps this, and still gets one record
+// per call out of it.
 //
 
 #include <algorithm>
@@ -130,6 +142,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -152,10 +165,16 @@ namespace tools {
  * The host's routing table over tool sets: which set provides a tool name, and
  * how one batch of calls is settled, run and collected.
  *
- * A host holds ONE of these and hands the model the catalogue it flattens
- * (get_tools()); a tool call from the model goes back in through execute(). See
- * the file header for the batch's four steps, the identity a record is filed
- * under, and the failure sizes.
+ * A host holds ONE of these, owned and driven by the agent loop, and hands the
+ * model the catalogue it flattens (get_tools()); a tool call from the model goes
+ * back in through execute(), one batch per model turn. See the file header for
+ * the batch's four steps, how a record is filed and what it answers, the
+ * one-batch-at-a-time contract, and the failure sizes.
+ *
+ * A host that accidentally runs two batches at once is outside the contract
+ * rather than blocked from it: there is no mutex here, because a turn — not a
+ * call — is the unit the loop engine can serialise, and this layer does not
+ * pretend to schedule across turns it cannot see.
  */
 class ToolRegistry {
 public:
@@ -164,9 +183,6 @@ public:
     /// What execute() answers with: one record per call, in the order of the
     /// calls (file header, step 4).
     using Results = std::vector<model_io::InvokeReturn>;
-    /// The identity a call is filed under while a batch is in flight: the
-    /// mangled_name() of the query as it arrived (file header).
-    using CallKey = std::string;
 
     ToolRegistry() = default;
     ~ToolRegistry() = default;
@@ -191,11 +207,14 @@ public:
      *
      * @param tool_set the set to register; kept by shared_ptr, so the registry
      *        shares ownership with whoever made it rather than owning it.
-     * @throws std::invalid_argument for a null set, or for one that offers a
-     *         tool with an empty name: no call could ever route to that name,
-     *         and an empty query.name would otherwise match it by accident
-     *         instead of being reported as the dispatch failure it is.
-     * @throws std::runtime_error for a name another set already provides. A
+     * @throws std::invalid_argument for a set that is malformed on its own — a
+     *         null set, a tool with an empty name (no call could ever route to
+     *         it, and an empty query.name would otherwise match it by accident
+     *         instead of being reported as the dispatch failure it is), or the
+     *         same name advertised twice (one name must resolve to one tool, and
+     *         the table could only keep one of the two anyway — leaving
+     *         get_tools() listing what routing cannot reach).
+     * @throws std::runtime_error for a name ANOTHER set already provides. A
      *         registration conflict is a configuration bug, so it is loud and
      *         it happens at startup rather than per call.
      */
@@ -207,11 +226,22 @@ public:
 
         const std::vector<std::string> names = tool_set->supported_names();
 
+        // Names the set offers itself, to catch the duplicate the first pass
+        // cannot see: the table does not hold them yet, so `foo` twice would
+        // sail through it and then be silently halved by the emplace below.
+        std::unordered_set<std::string_view> offered;
+        offered.reserve(names.size());
+
         for (const std::string& name : names) {
             if (name.empty()) {
                 throw std::invalid_argument(std::format(
                     "toolset \"{}\" offers a tool with no name, which no call "
                     "could route to", tool_set->name()));
+            }
+            if (!offered.insert(name).second) {
+                throw std::invalid_argument(std::format(
+                    "toolset \"{}\" offers the tool name \"{}\" twice: one name "
+                    "must resolve to one tool", tool_set->name(), name));
             }
             const auto occupied = _lookup_table.find(name);
             if (occupied != _lookup_table.end()) {
@@ -355,6 +385,13 @@ public:
      * sizes this returns records for; nothing here throws except on a failure of
      * the machinery itself (an allocation, a stopped executor).
      *
+     * ONE BATCH AT A TIME. This is not a reentrant dispatcher: a registry
+     * instance may have at most one active execute() operation, and serialising
+     * model turns is the loop engine's job (file header, "ownership and
+     * reentrancy"). Two overlapping batches would each honour their own
+     * SerialWrite calls while overlapping each other, which is not what a
+     * SerialWrite tool declared.
+     *
      * @param queries the batch, TAKEN BY VALUE: a coroutine's arguments are
      *        copied into its frame when it is called, whereas a reference would
      *        only borrow the caller's vector — and this awaitable is lazy, so a
@@ -363,10 +400,13 @@ public:
      *        https_stream.hpp, and pinned by test_registry.cpp). The frame also
      *        SETTLES the queries in place, which a const reference could not
      *        express anyway. Move the batch in when the caller is done with it.
-     * @param executor the executor the parallel calls run on and the channel
-     *        they report through. Pass the host's own, or a strand when the
-     *        tools behind it are not thread-safe; the calls this batch spawns are
-     *        joined before it returns either way.
+     * @param executor the executor the PARALLEL branches are spawned on, and
+     *        the one the report channel uses. It does not relocate the whole
+     *        batch: the routing and the serial calls are part of the CALLING
+     *        coroutine's own flow and run on the caller's executor. Pass the
+     *        host's own, or a strand when the tools behind it are not
+     *        thread-safe; either way every call this batch spawns is joined
+     *        before it returns.
      * @return Results, sized and ordered like `queries`. An empty batch is a
      *         legal batch: it answers with an empty vector and spawns nothing.
      *
@@ -379,8 +419,10 @@ public:
         std::vector<model_io::InvokeQuery> queries,
         boost::asio::any_io_executor executor) const
     {
-        std::unordered_map<CallKey, model_io::InvokeReturn> records;
-        std::vector<CallKey> keys;
+        // One slot per call, filled by whoever answers it: position is the
+        // batch's own identity, and the assembly reads it back in order (file
+        // header, "identity and filing").
+        std::vector<std::optional<model_io::InvokeReturn>> records(queries.size());
         std::vector<PreparedCall> serial_calls;
         std::vector<PreparedCall> parallel_calls;
 
@@ -392,14 +434,8 @@ public:
         // registry. (A lazy awaitable is not resumed until its caller awaits it,
         // so the registry does have to outlive that first resume — exactly what
         // `co_await registry.execute(...)` implies.)
-        keys.reserve(queries.size());
-        for (model_io::InvokeQuery& query : queries) {
-            // The identity of the call as it ARRIVED, before any hook can
-            // touch it (file header, "identity and filing"). It is kept even
-            // though the query is copied into the group below, because a hook
-            // may rename what it was handed.
-            keys.push_back(query.mangled_name());
-            const CallKey& key = keys.back();
+        for (std::size_t index = 0; index < queries.size(); ++index) {
+            model_io::InvokeQuery& query = queries[index];
 
             const ToolSetPtr tool_set = find(query.name);
             if (tool_set == nullptr) {
@@ -409,7 +445,7 @@ public:
                 logging::Logger::debug(
                     "registry: no toolset provides \"{}\"; call {} is answered "
                     "with a dispatch failure", query.name, query.id);
-                records[key] = InvokeException(
+                records[index] = InvokeException(
                     InvokeException::Stage::Dispatch,
                     std::format("no toolset in the registry provides a tool "
                                 "named \"{}\"", query.name),
@@ -430,17 +466,19 @@ public:
                 // batch's own copy when it has to stand in for a call whose
                 // record never arrived, and a moved-from query would make that
                 // record a lie about which call failed.
-                group.push_back(PreparedCall{tool_set, std::move(tool), query, key});
+                group.push_back(PreparedCall{index, tool_set, std::move(tool), query});
             } catch (const InvokeException& failure) {
                 // The documented failure of the settling half: prepare() always
                 // throws THIS type, and the exception already IS the record
-                // (invoke_exception.hpp), correlated to the call it carries.
-                records[key] = failure.to_invoke_return();
+                // (invoke_exception.hpp). It is re-correlated here rather than
+                // trusted, because a set that overrides prepare() may throw one
+                // naming a call of its own.
+                records[index] = failure.to_invoke_return(query);
             } catch (const std::exception& unexpected) {
-                records[key] = broken_set(
+                records[index] = broken_set(
                     *tool_set, "while settling the call", unexpected.what(), query);
             } catch (...) {
-                records[key] = broken_set(*tool_set, "while settling the call",
+                records[index] = broken_set(*tool_set, "while settling the call",
                     "an unknown error, not a std::exception", query);
             }
         }
@@ -450,7 +488,7 @@ public:
             // Whatever the set does, this call gets its record: run_settled()
             // turns a set that breaks its execute() contract into one instead of
             // unwinding through the rest of the batch.
-            records[call.key] =
+            records[call.index] =
                 co_await run_settled(call.tool_set, call.tool, call.query);
         }
 
@@ -473,7 +511,7 @@ public:
                 boost::asio::co_spawn(executor,
                     [call = std::move(call), channel]() -> boost::asio::awaitable<void> {
                         Report report;
-                        report.key = call.key;
+                        report.index = call.index;
                         report.record = co_await run_settled(
                             call.tool_set, call.tool, call.query);
                         co_await channel->async_send(
@@ -518,7 +556,7 @@ public:
                     // the assembly below reports the one that is missing.
                     continue;
                 }
-                records[std::move(report->key)] = std::move(report->record);
+                records[report->index] = std::move(report->record);
             }
         }
 
@@ -526,13 +564,12 @@ public:
         Results results;
         results.reserve(queries.size());
         for (std::size_t index = 0; index < queries.size(); ++index) {
-            const auto record = records.find(keys[index]);
-            if (record != records.end()) {
-                // COPIED, not moved: two calls of one batch may share an
-                // identity (mangled_name() is name and id), and both are
-                // answered with the same record — moving it out on the first
-                // lookup would answer the second with a gutted one.
-                results.push_back(record->second);
+            if (records[index].has_value()) {
+                // MOVED, not copied: a slot is read exactly once, and two calls
+                // that agree on name and id are two slots with two records — the
+                // one thing a positional identity gives that a derived key does
+                // not.
+                results.push_back(std::move(*records[index]));
                 continue;
             }
 
@@ -554,20 +591,22 @@ public:
     }
 
     /**
-     * The convenience form: the same batch, on the executor of whoever awaits
-     * it.
+     * The convenience form: the same batch, with the executor taken from whoever
+     * awaits it.
      *
      * A host dispatching from inside a coroutine is already on the executor it
-     * wants the batch on — its own strand, its own context — and naming it again
-     * is bookkeeping the caller should not have to do. This is the explicit form
-     * called with `co_await this_coro::executor`, which is the executor Asio
-     * attaches to an awaitable when the caller first resumes it (the
-     * `this_coro::executor` form endpoint/create_connection_stream offers for
-     * the same reason).
+     * wants the parallel branches on — its own strand, its own context — and
+     * naming it again is bookkeeping the caller should not have to do. This is
+     * the explicit form called with `co_await this_coro::executor`, which is the
+     * executor Asio attaches to an awaitable when the caller first resumes it
+     * (the `this_coro::executor` form endpoint/create_connection_stream offers
+     * for the same reason). The scope is the explicit form's: the routing and
+     * the serial calls were already on the caller's executor, and this selects
+     * it for the parallel branches too.
      *
-     * Use the explicit form when the batch should run somewhere OTHER than where
-     * it was started: off a UI thread, on a pool, through a strand built for the
-     * tools rather than for the caller.
+     * Use the explicit form when the branches should run somewhere OTHER than
+     * where the batch was started: off a UI thread, on a pool, through a strand
+     * built for the tools rather than for the caller.
      *
      * @param queries the batch, taken by value — see the explicit form.
      * @return the records, exactly as the explicit form returns them.
@@ -582,31 +621,28 @@ public:
 
 private:
     /**
-     * One settled call, ready for the schedule: the set it routed to, the tool
-     * inside that set, the settled query, and the identity it will be filed
-     * under.
+     * One settled call, ready for the schedule: where it sits in the batch, the
+     * set it routed to, the tool inside that set, and the settled query.
      *
-     * The pair is kept together on purpose — the tool handle belongs to the set
-     * that resolved it, and holding the shared_ptr means the batch keeps the set
-     * alive for as long as the call it routed may still run.
+     * The four are kept together on purpose. The index is what the record is
+     * filed by, and the tool handle belongs to the set that resolved it — holding
+     * the shared_ptr means the batch keeps the set alive for as long as the call
+     * it routed may still run.
      */
     struct PreparedCall {
+        std::size_t index;
         ToolSetPtr tool_set;
         ToolHandle tool;
         model_io::InvokeQuery query;
-        CallKey key;
     };
 
     /**
-     * What one parallel branch reports back.
-     *
-     * The key travels WITH the record because the collector files what arrives:
-     * a branch whose set answered for a call of its own making (a retry, a
-     * nested invocation) must not be able to file that answer under a different
-     * call's identity.
+     * What one parallel branch reports back: the position of the call it ran, so
+     * the collector files the record where the assembly will look for it, and the
+     * record itself.
      */
     struct Report {
-        CallKey key;
+        std::size_t index;
         model_io::InvokeReturn record;
     };
 
@@ -643,14 +679,20 @@ private:
      * ToolSet::execute() is documented never to throw, so anything escaping it
      * is the set breaking its contract — and that must not cost the batch its
      * other answers, nor the caller its await. The query is passed as an lvalue
-     * on purpose: the failure path needs it intact to correlate the record, and
-     * the record the successful path returns carries its own copy anyway.
+     * on purpose: the failure path needs it intact, and the record the
+     * successful path returns carries its own copy anyway.
+     *
+     * Whatever comes back is correlated to `query` before it is returned: a set
+     * that overrides execute() and answers for a call of its own making must not
+     * be able to move the model's own call out of the record's identity (file
+     * header; correlate() in invoke_exception.hpp).
      */
     [[nodiscard]] static boost::asio::awaitable<model_io::InvokeReturn> run_settled(
         ToolSetPtr tool_set, ToolHandle tool, model_io::InvokeQuery query)
     {
         try {
-            co_return co_await tool_set->execute(std::move(tool), query);
+            co_return correlate(
+                co_await tool_set->execute(std::move(tool), query), query);
         } catch (const std::exception& unexpected) {
             co_return broken_set(
                 *tool_set, "out of execute()", unexpected.what(), query);

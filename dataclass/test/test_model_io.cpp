@@ -105,9 +105,12 @@ BOOST_AUTO_TEST_CASE(invoke_query_roundtrips_with_arguments) {
 
 // ---- InvokeQuery::mangled_name() ---------------------------------------------
 //
-// The mangled name is the key an asynchronously executed call is filed under,
-// so these tests pin its exact value, not just the equality of two strings
-// produced in the same process.
+// The mangled name is a LABEL for a call — a log field, a file name, a
+// diagnostic — and not an identity: correlation is by query.id on the wire, and
+// by position inside a batch (tools/include/tools/registry.hpp). These tests pin
+// its exact value, not just the equality of two strings produced in the same
+// process, and they pin the lossiness the documentation promises, so that a
+// caller who needs to tell two calls apart cannot reach for this by accident.
 
 // The alphabet a hash key / file name may carry.
 static bool is_key_safe_char(char byte) {
@@ -219,6 +222,27 @@ BOOST_AUTO_TEST_CASE(mangled_name_reduces_fields_that_differ_unsafely) {
 
     BOOST_TEST(spaced.mangled_name() == "read_file__c1");
     BOOST_TEST(underscored.mangled_name() == "read_file__c1");
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_collides_on_the_separator_itself) {
+    // The lossiness that does NOT need an unsafe character: '_' is allowed in
+    // both fields, so the separator is ambiguous and the join is not injective
+    // even for two perfectly well-formed calls. Pinned rather than fixed — an
+    // escaping scheme would be inventing an identity this is not — which is why
+    // nothing correlates by this string.
+    InvokeQuery left;
+    left.name = "a__b";
+    left.id = "c";
+    InvokeQuery right;
+    right.name = "a";
+    right.id = "b__c";
+
+    BOOST_TEST(left.mangled_name() == "a__b__c");
+    BOOST_TEST(right.mangled_name() == "a__b__c");
+    // Different calls, one label — and they are still distinguishable by the two
+    // things that do identify a call.
+    BOOST_TEST(left.id != right.id);
+    BOOST_TEST(left.name != right.name);
 }
 
 BOOST_AUTO_TEST_CASE(mangled_name_never_touches_the_arguments) {

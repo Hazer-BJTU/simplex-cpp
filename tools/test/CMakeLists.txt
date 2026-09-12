@@ -22,16 +22,18 @@
 #                          split is for — settling a batch before scheduling it,
 #                          by query.type.
 #   test_registry          ToolRegistry: the routing table (registration, the
-#                          duplicate refusal, removal, the flattened catalogue)
+#                          duplicate refusals, removal, the flattened catalogue)
 #                          and a whole batch of calls — routed and settled
 #                          first, serial before parallel, joined, and assembled
-#                          back into one record per call in call order. The
-#                          cases a batch has to survive are all here: an
-#                          unknown tool, a set that breaks either of its two
-#                          contracts, a refused call, a failed tool, and two
-#                          calls sharing an identity. Every batch runs under a
-#                          watchdog, so a collector left waiting for a report
-#                          fails the case instead of hanging the suite.
+#                          back into one record per call in call order, each
+#                          answering the call at its position whatever a set or
+#                          a tool put in the record's own query. The cases a
+#                          batch has to survive are all here: an unknown tool, a
+#                          set that breaks either of its two contracts, a
+#                          refused call, a failed tool, and calls sharing an
+#                          identity. Every batch runs under a watchdog, so a
+#                          collector left waiting for a report fails the case
+#                          instead of hanging the suite.
 #
 # test_security_check, test_toolsets and test_registry link the async event bus
 # through tools_iface (async_eventbus_iface). Both drive coroutines on a local
