@@ -346,7 +346,10 @@ BOOST_AUTO_TEST_CASE(correlating_a_record_rewrites_its_identity_not_its_result)
     inner.id = "inner_call";
     model_io::InvokeReturn record;
     record.query = inner;
-    record.output = {model_io::ContentType::Text, "the tool's own answer"};
+    record.output = model_io::Content{
+        .type = model_io::ContentType::Text,
+        .raw = "the tool's own answer",
+        .extras = {}};
     record.extras = nlohmann::json{{"annotated_by", "the tool"}};
 
     const model_io::InvokeReturn correlated =
@@ -364,7 +367,8 @@ BOOST_AUTO_TEST_CASE(correlating_a_record_rewrites_its_identity_not_its_result)
     // no marker, no rewritten extras.
     model_io::InvokeReturn plain;
     plain.query = read_file_query();
-    plain.output = {model_io::ContentType::Text, "ok"};
+    plain.output = model_io::Content{
+        .type = model_io::ContentType::Text, .raw = "ok", .extras = {}};
     const model_io::InvokeReturn kept = tools::correlate(plain, read_file_query());
     BOOST_TEST(kept.query.arguments["path"] == "/etc/hosts");
     BOOST_CHECK(!kept.extras.has_value());
