@@ -35,8 +35,8 @@
 // blocking the thread. Nothing in the tool layer needs to know who — or
 // whether anyone — is listening.
 //
-// Fail closed. RequireConfirm is a request for approval, so anything short of
-// an explicit approval refuses the invocation:
+// Fail closed, at the level of ONE request. RequireConfirm is a request for
+// approval, so anything short of an explicit approval refuses the invocation:
 //
 //   no handler subscribed       refuse — nothing can confirm
 //   handler leaves it unanswered refuse — silence is not consent
@@ -52,9 +52,26 @@
 // settled query in `query` and answers by writing `decision` (and, if it wants
 // its words in the failure record, `reason`); a handler that only observes
 // returns its input unchanged. The fold is serial and in registration order, so
-// the LAST handler to answer decides — a policy layer subscribed after the UI
-// can veto an approval or grant one the UI refused. Handlers that answer
-// nothing leave the decision at Unanswered, which is why silence refuses.
+// the LAST handler to answer decides.
+//
+// WHAT THAT MEANS, said plainly, because it is a trust decision rather than an
+// implementation detail: the composition is NOT monotonic. A handler subscribed
+// after another CAN move Denied to Approved — a policy layer registered later
+// can grant what the UI just refused — and the other way round. The assumption
+// behind it is that every subscriber is an AUTHORIZATION AUTHORITY: they are
+// in-process or explicitly registered components of this host (a confirmation
+// dialog, a policy service, another plugin), and any of them could run the tool
+// itself rather than answer this question. The gate exists to keep the MODEL
+// from acting unattended; it is not a sandbox between plugins, and it does not
+// try to adjudicate between authorities that disagree.
+//
+// A host that wants deny-wins — "any explicit denial is final" — gets it by
+// subscribing ONE authoritative confirmer that consults whatever authorities it
+// likes internally and answers once with their combined verdict. That is also
+// the shape to reach for when several parties must agree: the bus carries one
+// question with one answer, deliberately, so the arbitration lives in one place
+// instead of being spread across handlers whose relative order is an accident
+// of registration.
 //
 // The reason strings. On refusal the reason is what the failure record shows
 // the model ("security check denied: <reason>"), so the defaults below read as
@@ -156,6 +173,13 @@ struct InvokeConfirmEvent : eventbus::AsyncEventBase {
  * A throwing handler aborts the fold, so the remaining handlers do not run.
  * That is the bus's propagate mode — the default — chosen here because a
  * confirmer that crashed should be reported, not silently treated as silence.
+ *
+ * What "fail closed" here does and does not cover: ONE request is refused
+ * unless it is explicitly approved, but the fold that decides it is not
+ * monotonic — the last handler to answer wins, in either direction. See the
+ * file header for why that is the deliberate reading of the bus in this
+ * position, and for the single-authoritative-confirmer shape to use when a host
+ * wants an explicit denial to be final.
  */
 [[nodiscard]] inline boost::asio::awaitable<std::tuple<bool, std::string>>
 default_security_check(

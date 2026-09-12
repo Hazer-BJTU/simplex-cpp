@@ -252,6 +252,71 @@ BOOST_AUTO_TEST_CASE(the_last_handler_to_answer_decides)
     BOOST_TEST(reason == "the policy forbids it");
 }
 
+BOOST_AUTO_TEST_CASE(a_later_handler_can_grant_what_an_earlier_one_refused)
+{
+    // The other direction of the fold, and the one worth pinning out loud: the
+    // composition is NOT monotonic, so a handler registered after a refusal can
+    // approve. That is the documented trust model rather than an accident —
+    // every subscriber is an authorization authority, and any of them could run
+    // the tool itself (security_check.hpp) — so the semantics are asserted here
+    // instead of being left for a reader to discover.
+    eventbus::AsyncEventBus bus;
+    AnsweringConfirmer ui{ConfirmDecision::Denied, "the human said no"};
+    auto first = bus.subscribe<InvokeConfirmEvent>(answering(ui));
+    auto second = bus.subscribe<InvokeConfirmEvent>(
+        [](const InvokeConfirmEvent& request)
+            -> asio::awaitable<InvokeConfirmEvent> {
+            InvokeConfirmEvent out = request;
+            out.decision = ConfirmDecision::Approved;
+            out.reason = "this build has no write path, so the question is moot";
+            co_return out;
+        });
+
+    const auto [passed, reason] =
+        check_on(settled_query(model_io::InvokeSecurity::RequireConfirm), bus);
+
+    BOOST_TEST(ui.asked);
+    BOOST_TEST(passed);
+    BOOST_TEST(reason == "this build has no write path, so the question is moot");
+}
+
+BOOST_AUTO_TEST_CASE(deny_wins_is_one_authoritative_confirmer)
+{
+    // What a host that wants "any explicit denial is final" subscribes: ONE
+    // handler that consults the authorities it cares about and answers once with
+    // their combined verdict. The bus carries one question and one answer, so
+    // arbitration belongs inside a confirmer rather than across handlers whose
+    // relative order is registration order.
+    eventbus::AsyncEventBus bus;
+    bool ui_approved = true;    // a UI that said yes...
+    bool policy_allows = false; // ...and a policy that did not
+
+    auto confirmer = bus.subscribe<InvokeConfirmEvent>(
+        [&](const InvokeConfirmEvent& request)
+            -> asio::awaitable<InvokeConfirmEvent> {
+            InvokeConfirmEvent out = request;
+            const bool allowed = ui_approved && policy_allows;
+            out.decision =
+                allowed ? ConfirmDecision::Approved : ConfirmDecision::Denied;
+            out.reason = allowed ? "every authority agreed" : "the policy forbids it";
+            co_return out;
+        });
+
+    const auto [passed, reason] =
+        check_on(settled_query(model_io::InvokeSecurity::RequireConfirm), bus);
+
+    BOOST_TEST(!passed);
+    BOOST_TEST(reason == "the policy forbids it");
+
+    // Convincing the second authority changes the verdict — with no handler
+    // overriding another, and no dependence on subscription order.
+    policy_allows = true;
+    const auto [allowed, allowed_reason] =
+        check_on(settled_query(model_io::InvokeSecurity::RequireConfirm), bus);
+    BOOST_TEST(allowed);
+    BOOST_TEST(allowed_reason == "every authority agreed");
+}
+
 BOOST_AUTO_TEST_CASE(a_throwing_handler_refuses_by_propagating)
 {
     eventbus::AsyncEventBus bus;
