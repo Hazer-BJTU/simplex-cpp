@@ -58,6 +58,10 @@ public:
     void note(std::string text)
     {
         const std::lock_guard<std::mutex> lock(_mutex);
+        const std::thread::id writer = std::this_thread::get_id();
+        if (std::find(_threads.begin(), _threads.end(), writer) == _threads.end()) {
+            _threads.push_back(writer);
+        }
         _entries.push_back(std::move(text));
     }
 
@@ -79,9 +83,18 @@ public:
         return _entries.size();
     }
 
+    /// The threads that wrote to the trace, in the order they first did — which
+    /// is how a batch says where it ran.
+    [[nodiscard]] std::vector<std::thread::id> threads() const
+    {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        return _threads;
+    }
+
 private:
     mutable std::mutex _mutex;
     std::vector<std::string> _entries;
+    std::vector<std::thread::id> _threads;
 };
 
 using TracePtr = std::shared_ptr<Trace>;
@@ -315,22 +328,26 @@ struct BatchRun {
     bool returned = false;
 };
 
-/// Run a batch to completion on a private context.
+/// Drive one batch to completion on a private context, with a watchdog.
 ///
 /// The watchdog is the point: the failure mode this layer must never have is a
 /// collector suspended on a report no branch will ever send, and a hung suite
 /// reports nothing at all. A batch that does not return inside the limit stops
 /// the context instead, and `returned` says which happened.
-BatchRun run_batch(const ToolRegistry& registry,
-                   std::vector<model_io::InvokeQuery> batch,
-                   std::chrono::milliseconds limit = std::chrono::seconds(5))
+///
+/// `start` is how the batch is started — the explicit executor form or the
+/// convenience form — so the two differ only in the call they make and share
+/// everything else about how the test runs them.
+template <typename Start>
+BatchRun run_watched(Start&& start,
+                     std::chrono::milliseconds limit = std::chrono::seconds(5))
 {
     asio::io_context io;
     BatchRun run;
 
     asio::co_spawn(io,
-        [&]() -> asio::awaitable<void> {
-            run.results = co_await registry.execute(std::move(batch), io.get_executor());
+        [&run, &io, &start]() -> asio::awaitable<void> {
+            run.results = co_await start(io);
             run.returned = true;
             io.stop();
         },
@@ -343,6 +360,32 @@ BatchRun run_batch(const ToolRegistry& registry,
 
     io.run();
     return run;
+}
+
+/// One batch on a context of its own, on an executor the test names.
+BatchRun run_batch(const ToolRegistry& registry,
+                   std::vector<model_io::InvokeQuery> batch,
+                   std::chrono::milliseconds limit = std::chrono::seconds(5))
+{
+    return run_watched(
+        [&registry, &batch](asio::io_context& io) {
+            return registry.execute(std::move(batch), io.get_executor());
+        },
+        limit);
+}
+
+/// One batch through the convenience form, which takes no executor: the batch
+/// must land on the caller's own, here the context this helper is running.
+BatchRun run_batch_on_the_callers_executor(
+    const ToolRegistry& registry,
+    std::vector<model_io::InvokeQuery> batch,
+    std::chrono::milliseconds limit = std::chrono::seconds(5))
+{
+    return run_watched(
+        [&registry, &batch](asio::io_context&) {
+            return registry.execute(std::move(batch));
+        },
+        limit);
 }
 
 /// The same, on a context driven by four threads — the case that makes the
@@ -1210,4 +1253,60 @@ BOOST_AUTO_TEST_CASE(the_batch_belongs_to_the_coroutine_frame)
     // The queries were settled in the frame's own copies, not in the caller's.
     BOOST_TEST((*results)[0].query.arguments["path"] == "/default/path");
     BOOST_CHECK_EQUAL(reader->invoke_count.load(), 2);
+}
+
+BOOST_AUTO_TEST_CASE(the_convenience_form_runs_the_batch_on_the_callers_executor)
+{
+    // execute(queries) exists because a host dispatching from inside a coroutine
+    // is already on the executor it wants the batch on — its own strand, its own
+    // context — and should not have to name it again. What this pins is that the
+    // batch really lands THERE: this helper runs the batch on a private context
+    // that only the caller drives, and the batch completes on it without ever
+    // being told which one it is.
+    //
+    // The delay is what makes the executor observable, and it is why this case
+    // is not a duplicate of the explicit form's: `co_spawn` runs a branch INLINE
+    // on the collector's thread until the branch's first real suspension, and
+    // dispatches everything after it on the executor the branch was spawned
+    // with. So the checkpoints a wrong executor would move are the ones after
+    // invoke()'s wait — which is why the tool waits here.
+    auto trace = std::make_shared<Trace>();
+    auto reader = std::make_shared<ScriptedTool>("read_file", trace);
+    reader->fill_default_argument = true;
+    reader->delay = std::chrono::milliseconds(2);
+    auto writer = std::make_shared<ScriptedTool>("write_file", trace);
+    writer->declares_type = model_io::InvokeType::SerialWrite;
+    writer->payload = "written";
+    auto set = std::make_shared<ScriptedSet>(
+        "local_tools", std::vector<tools::ToolSet::ToolHandle>{reader, writer});
+
+    ToolRegistry registry;
+    registry.add(set);
+
+    const BatchRun run = run_batch_on_the_callers_executor(registry, {
+        call_for("write_file", "call_w"),
+        call_for("read_file", "call_r1"),
+        call_for("read_file", "call_r2"),
+    });
+
+    BOOST_REQUIRE(run.returned);
+    BOOST_REQUIRE_EQUAL(run.results.size(), 3u);
+    // Same records, same order — the convenience form is the same call.
+    BOOST_TEST(run.results[0].query.id == "call_w");
+    BOOST_TEST(run.results[0].output.raw == "written");
+    BOOST_TEST(run.results[1].query.id == "call_r1");
+    BOOST_TEST(run.results[2].query.id == "call_r2");
+    for (const model_io::InvokeReturn& record : run.results) {
+        BOOST_TEST(!tools::is_error(record));
+    }
+    BOOST_TEST(run.results[1].query.arguments["path"] == "/default/path");
+
+    // ... and every checkpoint of every call ran on the CALLER's executor: one
+    // thread drove this context, and it is this one.
+    const std::vector<std::thread::id> writers = trace->threads();
+    BOOST_REQUIRE_EQUAL(writers.size(), 1u);
+    BOOST_TEST(writers.front() == std::this_thread::get_id());
+    // The serial call and both parallel calls all went through it.
+    BOOST_CHECK_EQUAL(reader->invoke_count.load(), 2);
+    BOOST_CHECK_EQUAL(writer->invoke_count.load(), 1);
 }

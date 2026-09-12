@@ -43,6 +43,14 @@
 //   4. ASSEMBLE           the records are returned in the ORDER OF THE CALLS,
 //                         never in completion order, one record per call.
 //
+// What co_spawn does with that executor is worth knowing, because it shapes what
+// step 3 costs: a branch runs INLINE on the collector's thread up to its first
+// real suspension, and everything after that is dispatched on the executor it
+// was spawned with. A batch of tools that never wait is therefore one
+// single-threaded pass with no hops, a batch that waits overlaps — and a strand
+// passed as the executor serialises a branch from its first suspension on only,
+// since the synchronous prefix never left the caller's thread.
+//
 // Serial before parallel is not a scheduling detail, it is what SerialWrite
 // MEANS: a writer that declared it must not run concurrently with anything, and
 // the only way to honour that from a batch is to run it while the rest of the
@@ -129,6 +137,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -542,6 +551,33 @@ public:
         }
 
         co_return results;
+    }
+
+    /**
+     * The convenience form: the same batch, on the executor of whoever awaits
+     * it.
+     *
+     * A host dispatching from inside a coroutine is already on the executor it
+     * wants the batch on — its own strand, its own context — and naming it again
+     * is bookkeeping the caller should not have to do. This is the explicit form
+     * called with `co_await this_coro::executor`, which is the executor Asio
+     * attaches to an awaitable when the caller first resumes it (the
+     * `this_coro::executor` form endpoint/create_connection_stream offers for
+     * the same reason).
+     *
+     * Use the explicit form when the batch should run somewhere OTHER than where
+     * it was started: off a UI thread, on a pool, through a strand built for the
+     * tools rather than for the caller.
+     *
+     * @param queries the batch, taken by value — see the explicit form.
+     * @return the records, exactly as the explicit form returns them.
+     */
+    [[nodiscard]] boost::asio::awaitable<Results> execute(
+        std::vector<model_io::InvokeQuery> queries) const
+    {
+        const boost::asio::any_io_executor executor =
+            co_await boost::asio::this_coro::executor;
+        co_return co_await execute(std::move(queries), executor);
     }
 
 private:
