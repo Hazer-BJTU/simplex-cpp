@@ -3,7 +3,7 @@
 #
 # The tool-invocation layer: the model_io tool contract (Invocable /
 # InvokeQuery / InvokeReturn) turned into something that runs. `tools_iface`
-# is header-only and carries three headers:
+# is header-only and carries four headers:
 #
 #   - invoke_exception.hpp  the tool-side failure type and its bridge to the
 #                           InvokeReturn record a detached invocation reports
@@ -13,7 +13,12 @@
 #                           InvokeConfirmEvent published on the async bus;
 #   - toolsets.hpp          ToolInterface / ToolSet: one tool, and the set that
 #                           dispatches a call, settles it synchronously
-#                           (prepare) and runs it asynchronously (execute).
+#                           (prepare) and runs it asynchronously (execute);
+#   - registry.hpp          ToolRegistry: the host's routing table over tool
+#                           sets — which set provides a name — and the batch
+#                           that settles a whole turn's calls, runs the serial
+#                           ones before the parallel ones, and answers with one
+#                           record per call in call order.
 #
 # It links `async_eventbus_iface` (utils/async_eventbus) for the confirmation
 # event: the policy publishes on eventbus::default_async_bus(), and that
