@@ -123,6 +123,33 @@ void read_optional(const nlohmann::json& j, const char* key,
         member.reset();
     }
 }
+
+// FNV-1a/64 over a byte range, foldable across calls via @p hash. The same
+// algorithm and offset basis extensions/plugin_magic.hpp uses for its
+// toolchain fingerprint; it is spelled out here rather than left to
+// std::hash because a digest that names a call has to be reproducible by
+// another process, another run and another standard library — none of which
+// std::hash's implementation-defined value guarantees. dataclass depends on
+// nothing but the vendored JSON header, so the six lines are duplicated.
+inline std::uint64_t fnv1a_64(std::string_view bytes,
+                              std::uint64_t hash = 0xcbf29ce484222325ull) {
+    for (const char byte : bytes) {
+        hash ^= static_cast<unsigned char>(byte);
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
+}
+
+// The digest as 16 lowercase hex digits, most significant first.
+inline std::string hex_digest(std::uint64_t value) {
+    static constexpr char kDigits[] = "0123456789abcdef";
+    std::string text(16, '0');
+    for (std::size_t index = text.size(); index-- > 0;) {
+        text[index] = kDigits[value & 0xF];
+        value >>= 4;
+    }
+    return text;
+}
 } // namespace detail
 
 // ---- conversation data types ------------------------------------------------
@@ -196,6 +223,79 @@ struct InvokeQuery {
     std::string id, name;
     nlohmann::json arguments = nlohmann::json::object();
     std::optional<nlohmann::json> extras;
+
+    /**
+     * A compact, stable name for THIS call, for use as a hash key or as the
+     * correlation key of an asynchronously executed invocation:
+     *
+     *     <name>__<id>__<16 hex digits>
+     *     "read_file__call_7f3a__3b1e7a0d94c2f586"
+     *
+     * The readable prefix is the name and the id, each reduced to the
+     * characters a key can safely carry — anything outside [A-Za-z0-9_-]
+     * becomes '_', and each field is capped at 64 characters (the wire name
+     * limit) — so the result is usable as a map key, a file name or a log
+     * field as it stands. Empty fields drop out; with neither set the result
+     * is the digest alone.
+     *
+     * The trailing digest is FNV-1a/64 over the RAW identity: name, id and
+     * the arguments' canonical JSON, each length-prefixed so no two
+     * (name, id, arguments) triples fold to the same bytes. It is therefore
+     * what makes the name unambiguous even though the prefix is lossy, and
+     * what makes it REPRODUCIBLE: the same call mangles to the same string in
+     * another process, in a later run, and after a JSON round trip. Argument
+     * object keys are canonicalised by the JSON dump (nlohmann orders object
+     * keys), so insertion order does not matter.
+     *
+     * Only the arguments' DIGEST rides along, never the arguments themselves:
+     * they can be arbitrarily large — a file's contents, a whole command —
+     * and a name that grows with them is neither a key nor a log field. The
+     * rest of the query is deliberately NOT identity: type, security and
+     * extras are host-side metadata resolved per dispatch, so the same call
+     * under different trust settings keeps its name.
+     *
+     * Note that the digest is recomputed on every call; cache the string if a
+     * call site needs it more than once.
+     */
+    [[nodiscard]] std::string mangled_name() const {
+        std::string prefix;
+        auto append_field = [&prefix](const std::string& raw) {
+            if (raw.empty()) return;
+            if (!prefix.empty()) prefix += "__";
+            constexpr std::size_t kFieldLimit = 64;
+            for (std::size_t index = 0;
+                 index < raw.size() && index < kFieldLimit; ++index) {
+                const char byte = raw[index];
+                const bool key_safe = (byte >= 'a' && byte <= 'z') ||
+                                      (byte >= 'A' && byte <= 'Z') ||
+                                      (byte >= '0' && byte <= '9') ||
+                                      byte == '_' || byte == '-';
+                prefix += key_safe ? byte : '_';
+            }
+        };
+        append_field(name);
+        append_field(id);
+
+        std::uint64_t digest = 0;
+        auto fold = [&digest](std::string_view field) {
+            digest = detail::fnv1a_64(std::to_string(field.size()), digest);
+            digest = detail::fnv1a_64(":", digest);
+            digest = detail::fnv1a_64(field, digest);
+        };
+        // error_handler::replace: a mangled name must not throw, and the
+        // arguments came from a model, so invalid UTF-8 is replaced rather
+        // than rejected.
+        const std::string canonical_arguments = arguments.dump(
+            -1, ' ', false, nlohmann::json::error_handler_t::replace);
+        fold(name);
+        fold(id);
+        fold(canonical_arguments);
+
+        if (prefix.empty()) return detail::hex_digest(digest);
+        prefix += "__";
+        prefix += detail::hex_digest(digest);
+        return prefix;
+    }
 };
 
 inline void to_json(nlohmann::json& j, const InvokeQuery& q) {

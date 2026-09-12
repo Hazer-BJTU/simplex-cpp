@@ -103,6 +103,181 @@ BOOST_AUTO_TEST_CASE(invoke_query_roundtrips_with_arguments) {
     BOOST_CHECK(!q2.extras.has_value());
 }
 
+// ---- InvokeQuery::mangled_name() ---------------------------------------------
+//
+// The mangled name is a value OTHER runs have to reproduce (an async result
+// is correlated by it), so these tests pin the format and the digest, not
+// just the equality of two strings produced in the same process.
+
+// The alphabet a hash key / file name may carry.
+static bool is_key_safe_char(char byte) {
+    return (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+           (byte >= '0' && byte <= '9') || byte == '_' || byte == '-';
+}
+
+static bool is_hex_digest(const std::string& text) {
+    if (text.size() != 16) return false;
+    for (const char byte : text) {
+        if (!((byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static InvokeQuery mangled_sample() {
+    InvokeQuery q;
+    q.id = "call_7f3a";
+    q.name = "read_file";
+    q.arguments = nlohmann::json{{"path", "/etc/hosts"}, {"tail", 200}};
+    return q;
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_is_readable_stable_and_pinned) {
+    const InvokeQuery q = mangled_sample();
+    const std::string mangled = q.mangled_name();
+
+    BOOST_TEST(mangled.rfind("read_file__call_7f3a__", 0) == 0);
+    BOOST_TEST(mangled.size() ==
+               std::string("read_file__call_7f3a__").size() + 16);
+    BOOST_CHECK(is_hex_digest(mangled.substr(mangled.size() - 16)));
+    BOOST_TEST(q.mangled_name() == mangled);
+
+    // Pinned: name, id AND the arguments all feed the digest, and the digest
+    // itself is part of the contract. A different value here means an async
+    // result correlated by this name would no longer match across runs.
+    BOOST_TEST(mangled == "read_file__call_7f3a__29d7fb1504850f68");
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_is_canonical_and_survives_a_round_trip) {
+    const InvokeQuery q = mangled_sample();
+
+    // Same arguments, built in the other insertion order: the JSON dump
+    // orders object keys, so the digest does not see the difference.
+    InvokeQuery reordered = q;
+    reordered.arguments = nlohmann::json{{"tail", 200}, {"path", "/etc/hosts"}};
+    BOOST_TEST(reordered.mangled_name() == q.mangled_name());
+
+    // And the name is derived from the value, not from the in-memory copy.
+    BOOST_TEST(roundtrip(q).mangled_name() == q.mangled_name());
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_distinguishes_calls) {
+    const InvokeQuery base = mangled_sample();
+
+    InvokeQuery other_arguments = base;
+    other_arguments.arguments["tail"] = 201;
+    InvokeQuery other_id = base;
+    other_id.id = "call_7f3b";
+    InvokeQuery other_name = base;
+    other_name.name = "write_file";
+    InvokeQuery extra_argument = base;
+    extra_argument.arguments["encoding"] = "utf-8";
+
+    BOOST_TEST(base.mangled_name() != other_arguments.mangled_name());
+    BOOST_TEST(base.mangled_name() != other_id.mangled_name());
+    BOOST_TEST(base.mangled_name() != other_name.mangled_name());
+    BOOST_TEST(base.mangled_name() != extra_argument.mangled_name());
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_ignores_host_side_metadata) {
+    const InvokeQuery base = mangled_sample();
+
+    // type/security/extras are resolved by the host per dispatch, not by the
+    // model: the same call under different trust settings is the same call.
+    InvokeQuery retyped = base;
+    retyped.type = InvokeType::SerialWrite;
+    retyped.security = InvokeSecurity::Trusted;
+    retyped.extras = nlohmann::json{{"provider", "local"}};
+
+    BOOST_TEST(retyped.mangled_name() == base.mangled_name());
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_mangles_key_unsafe_fields_and_stays_bounded) {
+    InvokeQuery q;
+    q.id = "call/../../etc";
+    q.name = "read file";
+    q.arguments = nlohmann::json{{"content", std::string(100000, 'x')}};
+
+    const std::string mangled = q.mangled_name();
+    for (const char byte : mangled) {
+        BOOST_CHECK(is_key_safe_char(byte));
+    }
+    BOOST_TEST(mangled.rfind("read_file__call", 0) == 0);
+    // A 100 KB argument does not grow the name: only its digest rides along.
+    // 64 characters per field (the wire name limit) + 2 separators + 16 hex.
+    BOOST_TEST(mangled.size() <= 64 + 2 + 64 + 2 + 16);
+
+    // The cap applies to the readable fields too, so a long name — one a
+    // provider let through, or a hand-built query — cannot turn the key into
+    // a document.
+    InvokeQuery long_fields;
+    long_fields.name = std::string(5000, 'r');
+    long_fields.id = std::string(5000, 'i');
+    BOOST_TEST(long_fields.mangled_name().size() == 64 + 2 + 64 + 2 + 16);
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_separates_ids_that_the_cap_truncates) {
+    // Two long ids sharing their first 64 characters reduce to the same
+    // readable prefix; the digest, which is over the RAW id, still tells the
+    // calls apart (the same holds for names, see the case above).
+    InvokeQuery first;
+    first.name = "read_file";
+    first.id = std::string(64, 'i') + "A";
+    InvokeQuery second = first;
+    second.id = std::string(64, 'i') + "B";
+
+    const std::string first_prefix =
+        first.mangled_name().substr(0, first.mangled_name().size() - 16);
+    const std::string second_prefix =
+        second.mangled_name().substr(0, second.mangled_name().size() - 16);
+    BOOST_TEST(first_prefix == second_prefix);
+    BOOST_TEST(first.mangled_name() != second.mangled_name());
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_separates_fields_that_mangle_alike) {
+    // Two different names can reduce to the same readable prefix; the digest
+    // is over the RAW values, so they still differ.
+    InvokeQuery spaced;
+    spaced.id = "c1";
+    spaced.name = "read file";
+    InvokeQuery underscored;
+    underscored.id = "c1";
+    underscored.name = "read_file";
+
+    BOOST_TEST(spaced.mangled_name().rfind("read_file__c1__", 0) == 0);
+    BOOST_TEST(underscored.mangled_name().rfind("read_file__c1__", 0) == 0);
+    BOOST_TEST(spaced.mangled_name() != underscored.mangled_name());
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_without_name_or_id_is_the_digest_alone) {
+    InvokeQuery q;
+    q.arguments = nlohmann::json{{"a", 1}};
+    const std::string mangled = q.mangled_name();
+
+    BOOST_TEST(mangled.size() == 16);
+    BOOST_CHECK(is_hex_digest(mangled));
+
+    // Still arguments-sensitive, so it is usable as a content key.
+    InvokeQuery different;
+    different.arguments = nlohmann::json{{"a", 2}};
+    BOOST_TEST(different.mangled_name() != mangled);
+}
+
+BOOST_AUTO_TEST_CASE(mangled_name_survives_arguments_that_are_not_valid_utf8) {
+    // Arguments arrive from a model, so they can carry bytes no encoder
+    // accepts (a lone surrogate escape decodes to one). Naming a call must
+    // not be the thing that throws.
+    InvokeQuery q;
+    q.id = "c1";
+    q.name = "read_file";
+    q.arguments = nlohmann::json{{"path", std::string("bad\xFF\xFEutf8", 9)}};
+
+    const std::string mangled = q.mangled_name();
+    BOOST_TEST(mangled.rfind("read_file__c1__", 0) == 0);
+    BOOST_CHECK(is_hex_digest(mangled.substr(mangled.size() - 16)));
+}
+
 BOOST_AUTO_TEST_CASE(invoke_return_roundtrips) {
     InvokeReturn r;
     r.query.type = InvokeType::ReadOnly;
