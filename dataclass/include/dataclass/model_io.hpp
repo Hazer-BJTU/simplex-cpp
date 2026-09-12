@@ -196,6 +196,62 @@ struct InvokeQuery {
     std::string id, name;
     nlohmann::json arguments = nlohmann::json::object();
     std::optional<nlohmann::json> extras;
+
+    /**
+     * A compact, stable LABEL for this call: the tool name and the wire call
+     * id, joined by "__" —
+     *
+     *     "read_file__call_7f3a"
+     *
+     * For a human-facing surface — a log line, a file name, a diagnostic dump,
+     * a metrics tag — where the full query is too much and an id alone says
+     * nothing about which tool ran.
+     *
+     * THIS IS NOT AN IDENTITY, and must not be used as a correlation key. It is
+     * deliberately LOSSY, in three ways at once:
+     *
+     *   - the separator collides: ("a__b", "c") and ("a", "b__c") both mangle
+     *     to "a__b__c", and both fields may legitimately contain '_';
+     *   - characters outside [A-Za-z0-9_-] all become '_', so ("read file", x)
+     *     and ("read_file", x) mangle alike;
+     *   - each field is capped at 64 characters (the wire name limit), so
+     *     anything past that is dropped.
+     *
+     * A caller that needs to tell two calls apart correlates by query.id (the
+     * wire's tool_call_id) or by the call's position in its batch — which is
+     * what the tool registry does, and why it does not use this
+     * (tools/include/tools/registry.hpp).
+     *
+     * It is stable because it is built from the two fields that do not move:
+     * the arguments are settled IN PLACE by ensure_arguments (defaults filled
+     * in, values normalised) between the call arriving and the call running, and
+     * type/security/extras are host-side metadata resolved per dispatch — so a
+     * name folded from any of those would change under the tool's own feet. An
+     * empty field drops out; with neither field set the result is empty.
+     *
+     * Never throws and never touches the arguments: no JSON is dumped, so it
+     * costs a little string work and nothing else.
+     */
+    [[nodiscard]] std::string mangled_name() const {
+        std::string mangled;
+        auto append_field = [&mangled](const std::string& raw) {
+            if (raw.empty()) return;
+            if (!mangled.empty()) mangled += "__";
+            constexpr std::size_t kFieldLimit = 64;
+            for (std::size_t index = 0;
+                 index < raw.size() && index < kFieldLimit; ++index) {
+                const char byte = raw[index];
+                const bool key_safe = (byte >= 'a' && byte <= 'z') ||
+                                      (byte >= 'A' && byte <= 'Z') ||
+                                      (byte >= '0' && byte <= '9') ||
+                                      byte == '_' || byte == '-';
+                mangled += key_safe ? byte : '_';
+            }
+        };
+        append_field(name);
+        append_field(id);
+        return mangled;
+    }
 };
 
 inline void to_json(nlohmann::json& j, const InvokeQuery& q) {
