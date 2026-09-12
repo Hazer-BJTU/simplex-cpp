@@ -120,8 +120,8 @@ BOOST_AUTO_TEST_CASE(each_stage_renders_its_own_phrase)
 BOOST_AUTO_TEST_CASE(a_failure_to_dispatch_names_its_own_stage)
 {
     // The call never reached a tool: nothing was resolved to run, so the
-    // failure is raised at Dispatch — before any security check, argument
-    // parse, or invoke — and the marker says so.
+    // failure is raised at Dispatch — before the arguments are ensured, the
+    // security check runs, or the tool is invoked — and the marker says so.
     const tools::InvokeException failure(
         tools::InvokeException::Stage::Dispatch,
         "no such tool \"write_file\"",
@@ -352,17 +352,17 @@ BOOST_AUTO_TEST_CASE(stage_tokens_round_trip)
     using Stage = tools::InvokeException::Stage;
 
     BOOST_TEST(tools::InvokeException::stage_key(Stage::Dispatch) == "dispatch");
-    BOOST_TEST(tools::InvokeException::stage_key(Stage::SecurityCheck) ==
-               "security_check");
     BOOST_TEST(tools::InvokeException::stage_key(Stage::ArgumentParse) ==
                "argument_parse");
+    BOOST_TEST(tools::InvokeException::stage_key(Stage::SecurityCheck) ==
+               "security_check");
     BOOST_TEST(tools::InvokeException::stage_key(Stage::Invoke) == "invoke");
     BOOST_TEST(tools::InvokeException::stage_key(Stage::ResultCheck) ==
                "result_check");
     BOOST_TEST(tools::InvokeException::stage_key(Stage::Unknown) == "unknown");
 
-    const Stage stages[] = {Stage::Dispatch, Stage::SecurityCheck,
-                            Stage::ArgumentParse, Stage::Invoke,
+    const Stage stages[] = {Stage::Dispatch, Stage::ArgumentParse,
+                            Stage::SecurityCheck, Stage::Invoke,
                             Stage::ResultCheck, Stage::Unknown};
     for (const Stage stage : stages) {
         const auto parsed =
@@ -375,6 +375,24 @@ BOOST_AUTO_TEST_CASE(stage_tokens_round_trip)
 
     BOOST_TEST(!tools::InvokeException::stage_from_key("quota_exceeded")
                     .has_value());
+}
+
+BOOST_AUTO_TEST_CASE(stages_are_declared_in_checkpoint_order)
+{
+    using Stage = tools::InvokeException::Stage;
+
+    // The declaration order is the order the checkpoints run, which is what
+    // makes the enum readable as a description of a tool call and not just a
+    // bag of tags. It is a dependency order too: ensuring the arguments is
+    // side-effect free, so it precedes the security check and the invocation,
+    // both of which read the ensured arguments.
+    BOOST_CHECK(Stage::Dispatch < Stage::ArgumentParse);
+    BOOST_CHECK(Stage::ArgumentParse < Stage::SecurityCheck);
+    BOOST_CHECK(Stage::SecurityCheck < Stage::Invoke);
+    BOOST_CHECK(Stage::Invoke < Stage::ResultCheck);
+    // Unknown stays last: it is the fallback for a failure no checkpoint
+    // claimed, so it is not part of the sequence.
+    BOOST_CHECK(Stage::ResultCheck < Stage::Unknown);
 }
 
 BOOST_AUTO_TEST_CASE(a_detached_invocation_reports_its_failure_as_the_result)
