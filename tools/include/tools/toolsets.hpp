@@ -16,42 +16,68 @@
 //                  Invoke checkpoint rather than answering the model with an
 //                  empty result.
 //
-//   ToolSet        The registry a host routes calls to. dispatch() resolves a
-//                  call's tool name to a tool; handle() runs that call through
-//                  every checkpoint and ALWAYS returns an InvokeReturn — the
-//                  success or the failure record for that call. It never lets
-//                  a failure escape, because its caller is a detached agent
-//                  loop: an invocation outlives the frame that started it, so
-//                  there is no caller left to throw at (invoke_exception.hpp).
+//   ToolSet        The registry a host routes calls to, and the two phases it
+//                  runs a call through. dispatch() resolves a call's tool name
+//                  to a tool; prepare() settles the call (synchronously, in
+//                  place); execute() runs the settled call to its record.
 //
-// The checkpoint sequence handle() runs, and the stage each failure is reported
-// at — the same list, in the same order, as InvokeException::Stage:
+// A CALL IS HANDLED IN TWO PHASES, and the split is the point. The stages a
+// call passes, and the phase each one belongs to — the same list, in the same
+// order, as InvokeException::Stage:
 //
-//   Dispatch       dispatch() resolved no tool, or threw while resolving one
-//   ArgumentParse  ensure_arguments() or write_attributes() failed: the call
-//                  could not be settled into a runnable query
-//   SecurityCheck  security_check() refused, or threw
-//   Invoke         invoke() threw
-//   ResultCheck    check_result() threw: the tool ran, but its output broke
-//                  the tool's own contract
+//   prepare(query) -> ToolHandle      SYNCHRONOUS, never suspends
+//     Dispatch       dispatch() resolved no tool, or threw while resolving one
+//     ArgumentParse  ensure_arguments() or write_attributes() failed: the call
+//                    could not be settled into a runnable query
 //
-// The order is a dependency order. Ensuring the arguments is side-effect free,
-// so it runs first, and everything that reads the settled query follows it: the
-// attributes this layer writes onto it, the security check that judges it, the
-// invocation itself, and the result check that wraps what came back. A policy
-// decision taken on half-settled arguments would be a decision about a
-// different call — see the longer argument in invoke_exception.hpp.
+//   execute(tool, query) -> record    ASYNCHRONOUS, may wait on anything
+//     SecurityCheck  security_check() refused, or threw
+//     Invoke         invoke() threw
+//     ResultCheck    check_result() threw: the tool ran, but its output broke
+//                    the tool's own contract
 //
-// Every failure travels back as an ordinary tool result: the model reads the
-// rendering in output.raw, the host classifies the marker in extras (is_error /
-// error_stage), and the query travels in the record so the failure correlates
-// to the call by query.id. handle() upholds that even for a tool that raised
-// its own InvokeException with no query attached.
+// Why the split, and why there. Scheduling needs to know what a call will do
+// before anything is run: whether it may run alongside its neighbours
+// (ReadOnly / ParallWrite) or must have the executor to itself (SerialWrite),
+// how much trust it needs, and what its final arguments are. All of that is
+// decided by write_attributes() and ensure_arguments() — both side-effect free,
+// neither of which can wait. So the settling half is synchronous and in place:
+// a host prepares a whole batch of calls, reads `query.type` and
+// `query.security` off each one, groups them, and only then awaits the
+// asynchronous half — security check, invocation, result check — in the order
+// that grouping implies. Everything that may take real time (a confirmation
+// from a human, a tool that reads the network, a result that needs validating)
+// is on the far side of the split, where a scheduler can see it coming.
 //
-// What this layer deliberately does not do: schedule. InvokeType (read-only /
-// parallel write / serial write) is written onto the query for the caller that
-// runs several invocations, and handle() runs exactly the one call it was
-// given.
+// The order inside each phase is a dependency order. Ensuring the arguments is
+// side-effect free, so it runs first, and everything that reads the settled
+// query follows it: the attributes this layer writes onto it, the security
+// check that judges it, the invocation itself, and the result check that wraps
+// what came back. A policy decision taken on half-settled arguments would be a
+// decision about a different call — see the longer argument in
+// invoke_exception.hpp.
+//
+// Failure, and who carries it. Every failure still travels back as an ordinary
+// tool result: the model reads the rendering in output.raw, the host classifies
+// the marker in extras (is_error / error_stage), and the query travels in the
+// record so the failure correlates to the call by query.id. What differs
+// between the phases is how the record gets out:
+//
+//   prepare() THROWS InvokeException, always that type and never a bare
+//     std::exception, carrying the stage and a copy of the query. It is a
+//     synchronous call made by a live caller — the batch builder filling in its
+//     results — so it can throw, and the exception IS the record:
+//     `catch (const InvokeException& e) { records.push_back(e); }`.
+//   execute() RETURNS the record and never throws. By then the invocation is
+//     detached from whoever started it — an agent loop that moved on — so there
+//     may be no caller left to throw at (invoke_exception.hpp).
+//
+// Both uphold the correlation even for a tool that raised its own
+// InvokeException with no query attached: the set's query stands in.
+//
+// What this layer deliberately does not do: schedule. It reports what a call
+// needs (`query.type`, `query.security`) and runs one call when asked; the host
+// owns the grouping, the ordering and the concurrency.
 //
 
 #include <exception>
@@ -111,7 +137,7 @@ public:
     ///
     /// Neither hook takes a query, so neither is part of the per-call checkpoint
     /// sequence: a toolset calls build() once when it registers the tool and
-    /// release() when it drops it. handle() calls neither.
+    /// release() when it drops it. Neither phase of a call runs them.
     virtual bool build() noexcept { return true; }
 
     /// Give back what build() acquired. Called once, when the tool is dropped.
@@ -258,15 +284,59 @@ public:
     }
 };
 
+namespace detail {
+
+/**
+ * The failure to hand the caller, correlated to the call it answers.
+ *
+ * A tool may raise InvokeException knowing nothing about the call it was
+ * invoked with — `InvokeException{Stage::Invoke, "read failed"}` carries no
+ * query — and a record built from that could not be correlated to the model's
+ * call, which is the one thing the record exists for. So a failure that arrived
+ * without a query is rebuilt around `query`; a failure that brought its own
+ * wins, because the tool may have failed on a call of its own making (a retry,
+ * a nested invocation) and that is the call the record should answer.
+ *
+ * Shared by both phases of a ToolSet so the rule is stated once: prepare()
+ * throws the result, execute() turns it into the record.
+ */
+[[nodiscard]] inline InvokeException correlate(
+    const InvokeException& failure, const model_io::InvokeQuery& query)
+{
+    if (failure.query().id.empty() && !query.id.empty()) {
+        return InvokeException(failure.stage(), failure.message(), query,
+                               failure.error_code());
+    }
+    return failure;
+}
+
+} // namespace detail
+
 /**
  * A set of tools, as one routable unit: what it offers, how a call finds its
- * tool, and how that call is run end to end.
+ * tool, and how that call is settled and run.
  *
  * A host holds tool sets rather than tools, because the set is the unit that
- * knows how to resolve a name (dispatch) and what to do with a call whose name
- * it does not know (return the Dispatch failure record). A set is free to be
- * heterogeneous — the tools in it may share nothing but the interface — and
- * free to be one tool, e.g. a shim that forwards to a remote provider.
+ * knows how to resolve a name (dispatch), how to settle a call (prepare) and
+ * what to do with a call whose name it does not know (throw the Dispatch
+ * failure). A set is free to be heterogeneous — the tools in it may share
+ * nothing but the interface — and free to be one tool, e.g. a shim that
+ * forwards to a remote provider.
+ *
+ * A call goes through the set in two phases, and the host owns the space
+ * between them (see the file header for why):
+ *
+ *   query -> prepare(query) -> ToolHandle      settle, in place, no waiting
+ *                  |
+ *                  v   the host schedules by query.type / query.security
+ *                  |
+ *   (tool, query) -> execute(tool, query) -> InvokeReturn record
+ *
+ * Both phases come with an implementation that runs the module's checkpoint
+ * sequence, so a set normally implements only name()/get_tools()/dispatch()
+ * and keeps them. A set that needs a different sequence — a remote provider
+ * that batches its calls, say — overrides the phase, and owes the caller the
+ * contract documented on it.
  */
 class ToolSet {
 public:
@@ -284,11 +354,14 @@ public:
     virtual std::vector<model_io::Invocable> get_tools() const = 0;
 
     /// Resolve `query` to the tool that handles it, or nullptr when this set has
-    /// no such tool — the case handle() reports as a Dispatch failure, which is
+    /// no such tool — the case prepare() reports as a Dispatch failure, which is
     /// why the contract allows returning nullptr instead of throwing.
     ///
+    /// Called by prepare() and by nothing else in this layer; a host that wants
+    /// to inspect a call's tool without settling it may call it directly.
+    ///
     /// Not noexcept: a set that resolves through a map, a plugin registry or a
-    /// remote catalogue may fail while doing so, and handle() reports such a
+    /// remote catalogue may fail while doing so, and prepare() reports such a
     /// failure as a Dispatch-stage record for the model rather than letting it
     /// terminate the process.
     virtual ToolHandle dispatch(const model_io::InvokeQuery& query) const = 0;
@@ -305,17 +378,92 @@ public:
     }
 
     /**
-     * Run one call to completion and return its record: the tool's result, or
-     * the failure record standing in for it. Never throws, and never returns an
-     * empty record — every path correlates to the caller's query by query.id.
+     * PHASE 1 — settle the call, synchronously and IN PLACE: resolve the tool,
+     * then let it complete the query (ensure_arguments fills defaults and
+     * checks the contract; write_attributes writes the invocation's type and
+     * security level onto it).
      *
-     * @param query the call, taken by value: handle() settles it (arguments
-     *        ensured, attributes written) and the record carries the settled
-     *        form.
+     * @param query the call, mutated in place. The caller owns it and reads the
+     *        settled form off its own object — that is the point of the phase:
+     *        when this returns, query.type says whether the call may run
+     *        alongside others (ReadOnly / ParallWrite) or must have the executor
+     *        to itself (SerialWrite), query.security says how much trust it
+     *        needs, and query.arguments are the final ones invoke() will see.
+     * @return the tool that will run the call: hold it, hand it back to
+     *         execute() when the schedule says so.
+     * @throws InvokeException — ALWAYS this type, never a bare std::exception:
+     *         a plain exception from a hook is translated into one, at the
+     *         stage that was running, with a copy of the query attached. The
+     *         exception IS this call's failure record, so a caller filling in
+     *         results writes `catch (const InvokeException& e) { out.push_back(e); }`
+     *         and needs to know nothing else about the failure.
      *
-     * The checkpoint sequence is the one the file header lists. Each step
-     * records the stage it is about to run in `stage`, so a failure that
-     * arrives as a plain exception is still reported at the right checkpoint.
+     * Never suspends: both hooks are required to be side-effect free and
+     * non-blocking, which is what lets a host settle a whole batch of calls
+     * before it schedules any of them.
+     *
+     * The failure carries a COPY of the query, never the caller's object: the
+     * object is being mutated in place, so a moved-from one would corrupt the
+     * caller's own bookkeeping. For the same reason a failure can leave the
+     * caller's query half-settled — it is the copy in the exception that the
+     * record is built from, and a failed call is not meant to be scheduled.
+     *
+     * A query the tool's own InvokeException carried wins over this one; only a
+     * failure that arrived without a query is rebuilt around the call's.
+     */
+    [[nodiscard]] virtual ToolHandle prepare(model_io::InvokeQuery& query)
+    {
+        InvokeException::Stage stage = InvokeException::Stage::Dispatch;
+        try {
+            ToolHandle tool = dispatch(query);
+            if (tool == nullptr) {
+                // The query is COPIED into the failure, not moved: prepare()
+                // owns nothing here — the caller's object is the in-place
+                // result — so a move would gut the caller for no gain, and
+                // with it the argument-evaluation-order hazard that moving
+                // into a call whose other arguments read the same object
+                // brings.
+                throw InvokeException(
+                    InvokeException::Stage::Dispatch,
+                    std::format("no tool named \"{}\" in toolset \"{}\"",
+                                query.name, name()),
+                    query,
+                    {});
+            }
+
+            stage = InvokeException::Stage::ArgumentParse;
+            tool->ensure_arguments(query);
+            tool->write_attributes(query);
+            return tool;
+        } catch (const InvokeException& failure) {
+            throw detail::correlate(failure, query);
+        } catch (const std::exception& e) {
+            // A plain exception from a hook, or from anything a hook called:
+            // reported at the checkpoint that was running.
+            throw InvokeException(stage, e.what(), query, {});
+        } catch (...) {
+            // Same, for a throw that is not a std::exception at all.
+            throw InvokeException(
+                stage, "an unknown error, not a std::exception", query, {});
+        }
+    }
+
+    /**
+     * PHASE 2 — run a settled call asynchronously and return its record: the
+     * tool's result, or the failure record standing in for it.
+     *
+     * @param tool the handle prepare() returned for this call.
+     * @param query the SETTLED call, taken by value: the record carries it, and
+     *        it is the query the security check and the record's correlation
+     *        are built from.
+     * @return the record. Never throws and never empty: every path correlates
+     *         to the call by query.id.
+     *
+     * Never suspends before the security check — the first thing it does is the
+     * one thing that may wait — and it does not re-settle the query: the pair
+     * (tool, query) is expected to come from prepare(). Calling it with a raw
+     * query runs an unsettled call, which the default policy then refuses
+     * (DefaultDeny) rather than trusting it.
      *
      * Two deliberate details of the failure paths:
      *
@@ -330,35 +478,30 @@ public:
      *    call. A query the tool DID carry wins — it may be the one it actually
      *    failed on.
      */
-    virtual boost::asio::awaitable<model_io::InvokeReturn> handle(
-        model_io::InvokeQuery query)
+    [[nodiscard]] virtual boost::asio::awaitable<model_io::InvokeReturn> execute(
+        ToolHandle tool, model_io::InvokeQuery query)
     {
         // The stage every failure is reported at until a later step claims it.
-        // Dispatch is accurate for everything that happens from here until
-        // ensure_arguments() starts: resolving the tool is the first checkpoint.
-        InvokeException::Stage stage = InvokeException::Stage::Dispatch;
+        InvokeException::Stage stage = InvokeException::Stage::SecurityCheck;
         try {
-            ToolHandle tool_handle = dispatch(query);
-            if (tool_handle == nullptr) {
-                // The message is rendered BEFORE the throw, never inline: the
-                // arguments of a call are evaluated in an unspecified order, so
-                // a std::format(...) reading query.name in the same argument
-                // list as std::move(query) may read the moved-from string and
-                // name no tool at all. (The test suite caught exactly that.)
-                const std::string message = std::format(
-                    "no tool named \"{}\" in toolset \"{}\"", query.name, name());
-                throw InvokeException(InvokeException::Stage::Dispatch, message,
-                                      std::move(query), {});
+            if (tool == nullptr) {
+                // Only a caller that ignored prepare()'s failure (or never
+                // called it) can get here: a record is a better answer than a
+                // null dereference, and it says what went wrong.
+                throw InvokeException(
+                    InvokeException::Stage::Dispatch,
+                    "the call was never settled: execute() needs the tool "
+                    "prepare() returned",
+                    std::move(query), {});
             }
 
-            stage = InvokeException::Stage::ArgumentParse;
-            tool_handle->ensure_arguments(query);
-            tool_handle->write_attributes(query);
-
-            stage = InvokeException::Stage::SecurityCheck;
-            auto [passed, reason] = co_await tool_handle->security_check(query);
+            auto [passed, reason] = co_await tool->security_check(query);
             if (!passed) {
-                // Rendered first, for the reason above.
+                // The message is rendered BEFORE the throw, never inline: the
+                // arguments of a call are evaluated in an unspecified order, so
+                // a std::format(...) in the same argument list as
+                // std::move(query) may read the moved-from object. (The test
+                // suite caught exactly that in the single-phase version.)
                 const std::string message =
                     std::format("security check denied: {}", reason);
                 throw InvokeException(InvokeException::Stage::SecurityCheck,
@@ -366,26 +509,18 @@ public:
             }
 
             stage = InvokeException::Stage::Invoke;
-            model_io::Content content = co_await tool_handle->invoke(query);
+            model_io::Content content = co_await tool->invoke(query);
 
             stage = InvokeException::Stage::ResultCheck;
             // A copy, not std::move(query): see the note above. check_result()
             // owns what it is given and embeds the settled query in the record.
-            co_return tool_handle->check_result(query, std::move(content));
+            co_return tool->check_result(query, std::move(content));
         } catch (const InvokeException& failure) {
-            if (failure.query().id.empty() && !query.id.empty()) {
-                co_return InvokeException(
-                    failure.stage(), failure.message(), query,
-                    failure.error_code()).to_invoke_return();
-            }
-            co_return failure.to_invoke_return();
+            co_return detail::correlate(failure, query).to_invoke_return();
         } catch (const std::exception& e) {
-            // A plain exception from a hook, or from anything a hook called:
-            // reported at the checkpoint that was running.
             co_return InvokeException(stage, e.what(), std::move(query), {})
                 .to_invoke_return();
         } catch (...) {
-            // Same, for a throw that is not a std::exception at all.
             co_return InvokeException(
                 stage, "an unknown error, not a std::exception",
                 std::move(query), {}).to_invoke_return();

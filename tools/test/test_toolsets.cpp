@@ -5,12 +5,20 @@
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace asio = boost::asio;
@@ -21,39 +29,89 @@ using tools::InvokeException;
 namespace {
 
 /// A call as the conversation carries it: the id correlates the result, the
-/// name is what dispatch() resolves, and the arguments are what
-/// ensure_arguments() settles. The type and security on it are deliberately the
-/// record's defaults (ReadOnly / DefaultDeny) rather than what the tool will
-/// declare: write_attributes() overwrites them, and the tests assert the
-/// settled values, so a write_attributes() that never ran cannot pass.
-model_io::InvokeQuery read_call()
+/// name is what dispatch() resolves. The type and security on it are
+/// deliberately the record's defaults (ReadOnly / DefaultDeny) rather than what
+/// a tool will declare: write_attributes() overwrites them, and the tests
+/// assert the settled values, so a write_attributes() that never ran cannot
+/// pass.
+model_io::InvokeQuery call_for(std::string name, std::string id = "call_1")
 {
     model_io::InvokeQuery query;
     query.type = model_io::InvokeType::ReadOnly;
     query.security = model_io::InvokeSecurity::DefaultDeny;
-    query.id = "call_1";
-    query.name = "read_file";
+    query.id = std::move(id);
+    query.name = std::move(name);
+    return query;
+}
+
+/// The read_file call the failure tests use: it carries the argument the tool
+/// expects, so ensure_arguments() has nothing to fill in and the test is about
+/// the failure it scripts.
+model_io::InvokeQuery read_call()
+{
+    model_io::InvokeQuery query = call_for("read_file");
     query.arguments = {{"path", "/etc/hosts"}};
     return query;
 }
 
-/// The call the minimal tool (below) is invoked with.
-model_io::InvokeQuery noop_call()
+/// What a host's batch builder holds for one call after phase 1: the tool
+/// prepare() resolved, or the failure that stopped it — which is already the
+/// record, through the exception's own bridge.
+struct Prepared {
+    tools::ToolSet::ToolHandle tool;
+    std::optional<InvokeException> failure;
+
+    [[nodiscard]] bool ok() const { return tool != nullptr; }
+};
+
+/// PHASE 1 alone, exactly as a host settling a batch of calls does it: the call
+/// is mutated in place and never scheduled on failure.
+Prepared prepare_only(tools::ToolSet& set, model_io::InvokeQuery& query)
 {
-    model_io::InvokeQuery query;
-    query.id = "call_2";
-    query.name = "noop";
-    return query;
+    try {
+        return Prepared{set.prepare(query), std::nullopt};
+    } catch (const InvokeException& failure) {
+        return Prepared{nullptr, failure};
+    }
 }
 
-/// Run one call through the set and hand back its record. handle() is a
-/// coroutine, so it needs an executor even though nothing here waits on
-/// anything but the hooks.
+/// Both phases, in order, for a test that only cares about the record: the
+/// host's loop in miniature. Phase 1's failure is turned into the record by the
+/// exception's implicit conversion — nothing else is needed, which is the point
+/// of prepare() throwing the module's own type.
+asio::awaitable<model_io::InvokeReturn> call_through(
+    tools::ToolSet& set, model_io::InvokeQuery query)
+{
+    tools::ToolSet::ToolHandle tool;
+    try {
+        tool = set.prepare(query);
+    } catch (const InvokeException& failure) {
+        co_return failure;
+    }
+    co_return co_await set.execute(std::move(tool), std::move(query));
+}
+
 model_io::InvokeReturn run(tools::ToolSet& set, model_io::InvokeQuery query)
 {
     asio::io_context io;
     auto pending =
-        asio::co_spawn(io, set.handle(std::move(query)), asio::use_future);
+        asio::co_spawn(io, call_through(set, std::move(query)), asio::use_future);
+    io.run();
+    return pending.get();
+}
+
+/// PHASE 2 on its own, on an executor of its own: what a host does once the
+/// schedule says this call may run now — and, being its own io_context, this is
+/// also how a test says "this call had the executor to itself". (A context
+/// cannot simply be run() twice: it stops when it runs out of work, and a later
+/// run() returns without executing anything.)
+model_io::InvokeReturn run_prepared(tools::ToolSet& set,
+                                    tools::ToolSet::ToolHandle tool,
+                                    model_io::InvokeQuery query)
+{
+    asio::io_context io;
+    auto pending = asio::co_spawn(
+        io, set.execute(std::move(tool), std::move(query)), asio::use_future);
     io.run();
     return pending.get();
 }
@@ -70,7 +128,7 @@ InvokeException::Stage stage_of(const model_io::InvokeReturn& record)
 
 /// A tool whose every checkpoint is scripted: each hook either does its job or
 /// fails, in one of the four shapes a hook can fail in. One type covers every
-/// failure path handle() has to report.
+/// failure path the two phases have to report.
 class ScriptedTool final : public tools::ToolInterface {
 public:
     /// Which hook fails. The stage the failure is reported at follows from it —
@@ -112,6 +170,10 @@ public:
     /// What the tool calls the query it throws with, when it throws one:
     /// distinct from the caller's id, so a test can tell whose query survived.
     std::string own_query_id;
+    /// The argument ensure_arguments() fills in when the call omits it; empty
+    /// means "require the argument". This is what makes phase 1's in-place
+    /// contract observable.
+    std::string ensure_default_path = "/default/path";
     /// What security_check() answers when it is not the failing hook.
     bool security_passes = true;
     std::string security_reason = "the invocation was not confirmed";
@@ -123,8 +185,13 @@ public:
 
     // What the call did, observed as it ran. Mutable because the hooks that
     // observe are the const ones.
+    //
+    // The first four are the split's own assertions: after prepare() the
+    // settling hooks must have run and the others must not have, and after
+    // execute() the ordering is the other way round.
     mutable bool ensure_ran = false;
     mutable bool write_attributes_ran = false;
+    mutable bool security_ran = false;
     mutable bool invoke_ran = false;
     mutable bool check_result_ran = false;
     mutable std::string check_result_query_id;
@@ -149,6 +216,10 @@ public:
     {
         ensure_ran = true;
         fail_if(Hook::EnsureArguments, query);
+        if (!ensure_default_path.empty() &&
+            !query.arguments.contains("path")) {
+            query.arguments["path"] = ensure_default_path;
+        }
     }
 
     void write_attributes(model_io::InvokeQuery& query) const override
@@ -162,6 +233,7 @@ public:
     boost::asio::awaitable<std::tuple<bool, std::string>> security_check(
         const model_io::InvokeQuery& query) override
     {
+        security_ran = true;
         fail_if(Hook::SecurityCheck, query);
         co_return std::make_tuple(security_passes, security_reason);
     }
@@ -209,8 +281,8 @@ private:
         }
     }
 
-    /// The stage a real tool would raise at this hook — and what handle() has
-    /// to report it at, since it must agree with the tool.
+    /// The stage a real tool would raise at this hook — and what the set has to
+    /// report it at, since it must agree with the tool.
     static InvokeException::Stage stage_for(Hook hook)
     {
         switch (hook) {
@@ -301,8 +373,54 @@ public:
     }
 };
 
+/// A read-only tool that takes a moment to run and counts how many of its
+/// invocations overlap — the measurement the two-phase split exists to make
+/// possible. Everything here runs on one thread (the tests' io_context), so the
+/// counters need no synchronisation; they only ever change at suspension
+/// points.
+class SlowReadTool final : public tools::ToolInterface {
+public:
+    SlowReadTool()
+    {
+        details.name = "slow_read";
+        details.description = "Takes a moment, and may run alongside others.";
+    }
+
+    model_io::Invocable details;
+    std::chrono::milliseconds delay{2};
+    int in_flight = 0;
+    int max_in_flight = 0;
+
+    const model_io::Invocable& get_details() const noexcept override
+    {
+        return details;
+    }
+
+    void write_attributes(model_io::InvokeQuery& query) const override
+    {
+        query.type = model_io::InvokeType::ReadOnly;
+        query.security = model_io::InvokeSecurity::Trusted;
+    }
+
+    boost::asio::awaitable<model_io::Content> invoke(
+        const model_io::InvokeQuery&) override
+    {
+        ++in_flight;
+        max_in_flight = std::max(max_in_flight, in_flight);
+
+        asio::steady_timer timer(co_await asio::this_coro::executor, delay);
+        co_await timer.async_wait(asio::use_awaitable);
+
+        --in_flight;
+        co_return model_io::Content{
+            .type = model_io::ContentType::Text, .raw = "read", .extras = {}};
+    }
+};
+
 /// A set of at most one tool: a test decides what a call resolves to — the
-/// tool, nothing (the Dispatch failure), or a resolver that fails.
+/// tool, nothing (the Dispatch failure), or a resolver that fails. It
+/// implements only the lookup, which is the point: prepare() and execute() come
+/// from ToolSet.
 class FakeToolSet final : public tools::ToolSet {
 public:
     FakeToolSet(std::string name, tools::ToolSet::ToolHandle tool)
@@ -336,121 +454,275 @@ private:
     tools::ToolSet::ToolHandle tool_;
 };
 
+// The shape of the split, pinned at compile time rather than only documented.
+// Phase 1 must be an ORDINARY function returning the resolved tool: being
+// non-suspending is the whole reason a host can settle a batch of calls before
+// it schedules any of them, and no runtime assertion can prove a function
+// cannot suspend — the type can. Phase 2 is the awaitable, and holds everything
+// that may wait.
+static_assert(std::is_same_v<
+              decltype(std::declval<FakeToolSet&>().prepare(
+                  std::declval<model_io::InvokeQuery&>())),
+              tools::ToolSet::ToolHandle>);
+static_assert(std::is_same_v<
+              decltype(std::declval<FakeToolSet&>().execute(
+                  std::declval<tools::ToolSet::ToolHandle>(),
+                  std::declval<model_io::InvokeQuery>())),
+              boost::asio::awaitable<model_io::InvokeReturn>>);
+
 } // namespace
 
-BOOST_AUTO_TEST_CASE(a_trusted_call_runs_and_its_record_carries_the_settled_query)
+// ===== phase 1: prepare =====================================================
+
+BOOST_AUTO_TEST_CASE(prepare_settles_the_call_in_place_and_resolves_its_tool)
 {
     auto tool = std::make_shared<ScriptedTool>();
+    tool->declares_type = model_io::InvokeType::ParallWrite;
+    tool->declares_security = model_io::InvokeSecurity::RequireConfirm;
     FakeToolSet set("local_tools", tool);
 
-    const model_io::InvokeReturn record = run(set, read_call());
+    // The call as the model made it: no arguments, and the record's default
+    // attributes.
+    model_io::InvokeQuery query = call_for("read_file");
 
-    BOOST_TEST(!tools::is_error(record));
-    BOOST_CHECK(record.output.type == model_io::ContentType::Text);
-    BOOST_TEST(record.output.raw == "127.0.0.1 localhost");
-    // The record answers the call: its identity survives the whole sequence...
-    BOOST_TEST(record.query.id == "call_1");
-    BOOST_TEST(record.query.name == "read_file");
-    BOOST_TEST(record.query.arguments["path"] == "/etc/hosts");
-    // ... in its SETTLED form: write_attributes() overwrote the type and
-    // security the request arrived with.
-    BOOST_CHECK(record.query.type == model_io::InvokeType::ReadOnly);
-    BOOST_CHECK(record.query.security == model_io::InvokeSecurity::Trusted);
-    // A successful result is the tool's own record, with nothing added.
-    BOOST_TEST(!record.extras.has_value());
+    const tools::ToolSet::ToolHandle resolved = set.prepare(query);
 
-    // Every checkpoint ran, on the settled query, and check_result() saw the
-    // output invoke() produced.
+    // The tool is resolved, and it is the set's own instance.
+    BOOST_REQUIRE(resolved != nullptr);
+    BOOST_CHECK(resolved.get() == tool.get());
+
+    // The caller reads the settled call off ITS OWN object — that is what makes
+    // the phase synchronous and in place...
+    BOOST_TEST(query.arguments["path"] == "/default/path");
+    BOOST_CHECK(query.type == model_io::InvokeType::ParallWrite);
+    BOOST_CHECK(query.security == model_io::InvokeSecurity::RequireConfirm);
+    // ... and what the scheduler needs: the type says this call may run
+    // alongside others, the level says a host will be asked about it.
     BOOST_TEST(tool->ensure_ran);
     BOOST_TEST(tool->write_attributes_ran);
-    BOOST_TEST(tool->invoke_ran);
-    BOOST_TEST(tool->check_result_ran);
-    BOOST_TEST(tool->check_result_query_id == "call_1");
-    BOOST_TEST(tool->check_result_output == "127.0.0.1 localhost");
 
-    // handle() runs a call, not the tool's lifecycle: build() and release() are
-    // the owning set's business, once per tool instance, and take no query.
-    BOOST_TEST(tool->build_calls == 0);
-    BOOST_TEST(tool->release_calls == 0);
+    // Nothing that can wait has run: the security check, the invocation and the
+    // result check are all on the far side of the split.
+    BOOST_TEST(!tool->security_ran);
+    BOOST_TEST(!tool->invoke_ran);
+    BOOST_TEST(!tool->check_result_ran);
 }
 
-BOOST_AUTO_TEST_CASE(an_unresolved_call_is_a_dispatch_failure)
+BOOST_AUTO_TEST_CASE(prepare_reports_an_unresolved_call)
 {
     FakeToolSet set("local_tools", nullptr);
+    model_io::InvokeQuery query = read_call();
 
-    const model_io::InvokeReturn record = run(set, read_call());
+    const Prepared prepared = prepare_only(set, query);
 
+    BOOST_TEST(!prepared.ok());
+    BOOST_REQUIRE(prepared.failure.has_value());
+    BOOST_CHECK(prepared.failure->stage() == InvokeException::Stage::Dispatch);
+
+    // The exception IS the record: one catch, no translation table.
+    const model_io::InvokeReturn record = *prepared.failure;
     BOOST_TEST(tools::is_error(record));
-    BOOST_CHECK(stage_of(record) == InvokeException::Stage::Dispatch);
     BOOST_TEST(record.output.raw ==
                "Failed while dispatching the invocation to a tool: no tool named "
                "\"read_file\" in toolset \"local_tools\" (tool read_file; call call_1)");
-    // The record still answers the call the model made.
     BOOST_TEST(record.query.id == "call_1");
-    BOOST_TEST(record.query.name == "read_file");
+
+    // The caller's own query is untouched: the failure carried a copy, so a
+    // host that keeps filling in its batch still has the call it was given.
+    BOOST_TEST(query.id == "call_1");
+    BOOST_TEST(query.name == "read_file");
+    BOOST_TEST(query.arguments["path"] == "/etc/hosts");
 }
 
-BOOST_AUTO_TEST_CASE(a_dispatch_that_throws_is_reported_and_not_fatal)
+BOOST_AUTO_TEST_CASE(prepare_reports_a_dispatch_that_throws)
 {
     auto tool = std::make_shared<ScriptedTool>();
     FakeToolSet set("local_tools", tool);
     set.dispatch_fails = true;
+    model_io::InvokeQuery query = read_call();
 
-    const model_io::InvokeReturn record = run(set, read_call());
+    const Prepared prepared = prepare_only(set, query);
 
     // Resolving a name may fail — a map, a plugin registry, a remote catalogue.
     // That is a Dispatch failure for the model, not a std::terminate().
-    BOOST_TEST(tools::is_error(record));
-    BOOST_CHECK(stage_of(record) == InvokeException::Stage::Dispatch);
-    BOOST_TEST(record.output.raw ==
+    BOOST_TEST(!prepared.ok());
+    BOOST_REQUIRE(prepared.failure.has_value());
+    BOOST_CHECK(prepared.failure->stage() == InvokeException::Stage::Dispatch);
+    BOOST_TEST(prepared.failure->to_invoke_return().output.raw ==
                "Failed while dispatching the invocation to a tool: "
                "the tool registry is unreachable (tool read_file; call call_1)");
     // The tool itself was never reached.
     BOOST_TEST(!tool->ensure_ran);
 }
 
-BOOST_AUTO_TEST_CASE(a_tools_own_argument_failure_reaches_the_model)
+BOOST_AUTO_TEST_CASE(prepare_reports_a_tools_own_argument_failure)
 {
     auto tool = std::make_shared<ScriptedTool>();
     tool->fail_in = ScriptedTool::Hook::EnsureArguments;
     tool->throw_as = ScriptedTool::Throw::InvokeExceptionWithQuery;
     tool->failure = "missing required property \"path\"";
     FakeToolSet set("local_tools", tool);
+    model_io::InvokeQuery query = read_call();
 
-    const model_io::InvokeReturn record = run(set, read_call());
+    const Prepared prepared = prepare_only(set, query);
 
-    BOOST_TEST(tools::is_error(record));
-    BOOST_CHECK(stage_of(record) == InvokeException::Stage::ArgumentParse);
+    BOOST_TEST(!prepared.ok());
+    BOOST_REQUIRE(prepared.failure.has_value());
+    BOOST_CHECK(prepared.failure->stage() == InvokeException::Stage::ArgumentParse);
+    // The message the model reads, and the bare one the marker carries.
+    const model_io::InvokeReturn record = *prepared.failure;
     BOOST_TEST(record.output.raw ==
                "Failed while parsing the invocation arguments: "
                "missing required property \"path\" (tool read_file; call call_1)");
-    // The bare message is what the marker carries, for a host that classifies
-    // the failure without parsing the prose.
     BOOST_REQUIRE(record.extras.has_value());
     BOOST_TEST(record.extras->at("error").at("message") ==
                "missing required property \"path\"");
-    BOOST_TEST(!tool->invoke_ran);
+    // The settling phase failed, so the other one never runs.
+    BOOST_TEST(!tool->write_attributes_ran);
 }
 
-BOOST_AUTO_TEST_CASE(a_write_attributes_failure_shares_the_argument_stage)
+BOOST_AUTO_TEST_CASE(prepare_reports_a_write_attributes_failure_at_the_same_stage)
 {
     auto tool = std::make_shared<ScriptedTool>();
     tool->fail_in = ScriptedTool::Hook::WriteAttributes;
     tool->failure = "the tool cannot classify this call";
     FakeToolSet set("local_tools", tool);
+    model_io::InvokeQuery query = read_call();
 
-    const model_io::InvokeReturn record = run(set, read_call());
+    const Prepared prepared = prepare_only(set, query);
 
-    BOOST_TEST(tools::is_error(record));
+    BOOST_TEST(!prepared.ok());
+    BOOST_REQUIRE(prepared.failure.has_value());
     // The same phase as ensure_arguments: settling the query before any check
     // runs, which is why it is the same stage.
-    BOOST_CHECK(stage_of(record) == InvokeException::Stage::ArgumentParse);
-    BOOST_TEST(record.output.raw ==
+    BOOST_CHECK(prepared.failure->stage() == InvokeException::Stage::ArgumentParse);
+    BOOST_TEST(prepared.failure->to_invoke_return().output.raw ==
                "Failed while parsing the invocation arguments: "
                "the tool cannot classify this call (tool read_file; call call_1)");
 }
 
-BOOST_AUTO_TEST_CASE(a_tool_exception_without_a_query_is_rebuilt_around_the_call)
+BOOST_AUTO_TEST_CASE(prepare_never_lets_a_bare_exception_reach_the_caller)
+{
+    // A host's batch builder catches ONE type — the module's — so a hook that
+    // throws anything else has to arrive as that type, at the stage that was
+    // running. Both shapes of "anything else" are covered here.
+    for (const ScriptedTool::Throw shape :
+         {ScriptedTool::Throw::Plain, ScriptedTool::Throw::NonStd}) {
+        auto tool = std::make_shared<ScriptedTool>();
+        tool->fail_in = ScriptedTool::Hook::EnsureArguments;
+        tool->throw_as = shape;
+        tool->failure = "the tool blew up";
+        FakeToolSet set("local_tools", tool);
+        model_io::InvokeQuery query = read_call();
+
+        // prepare_only() catches InvokeException only: anything else escapes
+        // and fails this case.
+        const Prepared prepared = prepare_only(set, query);
+
+        BOOST_TEST(!prepared.ok());
+        BOOST_REQUIRE(prepared.failure.has_value());
+        BOOST_CHECK(prepared.failure->stage() ==
+                    InvokeException::Stage::ArgumentParse);
+        // The call still travels back in the record, whichever shape it was.
+        BOOST_TEST(prepared.failure->query().id == "call_1");
+    }
+}
+
+// ===== phase 2: execute ======================================================
+
+BOOST_AUTO_TEST_CASE(execute_runs_the_settled_call_and_returns_its_record)
+{
+    auto tool = std::make_shared<ScriptedTool>();
+    FakeToolSet set("local_tools", tool);
+    model_io::InvokeQuery query = read_call();
+
+    const tools::ToolSet::ToolHandle resolved = set.prepare(query);
+
+    asio::io_context io;
+    auto pending = asio::co_spawn(
+        io, set.execute(resolved, query), asio::use_future);
+    io.run();
+    const model_io::InvokeReturn record = pending.get();
+
+    BOOST_TEST(!tools::is_error(record));
+    BOOST_CHECK(record.output.type == model_io::ContentType::Text);
+    BOOST_TEST(record.output.raw == "127.0.0.1 localhost");
+    // The record answers the call, in its settled form.
+    BOOST_TEST(record.query.id == "call_1");
+    BOOST_TEST(record.query.name == "read_file");
+    BOOST_TEST(record.query.arguments["path"] == "/etc/hosts");
+    BOOST_CHECK(record.query.type == model_io::InvokeType::ReadOnly);
+    BOOST_CHECK(record.query.security == model_io::InvokeSecurity::Trusted);
+    BOOST_TEST(!record.extras.has_value());
+
+    // The asynchronous half ran, in order, and check_result() saw the output
+    // invoke() produced.
+    BOOST_TEST(tool->security_ran);
+    BOOST_TEST(tool->invoke_ran);
+    BOOST_TEST(tool->check_result_ran);
+    BOOST_TEST(tool->check_result_query_id == "call_1");
+    BOOST_TEST(tool->check_result_output == "127.0.0.1 localhost");
+
+    // Neither phase runs the tool's lifecycle: build() and release() are the
+    // owning set's business, once per tool instance, and take no query.
+    BOOST_TEST(tool->build_calls == 0);
+    BOOST_TEST(tool->release_calls == 0);
+}
+
+BOOST_AUTO_TEST_CASE(execute_reports_a_security_refusal_with_the_tools_words)
+{
+    auto tool = std::make_shared<ScriptedTool>();
+    tool->security_passes = false;
+    tool->security_reason = "the human did not confirm the write";
+    FakeToolSet set("local_tools", tool);
+
+    const model_io::InvokeReturn record = run(set, read_call());
+
+    BOOST_TEST(tools::is_error(record));
+    BOOST_CHECK(stage_of(record) == InvokeException::Stage::SecurityCheck);
+    BOOST_TEST(record.output.raw ==
+               "Failed while validating the invocation's security: "
+               "security check denied: the human did not confirm the write "
+               "(tool read_file; call call_1)");
+    // A refused invocation never reaches the tool.
+    BOOST_TEST(!tool->invoke_ran);
+}
+
+BOOST_AUTO_TEST_CASE(execute_reports_a_throwing_security_check)
+{
+    auto tool = std::make_shared<ScriptedTool>();
+    tool->fail_in = ScriptedTool::Hook::SecurityCheck;
+    tool->failure = "the confirmation service is unreachable";
+    FakeToolSet set("local_tools", tool);
+
+    const model_io::InvokeReturn record = run(set, read_call());
+
+    BOOST_CHECK(stage_of(record) == InvokeException::Stage::SecurityCheck);
+    BOOST_TEST(record.output.raw ==
+               "Failed while validating the invocation's security: "
+               "the confirmation service is unreachable "
+               "(tool read_file; call call_1)");
+    BOOST_TEST(!tool->invoke_ran);
+}
+
+BOOST_AUTO_TEST_CASE(execute_reports_an_invoke_failure)
+{
+    auto tool = std::make_shared<ScriptedTool>();
+    tool->fail_in = ScriptedTool::Hook::Invoke;
+    tool->failure = "the tool failed";
+    FakeToolSet set("local_tools", tool);
+
+    const model_io::InvokeReturn record = run(set, read_call());
+
+    BOOST_CHECK(stage_of(record) == InvokeException::Stage::Invoke);
+    BOOST_TEST(record.output.raw ==
+               "Failed while invoking the tool: the tool failed "
+               "(tool read_file; call call_1)");
+    BOOST_TEST(tool->invoke_ran);
+    BOOST_TEST(!tool->check_result_ran);
+}
+
+BOOST_AUTO_TEST_CASE(execute_reports_an_unqueried_tool_exception_around_the_call)
 {
     auto tool = std::make_shared<ScriptedTool>();
     tool->fail_in = ScriptedTool::Hook::Invoke;
@@ -470,7 +742,7 @@ BOOST_AUTO_TEST_CASE(a_tool_exception_without_a_query_is_rebuilt_around_the_call
                "(tool read_file; call call_1)");
 }
 
-BOOST_AUTO_TEST_CASE(a_query_the_tool_carried_itself_wins)
+BOOST_AUTO_TEST_CASE(execute_prefers_a_query_the_tool_carried_itself)
 {
     auto tool = std::make_shared<ScriptedTool>();
     tool->fail_in = ScriptedTool::Hook::Invoke;
@@ -489,60 +761,7 @@ BOOST_AUTO_TEST_CASE(a_query_the_tool_carried_itself_wins)
                "(tool read_file; call inner_call)");
 }
 
-BOOST_AUTO_TEST_CASE(a_security_refusal_is_reported_with_the_tools_words)
-{
-    auto tool = std::make_shared<ScriptedTool>();
-    tool->security_passes = false;
-    tool->security_reason = "the human did not confirm the write";
-    FakeToolSet set("local_tools", tool);
-
-    const model_io::InvokeReturn record = run(set, read_call());
-
-    BOOST_TEST(tools::is_error(record));
-    BOOST_CHECK(stage_of(record) == InvokeException::Stage::SecurityCheck);
-    BOOST_TEST(record.output.raw ==
-               "Failed while validating the invocation's security: "
-               "security check denied: the human did not confirm the write "
-               "(tool read_file; call call_1)");
-    // A refused invocation never reaches the tool.
-    BOOST_TEST(!tool->invoke_ran);
-}
-
-BOOST_AUTO_TEST_CASE(a_throwing_security_check_is_reported_at_its_stage)
-{
-    auto tool = std::make_shared<ScriptedTool>();
-    tool->fail_in = ScriptedTool::Hook::SecurityCheck;
-    tool->failure = "the confirmation service is unreachable";
-    FakeToolSet set("local_tools", tool);
-
-    const model_io::InvokeReturn record = run(set, read_call());
-
-    BOOST_CHECK(stage_of(record) == InvokeException::Stage::SecurityCheck);
-    BOOST_TEST(record.output.raw ==
-               "Failed while validating the invocation's security: "
-               "the confirmation service is unreachable "
-               "(tool read_file; call call_1)");
-    BOOST_TEST(!tool->invoke_ran);
-}
-
-BOOST_AUTO_TEST_CASE(an_invoke_failure_is_reported_at_the_invoke_stage)
-{
-    auto tool = std::make_shared<ScriptedTool>();
-    tool->fail_in = ScriptedTool::Hook::Invoke;
-    tool->failure = "the tool failed";
-    FakeToolSet set("local_tools", tool);
-
-    const model_io::InvokeReturn record = run(set, read_call());
-
-    BOOST_CHECK(stage_of(record) == InvokeException::Stage::Invoke);
-    BOOST_TEST(record.output.raw ==
-               "Failed while invoking the tool: the tool failed "
-               "(tool read_file; call call_1)");
-    BOOST_TEST(tool->invoke_ran);
-    BOOST_TEST(!tool->check_result_ran);
-}
-
-BOOST_AUTO_TEST_CASE(a_result_check_failure_still_correlates_to_the_call)
+BOOST_AUTO_TEST_CASE(execute_reports_a_result_check_failure_and_keeps_the_call)
 {
     auto tool = std::make_shared<ScriptedTool>();
     tool->fail_in = ScriptedTool::Hook::CheckResult;
@@ -567,7 +786,7 @@ BOOST_AUTO_TEST_CASE(a_result_check_failure_still_correlates_to_the_call)
                "result is not valid JSON (tool read_file; call call_1)");
 }
 
-BOOST_AUTO_TEST_CASE(a_throw_that_is_not_a_std_exception_is_still_reported)
+BOOST_AUTO_TEST_CASE(execute_reports_a_throw_that_is_not_a_std_exception)
 {
     auto tool = std::make_shared<ScriptedTool>();
     tool->fail_in = ScriptedTool::Hook::Invoke;
@@ -582,26 +801,23 @@ BOOST_AUTO_TEST_CASE(a_throw_that_is_not_a_std_exception_is_still_reported)
                "std::exception (tool read_file; call call_1)");
 }
 
-BOOST_AUTO_TEST_CASE(a_tool_that_declares_nothing_is_denied_without_a_confirmer)
+BOOST_AUTO_TEST_CASE(execute_without_a_tool_returns_a_record_not_a_crash)
 {
-    auto tool = std::make_shared<MinimalTool>();
+    auto tool = std::make_shared<ScriptedTool>();
     FakeToolSet set("local_tools", tool);
+    model_io::InvokeQuery query = read_call();
 
-    eventbus::AsyncEventBus& bus = eventbus::default_async_bus();
-    BOOST_REQUIRE(bus.subscriber_count<InvokeConfirmEvent>() == 0u);
+    // What a caller that ignored prepare()'s failure would pass.
+    asio::io_context io;
+    auto pending = asio::co_spawn(
+        io, set.execute(nullptr, query), asio::use_future);
+    io.run();
+    const model_io::InvokeReturn record = pending.get();
 
-    const model_io::InvokeReturn record = run(set, noop_call());
-
-    // The default write_attributes() declared the cautious pair and the default
-    // security_check() refused it, because nothing is subscribed to confirm.
     BOOST_TEST(tools::is_error(record));
-    BOOST_CHECK(stage_of(record) == InvokeException::Stage::SecurityCheck);
-    BOOST_TEST(record.output.raw ==
-               "Failed while validating the invocation's security: security check "
-               "denied: no handler is subscribed to confirm the invocation "
-               "(tool noop; call call_2)");
-    BOOST_CHECK(record.query.type == model_io::InvokeType::SerialWrite);
-    BOOST_CHECK(record.query.security == model_io::InvokeSecurity::RequireConfirm);
+    BOOST_CHECK(stage_of(record) == InvokeException::Stage::Dispatch);
+    BOOST_TEST(record.query.id == "call_1");
+    BOOST_TEST(!tool->security_ran);
 }
 
 BOOST_AUTO_TEST_CASE(a_tool_that_implements_no_invoke_refuses_at_that_checkpoint)
@@ -609,9 +825,7 @@ BOOST_AUTO_TEST_CASE(a_tool_that_implements_no_invoke_refuses_at_that_checkpoint
     auto tool = std::make_shared<TrustedStubTool>();
     FakeToolSet set("local_tools", tool);
 
-    model_io::InvokeQuery query = noop_call();
-    query.name = "stub";
-    const model_io::InvokeReturn record = run(set, std::move(query));
+    const model_io::InvokeReturn record = run(set, call_for("stub", "call_2"));
 
     // The one hook with no usable default: answering an empty text part would
     // look to the model like a result, so the default refuses instead — and
@@ -623,6 +837,139 @@ BOOST_AUTO_TEST_CASE(a_tool_that_implements_no_invoke_refuses_at_that_checkpoint
                "implement invoke() (tool stub; call call_2)");
     // The gate in front of it passed, so the refusal is the tool's own.
     BOOST_CHECK(record.query.security == model_io::InvokeSecurity::Trusted);
+}
+
+// ===== what the split is for: settle a batch, then schedule it ===============
+
+BOOST_AUTO_TEST_CASE(a_batch_is_settled_before_any_of_it_runs)
+{
+    // Two tools with different schedules, in different sets: the host settles
+    // every call first, and only then decides what may overlap.
+    auto parallel_tool = std::make_shared<ScriptedTool>();
+    parallel_tool->declares_type = model_io::InvokeType::ParallWrite;
+    FakeToolSet parallel_set("parallel_tools", parallel_tool);
+
+    auto serial_tool = std::make_shared<ScriptedTool>();
+    serial_tool->declares_type = model_io::InvokeType::SerialWrite;
+    FakeToolSet serial_set("serial_tools", serial_tool);
+
+    model_io::InvokeQuery parallel_call = read_call();
+    model_io::InvokeQuery serial_call = read_call();
+
+    // Phase 1 for the whole batch, synchronously, before anything is awaited.
+    Prepared first = prepare_only(parallel_set, parallel_call);
+    Prepared second = prepare_only(serial_set, serial_call);
+    BOOST_REQUIRE(first.ok());
+    BOOST_REQUIRE(second.ok());
+
+    // The scheduling decision is readable off the settled calls, and nothing
+    // that can wait has started for either of them.
+    BOOST_CHECK(parallel_call.type == model_io::InvokeType::ParallWrite);
+    BOOST_CHECK(serial_call.type == model_io::InvokeType::SerialWrite);
+    BOOST_TEST(!parallel_tool->security_ran);
+    BOOST_TEST(!serial_tool->security_ran);
+    BOOST_TEST(!parallel_tool->invoke_ran);
+    BOOST_TEST(!serial_tool->invoke_ran);
+
+    // Phase 2, in the order that decision implies: the serial call gets the
+    // executor to itself.
+    const model_io::InvokeReturn parallel_record =
+        run_prepared(parallel_set, first.tool, parallel_call);
+    BOOST_TEST(!tools::is_error(parallel_record));
+
+    const model_io::InvokeReturn serial_record =
+        run_prepared(serial_set, second.tool, serial_call);
+    BOOST_TEST(!tools::is_error(serial_record));
+
+    BOOST_TEST(parallel_tool->invoke_ran);
+    BOOST_TEST(serial_tool->invoke_ran);
+}
+
+BOOST_AUTO_TEST_CASE(prepared_parallel_calls_really_do_overlap)
+{
+    // One tool, two calls, one executor: the split lets the host await both at
+    // once, and this is what "may run alongside others" means in practice.
+    auto tool = std::make_shared<SlowReadTool>();
+    FakeToolSet set("local_tools", tool);
+
+    model_io::InvokeQuery first_call = call_for("slow_read", "call_1");
+    model_io::InvokeQuery second_call = call_for("slow_read", "call_2");
+
+    const tools::ToolSet::ToolHandle first = set.prepare(first_call);
+    const tools::ToolSet::ToolHandle second = set.prepare(second_call);
+    BOOST_CHECK(first_call.type == model_io::InvokeType::ReadOnly);
+
+    asio::io_context io;
+    auto first_run = asio::co_spawn(
+        io, set.execute(first, first_call), asio::use_future);
+    auto second_run = asio::co_spawn(
+        io, set.execute(second, second_call), asio::use_future);
+    io.run();
+
+    const model_io::InvokeReturn first_record = first_run.get();
+    const model_io::InvokeReturn second_record = second_run.get();
+    BOOST_TEST(!tools::is_error(first_record));
+    BOOST_TEST(!tools::is_error(second_record));
+    BOOST_TEST(first_record.query.id == "call_1");
+    BOOST_TEST(second_record.query.id == "call_2");
+    // Both were inside invoke() at the same time: the second did not wait for
+    // the first to finish, which is the scheduling freedom prepare() exposed.
+    BOOST_TEST(tool->max_in_flight == 2);
+    BOOST_TEST(tool->in_flight == 0);
+}
+
+BOOST_AUTO_TEST_CASE(a_prepared_call_run_alone_never_overlaps)
+{
+    // The other half of the same contract: a host that runs a serial call on
+    // its own sees one invocation in flight, start to finish.
+    auto tool = std::make_shared<SlowReadTool>();
+    FakeToolSet set("local_tools", tool);
+
+    model_io::InvokeQuery first_call = call_for("slow_read", "call_1");
+    model_io::InvokeQuery second_call = call_for("slow_read", "call_2");
+    const tools::ToolSet::ToolHandle first = set.prepare(first_call);
+    const tools::ToolSet::ToolHandle second = set.prepare(second_call);
+
+    BOOST_TEST(!tools::is_error(run_prepared(set, first, first_call)));
+    BOOST_TEST(tool->max_in_flight == 1);
+
+    BOOST_TEST(!tools::is_error(run_prepared(set, second, second_call)));
+    // Still one at a time: the calls were awaited in sequence, not together.
+    BOOST_TEST(tool->max_in_flight == 1);
+}
+
+// ===== the default policy, end to end through both phases ====================
+
+BOOST_AUTO_TEST_CASE(a_tool_that_declares_nothing_is_denied_without_a_confirmer)
+{
+    auto tool = std::make_shared<MinimalTool>();
+    FakeToolSet set("local_tools", tool);
+
+    eventbus::AsyncEventBus& bus = eventbus::default_async_bus();
+    BOOST_REQUIRE(bus.subscriber_count<InvokeConfirmEvent>() == 0u);
+
+    model_io::InvokeQuery query = call_for("noop", "call_2");
+    const tools::ToolSet::ToolHandle resolved = set.prepare(query);
+
+    // Phase 1 succeeded — the default write_attributes() declared the cautious
+    // pair, which is exactly what the scheduler reads...
+    BOOST_REQUIRE(resolved != nullptr);
+    BOOST_CHECK(query.type == model_io::InvokeType::SerialWrite);
+    BOOST_CHECK(query.security == model_io::InvokeSecurity::RequireConfirm);
+
+    // ... and phase 2 refused it, because nothing is subscribed to confirm.
+    asio::io_context io;
+    auto pending = asio::co_spawn(
+        io, set.execute(resolved, query), asio::use_future);
+    io.run();
+    const model_io::InvokeReturn record = pending.get();
+
+    BOOST_TEST(tools::is_error(record));
+    BOOST_CHECK(stage_of(record) == InvokeException::Stage::SecurityCheck);
+    BOOST_TEST(record.output.raw ==
+               "Failed while validating the invocation's security: security check "
+               "denied: no handler is subscribed to confirm the invocation "
+               "(tool noop; call call_2)");
 }
 
 BOOST_AUTO_TEST_CASE(a_confirmer_on_the_process_wide_bus_lets_the_call_run)
@@ -647,9 +994,8 @@ BOOST_AUTO_TEST_CASE(a_confirmer_on_the_process_wide_bus_lets_the_call_run)
                     co_return out;
                 });
 
-        model_io::InvokeQuery query = noop_call();
-        query.name = "confirmable";
-        const model_io::InvokeReturn record = run(set, std::move(query));
+        const model_io::InvokeReturn record =
+            run(set, call_for("confirmable", "call_2"));
 
         BOOST_TEST(!tools::is_error(record));
         BOOST_TEST(record.output.raw == "the tool ran");
@@ -683,11 +1029,12 @@ BOOST_AUTO_TEST_CASE(a_confirmer_that_throws_denies_at_the_security_stage)
                     co_return request;
                 });
 
-        const model_io::InvokeReturn record = run(set, noop_call());
+        const model_io::InvokeReturn record =
+            run(set, call_for("noop", "call_2"));
 
-        // The policy propagates a confirmer's failure, and handle() reports it
-        // at the checkpoint that was running: a broken confirmer denies the
-        // call, with its own message rather than a silent "nobody answered".
+        // The policy propagates a confirmer's failure, and the set reports it at
+        // the stage that was running: a broken confirmer denies the call, with
+        // its own message rather than a silent "nobody answered".
         BOOST_TEST(tools::is_error(record));
         BOOST_CHECK(stage_of(record) == InvokeException::Stage::SecurityCheck);
         BOOST_TEST(record.output.raw ==

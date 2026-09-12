@@ -14,10 +14,13 @@
 #                          subscribed on a bus the test owns, and the fail-
 #                          closed cases (no subscriber, no answer, a throwing
 #                          handler).
-#   test_toolsets          ToolInterface / ToolSet::handle(): the happy path,
-#                          every checkpoint's failure record and stage, the
-#                          query correlation a failure record must keep, and the
-#                          end-to-end confirmation of a RequireConfirm tool.
+#   test_toolsets          ToolInterface / ToolSet's two phases: phase 1
+#                          (prepare) settling a call in place and resolving its
+#                          tool, phase 2 (execute) running the settled call to
+#                          its record, every checkpoint's failure and stage, the
+#                          query correlation a record must keep, and what the
+#                          split is for — settling a batch before scheduling it,
+#                          by query.type.
 #
 # test_security_check and test_toolsets link the async event bus through
 # tools_iface (async_eventbus_iface). Both drive coroutines on a local

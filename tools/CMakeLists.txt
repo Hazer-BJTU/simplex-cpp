@@ -11,9 +11,9 @@
 #   - security_check.hpp    the default invocation security policy, whose
 #                           RequireConfirm case asks the host through an
 #                           InvokeConfirmEvent published on the async bus;
-#   - toolsets.hpp          ToolInterface / ToolSet: one tool, and the set
-#                           that dispatches a call and runs it through every
-#                           checkpoint.
+#   - toolsets.hpp          ToolInterface / ToolSet: one tool, and the set that
+#                           dispatches a call, settles it synchronously
+#                           (prepare) and runs it asynchronously (execute).
 #
 # It links `async_eventbus_iface` (utils/async_eventbus) for the confirmation
 # event: the policy publishes on eventbus::default_async_bus(), and that
