@@ -238,6 +238,138 @@ BOOST_AUTO_TEST_CASE(to_invoke_return_carries_the_query_and_the_rendering)
     BOOST_TEST(!record.output.extras.has_value());
 }
 
+BOOST_AUTO_TEST_CASE(a_correlated_conversion_answers_the_call_it_is_given)
+{
+    // A failure a tool raised against a call of its own making — a nested
+    // invocation, a retry. The conversion that knows the outer call answers IT,
+    // because query.id is the wire's tool_call_id (emit_tool_results): answering
+    // with the nested id would leave the model's call unanswered.
+    model_io::InvokeQuery inner = read_file_query();
+    inner.id = "inner_call";
+    inner.name = "fetch_url";
+
+    const tools::InvokeException failure(
+        tools::InvokeException::Stage::Invoke, "the nested fetch failed", inner);
+    const model_io::InvokeQuery outer = read_file_query();   // id call_1, read_file
+
+    const model_io::InvokeReturn record = failure.to_invoke_return(outer);
+
+    BOOST_TEST(record.query.id == "call_1");
+    BOOST_TEST(record.query.name == "read_file");
+    // The prose follows the identity: one record, one call, one answer.
+    BOOST_TEST(record.output.raw ==
+               "Failed while invoking the tool: the nested fetch failed "
+               "(tool fetch_url; call inner_call)");
+    // ... and the nested call is preserved rather than lost.
+    BOOST_REQUIRE(record.extras.has_value());
+    BOOST_TEST(record.extras->at("cause_query").at("id") == "inner_call");
+    BOOST_TEST(record.extras->at("cause_query").at("name") == "fetch_url");
+    BOOST_TEST(record.extras->at("error").at("stage") == "invoke");
+}
+
+BOOST_AUTO_TEST_CASE(correlating_to_the_same_call_preserves_nothing_extra)
+{
+    // The ordinary case: the tool named the call it was handed, so there is no
+    // second call to preserve and extras stays the two-field marker.
+    const model_io::InvokeQuery call = read_file_query();
+    const tools::InvokeException failure(
+        tools::InvokeException::Stage::Invoke, "the read failed", call);
+
+    const model_io::InvokeReturn record = failure.to_invoke_return(call);
+
+    BOOST_TEST(record.query.id == "call_1");
+    BOOST_REQUIRE(record.extras.has_value());
+    BOOST_TEST(record.extras->size() == 1u);
+    BOOST_CHECK(!record.extras->contains(
+        std::string(tools::InvokeException::cause_key)));
+}
+
+BOOST_AUTO_TEST_CASE(a_failure_with_no_query_of_its_own_is_correlated_too)
+{
+    // A tool may throw knowing nothing about the call it was invoked with; the
+    // caller's call stands in, and there is no cause to record.
+    const tools::InvokeException failure(
+        tools::InvokeException::Stage::Invoke, "the read failed");
+    const model_io::InvokeQuery outer = read_file_query();
+
+    const model_io::InvokeReturn record = failure.to_invoke_return(outer);
+
+    BOOST_TEST(record.query.id == "call_1");
+    BOOST_TEST(record.output.raw ==
+               "Failed while invoking the tool: the read failed");
+    BOOST_REQUIRE(record.extras.has_value());
+    BOOST_TEST(record.extras->size() == 1u);
+}
+
+BOOST_AUTO_TEST_CASE(correlated_to_rebuilds_the_exception_around_the_outer_call)
+{
+    // This is the form a LAYER propagates, so that what it throws — and what a
+    // caller turns into a record with the implicit conversion — is already
+    // correlated. Both conversions of the rebuilt failure agree.
+    model_io::InvokeQuery inner = read_file_query();
+    inner.id = "inner_call";
+    const tools::InvokeException failure(
+        tools::InvokeException::Stage::ResultCheck, "not valid JSON", inner);
+
+    const tools::InvokeException correlated = failure.correlated_to(read_file_query());
+
+    BOOST_CHECK(correlated.stage() == tools::InvokeException::Stage::ResultCheck);
+    BOOST_TEST(correlated.message() == "not valid JSON");
+    BOOST_TEST(correlated.query().id == "call_1");
+    // The rendering was rebuilt around the call it now answers.
+    BOOST_TEST(correlated.what() ==
+               "Failed while validating the tool result: not valid JSON "
+               "(tool read_file; call call_1)");
+
+    for (const model_io::InvokeReturn& record :
+         {correlated.to_invoke_return(),
+          correlated.to_invoke_return(read_file_query()),
+          static_cast<model_io::InvokeReturn>(correlated)}) {
+        BOOST_TEST(record.query.id == "call_1");
+        BOOST_REQUIRE(record.extras.has_value());
+        BOOST_TEST(record.extras->at("cause_query").at("id") == "inner_call");
+    }
+
+    // The original is untouched: it still answers the call it was raised with.
+    BOOST_TEST(failure.query().id == "inner_call");
+    BOOST_REQUIRE(failure.to_invoke_return().extras.has_value());
+    BOOST_CHECK(!failure.to_invoke_return().extras->contains(
+        std::string(tools::InvokeException::cause_key)));
+}
+
+BOOST_AUTO_TEST_CASE(correlating_a_record_rewrites_its_identity_not_its_result)
+{
+    // The same rule for a record a call produced: correlate() answers the call
+    // the layer was given, keeps a producer's own call as the cause, and leaves
+    // the payload, the marker and everything else the producer wrote alone.
+    model_io::InvokeQuery inner = read_file_query();
+    inner.id = "inner_call";
+    model_io::InvokeReturn record;
+    record.query = inner;
+    record.output = {model_io::ContentType::Text, "the tool's own answer"};
+    record.extras = nlohmann::json{{"annotated_by", "the tool"}};
+
+    const model_io::InvokeReturn correlated =
+        tools::correlate(record, read_file_query());
+
+    BOOST_TEST(correlated.query.id == "call_1");
+    BOOST_TEST(correlated.query.name == "read_file");
+    BOOST_TEST(correlated.output.raw == "the tool's own answer");
+    BOOST_REQUIRE(correlated.extras.has_value());
+    BOOST_TEST(correlated.extras->at("annotated_by") == "the tool");
+    BOOST_TEST(correlated.extras->at("cause_query").at("id") == "inner_call");
+    BOOST_TEST(!tools::is_error(correlated));   // it is not a failure now
+
+    // A record that already answers the call is returned as it stands: no cause,
+    // no marker, no rewritten extras.
+    model_io::InvokeReturn plain;
+    plain.query = read_file_query();
+    plain.output = {model_io::ContentType::Text, "ok"};
+    const model_io::InvokeReturn kept = tools::correlate(plain, read_file_query());
+    BOOST_TEST(kept.query.arguments["path"] == "/etc/hosts");
+    BOOST_CHECK(!kept.extras.has_value());
+}
+
 BOOST_AUTO_TEST_CASE(the_failure_marker_names_the_stage_and_the_bare_message)
 {
     const tools::InvokeException failure(

@@ -29,6 +29,27 @@
 // its snake_case key, so a restored session classifies a failure exactly the
 // way the live one did.
 //
+// IDENTITY: THE RECORD ANSWERS THE CALL THE CALLER MADE. InvokeReturn::query.id
+// is not diagnostics — the chat-completions interpreter emits it as the tool
+// message's tool_call_id (llm/src/chat_completions/interpreter.cpp::
+// emit_tool_results), and the provider is waiting for the result of the call IT
+// issued. A failure may well have been raised against a call of the tool's own
+// making (a nested invocation, a delegated call, a retry), and answering with
+// THAT id would leave the model's call unanswered — which a provider rejects as
+// a malformed turn. So the conversion takes the call the caller made:
+//
+//   to_invoke_return(call)  answers `call`, whatever call the exception names;
+//   correlate(record, call) the same rule for a record a successful call
+//                           produced, since a tool's check_result() may also
+//                           answer with a query of its own;
+//   to_invoke_return()      no caller in sight: answers the exception's own
+//                           query, which is all it can know.
+//
+// The call the failure was really about is not thrown away: when the exception
+// names a DIFFERENT call (a non-empty id that is not the one being answered),
+// it is preserved under extras.cause_query (cause_key), where a host can read
+// the causal chain without the wire ever seeing it.
+//
 // Shape. As in the other module exceptions of this tree (endpoint's
 // HttpRequestException, which process::ProcessException copies, and intercom's
 // WsException), the class carries one Stage, an optional error_code, and the
@@ -178,18 +199,115 @@ public:
     [[nodiscard]] std::string to_string() const { return what(); }
 
     /**
-     * The failure as the tool result it stands for: the query the invocation
-     * was made with, the rendering in output.raw (prose, for the model), and
+     * The failure as the tool result it stands for, answering the call the
+     * EXCEPTION carries: the rendering in output.raw (prose, for the model), and
      * the failure marker in extras (machine-readable, for the host).
      *
-     * The error code, when set, is deliberately NOT duplicated into the
-     * marker: it is already in error_code() and in the rendered text, and the
-     * marker stays a small, stable pair of fields a host can rely on.
+     * For a caller that has no other call in play — a detached handler of a
+     * failure it raised itself. A caller that knows which call it made (every
+     * layer in this module does) must use to_invoke_return(call) instead: an
+     * exception that names a nested call would answer with that call's id, and
+     * the call the model made would be left unanswered (see the file header).
+     *
+     * The error code, when set, is deliberately NOT duplicated into the marker:
+     * it is already in error_code() and in the rendered text, and the marker
+     * stays a small, stable pair of fields a host can rely on.
      */
     [[nodiscard]] model_io::InvokeReturn to_invoke_return() const
     {
+        return build_record(query_, effective_cause(query_));
+    }
+
+    /**
+     * The same record, but answering `call` — the invocation the CALLER made,
+     * which is the identity the conversation correlates by (file header).
+     *
+     * A failure the tool raised against a call of its own making keeps that call
+     * under extras.cause_query: it is the failure's context, worth preserving
+     * for a host, and never the record's identity.
+     */
+    [[nodiscard]] model_io::InvokeReturn to_invoke_return(
+        const model_io::InvokeQuery& call) const
+    {
+        return build_record(call, effective_cause(call));
+    }
+
+    /**
+     * The same failure, re-correlated to `call`: this is the form a LAYER
+     * propagates, so that what it throws (and what a caller turns into a record
+     * with the implicit conversion) already answers the call the layer was
+     * given, whatever call the tool named.
+     *
+     * A call the tool named and this one does not is preserved as the cause (see
+     * to_invoke_return(call)), so nothing about the nested failure is lost — it
+     * simply stops being the record's identity.
+     */
+    [[nodiscard]] InvokeException correlated_to(const model_io::InvokeQuery& call) const
+    {
+        InvokeException rebuilt(stage_, message_, call, ec_);
+        if (const model_io::InvokeQuery* cause = effective_cause(call);
+            cause != nullptr) {
+            rebuilt.cause_ = *cause;
+        }
+        return rebuilt;
+    }
+
+    /**
+     * The same conversion as to_invoke_return(), implicit on purpose: it is
+     * what lets a handler that has nothing left to throw at return the failure
+     * straight out of an awaitable<InvokeReturn> (`co_return failure;`).
+     *
+     * It answers the exception's own query; a handler that knows the call it
+     * made should convert with to_invoke_return(call) or correlate() instead.
+     */
+    operator model_io::InvokeReturn() const { return to_invoke_return(); }
+
+    /** InvokeReturn::extras key under which the failure marker lives. */
+    static constexpr std::string_view extras_key = "error";
+
+    /**
+     * InvokeReturn::extras key under which the call a failure was really about
+     * is preserved, when that is not the call the record answers. Absent in the
+     * ordinary case, where the two are the same call.
+     */
+    static constexpr std::string_view cause_key = "cause_query";
+
+private:
+    /// Whether this failure names a call OTHER than `call` — the condition under
+    /// which its own query is worth preserving as the cause. An exception that
+    /// carries no query at all, or one with an empty id, names nothing: it
+    /// cannot disagree with the call being answered.
+    [[nodiscard]] bool names_a_different_call(
+        const model_io::InvokeQuery& call) const noexcept
+    {
+        return !query_.id.empty() && query_.id != call.id;
+    }
+
+    /**
+     * The call to preserve alongside a record answering `answering`, or nullptr
+     * when there is nothing to preserve.
+     *
+     * The exception's own query wins while it names a DIFFERENT call — that is
+     * the nested failure a host wants to see — and a cause it already carries
+     * (from an earlier re-correlation) stands otherwise, so a failure that
+     * travelled through two layers still says which call it came from.
+     */
+    [[nodiscard]] const model_io::InvokeQuery* effective_cause(
+        const model_io::InvokeQuery& answering) const noexcept
+    {
+        if (names_a_different_call(answering)) return &query_;
+        if (cause_.has_value()) return &*cause_;
+        return nullptr;
+    }
+
+    /// The record, built around the call it answers and the rendering baked in
+    /// at construction; `cause` is the call to preserve, or nullptr.
+    [[nodiscard]] model_io::InvokeReturn build_record(
+        const model_io::InvokeQuery& answering,
+        const model_io::InvokeQuery* cause) const
+    {
         model_io::InvokeReturn record;
-        record.query = query_;
+        record.query = answering;
         record.output.type = model_io::ContentType::Text;
         record.output.raw = what();
         record.extras = nlohmann::json::object();
@@ -197,20 +315,12 @@ public:
             {"stage", std::string(stage_key(stage_))},
             {"message", message_},
         };
+        if (cause != nullptr) {
+            (*record.extras)[std::string(cause_key)] = *cause;
+        }
         return record;
     }
 
-    /**
-     * The same conversion as to_invoke_return(), implicit on purpose: it is
-     * what lets a handler that has nothing left to throw at return the failure
-     * straight out of an awaitable<InvokeReturn> (`co_return failure;`).
-     */
-    operator model_io::InvokeReturn() const { return to_invoke_return(); }
-
-    /** InvokeReturn::extras key under which the failure marker lives. */
-    static constexpr std::string_view extras_key = "error";
-
-private:
     /// The one-line rendering baked into the runtime_error base at
     /// construction, so what() carries the full context everywhere (the format
     /// is the one to_string() documents).
@@ -243,6 +353,9 @@ private:
     std::string message_;
     model_io::InvokeQuery query_;
     boost::system::error_code ec_;
+    /// The call this failure was really about, when it stopped being the call
+    /// it answers — set by correlated_to(), emitted as extras.cause_query.
+    std::optional<model_io::InvokeQuery> cause_;
 };
 
 namespace detail {
@@ -290,6 +403,34 @@ namespace detail {
     const auto it = marker->find("stage");
     if (it == marker->end() || !it->is_string()) return std::nullopt;
     return InvokeException::stage_from_key(it->get_ref<const std::string&>());
+}
+
+/**
+ * The same identity rule as InvokeException::to_invoke_return(call), for a
+ * record a call produced rather than a failure: the record answers `call`, the
+ * invocation the layer was given, whatever its producer put in its query.
+ *
+ * The query is overwritten, not merged: it IS the settled call, and a tool that
+ * wants to annotate its result has the record's own extras for that. A producer
+ * that answered with a query of its own — a nested invocation, a batching
+ * relay, a check_result() that rebuilt the record — keeps that query under
+ * extras.cause_query, exactly as a failure does, so the causal chain survives
+ * without ever reaching the wire (file header, and emit_tool_results(), which
+ * reads query.id as the tool message's tool_call_id).
+ */
+[[nodiscard]] inline model_io::InvokeReturn correlate(
+    model_io::InvokeReturn record, const model_io::InvokeQuery& call)
+{
+    if (!record.query.id.empty() && record.query.id != call.id) {
+        // A producer whose extras are not an object has already left the shape
+        // this module documents; the cause is worth more than that debris.
+        if (!record.extras || !record.extras->is_object()) {
+            record.extras = nlohmann::json::object();
+        }
+        (*record.extras)[std::string(InvokeException::cause_key)] = record.query;
+    }
+    record.query = call;
+    return record;
 }
 
 } // namespace tools

@@ -72,8 +72,12 @@
 //     detached from whoever started it — an agent loop that moved on — so there
 //     may be no caller left to throw at (invoke_exception.hpp).
 //
-// Both uphold the correlation even for a tool that raised its own
-// InvokeException with no query attached: the set's query stands in.
+// Both uphold the identity of the record they hand back: it answers the call the
+// SET was given, whatever call a failure named. A tool that failed on a nested
+// invocation, a retry or a delegated call keeps that call as extras.cause_query
+// rather than taking over the record's identity — query.id is the wire's
+// tool_call_id, and the provider is waiting for the result of the call IT issued
+// (invoke_exception.hpp).
 //
 // What this layer deliberately does not do: schedule. It reports what a call
 // needs (`query.type`, `query.security`) and runs one call when asked; the host
@@ -281,29 +285,24 @@ public:
 namespace detail {
 
 /**
- * The failure to hand the caller, correlated to the call it answers.
+ * The failure to hand the caller, re-correlated to the call it answers.
  *
- * A tool may raise InvokeException knowing nothing about the call it was
- * invoked with — `InvokeException{Stage::Invoke, "read failed"}` carries no
- * query — and a record built from that could not be correlated to the model's
- * call, which is the one thing the record exists for. So a failure that arrived
- * without a query is rebuilt around `query`; a failure that brought its own
- * wins, because the tool may have failed on a call of its own making (a retry,
- * a nested invocation) and that is the call the record should answer.
+ * A tool may raise InvokeException knowing nothing about the call it was invoked
+ * with — `InvokeException{Stage::Invoke, "read failed"}` carries no query — and
+ * a record built from that could not be correlated to the model's call, which is
+ * the one thing the record exists for. So a failure that arrived without a query
+ * is rebuilt around `query`.
  *
- * Shared by both phases of a ToolSet so the rule is stated once: prepare()
- * throws the result, execute() turns it into the record.
+ * The opposite case is the one worth stating: a tool whose InvokeException names
+ * a DIFFERENT call (a nested invocation, a retry) does not get to answer with
+ * that call either. query.id is the wire's tool_call_id, so answering with the
+ * nested id would leave the model's own call unanswered — a turn the provider
+ * rejects. The nested call is preserved as extras.cause_query instead. Both
+ * phases of a ToolSet go through this, so the rule is stated once.
  */
-[[nodiscard]] inline InvokeException correlate(const InvokeException& failure, const model_io::InvokeQuery& query) {
-    if (failure.query().id.empty() && !query.id.empty()) {
-        return InvokeException(
-            failure.stage(), 
-            failure.message(), 
-            query,
-            failure.error_code()
-        );
-    }
-    return failure;
+[[nodiscard]] inline InvokeException correlate(
+    const InvokeException& failure, const model_io::InvokeQuery& query) {
+    return failure.correlated_to(query);
 }
 
 } // namespace detail
@@ -403,8 +402,10 @@ public:
      * caller's query half-settled — it is the copy in the exception that the
      * record is built from, and a failed call is not meant to be scheduled.
      *
-     * A query the tool's own InvokeException carried wins over this one; only a
-     * failure that arrived without a query is rebuilt around the call's.
+     * The exception thrown answers the call the caller made, even when the tool
+     * raised one naming a call of its own making: that call is preserved as
+     * extras.cause_query instead of becoming the record's identity, which is
+     * what keeps the model's call answered (invoke_exception.hpp).
      */
     [[nodiscard]] virtual ToolHandle prepare(model_io::InvokeQuery& query) {
         InvokeException::Stage stage = InvokeException::Stage::Dispatch;
@@ -458,18 +459,21 @@ public:
      * query runs an unsettled call, which the default policy then refuses
      * (DefaultDeny) rather than trusting it.
      *
+     * Every path answers the call the SET was given — the identity the
+     * conversation correlates by — and a call the tool named of its own making
+     * travels as extras.cause_query rather than taking that identity over.
+     *
      * Two deliberate details of the failure paths:
      *
      *  - check_result() gets a COPY of the query. It takes the query by value,
      *    so moving ours into it would leave the catch blocks holding a
      *    moved-from query, and a failure record without query.id no longer
      *    correlates to the model's call — the one thing the record is for.
-     *  - An InvokeException a tool raised with no query of its own is rebuilt
-     *    around ours, for the same reason: a tool may throw
-     *    InvokeException{Stage::Invoke, "read failed"} and know nothing about
-     *    the call it was invoked with, but the record still has to answer that
-     *    call. A query the tool DID carry wins — it may be the one it actually
-     *    failed on.
+     *  - An InvokeException is re-correlated to ours before it becomes a record,
+     *    for the same reason: a tool may throw
+     *    InvokeException{Stage::Invoke, "read failed"} and know nothing about the
+     *    call it was invoked with, or know a nested call of its own — either way
+     *    the record still has to answer the call the model made.
      */
     [[nodiscard]] virtual boost::asio::awaitable<model_io::InvokeReturn> execute(ToolHandle tool, model_io::InvokeQuery query) {
         // The stage every failure is reported at until a later step claims it.
@@ -483,7 +487,7 @@ public:
                     InvokeException::Stage::Dispatch,
                     "the call was never settled: execute() needs the tool "
                     "prepare() returned",
-                    std::move(query), 
+                    query,   // a COPY: the catch below still needs `query`
                     {}
                 );
             }
@@ -496,7 +500,12 @@ public:
                 // std::move(query) may read the moved-from object. (The test
                 // suite caught exactly that in the single-phase version.)
                 const std::string message = std::format("security check denied: {}", reason);
-                throw InvokeException(InvokeException::Stage::SecurityCheck, message, std::move(query), {});
+                // A COPY of the query, for the same reason twice over: the
+                // refusal is re-correlated to `query` in the catch below, and a
+                // moved-from object has no name and no id to correlate by — the
+                // record would lose the call it answers.
+                throw InvokeException(
+                    InvokeException::Stage::SecurityCheck, message, query, {});
             }
 
             stage = InvokeException::Stage::Invoke;
@@ -504,23 +513,21 @@ public:
 
             stage = InvokeException::Stage::ResultCheck;
             // A copy, not std::move(query): see the note above. check_result()
-            // owns what it is given and embeds the settled query in the record.
-            co_return tool->check_result(query, std::move(content));
+            // owns what it is given and embeds the settled query in the record —
+            // and correlate() makes that true even for a tool that rebuilt the
+            // record around a query of its own.
+            co_return correlate(
+                tool->check_result(query, std::move(content)), query);
         } catch (const InvokeException& failure) {
             co_return detail::correlate(failure, query).to_invoke_return();
         } catch (const std::exception& e) {
-            co_return InvokeException(
-                stage, 
-                e.what(), 
-                std::move(query), 
-                {}
-            ).to_invoke_return();
+            // Built around the call, like every other path out of this function:
+            // a reader should not have to work out whether a moved-from query
+            // still carried the id. The copy is on the failure path only.
+            co_return InvokeException(stage, e.what(), query, {}).to_invoke_return();
         } catch (...) {
             co_return InvokeException(
-                stage, 
-                "an unknown error, not a std::exception",
-                std::move(query), 
-                {}
+                stage, "an unknown error, not a std::exception", query, {}
             ).to_invoke_return();
         }
     }

@@ -182,6 +182,9 @@ public:
     model_io::InvokeSecurity declares_security = model_io::InvokeSecurity::Trusted;
     /// What a successful invoke() answers.
     std::string payload = "127.0.0.1 localhost";
+    /// Whether check_result() answers for a call of its own making instead of
+    /// the one it was handed — a tool that rewires the record's identity.
+    bool check_result_reports_another_call = false;
 
     // What the call did, observed as it ran. Mutable because the hooks that
     // observe are the const ones.
@@ -254,6 +257,9 @@ public:
         check_result_query_id = query.id;
         check_result_output = output.raw;
         fail_if(Hook::CheckResult, query);
+        if (check_result_reports_another_call) {
+            query.id = "inner_call";
+        }
         return tools::ToolInterface::check_result(std::move(query), std::move(output));
     }
 
@@ -742,7 +748,7 @@ BOOST_AUTO_TEST_CASE(execute_reports_an_unqueried_tool_exception_around_the_call
                "(tool read_file; call call_1)");
 }
 
-BOOST_AUTO_TEST_CASE(execute_prefers_a_query_the_tool_carried_itself)
+BOOST_AUTO_TEST_CASE(execute_never_lets_a_nested_call_take_over_the_record)
 {
     auto tool = std::make_shared<ScriptedTool>();
     tool->fail_in = ScriptedTool::Hook::Invoke;
@@ -753,12 +759,68 @@ BOOST_AUTO_TEST_CASE(execute_prefers_a_query_the_tool_carried_itself)
     const model_io::InvokeReturn record = run(set, read_call());
 
     // A tool may fail on a call of its own making — a retry, a nested
-    // invocation — and that is the call the record answers.
-    BOOST_TEST(record.query.id == "inner_call");
+    // invocation — but the record still answers the call the MODEL made.
+    // query.id is the wire's tool_call_id (emit_tool_results), so answering with
+    // the nested id would leave call_1 unanswered and the provider would reject
+    // the turn.
     BOOST_CHECK(stage_of(record) == InvokeException::Stage::Invoke);
+    BOOST_TEST(record.query.id == "call_1");
+    BOOST_TEST(record.query.name == "read_file");
+    // ... the prose follows the identity, so the record reads as one answer...
     BOOST_TEST(record.output.raw ==
                "Failed while invoking the tool: the checkpoint failed "
-               "(tool read_file; call inner_call)");
+               "(tool read_file; call call_1)");
+
+    // ... and the nested call is preserved rather than dropped: a host can still
+    // see which call the failure was really about.
+    BOOST_REQUIRE(record.extras.has_value());
+    const nlohmann::json& cause =
+        record.extras->at(std::string(InvokeException::cause_key));
+    BOOST_TEST(cause.at("id") == "inner_call");
+    BOOST_TEST(cause.at("name") == "read_file");
+    BOOST_TEST(cause.at("arguments").at("path") == "/etc/hosts");
+    // The marker's own fields are untouched by the cause.
+    BOOST_TEST(record.extras->at("error").at("stage") == "invoke");
+    BOOST_TEST(record.extras->at("error").at("message") == "the checkpoint failed");
+}
+
+BOOST_AUTO_TEST_CASE(execute_omits_the_cause_when_the_tool_named_the_same_call)
+{
+    // The ordinary case: the tool threw the query it was handed (or one equal to
+    // it), so there is no second call to preserve and extras stays a plain
+    // failure marker — a host reading extras.cause_query is reading "this
+    // failure named a DIFFERENT call", not "this failure had a query".
+    auto tool = std::make_shared<ScriptedTool>();
+    tool->fail_in = ScriptedTool::Hook::Invoke;
+    tool->throw_as = ScriptedTool::Throw::InvokeExceptionWithQuery;
+    FakeToolSet set("local_tools", tool);
+
+    const model_io::InvokeReturn record = run(set, read_call());
+
+    BOOST_REQUIRE(record.extras.has_value());
+    BOOST_CHECK(!record.extras->contains(std::string(InvokeException::cause_key)));
+    BOOST_TEST(record.query.id == "call_1");
+}
+
+BOOST_AUTO_TEST_CASE(execute_re_correlates_a_record_the_tool_built_itself)
+{
+    // check_result() builds the record, so a tool can put a query of its own in
+    // it. The set takes that identity back the same way it takes it back from a
+    // failure: the record answers the call the caller made, and the tool's own
+    // call is preserved as the cause.
+    auto tool = std::make_shared<ScriptedTool>();
+    tool->check_result_reports_another_call = true;
+    FakeToolSet set("local_tools", tool);
+
+    const model_io::InvokeReturn record = run(set, read_call());
+
+    BOOST_TEST(!tools::is_error(record));   // the tool ran fine; only its wiring moved
+    BOOST_TEST(record.query.id == "call_1");
+    BOOST_TEST(record.query.name == "read_file");
+    BOOST_TEST(record.output.raw == "127.0.0.1 localhost");
+    BOOST_REQUIRE(record.extras.has_value());
+    BOOST_TEST(record.extras->at(std::string(InvokeException::cause_key)).at("id") ==
+               "inner_call");
 }
 
 BOOST_AUTO_TEST_CASE(execute_reports_a_result_check_failure_and_keeps_the_call)
