@@ -162,7 +162,7 @@ public:
      * The default requires nothing: a tool whose arguments are all optional
      * needs no check.
      */
-    virtual void ensure_arguments(model_io::InvokeQuery& /* query */) const {}
+    virtual void ensure_arguments(model_io::InvokeQuery& query) const {}
 
     /**
      * Write the invocation attributes the model request leaves indeterminate
@@ -188,8 +188,7 @@ public:
      * InvokeException::Stage::ArgumentParse: it is the same phase, settling the
      * query before any check runs.
      */
-    virtual void write_attributes(model_io::InvokeQuery& query) const
-    {
+    virtual void write_attributes(model_io::InvokeQuery& query) const {
         query.type = model_io::InvokeType::SerialWrite;
         query.security = model_io::InvokeSecurity::RequireConfirm;
     }
@@ -222,9 +221,7 @@ public:
      * confirmer's exception propagates from default_security_check() — and the
      * toolset reports it at InvokeException::Stage::SecurityCheck.
      */
-    virtual boost::asio::awaitable<std::tuple<bool, std::string>> security_check(
-        const model_io::InvokeQuery& query)
-    {
+    virtual boost::asio::awaitable<std::tuple<bool, std::string>> security_check(const model_io::InvokeQuery& query) {
         co_return co_await default_security_check(query);
     }
 
@@ -245,13 +242,12 @@ public:
      * expected to override this; leaving it is a bug in the tool, reported as
      * one.
      */
-    virtual boost::asio::awaitable<model_io::Content> invoke(
-        const model_io::InvokeQuery& /* query */)
-    {
+    virtual boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) {
         throw InvokeException(
             InvokeException::Stage::Invoke,
-            std::format("tool \"{}\" does not implement invoke()",
-                        get_details().name));
+            std::format("tool \"{}\" does not implement invoke()", get_details().name)
+        );
+
         // Unreachable, like the trailing returns in invoke_exception.hpp's
         // stage switches: a coroutine needs a co_ keyword to BE a coroutine,
         // and this one must throw when awaited rather than at the call.
@@ -273,9 +269,7 @@ public:
      * settled one the caller passed. Like the other "no write to inner states"
      * hooks it is const.
      */
-    virtual model_io::InvokeReturn check_result(
-        model_io::InvokeQuery query, model_io::Content output) const
-    {
+    virtual model_io::InvokeReturn check_result(model_io::InvokeQuery query, model_io::Content output) const {
         return model_io::InvokeReturn{
             .query = std::move(query),
             .output = std::move(output),
@@ -300,12 +294,14 @@ namespace detail {
  * Shared by both phases of a ToolSet so the rule is stated once: prepare()
  * throws the result, execute() turns it into the record.
  */
-[[nodiscard]] inline InvokeException correlate(
-    const InvokeException& failure, const model_io::InvokeQuery& query)
-{
+[[nodiscard]] inline InvokeException correlate(const InvokeException& failure, const model_io::InvokeQuery& query) {
     if (failure.query().id.empty() && !query.id.empty()) {
-        return InvokeException(failure.stage(), failure.message(), query,
-                               failure.error_code());
+        return InvokeException(
+            failure.stage(), 
+            failure.message(), 
+            query,
+            failure.error_code()
+        );
     }
     return failure;
 }
@@ -368,8 +364,7 @@ public:
 
     /// The names get_tools() advertises, for diagnostics and for a host that
     /// routes by name across several sets. Allocates, so not noexcept.
-    [[nodiscard]] std::vector<std::string> supported_names() const
-    {
+    [[nodiscard]] std::vector<std::string> supported_names() const {
         std::vector<std::string> results = {};
         for (const auto& tool : get_tools()) {
             results.push_back(tool.name);
@@ -411,8 +406,7 @@ public:
      * A query the tool's own InvokeException carried wins over this one; only a
      * failure that arrived without a query is rebuilt around the call's.
      */
-    [[nodiscard]] virtual ToolHandle prepare(model_io::InvokeQuery& query)
-    {
+    [[nodiscard]] virtual ToolHandle prepare(model_io::InvokeQuery& query) {
         InvokeException::Stage stage = InvokeException::Stage::Dispatch;
         try {
             ToolHandle tool = dispatch(query);
@@ -425,10 +419,10 @@ public:
                 // brings.
                 throw InvokeException(
                     InvokeException::Stage::Dispatch,
-                    std::format("no tool named \"{}\" in toolset \"{}\"",
-                                query.name, name()),
+                    std::format("no tool named \"{}\" in toolset \"{}\"", query.name, name()),
                     query,
-                    {});
+                    {}
+                );
             }
 
             stage = InvokeException::Stage::ArgumentParse;
@@ -443,8 +437,7 @@ public:
             throw InvokeException(stage, e.what(), query, {});
         } catch (...) {
             // Same, for a throw that is not a std::exception at all.
-            throw InvokeException(
-                stage, "an unknown error, not a std::exception", query, {});
+            throw InvokeException(stage, "an unknown error, not a std::exception", query, {});
         }
     }
 
@@ -478,9 +471,7 @@ public:
      *    call. A query the tool DID carry wins — it may be the one it actually
      *    failed on.
      */
-    [[nodiscard]] virtual boost::asio::awaitable<model_io::InvokeReturn> execute(
-        ToolHandle tool, model_io::InvokeQuery query)
-    {
+    [[nodiscard]] virtual boost::asio::awaitable<model_io::InvokeReturn> execute(ToolHandle tool, model_io::InvokeQuery query) {
         // The stage every failure is reported at until a later step claims it.
         InvokeException::Stage stage = InvokeException::Stage::SecurityCheck;
         try {
@@ -492,7 +483,9 @@ public:
                     InvokeException::Stage::Dispatch,
                     "the call was never settled: execute() needs the tool "
                     "prepare() returned",
-                    std::move(query), {});
+                    std::move(query), 
+                    {}
+                );
             }
 
             auto [passed, reason] = co_await tool->security_check(query);
@@ -502,10 +495,8 @@ public:
                 // a std::format(...) in the same argument list as
                 // std::move(query) may read the moved-from object. (The test
                 // suite caught exactly that in the single-phase version.)
-                const std::string message =
-                    std::format("security check denied: {}", reason);
-                throw InvokeException(InvokeException::Stage::SecurityCheck,
-                                      message, std::move(query), {});
+                const std::string message = std::format("security check denied: {}", reason);
+                throw InvokeException(InvokeException::Stage::SecurityCheck, message, std::move(query), {});
             }
 
             stage = InvokeException::Stage::Invoke;
@@ -518,12 +509,19 @@ public:
         } catch (const InvokeException& failure) {
             co_return detail::correlate(failure, query).to_invoke_return();
         } catch (const std::exception& e) {
-            co_return InvokeException(stage, e.what(), std::move(query), {})
-                .to_invoke_return();
+            co_return InvokeException(
+                stage, 
+                e.what(), 
+                std::move(query), 
+                {}
+            ).to_invoke_return();
         } catch (...) {
             co_return InvokeException(
-                stage, "an unknown error, not a std::exception",
-                std::move(query), {}).to_invoke_return();
+                stage, 
+                "an unknown error, not a std::exception",
+                std::move(query), 
+                {}
+            ).to_invoke_return();
         }
     }
 };
