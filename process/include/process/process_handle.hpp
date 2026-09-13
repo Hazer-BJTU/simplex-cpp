@@ -66,8 +66,18 @@
 // handle's strand. Start the two lifecycle coroutines ON that strand (the
 // tests' make_strand + co_spawn pattern), and treat the observation
 // accessors as strand-side or at-rest (after io_context::run() returned).
-// The two exceptions are the concurrent_channel frontends write_input() /
-// close_input(), which are safe from any thread by design.
+// The exceptions are the concurrent_channel frontends write_input() /
+// close_input(), and exited() — see below — which are safe from any thread
+// by design.
+//
+// exited() is the one OBSERVATION that crosses that line, because a shutdown
+// path has no strand to hop to: a destructor cannot co_await, and the single
+// question it must answer is "is this child already observed and reaped?" —
+// answering it wrongly means signalling a pid the kernel may have handed to
+// somebody else. So terminality is a LATCH (std::atomic<bool>, written once
+// by whichever await task observes the child, never unwritten) rather than
+// only the strand-owned _final_status; status()/snapshot()/output still
+// belong to the strand exactly as before.
 //
 // The initial-wait deadline (await_initial_execution): the first wait
 // races the spec's initial_wait_timeout_milliseconds against the child's
@@ -92,6 +102,7 @@
 //
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <format>
@@ -164,7 +175,14 @@ private:
 
     // Engaged exactly once, by whichever await task observes the child's
     // terminal state. Disengaged => status() reports the live view.
+    // Strand-owned; exited() reports the same fact through _terminal_observed.
     std::optional<ExecutionStatus> _final_status;
+
+    // The thread-safe half of that fact: set (release) immediately after
+    // _final_status is engaged, read by exited() from any thread. A latch,
+    // not a shared flag — nothing ever clears it, so there is no mutual
+    // exclusion to get wrong.
+    mutable std::atomic<bool> _terminal_observed{false};
     std::vector<std::future<void>> _background_tasks;
 
     boost::asio::awaitable<void> background_write_task(boost::asio::writable_pipe& pipe, MsgChannel& channel);
@@ -264,6 +282,14 @@ public:
     [[nodiscard]] std::chrono::system_clock::time_point started_at() const noexcept;
 
     // True once some await task has observed the child's terminal state.
+    //
+    // SAFE FROM ANY THREAD, unlike the observers around it: it reads the
+    // latch described in the class comment. That is what makes it usable from
+    // the one place a strand hop is impossible — a destructor deciding
+    // whether signalling a recorded pid is still meaningful (a child that was
+    // observed is also reaped, so its pid may already name somebody else).
+    // Everything the terminal state is read FOR — the status, the captured
+    // output, whether the pipes are drained — is still strand-side.
     [[nodiscard]] bool exited() const noexcept;
 
     // The terminal record once exited(); before that, the live view —

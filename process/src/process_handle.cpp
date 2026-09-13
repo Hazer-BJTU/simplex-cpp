@@ -501,6 +501,11 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
             std::chrono::steady_clock::now() - _started_steady
         ).count();
         _final_status = std::move(state);
+        // The latch AFTER the optional, and that order is the contract: any
+        // thread that sees exited() == true is guaranteed — by the release
+        // below — to see everything the terminal observation wrote, including
+        // the _final_status a strand-side status() reads.
+        _terminal_observed.store(true, std::memory_order_release);
         // A dead child cannot read: close the stdin faucet so the write task
         // drains and finishes too. This is what lets a handle quiesce without
         // the owner remembering to close_input() first.
@@ -744,7 +749,10 @@ std::chrono::system_clock::time_point ProcessHandle::started_at() const noexcept
 }
 
 bool ProcessHandle::exited() const noexcept {
-    return _final_status.has_value();
+    // The latch, not _final_status: see the class comment. An acquire pairs
+    // with the release in background_await_task(), so a caller that sees true
+    // also sees whatever the terminal observation published before it.
+    return _terminal_observed.load(std::memory_order_acquire);
 }
 
 ExecutionStatus ProcessHandle::status() const {
