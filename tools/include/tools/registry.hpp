@@ -111,6 +111,14 @@
 // gate here on purpose: that belongs to the loop engine, and a turn is the unit
 // it can actually reason about.
 //
+// The invariant is per SET OF TOOL INSTANCES, not per table, so the registry is
+// NOT copyable: a copy would be a second table over the same sets, and the two
+// could each honour "one active execute()" while running SerialWrite calls
+// against the same tools at once. One scheduling authority, one registry — a
+// component that wants to dispatch through the host's tools holds a reference, a
+// pointer or a shared_ptr to it rather than a table of its own. Moves are fine
+// and are what building one looks like: the sets travel with the table.
+//
 // Nothing else about a single batch is single-threaded: its parallel branches
 // may run on a pool (see step 3), and registration — add()/remove()/clear() — is
 // configuration, not synchronised against dispatch, so a host registers
@@ -167,9 +175,12 @@ namespace tools {
  *
  * A host holds ONE of these, owned and driven by the agent loop, and hands the
  * model the catalogue it flattens (get_tools()); a tool call from the model goes
- * back in through execute(), one batch per model turn. See the file header for
- * the batch's four steps, how a record is filed and what it answers, the
- * one-batch-at-a-time contract, and the failure sizes.
+ * back in through execute(), one batch per model turn. It is not copyable, so a
+ * component that dispatches through the host's tools holds a reference, a
+ * pointer or a shared_ptr to this one rather than a table of its own (file
+ * header, "ownership and reentrancy"). See the file header for the batch's four
+ * steps, how a record is filed and what it answers, the one-batch-at-a-time
+ * contract, and the failure sizes.
  *
  * A host that accidentally runs two batches at once is outside the contract
  * rather than blocked from it: there is no mutex here, because a turn — not a
@@ -186,13 +197,21 @@ public:
 
     ToolRegistry() = default;
     ~ToolRegistry() = default;
-    // Copying the table copies the POINTERS: both tables then route to the same
-    // sets. That is what a host handing a registry to a component — a plugin
-    // that wants to dispatch through the host's tools, say — needs, and it is
-    // why the entries are shared_ptr in the first place. The table does not own
-    // the sets' lifetimes any more than a catalogue does.
-    ToolRegistry(const ToolRegistry&) = default;
-    ToolRegistry& operator = (const ToolRegistry&) = default;
+
+    // NOT copyable, and that is a scheduling guarantee rather than tidiness. A
+    // copy would be a second table over the SAME tool instances (the entries are
+    // shared_ptr, and the sets hold the tools), so both copies would satisfy
+    // "one active execute() per registry instance" while running SerialWrite
+    // calls against the same tools at the same time. The invariant the
+    // non-reentrant contract keeps is per SET OF TOOL INSTANCES, not per table,
+    // so the type refuses to make a second table out of one. A component that
+    // needs to dispatch through the host's tools takes a reference, a pointer or
+    // a shared_ptr to the ONE registry the loop engine owns.
+    ToolRegistry(const ToolRegistry&) = delete;
+    ToolRegistry& operator = (const ToolRegistry&) = delete;
+    // Moving is what a host does while BUILDING one — return it from a factory,
+    // put it in a member — and it keeps a single owner: the sets travel with the
+    // table, and no second table is left behind.
     ToolRegistry(ToolRegistry&&) = default;
     ToolRegistry& operator = (ToolRegistry&&) = default;
 

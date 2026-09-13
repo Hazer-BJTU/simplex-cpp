@@ -24,6 +24,7 @@
 #include <string_view>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -442,6 +443,18 @@ BatchRun run_batch_on_threads(const ToolRegistry& registry,
 }
 
 } // namespace
+
+// The ownership model, pinned by the type rather than only by prose: there is
+// ONE scheduling authority for a given set of tool instances, so a registry
+// cannot be copied into a second table over the same sets. Two copies would each
+// satisfy "one active execute() per instance" while running SerialWrite calls
+// against the same tools at the same time, which is the guarantee the
+// non-reentrant contract exists to give. Moving is how a host BUILDS one, and
+// leaves a single owner behind.
+static_assert(!std::is_copy_constructible_v<ToolRegistry>);
+static_assert(!std::is_copy_assignable_v<ToolRegistry>);
+static_assert(std::is_move_constructible_v<ToolRegistry>);
+static_assert(std::is_move_assignable_v<ToolRegistry>);
 
 // ===== configuration =========================================================
 
