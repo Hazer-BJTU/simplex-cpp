@@ -7,11 +7,11 @@
 # (ProcessHandle) with the piece neither owns — a table of live children a model
 # can name across turns.
 #
-#   process/session_store.hpp  the session table: readable recycled ids, a
-#                              strand per child, the per-stream read cursors
-#                              that make "what is new since I last looked"
-#                              answerable, reaping, and the terminate_all()
-#                              shutdown path;
+#   process/session_store.hpp  the session table: readable ids that are never
+#                              reused, a strand per child, the per-stream read
+#                              cursors that make "what is new since I last
+#                              looked" answerable, reaping, and the
+#                              terminate_all() shutdown path;
 #   process/tools.hpp          the six ToolInterface implementations and the
 #                              ProcessToolBase that adds this family's session
 #                              id argument to the shared IntrinsicTool;

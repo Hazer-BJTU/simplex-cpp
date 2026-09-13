@@ -50,20 +50,33 @@ ProcessSessionStore::~ProcessSessionStore()
     // host forgot to shut down, and a polite signal a nobody is watching for
     // would leave the child running anyway.
     //
-    // The pid is safe to signal because the child has not been reaped: the
-    // handle (kept alive by its await task) is still its parent, so the pid
-    // cannot have been recycled onto somebody else's process.
+    // The two reads below are the two that a destructor is allowed to make,
+    // and the choice is deliberate rather than convenient:
+    //
+    //   the pid     copied into the Session at spawn, so this runs off the
+    //               handle entirely — and the value was written once, before
+    //               the handle was shared with anyone.
+    //   exited()    the handle's one thread-safe observation (a latch, see
+    //               process_handle.hpp). It has to be: the question this path
+    //               asks is "was this child already observed?", and a child
+    //               that was observed was also REAPED, so its pid may already
+    //               belong to somebody else. Killing on a stale pid is the one
+    //               failure here that hurts a stranger, so it is answered
+    //               properly even though a destructor cannot hop to a strand.
+    //               The race this replaces — reading strand-owned state from
+    //               the wrong thread and calling the answer luck — is what the
+    //               latch exists to remove.
     for (const auto& [id, session] : _sessions) {
-        if (!session->handle || session->handle->exited()) {
+        if (!session->handle || session->handle->exited() || session->pid <= 0) {
             continue;
         }
-        const pid_t pid = session->handle->pid();
+        const pid_t pid = session->pid;
         logging::Logger::warning(std::format(
             "process session store destroyed while session {} (pid {}) is "
             "still running; killing it. A host should await terminate_all() "
             "before dropping the store",
             id, static_cast<int>(pid)));
-        if (pid > 0 && ::kill(pid, SIGKILL) != 0 && errno != ESRCH) {
+        if (::kill(pid, SIGKILL) != 0 && errno != ESRCH) {
             logging::Logger::error(std::format(
                 "killing session {} (pid {}) during store destruction failed: "
                 "errno {}", id, static_cast<int>(pid), errno));
@@ -76,13 +89,10 @@ ProcessSessionStore::~ProcessSessionStore()
 
 ProcessSessionStore::SessionId ProcessSessionStore::mint_id_on_strand()
 {
-    // Recycle first, so the numbers a transcript shows stay small and
-    // readable rather than climbing forever.
-    if (!_free_ids.empty()) {
-        SessionId recycled = std::move(_free_ids.back());
-        _free_ids.pop_back();
-        return recycled;
-    }
+    // Monotonic, always. No pool, no reuse: an agent-facing id that came back
+    // around would alias a process the model remembers from an earlier turn
+    // (the header's identity note). The cost of never reusing is a number
+    // that grows; the cost of reuse is killing the wrong process.
     return std::format("proc_{}", _next_id++);
 }
 
@@ -137,6 +147,11 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
         .id = mint_id_on_strand(),
         .handle = handle,
         .strand = session_strand,
+        // Read here, before the handle is shared with any task: the pid is
+        // stamped by the constructor and never written again, and this copy is
+        // what lets the destructor signal the child without touching the
+        // handle at all (the header's shutdown note).
+        .pid = handle->pid(),
         .stdout_cursor = 0,
         .stderr_cursor = 0,
     });
@@ -174,7 +189,7 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
                 co_await handle->await_initial_execution();
             },
             boost::asio::detached);
-        co_return SpawnResult{.id = id, .finished = false};
+        co_return SpawnResult{.id = id, .finished = false, .output_drained = false};
     }
 
     // The window applies: race it against the child, which is precisely what
@@ -183,8 +198,11 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
     // there is nothing to co_spawn here for that case.
     //
     // This suspends onto the SESSION's strand and stays there, so _sessions is
-    // untouchable from here on — already handled above.
+    // untouchable from here on — already handled above. The hop is stated
+    // explicitly below rather than left to the propagation rules, because the
+    // code that follows reads the handle's strand-owned output state.
     const bool finished = co_await handle->await_initial_execution();
+    co_await boost::asio::dispatch(session_strand, boost::asio::use_awaitable);
 
     if (finished) {
         // Terminal, but the output may still be in flight: the await task
@@ -207,7 +225,17 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
         }
     }
 
-    co_return SpawnResult{.id = id, .finished = finished};
+    // `finished` and `output_drained` are reported SEPARATELY, and this is the
+    // one place in the store where they can disagree: the child exited inside
+    // the window, while a descendant it left behind holds the inherited pipes
+    // open, so the capture is still incomplete when the bound above fires. The
+    // caller gets both facts rather than one bool that would have to mean two
+    // things (SpawnResult).
+    co_return SpawnResult{
+        .id = id,
+        .finished = finished,
+        .output_drained = finished && handle->output_drained(),
+    };
 }
 
 // ---- observation ------------------------------------------------------------
@@ -222,6 +250,10 @@ ProcessSessionStore::snapshot_on_session(SessionPtr session)
         .id = session->id,
         .result = session->handle->snapshot(),
         .exited = session->handle->exited(),
+        // Both facts, always: a caller that only ever sees `exited` cannot
+        // tell a complete capture from one whose pipes somebody else still
+        // holds open (SessionSnapshot).
+        .output_drained = session->handle->output_drained(),
     };
 }
 
@@ -410,13 +442,16 @@ ProcessSessionStore::wait_for_exit(
         co_await poll.async_wait(boost::asio::use_awaitable);
     }
 
-    // Either way the snapshot is the answer: its `exited` says whether the
-    // child finished or the deadline did. Already on the session's strand,
-    // so this reads directly rather than hopping again.
+    // Either way the snapshot is the answer, and it carries BOTH facts: which
+    // of the two conditions the wait reached is exactly what tells a caller
+    // "it finished" from "it finished but its output is not all here yet" from
+    // "the deadline came first". Already on the session's strand, so this
+    // reads directly rather than hopping again.
     co_return SessionSnapshot{
         .id = session->id,
         .result = session->handle->snapshot(),
         .exited = session->handle->exited(),
+        .output_drained = session->handle->output_drained(),
     };
 }
 
@@ -486,19 +521,38 @@ boost::asio::awaitable<bool> ProcessSessionStore::release(SessionId id)
     // a silent kill out of what reads like a bookkeeping call. A caller that
     // means to end a child calls terminate() and says so.
     //
-    // exited() is strand-owned state, but it is a bool the await task writes
-    // once and never unwrites, and the table entry cannot vanish under us
-    // (we hold the store's strand). Reading it here rather than hopping to
-    // the session's strand keeps the whole removal in ONE strand pass, so a
-    // concurrent spawn() cannot recycle this id mid-removal.
-    if (!session->handle->exited()) {
+    // The answer is read on the SESSION's strand, where the handle keeps it,
+    // and the coroutine comes back to the store's strand to act on it. The
+    // detour is not ceremony: "exited() only ever transitions once" is an
+    // argument about the value, not about the memory, and a release deciding a
+    // lifetime question from a state read on the wrong strand is exactly the
+    // kind of unsynchronised access that passes every single-runner test and
+    // fails the first time the context gets a second worker thread.
+    //
+    // What is held across the two hops is a shared_ptr, so the session itself
+    // cannot be destroyed under this coroutine; what is NOT held is any belief
+    // about the table (see the re-lookup below).
+    co_await boost::asio::dispatch(session->strand, boost::asio::use_awaitable);
+    const bool exited = session->handle->exited();
+    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
+
+    if (!exited) {
+        co_return false;
+    }
+
+    // Back on the store's strand, and the table may have moved while we were
+    // away: a concurrent release() of the same session can have won the race,
+    // and erasing on a stale find would drop an entry that is already gone and
+    // report true a second time for one session. So the lookup is redone and
+    // the identity is checked rather than the id — an id is never reused
+    // (mint_id_on_strand), so "the id resolves to MY session" is the precise
+    // question, and a mismatch can only mean somebody else already released
+    // it.
+    if (find_on_strand(id) != session) {
         co_return false;
     }
 
     _sessions.erase(id);
-    // Recycled only now, after the entry is gone: an id in the pool must
-    // never still name a session.
-    _free_ids.push_back(id);
     logging::Logger::debug(std::format("process session {} released", id));
     co_return true;
 }

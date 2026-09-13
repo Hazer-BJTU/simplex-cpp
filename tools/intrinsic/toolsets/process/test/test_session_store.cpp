@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -26,9 +27,11 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 
-// Tests for the session table: id minting and recycling, the delta/full read
-// distinction and its cursor, the refusal to release a live child, waiting
-// with and without a deadline, and the shutdown that must not leak children.
+// Tests for the session table: id minting (monotonic, never reused), the
+// delta/full read distinction and its cursor, the refusal to release a live
+// child, waiting with and without a deadline, the difference between "the
+// child exited" and "its output is all here", and the shutdown that must not
+// leak children.
 //
 // Children are the same harmless coreutils process/'s own tests use (echo /
 // cat / sleep / true), and every case drives one store on a private
@@ -75,16 +78,24 @@ struct Fixture {
     Fixture(const Fixture&) = delete;
     Fixture& operator = (const Fixture&) = delete;
 
-    /// Drop the store, then stop the context and join its thread — in that
-    /// order, so the store's destructor (which kills any live child) runs
-    /// while its executor is still alive. Idempotent, so a case may call it
-    /// early to observe what teardown does.
+    /// Stop the context and join its thread FIRST, then drop the store.
+    ///
+    /// That order is what ThreadSanitizer found the other way round. Killing a
+    /// leaked child is a synchronous ::kill on a pid the spawn recorded, so the
+    /// destructor needs no executor at all — but the table's own strand shares
+    /// refcounted state with the operations still queued on the context, and
+    /// freeing it from the test thread while a worker is finishing one is a
+    /// data race on that shared state (asio's executor refcount), which TSan
+    /// reports as a race in `operator delete`. Nothing that shares an executor
+    /// with a running context should be destroyed before it is quiesced.
+    ///
+    /// Idempotent, so a case may call it early to observe what teardown does.
     void shutdown()
     {
-        store.reset();
         guard.reset();
         io.stop();
         if (runner.joinable()) runner.join();
+        store.reset();
     }
 
     /// Run one coroutine over the store on the store's context and block the
@@ -120,6 +131,68 @@ process::LaunchSpec spec_for(std::string executable,
     spec.description = std::move(description);
     return spec;
 }
+
+/// The same store on a context with SEVERAL worker threads.
+///
+/// The single-runner fixture above is what a case wants when it is testing
+/// behavior, and it is useless for testing strand discipline: with one thread
+/// nothing is ever concurrent, so an off-strand read cannot be observed no
+/// matter how wrong it is. This fixture is the one that gives the two-level
+/// strand model something to actually do — the store's strand and a session's
+/// strand are on different threads often enough to matter.
+struct MultiWorkerFixture {
+    asio::io_context io;
+    asio::executor_work_guard<asio::io_context::executor_type> guard;
+    std::vector<std::thread> runners;
+    std::shared_ptr<ProcessSessionStore> store;
+
+    explicit MultiWorkerFixture(std::size_t workers = 3)
+        : guard(asio::make_work_guard(io))
+    {
+        runners.reserve(workers);
+        for (std::size_t i = 0; i < workers; ++i) {
+            runners.emplace_back([this] { io.run(); });
+        }
+        store = std::make_shared<ProcessSessionStore>(io.get_executor());
+    }
+
+    ~MultiWorkerFixture() { shutdown(); }
+
+    MultiWorkerFixture(const MultiWorkerFixture&) = delete;
+    MultiWorkerFixture& operator = (const MultiWorkerFixture&) = delete;
+
+    /// Stop the context, join every worker, and only THEN drop the store —
+    /// the order a host that never called terminate_all() leaves behind, and
+    /// the only order that is free of races: the tail's signal is a synchronous
+    /// ::kill on a recorded pid, which needs no executor, while the table's
+    /// strand shares refcounted state with the operations still queued on the
+    /// context. Freeing it before the workers are joined is a data race in that
+    /// refcount, which ThreadSanitizer reports as a race in operator delete.
+    void shutdown()
+    {
+        guard.reset();
+        io.stop();
+        for (std::thread& runner : runners) {
+            if (runner.joinable()) runner.join();
+        }
+        store.reset();
+    }
+
+    template <typename Awaitable>
+    auto run(Awaitable&& work)
+    {
+        return asio::co_spawn(io, std::forward<Awaitable>(work),
+                              asio::use_future)
+            .get();
+    }
+
+    std::string spawn_id(process::LaunchSpec spec)
+    {
+        spec.initial_wait_timeout_milliseconds =
+            ProcessSessionStore::kNoInitialWait;
+        return run(store->spawn(std::move(spec))).id;
+    }
+};
 
 /// Whether a pid still names a RUNNABLE process — not merely a pid the
 /// kernel still knows.
@@ -204,10 +277,14 @@ BOOST_AUTO_TEST_CASE(spawn_answers_at_once_when_the_child_finishes_in_its_window
 
     const auto spawned = f.run(f.store->spawn(std::move(spec)));
     BOOST_TEST(spawned.finished);
+    // And the SECOND fact, reported separately: the capture behind that exit
+    // is complete, so the caller can treat what it reads as the whole output.
+    BOOST_TEST(spawned.output_drained);
 
     const auto snapshot = f.run(f.store->snapshot(spawned.id));
     BOOST_TEST_REQUIRE(snapshot.has_value());
     BOOST_TEST(snapshot->exited);
+    BOOST_TEST(snapshot->output_drained);
     BOOST_TEST(snapshot->result.execution.exit_code.value() == 0);
     // And the output is complete, not still in flight — the spawn waits out the
     // drain for the same reason wait_for_exit() does.
@@ -500,7 +577,7 @@ BOOST_AUTO_TEST_CASE(terminate_kills_and_graceful_asks)
     BOOST_TEST(!f.run(f.store->terminate(killed, false)));
 }
 
-BOOST_AUTO_TEST_CASE(release_refuses_a_running_child_and_recycles_an_exited_id)
+BOOST_AUTO_TEST_CASE(release_refuses_a_running_child_and_retires_the_id)
 {
     Fixture f;
     const auto live = f.spawn_id(spec_for("sleep", {"30"}));
@@ -517,10 +594,116 @@ BOOST_AUTO_TEST_CASE(release_refuses_a_running_child_and_recycles_an_exited_id)
     BOOST_TEST(f.run(f.store->release(live)));
     BOOST_TEST(f.run(f.store->size()) == std::size_t{0});
     BOOST_TEST(!f.run(f.store->snapshot(live)).has_value());
+    // A second release of the same id is false, not a second success: the
+    // removal happens after a strand hop, so the id is looked up again when
+    // the coroutine gets back and "already gone" has to be answered honestly.
+    BOOST_TEST(!f.run(f.store->release(live)));
 
-    // The id is recycled, so the numbers a transcript shows stay small.
+    // The id is SPENT. It does not come back — not for the next spawn, not for
+    // any later one. An agent-facing id that reappeared would alias a process
+    // the model still remembers from an earlier turn.
     const auto next = f.spawn_id(spec_for("true"));
-    BOOST_TEST(next == live);
+    BOOST_TEST(next != live);
+    const auto after = f.spawn_id(spec_for("true"));
+    BOOST_TEST(after != next);
+    BOOST_TEST(after != live);
+}
+
+BOOST_AUTO_TEST_CASE(a_concurrent_release_of_one_session_has_exactly_one_winner)
+{
+    // release() reads the child's state on the session's strand and removes the
+    // entry on the store's strand, so callers racing for one session must not
+    // both report success. This case puts eight callers inside release() at the
+    // same instant, on a context with three worker threads, and asserts the
+    // contract that has to hold for all of them: exactly one removes the
+    // session, the rest answer false, and the table ends empty.
+    //
+    // The callers are held at a SHARED DEADLINE rather than started in a loop,
+    // because a loop is not a race at all: each release is a few strand hops and
+    // the next caller only starts a moment later, so a loop tests the sequential
+    // path twice and calls it concurrency.
+    //
+    // WHAT THIS CASE DOES NOT DO, stated because the difference matters when
+    // reading a mutation report: it does not drive the re-lookup that release()
+    // performs after its second hop. Every hop in this store is a continuation
+    // of the handler before it, so on a free worker the first caller's three
+    // hops run back to back before another caller's first hop is even dequeued
+    // — the losers here find the session already gone, which is the FIRST
+    // lookup answering. Measured, rather than assumed: with the re-lookup
+    // deleted, 120 rounds of this case still never produced a second winner. So
+    // that check is defensive (it costs one map lookup and turns a "cannot
+    // happen" into an answer), and the assertions below are about the property
+    // a host actually depends on.
+    MultiWorkerFixture f;
+    constexpr int kRounds = 20;
+    constexpr int kCallers = 8;
+
+    for (int round = 0; round < kRounds; ++round) {
+        BOOST_TEST_CONTEXT("round " << round) {
+            const auto id = f.spawn_id(spec_for("true"));
+            BOOST_TEST_REQUIRE(f.run(f.store->wait_for_exit(id, 5000))->exited);
+
+            const auto gate_at = std::chrono::steady_clock::now() +
+                                 std::chrono::milliseconds{20};
+            std::vector<std::future<bool>> releases;
+            releases.reserve(kCallers);
+            for (int caller = 0; caller < kCallers; ++caller) {
+                releases.push_back(asio::co_spawn(
+                    f.io,
+                    [&store = *f.store, id, gate_at]() -> asio::awaitable<bool> {
+                        // The barrier: every caller waits on the same instant,
+                        // so none of them can finish before the last one has
+                        // started.
+                        asio::steady_timer gate{
+                            co_await asio::this_coro::executor};
+                        gate.expires_at(gate_at);
+                        co_await gate.async_wait(asio::use_awaitable);
+                        co_return co_await store.release(id);
+                    },
+                    asio::use_future));
+            }
+            int released = 0;
+            for (auto& release : releases) {
+                if (release.get()) ++released;
+            }
+            BOOST_TEST(released == 1);
+            BOOST_TEST(f.run(f.store->size()) == std::size_t{0});
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_descendant_holding_the_pipes_delays_output_completion)
+{
+    // The two facts SessionSnapshot carries, in the case where they come
+    // apart for a reason that has nothing to do with scheduling: the direct
+    // child exits at once, but something it started inherited its stdout and
+    // stderr and is still holding them open, so the capture cannot complete
+    // until that descendant is gone. The exit code is readable the whole time.
+    //
+    // `sh -c 'sleep N & exit 0'` is the smallest way to arrange it: the shell
+    // puts the sleep in the background (it inherits the pipes) and exits
+    // without waiting for it.
+    Fixture f;
+    const auto id = f.spawn_id(spec_for("sh", {"-c", "sleep 2 & exit 0"}));
+
+    const auto waited = f.run(f.store->wait_for_exit(id, 500));
+    BOOST_TEST_REQUIRE(waited.has_value());
+    // The child is gone, and it ended successfully...
+    BOOST_TEST(waited->exited);
+    BOOST_TEST(waited->result.execution.exit_code.value() == 0);
+    // ...while the capture is NOT finished. This is the state a caller must be
+    // able to see: read on `exited` alone, it would take what it has for all
+    // the output there is, and it has none.
+    BOOST_TEST(!waited->output_drained);
+
+    // And the flag is a fact about the pipes, not a verdict about the session:
+    // when the descendant goes, the capture finishes and the same session
+    // reports it.
+    const auto finished = f.run(f.store->wait_for_exit(id, 10000));
+    BOOST_TEST_REQUIRE(finished.has_value());
+    BOOST_TEST(finished->exited);
+    BOOST_TEST(finished->output_drained);
+    BOOST_TEST(f.run(f.store->release(id)));
 }
 
 BOOST_AUTO_TEST_CASE(snapshots_lists_every_session_in_id_order)
@@ -570,6 +753,36 @@ BOOST_AUTO_TEST_CASE(destroying_the_store_does_not_leak_running_children)
     // handle's await task holds its handle alive, so the destructor signals
     // the recorded pids itself.
     Fixture f;
+    const auto id = f.spawn_id(spec_for("sleep", {"60"}));
+    const pid_t pid = f.run(f.store->snapshot(id))->result.spec.pid;
+    BOOST_TEST_REQUIRE(pid > 0);
+    BOOST_TEST(process_running(pid));
+
+    f.shutdown();
+    BOOST_TEST(wait_until_not_running(pid));
+}
+
+BOOST_AUTO_TEST_CASE(destroying_the_store_under_several_workers_still_reaps_children)
+{
+    // The same last-resort tail, on the fixture whose context runs on THREE
+    // worker threads, so the table being dropped is one whose strands and
+    // handles have really been spread across threads.
+    //
+    // What makes the tail answerable is the pair the destructor reads: the pid
+    // copied at spawn (written once, before the handle was shared with anyone)
+    // and exited(), the handle's one thread-safe observation. It reads both
+    // WITHOUT a strand hop, because a destructor cannot make one — and the
+    // answer matters: a child that was observed was also reaped, so its pid may
+    // already belong to somebody else.
+    //
+    // The teardown ORDER is part of the case rather than incidental: the
+    // context is stopped and every worker joined before the table is dropped
+    // (see MultiWorkerFixture::shutdown). That is not tidiness — the table's
+    // strand shares refcounted state with the operations queued on the context,
+    // and freeing it while a worker is still finishing one is a race that
+    // ThreadSanitizer reports in operator delete. The tail itself needs no
+    // executor, so nothing is lost by quiescing first.
+    MultiWorkerFixture f;
     const auto id = f.spawn_id(spec_for("sleep", {"60"}));
     const pid_t pid = f.run(f.store->snapshot(id))->result.spec.pid;
     BOOST_TEST_REQUIRE(pid > 0);

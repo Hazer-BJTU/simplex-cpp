@@ -15,17 +15,23 @@
 //
 //   SESSION IDENTITY   a SessionId per child, minted "proc_<n>". Text, not an
 //                      integer, because it travels through JSON tool
-//                      arguments and back as prose the model may repeat; a
-//                      recycled id pool keeps the numbers small enough to
-//                      stay readable in a transcript.
+//                      arguments and back as prose the model may repeat. The
+//                      numbers only ever go UP: an id is handed out once and
+//                      never reused, not even after its session is released.
+//                      Reuse would alias a stale handle in the one place
+//                      aliasing is unrecoverable — a model's context still
+//                      says "proc_1 is the build I started three turns ago",
+//                      and a reused proc_1 would make kill_process end a
+//                      process that model never saw. Growth is the cheap
+//                      side of that trade: a uint64 counter does not run out.
 //   READ CURSORS       how much of each stream the model has already been
 //                      given. ProcessHandle keeps the whole captured buffer
 //                      and never forgets, so "the new output" is a cursor
 //                      over that buffer — this layer's account, not the
 //                      child's state.
 //   REAPING            a session is removed only once its child is observed
-//                      terminal. An id is returned to the pool at the same
-//                      moment, so an id in flight never names two children.
+//                      terminal, and its id goes nowhere afterwards: the
+//                      table shrinks, the number does not come back.
 //
 // THREADING — TWO LEVELS OF STRAND, on purpose:
 //
@@ -46,7 +52,10 @@
 // is why they are coroutines rather than plain accessors, and why a caller
 // never gets a Session out — a handle read off-strand would be a data race,
 // so what leaves this class is always a VALUE (a snapshot, a slice of output,
-// a bool), never a reference into the table.
+// a bool), never a reference into the table. release() is the one method that
+// hops TWICE (in, out, and back in), because it must both read the handle's
+// terminal state where that state lives and remove the table entry where the
+// table lives; see its own comment.
 //
 // THE STORE OWNS THE LIFECYCLE CONTRACT. ProcessHandle's contract
 // (process_handle.hpp) says: start the io tasks, then keep driving the handle
@@ -72,16 +81,37 @@
 // has no executor left to run one on. So a host ends its children by awaiting
 // terminate_all() while its context still runs; the destructor is a
 // last-resort tail that signals whatever is left synchronously (::kill on the
-// recorded pid) and says so loudly, because a leaked child outlives the
-// process that made it.
+// pid recorded at spawn) and says so loudly, because a leaked child outlives
+// the process that made it.
+//
+// The destructor therefore reads exactly two things off a handle, and both are
+// chosen because a destructor cannot hop to a strand: the pid, which the
+// spawn stamped and nothing ever writes again, and exited(), which is the
+// handle's one thread-safe observation — a latch, so that "this child was
+// already observed (and therefore reaped)" is answerable from any thread. The
+// pair is what keeps the tail honest: a child that was observed is not
+// signalled, because its pid may already belong to somebody else.
+//
+// DROP THE TABLE AFTER THE CONTEXT IS QUIESCED — stop it and join its threads
+// first, whether or not terminate_all() was awaited. Signalling a pid needs no
+// executor, so the tail works either way, but the table's own strand shares
+// refcounted state with the operations still queued on that context, and
+// freeing it from another thread while a worker finishes one is a data race in
+// that refcount (measured: ThreadSanitizer reports it in operator delete, on
+// every suite that dropped the store with its workers still running). Nothing
+// that shares an executor with a running context should be destroyed before
+// the context is quiesced.
 //
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <sys/types.h>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -114,26 +144,54 @@ struct OutputRead {
 };
 
 /// One session as a caller sees it: its name, the report-shaped view of its
-/// child, and whether its terminal state has been observed. A VALUE — the
-/// live handle never leaves the store (see the header's threading note).
+/// child, and the two facts about its ending — whether the child has been
+/// observed terminal, and whether the capture behind it is COMPLETE.
+///
+/// Those last two are NOT the same question, and a caller that treats them as
+/// one reports an exit code with half its output:
+///
+///   exited          the child is gone (its exit code is readable).
+///   output_drained  both output pipes have hit EOF and the readers have
+///                   finished, so the captured text is everything the child
+///                   will ever produce.
+///
+/// The gap between them is ordinary, not exotic. The handle's await task
+/// records the exit the moment it observes the child, while the readers are
+/// still draining what sits in the pipe buffers — and a descendant that
+/// inherited stdout/stderr keeps those pipes OPEN after the direct child is
+/// gone, so `exited` can be true for as long as that descendant lives while
+/// `output_drained` stays false. A VALUE — the live handle never leaves the
+/// store (see the header's threading note).
 struct SessionSnapshot {
     std::string id;
     process::ExecutionResult result;
     bool exited = false;
+    bool output_drained = false;
 };
 
-/// What a spawn answers with: the session's id, and whether the child finished
-/// inside the spec's initial-wait window.
+/// What a spawn answers with: the session's id, whether the child finished
+/// inside the spec's initial-wait window, and whether its output was fully
+/// collected by the time this answered.
 ///
-/// The bool is the whole point of the pair. A caller that launched `ls` wants
-/// its output in the same call, while one that launched a server wants the id
-/// and nothing else — and which of the two happened is not something the
-/// caller can know in advance, only something the launch can report. `finished`
-/// true means the session is already terminal (its output complete, its exit
+/// `finished` is the whole point of the pair with the id. A caller that
+/// launched `ls` wants its output in the same call, while one that launched a
+/// server wants the id and nothing else — and which of the two happened is not
+/// something the caller can know in advance, only something the launch can
+/// report. `finished` true means the session is already terminal (its exit
 /// code readable); false means it is a live session to come back to.
+///
+/// `output_drained` is the SECOND question, and it is deliberately not folded
+/// into the first. `finished` is a fact about the child; the capture is a fact
+/// about its pipes, and the two part company exactly where it matters — a
+/// child that exits while a descendant holds its inherited stdout/stderr open
+/// is finished with its output still arriving. So `finished && !output_drained`
+/// is a real answer ("it ended, but this result is not the whole of what it
+/// printed"), and the tools report both rather than letting one imply the
+/// other.
 struct SpawnResult {
     std::string id;
     bool finished = false;
+    bool output_drained = false;
 };
 
 /**
@@ -150,9 +208,16 @@ public:
     using SessionId = std::string;
     using HandlePtr = std::shared_ptr<process::ProcessHandle>;
 
-    /// How many children may be alive at once. A model that loops on spawn
+    /// How many sessions may be RETAINED at once. A model that loops on spawn
     /// would otherwise fill the host's process table; the refusal is a
     /// failure the tool reports, which the model can read and act on.
+    ///
+    /// Retained, not alive: this counts table entries, and an exited session
+    /// stays in the table until it is released (its output is still worth
+    /// reading). So a model that spawns 32 quick commands without releasing
+    /// any of them is refused on the 33rd, exactly as if they were all still
+    /// running, and the remedy the message names is release_exited — the
+    /// answer the cap is really about.
     static constexpr std::size_t kDefaultMaxSessions = 32;
 
     explicit ProcessSessionStore(
@@ -200,8 +265,12 @@ public:
      * The wait is bounded by the window, so it does not block the store's
      * strand: the table is updated and released before the wait begins.
      *
-     * @return the new session's id, and whether the child finished inside the
-     *         window.
+     * @return the new session's id, whether the child finished inside the
+     *         window, and whether the capture was complete when this answered.
+     *         The last two are separate on purpose (SpawnResult): a child that
+     *         exits while a descendant keeps its pipes open is finished with
+     *         output still to come, and the drain is bounded by the same window
+     *         so that case answers rather than hanging.
      * @throws process::ProcessException when the launch itself fails (the
      *         spawn stages: Environment / ResolveExecutable / Spawn), passed
      *         through untranslated so the caller keeps the launch context.
@@ -247,16 +316,22 @@ public:
         SessionId id, std::string input, bool close_input);
 
     /**
-     * Wait for one session's child to be observed terminal.
+     * Wait for one session's child to be observed terminal AND for its output
+     * capture to complete — the handle's own "work runs out" pair, because
+     * the two are settled by different tasks and waiting on the first alone
+     * reports an exit code with empty output.
      *
      * Polls the handle's own observation on a short cadence rather than
      * re-entering its one-shot initial wait: the await task the store
      * spawned is already the one authority on the terminal state, and this
      * only watches it. @p timeout_milliseconds of 0 waits indefinitely.
      *
-     * @return the snapshot at the moment the wait ended — exited() tells a
-     *         caller whether the child finished or the deadline did. nullopt
-     *         when no session has that id.
+     * @return the snapshot at the moment the wait ended, with BOTH facts
+     *         readable on it: `exited` and `output_drained` say which of the
+     *         two conditions the wait reached, and a deadline that fired
+     *         between them leaves `exited` true and `output_drained` false —
+     *         the descendant-holding-the-pipes case, not a contradiction.
+     *         nullopt when no session has that id.
      */
     boost::asio::awaitable<std::optional<SessionSnapshot>> wait_for_exit(
         SessionId id, std::uint64_t timeout_milliseconds);
@@ -268,19 +343,33 @@ public:
     boost::asio::awaitable<bool> terminate(SessionId id, bool graceful);
 
     /**
-     * Drop an EXITED session and recycle its id.
+     * Drop an EXITED session. Its id is spent — nobody gets "proc_3" again.
      *
      * Refuses a session whose child is still running: releasing it would
      * drop the last reference to a live child, and the handle's destructor
      * would kill it — a silent kill from what reads like a bookkeeping call.
      * A caller that means to end a child calls terminate() and says so.
      *
-     * @return whether the session was dropped (false: unknown id, or the
-     *         child is still running).
+     * Reads the child's terminal state on the SESSION's strand, where the
+     * handle keeps it, and removes the entry on the STORE's strand, where the
+     * table lives — hopping out and back rather than reading strand state from
+     * the wrong side (`exited()` is a latch and would be safe either way, but
+     * the rule is the rule, and this is the method that made it worth stating:
+     * "the value only ever transitions once" is not a synchronisation
+     * argument). Because the removal happens after a hop, the id is looked up
+     * AGAIN when the coroutine gets back: a concurrent release() of the same
+     * session may have won the race while this one was away, and the second
+     * one has to answer false rather than erase a second time.
+     *
+     * @return whether the session was dropped (false: unknown id, the child
+     *         is still running, or another caller released it first).
      */
     boost::asio::awaitable<bool> release(SessionId id);
 
-    /// How many sessions are registered. For diagnostics and the cap check.
+    /// How many sessions the table RETAINS — exited-but-unreleased ones
+    /// included, since that is what it holds and what the cap counts. For
+    /// diagnostics and the cap check; a host wanting to know how many
+    /// children are alive asks the snapshots.
     boost::asio::awaitable<std::size_t> size() const;
 
     /**
@@ -309,6 +398,10 @@ private:
         SessionId id;
         HandlePtr handle;
         boost::asio::strand<boost::asio::any_io_executor> strand;
+        /// The pid the handle stamped, copied at spawn because the destructor
+        /// signals it without a strand to read the handle on (the pid is
+        /// written once, at construction, and never again).
+        pid_t pid = -1;
         // Bytes of each stream already handed to a delta reader. Touched
         // only on `strand`.
         std::size_t stdout_cursor = 0;
@@ -320,8 +413,10 @@ private:
     /// store's strand.
     [[nodiscard]] SessionPtr find_on_strand(const SessionId& id) const;
 
-    /// Mint an id: from the recycled pool if it has one, else the next
-    /// number. Store's strand only.
+    /// Mint an id: the next number, always. Store's strand only, though the
+    /// monotonic counter alone would make it safe from anywhere — the pool
+    /// that used to sit here is gone precisely because a minted id must never
+    /// name two children (see the header's identity note).
     [[nodiscard]] SessionId mint_id_on_strand();
 
     /// The snapshot for `session`, read on its OWN strand.
@@ -332,9 +427,8 @@ private:
     boost::asio::any_io_executor _executor;
     std::size_t _max_sessions;
 
-    // The table and the id pool: store's strand only.
+    // The table: store's strand only. _next_id only climbs.
     std::unordered_map<SessionId, SessionPtr> _sessions;
-    std::vector<SessionId> _free_ids;
     std::uint64_t _next_id = 1;
 };
 
