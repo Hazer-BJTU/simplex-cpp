@@ -91,10 +91,12 @@ and whatever state they share.
    `write_attributes()`, and check every argument in `ensure_arguments()` —
    never in `invoke()`, because the security check and the human confirmation
    must see settled arguments. Use the `settle_*` accessors there, so the
-   defaults are part of the query both of those read. Classify from the SETTLED
-   arguments whenever the same tool can both change state and merely observe:
-   `InvokeType` decides whether a batch may run the call beside its neighbours,
-   and a call that consumes a cursor or removes an object may not.
+   defaults are part of the query both of those read. `InvokeType` describes the
+   effect a call has OUTSIDE the host: a tool whose only changes are to its own
+   component's state is `ReadOnly` **provided that component is safe to use
+   concurrently** — the component owns that, the scheduler does not. A call that
+   changes the world (starts something, writes to it, ends it) is a write, and
+   `SerialWrite` when the order between two of them is observable out there.
 4. `add_subdirectory(toolsets/<name>)` in this directory's `CMakeLists.txt`;
    link `tools_intrinsic`, and build SHARED for the ABI reason below.
 

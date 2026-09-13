@@ -75,25 +75,34 @@ observing calls and refuses the rest.
 
 ### Which calls may run beside their neighbours
 
-The host schedules a turn's calls in one batch, and each call's settled
-arguments decide whether it may overlap the others. The rule is "does this call
-disturb what a neighbour in the same batch could observe":
+The host schedules a turn's calls in one batch, and each call declares whether it
+may overlap the others. What that declaration describes is the effect a call has
+**outside this host**:
 
-| call | runs beside others | runs alone |
+| call | | why |
 | --- | --- | --- |
-| `spawn_process` | — | always (it changes the machine) |
-| `kill_process` | — | always |
-| `write_process_input` | — | always (two writes to one child do not commute) |
-| `poll_processes` | `include_output: false, release_exited: false` | any poll that reads output or reaps |
-| `read_process_output` | `full: true, release: false` | the delta read (`full: false`), or any `release` |
-| `wait_process` | `release: false` | `release: true` |
+| `poll_processes` | runs beside others | it asks what the children are doing; the cursors and table entries it touches are this layer's own bookkeeping |
+| `read_process_output` | runs beside others | same, `full` and delta and `release` alike |
+| `wait_process` | runs beside others | watching a child changes nothing outside; `release` is bookkeeping |
+| `spawn_process` | runs alone | it starts a process on the machine, and two launches in one batch contend for the same files |
+| `write_process_input` | runs alone | the bytes are the child's next input, so the order two writes arrive in is what it reads |
+| `kill_process` | runs alone | it ends a process on the machine |
 
-A delta read advances that session's position, so two of them in one batch are
-order-dependent whichever way they interleave; a `release` removes the session a
-neighbour may be addressing. Both are therefore serial — the batch gives them
-the executor to itself, and the rest of the batch waits. Calls that run alone go
-**first**, in call order, so a poll beside a spawn already sees the session that
-spawn created.
+"Runs beside others" means what it says about safety, not about determinism:
+the session store is what makes an overlapping poll or read safe — the table is
+serialised on the store's strand and each child's handle and cursors on its own
+(strand per session), so no two calls can tear a snapshot or hand out the same
+bytes twice. What is *not* promised is that a batch's result is independent of
+its interleaving: a model that asks for the same session's new output twice in
+one batch gets it split between the two calls, in whichever order the schedule
+picked, and a `release` beside a read of the same session may or may not be seen
+by it. That is an ambiguous question asked twice in one turn, not a hazard to
+anything outside the host.
+
+Calls that run alone go **first**, in call order, and nothing else in the batch
+is in flight while they do — which is why a poll beside a `spawn_process`
+already sees the session that spawn created, and why a `kill_process` beside a
+`wait_process` lets the wait find the child already gone instead of timing out.
 
 ---
 
@@ -515,10 +524,11 @@ first, for exactly that reason).
 - **`process/tools.hpp`** — the six `ToolInterface` implementations. Each
   checks its arguments in `ensure_arguments()` and writes the defaults into the
   query there (so the security check and the human confirmation see settled
-  arguments), and answers with a JSON object in a text part. `InvokeType` is
-  decided from those settled arguments, not from the tool's name: a read that
-  consumes a cursor, a poll that reaps and a wait that releases are all
-  `SerialWrite`, because a neighbour in the same batch can observe their order.
+  arguments), and answers with a JSON object in a text part. `InvokeType`
+  describes what a call changes OUTSIDE the host: the three observing tools are
+  `ReadOnly` (the cursors and table entries they touch are internal, and the
+  store's strands make them safe to overlap), and the three that launch, feed or
+  end a process are `SerialWrite`.
 - **`process/toolset.hpp`** — the `ProcessToolSet` a host registers. Its name,
   its six tools and the store they share; the catalogue, the routing and the
   build/release lifecycle come from `IntrinsicToolSet`, and

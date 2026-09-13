@@ -320,24 +320,23 @@ void PollProcessesTool::ensure_arguments(model_io::InvokeQuery& query) const
 
 void PollProcessesTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // The type follows the SETTLED ARGUMENTS, which is why this runs after
-    // ensure_arguments (tools/toolsets.hpp): a poll that reads each session's
-    // new output consumes cursors, and one that reaps removes sessions, so
-    // only the poll that does neither may run beside its neighbours. The
-    // arguments are read through the pure accessors here rather than the
-    // settle family — this hook only decides, it settles nothing.
+    // ReadOnly, unconditionally — what the type describes is the effect this
+    // call has OUTSIDE the host, and a poll has none: it asks the table what
+    // the children are doing and (with `include_output`) takes each session's
+    // new bytes. Both of those touch this layer's own bookkeeping — the table
+    // and the cursors — and that bookkeeping is the store's concurrency
+    // contract, not the scheduler's business: the store serialises it on two
+    // levels of strand, so an overlapping poll cannot tear a snapshot or
+    // double-hand a byte. `release_exited` removes a table entry, which is
+    // again internal.
     //
-    // That is a real narrowing of what used to be an unconditional ReadOnly,
-    // and the reason is the definition of the word: two delta reads of one
-    // session are order-dependent whichever way they interleave (the first
-    // takes the new bytes, the second gets an empty delta), and "the value
-    // happens to be this layer's bookkeeping" does not make the two orders
-    // equivalent. Trusted either way: looking at processes the host already
-    // started needs no permission, whether or not it also tidies up.
-    const bool consumes_output = optional_bool(query, "include_output", true);
-    const bool reaps = optional_bool(query, "release_exited", false);
-    query.type = consumes_output || reaps ? model_io::InvokeType::SerialWrite
-                                          : model_io::InvokeType::ReadOnly;
+    // What ReadOnly does NOT promise is that a batch's RESULT is independent of
+    // its interleaving: two consuming polls of one session in the same batch
+    // split that session's new output between them, and which one gets it
+    // depends on the schedule. That is a determinism caveat on a call the model
+    // made twice, not a data race, and it is documented where a reader will
+    // meet it (tools.hpp's header, and the README).
+    query.type = model_io::InvokeType::ReadOnly;
     query.security = model_io::InvokeSecurity::Trusted;
 }
 
@@ -440,16 +439,16 @@ void ReadProcessOutputTool::ensure_arguments(model_io::InvokeQuery& query) const
 
 void ReadProcessOutputTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // ReadOnly only for a read that TAKES nothing and RELEASES nothing: a
-    // delta read consumes the session's cursor (two of them in a batch are
-    // order-dependent), and `release` removes the session. Everything else
-    // here is observation in the sense the scheduler means it — the whole
-    // capture, read again and again, leaves the world exactly as it found it.
-    // Trusted: reading output the host already captured needs no confirmation.
-    const bool full = optional_bool(query, "full", false);
-    const bool release = optional_bool(query, "release", false);
-    query.type = full && !release ? model_io::InvokeType::ReadOnly
-                                  : model_io::InvokeType::SerialWrite;
+    // ReadOnly, unconditionally, for the reason given on PollProcessesTool: a
+    // read touches nothing outside this host. `full` and the delta both leave
+    // the child exactly as they found it; the delta advances a cursor and
+    // `release` removes a table entry, and both of those are this layer's own
+    // state, serialised by the store's strands.
+    //
+    // The determinism caveat is the same one: a batch that asks for the same
+    // session's delta twice splits the bytes between the two calls, in whatever
+    // order the schedule picked. Safe, and not promised to be in call order.
+    query.type = model_io::InvokeType::ReadOnly;
     query.security = model_io::InvokeSecurity::Trusted;
 }
 
@@ -546,17 +545,26 @@ void WriteProcessInputTool::ensure_arguments(model_io::InvokeQuery& query) const
 
 void WriteProcessInputTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // SerialWrite rather than ParallWrite, and the distinction is worth being
-    // exact about because the plumbing is thread-safe: the handle's stdin
-    // channel is a concurrent_channel, so two writes cannot corrupt anything —
-    // but they do not COMMUTE. Which write lands first is what the child
-    // reads, and `close_input` on one of them ends the stream the other is
-    // still writing to, so the batch order decides the call's meaning. A
-    // scheduler is only allowed to overlap calls whose outcome does not depend
-    // on their order; this one does, so it takes the serial turn until the
-    // registry can serialise per session (`process:proc_3`) instead.
-    // RequireConfirm: it is input to a live process, which can do anything
-    // with it.
+    // The one write among the reading-looking tools, and a write by the rule
+    // that decides this column: what it changes is OUTSIDE the host. Bytes
+    // queued for a live child's standard input are the child's next input, not
+    // this layer's bookkeeping.
+    //
+    // SerialWrite rather than ParallWrite, and the reason is the same rule read
+    // one level further: ParallWrite means the order between writers is not
+    // observable, while here it is. Two writes to one child land in the order
+    // they arrive — that is what the child reads — and when one of them carries
+    // `close_input` the other can be DROPPED outright, since a send onto a
+    // closed channel is discarded. So the batch's call order is what the child
+    // sees, which is only true if the batch runs these one at a time.
+    //
+    // Note what does NOT decide it: the handle's stdin channel is a
+    // concurrent_channel, so overlapping writes cannot corrupt memory. That is
+    // the store's concurrency contract doing its job; it says nothing about
+    // whether the two orders mean the same thing.
+    //
+    // RequireConfirm: it is input to a live process, which can do anything with
+    // it.
     query.type = model_io::InvokeType::SerialWrite;
     query.security = model_io::InvokeSecurity::RequireConfirm;
 }
@@ -633,20 +641,19 @@ void WaitProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 
 void WaitProcessTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // ReadOnly unless it releases: waiting observes the child, but `release`
-    // removes the session, and a neighbour addressing that id in the same
-    // batch would then find nothing. Trusted: there is nothing to authorise
-    // about watching a process the host already started.
+    // ReadOnly, unconditionally: waiting watches a child the host already
+    // started and changes nothing outside this host. `release` removes the
+    // session it waited on, which is the table's own bookkeeping — the store
+    // serialises that on its strand, so a neighbour addressing the same id is
+    // safe rather than corrupted.
     //
-    // Worth noting what ReadOnly means for a batch here: a wait may occupy a
-    // parallel branch for its whole timeout, which it now shares only with
-    // calls that change nothing either. That is the correct trade —
-    // SerialWrite would make every wait block every other call in the turn,
-    // which is strictly worse — but it is why the timeout defaults to a
-    // bounded value rather than to "forever".
-    const bool release = optional_bool(query, "release", false);
-    query.type = release ? model_io::InvokeType::SerialWrite
-                         : model_io::InvokeType::ReadOnly;
+    // What ReadOnly means for a batch here is worth stating, because a wait is
+    // the one call that can hold a parallel branch open for its whole timeout:
+    // it may occupy the executor for that long, alongside anything else that
+    // overlaps. That is still the right trade — SerialWrite would make every
+    // wait block every other call in the turn — and it is why the timeout
+    // defaults to a bounded value rather than to "forever".
+    query.type = model_io::InvokeType::ReadOnly;
     query.security = model_io::InvokeSecurity::Trusted;
 }
 

@@ -481,14 +481,15 @@ BOOST_AUTO_TEST_CASE(a_quick_command_finishes_inside_its_spawn_window)
     BOOST_TEST(payload.at("exit_code") == nlohmann::json(0));
     BOOST_TEST(payload.at("stdout_text") == nlohmann::json("done already\n"));
 
-    // The session is kept, so the release is a call of its own — and it is a
-    // SerialWrite (it removes the session), which the registry honors.
+    // The session is kept, so the release is a call of its own — a ReadOnly
+    // one, because removing a table entry is this layer's own bookkeeping and
+    // nothing outside the host changes.
     const std::string id = payload.at("session_id").get<std::string>();
     const auto released = f.call(call_for(
         std::string(tool_names::kRead),
         nlohmann::json{{"session_id", id}, {"full", true}, {"release", true}},
         "call_release"));
-    BOOST_CHECK(released.query.type == model_io::InvokeType::SerialWrite);
+    BOOST_CHECK(released.query.type == model_io::InvokeType::ReadOnly);
     BOOST_TEST(payload_of(released).at("released") == nlohmann::json(true));
 }
 
@@ -617,13 +618,20 @@ BOOST_AUTO_TEST_CASE(a_serial_call_runs_before_the_observing_ones_in_its_batch)
     BOOST_TEST(polled.at("sessions")[0].at("session_id") == nlohmann::json(id));
 }
 
-BOOST_AUTO_TEST_CASE(two_delta_reads_of_one_session_are_ordered_not_interleaved)
+BOOST_AUTO_TEST_CASE(two_delta_reads_of_one_session_split_the_output_between_them)
 {
-    // The case that decides the delta read's InvokeType. Two delta reads of one
-    // session are order-dependent by nature — the first takes the bytes, the
-    // second finds nothing — so they may not run together, and the result must
-    // be the one the CALL ORDER implies rather than whichever branch reached
-    // the session strand first.
+    // Two delta reads of one session in one batch, and what ReadOnly promises
+    // here: SAFETY, not a schedule. The call declares no effect outside this
+    // host, so the batch runs both at once; the store serialises them on the
+    // session's strand, so neither can tear or double-hand a byte — and the
+    // session's new output goes to exactly one of them, the other answering
+    // "nothing new".
+    //
+    // Which of the two gets it is NOT asserted, and that is the point of the
+    // case: the type says what the call does, not that a batch's result is
+    // independent of its interleaving. A model that asks for the same session's
+    // new output twice in one turn has asked an ambiguous question, and the
+    // store's contract (no loss, no duplication) is what it gets.
     Fixture f;
     const std::string id = f.spawn("echo", {"only-once"});
     (void)f.call(call_for(std::string(tool_names::kWait),
@@ -638,14 +646,24 @@ BOOST_AUTO_TEST_CASE(two_delta_reads_of_one_session_are_ordered_not_interleaved)
                      nlohmann::json{{"session_id", id}}, "call_second"),
         });
     BOOST_TEST_REQUIRE(records.size() == std::size_t{2});
-    BOOST_CHECK(records[0].query.type == model_io::InvokeType::SerialWrite);
-    BOOST_CHECK(records[1].query.type == model_io::InvokeType::SerialWrite);
+    BOOST_CHECK(records[0].query.type == model_io::InvokeType::ReadOnly);
+    BOOST_CHECK(records[1].query.type == model_io::InvokeType::ReadOnly);
 
-    BOOST_TEST(payload_of(records[0]).at("stdout_text") ==
-               nlohmann::json("only-once\n"));
-    // Deterministic, and it has to be: the second call's answer is "nothing
-    // new", not "whatever the first one did not get".
-    BOOST_TEST(payload_of(records[1]).at("stdout_text") == nlohmann::json(""));
+    // The bytes went to one of them, whole, and to exactly one: never split
+    // across the two answers, never handed out twice.
+    const std::string first =
+        payload_of(records[0]).at("stdout_text").get<std::string>();
+    const std::string second =
+        payload_of(records[1]).at("stdout_text").get<std::string>();
+    const std::size_t delivered = (first == "only-once\n" ? 1 : 0) +
+                                  (second == "only-once\n" ? 1 : 0);
+    BOOST_TEST(delivered == std::size_t{1});
+    BOOST_TEST((first.empty() || second.empty()));
+    // And the session is still readable afterwards: a delta read consumes only
+    // what it handed over.
+    const nlohmann::json afterwards = payload_of(f.call(call_for(
+        std::string(tool_names::kRead), nlohmann::json{{"session_id", id}})));
+    BOOST_TEST(afterwards.at("stdout_text") == nlohmann::json(""));
 }
 
 BOOST_AUTO_TEST_CASE(reads_of_two_sessions_in_one_batch_do_not_interfere)
@@ -820,13 +838,15 @@ BOOST_AUTO_TEST_CASE(kill_wait_and_read_in_one_batch)
                nlohmann::json("before the signal\n"));
 }
 
-BOOST_AUTO_TEST_CASE(a_release_in_one_batch_hides_its_session_from_its_neighbours)
+BOOST_AUTO_TEST_CASE(a_release_in_one_batch_leaves_the_table_empty_for_the_next_one)
 {
-    // The other reason a reading call can be SerialWrite: `release` removes the
-    // session. It runs first (serial first), so the poll beside it — which is
-    // ReadOnly and would otherwise be free to run concurrently — must see a
-    // table without it. This is the batch where the classification decides
-    // whether the result is well defined at all.
+    // `release` removes a session, and the type says what that is: this layer's
+    // own bookkeeping, changed by a call that has no effect outside the host,
+    // so the call is ReadOnly and may overlap its neighbours. What follows from
+    // that is worth pinning, because it is the limit of the rule: a poll BESIDE
+    // a release of the same session may or may not see it (both are ReadOnly
+    // and both run in the parallel phase), while the release's own effect is
+    // not in doubt — the session is gone for every call after the batch.
     Fixture f;
     const std::string id = f.spawn("echo", {"gone"}, 5000);
 
@@ -840,15 +860,29 @@ BOOST_AUTO_TEST_CASE(a_release_in_one_batch_hides_its_session_from_its_neighbour
                      nlohmann::json{{"include_output", false}}, "call_poll"),
         });
     BOOST_TEST_REQUIRE(records.size() == std::size_t{2});
-    BOOST_CHECK(records[0].query.type == model_io::InvokeType::SerialWrite);
+    BOOST_CHECK(records[0].query.type == model_io::InvokeType::ReadOnly);
     BOOST_CHECK(records[1].query.type == model_io::InvokeType::ReadOnly);
 
+    // The read answered for its own session, with its whole capture, and the
+    // removal it asked for happened.
     const nlohmann::json released = payload_of(records[0]);
     BOOST_TEST(released.at("released") == nlohmann::json(true));
     BOOST_TEST(released.at("stdout_text") == nlohmann::json("gone\n"));
+    // The poll beside it answered honestly either way — a session it saw, or
+    // none — but never a half-removed one.
     const nlohmann::json polled = payload_of(records[1]);
-    BOOST_TEST(polled.at("sessions") == nlohmann::json::array());
-    BOOST_TEST(polled.at("retained_session_count") == nlohmann::json(0));
+    BOOST_TEST(polled.at("retained_session_count").get<int>() <= 1);
+    BOOST_TEST(polled.at("sessions").size() ==
+               static_cast<std::size_t>(
+                   polled.at("retained_session_count").get<int>()));
+
+    // The next batch sees a table the release has already emptied: the effect
+    // is not "may or may not", it is "done by the time this batch answers".
+    const nlohmann::json afterwards = payload_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"include_output", false}}, "call_after")));
+    BOOST_TEST(afterwards.at("sessions") == nlohmann::json::array());
+    BOOST_TEST(afterwards.at("retained_session_count") == nlohmann::json(0));
 }
 
 BOOST_AUTO_TEST_CASE(stdin_writes_and_a_close_keep_their_order_in_one_batch)
@@ -954,14 +988,13 @@ BOOST_AUTO_TEST_CASE(a_batch_mixing_process_calls_and_probes_keeps_both_rules)
 
     const std::vector<model_io::InvokeReturn> records =
         f.batch(std::vector<model_io::InvokeQuery>{
-            // A consuming poll: SerialWrite, so it runs alone, first, and takes
-            // the session's delta with it.
+            // A consuming poll and everything else in this batch are ReadOnly —
+            // the poll's cursor work is this layer's own state — so this whole
+            // batch runs in the parallel phase, together.
             call_for(std::string(tool_names::kPoll),
                      nlohmann::json{{"session_id", id},
                                     {"include_output", true}},
                      "call_poll"),
-            // Then everything that may overlap: two probes, and a read of the
-            // whole capture (which consumes nothing, so it is ReadOnly).
             call_for(std::string(Fixture::kReadOnlyProbeA), {}, "call_probe_a"),
             call_for(std::string(Fixture::kReadOnlyProbeB), {}, "call_probe_b"),
             call_for(std::string(tool_names::kRead),
@@ -969,13 +1002,13 @@ BOOST_AUTO_TEST_CASE(a_batch_mixing_process_calls_and_probes_keeps_both_rules)
                      "call_read"),
         });
     BOOST_TEST_REQUIRE(records.size() == std::size_t{4});
-    BOOST_CHECK(records[0].query.type == model_io::InvokeType::SerialWrite);
-    BOOST_CHECK(records[1].query.type == model_io::InvokeType::ReadOnly);
-    BOOST_CHECK(records[2].query.type == model_io::InvokeType::ReadOnly);
-    BOOST_CHECK(records[3].query.type == model_io::InvokeType::ReadOnly);
+    for (const model_io::InvokeReturn& record : records) {
+        BOOST_CHECK(record.query.type == model_io::InvokeType::ReadOnly);
+    }
 
-    // The poll consumed the delta — it ran first, by the serial-first rule and
-    // not by luck.
+    // The poll took the session's new output, and the full read beside it still
+    // sees the whole capture: `full` consumes nothing, so the two do not fight
+    // over the same bytes even though they ran together.
     BOOST_TEST(payload_of(records[0]).at("sessions")[0].at("new_stdout") ==
                nlohmann::json("mixed\n"));
     // The full read in the parallel phase still sees the whole capture, which is

@@ -256,11 +256,13 @@ BOOST_AUTO_TEST_CASE(each_tool_declares_its_type_and_security)
     // Asserted on the SETTLED query, after phase 1: these are the values a
     // batch scheduler groups by and the security policy judges.
     //
-    // Three of the six tools classify by their SETTLED ARGUMENTS rather than by
-    // their name, so this walks the matrix instead of one row per tool: a poll
-    // that consumes output or reaps, a read that takes the delta, a wait that
-    // releases, and a stdin write — those are the calls whose ORDER a neighbour
-    // can observe, and every one of them must come out SerialWrite.
+    // The RULE, and the rows below are chosen to pin its edges: InvokeType
+    // describes the effect a call has OUTSIDE this host. Internal bookkeeping
+    // never makes a call a write — a delta read advancing a cursor and a poll
+    // reaping a session are this layer's own state, and the store is what makes
+    // them safe to overlap (table on the store's strand, handle and cursors on
+    // the session's). What is a write is launching a program, putting bytes in
+    // a live child's input, and ending it.
     struct Expectation {
         std::string_view name;
         nlohmann::json arguments;
@@ -276,9 +278,11 @@ BOOST_AUTO_TEST_CASE(each_tool_declares_its_type_and_security)
         {tool_names::kKill, {{"session_id", "proc_1"}},
          model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
-        // A write through the handle's thread-safe stdin channel — but the two
-        // writes do not commute, and one of them may close the stream, so the
-        // thread-safety of the plumbing does not make the call parallel.
+        // Stdin writes change the outside too — the bytes ARE the child's next
+        // input — so the call order is what the child reads, and one carrying
+        // `close_input` can drop the other outright. SerialWrite. (What does
+        // not decide it: the channel is thread-safe, so an overlap cannot
+        // corrupt memory. That is the store doing its job.)
         {tool_names::kWrite, {{"session_id", "proc_1"}, {"input", "x"}},
          model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
@@ -286,45 +290,40 @@ BOOST_AUTO_TEST_CASE(each_tool_declares_its_type_and_security)
          model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
 
-        // poll: ReadOnly exactly when it neither reads output nor reaps.
-        {tool_names::kPoll, {{"include_output", false}, {"release_exited", false}},
+        // poll: ReadOnly for EVERY shape, including the two that move internal
+        // state — consuming each session's new output and reaping the exited
+        // ones. Those are the rows that matter here: if the rule ever drifts
+        // back to "touches state, therefore a write", this is what fails.
+        {tool_names::kPoll, nlohmann::json::object(),
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
-        {tool_names::kPoll, {{"include_output", false}},
+        {tool_names::kPoll, {{"include_output", true}, {"release_exited", false}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        {tool_names::kPoll, {{"include_output", false}, {"release_exited", true}},
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
         {tool_names::kPoll, {{"session_ids", {"proc_1"}}, {"include_output", false}},
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
-        // ...and SerialWrite for anything that consumes or reaps. `{}` is the
-        // default shape, and the default includes output.
-        {tool_names::kPoll, nlohmann::json::object(),
-         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
-        {tool_names::kPoll, {{"include_output", true}, {"release_exited", false}},
-         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
-        {tool_names::kPoll, {{"include_output", false}, {"release_exited", true}},
-         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
 
-        // read: the whole capture, taken and not released, is the observation.
+        // read: ReadOnly for every shape too — the delta that consumes the
+        // cursor and the read that releases the session included.
+        {tool_names::kRead, {{"session_id", "proc_1"}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        {tool_names::kRead, {{"session_id", "proc_1"}, {"full", false}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
         {tool_names::kRead,
          {{"session_id", "proc_1"}, {"full", true}, {"release", false}},
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
-        {tool_names::kRead, {{"session_id", "proc_1"}, {"full", true}},
-         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
-        // A DELTA read advances the cursor, so two of them are order-dependent
-        // whichever way they interleave: SerialWrite. `{}` again is the delta.
-        {tool_names::kRead, {{"session_id", "proc_1"}},
-         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
-        {tool_names::kRead, {{"session_id", "proc_1"}, {"full", false}},
-         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
         {tool_names::kRead,
          {{"session_id", "proc_1"}, {"full", true}, {"release", true}},
-         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
 
-        // wait: releasing the session it waited on is the exception.
+        // wait: ReadOnly too. Waiting watches a child the host already started;
+        // `release` removes the session, which is the table's business.
         {tool_names::kWait, {{"session_id", "proc_1"}},
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
         {tool_names::kWait, {{"session_id", "proc_1"}, {"release", false}},
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
         {tool_names::kWait, {{"session_id", "proc_1"}, {"release", true}},
-         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
     };
 
     for (const Expectation& expectation : expected) {

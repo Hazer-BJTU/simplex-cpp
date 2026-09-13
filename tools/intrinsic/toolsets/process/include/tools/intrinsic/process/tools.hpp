@@ -32,59 +32,57 @@
 //
 // WHAT EACH TOOL DECLARES, and why the two columns are not the same question:
 //
-//   tool                  InvokeType                     InvokeSecurity
-//   spawn_process         SerialWrite                    RequireConfirm
-//   poll_processes        ReadOnly, unless it consumes   Trusted
-//                         output or reaps (then Serial)
-//   read_process_output   ReadOnly only when the read    Trusted
-//                         is full AND non-releasing
-//   write_process_input   SerialWrite                    RequireConfirm
-//   wait_process          ReadOnly, unless it releases   Trusted
-//   kill_process          SerialWrite                    RequireConfirm
+//   tool                  InvokeType    InvokeSecurity
+//   spawn_process         SerialWrite   RequireConfirm
+//   poll_processes        ReadOnly      Trusted
+//   read_process_output   ReadOnly      Trusted
+//   write_process_input   SerialWrite   RequireConfirm
+//   wait_process          ReadOnly      Trusted
+//   kill_process          SerialWrite   RequireConfirm
 //
 // InvokeType is about SCHEDULING — may this run beside its neighbours in a
-// batch. InvokeSecurity is about TRUST — may this run unattended. Running an
-// arbitrary executable, feeding it input, and killing it are all state
-// changes outside this process, so they ask (through the async bus's
-// InvokeConfirmEvent, per security_check.hpp: no answer means refused).
-// Looking at what is already running is not, so it does not ask — a
-// confirmation prompt for "read the output you just asked for" trains a user
-// to click through prompts, which costs more than it buys.
+// batch — and what it describes is the effect a call has OUTSIDE this host.
+// InvokeSecurity is about TRUST — may this run unattended. Running an arbitrary
+// executable, feeding it input, and killing it are all state changes outside
+// this process, so they ask (through the async bus's InvokeConfirmEvent, per
+// security_check.hpp: no answer means refused). Looking at what is already
+// running is not, so it does not ask — a confirmation prompt for "read the
+// output you just asked for" trains a user to click through prompts, which
+// costs more than it buys.
 //
-// THE READING TOOLS ARE NOT ALWAYS ReadOnly, and the exceptions are the whole
-// point of this column. Two things a reading call can do are observable by a
-// neighbour, and both come from the call's own arguments:
+// INTERNAL BOOKKEEPING IS NOT AN EXTERNAL EFFECT, and keeping the two apart is
+// what makes this column mean something. A delta read advances that session's
+// cursor; `release` removes a table entry; `include_output: false` and
+// `release_exited: false` skip both. Those are changes to THIS LAYER'S OWN
+// state, and the store is what makes them safe to overlap: the table is
+// serialised on the store's strand and each child's handle and cursors on its
+// own (process/session_store.hpp, threading), so two calls touching one session
+// cannot tear a snapshot or double-hand the same bytes. A call that changes
+// nothing outside the host is ReadOnly, however much internal state it moves.
 //
-//   CONSUMING OUTPUT   a delta read advances that session's cursor, so two of
-//                      them in one batch are order-dependent: whichever runs
-//                      first takes the new bytes and the other gets an empty
-//                      delta. Memory-safe is not the same as commutative, and
-//                      a scheduler may only run ReadOnly calls together on the
-//                      strength of the second.
-//   REAPING            `release` / `release_exited` remove a session, and a
-//                      neighbour addressing that id then finds nothing.
+// WHAT ReadOnly DOES NOT PROMISE, stated here because it is the honest limit of
+// the rule: it is a statement about effects, not about a batch's determinism.
+// Two consuming reads of one session in the same batch split that session's new
+// output between them, and which one gets the bytes depends on the schedule —
+// the same is true of a read beside a `release` of the same session. That is a
+// model asking twice for the same thing in one turn, not a data race and not an
+// ordering hazard for anything outside the host, and the store's contracts
+// (no torn reads, no double delivery, no undefined behaviour) hold either way.
 //
-// So `poll_processes` is ReadOnly exactly when it neither reads output nor
-// reaps (`include_output: false, release_exited: false`), `read_process_output`
-// exactly when the read is `full` and not `release`, and `wait_process`
-// exactly when it does not release. The rest are SerialWrite, which costs a
-// serial turn but buys the thing the declaration is FOR: a batch either gives
-// the call the executor to itself, or the call must be safe to run beside its
-// neighbours — and a cursor is not.
+// THE WRITES, by contrast, all change something outside: running a program,
+// putting bytes in a live child's input, ending it. They are SerialWrite rather
+// than ParallWrite because their ORDER is observable out there — two launches
+// contend for the same files, two stdin writes are what the child reads in that
+// order (and a `close_input` beside one of them can drop the other outright,
+// since a send onto a closed channel is discarded). Note what does NOT decide
+// that: the handle's stdin channel is thread-safe, so overlapping writes cannot
+// corrupt memory. That is the store's concurrency contract doing its job, and
+// it says nothing about whether two orders mean the same thing.
 //
-// (A future scheduler keyed by RESOURCE — `process:proc_3` — could serialise
-// only calls naming the same session and let the rest overlap. Until the
-// registry offers that, SerialWrite is the honest answer: the alternative is
-// declaring a call parallel and hoping its neighbours do not address the same
-// session, which is a data race written as a type.)
-//
-// write_process_input is a write for the same reason, and the reason is worth
-// stating because the plumbing looks safer than it is: the handle's stdin
-// channel is thread-safe (a concurrent_channel), so the call cannot corrupt
-// anything, but two writes to one child do not commute — especially when one
-// carries `close_input`, which ends the stream the other may still be writing
-// to. Thread-safe is a statement about memory; this column is a statement
-// about ORDER, and the order here is observable by the child.
+// (A scheduler keyed by RESOURCE — `process:proc_3` — could serialise only the
+// calls naming the same session and let the rest overlap. Nothing here needs to
+// change for that: the types stay as they are, and only the grouping gets
+// finer.)
 //
 // WHERE THE WORK HAPPENS. Every invoke() goes through the store's coroutine
 // interface and never touches a ProcessHandle directly: the handles live on
@@ -204,9 +202,9 @@ public:
 };
 
 /// The state of every session (or the named ones), each with its new output.
-/// Trusted; ReadOnly while it neither consumes output nor reaps, SerialWrite
-/// otherwise (`include_output: false, release_exited: false` is the pure
-/// observation).
+/// ReadOnly / Trusted: it changes nothing outside this host, and the cursors
+/// and table entries it touches are the store's own state, which the store's
+/// strands make safe to overlap.
 class PollProcessesTool final : public ProcessToolBase {
 public:
     explicit PollProcessesTool(StorePtr store,
@@ -219,8 +217,8 @@ public:
 };
 
 /// One session's captured output: the delta since the last read by default,
-/// the whole capture with `full`. Trusted; ReadOnly only for a read that
-/// takes nothing and releases nothing (`full: true, release: false`).
+/// the whole capture with `full`. ReadOnly / Trusted, whether it consumes the
+/// cursor or releases the session — both are this layer's bookkeeping.
 class ReadProcessOutputTool final : public ProcessToolBase {
 public:
     explicit ReadProcessOutputTool(StorePtr store,
@@ -232,10 +230,9 @@ public:
         const model_io::InvokeQuery& query) override;
 };
 
-/// Feed one child's stdin, optionally closing it afterwards. SerialWrite (the
-/// channel is thread-safe, but two writes to one child — one of them closing
-/// the stream — do not commute) / RequireConfirm (it is input to a live
-/// process).
+/// Feed one child's stdin, optionally closing it afterwards. SerialWrite (its
+/// effect is outside this host, and the order two writes reach the child in is
+/// what the child reads) / RequireConfirm (it is input to a live process).
 class WriteProcessInputTool final : public ProcessToolBase {
 public:
     explicit WriteProcessInputTool(StorePtr store,
@@ -250,7 +247,8 @@ public:
 /// Wait for one child to exit, with a deadline that defaults to nonzero: an
 /// unbounded wait would hand a never-exiting child the agent loop. A timeout
 /// is not a failure — the result says the child is still running.
-/// Trusted; ReadOnly unless it releases the session it waited on.
+/// ReadOnly / Trusted: waiting changes nothing outside this host, `release`
+/// included.
 class WaitProcessTool final : public ProcessToolBase {
 public:
     /// The default deadline, in milliseconds. Long enough for an ordinary
