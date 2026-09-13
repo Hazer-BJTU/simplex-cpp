@@ -168,8 +168,11 @@ BOOST_AUTO_TEST_CASE(require_string_names_the_property_and_what_it_is_for)
     // Missing: the message has to say both which property and where its value
     // was supposed to come from, since that is all a model has to work from.
     const std::string missing = refusal_message([] {
-        ProbeTool::require_string(query_with(nlohmann::json::object()),
-                                  "session_id", "the id spawn_process returned");
+        // The result is discarded on purpose — these calls exist to throw, and
+        // refusal_message() reads the message off the exception.
+        (void)ProbeTool::require_string(query_with(nlohmann::json::object()),
+                                        "session_id",
+                                        "the id spawn_process returned");
     });
     BOOST_TEST(missing.find("session_id") != std::string::npos);
     BOOST_TEST(missing.find("the id spawn_process returned") !=
@@ -177,14 +180,14 @@ BOOST_AUTO_TEST_CASE(require_string_names_the_property_and_what_it_is_for)
 
     // Wrong type, and empty, are distinct refusals — both name the property.
     const std::string wrong_type = refusal_message([] {
-        ProbeTool::require_string(query_with({{"session_id", 7}}),
-                                  "session_id", "an id");
+        (void)ProbeTool::require_string(query_with({{"session_id", 7}}),
+                                        "session_id", "an id");
     });
     BOOST_TEST(wrong_type.find("must be a string") != std::string::npos);
 
     const std::string empty = refusal_message([] {
-        ProbeTool::require_string(query_with({{"session_id", ""}}),
-                                  "session_id", "an id");
+        (void)ProbeTool::require_string(query_with({{"session_id", ""}}),
+                                        "session_id", "an id");
     });
     BOOST_TEST(empty.find("must not be empty") != std::string::npos);
 
@@ -200,10 +203,11 @@ BOOST_AUTO_TEST_CASE(booleans_are_refused_rather_than_coerced)
     // so coercing would hand a model the OPPOSITE of what it asked for with
     // nothing in the result to explain it.
     BOOST_TEST(!refusal_message([] {
-        ProbeTool::optional_bool(query_with({{"flag", "false"}}), "flag", true);
+        (void)ProbeTool::optional_bool(query_with({{"flag", "false"}}), "flag",
+                                       true);
     }).empty());
     BOOST_TEST(!refusal_message([] {
-        ProbeTool::optional_bool(query_with({{"flag", 0}}), "flag", true);
+        (void)ProbeTool::optional_bool(query_with({{"flag", 0}}), "flag", true);
     }).empty());
 
     BOOST_TEST(ProbeTool::optional_bool(query_with({{"flag", false}}),
@@ -234,13 +238,13 @@ BOOST_AUTO_TEST_CASE(unsigned_reads_accept_both_integer_kinds_and_refuse_the_res
     // Refused: a negative would wrap into an enormous unsigned value, and a
     // float or a string would truncate or parse into a different call.
     BOOST_TEST(refusal_message([] {
-        ProbeTool::optional_uint(query_with({{"n", -5}}), "n", 1);
+        (void)ProbeTool::optional_uint(query_with({{"n", -5}}), "n", 1);
     }).find("must not be negative") != std::string::npos);
     BOOST_TEST(!refusal_message([] {
-        ProbeTool::optional_uint(query_with({{"n", 1.9}}), "n", 1);
+        (void)ProbeTool::optional_uint(query_with({{"n", 1.9}}), "n", 1);
     }).empty());
     BOOST_TEST(!refusal_message([] {
-        ProbeTool::optional_uint(query_with({{"n", "soon"}}), "n", 1);
+        (void)ProbeTool::optional_uint(query_with({{"n", "soon"}}), "n", 1);
     }).empty());
 
     BOOST_TEST(ProbeTool::optional_uint(query_with(nlohmann::json::object()),
@@ -253,7 +257,7 @@ BOOST_AUTO_TEST_CASE(string_lists_are_checked_element_by_element)
     // inside the whole-array conversion, which says nothing about which entry
     // was wrong.
     const std::string message = refusal_message([] {
-        ProbeTool::optional_string_list(
+        (void)ProbeTool::optional_string_list(
             query_with({{"items", nlohmann::json::array({"ok", 7, "also ok"})}}),
             "items");
     });
@@ -261,8 +265,8 @@ BOOST_AUTO_TEST_CASE(string_lists_are_checked_element_by_element)
     BOOST_TEST(message.find("[1]") != std::string::npos);
 
     BOOST_TEST(!refusal_message([] {
-        ProbeTool::optional_string_list(query_with({{"items", "not a list"}}),
-                                        "items");
+        (void)ProbeTool::optional_string_list(
+            query_with({{"items", "not a list"}}), "items");
     }).empty());
 
     const std::vector<std::string> read = ProbeTool::optional_string_list(
@@ -338,7 +342,9 @@ BOOST_AUTO_TEST_CASE(a_settled_value_that_is_wrong_is_refused_before_anything_is
     // see why, and the query keeps what it was given.
     model_io::InvokeQuery query = query_with({{"flag", "yes"}});
     const std::string message =
-        refusal_message([&query] { ProbeTool::settle_bool(query, "flag", true); });
+        refusal_message([&query] {
+            (void)ProbeTool::settle_bool(query, "flag", true);
+        });
     BOOST_TEST(message.find("flag") != std::string::npos);
     BOOST_TEST(query.arguments.at("flag") == nlohmann::json("yes"));
 }
@@ -351,7 +357,9 @@ BOOST_AUTO_TEST_CASE(settling_refuses_arguments_that_are_not_an_object)
     // instead, at the checkpoint a model can fix.
     model_io::InvokeQuery query = query_with(nlohmann::json::array({1, 2}));
     const std::string message =
-        refusal_message([&query] { ProbeTool::settle_bool(query, "flag", true); });
+        refusal_message([&query] {
+            (void)ProbeTool::settle_bool(query, "flag", true);
+        });
     BOOST_TEST(message.find("arguments") != std::string::npos);
     BOOST_TEST(message.find("object") != std::string::npos);
 
