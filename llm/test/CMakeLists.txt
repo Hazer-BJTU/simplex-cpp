@@ -1,4 +1,11 @@
-# Unit tests for the llm model-plugin contract (llm/models.hpp).
+# Unit tests for the llm model-plugin contract (llm/models.hpp) and for the
+# plugin/ABI boundary itself.
+#
+# The two protocol adapters have their own suites next to their code:
+#   compat/chat_completions/test/  — interpreter, stream, reader, model, tool
+#                                    correlation, concurrency
+#   compat/responses/test/         — interpreter, stream, reader, model
+# What is left here is what belongs to the MODULE rather than to one adapter.
 #
 # test_llm_models — in-memory coverage of the model-type vocabulary, the
 # default converse() throw, the integrate() placement table (incl. orphan
@@ -6,8 +13,8 @@
 # contexts (add + create_model routing, the build/release lifecycle guarantee
 # incl. build failure, the ABI/type/warm admission gates). The real dynamic
 # path (a provider .so under bin/plugins/llm, load_models over it) and the
-# offline loopback full-flow exchange are covered by test_openai_plugin and
-# the responses/* tests below.
+# offline loopback full-flow exchange are covered by test_openai_plugin and the
+# adapter suites above.
 #
 # llm_iface already carries Boost headers (Asio), nlohmann/json,
 # extensions, and the generated versioning header.
@@ -18,95 +25,6 @@ target_compile_options(test_llm_models PRIVATE
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
 target_link_libraries(test_llm_models PRIVATE llm_iface Boost::unit_test_framework)
 add_test(NAME test_llm_models COMMAND test_llm_models)
-
-add_executable(test_responses_interpreter
-    responses/test_responses_interpreter.cpp)
-target_link_libraries(test_responses_interpreter PRIVATE
-    llm_responses Boost::unit_test_framework)
-add_test(NAME test_responses_interpreter COMMAND test_responses_interpreter)
-
-add_executable(test_responses_stream responses/test_responses_stream.cpp)
-target_link_libraries(test_responses_stream PRIVATE
-    llm_responses Boost::unit_test_framework)
-add_test(NAME test_responses_stream COMMAND test_responses_stream)
-
-add_executable(test_responses_reader responses/test_responses_reader.cpp)
-target_include_directories(test_responses_reader PRIVATE
-    "${PROJECT_SOURCE_DIR}/endpoint/test")
-target_link_libraries(test_responses_reader PRIVATE
-    llm_responses endpoint_lib Boost::unit_test_framework)
-add_test(NAME test_responses_reader COMMAND test_responses_reader)
-
-add_executable(test_responses_model responses/test_responses_model.cpp)
-target_include_directories(test_responses_model PRIVATE
-    "${PROJECT_SOURCE_DIR}/endpoint/test")
-target_link_libraries(test_responses_model PRIVATE
-    llm_responses endpoint_lib Boost::unit_test_framework)
-add_test(NAME test_responses_model COMMAND test_responses_model)
-
-add_executable(test_chat_completions_interpreter
-    chat_completions/test_chat_completions_interpreter.cpp)
-target_link_libraries(test_chat_completions_interpreter PRIVATE
-    llm_chat_completions Boost::unit_test_framework)
-add_test(NAME test_chat_completions_interpreter
-    COMMAND test_chat_completions_interpreter)
-
-# The tool layer's records correlated all the way to the wire: a real
-# ToolRegistry runs a real batch whose failure carries a NESTED call id, the
-# records become the turn's tool results, and the assertion is on the
-# tool_call_id emit_tool_results() builds — the model's own call, never the
-# nested one. Links tools_iface for the frame; the llm module itself does not
-# depend on the tools module.
-add_executable(test_tool_result_correlation
-    chat_completions/test_tool_result_correlation.cpp)
-target_compile_options(test_tool_result_correlation PRIVATE
-    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
-target_link_libraries(test_tool_result_correlation PRIVATE
-    llm_chat_completions tools_iface Boost::unit_test_framework)
-add_test(NAME test_tool_result_correlation
-    COMMAND test_tool_result_correlation)
-
-add_executable(test_chat_completions_stream
-    chat_completions/test_chat_completions_stream.cpp)
-target_link_libraries(test_chat_completions_stream PRIVATE
-    llm_chat_completions Boost::unit_test_framework)
-add_test(NAME test_chat_completions_stream
-    COMMAND test_chat_completions_stream)
-
-# The chat-completions adapter's LLMModel surface: set_generation() layering
-# on the build() derivation (and its survival across the idempotent second
-# build), the GenerationPreset envelope folded into reasoning_effort by the
-# interpreter, and provider_info() over the loopback transport (catalogue
-# envelope unwrapping, array passthrough, non-200 and bad-shape failures).
-add_executable(test_chat_completions_model
-    chat_completions/test_chat_completions_model.cpp)
-target_include_directories(test_chat_completions_model PRIVATE
-    "${PROJECT_SOURCE_DIR}/endpoint/test")
-target_link_libraries(test_chat_completions_model PRIVATE
-    llm_chat_completions endpoint_lib Boost::unit_test_framework)
-add_test(NAME test_chat_completions_model COMMAND test_chat_completions_model)
-
-# The reentrancy contract of converse(): concurrent exchanges on ONE instance
-# over a multi-threaded executor (answer-to-request pairing, exchange_id as the
-# demultiplexing join key), a concurrent set_generation() that must not tear an
-# in-flight snapshot, the by-value conversation argument surviving the
-# temporary-into-co_spawn trap, and the retry replay's attempt counter.
-# -pthread: the fixture holds one thread per concurrent connection and the test
-# runs the io_context on a pool (the plain compile option, matching
-# utils/eventbus/test — it preserves the project's per-config option sets).
-add_executable(test_chat_completions_concurrency
-    chat_completions/test_chat_completions_concurrency.cpp)
-target_include_directories(test_chat_completions_concurrency PRIVATE
-    "${PROJECT_SOURCE_DIR}/endpoint/test")
-target_compile_options(test_chat_completions_concurrency PRIVATE -pthread
-    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
-target_link_libraries(test_chat_completions_concurrency PRIVATE
-    llm_chat_completions endpoint_lib eventbus_iface
-    Boost::unit_test_framework)
-add_test(NAME test_chat_completions_concurrency
-    COMMAND test_chat_completions_concurrency)
 
 add_executable(test_openai_plugin test_openai_plugin.cpp)
 target_link_libraries(test_openai_plugin PRIVATE
@@ -126,11 +44,18 @@ add_test(NAME test_openai_plugin COMMAND test_openai_plugin)
 # against a loopback server: endpoint_lib (transport + loopback fixture) and
 # eventbus_iface (the host-side reasoning subscriber) are part of what the
 # cross-boundary wiring test exercises.
+#
+# llm_chat_completions is named explicitly because this test includes the
+# adapter's events.hpp — the reasoning increment a host subscribes to. That
+# header no longer arrives through llm_iface's include directory now that the
+# adapters live in the compatibility layer, and a consumer of a layer's header
+# naming that layer is the point of the move rather than a cost of it.
 add_executable(test_deepseek_plugin test_deepseek_plugin.cpp)
 target_include_directories(test_deepseek_plugin PRIVATE
     "${PROJECT_SOURCE_DIR}/endpoint/test")
 target_link_libraries(test_deepseek_plugin PRIVATE
-    llm_iface endpoint_lib eventbus_iface Boost::unit_test_framework)
+    llm_iface llm_chat_completions endpoint_lib eventbus_iface
+    Boost::unit_test_framework)
 target_compile_definitions(test_deepseek_plugin PRIVATE
     DEEPSEEK_PLUGIN_DIR="$<TARGET_FILE_DIR:llm_deepseek>")
 # ENABLE_EXPORTS (-rdynamic): the dlopened providers bind this executable's
@@ -147,6 +72,11 @@ add_test(NAME test_deepseek_plugin COMMAND test_deepseek_plugin)
 # artifacts — see plugin_boundary_hygiene.cmake for the rationale of each
 # check. The generator expressions reference targets test_deepseek_plugin
 # already depends on, so a full build satisfies them.
+#
+# It stays at the module level rather than moving into compat/ because what it
+# asserts is the relationship between THREE parties — the host executable, the
+# provider plugins and the two shared adapters — and neither adapter owns it
+# alone.
 add_test(NAME llm_plugin_boundary_hygiene COMMAND ${CMAKE_COMMAND}
     -DDEEPSEEK_SO=$<TARGET_FILE:llm_deepseek>
     -DOPENAI_SO=$<TARGET_FILE:llm_openai>

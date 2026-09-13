@@ -59,5 +59,6 @@ tools_add_test(test_registry)
 # One case drives a batch of parallel calls on a four-thread io_context — the
 # case that makes the registry's report channel a concurrent_channel — so this
 # test needs pthread: the plain compile option, matching utils/eventbus/test and
-# llm/test's concurrency test, which preserves the per-config option sets above.
+# llm/compat/chat_completions/test's concurrency test, which preserves the
+# per-config option sets above.
 target_compile_options(test_registry PRIVATE -pthread)

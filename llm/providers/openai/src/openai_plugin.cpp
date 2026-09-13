@@ -9,7 +9,7 @@
 // OpenAI wire format; providers that deviate override the same two hooks.
 
 #include "llm/models.hpp"
-#include "llm/responses/model.hpp"
+#include "llm/compat/responses/model.hpp"
 
 #include <memory>
 #include <string_view>

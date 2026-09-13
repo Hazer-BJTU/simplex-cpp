@@ -18,7 +18,12 @@ add_executable(llm_deepseek_chat deepseek_chat.cpp)
 target_compile_options(llm_deepseek_chat PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
-target_link_libraries(llm_deepseek_chat PRIVATE llm_iface eventbus_iface)
+# llm_chat_completions is named because this demo subscribes to the adapter's
+# reasoning-increment events (llm/compat/chat_completions/events.hpp). The adapter used
+# to be reachable through llm_iface's include directory; now that it lives in
+# the compatibility layer, a consumer of the layer's header links the layer.
+target_link_libraries(llm_deepseek_chat PRIVATE
+    llm_iface llm_chat_completions eventbus_iface)
 # ENABLE_EXPORTS (-rdynamic / --export-dynamic): the host executable's symbols
 # open the process-wide lookup scope, so its emissions of the header-only
 # contract classes (ExtensionContext / LLMModelExtensionContext / LLMModel
