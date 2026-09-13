@@ -15,7 +15,8 @@
 //   read_process_output   one session's output: the delta by default, the
 //                         whole capture on request.
 //   write_process_input   feed a child's stdin, optionally closing it.
-//   wait_process          block until one child exits, with a deadline.
+//   wait_process          block until one child has exited and its output is
+//                         complete, with a deadline.
 //   kill_process          end a child, hard or graceful.
 //
 // WHY SIX AND NOT MORE. There is no separate run_command, because spawn_process

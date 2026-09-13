@@ -613,9 +613,12 @@ WaitProcessTool::WaitProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
     _details.name = std::string(tool_names::kWait);
     _details.description =
         "Wait for a process to finish and report how it ended, along with "
-        "everything it printed. Returns as soon as the process exits, or when "
-        "the timeout runs out — a timeout is not an error, the result simply "
-        "reports the process as still running, and it keeps running.";
+        "everything it printed. Returns when the process has exited AND its "
+        "output capture is complete — a child that exits while something it "
+        "started still holds its stdout/stderr open keeps this waiting — or "
+        "when the timeout runs out. A timeout is not an error: the result "
+        "reports `exited` and `output_complete` separately, and the process "
+        "keeps running.";
     _details.argument_schema = object_schema(
         nlohmann::json{
             {"session_id", string_property(
