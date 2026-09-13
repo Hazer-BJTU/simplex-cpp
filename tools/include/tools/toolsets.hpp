@@ -180,13 +180,15 @@ public:
      * as one when the path argument says so.
      *
      * The default is the cautious pair. SerialWrite, because a tool that
-     * forgets to declare itself must not be advertised as side-effect free
-     * (ReadOnly is what lets a caller run invocations in parallel) — a wrong
-     * ReadOnly is a data race, a wrong SerialWrite is merely slower. And
-     * RequireConfirm, so a tool that never says how much it can be trusted is
-     * judged by default_security_check() (tools/security_check.hpp): asked
-     * about, and refused unless someone answers. A tool that wants Trusted —
-     * or wants to be refused outright with DefaultDeny — says so here.
+     * forgets to declare itself must not be advertised as safe to overlap
+     * (ReadOnly and ParallWrite are what let a caller run invocations in
+     * parallel): both of the things overlapping asserts about a call
+     * (dataclass/model_io.hpp, InvokeType) would go unasserted, whereas erring
+     * the other way costs only concurrency. And RequireConfirm, so a tool that
+     * never says how much it can be trusted is judged by
+     * default_security_check() (tools/security_check.hpp): asked about, and
+     * refused unless someone answers. A tool that wants Trusted — or wants to
+     * be refused outright with DefaultDeny — says so here.
      *
      * Throws like ensure_arguments(), and is reported at the same
      * InvokeException::Stage::ArgumentParse: it is the same phase, settling the

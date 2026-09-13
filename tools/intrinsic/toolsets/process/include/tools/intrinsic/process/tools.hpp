@@ -42,14 +42,15 @@
 //   kill_process          SerialWrite   RequireConfirm
 //
 // InvokeType is about SCHEDULING — may this run beside its neighbours in a
-// batch — and what it describes is the effect a call has OUTSIDE this host.
-// InvokeSecurity is about TRUST — may this run unattended. Running an arbitrary
-// executable, feeding it input, and killing it are all state changes outside
-// this process, so they ask (through the async bus's InvokeConfirmEvent, per
-// security_check.hpp: no answer means refused). Looking at what is already
-// running is not, so it does not ask — a confirmation prompt for "read the
-// output you just asked for" trains a user to click through prompts, which
-// costs more than it buys.
+// batch — and what it describes is the effect a call has OUTSIDE this host (the
+// definition of the three values is at the enum itself: dataclass/model_io.hpp,
+// InvokeType). InvokeSecurity is about TRUST — may this run unattended. Running
+// an arbitrary executable, feeding it input, and killing it are all state
+// changes outside this process, so they ask (through the async bus's
+// InvokeConfirmEvent, per security_check.hpp: no answer means refused). Looking
+// at what is already running is not, so it does not ask — a confirmation prompt
+// for "read the output you just asked for" trains a user to click through
+// prompts, which costs more than it buys.
 //
 // INTERNAL BOOKKEEPING IS NOT AN EXTERNAL EFFECT, and keeping the two apart is
 // what makes this column mean something. A delta read advances that session's

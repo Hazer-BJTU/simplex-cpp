@@ -92,11 +92,14 @@ and whatever state they share.
    never in `invoke()`, because the security check and the human confirmation
    must see settled arguments. Use the `settle_*` accessors there, so the
    defaults are part of the query both of those read. `InvokeType` describes the
-   effect a call has OUTSIDE the host: a tool whose only changes are to its own
-   component's state is `ReadOnly` **provided that component is safe to use
-   concurrently** — the component owns that, the scheduler does not. A call that
-   changes the world (starts something, writes to it, ends it) is a write, and
-   `SerialWrite` when the order between two of them is observable out there.
+   effect a call has OUTSIDE the host — the definition of the three values is at
+   the enum itself (`dataclass/model_io.hpp`, `InvokeType`), because a toolset
+   answers that question rather than getting its own version of it. A tool whose
+   only changes are to its own component's state is `ReadOnly` **provided that
+   component is safe to use concurrently**: the component owns that, the
+   scheduler does not. A call that changes the world (starts something, writes
+   to it, ends it) is a write, and `SerialWrite` when the order between two of
+   them is observable out there.
 4. `add_subdirectory(toolsets/<name>)` in this directory's `CMakeLists.txt`;
    link `tools_intrinsic`, and build SHARED for the ABI reason below.
 

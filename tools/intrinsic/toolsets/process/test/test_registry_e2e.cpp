@@ -35,14 +35,18 @@
 // them.
 //
 // WHY THIS LAYER EXISTS, given that test_tools already covers each tool and
-// test_session_store covers the table. Because InvokeType is not metadata in
-// this toolset — it is part of the implementation's correctness. `poll` with
-// output, a delta `read` and any `release` advance or remove state that a
-// neighbouring call in the same batch can address, so whether a batch gives a
-// call the executor to itself decides what the call MEANS. A per-tool test
-// cannot see that: it runs one call at a time. These cases run batches, through
-// the registry, on a context with SEVERAL worker threads, and assert both what
-// came back and how the batch was scheduled.
+// test_session_store covers the table. Because a BATCH is where this toolset's
+// internal state is shared between calls: a `poll` with output, a delta `read`
+// and any `release` advance or remove state that a neighbouring call in the
+// same batch can address, and every one of them is declared ReadOnly, so the
+// scheduler is free to overlap them (tools.hpp, WHAT EACH TOOL DECLARES). That
+// classification is correct precisely because the STORE serialises that state
+// and not the scheduler — and the way to show it is to run the overlap and
+// assert what survives it: no torn snapshot, no byte handed out twice, no call
+// answered twice or left unanswered. A per-tool test cannot see that: it runs
+// one call at a time. These cases run batches, through the registry, on a
+// context with SEVERAL worker threads, and assert both what came back and how
+// the batch was scheduled.
 //
 // The shape of a case here is therefore always the same:
 //
@@ -108,7 +112,8 @@ nlohmann::json payload_of(const model_io::InvokeReturn& record)
  * on purpose. What a scheduler promises is that two calls do not overlap, and
  * "overlap" is about time, not about which worker thread happened to pick each
  * one up: two branches of one batch can share a thread and still interleave
- * their awaits, and that is exactly the interference a wrong ReadOnly permits.
+ * their awaits, and that interleaving is exactly what a ReadOnly or ParallWrite
+ * call declares itself safe under.
  */
 struct ProbeLog {
     std::mutex mutex;
@@ -528,8 +533,10 @@ BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
     BOOST_TEST(empty.at("stdout_text") == nlohmann::json(""));
 
     // Reaping through a poll: the session goes, and the poll says which ones
-    // went. `release_exited` makes that batch a SerialWrite, which is why the
-    // removal cannot race a neighbour addressing the same id.
+    // went. Like every other poll the call is ReadOnly — the removal is the
+    // table's own bookkeeping — so the reason a neighbour addressing the same
+    // id is safe is the store's strand, not the scheduler holding this call
+    // apart from it.
     const nlohmann::json polled = payload_of(f.call(call_for(
         std::string(tool_names::kPoll),
         nlohmann::json{{"release_exited", true}}, "call_poll")));
@@ -957,11 +964,13 @@ BOOST_AUTO_TEST_CASE(a_serial_write_never_overlaps_its_neighbours)
 
 BOOST_AUTO_TEST_CASE(read_only_and_parallel_write_calls_are_allowed_to_overlap)
 {
-    // The other half of the scheduler's contract, and the reason the wrong
-    // ReadOnly is a data race rather than a slowdown: ReadOnly and ParallWrite
-    // calls are started together and run concurrently. Three probes, three
-    // workers, all three overlapping — asserted on the logical overlap, not on
-    // which thread ran what.
+    // The other half of the scheduler's contract: ReadOnly and ParallWrite
+    // calls are started together and run concurrently, which is what makes
+    // declaring either of them a claim about the tool rather than a hint —
+    // overlapping asks that no neighbour can observe an effect of the call, and
+    // that the implementation is safe to use from two branches at once. Three
+    // probes, three workers, all three overlapping — asserted on the logical
+    // overlap, not on which thread ran what.
     Fixture f;
     const std::vector<model_io::InvokeReturn> records =
         f.batch(std::vector<model_io::InvokeQuery>{
