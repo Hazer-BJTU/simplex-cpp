@@ -37,6 +37,15 @@ target_link_libraries(tools_iface INTERFACE
     async_eventbus_iface
 )
 
+# The host's own built-in tools, on top of the interface above. intrinsic/ is
+# organised like llm/'s providers — a shared core (tools_intrinsic) plus one
+# self-contained package per toolset under intrinsic/toolsets/, the first being
+# the process-management family — except that an intrinsic toolset is NOT a
+# plugin: it is a shared library the host links and constructs directly, with no
+# ExtensionContext and no dlopen. SHARED rather than header-only for the
+# typeinfo reason its own CMakeLists states.
+add_subdirectory(intrinsic)
+
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()

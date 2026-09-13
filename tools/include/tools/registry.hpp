@@ -56,8 +56,21 @@
 // the only way to honour that from a batch is to run it while the rest of the
 // batch waits. ReadOnly and ParallWrite are the only types allowed to overlap,
 // and they are named explicitly: a type a future enum adds defaults to the slow
-// side, because a wrong ReadOnly is a data race while a wrong SerialWrite is
-// merely slower.
+// side.
+//
+// WHY THE SLOW SIDE IS THE SAFE SIDE, since the asymmetry is the whole reason
+// the naming is the way round it is. Overlapping two calls asks two things of
+// them at once — that neither affects anything outside the host that the other
+// can be observed against, and that both are safe to run concurrently — and a
+// call that declared ReadOnly or ParallWrite while meaning something else can
+// break either of them. A call whose neighbour can observe its effect is wrong
+// when it overlaps even if it is perfectly thread-safe (two appends to one log
+// are ordered out there whatever the writer does internally), and a call over
+// state its component cannot share corrupts memory even when the order does not
+// matter. An unnecessarily serial call costs concurrency and nothing else. So
+// the safety of the classification rests on what a tool DECLARES, which is why
+// model_io.hpp states the rule once at the enum and every toolset is expected to
+// answer that question rather than its own version of it.
 //
 // EVERY CALL IS ANSWERED, EXACTLY ONCE. That is a wire requirement, not
 // politeness: a provider rejects an assistant message whose tool_calls are not
@@ -682,8 +695,10 @@ private:
     };
 
     /// Only these two may overlap their neighbours; anything else — including a
-    /// type a later version of the enum adds — is treated as serial, which is
-    /// the side that is merely slower rather than the one that races.
+    /// type a later version of the enum adds — is treated as serial. The cost
+    /// of that default is concurrency and nothing else (file header: what
+    /// overlapping a call asks of it, and why the naming is the safe way
+    /// round).
     [[nodiscard]] static constexpr bool may_run_in_parallel(
         model_io::InvokeType type) noexcept
     {

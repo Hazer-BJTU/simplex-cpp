@@ -162,11 +162,48 @@ inline void from_json(const nlohmann::json& j, Content& c) {
     detail::read_optional(j, "extras", c.extras);
 }
 
-// How a tool invocation may touch state.
+// How a tool invocation may be SCHEDULED. This is the framework's definition of
+// the three values — a toolset that declares them (write_attributes()) is
+// answering this question, and the scheduler that reads them (tools/registry.hpp,
+// scheduling) is acting on this answer, so a toolset that reads it differently
+// is a bug in the toolset.
+//
+// WHAT THE COLUMN IS ABOUT: the effect a call has OUTSIDE the host, and whether
+// the call may run beside its neighbours in a batch. It is NOT about the host's
+// own components. A call that only moves its own component's internal state — a
+// cursor, a cache, a table of retained entries — is ReadOnly, because ReadOnly
+// is a claim about what can be observed out there, and the component that owns
+// that state is the one responsible for making concurrent use of it safe.
+//
+// WHICH MEANS OVERLAPPING A CALL ASKS TWO THINGS OF IT, and both are the tool
+// author's to assert, not the scheduler's: that the call has no effect outside
+// the host that a neighbour could observe out of order, AND that the
+// implementation really is safe to run from two branches at once. A tool
+// declaring ReadOnly or ParallWrite asserts both; SerialWrite says that at
+// least one of them does not hold. That is why a value the scheduler does not
+// recognise — including one a later version of this enum adds — is treated as
+// serial: being wrong in that direction costs concurrency, while being wrong in
+// the other breaks one of the two things above.
 enum class InvokeType {
-    ReadOnly,    // no side effects; safe to run in parallel.
-    ParallWrite, // writes state, may be parallelised with other writers.
-    SerialWrite, // writes state; must run serially.
+    // No effect outside the host. Internal bookkeeping may change, provided the
+    // implementation is safe to use concurrently.
+    //
+    // It does NOT promise determinism. Two overlapping ReadOnly calls may
+    // consume shared internal state in an order that depends on the schedule
+    // (two consuming reads of one stream split it between them), so a caller
+    // that needs a particular interleaving cannot get it from this value — only
+    // from not making the calls overlap.
+    ReadOnly,
+
+    // Changes something outside the host, in a way that may be interleaved with
+    // other parallel calls: the order between them is not observable, or does
+    // not matter to what they mean.
+    ParallWrite,
+
+    // Changes something outside the host and must not overlap its neighbours:
+    // either the order between two such calls is observable out there, or the
+    // implementation cannot safely run concurrently.
+    SerialWrite,
 };
 
 NLOHMANN_JSON_SERIALIZE_ENUM(InvokeType, {

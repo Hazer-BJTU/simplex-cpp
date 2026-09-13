@@ -176,6 +176,13 @@ add_subdirectory(dataclass)
 # the tool-side failure type (tools::InvokeException), which turns a failed
 # call into the InvokeReturn record the conversation carries — the path a
 # detached invocation reports back on with no caller left to throw at.
+#
+# Its intrinsic/ subpackage (tools_intrinsic) is the host's own built-in tools,
+# starting with the process-management family, and links process_lib from the
+# module added BELOW this line. That ordering is fine — CMake resolves target
+# link names at generate time, not at add_subdirectory() time — and tools stays
+# here rather than after process/ so the invocation layer keeps its place next
+# to the contract it implements.
 add_subdirectory(tools)
 # process after dataclass: the child-process management module. Its typed
 # data contract (process::LaunchSpec / ExecutionStatus / ExecutionResult)

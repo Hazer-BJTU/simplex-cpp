@@ -31,6 +31,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
             "PATH=/usr/bin",
             "LANG=C",
         },
+        .working_directory = "/srv/notes",
     };
 
     const nlohmann::json j = spec;
@@ -67,6 +68,11 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
     // array of verbatim strings, caller's order preserved.
     BOOST_TEST(j.at("environment") ==
                nlohmann::json::array({"PATH=/usr/bin", "LANG=C"}));
+    // The start directory is carried verbatim, like the environment entries:
+    // no resolution, no canonicalisation, no trailing-slash normalising.
+    BOOST_TEST(back.working_directory.has_value());
+    BOOST_TEST(*back.working_directory == std::string("/srv/notes"));
+    BOOST_TEST(j.at("working_directory") == nlohmann::json("/srv/notes"));
 }
 
 BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
@@ -91,6 +97,9 @@ BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
     BOOST_TEST(j.at("pid") == nlohmann::json(0));
     BOOST_TEST(j.at("started_at") == nlohmann::json(0));
     BOOST_TEST(!j.contains("environment"));
+    // Disengaged => the key is absent, never null and never "": an empty
+    // string would be a path, and "inherit the parent's cwd" is not one.
+    BOOST_TEST(!j.contains("working_directory"));
 
     const process::LaunchSpec back = j.get<process::LaunchSpec>();
     BOOST_TEST(back.initial_wait_timeout_milliseconds == std::uint64_t{0});
@@ -101,6 +110,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
     BOOST_CHECK(back.started_at ==
                 std::chrono::system_clock::time_point{});
     BOOST_TEST(!back.environment.has_value());
+    BOOST_TEST(!back.working_directory.has_value());
 }
 
 BOOST_AUTO_TEST_CASE(launch_spec_engaged_empty_environment_stays_engaged)
@@ -253,9 +263,11 @@ BOOST_AUTO_TEST_CASE(null_and_absent_optionals_read_as_disengaged)
         {"executable", "sleep"},
         {"description", "x"},
         {"environment", nullptr},
+        {"working_directory", nullptr},
     };
     const process::LaunchSpec spec = spec_j.get<process::LaunchSpec>();
     BOOST_TEST(!spec.environment.has_value());
+    BOOST_TEST(!spec.working_directory.has_value());
 
     const nlohmann::json result_j = nlohmann::json{
         {"spec", nullptr},
