@@ -171,6 +171,12 @@ add_subdirectory(intercom)
 # functions, so the module depends only on simplex_thirdparty_iface
 # (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
+# tools after dataclass + extensions: the tool-invocation layer. It consumes
+# the model_io tool contract (Invocable / InvokeQuery / InvokeReturn) and owns
+# the tool-side failure type (tools::InvokeException), which turns a failed
+# call into the InvokeReturn record the conversation carries — the path a
+# detached invocation reports back on with no caller left to throw at.
+add_subdirectory(tools)
 # process after dataclass: the child-process management module. Its typed
 # data contract (process::LaunchSpec / ExecutionStatus / ExecutionResult)
 # lives in dataclass; the exception contract lands first. The manager
