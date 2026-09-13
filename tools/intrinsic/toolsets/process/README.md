@@ -49,8 +49,15 @@ loop.
 **Sessions have to be let go.** A finished process keeps its session (and its
 output) until it is released, so the model can still read it. Release with
 `release` on a read or wait, or `release_exited` on a poll. At most **32**
-processes may be alive at once; spawn refuses past that, which is a failure the
-model reads and can act on by releasing finished sessions.
+sessions may be retained at once — an exited-but-unreleased session still counts
+— and spawn refuses past that, which is a failure the model reads and can act on
+by releasing finished sessions.
+
+**Session ids are never reused.** `proc_3` names one process for the life of the
+host, and after that session is released the number is spent: the next spawn
+gets a fresh one. A model's older context still says "proc_3 is the build I
+started three turns ago", and an id that came back around would make
+`kill_process(proc_3)` end a process that model never saw.
 
 **There is no shell.** The executable runs directly, so `|`, `>`, `*` and `&&`
 reach it as literal arguments. A model that wants a pipeline asks for
@@ -66,6 +73,28 @@ reach it as literal arguments. A model that wants a pipeline asks for
 A confirmation that nobody answers is a refusal, so an unattended host runs the
 observing calls and refuses the rest.
 
+### Which calls may run beside their neighbours
+
+The host schedules a turn's calls in one batch, and each call's settled
+arguments decide whether it may overlap the others. The rule is "does this call
+disturb what a neighbour in the same batch could observe":
+
+| call | runs beside others | runs alone |
+| --- | --- | --- |
+| `spawn_process` | — | always (it changes the machine) |
+| `kill_process` | — | always |
+| `write_process_input` | — | always (two writes to one child do not commute) |
+| `poll_processes` | `include_output: false, release_exited: false` | any poll that reads output or reaps |
+| `read_process_output` | `full: true, release: false` | the delta read (`full: false`), or any `release` |
+| `wait_process` | `release: false` | `release: true` |
+
+A delta read advances that session's position, so two of them in one batch are
+order-dependent whichever way they interleave; a `release` removes the session a
+neighbour may be addressing. Both are therefore serial — the batch gives them
+the executor to itself, and the rest of the batch waits. Calls that run alone go
+**first**, in call order, so a poll beside a spawn already sees the session that
+spawn created.
+
 ---
 
 ### `spawn_process`
@@ -79,7 +108,7 @@ not, it keeps running and the result carries a `session_id` instead.
   "executable": "grep",                    // required: PATH name or path
   "arguments": ["-rn", "TODO", "src/"],    // one element per argument, verbatim
   "description": "find TODOs",             // label echoed in every later report
-  "working_directory": "/home/me/project", // defaults to the host's own cwd
+  "working_directory": "/home/me/project", // defaults to the host's own cwd; "" is refused
   "environment": ["LANG=C"],               // "KEY=VALUE", merged over the inherited env
   "inherit_environment": true,             // default true
   "expected_runtime_milliseconds": 5000    // default 5000; 0 returns a session id at once
@@ -87,7 +116,10 @@ not, it keeps running and the result carries a `session_id` instead.
 ```
 
 Only `executable` is required. Arguments are passed **verbatim** — do not quote
-or escape them, and do not put them all in one string.
+or escape them, and do not put them all in one string. `working_directory: ""`
+is refused rather than read as "not given": a child cannot be started in the
+empty path, and silently inheriting the host's directory would run the command
+somewhere the model did not ask for.
 
 **A quick command finishes inside the window** and comes back complete:
 
@@ -99,6 +131,7 @@ or escape them, and do not put them all in one string.
   "description": "find TODOs",
   "pid": 48231,
   "finished": true,
+  "output_complete": true,
   "state": "exited",
   "exit_code": 0,
   "running_milliseconds": 8,
@@ -114,15 +147,35 @@ The session is **kept**, not reaped, even though it already finished: its
 output stays readable, and the model releases it when done (`release: true` on
 a later `read_process_output`, or `release_exited` on a poll).
 
+**`finished` and `output_complete` are two different facts**, and the second is
+not implied by the first. `finished` is about the child: it exited inside the
+window, and its exit code is readable. `output_complete` is about its pipes: the
+capture finished too, so the text above is everything the process printed. They
+part company when a command starts something else that inherits its output and
+then exits itself — a launcher, a background job — because the descendant keeps
+those pipes open after the child is gone:
+
+```jsonc
+{
+  "session_id": "proc_2",
+  "finished": true,
+  "output_complete": false,
+  "state": "exited", "exit_code": 0,
+  "stdout_text": "…what has arrived so far…",
+  "hint": "the process finished, but its output capture is not complete yet: … call wait_process to collect the rest"
+}
+```
+
 **A program that outlives the window** comes back as just the id and the
 in-progress state — no `exit_code`, no output slice:
 
 ```jsonc
 {
-  "session_id": "proc_2",
+  "session_id": "proc_3",
   "executable": "make",
   "pid": 48244,
   "finished": false,
+  "output_complete": false,
   "state": "running",
   "running_milliseconds": 5000,
   "hint": "the process is still running; call poll_processes to check on it, wait_process to wait for it, read_process_output to read its output"
@@ -167,14 +220,16 @@ All three are optional; `{}` reports everything.
       "new_stderr": ""
     }
   ],
-  "live_session_count": 1,
+  "retained_session_count": 1,
   "released": ["proc_1"]              // only when release_exited actually freed some
 }
 ```
 
 `exit_code` is **absent** while a process runs — an absent exit code is not a
 zero one. With `release_exited: true`, output is reported *before* the session
-is freed, so nothing is lost.
+is freed, so nothing is lost. `retained_session_count` counts what the table is
+holding, exited-but-unreleased sessions included — the same number the
+32-session cap counts, so it is not the number of *running* processes.
 
 ### `read_process_output`
 
@@ -263,6 +318,7 @@ printed.
   "exit_code": 0,
   "running_milliseconds": 412,
   "exited": true,
+  "output_complete": true,
   "timed_out": false,
   "stdout_text": "src/main.cpp:12: // TODO\n",   // the FULL capture
   "stderr_text": "",
@@ -271,17 +327,26 @@ printed.
 }
 ```
 
+The three fields say which of the two things the wait was waiting for it
+reached: `exited` — the child is gone, its exit code readable; `output_complete`
+— its output is all here, both pipes closed; `timed_out` — the wait ended
+without reaching both, which is the negation of `exited && output_complete`
+rather than of `exited` alone, so the three can never disagree. A child that
+exits while something it started still holds its stdout open ends the wait with
+`exited: true, output_complete: false, timed_out: true` — a real state, and the
+reason the distinction exists; the result then carries a hint saying so, and
+waiting again collects the rest.
+
 **A timeout is not an error.** It comes back `"exited": false, "timed_out":
 true` with `state` still `"running"`, and the process keeps running — wait
 again, read its output, or kill it. `timeout_milliseconds: 0` waits forever,
 which hangs the turn on a process that never exits; prefer a real timeout and
 wait twice.
 
-Unlike a read, this returns the **whole** capture: a caller waiting for a
-command to finish wants all its output and cannot know what an earlier poll
-already consumed. When `"exited": true`, the output is complete — the wait ends
-only once the process has finished *and* its output has been fully collected,
-so a quick command never comes back with an exit code and empty text.
+Unlike a read, this returns the **whole** capture, with `full = true`: a caller
+waiting for a command to finish wants all its output and cannot know what an
+earlier poll already consumed. Because a full read is an observation and not a
+consumption, a wait running beside a poll loop steals nothing from it.
 
 ### `kill_process`
 
@@ -409,8 +474,11 @@ keeps a component's confirmations to itself.
 
 Since the state-changing tools declare `RequireConfirm`, a host that wants them
 to run at all must subscribe a handler to `InvokeConfirmEvent` — with none,
-they are refused (silence is not consent). `ProcessSessionStore`'s constructor
-also takes a `max_sessions` cap, default `kDefaultMaxSessions` (32).
+they are refused (silence is not consent). What the handler is shown is the
+**settled** call: the query with every default written in, exactly the one that
+will run and exactly the one the record carries back. `ProcessSessionStore`'s
+constructor also takes a `max_sessions` cap, default `kDefaultMaxSessions`
+(32), which counts retained sessions rather than live processes.
 
 ### Shutdown is `terminate_all()`, not the destructor
 
@@ -421,24 +489,36 @@ to run it on. So a host awaits `terminate_all()` **while its context still
 runs**. The destructor is a last-resort tail: it signals the recorded pids
 synchronously and logs loudly.
 
+Drop the table **after** the context is quiesced — stopped, with its threads
+joined. The tail's signal is a plain `::kill` on a pid recorded at spawn, so it
+needs no executor and works either way; what it cannot survive is being freed
+while the context is still running, because the table's strand shares
+refcounted state with the operations queued on it. That is a race in the
+executor's refcount, and ThreadSanitizer reports it (the suites here quiesce
+first, for exactly that reason).
+
 ### The three headers
 
 - **`process/session_store.hpp`** — the session table. Mints readable ids
-  (`proc_1`, recycled from a free pool so the numbers stay small), gives each
-  child its own strand, keeps the per-stream read cursors that make "what is
-  new since I last looked" answerable, and reaps a session once its child is
-  observed terminal. Two levels of strand: the store's own serialises the
-  table, a session's serialises its handle and cursors — so nothing that leaves
-  the class is a reference into it, only values (a snapshot, a slice of output,
-  a bool). It owns `ProcessHandle`'s lifecycle contract in full: start the io
-  tasks, then drive the handle to a terminal observation with a detached await
-  task, and never block a spawn on the child.
+  (`proc_1`, `proc_2`, … monotonically, never reusing one), gives each child its
+  own strand, keeps the per-stream read cursors that make "what is new since I
+  last looked" answerable, and reaps a session once its child is observed
+  terminal. Two levels of strand: the store's own serialises the table, a
+  session's serialises its handle and cursors — so nothing that leaves the class
+  is a reference into it, only values (a snapshot, a slice of output, a bool).
+  `release()` is the one method that hops twice, reading the child's terminal
+  state on the session's strand and removing the entry on the store's, because
+  a lifetime decision read off the wrong strand is a data race that passes every
+  single-runner test. It owns `ProcessHandle`'s lifecycle contract in full:
+  start the io tasks, then drive the handle to a terminal observation with a
+  detached await task, and never block a spawn on the child.
 - **`process/tools.hpp`** — the six `ToolInterface` implementations. Each
-  checks its arguments in `ensure_arguments()` (so the security check and the
-  human confirmation see settled arguments) and answers with a JSON object in
-  a text part. The readers are `ReadOnly` despite advancing a cursor — that
-  cursor is this layer's record of what the model has been shown, serialised
-  per session, not state a neighbouring call observes.
+  checks its arguments in `ensure_arguments()` and writes the defaults into the
+  query there (so the security check and the human confirmation see settled
+  arguments), and answers with a JSON object in a text part. `InvokeType` is
+  decided from those settled arguments, not from the tool's name: a read that
+  consumes a cursor, a poll that reaps and a wait that releases are all
+  `SerialWrite`, because a neighbour in the same batch can observe their order.
 - **`process/toolset.hpp`** — the `ProcessToolSet` a host registers. Its name,
   its six tools and the store they share; the catalogue, the routing and the
   build/release lifecycle come from `IntrinsicToolSet`, and
@@ -474,11 +554,22 @@ All three landed with this toolset and are used by it:
 - `ProcessHandle::output_drained()` — whether both output pipes have hit EOF.
   **Not** implied by `exited()`: the await task records the terminal status as
   soon as it observes the child, while the readers may still be draining what
-  is in the pipe buffers, so waiting on `exited()` alone reports an exit code
-  with empty output for a child that prints and exits promptly. `wait_for_exit()`
-  waits for the pair, which is the handle's own "work runs out" condition.
-  Pinned by a repeated test that runs the spawn and the wait in one coroutine —
-  the usual per-call round trip adds enough latency to hide the race.
+  is in the pipe buffers, or may be unable to finish at all because a descendant
+  inherited the pipes and is still holding them. `wait_for_exit()` waits for the
+  pair and reports both facts, and `spawn_process` reports `finished` and
+  `output_complete` separately for the same reason. Pinned by a repeated test
+  that runs the spawn and the wait in one coroutine — the usual per-call round
+  trip adds enough latency to hide the race — and by a regression test whose
+  direct child exits while a background descendant keeps its stdout open.
+- `ProcessHandle::exited()` is now a **latch** (`std::atomic<bool>`, written
+  once by the await task that observes the child, never unwritten) rather than a
+  plain read of strand-owned state. That is what lets a destructor ask the one
+  question it must — "was this child already observed, and therefore already
+  reaped?" — without a strand to hop to: signalling a pid whose child was reaped
+  can kill somebody else's process, and the answer has to be right rather than
+  lucky. Everything the terminal state is read *for* (the status, the captured
+  output, whether the pipes are drained) is still strand-side, and the store
+  still hops for all of it.
 
 Built SHARED per `docs/abi-context.md`, like the core it links: hosts and
 dlopened plugins may both subclass or catch these types, so their typeinfo must
@@ -486,15 +577,29 @@ resolve to one authoritative copy per process.
 
 ### Tests
 
-`test_session_store` — ids and recycling, the delta/full read distinction and
-its per-stream cursors, the deadline override, the session cap, waiting with and
-without a deadline, the refusal to release a live child, both shutdown paths.
+`test_session_store` — ids (monotonic, never reused), the delta/full read
+distinction and its per-stream cursors, the difference between a finished child
+and a finished capture, the deadline override, the retained-session cap, waiting
+with and without a deadline, the refusal to release a live child (and a
+concurrent release of one session having exactly one winner), both shutdown
+paths — the last of them on a context with three worker threads, where a
+strand mistake has somewhere to show up.
 
 `test_tools` — each tool's result, every malformed argument's `ArgumentParse`
 failure, the `Invoke` failure for a session that is gone, the type/security each
-tool declares (asserted after settling, so a `write_attributes` that never ran
-cannot pass), the unconfirmed-call refusal, and a whole turn through a
+tool declares for a given settled call (asserted after settling, so a
+`write_attributes` that never ran cannot pass), the defaults materialized into
+the settled query, the unconfirmed-call refusal, and a whole turn through a
 `ToolRegistry` batch.
 
-Both drive real children — the same harmless coreutils `process/`'s own suite
-uses — on a context that runs continuously, the way a host does.
+`test_registry_e2e` — the composition the agent loop uses, at the registry
+boundary: `ToolRegistry` + `ProcessToolSet` + `ProcessSessionStore` + its own
+event bus + real children, on a context with three worker threads and with every
+call going through `ToolRegistry::execute`. Mixed batches (serial first, then
+the parallel ones), the settled query and the confirmation question compared
+against the record, the scheduling rules measured with a recording probe tool
+(serial calls never overlap; read-only and parallel-write calls do), and a
+50-turn repetition that gives an ordering regression somewhere to show up.
+
+All three drive real children — the same harmless coreutils `process/`'s own
+suite uses — on a context that runs continuously, the way a host does.

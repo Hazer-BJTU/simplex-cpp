@@ -103,10 +103,17 @@ struct Fixture {
                 .get();
         }
         set.reset();
-        store.reset();
+        // Then the context stopped and joined, and the table LAST. Killing a
+        // leaked child needs no executor, so the store's destructor is just as
+        // happy at this end — and this is the end it has to be at: the table's
+        // strand shares refcounted state with the operations queued on the
+        // context, and freeing it while a worker is still finishing one is a
+        // data race in that refcount (ThreadSanitizer reports it as a race in
+        // operator delete).
         guard.reset();
         io.stop();
         if (runner.joinable()) runner.join();
+        store.reset();
     }
 
     Fixture(const Fixture&) = delete;
@@ -247,55 +254,193 @@ BOOST_AUTO_TEST_CASE(each_tool_declares_its_type_and_security)
 {
     Fixture f;
     // Asserted on the SETTLED query, after phase 1: these are the values a
-    // batch scheduler groups by and the security policy judges. The calls
-    // start with the opposite pair, so a write_attributes() that never ran
-    // could not produce these.
+    // batch scheduler groups by and the security policy judges.
+    //
+    // Three of the six tools classify by their SETTLED ARGUMENTS rather than by
+    // their name, so this walks the matrix instead of one row per tool: a poll
+    // that consumes output or reaps, a read that takes the delta, a wait that
+    // releases, and a stdin write — those are the calls whose ORDER a neighbour
+    // can observe, and every one of them must come out SerialWrite.
     struct Expectation {
         std::string_view name;
+        nlohmann::json arguments;
         model_io::InvokeType type;
         model_io::InvokeSecurity security;
     };
     const Expectation expected[] = {
-        // State changes outside this process: they ask.
-        {tool_names::kSpawn, model_io::InvokeType::SerialWrite,
+        // State changes outside this process: they ask, and they take the
+        // executor to themselves.
+        {tool_names::kSpawn, {{"executable", "true"}},
+         model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
-        {tool_names::kKill, model_io::InvokeType::SerialWrite,
+        {tool_names::kKill, {{"session_id", "proc_1"}},
+         model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
-        // A write, but through the handle's thread-safe stdin channel, so it
-        // needs no exclusive turn on the executor.
-        {tool_names::kWrite, model_io::InvokeType::ParallWrite,
+        // A write through the handle's thread-safe stdin channel — but the two
+        // writes do not commute, and one of them may close the stream, so the
+        // thread-safety of the plumbing does not make the call parallel.
+        {tool_names::kWrite, {{"session_id", "proc_1"}, {"input", "x"}},
+         model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
-        // Observation: parallelisable, and nothing to authorise.
-        {tool_names::kPoll, model_io::InvokeType::ReadOnly,
-         model_io::InvokeSecurity::Trusted},
-        {tool_names::kRead, model_io::InvokeType::ReadOnly,
-         model_io::InvokeSecurity::Trusted},
-        {tool_names::kWait, model_io::InvokeType::ReadOnly,
-         model_io::InvokeSecurity::Trusted},
+        {tool_names::kWrite, {{"session_id", "proc_1"}, {"close_input", true}},
+         model_io::InvokeType::SerialWrite,
+         model_io::InvokeSecurity::RequireConfirm},
+
+        // poll: ReadOnly exactly when it neither reads output nor reaps.
+        {tool_names::kPoll, {{"include_output", false}, {"release_exited", false}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        {tool_names::kPoll, {{"include_output", false}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        {tool_names::kPoll, {{"session_ids", {"proc_1"}}, {"include_output", false}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        // ...and SerialWrite for anything that consumes or reaps. `{}` is the
+        // default shape, and the default includes output.
+        {tool_names::kPoll, nlohmann::json::object(),
+         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
+        {tool_names::kPoll, {{"include_output", true}, {"release_exited", false}},
+         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
+        {tool_names::kPoll, {{"include_output", false}, {"release_exited", true}},
+         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
+
+        // read: the whole capture, taken and not released, is the observation.
+        {tool_names::kRead,
+         {{"session_id", "proc_1"}, {"full", true}, {"release", false}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        {tool_names::kRead, {{"session_id", "proc_1"}, {"full", true}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        // A DELTA read advances the cursor, so two of them are order-dependent
+        // whichever way they interleave: SerialWrite. `{}` again is the delta.
+        {tool_names::kRead, {{"session_id", "proc_1"}},
+         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
+        {tool_names::kRead, {{"session_id", "proc_1"}, {"full", false}},
+         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
+        {tool_names::kRead,
+         {{"session_id", "proc_1"}, {"full", true}, {"release", true}},
+         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
+
+        // wait: releasing the session it waited on is the exception.
+        {tool_names::kWait, {{"session_id", "proc_1"}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        {tool_names::kWait, {{"session_id", "proc_1"}, {"release", false}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        {tool_names::kWait, {{"session_id", "proc_1"}, {"release", true}},
+         model_io::InvokeType::SerialWrite, model_io::InvokeSecurity::Trusted},
     };
 
     for (const Expectation& expectation : expected) {
-        // Arguments that satisfy each tool's own contract, so settling
-        // reaches write_attributes() rather than failing first.
-        nlohmann::json arguments = nlohmann::json::object();
-        if (expectation.name == tool_names::kSpawn) {
-            arguments["executable"] = "true";
-        } else if (expectation.name != tool_names::kPoll) {
-            arguments["session_id"] = "proc_1";
-            if (expectation.name == tool_names::kWrite) {
-                arguments["input"] = "x";
-            }
-        }
-
+        // The query starts with the OPPOSITE pair of what this row expects, so
+        // neither assertion can pass by accident: a write_attributes() that
+        // never ran would leave the wrong values in place and fail.
         model_io::InvokeQuery query =
-            call_for(std::string(expectation.name), std::move(arguments));
+            call_for(std::string(expectation.name), expectation.arguments);
+        query.type = expectation.type == model_io::InvokeType::ReadOnly
+                         ? model_io::InvokeType::SerialWrite
+                         : model_io::InvokeType::ReadOnly;
+        query.security =
+            expectation.security == model_io::InvokeSecurity::Trusted
+                ? model_io::InvokeSecurity::DefaultDeny
+                : model_io::InvokeSecurity::Trusted;
+
         const auto tool = f.prepare(query);
         BOOST_TEST_REQUIRE(tool != nullptr);
-        BOOST_TEST_CONTEXT("tool " << expectation.name) {
+        BOOST_TEST_CONTEXT("tool " << expectation.name << " with "
+                                   << expectation.arguments.dump()) {
             BOOST_CHECK(query.type == expectation.type);
             BOOST_CHECK(query.security == expectation.security);
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(settling_materializes_the_defaults_into_the_query)
+{
+    // The settled query IS the call: it is what the security policy judges,
+    // what a human confirmer is shown, what invoke() reads and what the record
+    // carries back. A default the tool applied privately — validated but never
+    // written into arguments — would mean all four of those see a different
+    // call from the one that runs, so this asserts the DEFAULTS ARE IN THERE.
+    Fixture f;
+    struct Expectation {
+        std::string_view name;
+        nlohmann::json given;
+        nlohmann::json settled;
+    };
+    const Expectation expected[] = {
+        {tool_names::kSpawn,
+         {{"executable", "echo"}},
+         {{"executable", "echo"},
+          {"arguments", nlohmann::json::array()},
+          {"description", ""},
+          {"environment", nlohmann::json::array()},
+          {"inherit_environment", true},
+          {"expected_runtime_milliseconds",
+           tools::intrinsic::SpawnProcessTool::kDefaultExpectedRuntimeMilliseconds}}},
+        {tool_names::kPoll,
+         nlohmann::json::object(),
+         {{"session_ids", nlohmann::json::array()},
+          {"include_output", true},
+          {"release_exited", false}}},
+        {tool_names::kRead,
+         {{"session_id", "proc_1"}},
+         {{"session_id", "proc_1"},
+          {"stream", "both"},
+          {"full", false},
+          {"release", false}}},
+        {tool_names::kWrite,
+         {{"session_id", "proc_1"}, {"close_input", true}},
+         {{"session_id", "proc_1"},
+          {"input", ""},
+          {"close_input", true}}},
+        {tool_names::kWait,
+         {{"session_id", "proc_1"}},
+         {{"session_id", "proc_1"},
+          {"timeout_milliseconds", tools::intrinsic::WaitProcessTool::kDefaultTimeoutMilliseconds},
+          {"release", false}}},
+        {tool_names::kKill,
+         {{"session_id", "proc_1"}},
+         {{"session_id", "proc_1"}, {"graceful", false}}},
+    };
+
+    for (const Expectation& expectation : expected) {
+        model_io::InvokeQuery query =
+            call_for(std::string(expectation.name), expectation.given);
+        (void)f.prepare(query);
+        BOOST_TEST_CONTEXT("tool " << expectation.name) {
+            // The whole object, not one key at a time: a property the tool
+            // materialized that it should not have (a defaulted
+            // working_directory, say) is as wrong as one it failed to
+            // materialize, and only the full comparison catches both.
+            BOOST_CHECK(query.arguments == expectation.settled);
+        }
+    }
+
+    // The values the caller DID send are left exactly as they came, even when
+    // they happen to equal the default — settling fills gaps, it does not
+    // normalize.
+    model_io::InvokeQuery named = call_for(
+        std::string(tool_names::kRead),
+        nlohmann::json{{"session_id", "proc_9"}, {"full", true},
+                       {"stream", "stderr"}});
+    (void)f.prepare(named);
+    BOOST_CHECK(named.arguments ==
+                nlohmann::json({{"session_id", "proc_9"}, {"full", true},
+                                {"stream", "stderr"}, {"release", false}}));
+
+    // working_directory is the one optional property with no default to write:
+    // absent means "inherit the host's", and absent is how it stays.
+    model_io::InvokeQuery directory = call_for(
+        std::string(tool_names::kSpawn), nlohmann::json{{"executable", "true"}});
+    (void)f.prepare(directory);
+    BOOST_CHECK(!directory.arguments.contains("working_directory"));
+
+    // And when the caller names one, it is untouched (no rewriting, no
+    // normalization), which is what makes the confirmation and the launch
+    // agree.
+    model_io::InvokeQuery named_directory = call_for(
+        std::string(tool_names::kSpawn),
+        nlohmann::json{{"executable", "true"}, {"working_directory", "/tmp"}});
+    (void)f.prepare(named_directory);
+    BOOST_CHECK(named_directory.arguments.at("working_directory") ==
+                nlohmann::json("/tmp"));
 }
 
 // ---- argument checking ------------------------------------------------------
@@ -319,8 +464,17 @@ BOOST_AUTO_TEST_CASE(malformed_arguments_fail_at_the_argument_parse_stage)
         {tool_names::kSpawn, {{"executable", "true"},
                               {"environment", nlohmann::json::array({"=novalue"})}}},
         {tool_names::kSpawn, {{"executable", "true"}, {"working_directory", 7}}},
+        // An EMPTY working directory is refused rather than read as "absent":
+        // the two are different calls, and a child cannot be started in "".
+        // The model's typo is a mistake it can fix, so it belongs here.
+        {tool_names::kSpawn, {{"executable", "true"}, {"working_directory", ""}}},
         {tool_names::kSpawn, {{"executable", "true"},
                               {"inherit_environment", "yes"}}},
+        // `arguments` that is not an object at all: every property would read
+        // as absent and the call would run on defaults the model never chose,
+        // so it is refused where the model can see why.
+        {tool_names::kPoll, nlohmann::json::array({1, 2})},
+        {tool_names::kPoll, "not an object"},
         // the session-id tools: missing, wrong type, empty.
         {tool_names::kRead, nlohmann::json::object()},
         {tool_names::kRead, {{"session_id", 1}}},
@@ -491,10 +645,75 @@ BOOST_AUTO_TEST_CASE(wait_reports_the_exit_and_the_whole_output)
     const nlohmann::json payload = f.payload_of(record);
     BOOST_TEST(payload.at("exited") == nlohmann::json(true));
     BOOST_TEST(payload.at("timed_out") == nlohmann::json(false));
+    // The two facts behind that pair, spelled out: the child is gone AND its
+    // capture is complete, which is why the output below is the whole of it.
+    BOOST_TEST(payload.at("output_complete") == nlohmann::json(true));
     BOOST_TEST(payload.at("state") == nlohmann::json("exited"));
     BOOST_TEST(payload.at("exit_code") == nlohmann::json(0));
     BOOST_TEST(payload.at("stdout_text") == nlohmann::json("hello tools\n"));
     BOOST_TEST(payload.at("stderr_text") == nlohmann::json(""));
+}
+
+BOOST_AUTO_TEST_CASE(wait_separates_a_finished_child_from_a_finished_capture)
+{
+    // The case the two fields exist for, and the one a single `exited` bool
+    // gets wrong: the direct child exits at once, while a descendant it
+    // started inherited stdout/stderr and keeps them open. The wait's deadline
+    // then fires with the child GONE and its output still arriving.
+    //
+    // Reported as `exited: true, output_complete: false, timed_out: true` —
+    // and `timed_out` is deliberately defined over the COMPLETE condition
+    // rather than over the exit, so the three fields cannot disagree about
+    // whether this result is the finished article.
+    Fixture f;
+    const std::string id =
+        spawn_through_tool(f, "sh", {"-c", "sleep 2 & exit 0"});
+
+    const nlohmann::json payload = f.payload_of(f.call(call_for(
+        std::string(tool_names::kWait),
+        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 500}})));
+
+    BOOST_TEST(payload.at("exited") == nlohmann::json(true));
+    BOOST_TEST(payload.at("state") == nlohmann::json("exited"));
+    BOOST_TEST(payload.at("exit_code") == nlohmann::json(0));
+    BOOST_TEST(payload.at("output_complete") == nlohmann::json(false));
+    BOOST_TEST(payload.at("timed_out") == nlohmann::json(true));
+    // Prose as well as fields: the cause is not visible in the output itself.
+    BOOST_TEST(payload.contains("hint"));
+
+    // Waiting again collects the rest, once the descendant is gone: the flag is
+    // a fact about the pipes, not a verdict on the session.
+    const nlohmann::json finished = f.payload_of(f.call(call_for(
+        std::string(tool_names::kWait),
+        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 10000}})));
+    BOOST_TEST(finished.at("exited") == nlohmann::json(true));
+    BOOST_TEST(finished.at("output_complete") == nlohmann::json(true));
+    BOOST_TEST(finished.at("timed_out") == nlohmann::json(false));
+}
+
+BOOST_AUTO_TEST_CASE(a_spawn_that_finishes_with_an_incomplete_capture_says_so)
+{
+    // The same distinction one call earlier: spawn reports `finished` (a fact
+    // about the child) and `output_complete` (a fact about its pipes)
+    // separately, because `finished` alone would let a caller read the text
+    // below as everything the child printed.
+    Fixture f;
+    const auto record = f.call(call_for(
+        std::string(tool_names::kSpawn),
+        nlohmann::json{{"executable", "sh"},
+                       {"arguments", nlohmann::json::array(
+                           {"-c", "sleep 2 & exit 0"})},
+                       // Short enough that the child exits inside it and the
+                       // drain cannot finish inside it.
+                       {"expected_runtime_milliseconds", 500}}));
+
+    const nlohmann::json payload = f.payload_of(record);
+    BOOST_TEST(payload.at("finished") == nlohmann::json(true));
+    BOOST_TEST(payload.at("output_complete") == nlohmann::json(false));
+    BOOST_TEST(payload.at("state") == nlohmann::json("exited"));
+    // The hint names the way to the rest of the output.
+    BOOST_TEST(payload.at("hint").get<std::string>().find("wait_process") !=
+               std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(wait_reports_a_timeout_as_a_result_not_a_failure)
@@ -592,7 +811,10 @@ BOOST_AUTO_TEST_CASE(poll_reports_every_session_and_only_new_output)
     const nlohmann::json first = f.payload_of(
         f.call(call_for(std::string(tool_names::kPoll))));
     BOOST_TEST_REQUIRE(first.at("sessions").size() == std::size_t{2});
-    BOOST_TEST(first.at("live_session_count") == nlohmann::json(2));
+    // RETAINED, and the name says so: one of these two has already exited and
+    // is still in the table (and still counted) until it is released — which is
+    // also what the session cap counts.
+    BOOST_TEST(first.at("retained_session_count") == nlohmann::json(2));
 
     // Sorted by id, so a poll loop's output reads the same way every turn.
     const nlohmann::json& done_entry = first.at("sessions")[0];

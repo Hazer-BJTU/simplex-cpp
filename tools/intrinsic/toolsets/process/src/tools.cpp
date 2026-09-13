@@ -131,9 +131,9 @@ void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
     (void)require_string(query, "executable", "the program to run");
     // Element-wise, so a single non-string names its own index rather than
     // failing as a type error from inside the whole-array conversion.
-    (void)optional_string_list(query, "arguments");
+    (void)settle_string_list(query, "arguments");
     const std::vector<std::string> environment =
-        optional_string_list(query, "environment");
+        settle_string_list(query, "environment");
 
     // Each entry must be the execve KEY=VALUE shape. The manager checks this
     // too and throws at its Environment stage, but that failure would arrive
@@ -149,14 +149,29 @@ void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
         }
     }
 
-    // Validated with the same accessors invoke() reads through, so a malformed
-    // value fails HERE - as an argument the model can fix - rather than being
-    // silently replaced by a default once the call is already running.
-    (void)optional_string(query, "description");
-    (void)optional_string(query, "working_directory");
-    (void)optional_bool(query, "inherit_environment", true);
-    (void)optional_uint(query, "expected_runtime_milliseconds",
-                        kDefaultExpectedRuntimeMilliseconds);
+    // The settled values, written back so the confirmation and the record show
+    // the call that will run (tool_base.hpp). Every one of these has a default
+    // and so every one of them is materialized.
+    (void)settle_string(query, "description");
+    (void)settle_bool(query, "inherit_environment", true);
+    (void)settle_uint(query, "expected_runtime_milliseconds",
+                      kDefaultExpectedRuntimeMilliseconds);
+
+    // working_directory is the one optional property with NO default to write
+    // back: absent means "inherit the host's working directory", and there is
+    // no placeholder path that means that. So it is validated in place — and
+    // an EMPTY string is refused rather than treated as absent, because the
+    // two are different calls and the empty one cannot be run: a child cannot
+    // be started in "". Refusing at ArgumentParse is the model's chance to fix
+    // a typo; quietly inheriting the host's cwd would run the call somewhere
+    // the model did not ask for.
+    if (const std::string directory = optional_string(query, "working_directory");
+        find_argument(query, "working_directory") != nullptr && directory.empty()) {
+        bad_argument(
+            "property \"working_directory\" must not be empty: omit it to "
+            "inherit the host's working directory, or name a directory to "
+            "start the process in");
+    }
 }
 
 void SpawnProcessTool::write_attributes(model_io::InvokeQuery& query) const
@@ -173,21 +188,27 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
     const model_io::InvokeQuery& query)
 {
     process::LaunchSpec spec;
+    // Read through the pure accessors, on a query ensure_arguments() has
+    // already settled: every property below is present by now, with the value
+    // the confirmation was asked about (tool_base.hpp).
     spec.executable = require_string(query, "executable", "the program to run");
     spec.arguments = optional_string_list(query, "arguments");
     spec.description = optional_string(query, "description");
     spec.inherit_environment = optional_bool(query, "inherit_environment", true);
-    // The two optionals stay DISENGAGED when absent, which is not the same as
-    // empty: an engaged-but-empty environment means "explicitly no extra
-    // entries", and an empty working directory would be a path rather than
-    // "inherit the parent's cwd" (dataclass/process_spec.hpp says so on both).
+    // working_directory stays DISENGAGED when the call did not name one: absent
+    // means "inherit the parent's cwd", and an empty string is not a path, so
+    // there is nothing to materialize (ensure_arguments refuses the empty one
+    // rather than pretending it meant absent).
     if (const std::string directory = optional_string(query, "working_directory");
         !directory.empty()) {
         spec.working_directory = directory;
     }
-    if (find_argument(query, "environment") != nullptr) {
-        spec.environment = optional_string_list(query, "environment");
-    }
+    // environment is always engaged here, because the settled call always
+    // carries the list — `[]` when the model named none. The two spellings
+    // launch the same child: the manager merges the entries in, and an empty
+    // list merges nothing. So the dataclass's "no explicit entries" case is
+    // still reachable, just written the one way the settled query has.
+    spec.environment = optional_string_list(query, "environment");
     // The window the store races the child against. detach_on_timeout is the
     // store's to force (a killed child would leave an id naming nothing), so
     // it is deliberately not set here.
@@ -208,6 +229,12 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
 
         nlohmann::json payload = session_json(*snapshot);
         payload["finished"] = spawned.finished;
+        // The second, separate fact (SpawnResult): the child ended inside the
+        // window, but a descendant holding the inherited pipes open keeps the
+        // capture from being complete. Reported rather than folded into
+        // `finished`, because a caller told only "finished" would read the
+        // output below as the whole of what the child printed.
+        payload["output_complete"] = spawned.output_drained;
 
         if (!spawned.finished) {
             // Still running: the id is the useful part of the answer, and the
@@ -234,6 +261,19 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
         // The session is kept, not reaped: its output stays readable, and the
         // caller decides when to let it go. Saying so beats a caller assuming
         // either way.
+        if (!spawned.output_drained) {
+            // The one case where "finished" alone would mislead: the text
+            // above is what has arrived SO FAR. The usual cause is a child
+            // that started something with the same stdout/stderr and exited
+            // itself, leaving the pipes open in the descendant's hands. The
+            // session is still the way to the rest of it.
+            payload["hint"] = std::format(
+                "the process finished, but its output capture is not complete "
+                "yet: the text above is what has arrived so far. Something "
+                "may still hold its output open; call {} to collect the rest",
+                tool_names::kWait);
+            co_return json_content(std::move(payload));
+        }
         payload["hint"] = std::format(
             "the process finished; its output is above. Call {} with release "
             "to forget the session when done with it", tool_names::kRead);
@@ -273,19 +313,31 @@ PollProcessesTool::PollProcessesTool(StorePtr store, eventbus::AsyncEventBus* bu
 
 void PollProcessesTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
-    (void)optional_string_list(query, "session_ids");
-    (void)optional_bool(query, "include_output", true);
-    (void)optional_bool(query, "release_exited", false);
+    (void)settle_string_list(query, "session_ids");
+    (void)settle_bool(query, "include_output", true);
+    (void)settle_bool(query, "release_exited", false);
 }
 
 void PollProcessesTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // ReadOnly even though a delta read advances a cursor: the cursor is this
-    // layer's record of what the model has been shown, not state any
-    // neighbouring call observes, and it is serialised per session by that
-    // session's strand (see the file header). Trusted: looking at processes
-    // the host already started needs no permission.
-    query.type = model_io::InvokeType::ReadOnly;
+    // The type follows the SETTLED ARGUMENTS, which is why this runs after
+    // ensure_arguments (tools/toolsets.hpp): a poll that reads each session's
+    // new output consumes cursors, and one that reaps removes sessions, so
+    // only the poll that does neither may run beside its neighbours. The
+    // arguments are read through the pure accessors here rather than the
+    // settle family — this hook only decides, it settles nothing.
+    //
+    // That is a real narrowing of what used to be an unconditional ReadOnly,
+    // and the reason is the definition of the word: two delta reads of one
+    // session are order-dependent whichever way they interleave (the first
+    // takes the new bytes, the second gets an empty delta), and "the value
+    // happens to be this layer's bookkeeping" does not make the two orders
+    // equivalent. Trusted either way: looking at processes the host already
+    // started needs no permission, whether or not it also tidies up.
+    const bool consumes_output = optional_bool(query, "include_output", true);
+    const bool reaps = optional_bool(query, "release_exited", false);
+    query.type = consumes_output || reaps ? model_io::InvokeType::SerialWrite
+                                          : model_io::InvokeType::ReadOnly;
     query.security = model_io::InvokeSecurity::Trusted;
 }
 
@@ -333,7 +385,11 @@ boost::asio::awaitable<model_io::Content> PollProcessesTool::invoke(
 
     nlohmann::json payload{
         {"sessions", std::move(entries)},
-        {"live_session_count", co_await _store->size()},
+        // RETAINED, not alive: an exited session stays in the table (and in
+        // this count) until it is released, which is what the cap counts too.
+        // The name says so rather than leaving the reader to work out which
+        // number "live" was meant to be.
+        {"retained_session_count", co_await _store->size()},
     };
     if (!released.empty()) {
         payload["released"] = released;
@@ -372,22 +428,28 @@ ReadProcessOutputTool::ReadProcessOutputTool(StorePtr store, eventbus::AsyncEven
 void ReadProcessOutputTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_session_id(query);
-    if (const std::string stream = optional_string(query, "stream", "both");
+    if (const std::string stream = settle_string(query, "stream", "both");
         !parse_stream(stream)) {
         bad_argument(std::format(
             "property \"stream\" must be one of \"stdout\", \"stderr\", "
             "\"both\", got \"{}\"", stream));
     }
-    (void)optional_bool(query, "full", false);
-    (void)optional_bool(query, "release", false);
+    (void)settle_bool(query, "full", false);
+    (void)settle_bool(query, "release", false);
 }
 
 void ReadProcessOutputTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // ReadOnly / Trusted for the reasons given on PollProcessesTool: the
-    // cursor is bookkeeping, and reading output the host already captured
-    // needs no confirmation.
-    query.type = model_io::InvokeType::ReadOnly;
+    // ReadOnly only for a read that TAKES nothing and RELEASES nothing: a
+    // delta read consumes the session's cursor (two of them in a batch are
+    // order-dependent), and `release` removes the session. Everything else
+    // here is observation in the sense the scheduler means it — the whole
+    // capture, read again and again, leaves the world exactly as it found it.
+    // Trusted: reading output the host already captured needs no confirmation.
+    const bool full = optional_bool(query, "full", false);
+    const bool release = optional_bool(query, "release", false);
+    query.type = full && !release ? model_io::InvokeType::ReadOnly
+                                  : model_io::InvokeType::SerialWrite;
     query.security = model_io::InvokeSecurity::Trusted;
 }
 
@@ -470,12 +532,13 @@ WriteProcessInputTool::WriteProcessInputTool(StorePtr store, eventbus::AsyncEven
 void WriteProcessInputTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_session_id(query);
-    const nlohmann::json* input = find_argument(query, "input");
-    (void)optional_string(query, "input");
-    const bool close_input = optional_bool(query, "close_input", false);
-    if (input == nullptr && !close_input) {
+    const std::string input = settle_string(query, "input");
+    const bool close_input = settle_bool(query, "close_input", false);
+    if (input.empty() && !close_input) {
         // Neither writing nor closing: the call would do nothing at all, and
-        // silently succeeding at nothing is worse than saying so.
+        // silently succeeding at nothing is worse than saying so. Checked on
+        // the SETTLED values, so the refusal and the payload agree on what an
+        // absent `input` came to.
         bad_argument("nothing to do: provide \"input\" to send, or "
                      "\"close_input\": true to end the process's input");
     }
@@ -483,12 +546,18 @@ void WriteProcessInputTool::ensure_arguments(model_io::InvokeQuery& query) const
 
 void WriteProcessInputTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // ParallWrite rather than SerialWrite: the handle's stdin channel is a
-    // concurrent_channel — its documented thread-safe entry point — so this
-    // needs no exclusive turn on the executor, only to be counted as a write.
+    // SerialWrite rather than ParallWrite, and the distinction is worth being
+    // exact about because the plumbing is thread-safe: the handle's stdin
+    // channel is a concurrent_channel, so two writes cannot corrupt anything —
+    // but they do not COMMUTE. Which write lands first is what the child
+    // reads, and `close_input` on one of them ends the stream the other is
+    // still writing to, so the batch order decides the call's meaning. A
+    // scheduler is only allowed to overlap calls whose outcome does not depend
+    // on their order; this one does, so it takes the serial turn until the
+    // registry can serialise per session (`process:proc_3`) instead.
     // RequireConfirm: it is input to a live process, which can do anything
     // with it.
-    query.type = model_io::InvokeType::ParallWrite;
+    query.type = model_io::InvokeType::SerialWrite;
     query.security = model_io::InvokeSecurity::RequireConfirm;
 }
 
@@ -558,23 +627,26 @@ WaitProcessTool::WaitProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
 void WaitProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_session_id(query);
-    (void)optional_uint(query, "timeout_milliseconds",
-                        kDefaultTimeoutMilliseconds);
-    (void)optional_bool(query, "release", false);
+    (void)settle_uint(query, "timeout_milliseconds", kDefaultTimeoutMilliseconds);
+    (void)settle_bool(query, "release", false);
 }
 
 void WaitProcessTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // ReadOnly: waiting observes, it does not touch the child. Trusted: there
-    // is nothing to authorise about watching a process the host already
-    // started.
+    // ReadOnly unless it releases: waiting observes the child, but `release`
+    // removes the session, and a neighbour addressing that id in the same
+    // batch would then find nothing. Trusted: there is nothing to authorise
+    // about watching a process the host already started.
     //
     // Worth noting what ReadOnly means for a batch here: a wait may occupy a
-    // parallel branch for its whole timeout. That is the correct trade —
-    // SerialWrite would make the wait block every other call in the turn,
+    // parallel branch for its whole timeout, which it now shares only with
+    // calls that change nothing either. That is the correct trade —
+    // SerialWrite would make every wait block every other call in the turn,
     // which is strictly worse — but it is why the timeout defaults to a
     // bounded value rather than to "forever".
-    query.type = model_io::InvokeType::ReadOnly;
+    const bool release = optional_bool(query, "release", false);
+    query.type = release ? model_io::InvokeType::SerialWrite
+                         : model_io::InvokeType::ReadOnly;
     query.security = model_io::InvokeSecurity::Trusted;
 }
 
@@ -595,9 +667,20 @@ boost::asio::awaitable<model_io::Content> WaitProcessTool::invoke(
 
     nlohmann::json payload = session_json(*snapshot);
     payload["exited"] = snapshot->exited;
+    // THREE facts, not two, because "the child is gone" and "the output is all
+    // here" are settled by different tasks and a caller told only the first
+    // would treat a partial capture as the whole result (SessionSnapshot).
+    // The pair that matters is the descendant-holding-the-pipes case: the
+    // direct child exits at once while something it started keeps stdout open,
+    // so the wait can end with `exited: true, output_complete: false`.
+    payload["output_complete"] = snapshot->output_drained;
     // A timeout is a result, not a failure: it says the wait ended without
-    // the child ending, and the child is still there to be waited on again.
-    payload["timed_out"] = !snapshot->exited;
+    // reaching the COMPLETE condition — the child gone AND its capture
+    // finished — and the session is still there to be waited on again. Defined
+    // as the negation of that condition rather than of `exited` alone, so the
+    // three fields cannot disagree: timed_out is exactly the case where the
+    // answer below is not the finished article.
+    payload["timed_out"] = !(snapshot->exited && snapshot->output_drained);
 
     // The whole capture, not the delta: a caller waiting for a command to
     // finish wants its output, and cannot know whether an earlier poll
@@ -609,6 +692,15 @@ boost::asio::awaitable<model_io::Content> WaitProcessTool::invoke(
         payload["stderr_text"] = read->standard_error.text;
         payload["stdout_truncated"] = read->standard_output.truncated;
         payload["stderr_truncated"] = read->standard_error.truncated;
+    }
+    if (snapshot->exited && !snapshot->output_drained) {
+        // Said in prose as well as in the fields: the cause is not something
+        // the reader can see in the output itself.
+        payload["hint"] = std::format(
+            "the process has exited, but its output is still incomplete: "
+            "something it started may hold its stdout/stderr open. Call {} "
+            "again to collect the rest",
+            tool_names::kWait);
     }
 
     if (release) {
@@ -642,7 +734,7 @@ KillProcessTool::KillProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
 void KillProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_session_id(query);
-    (void)optional_bool(query, "graceful", false);
+    (void)settle_bool(query, "graceful", false);
 }
 
 void KillProcessTool::write_attributes(model_io::InvokeQuery& query) const
