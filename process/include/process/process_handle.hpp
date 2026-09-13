@@ -33,6 +33,16 @@
 // the child's own environment is unaffected by the fallback and really
 // does ship without a PATH.
 //
+// The spec's working_directory, when engaged, is where the child starts.
+// v2 applies it between fork and exec (a chdir in the child), so the
+// PARENT's cwd is never touched and a relative path is resolved against
+// the parent's cwd by the child. The directory is checked before the
+// launch — a missing path, or one that is not a directory, throws at
+// Stage::Spawn naming it, rather than reaching the caller as the bare
+// ENOENT a failed chdir inside the child would report. Disengaged (the
+// default) inherits the parent's cwd, which is what a plain fork/exec
+// gives.
+//
 // Lifetime model — read this before owning one:
 //   - The class MUST live in a std::shared_ptr: the background tasks
 //     capture shared_from_this(), so once start_background_io_tasks() has
@@ -161,6 +171,11 @@ private:
     boost::asio::awaitable<void> background_read_task(boost::asio::readable_pipe& pipe, std::string& output, bool& truncated);
     boost::asio::awaitable<void> background_await_task();
 
+    // Which signal signal_child() sends. The two public entry points differ
+    // only in this, so they share one body.
+    enum class Signal { Kill, Graceful };
+    boost::asio::awaitable<bool> signal_child(Signal signal);
+
 public:
     ProcessHandle(LaunchSpec spec, boost::asio::any_io_executor executor);
     ~ProcessHandle();
@@ -209,6 +224,39 @@ public:
     // on close), then the pump closes the pipe and the child sees EOF.
     void close_input();
 
+    // -- termination (co_spawn on the handle's strand, like the lifecycle) --
+
+    // Signal the child to end, NOW, rather than at the deadline policy's
+    // discretion: terminate() is the hard kill (SIGKILL, reported by
+    // exit_code() as 9), request_exit() the graceful one (SIGTERM, which a
+    // child may catch, so it is a request and not a guarantee).
+    //
+    // Both are WITHIN-LIFETIME operations, and they only send the signal:
+    // the terminal state is still observed — and _final_status still
+    // written — by the await task alone, which is the invariant exited()
+    // reports. So a caller that needs the final status awaits the handle's
+    // quiescence after this, exactly as it would for a natural exit; a
+    // child killed here is reaped by the running await task, which then
+    // closes the stdin channel like any other exit.
+    //
+    // @return whether a signal was actually sent: false means the child was
+    //         already gone (both are idempotent, and killing a dead child
+    //         is not a failure worth an exception).
+    // @throws ProcessException at Stage::Terminate when the signal itself
+    //         failed — never a boost type, the module boundary rule.
+    //
+    // Both marshal onto the strand first, so they are safe to start from any
+    // executor — but the strand's own context MUST still be running: the
+    // dispatch is what resumes the coroutine, so calling these on a context
+    // that has already returned from run() leaves them suspended forever
+    // rather than failing. (Same for the lifecycle coroutines; it is worth
+    // repeating here because termination is the one operation a caller is
+    // tempted to reach for after the fact.) The io tasks are expected to be
+    // running too (the lifecycle contract above), since it is the await task
+    // that turns the signalled death into an observed one.
+    boost::asio::awaitable<bool> terminate();
+    boost::asio::awaitable<bool> request_exit();
+
     // -- observation (strand-owned state: call on the strand or at rest) ----
 
     [[nodiscard]] const LaunchSpec& spec() const noexcept;
@@ -230,6 +278,25 @@ public:
     // was drained and discarded — see the class comment).
     [[nodiscard]] bool stdout_truncated() const noexcept;
     [[nodiscard]] bool stderr_truncated() const noexcept;
+
+    // True once BOTH output pipes have hit EOF and their read tasks have
+    // finished — i.e. the captured text is everything the child will ever
+    // produce.
+    //
+    // This is NOT implied by exited(), and the difference is a race a caller
+    // has to care about: the await task records the terminal status as soon
+    // as it observes the child, while the readers are still draining what is
+    // sitting in the pipe buffers. A caller that reports "the process
+    // finished, here is its output" after exited() alone can therefore report
+    // an exit code with EMPTY output for a child that printed and exited
+    // promptly — the two facts are settled by different tasks. The pair
+    // (exited() && output_drained()) is the condition the class comment calls
+    // "work runs out", and the one to wait for before treating a capture as
+    // complete.
+    //
+    // Reads the pipes' state, which the read tasks close on EOF, so it is
+    // strand-owned like the other observers.
+    [[nodiscard]] bool output_drained() const noexcept;
 
     // The report-shaped view: stamped spec + current status + both captured
     // streams (always engaged — the pipes are wired for every launch, so ""

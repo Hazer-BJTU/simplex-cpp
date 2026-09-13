@@ -123,6 +123,16 @@ struct LaunchSpec {
     std::optional<std::vector<std::string>> environment;
     // true (default) => the child inherits the parent's environment.
     bool inherit_environment = true;
+    // The directory the child starts in. Disengaged (the default) => the
+    // child inherits the PARENT's working directory, which is what a plain
+    // fork/exec gives; engaged => the manager changes into it in the child
+    // between fork and exec, so the parent's own cwd is never touched.
+    // Carried verbatim like the environment entries: this contract does not
+    // resolve, canonicalise or check the path — a directory that does not
+    // exist (or is not one) is a launch failure the manager reports at
+    // ProcessException::Stage::Spawn. A relative path is therefore resolved
+    // against the PARENT's cwd, by the child, at launch time.
+    std::optional<std::string> working_directory;
 };
 
 inline void to_json(nlohmann::json& j, const LaunchSpec& s) {
@@ -142,6 +152,7 @@ inline void to_json(nlohmann::json& j, const LaunchSpec& s) {
         {"inherit_environment", s.inherit_environment},
     };
     if (s.environment) j["environment"] = *s.environment;
+    if (s.working_directory) j["working_directory"] = *s.working_directory;
 }
 
 inline void from_json(const nlohmann::json& j, LaunchSpec& s) {
@@ -166,6 +177,9 @@ inline void from_json(const nlohmann::json& j, LaunchSpec& s) {
     if (auto it = j.find("environment"); it != j.end() && !it->is_null())
         s.environment = it->get<std::vector<std::string>>();
     else s.environment.reset();
+    if (auto it = j.find("working_directory"); it != j.end() && !it->is_null())
+        s.working_directory = it->get<std::string>();
+    else s.working_directory.reset();
 }
 
 // ---- execution status -----------------------------------------------------

@@ -70,6 +70,29 @@ BOOST_AUTO_TEST_CASE(spawns_echo_and_captures_stdout)
     BOOST_TEST(result.stderr_text->empty());
 }
 
+BOOST_AUTO_TEST_CASE(output_drained_separates_the_exit_from_the_capture)
+{
+    // exited() and output_drained() are settled by DIFFERENT tasks: the await
+    // task records the terminal status when it observes the child, the read
+    // tasks close their pipes when they reach EOF. A caller that reports "the
+    // process finished, here is its output" after exited() alone can therefore
+    // report an exit code with an empty capture.
+    //
+    // run_scenario drives the io to quiescence, so by the time this asserts
+    // BOTH have happened - which is what "work runs out" means (the class
+    // comment) and what the pair is for.
+    auto s = run_scenario(process::LaunchSpec{
+        .executable = "echo",
+        .arguments = {"drained"},
+        .description = "exit and drain",
+        .initial_wait_timeout_milliseconds = std::uint64_t{5000},
+    });
+
+    BOOST_TEST(s.handle->exited());
+    BOOST_TEST(s.handle->output_drained());
+    BOOST_TEST(s.handle->standard_output() == "drained\n");
+}
+
 BOOST_AUTO_TEST_CASE(propagates_a_nonzero_exit_code)
 {
     auto s = run_scenario(process::LaunchSpec{
@@ -434,4 +457,190 @@ BOOST_AUTO_TEST_CASE(unresolvable_executable_throws_at_resolve_stage)
                    std::string::npos);
     }
     BOOST_TEST(threw);
+}
+
+// ---- working directory ------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(starts_the_child_in_the_spec_working_directory)
+{
+    // A real directory that is not the test's own cwd, so the assertion
+    // cannot pass by accident. canonical() because the child reports its cwd
+    // resolved (/tmp is a symlink on some systems, and pwd -P would then
+    // disagree with the string we passed in).
+    const std::filesystem::path start_dir =
+        std::filesystem::canonical(std::filesystem::temp_directory_path());
+    const std::filesystem::path parent_cwd = std::filesystem::current_path();
+    BOOST_TEST_REQUIRE(start_dir != parent_cwd);
+
+    auto s = run_scenario(process::LaunchSpec{
+        .executable = "pwd",
+        .arguments = {"-P"},
+        .description = "report the start directory",
+        .initial_wait_timeout_milliseconds = std::uint64_t{5000},
+        .working_directory = start_dir.string(),
+    });
+
+    BOOST_TEST(s.finished_on_time);
+    BOOST_TEST(s.handle->status().exit_code.value() == 0);
+    BOOST_TEST(s.handle->standard_output() == start_dir.string() + "\n");
+    // The chdir happened in the CHILD: the parent's own cwd is untouched.
+    BOOST_CHECK(std::filesystem::current_path() == parent_cwd);
+}
+
+BOOST_AUTO_TEST_CASE(missing_working_directory_throws_at_spawn_stage)
+{
+    // Checked before the launch so the failure names the path, instead of
+    // arriving as the bare ENOENT a failed chdir inside the child reports.
+    const std::string absent =
+        (std::filesystem::temp_directory_path() /
+         "simplex-no-such-directory-xyz").string();
+
+    bool threw = false;
+    try {
+        boost::asio::io_context io;
+        auto strand = boost::asio::make_strand(io);
+        auto handle = std::make_shared<process::ProcessHandle>(
+            process::LaunchSpec{
+                .executable = "pwd",
+                .arguments = {},
+                .description = "doomed start dir",
+                .initial_wait_timeout_milliseconds = std::uint64_t{1000},
+                .working_directory = absent,
+            },
+            strand);
+        (void)handle;
+    } catch (const process::ProcessException& e) {
+        threw = true;
+        BOOST_CHECK(e.stage() == process::ProcessException::Stage::Spawn);
+        BOOST_TEST(std::string(e.what()).find(absent) != std::string::npos);
+    }
+    BOOST_TEST(threw);
+}
+
+BOOST_AUTO_TEST_CASE(a_file_as_working_directory_throws_at_spawn_stage)
+{
+    // is_directory(), not exists(): a path that exists but is not a
+    // directory fails the chdir just the same.
+    const std::filesystem::path file =
+        std::filesystem::temp_directory_path() /
+        "simplex-start-dir-not-a-dir.txt";
+    { std::ofstream out(file); out << "x"; }
+
+    bool threw = false;
+    try {
+        boost::asio::io_context io;
+        auto strand = boost::asio::make_strand(io);
+        auto handle = std::make_shared<process::ProcessHandle>(
+            process::LaunchSpec{
+                .executable = "pwd",
+                .arguments = {},
+                .description = "start dir is a file",
+                .initial_wait_timeout_milliseconds = std::uint64_t{1000},
+                .working_directory = file.string(),
+            },
+            strand);
+        (void)handle;
+    } catch (const process::ProcessException& e) {
+        threw = true;
+        BOOST_CHECK(e.stage() == process::ProcessException::Stage::Spawn);
+    }
+    BOOST_TEST(threw);
+
+    std::error_code cleanup_ec;
+    std::filesystem::remove(file, cleanup_ec);
+}
+
+// ---- on-demand termination --------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(terminate_kills_a_running_child_mid_life)
+{
+    // The deadline is disabled (0), so nothing but terminate() can end this
+    // child: what the case observes is the on-demand path alone, and the
+    // await task turning the signalled death into an observed one.
+    bool signalled = false;
+    auto s = run_scenario(
+        process::LaunchSpec{
+            .executable = "sleep",
+            .arguments = {"30"},
+            .description = "killed on demand",
+            .initial_wait_timeout_milliseconds = std::uint64_t{0},
+        },
+        {},
+        [&signalled](process::ProcessHandle& handle)
+            -> boost::asio::awaitable<void> {
+            signalled = co_await handle.terminate();
+        });
+
+    BOOST_TEST(signalled);
+    // finished_on_time is true because the deadline was disabled: the wait
+    // was unbounded and it ended on the (killed) child's exit.
+    BOOST_TEST(s.finished_on_time);
+    BOOST_TEST(s.handle->exited());
+    const process::ExecutionStatus status = s.handle->status();
+    BOOST_CHECK(status.state == process::ProcessState::Exited);
+    // SIGKILL, reported by posix evaluate_exit_code as the signal number.
+    BOOST_TEST(status.exit_code.value() == 9);
+}
+
+BOOST_AUTO_TEST_CASE(request_exit_asks_a_running_child_to_end)
+{
+    bool signalled = false;
+    auto s = run_scenario(
+        process::LaunchSpec{
+            .executable = "sleep",
+            .arguments = {"30"},
+            .description = "asked to exit",
+            .initial_wait_timeout_milliseconds = std::uint64_t{0},
+        },
+        {},
+        [&signalled](process::ProcessHandle& handle)
+            -> boost::asio::awaitable<void> {
+            signalled = co_await handle.request_exit();
+        });
+
+    BOOST_TEST(signalled);
+    BOOST_TEST(s.handle->exited());
+    const process::ExecutionStatus status = s.handle->status();
+    BOOST_CHECK(status.state == process::ProcessState::Exited);
+    // SIGTERM: sleep does not catch it, so it dies of the signal (15).
+    BOOST_TEST(status.exit_code.value() == 15);
+}
+
+BOOST_AUTO_TEST_CASE(terminating_an_exited_child_reports_no_signal_sent)
+{
+    // Idempotent, and honest about it: the child is long gone by the time
+    // this runs, so no signal is sent (a recycled pid would belong to
+    // somebody else) — and the terminal status the await task recorded is
+    // left exactly as it was.
+    auto s = run_scenario(process::LaunchSpec{
+        .executable = "true",
+        .arguments = {},
+        .description = "already gone",
+        .initial_wait_timeout_milliseconds = std::uint64_t{5000},
+    });
+
+    BOOST_TEST_REQUIRE(s.handle->exited());
+    BOOST_TEST(s.handle->status().exit_code.value() == 0);
+
+    // Driven on the handle's OWN context, restarted: terminate() marshals
+    // onto the handle's strand, so a foreign context would leave the
+    // dispatch unresumable and this call would never complete. restart() is
+    // what lets a context that ran out of work run again.
+    s.io->restart();
+    auto pending = boost::asio::co_spawn(
+        *s.io,
+        [handle = s.handle]() -> boost::asio::awaitable<bool> {
+            const bool first = co_await handle->terminate();
+            // Twice, and through both entry points, to pin the idempotence
+            // rather than a single lucky call.
+            const bool second = co_await handle->request_exit();
+            co_return first || second;
+        },
+        boost::asio::use_future);
+    s.io->run();
+
+    BOOST_TEST(!pending.get());
+    // Unchanged: a signal is not an observation, and there was no signal.
+    BOOST_TEST(s.handle->exited());
+    BOOST_TEST(s.handle->status().exit_code.value() == 0);
 }

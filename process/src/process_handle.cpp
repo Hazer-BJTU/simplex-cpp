@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <filesystem>
 #include <limits>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace {
@@ -108,14 +110,57 @@ ProcessHandle::ProcessHandle(
         );
     }
 
+    // The start directory is checked HERE rather than left to the launch: v2
+    // applies it as a chdir in the forked child, and a failure there arrives
+    // as a bare ENOENT with nothing saying which path was meant — the launch
+    // context this exception exists to carry. Checked with the non-throwing
+    // overload: a filesystem error (an unreadable parent, a broken symlink)
+    // is reported as the launch failure it is, not as a std::filesystem
+    // exception escaping a constructor.
+    if (_spec.working_directory) {
+        std::error_code dir_ec;
+        const std::filesystem::path start_dir{*_spec.working_directory};
+        if (!std::filesystem::is_directory(start_dir, dir_ec)) {
+            throw ProcessException(
+                ProcessException::Stage::Spawn,
+                std::format(
+                    "working directory is not a directory: \"{}\"",
+                    *_spec.working_directory),
+                {},
+                _spec.executable,
+                _spec.description
+            );
+        }
+    }
+
     try {
-        _process_ptr = std::make_unique<boost::process::process>(
-            _strand,
-            std::move(exec_path),
-            _spec.arguments,
-            boost::process::process_stdio{_pipe0, _pipe1, _pipe2},
-            boost::process::process_environment(used_envs)
-        );
+        // The start directory rides as one more v2 initializer, which is why
+        // the two spawn forms are spelled out instead of building a pack: the
+        // process constructor takes its initializers as variadic arguments,
+        // so an engaged optional cannot simply be "passed as nothing".
+        if (_spec.working_directory) {
+            _process_ptr = std::make_unique<boost::process::process>(
+                _strand,
+                std::move(exec_path),
+                _spec.arguments,
+                boost::process::process_stdio{_pipe0, _pipe1, _pipe2},
+                boost::process::process_environment(used_envs),
+                // From the string, not a path object: this Boost builds
+                // Process against boost::filesystem, while the check above
+                // (and the rest of the tree) speaks std::filesystem — the
+                // two path types do not convert, and the initializer's own
+                // constructor is happy to build its path from the string.
+                boost::process::process_start_dir(*_spec.working_directory)
+            );
+        } else {
+            _process_ptr = std::make_unique<boost::process::process>(
+                _strand,
+                std::move(exec_path),
+                _spec.arguments,
+                boost::process::process_stdio{_pipe0, _pipe1, _pipe2},
+                boost::process::process_environment(used_envs)
+            );
+        }
 
         _spec.pid = _process_ptr->id();
         // Two anchors for the same moment, deliberately different clocks:
@@ -608,6 +653,82 @@ void ProcessHandle::close_input() {
     _write_channel.close();
 }
 
+// ---- termination ------------------------------------------------------------
+//
+// Both entry points are the same shape and differ only in the signal, so the
+// body is shared: marshal onto the strand, probe, signal, report. What they
+// deliberately do NOT do is engage _final_status — the await task owns that
+// (see its comment on the class invariant), and a signal is not an
+// observation. The child's death arrives at the watcher like any other exit,
+// which is what makes these composable with the ordinary lifecycle instead of
+// a second, competing teardown path.
+
+boost::asio::awaitable<bool> ProcessHandle::terminate() {
+    co_return co_await signal_child(Signal::Kill);
+}
+
+boost::asio::awaitable<bool> ProcessHandle::request_exit() {
+    co_return co_await signal_child(Signal::Graceful);
+}
+
+boost::asio::awaitable<bool> ProcessHandle::signal_child(Signal signal) {
+    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
+
+    // Everything below is strand-side state, so the probe and the signal
+    // cannot interleave with the await task's own probe.
+    if (_process_ptr == nullptr) {
+        co_return false; // never spawned, or already released
+    }
+    if (_final_status.has_value()) {
+        // Already observed terminal: no pid worth signalling — and on a
+        // recycled pid, signalling would hit somebody else's process.
+        co_return false;
+    }
+
+    boost::system::error_code probe_ec;
+    if (!_process_ptr->running(probe_ec)) {
+        // Gone but not yet observed by the watcher (running() just reaped
+        // it). Not an error, and not our terminal state to record.
+        co_return false;
+    }
+    if (probe_ec) {
+        throw ProcessException(
+            ProcessException::Stage::Terminate,
+            "probing the child before signalling it failed",
+            probe_ec,
+            _spec.executable,
+            _spec.description
+        );
+    }
+
+    // The non-throwing overloads on purpose: the throwing ones raise
+    // boost::system::system_error, and this class's boundary is
+    // ProcessException (the rule process_exceptions.hpp states).
+    boost::system::error_code signal_ec;
+    if (signal == Signal::Kill) {
+        _process_ptr->terminate(signal_ec);
+    } else {
+        _process_ptr->request_exit(signal_ec);
+    }
+    if (signal_ec) {
+        throw ProcessException(
+            ProcessException::Stage::Terminate,
+            signal == Signal::Kill
+                ? "failed to terminate the process"
+                : "failed to request the process to exit",
+            signal_ec,
+            _spec.executable,
+            _spec.description
+        );
+    }
+
+    logging::Logger::debug(std::format(
+        "signalled child {} (pid {}) to {}",
+        _spec.executable, static_cast<int>(_spec.pid),
+        signal == Signal::Kill ? "terminate" : "exit"));
+    co_return true;
+}
+
 // ---- observation ------------------------------------------------------------
 
 const LaunchSpec& ProcessHandle::spec() const noexcept {
@@ -657,6 +778,13 @@ bool ProcessHandle::stdout_truncated() const noexcept {
 
 bool ProcessHandle::stderr_truncated() const noexcept {
     return _stderr_truncated;
+}
+
+bool ProcessHandle::output_drained() const noexcept {
+    // The read tasks close their pipe on EOF (and on any error that ends
+    // them), so a closed pipe IS "this reader is done" — the same signal the
+    // tasks' own loops use to stop. Both closed means the capture is final.
+    return !_pipe1.is_open() && !_pipe2.is_open();
 }
 
 ExecutionResult ProcessHandle::snapshot() const {
