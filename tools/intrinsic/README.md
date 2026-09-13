@@ -48,6 +48,15 @@ kinds and check the sign separately — a plain positive literal is stored as
 ordinary value. Lists are checked element by element so a bad entry names its
 own index.
 
+They come in two families, and `ensure_arguments()` wants the second:
+`optional_*` **read** (for `invoke()`), and `settle_*` read, validate and
+**write the default back into the query**. The settled query is what the
+security policy judges, what a human confirmer is shown, what `invoke()` reads
+and what the returned record carries — so a default the tool merely knew about
+would mean all four saw a different call from the one that ran. A call whose
+`arguments` is not a JSON object is refused rather than settled as "every
+property absent".
+
 **`toolset_base.hpp` — `IntrinsicToolSet`.** The ordered catalogue `get_tools()`
 hands out, the name→tool table `dispatch()` routes by, and the tools'
 `build()`/`release()` lifecycle. Two containers on purpose: order is what the
@@ -81,7 +90,11 @@ and whatever state they share.
 3. Declare each tool's `InvokeType` and `InvokeSecurity` in
    `write_attributes()`, and check every argument in `ensure_arguments()` —
    never in `invoke()`, because the security check and the human confirmation
-   must see settled arguments.
+   must see settled arguments. Use the `settle_*` accessors there, so the
+   defaults are part of the query both of those read. Classify from the SETTLED
+   arguments whenever the same tool can both change state and merely observe:
+   `InvokeType` decides whether a batch may run the call beside its neighbours,
+   and a call that consumes a cursor or removes an object may not.
 4. `add_subdirectory(toolsets/<name>)` in this directory's `CMakeLists.txt`;
    link `tools_intrinsic`, and build SHARED for the ABI reason below.
 

@@ -34,11 +34,24 @@
 // ARGUMENTS ARE CHECKED IN ensure_arguments(), NEVER IN invoke(). That is the
 // invocation layer's dependency order (tools/toolsets.hpp): the security check
 // and the human confirmation must see the SETTLED arguments, so defaults are
-// filled in and types validated before anything judges the call. The
-// accessors below are therefore called TWICE for most tools — once in
-// ensure_arguments() to validate (discarding the value), once in invoke() to
-// read it — and they are pure reads, so that costs nothing but says the
-// checking happened at the checkpoint that owns it.
+// filled in and types validated before anything judges the call.
+//
+// "SETTLED" MEANS THE DEFAULTS ARE IN THE QUERY, not merely known to the tool
+// that would apply them. A tool that validated `optional_bool(query, "quit",
+// false)` and then used `false` in invoke() would run a call nobody was shown:
+// the confirmer reads query.arguments, the record carries the settled query,
+// and an auditor reading either would see `{"session_id": "proc_1"}` for a call
+// whose real content is `{"session_id": "proc_1", "quit": false}`. So the
+// settle_* accessors below READ, VALIDATE AND WRITE BACK — same rules as their
+// optional_* twins, plus materializing the default when the property is
+// absent — and they are what ensure_arguments() calls. invoke() then reads
+// through the pure accessors, which is why those are still here: the settled
+// query is complete, and a read on it cannot disagree with what was settled.
+//
+// The one property a tool settles without a default is one where ABSENT is a
+// meaning of its own rather than a missing value (`working_directory`: absent
+// means "inherit the host's", and there is no placeholder that would not be a
+// path). Those are validated in place and left as they came.
 //
 // FAILURE IS BY EXCEPTION, AT THE RIGHT CHECKPOINT. bad_argument() raises
 // Stage::ArgumentParse, which is the one failure class a model can fix by
@@ -150,6 +163,46 @@ protected:
     /// non-string names its own index. Empty when absent.
     [[nodiscard]] static std::vector<std::string> optional_string_list(
         const model_io::InvokeQuery& query, std::string_view key);
+
+    // ---- settling arguments -------------------------------------------------
+    //
+    // The accessors above READ; these READ, VALIDATE AND WRITE BACK, and they
+    // are what ensure_arguments() calls (see the file header). Each one takes
+    // the query by reference, applies the same rule as its optional_* twin,
+    // and materializes the default into query.arguments when the property is
+    // absent — so what the security check, the confirmation, the invocation
+    // and the record all see is one query, complete.
+
+    /// A string with a default, materialized when absent.
+    [[nodiscard]] static std::string settle_string(
+        model_io::InvokeQuery& query, std::string_view key,
+        std::string_view fallback = {});
+
+    /// A boolean with a default, materialized when absent.
+    [[nodiscard]] static bool settle_bool(model_io::InvokeQuery& query,
+                                          std::string_view key, bool fallback);
+
+    /// A non-negative integer with a default, materialized when absent.
+    [[nodiscard]] static std::uint64_t settle_uint(
+        model_io::InvokeQuery& query, std::string_view key,
+        std::uint64_t fallback);
+
+    /// An array of strings, materialized as `[]` when absent: an empty list is
+    /// what "no entries" already means to every reader of it, and a property
+    /// that sometimes is not there and sometimes is empty is one a confirmer
+    /// has to guess about.
+    [[nodiscard]] static std::vector<std::string> settle_string_list(
+        model_io::InvokeQuery& query, std::string_view key);
+
+    /// Write one settled value into the call's arguments.
+    ///
+    /// Refuses a call whose `arguments` is neither an object nor null rather
+    /// than quietly settling it as "every property absent" — which would run a
+    /// call the model did not send, with defaults it never chose. JSON null is
+    /// the module's spelling of absent (find_argument), so a null arguments is
+    /// taken as the empty object it means.
+    static void write_argument(model_io::InvokeQuery& query,
+                               std::string_view key, nlohmann::json value);
 
     // ---- failures -----------------------------------------------------------
 

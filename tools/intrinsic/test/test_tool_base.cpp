@@ -86,9 +86,14 @@ public:
     using IntrinsicTool::optional_string_list;
     using IntrinsicTool::optional_uint;
     using IntrinsicTool::require_string;
+    using IntrinsicTool::settle_bool;
+    using IntrinsicTool::settle_string;
+    using IntrinsicTool::settle_string_list;
+    using IntrinsicTool::settle_uint;
     using IntrinsicTool::string_list_property;
     using IntrinsicTool::string_property;
     using IntrinsicTool::uint_property;
+    using IntrinsicTool::write_argument;
 };
 
 /// A minimal set over whatever tools a case gives it — the toolset base with
@@ -268,6 +273,94 @@ BOOST_AUTO_TEST_CASE(string_lists_are_checked_element_by_element)
     // a caller that must tell those apart uses find_argument().
     BOOST_TEST(ProbeTool::optional_string_list(
                    query_with(nlohmann::json::object()), "items").empty());
+}
+
+// ---- settling -----------------------------------------------------------------
+//
+// The settle_* family is the optional_* family plus a write-back, and the write
+// is the part that matters: the settled query is what the security policy
+// judges, what a human confirmer is shown, what invoke() reads and what the
+// record carries. So these cases assert on the QUERY afterwards, not on the
+// value returned — a default that is known but not written is the bug the whole
+// family exists to prevent.
+
+BOOST_AUTO_TEST_CASE(settling_writes_the_default_into_the_arguments)
+{
+    model_io::InvokeQuery query = query_with(nlohmann::json::object());
+    BOOST_TEST(ProbeTool::settle_bool(query, "flag", true) == true);
+    BOOST_TEST(query.arguments.at("flag") == nlohmann::json(true));
+
+    BOOST_TEST(ProbeTool::settle_uint(query, "limit", 5000) ==
+               std::uint64_t{5000});
+    BOOST_TEST(query.arguments.at("limit") == nlohmann::json(5000));
+
+    BOOST_TEST(ProbeTool::settle_string(query, "label", "none") ==
+               std::string("none"));
+    BOOST_TEST(query.arguments.at("label") == nlohmann::json("none"));
+
+    // A list settles as an EMPTY LIST, not as a missing key: every reader of
+    // the settled query then answers "none of them" without a second question.
+    BOOST_TEST(ProbeTool::settle_string_list(query, "items").empty());
+    BOOST_TEST(query.arguments.at("items") == nlohmann::json::array());
+}
+
+BOOST_AUTO_TEST_CASE(settling_leaves_what_the_caller_sent_alone)
+{
+    model_io::InvokeQuery query = query_with({
+        {"flag", false},
+        {"limit", 7},
+        {"label", "given"},
+        {"items", nlohmann::json::array({"a"})},
+        // Null reads as absent everywhere in this module, so this one IS
+        // settled — with the default spelled into the query.
+        {"nulled", nullptr},
+    });
+
+    BOOST_TEST(ProbeTool::settle_bool(query, "flag", true) == false);
+    BOOST_TEST(query.arguments.at("flag") == nlohmann::json(false));
+    BOOST_TEST(ProbeTool::settle_uint(query, "limit", 5000) ==
+               std::uint64_t{7});
+    BOOST_TEST(query.arguments.at("limit") == nlohmann::json(7));
+    BOOST_TEST(ProbeTool::settle_string(query, "label", "none") ==
+               std::string("given"));
+    BOOST_TEST(query.arguments.at("label") == nlohmann::json("given"));
+    BOOST_TEST(ProbeTool::settle_bool(query, "nulled", true) == true);
+    BOOST_TEST(query.arguments.at("nulled") == nlohmann::json(true));
+
+    // Nothing else appeared: settling fills gaps, it does not normalize.
+    BOOST_TEST(query.arguments.size() == std::size_t{5});
+}
+
+BOOST_AUTO_TEST_CASE(a_settled_value_that_is_wrong_is_refused_before_anything_is_written)
+{
+    // The validation still runs first, so a malformed value cannot be
+    // quietly replaced by the default — the call fails where the model can
+    // see why, and the query keeps what it was given.
+    model_io::InvokeQuery query = query_with({{"flag", "yes"}});
+    const std::string message =
+        refusal_message([&query] { ProbeTool::settle_bool(query, "flag", true); });
+    BOOST_TEST(message.find("flag") != std::string::npos);
+    BOOST_TEST(query.arguments.at("flag") == nlohmann::json("yes"));
+}
+
+BOOST_AUTO_TEST_CASE(settling_refuses_arguments_that_are_not_an_object)
+{
+    // A call whose arguments are a bare array would read as "every property
+    // absent" and run on defaults the model never chose — a different call
+    // from the one that was sent, dressed up as a successful one. Refused
+    // instead, at the checkpoint a model can fix.
+    model_io::InvokeQuery query = query_with(nlohmann::json::array({1, 2}));
+    const std::string message =
+        refusal_message([&query] { ProbeTool::settle_bool(query, "flag", true); });
+    BOOST_TEST(message.find("arguments") != std::string::npos);
+    BOOST_TEST(message.find("object") != std::string::npos);
+
+    // JSON null is the module's spelling of absent, so a null arguments is the
+    // empty object it means, and settling turns it into one.
+    model_io::InvokeQuery nulled = query_with(nullptr);
+    BOOST_TEST(ProbeTool::settle_bool(nulled, "flag", true) == true);
+    BOOST_TEST(nulled.arguments.is_object());
+    BOOST_TEST(nulled.arguments.at("flag") == nlohmann::json(true));
 }
 
 // ---- results and schemas ----------------------------------------------------

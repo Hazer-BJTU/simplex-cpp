@@ -133,6 +133,75 @@ std::vector<std::string> IntrinsicTool::optional_string_list(
     return items;
 }
 
+// ---- settling arguments -----------------------------------------------------
+//
+// Each of these is "validate like the optional_* twin, then make the answer
+// part of the call". The order matters: the read validates FIRST, so a
+// malformed value is refused before anything is written, and the write only
+// happens when the property really was absent (find_argument answers that,
+// with JSON null counting as absent — the module's one rule).
+
+void IntrinsicTool::write_argument(model_io::InvokeQuery& query,
+                                   std::string_view key,
+                                   nlohmann::json value)
+{
+    if (query.arguments.is_null()) {
+        // Null arguments and no arguments are the same call; the settled form
+        // spells it as the empty object so the write below has somewhere to go.
+        query.arguments = nlohmann::json::object();
+    }
+    if (!query.arguments.is_object()) {
+        bad_argument(std::format(
+            "the call's \"arguments\" must be a JSON object, got {}",
+            query.arguments.type_name()));
+    }
+    query.arguments[std::string(key)] = std::move(value);
+}
+
+std::string IntrinsicTool::settle_string(model_io::InvokeQuery& query,
+                                         std::string_view key,
+                                         std::string_view fallback)
+{
+    const std::string value = optional_string(query, key, fallback);
+    if (find_argument(query, key) == nullptr) {
+        write_argument(query, key, value);
+    }
+    return value;
+}
+
+bool IntrinsicTool::settle_bool(model_io::InvokeQuery& query,
+                                std::string_view key, bool fallback)
+{
+    const bool value = optional_bool(query, key, fallback);
+    if (find_argument(query, key) == nullptr) {
+        write_argument(query, key, value);
+    }
+    return value;
+}
+
+std::uint64_t IntrinsicTool::settle_uint(model_io::InvokeQuery& query,
+                                         std::string_view key,
+                                         std::uint64_t fallback)
+{
+    const std::uint64_t value = optional_uint(query, key, fallback);
+    if (find_argument(query, key) == nullptr) {
+        write_argument(query, key, value);
+    }
+    return value;
+}
+
+std::vector<std::string> IntrinsicTool::settle_string_list(
+    model_io::InvokeQuery& query, std::string_view key)
+{
+    const std::vector<std::string> value = optional_string_list(query, key);
+    if (find_argument(query, key) == nullptr) {
+        // An empty list, not a missing property: every reader of the settled
+        // query then answers "none of them" without a second question.
+        write_argument(query, key, nlohmann::json::array());
+    }
+    return value;
+}
+
 // ---- failures ---------------------------------------------------------------
 
 void IntrinsicTool::bad_argument(std::string message)
