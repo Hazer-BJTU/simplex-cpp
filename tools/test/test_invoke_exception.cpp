@@ -256,15 +256,29 @@ BOOST_AUTO_TEST_CASE(a_correlated_conversion_answers_the_call_it_is_given)
 
     BOOST_TEST(record.query.id == "call_1");
     BOOST_TEST(record.query.name == "read_file");
-    // The prose follows the identity: one record, one call, one answer.
+    // The prose follows the identity: one record, one call, one answer. The
+    // model reads this text and never sees extras, so naming a call it never
+    // issued would describe something it cannot find.
     BOOST_TEST(record.output.raw ==
                "Failed while invoking the tool: the nested fetch failed "
-               "(tool fetch_url; call inner_call)");
-    // ... and the nested call is preserved rather than lost.
+               "(tool read_file; call call_1)");
+    // ... and the nested call is preserved rather than lost, machine-readable.
     BOOST_REQUIRE(record.extras.has_value());
     BOOST_TEST(record.extras->at("cause_query").at("id") == "inner_call");
     BOOST_TEST(record.extras->at("cause_query").at("name") == "fetch_url");
     BOOST_TEST(record.extras->at("error").at("stage") == "invoke");
+
+    // The conversion without a call to answer has nothing to render for but the
+    // call the exception carries — the difference between the two forms, in one
+    // place, rather than a mixed record that says one thing twice.
+    const model_io::InvokeReturn as_raised = failure.to_invoke_return();
+    BOOST_TEST(as_raised.query.id == "inner_call");
+    BOOST_TEST(as_raised.output.raw ==
+               "Failed while invoking the tool: the nested fetch failed "
+               "(tool fetch_url; call inner_call)");
+    BOOST_REQUIRE(as_raised.extras.has_value());
+    BOOST_CHECK(!as_raised.extras->contains(
+        std::string(tools::InvokeException::cause_key)));
 }
 
 BOOST_AUTO_TEST_CASE(correlating_to_the_same_call_preserves_nothing_extra)
@@ -287,7 +301,8 @@ BOOST_AUTO_TEST_CASE(correlating_to_the_same_call_preserves_nothing_extra)
 BOOST_AUTO_TEST_CASE(a_failure_with_no_query_of_its_own_is_correlated_too)
 {
     // A tool may throw knowing nothing about the call it was invoked with; the
-    // caller's call stands in, and there is no cause to record.
+    // caller's call stands in, there is no cause to record, and the rendering now
+    // carries that call's context — which the bare failure could not have.
     const tools::InvokeException failure(
         tools::InvokeException::Stage::Invoke, "the read failed");
     const model_io::InvokeQuery outer = read_file_query();
@@ -296,7 +311,8 @@ BOOST_AUTO_TEST_CASE(a_failure_with_no_query_of_its_own_is_correlated_too)
 
     BOOST_TEST(record.query.id == "call_1");
     BOOST_TEST(record.output.raw ==
-               "Failed while invoking the tool: the read failed");
+               "Failed while invoking the tool: the read failed "
+               "(tool read_file; call call_1)");
     BOOST_REQUIRE(record.extras.has_value());
     BOOST_TEST(record.extras->size() == 1u);
 }

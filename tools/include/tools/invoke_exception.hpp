@@ -36,14 +36,18 @@
 // issued. A failure may well have been raised against a call of the tool's own
 // making (a nested invocation, a delegated call, a retry), and answering with
 // THAT id would leave the model's call unanswered — which a provider rejects as
-// a malformed turn. So the conversion takes the call the caller made:
+// a malformed turn. The PROSE follows the identity for the same reason: the
+// model reads output.raw and never sees extras, so a failure text naming an
+// inner call it never issued would describe a call it cannot find. So the
+// conversion takes the call the caller made:
 //
-//   to_invoke_return(call)  answers `call`, whatever call the exception names;
+//   to_invoke_return(call)  answers `call`, and renders for it, whatever call
+//                           the exception names;
 //   correlate(record, call) the same rule for a record a successful call
 //                           produced, since a tool's check_result() may also
 //                           answer with a query of its own;
 //   to_invoke_return()      no caller in sight: answers the exception's own
-//                           query, which is all it can know.
+//                           query, and renders for it, which is all it can know.
 //
 // The call the failure was really about is not thrown away: when the exception
 // names a DIFFERENT call (a non-empty id that is not the one being answered),
@@ -208,6 +212,8 @@ public:
      * layer in this module does) must use to_invoke_return(call) instead: an
      * exception that names a nested call would answer with that call's id, and
      * the call the model made would be left unanswered (see the file header).
+     * Its prose describes the call the exception carries, since that is all it
+     * has to render.
      *
      * The error code, when set, is deliberately NOT duplicated into the marker:
      * it is already in error_code() and in the rendered text, and the marker
@@ -225,11 +231,18 @@ public:
      * A failure the tool raised against a call of its own making keeps that call
      * under extras.cause_query: it is the failure's context, worth preserving
      * for a host, and never the record's identity.
+     *
+     * The PROSE follows the identity too, for the same reason the identity is
+     * the caller's: output.raw is what the model reads, the model never sees
+     * extras, and a failure text naming an inner call it never issued would be
+     * telling it about a call it cannot find, next to a record that claims to
+     * answer one it can. So this conversion rebuilds the rendering for `call` —
+     * there is one rendering rule, and correlated_to() is where it lives.
      */
     [[nodiscard]] model_io::InvokeReturn to_invoke_return(
         const model_io::InvokeQuery& call) const
     {
-        return build_record(call, effective_cause(call));
+        return correlated_to(call).to_invoke_return();
     }
 
     /**
