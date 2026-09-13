@@ -32,7 +32,7 @@
 #include <vector>
 
 #include "eventbus/event_bus.hpp"
-#include "llm/chat_completions/events.hpp"
+#include "llm/compat/chat_completions/events.hpp"
 #include "llm/models.hpp"
 #include "loopback_server.hpp"
 

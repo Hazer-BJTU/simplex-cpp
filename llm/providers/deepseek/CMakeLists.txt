@@ -14,7 +14,14 @@
 # =============================================================================
 add_library(llm_deepseek MODULE src/deepseek_plugin.cpp)
 target_include_directories(llm_deepseek PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(llm_deepseek PRIVATE llm_chat_completions boost_dll_iface)
+# PUBLIC, not PRIVATE: this plugin's own public header
+# (include/llm/deepseek/dialect.hpp) includes the adapter's
+# llm/compat/chat_completions/dialect.hpp, so the adapter's include directory is part
+# of what this target's interface needs — the same reason a consumer of the
+# dialect must link llm_chat_completions itself. Nothing links a MODULE
+# library, so nothing inherits it today; the declaration is what keeps the
+# dependency visible instead of ambient.
+target_link_libraries(llm_deepseek PUBLIC llm_chat_completions boost_dll_iface)
 target_compile_options(llm_deepseek PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)

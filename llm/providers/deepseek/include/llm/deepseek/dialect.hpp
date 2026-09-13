@@ -48,7 +48,7 @@
 #include <nlohmann/json.hpp>
 
 #include "dataclass/endpoint_config.hpp"
-#include "llm/chat_completions/dialect.hpp"
+#include "llm/compat/chat_completions/dialect.hpp"
 
 namespace llm::deepseek {
 

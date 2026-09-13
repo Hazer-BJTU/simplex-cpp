@@ -1,6 +1,6 @@
 # LLM model plugins
 
-`llm` owns the provider-plugin ABI and protocol-level model adapters. The
+`llm` owns the provider-plugin ABI and the protocol-level model adapters. The
 `endpoint` module below it is transport-only: HTTP/HTTPS, SSE framing and retry
 drivers do not know which model protocol they carry.
 
@@ -13,6 +13,35 @@ gate in `extensions`, the shared runtime stack
 (`libasio`/`libeventbus`/`liblogging`/`libllm_chat_completions`/
 `libllm_responses`), and `-rdynamic` hosts. The full contract, its mechanisms,
 and their structural tests live in `docs/abi-context.md`.
+
+## Module layout
+
+```text
+llm/
+  include/llm/       the module core: models.hpp (the plugin ABI),
+                     provider_models.hpp, exchange_id.hpp — everything
+                     llm_iface exposes, and nothing protocol-specific
+  compat/            the compatibility layer: the two adapters that speak an
+                     EXTERNAL wire protocol (OpenAI-compatible chat
+                     completions, and the Responses API), each a submodule
+                     with its own library, headers and tests. Its headers are
+                     included through the layer's path —
+                     llm/compat/chat_completions/…, llm/compat/responses/…
+                     (compat/README.md says why this grouping, unlike
+                     providers/, appears in the logical path)
+  providers/         the bundled provider plugins (openai over the Responses
+                     adapter, deepseek over the Chat Completions one)
+  example/           manual demos that need a live API key
+  test/              module-level tests: the contract, the plugins, and the
+                     plugin-boundary ABI assertions
+```
+
+The split matters in one direction only: the core does not depend on the
+adapters. `compat/` is the part of this module whose shape is dictated from
+outside the repository, and putting it in its own submodules keeps that visible
+— in the build graph (a consumer links the adapter it speaks), in the include
+lines (a header says which layer it belongs to), and in the directory tree (no
+protocol code in `include/llm/`).
 
 ## Architecture and responsibility boundaries
 
@@ -42,7 +71,7 @@ The layers have intentionally narrow ownership:
 | Host/session loop | user turns, tool execution and authorization, step limits, persistence, compaction, cancellation policy | provider JSON and SSE parsing |
 | `LLMDispatcher` / plugin context | plugin discovery, ABI gating, factory lookup, library lifetime | conversations and network exchanges |
 | `LLMModel` | one configured provider client, one `converse()` exchange, result integration/retention policy, the runtime services (`provider_info()` catalogue query, `set_generation()` knob adjustment) | agent loops, tool execution, durable storage |
-| Protocol adapter | canonical-data-to-wire mapping and wire-to-canonical assembly | provider-specific deviations that can be expressed by a dialect |
+| Protocol adapter (`compat/`) | canonical-data-to-wire mapping and wire-to-canonical assembly | provider-specific deviations that can be expressed by a dialect |
 | Dialect | endpoint defaults and small JSON-level provider rewrites | transport, session state, a second model abstraction |
 | `endpoint` | DNS/TCP/TLS/HTTP, SSE framing, retry/backoff and producer/consumer plumbing | LLM messages, tools, reasoning semantics |
 
@@ -210,7 +239,7 @@ Reader hooks are per exchange, because the reader is — `converse()` constructs
 one per call. A `ReasoningDeltaEvent` subscriber is not: it sits on one
 process-wide bus that every concurrent exchange of every model publishes into,
 so it must demultiplex by `exchange_id`
-(`llm/chat_completions/events.hpp` carries that contract in full).
+(`llm/compat/chat_completions/events.hpp` carries that contract in full).
 
 ## Designing a complete LLM interface
 
@@ -297,6 +326,9 @@ important than matching any one provider's vocabulary.
 
 ## Responses adapter
 
+Code: `compat/responses/` (library `llm_responses`, public headers
+`llm/compat/responses/…`).
+
 `llm::responses::ResponsesModel` is a complete `LLMModel` implementation for
 the canonical Responses API. It combines:
 
@@ -371,6 +403,9 @@ later stateless turn.
 
 ## Chat Completions adapter
 
+Code: `compat/chat_completions/` (library `llm_chat_completions`, public headers
+`llm/compat/chat_completions/…`).
+
 `llm::chat_completions::ChatCompletionsModel` is the provider-neutral,
 OpenAI-compatible `POST /chat/completions` counterpart. It is built as
 `llm_chat_completions`; the bundled `deepseek` provider plugin (below) is its
@@ -415,7 +450,7 @@ normalize compatible extensions without changing the shared model I/O ABI.
 
 Streamed reasoning is observable live: `converse()` broadcasts every
 reasoning increment as `llm::chat_completions::ReasoningDeltaEvent` on
-`eventbus::default_bus()` (`llm/chat_completions/events.hpp` carries the full
+`eventbus::default_bus()` (`llm/compat/chat_completions/events.hpp` carries the full
 contract) — synchronous, wire-ordered, with `provider` (the dialect's
 `provider_name()`), `model`, and the exchange's correlation id attached. No
 subscribers means a silent no-op; subscribers run inline on the exchange's I/O

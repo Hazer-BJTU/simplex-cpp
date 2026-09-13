@@ -31,7 +31,7 @@
 //
 // IDENTITY: THE RECORD ANSWERS THE CALL THE CALLER MADE. InvokeReturn::query.id
 // is not diagnostics — the chat-completions interpreter emits it as the tool
-// message's tool_call_id (llm/src/chat_completions/interpreter.cpp::
+// message's tool_call_id (llm/compat/chat_completions/src/interpreter.cpp::
 // emit_tool_results), and the provider is waiting for the result of the call IT
 // issued. A failure may well have been raised against a call of the tool's own
 // making (a nested invocation, a delegated call, a retry), and answering with

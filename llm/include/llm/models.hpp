@@ -311,7 +311,7 @@ struct GenerationPreset {
  *
  * Live observation stays correlatable under concurrency: each exchange mints
  * a process-unique exchange id, broadcasts it on every event, and reports it
- * back on the assembled MessageItem (see llm/chat_completions/events.hpp).
+ * back on the assembled MessageItem (see llm/compat/chat_completions/events.hpp).
  */
 class LLMModel {
 public:

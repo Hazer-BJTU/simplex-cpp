@@ -11,7 +11,7 @@
 // two standard aliases the loader resolves are exported at the bottom (see
 // llm/models.hpp).
 
-#include "llm/chat_completions/model.hpp"
+#include "llm/compat/chat_completions/model.hpp"
 #include "llm/deepseek/dialect.hpp"
 #include "llm/models.hpp"
 

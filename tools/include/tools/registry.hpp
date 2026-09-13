@@ -75,12 +75,12 @@
 // EVERY CALL IS ANSWERED, EXACTLY ONCE. That is a wire requirement, not
 // politeness: a provider rejects an assistant message whose tool_calls are not
 // each answered by exactly one tool message (see
-// llm/src/chat_completions/interpreter.cpp::emit_tool_results). So no path here
-// may DROP a call — not an unknown tool, not a set that breaks its contract, not
-// a report that never arrives. Whatever fails, the call gets a record, and the
-// record carries the call (query.id) so the conversation can correlate it. The
-// assembly is positional over the batch for the same reason: results[i] answers
-// the call the caller passed at index i.
+// llm/compat/chat_completions/src/interpreter.cpp::emit_tool_results). So no
+// path here may DROP a call — not an unknown tool, not a set that breaks its
+// contract, not a report that never arrives. Whatever fails, the call gets a
+// record, and the record carries the call (query.id) so the conversation can
+// correlate it. The assembly is positional over the batch for the same reason:
+// results[i] answers the call the caller passed at index i.
 //
 // FAILURE COMES IN THREE SIZES, and the record's stage says which:
 //

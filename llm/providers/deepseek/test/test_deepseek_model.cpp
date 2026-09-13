@@ -25,8 +25,8 @@
 #include <vector>
 
 #include "eventbus/event_bus.hpp"
-#include "llm/chat_completions/events.hpp"
-#include "llm/chat_completions/model.hpp"
+#include "llm/compat/chat_completions/events.hpp"
+#include "llm/compat/chat_completions/model.hpp"
 #include "llm/deepseek/dialect.hpp"
 #include "loopback_server.hpp"
 
