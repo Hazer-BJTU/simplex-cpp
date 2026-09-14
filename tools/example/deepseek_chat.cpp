@@ -71,6 +71,14 @@
 //                      set that registered five of six tools, or a routing
 //                      table that lost a name all exit non-zero here.
 //   --yes              approve every confirmed call without prompting.
+//   --max-steps N      how many model exchanges one user turn may take
+//                      (default 12). Driving an interactive child — another
+//                      agent, a REPL, a debugger — costs one exchange per
+//                      "feed it, look at what it said" round, so that kind of
+//                      work legitimately needs a larger budget than a chat
+//                      answer does. Running out is not a failure: every call
+//                      already ran and its result is in the conversation, so
+//                      the next message continues from there.
 //
 // REPL COMMANDS (empty line quits): /tools /sessions /help
 
@@ -91,6 +99,7 @@
 
 #include <boost/asio.hpp>
 
+#include <charconv>
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
@@ -100,6 +109,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -118,16 +128,25 @@ const char* model_name() {
     return "deepseek-v4-flash";
 }
 
+/// How many model exchanges one user turn may take before the loop stops.
+/// Overridable with --max-steps: driving an interactive child (another agent,
+/// a REPL, a debugger) costs one exchange per round of "feed it, look at what
+/// it said", and a task like that legitimately needs more than a chat answer
+/// does.
+constexpr std::size_t kDefaultMaxAgentSteps = 12;
+
 struct Options {
     bool list_models_only = false;
     bool catalogue_only = false;
     bool assume_yes = false;
     bool help = false;
+    std::size_t max_steps = kDefaultMaxAgentSteps;
 };
 
 void print_usage(const char* executable) {
     std::cout
-        << "usage: " << executable << " [--tools] [--list-models] [--yes]\n"
+        << "usage: " << executable
+        << " [--tools] [--list-models] [--yes] [--max-steps N]\n"
         << "\n"
         << "  (no flags)      chat: one turn at a time, tools behind a\n"
         << "                  terminal confirmation prompt\n"
@@ -139,6 +158,11 @@ void print_usage(const char* executable) {
         << "  --yes           approve every confirmed tool call without\n"
         << "                  asking (scripted runs; the model still cannot\n"
         << "                  call a tool that does not exist)\n"
+        << "  --max-steps N   model exchanges one user turn may take\n"
+        << "                  (default " << kDefaultMaxAgentSteps
+        << "; raise it to drive an\n"
+        << "                  interactive child, which costs a round trip per\n"
+        << "                  look)\n"
         << "\n"
         << "environment: DEEPSEEK_API_KEY (else prompted), DEEPSEEK_MODEL\n";
 }
@@ -148,7 +172,17 @@ void print_usage(const char* executable) {
 /// model's shell commands need confirming would be the worst kind of quiet.
 bool parse_options(int argc, char* argv[], Options& options) {
     for (int index = 1; index < argc; ++index) {
-        const std::string_view flag = argv[index];
+        std::string_view flag = argv[index];
+        std::string_view value;
+        // --max-steps N and --max-steps=N are both accepted; everything else
+        // is a bare switch, so splitting the value off here keeps the chain
+        // below to a plain comparison.
+        if (const std::size_t equals = flag.find('=');
+            equals != std::string_view::npos) {
+            value = flag.substr(equals + 1);
+            flag = flag.substr(0, equals);
+        }
+
         if (flag == "--tools") {
             options.catalogue_only = true;
         } else if (flag == "--list-models") {
@@ -157,6 +191,26 @@ bool parse_options(int argc, char* argv[], Options& options) {
             options.assume_yes = true;
         } else if (flag == "--help" || flag == "-h") {
             options.help = true;
+        } else if (flag == "--max-steps") {
+            if (value.empty()) {
+                if (index + 1 >= argc) {
+                    std::cerr << "--max-steps needs a number\n";
+                    return false;
+                }
+                value = argv[++index];
+            }
+            std::size_t parsed = 0;
+            const auto [end, error] = std::from_chars(
+                value.data(), value.data() + value.size(), parsed);
+            if (error != std::errc{} || end != value.data() + value.size() ||
+                parsed == 0) {
+                // One round is the floor that still lets a model call a tool
+                // and see the result; zero would answer nothing at all.
+                std::cerr << "--max-steps needs a positive number, got \""
+                          << value << "\"\n";
+                return false;
+            }
+            options.max_steps = parsed;
         } else {
             std::cerr << "unknown flag: " << flag << "\n";
             return false;
@@ -413,8 +467,6 @@ private:
 
 // ---- one user turn: the ReAct agent loop --------------------------------------
 
-constexpr std::size_t kMaxAgentSteps = 12;
-
 /// One record as the terminal shows it: the SETTLED call (which is what the
 /// registry answers with — defaults filled in, type and security written by the
 /// tool), the failure stage when the record is a failure, and the payload the
@@ -442,10 +494,17 @@ void report_record(const model_io::InvokeReturn& record) {
 /// calls — ONE ToolRegistry::execute() batch, whose records go back into the
 /// conversation as InvokeReturn items. A response with no invokes is the final
 /// answer.
+///
+/// `max_steps` is the turn's exchange budget (--max-steps), and running out of
+/// it is not a failure: every call the model made has already run and its
+/// result is already in the conversation, so the next user message continues
+/// from there — which is what the message on stderr says, because a terminal
+/// that just stops answering reads like a crash otherwise.
 asio::awaitable<void> run_turn(llm::LLMModel& model,
                                const tools::ToolRegistry& registry,
-                               model_io::AgentInputState& state) {
-    for (std::size_t step = 0; step < kMaxAgentSteps; ++step) {
+                               model_io::AgentInputState& state,
+                               std::size_t max_steps) {
+    for (std::size_t step = 0; step < max_steps; ++step) {
         model_io::MessageItem item = co_await model.converse(state);
         model.integrate(state, item);
 
@@ -498,8 +557,12 @@ asio::awaitable<void> run_turn(llm::LLMModel& model,
             model.integrate(state, result);
         }
     }
-    std::cerr << "agent loop exhausted its step budget before a final "
-                 "answer\n";
+    std::cerr << "agent loop hit its " << max_steps
+              << "-step budget before a final answer.\n"
+              << "  Every tool call it made has already run, and the results "
+                 "are in the conversation:\n"
+              << "  send another message (\"continue\" is enough) and it picks "
+                 "up from there, or relaunch with a larger --max-steps.\n";
 }
 
 // ---- the host's own view of the session table ---------------------------------
@@ -678,7 +741,12 @@ int main(int argc, char* argv[]) {
         "no shell: pass the program and its arguments separately, or run "
         "'sh' with '-c' explicitly. Every state-changing call is confirmed by "
         "the person at the terminal before it runs, so ask for what you need "
-        "directly and keep commands small.",
+        "directly and keep commands small. You have " +
+            std::to_string(options.max_steps) +
+            " tool-call rounds per message: prefer one decisive call to a "
+            "poll loop (wait_process with a real timeout instead of asking "
+            "again and again), and if a task needs more rounds than that, say "
+            "where you got to so the person can answer \"continue\".",
         model_io::SectionStability::Immutable);
     state.tools = registry.get_tools();
 
@@ -698,6 +766,8 @@ int main(int argc, char* argv[]) {
         std::cout << " (--yes: auto-approved)";
     }
     std::cout << ".\n";
+    std::cout << "budget: " << options.max_steps
+              << " tool-call rounds per message (--max-steps N to change).\n";
     std::cout << "commands: /tools /sessions /help; empty line to quit.\n";
     std::cout << "try: \"run seq 1 5 and show me the output\", or \"start cat, "
                  "feed it hello, then read back what it printed\".\n";
@@ -761,7 +831,8 @@ int main(int argc, char* argv[]) {
 
         try {
             auto future = asio::co_spawn(
-                io, run_turn(*model, registry, state), asio::use_future);
+                io, run_turn(*model, registry, state, options.max_steps),
+                asio::use_future);
             io.restart();   // a prior turn's run() drained the context
             io.run();
             future.get();

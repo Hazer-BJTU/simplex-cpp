@@ -39,6 +39,9 @@ THE DEMO (tools/example/deepseek_chat.cpp)
       --yes          approve every confirmed call without asking
       --tools        print the tool catalogue and exit (no key, no child)
       --list-models  the provider's live model list and balance, then exit
+      --max-steps N  model exchanges one message may take (default 12; raise
+                     it when driving an interactive child, which costs one
+                     round trip per look)
       --help         usage
 
   In the REPL: /tools, /sessions, /help, empty line quits.
@@ -58,6 +61,14 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
   6. Answer "n" to a confirmation   ->  the call is refused, and the refusal
       is a tool RESULT: the model reads "security check denied: ..." and can
       adapt, instead of the turn dying.
+  7. Drive another agent: "spawn a second copy of this program with
+      /src/build/bin/tools_deepseek_chat, then send it a task and tell me what
+      it answers"
+        -> the outer model bootstraps an inner one and drives it through
+           write_process_input / read_process_output. Each round of
+           "feed it, look at what it said" is one model exchange, so that kind
+           of work runs past the default budget: raise it with
+           --max-steps 40 (or answer "continue" when it says it stopped).
 
 OFFLINE CHECKS (no API key, no network, no child process)
   /src/build/bin/tools_deepseek_chat --tools
