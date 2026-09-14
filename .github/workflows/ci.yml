@@ -149,6 +149,22 @@ jobs:
         # where the bundled runtime lives and where "shipped by us" is decided.
         run: cmake --install build
 
+      - name: Assert the release carries the tools' declarations
+        # The process tools are DECLARED in YAML files that are loaded at run
+        # time from beside the executable (<exe_dir>/schemas/process) — nothing
+        # about them is compiled in. No test in the build tree can see whether
+        # they were installed, because the suite reaches them through the
+        # source path CMake baked in, and that path exists in every job here (a
+        # release tree reaches them the other way; staged-runtime exercises
+        # that). A release that quietly stopped shipping these files would lose
+        # all six process tools at run time with nothing red to show for it, so
+        # the packaging is asserted explicitly.
+        run: |
+          set -euo pipefail
+          found=$(find stage/bin/schemas/process -maxdepth 1 -name '*.yaml' | wc -l)
+          echo "staged declaration files: $found"
+          test "$found" -eq 6
+
       - name: Test
         run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
 
@@ -336,3 +352,26 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+
+      - name: Assert a release binary finds the STAGED tool declarations
+        # The last step cannot answer this, and that is the whole reason this one
+        # exists: the suite runs from build/, and this job checks the sources out
+        # at the SAME absolute path the release was built with — so the tools'
+        # YAML declarations are found through that path whether or not the
+        # install shipped them. A packaging regression would therefore keep CI
+        # green while every real release (which has no source tree) silently lost
+        # all six process tools.
+        #
+        # So: hide the source copy, put a suite in the staged bin/ — the lookup
+        # is relative to /proc/self/exe, so that is what makes it read the
+        # installed layout — and have it load all six tools from there. The trap
+        # restores the tree whether the assertion passes or fails.
+        run: |
+          set -euo pipefail
+          sources=tools/intrinsic/toolsets/process/schemas
+          mv "$sources" /tmp/schemas-parked
+          trap 'mv /tmp/schemas-parked "$sources"' EXIT
+          cp build/bin/test_tools stage/bin/
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          stage/bin/test_tools --log_level=error \
+            --run_test=the_set_offers_six_routable_tools,every_tool_is_declared_by_its_own_yaml_file

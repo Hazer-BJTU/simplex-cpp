@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "tools/intrinsic/process/schemas.hpp"
 #include "tools/invoke_exception.hpp"
 
 namespace tools::intrinsic {
@@ -36,8 +37,14 @@ std::string_view stream_word(OutputStream stream)
 
 // ---- ProcessToolBase --------------------------------------------------------
 
-ProcessToolBase::ProcessToolBase(StorePtr store, eventbus::AsyncEventBus* bus)
-    : IntrinsicTool(bus), _store(std::move(store))
+ProcessToolBase::ProcessToolBase(StorePtr store, std::string_view declaration_file,
+                                 eventbus::AsyncEventBus* bus)
+    // The declaration is loaded HERE, in the family's base, so a tool class
+    // names its file and has nothing to say about its own name, description or
+    // argument schema. A file that cannot be loaded is logged and leaves the
+    // tool unnamed, which is how the set skips it (tool_declaration.hpp).
+    : DeclaredTool(schema_directory() / declaration_file, bus),
+      _store(std::move(store))
 {}
 
 std::string ProcessToolBase::require_session_id(
@@ -82,49 +89,9 @@ nlohmann::json ProcessToolBase::session_json(const SessionSnapshot& snapshot)
 // ---- spawn_process ----------------------------------------------------------
 
 SpawnProcessTool::SpawnProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    : ProcessToolBase(std::move(store), bus)
-{
-    _details.name = std::string(tool_names::kSpawn);
-    _details.description =
-        "Run a program. Waits a short while for it to finish, so an ordinary "
-        "command returns its exit code and its whole output in this one call. "
-        "A program still running when that wait runs out keeps running in the "
-        "background instead, and the result carries a session id for it: use "
-        "poll_processes or read_process_output to follow it, write_process_input "
-        "to feed it, wait_process to wait for its exit and kill_process to end "
-        "it. Set expected_runtime_milliseconds when a command needs longer than "
-        "the default to finish in-call, or 0 to skip the wait and get an id "
-        "straight away. There is no shell - the program is run directly, so "
-        "pipes, redirections and globs reach it as literal arguments; run them "
-        "through 'sh' with '-c' explicitly if that is what you want.";
-    _details.argument_schema = object_schema(
-        nlohmann::json{
-            {"executable", string_property(
-                "Program to run: a name resolved through PATH ('grep') or a "
-                "path ('/usr/bin/grep')")},
-            {"arguments", string_list_property(
-                "Arguments after the program name. Each element is one "
-                "argument, passed verbatim - do not quote or escape them")},
-            {"description", string_property(
-                "Short label for this process, echoed back in every report "
-                "about it")},
-            {"working_directory", string_property(
-                "Directory to start the process in. Defaults to the host's "
-                "own working directory")},
-            {"environment", string_list_property(
-                "Extra environment entries as \"KEY=VALUE\" strings, merged "
-                "over the inherited environment by key")},
-            {"inherit_environment", bool_property(
-                "Whether the process inherits the host's environment", true)},
-            {"expected_runtime_milliseconds", uint_property(
-                "How long to wait for the program to finish before letting it "
-                "continue in the background. Raise it for a command expected "
-                "to take a while but still worth waiting for; 0 returns a "
-                "session id immediately without waiting",
-                kDefaultExpectedRuntimeMilliseconds)},
-        },
-        {"executable"});
-}
+    // Name, description and argument schema: schemas/spawn_process.yaml.
+    : ProcessToolBase(std::move(store), "spawn_process.yaml", bus)
+{}
 
 void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -290,26 +257,9 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
 // ---- poll_processes ---------------------------------------------------------
 
 PollProcessesTool::PollProcessesTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    : ProcessToolBase(std::move(store), bus)
-{
-    _details.name = std::string(tool_names::kPoll);
-    _details.description =
-        "List the state of the process sessions: which are still running, "
-        "which have exited and with what code, and what each has printed "
-        "since the last time its output was read. This is the call to make "
-        "when checking on work started earlier. Pass session_ids to look at "
-        "specific sessions, or leave it out for all of them.";
-    _details.argument_schema = object_schema(nlohmann::json{
-        {"session_ids", string_list_property(
-            "Sessions to report on. Omit or leave empty for every session")},
-        {"include_output", bool_property(
-            "Whether to include each session's new output since the last "
-            "read", true)},
-        {"release_exited", bool_property(
-            "Whether to forget sessions that have exited, after reporting "
-            "them. Their ids stop being valid", false)},
-    });
-}
+    // Name, description and argument schema: schemas/poll_processes.yaml.
+    : ProcessToolBase(std::move(store), "poll_processes.yaml", bus)
+{}
 
 void PollProcessesTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -399,30 +349,9 @@ boost::asio::awaitable<model_io::Content> PollProcessesTool::invoke(
 // ---- read_process_output ----------------------------------------------------
 
 ReadProcessOutputTool::ReadProcessOutputTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    : ProcessToolBase(std::move(store), bus)
-{
-    _details.name = std::string(tool_names::kRead);
-    _details.description =
-        "Read what one process has printed. By default this returns only what "
-        "is new since the last read of that session, so it can be called "
-        "repeatedly while a process runs without re-reading the same text; "
-        "pass full to get everything captured so far instead.";
-    _details.argument_schema = object_schema(
-        nlohmann::json{
-            {"session_id", string_property(
-                "The session to read, as returned by spawn_process")},
-            {"stream", enum_property("Which stream to read",
-                                     {"stdout", "stderr", "both"}, "both")},
-            {"full", bool_property(
-                "Whether to return everything captured so far instead of only "
-                "what is new. A full read does not consume the new output",
-                false)},
-            {"release", bool_property(
-                "Whether to forget the session after reading it. Only applies "
-                "once the process has exited", false)},
-        },
-        {"session_id"});
-}
+    // Name, description and argument schema: schemas/read_process_output.yaml.
+    : ProcessToolBase(std::move(store), "read_process_output.yaml", bus)
+{}
 
 void ReadProcessOutputTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -506,27 +435,9 @@ boost::asio::awaitable<model_io::Content> ReadProcessOutputTool::invoke(
 // ---- write_process_input ----------------------------------------------------
 
 WriteProcessInputTool::WriteProcessInputTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    : ProcessToolBase(std::move(store), bus)
-{
-    _details.name = std::string(tool_names::kWrite);
-    _details.description =
-        "Send text to a running process's standard input. Include the "
-        "trailing newline if the process reads by lines. Pass close_input to "
-        "signal end-of-input afterwards, which is what a process reading "
-        "until EOF waits for.";
-    _details.argument_schema = object_schema(
-        nlohmann::json{
-            {"session_id", string_property(
-                "The session to write to, as returned by spawn_process")},
-            {"input", string_property(
-                "Text to send, verbatim. Include \"\\n\" if the process reads "
-                "lines")},
-            {"close_input", bool_property(
-                "Whether to close standard input after sending, so the "
-                "process sees end-of-input", false)},
-        },
-        {"session_id"});
-}
+    // Name, description and argument schema: schemas/write_process_input.yaml.
+    : ProcessToolBase(std::move(store), "write_process_input.yaml", bus)
+{}
 
 void WriteProcessInputTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -608,32 +519,9 @@ boost::asio::awaitable<model_io::Content> WriteProcessInputTool::invoke(
 // ---- wait_process ----------------------------------------------------------
 
 WaitProcessTool::WaitProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    : ProcessToolBase(std::move(store), bus)
-{
-    _details.name = std::string(tool_names::kWait);
-    _details.description =
-        "Wait for a process to finish and report how it ended, along with "
-        "everything it printed. Returns when the process has exited AND its "
-        "output capture is complete — a child that exits while something it "
-        "started still holds its stdout/stderr open keeps this waiting — or "
-        "when the timeout runs out. A timeout is not an error: the result "
-        "reports `exited` and `output_complete` separately, and the process "
-        "keeps running.";
-    _details.argument_schema = object_schema(
-        nlohmann::json{
-            {"session_id", string_property(
-                "The session to wait for, as returned by spawn_process")},
-            {"timeout_milliseconds", uint_property(
-                "How long to wait before giving up and reporting the process "
-                "as still running. 0 waits indefinitely, which risks waiting "
-                "forever on a process that never exits",
-                kDefaultTimeoutMilliseconds)},
-            {"release", bool_property(
-                "Whether to forget the session after it exits and its output "
-                "has been reported", false)},
-        },
-        {"session_id"});
-}
+    // Name, description and argument schema: schemas/wait_process.yaml.
+    : ProcessToolBase(std::move(store), "wait_process.yaml", bus)
+{}
 
 void WaitProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -722,24 +610,9 @@ boost::asio::awaitable<model_io::Content> WaitProcessTool::invoke(
 // ---- kill_process ----------------------------------------------------------
 
 KillProcessTool::KillProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    : ProcessToolBase(std::move(store), bus)
-{
-    _details.name = std::string(tool_names::kKill);
-    _details.description =
-        "End a running process. By default this kills it outright; pass "
-        "graceful to ask it to shut down instead, which a process may handle "
-        "or ignore. The session stays readable afterwards, so its output can "
-        "still be collected.";
-    _details.argument_schema = object_schema(
-        nlohmann::json{
-            {"session_id", string_property(
-                "The session to end, as returned by spawn_process")},
-            {"graceful", bool_property(
-                "Whether to ask the process to shut down (a signal it may "
-                "handle) instead of killing it outright", false)},
-        },
-        {"session_id"});
-}
+    // Name, description and argument schema: schemas/kill_process.yaml.
+    : ProcessToolBase(std::move(store), "kill_process.yaml", bus)
+{}
 
 void KillProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {

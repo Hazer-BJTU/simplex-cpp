@@ -1,0 +1,46 @@
+# read_process_output — one session's output: the delta by default.
+#
+# THIS FILE IS THE DECLARATION, and src/tools.cpp is the implementation. See
+# tools/intrinsic/tool_declaration.hpp for the format and spawn_process.yaml
+# for the full explanation of how the two are kept together.
+
+name: read_process_output
+description: >-
+  Read what one process has printed. By default this returns only what is new
+  since the last read of that session, so it can be called repeatedly while a
+  process runs without re-reading the same text; pass full to get everything
+  captured so far instead.
+
+# READ BY A HUMAN, NOT BY THE LOADER. ReadOnly / Trusted: a read touches nothing
+# outside this host, and the cursor it advances or the table entry `release`
+# removes are this layer's own state, serialised by the store's strands.
+type: read_only
+security: trusted
+
+argument_schema:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      minLength: 1
+      description: >-
+        The session to read, as returned by spawn_process
+    stream:
+      type: string
+      enum: [stdout, stderr, both]
+      default: both
+      description: >-
+        Which stream to read
+    full:
+      type: boolean
+      default: false
+      description: >-
+        Whether to return everything captured so far instead of only what is
+        new. A full read does not consume the new output
+    release:
+      type: boolean
+      default: false
+      description: >-
+        Whether to forget the session after reading it. Only applies once the
+        process has exited

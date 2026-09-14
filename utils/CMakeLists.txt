@@ -5,9 +5,13 @@
 #
 #   - logging/    `logging_lib` (STATIC): thread-safe console logger
 #                 (logging::Logger), standard-library only.
-#   - yamlconfig/ `yamlconfig_iface` (INTERFACE, header-only): one-way
-#                 YAML -> nlohmann JSON config bridge (yamlconfig::*) over
-#                 the vendored yaml-cpp + nlohmann/json tree.
+#   - yamlconfig/ `yamlconfig_lib` (SHARED, the one copy of yaml-cpp per
+#                 process and of the conversion itself) + `yamlconfig_iface`
+#                 (INTERFACE wrapper): one-way YAML -> nlohmann JSON config
+#                 bridge (yamlconfig::parse / load_file / YamlConfigError).
+#                 Shared because the error type crosses module boundaries and
+#                 because a header-only bridge would compile — and re-export —
+#                 the vendored yaml-cpp in every consumer.
 #   - eventbus/   `eventbus_lib` (SHARED, the default_bus() singleton) +
 #                 `eventbus_iface` (INTERFACE wrapper): type-dispatched
 #                 synchronous publish/subscribe bus over boost::signals2

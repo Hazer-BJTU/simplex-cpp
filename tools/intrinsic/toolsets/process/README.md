@@ -19,6 +19,19 @@ process domain. The manager underneath is `process/`'s `ProcessHandle`.
 
 ## The model's view
 
+Every tool's name, description and argument schema are **declared in YAML**,
+one file per tool under [`schemas/`](schemas/) — `spawn_process.yaml`,
+`kill_process.yaml`, and so on — and loaded when the tool is built. What this
+section shows is therefore not a copy of something written in C++: it is the
+declaration, and the file is what a model is actually sent. The prose there is
+the same prose below; edit the file and rerun the tests.
+
+Those files also restate each tool's `type`/`security` pair for the reader.
+That part is documentation, not configuration: the loader does not read it, the
+tool's `write_attributes()` is what a scheduler and the security policy act on,
+and `test_tools` fails if the two ever disagree. See
+[Where the declarations live](#where-the-declarations-live).
+
 ### How the tools fit together
 
 `spawn_process` waits a short while (5 seconds by default) for the program to
@@ -506,7 +519,7 @@ refcounted state with the operations queued on it. That is a race in the
 executor's refcount, and ThreadSanitizer reports it (the suites here quiesce
 first, for exactly that reason).
 
-### The three headers
+### The headers
 
 - **`process/session_store.hpp`** — the session table. Mints readable ids
   (`proc_1`, `proc_2`, … monotonically, never reusing one), gives each child its
@@ -528,12 +541,82 @@ first, for exactly that reason).
   describes what a call changes OUTSIDE the host: the three observing tools are
   `ReadOnly` (the cursors and table entries they touch are internal, and the
   store's strands make them safe to overlap), and the three that launch, feed or
-  end a process are `SerialWrite`.
+  end a process are `SerialWrite`. What each tool *is* — its name, its
+  description and its argument schema — is not here: it is declared in
+  `schemas/<tool>.yaml`, and `ProcessToolBase` loads it.
 - **`process/toolset.hpp`** — the `ProcessToolSet` a host registers. Its name,
   its six tools and the store they share; the catalogue, the routing and the
   build/release lifecycle come from `IntrinsicToolSet`, and
   `prepare()` / `execute()` stay as `ToolSet` defines them, since those carry
   the invocation layer's checkpoint sequence and failure contracts.
+- **`process/schemas.hpp`** — where the declarations live, answered once (see
+  below). The header a deployment's configuration question belongs in.
+
+### Where the declarations live
+
+`schemas/<tool name>.yaml`, one file per tool, next to this package's sources,
+and each tool names its own when it is built
+(`ProcessToolBase(store, "spawn_process.yaml", bus)`). What a file holds is the
+tool's name, the prose a model reads and the JSON Schema of its arguments, and
+nothing about how the tool behaves — the format, and what is deliberately not
+loaded from it, is `tools/intrinsic/tool_declaration.hpp`.
+
+The directory is resolved in exactly one place, `process/schemas.hpp`:
+
+1. `SIMPLEX_PROCESS_SCHEMA_DIR`, when it is set and non-empty — a deployment
+   that keeps the declarations somewhere of its own choosing points this at its
+   copy, with no rebuild;
+2. otherwise `<exe_dir>/schemas/process`, when that directory exists — where a
+   release installs them, following the same "beside the executable" convention
+   as the host's `<exe_dir>/plugins` lookup, so a staged tree needs no path
+   configuration at all;
+3. otherwise the path CMake baked in from the source tree, which is what the dev
+   tree and the test suite use.
+
+Only one of (2) and (3) is ever really there — a release carries the first, a
+build tree the second — so the rule is simply "take the one that exists".
+
+A file that cannot be read, or that does not satisfy the loader's shape rules,
+is reported through the log — with the file and the in-document path — and the
+tool it declares is **not registered**: a model is never offered a tool whose
+description and schema nobody could find, and the rest of the set is
+unaffected. That failure mode is also why the files are listed among the
+target's sources in `CMakeLists.txt`: an IDE shows them with the package, and
+since nothing is compiled from them, editing one takes effect on the next run
+without a rebuild.
+
+The six are also declared to be one **capability group** ("process",
+`declare_capability_group()` in `src/toolset.cpp`), because a tool that fails to
+arrive on its own costs itself and no more is the right rule for one broken file
+but not a safe *state* for a family: five of the six leaves a model able to
+start a process it cannot end. So a partial registration is one error line —
+the group, the count, every missing member — and `capability_groups()` answers
+the same for a host that wants to act on it, while a package carrying none of
+the files is reported as the family being absent rather than as six failures.
+
+Which leaves a file free to claim something the implementation does not do, so
+`test_tools` closes that gap: for each of the six tools it loads the file,
+asserts the catalogue entry is that document verbatim, and asks the
+implementation the same questions the document answers — every property
+validated with the declared kind, the default contract held in **both**
+directions (every declared default the value really settled, on every call the
+declaration allows, and nothing settled that the file does not declare), every
+value clause probed from **both** sides (each declared enum member accepted and
+one outside refused, the declared minimum accepted and one below it refused, a
+string of exactly `minLength` accepted and a shorter one refused, an element of
+the declared type accepted and one of another refused), each `anyOf`
+alternative a call the tool accepts, the required-only call refused whenever the
+declaration states a cross-property rule, the declared `required` really
+required, and the restated `type`/`security` pair the pair the tool declares. A
+declaration that stops describing its tool fails the suite — including one that
+quietly drops a `default:`.
+
+One rule deliberately lives on the implementation side of that line:
+`environment` entries must be `"KEY=VALUE"`, which no keyword in the vocabulary
+expresses (`items` says only what an element's *type* is). The file states it in
+prose, `tools.cpp` enforces it, and `test_tools` pins it as an **unstated
+rule** — an element the schema alone would allow and the implementation refuses
+— rather than passing over it.
 
 ### Deliberately absent
 
@@ -600,7 +683,11 @@ failure, the `Invoke` failure for a session that is gone, the type/security each
 tool declares for a given settled call (asserted after settling, so a
 `write_attributes` that never ran cannot pass), the defaults materialized into
 the settled query, the unconfirmed-call refusal, and a whole turn through a
-`ToolRegistry` batch.
+`ToolRegistry` batch. It also owns the declaration cross-check: every tool's
+catalogue entry is compared against its `schemas/*.yaml` file, and the
+implementation is asked the same questions the file answers — declared kinds,
+defaults, enum members, minimums, `required` and the restated type/security
+pair — so a declaration and its tool cannot drift apart.
 
 `test_registry_e2e` — the composition the agent loop uses, at the registry
 boundary: `ToolRegistry` + `ProcessToolSet` + `ProcessSessionStore` + its own

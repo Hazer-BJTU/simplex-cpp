@@ -8,7 +8,9 @@
 # entry point over a temp file, and a realistic llm-style config checked
 # field-by-field plus a dump()/re-parse legality round-trip.
 #
-# yamlconfig_iface carries yaml-cpp + nlohmann/json transitively.
+# yamlconfig_iface carries nlohmann/json's headers and links the module's shared
+# library — the conversion itself, and the ONE yaml-cpp per process. Nothing
+# here names yaml-cpp: it is yamlconfig_lib's implementation detail now.
 
 add_executable(test_yaml_json test_yaml_json.cpp)
 target_compile_options(test_yaml_json PRIVATE

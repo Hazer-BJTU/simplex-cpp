@@ -20,6 +20,32 @@
 #                       into the settled query, the refusal of an unconfirmed
 #                       state change, and one end-to-end turn
 #                       (spawn -> write -> wait -> read -> kill).
+#                       It also owns the DECLARATION cross-check: for each of
+#                       the six tools it loads schemas/<tool>.yaml, asserts the
+#                       catalogue entry is that document verbatim, and asks the
+#                       implementation the same questions the document answers
+#                       — every property validated with the declared kind, the
+#                       default contract held in BOTH directions (every declared
+#                       default the value really settled on every call the
+#                       declaration allows, and nothing settled that the file
+#                       does not declare, so a dropped `default:` fails too),
+#                       every value clause probed from BOTH sides (each enum
+#                       member accepted and one outside refused, `minimum`
+#                       accepted and `minimum - 1` refused,
+#                       a string of exactly `minLength` accepted and a shorter
+#                       one refused, an element of the declared type accepted
+#                       and one of another refused), each `anyOf` alternative a
+#                       call the tool accepts, the required-only call refused
+#                       whenever the file states a cross-property rule, the
+#                       declared `required` really required, and the
+#                       type/security pair restated in the file (which the
+#                       loader deliberately ignores) the pair the tool declares.
+#                       The one argument rule the vocabulary cannot express
+#                       (`environment` entries are "KEY=VALUE") is pinned as an
+#                       unstated rule instead of passing over it. The suite also
+#                       builds the set over a package missing one declaration,
+#                       and over one carrying none, to assert what a degraded
+#                       capability group reports.
 #   test_registry_e2e   the composition the agent loop actually uses:
 #                       ToolRegistry + ProcessToolSet + ProcessSessionStore +
 #                       its own bus + real children, on a context with SEVERAL
@@ -36,6 +62,11 @@
 # confirmation handler, and both tool suites subscribe one on a bus THEY own
 # rather than the process-wide default_async_bus(), so the tests leave no global
 # subscription behind for another suite to inherit.
+#
+# test_tools additionally links yamlconfig_iface, because the cross-check above
+# reads the declaration FILES as documents — the `type`/`security` keys the
+# loader does not load are exactly what it has to compare against what the tools
+# declare, and reading them the way the loader reads them is the point.
 #
 # -pthread on all three: the store's coroutines and the registry's parallel
 # branches use asio's concurrent primitives (the same reason tools/test's
@@ -60,3 +91,5 @@ endfunction()
 intrinsic_process_add_test(test_session_store)
 intrinsic_process_add_test(test_tools)
 intrinsic_process_add_test(test_registry_e2e)
+
+target_link_libraries(test_tools PRIVATE yamlconfig_iface)
