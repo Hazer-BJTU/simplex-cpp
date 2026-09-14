@@ -13,16 +13,33 @@
 #                   tool that will not build, duplicate and unnamed tools, and
 #                   one call through the phases the base deliberately inherits
 #                   rather than overrides.
+#   test_tool_declaration
+#                   the YAML declaration loader: a well-formed file arriving
+#                   whole and VERBATIM (the argument schema is what a provider
+#                   puts on the wire, so nothing may be normalized on the way
+#                   through), and every shape it refuses — an unreadable or
+#                   unparseable file, a document that is not a mapping, a
+#                   missing/empty/mistyped name or description, a schema that is
+#                   not an object schema, a property that is not a mapping, and
+#                   a `required` that names a property nobody declared. The
+#                   files are written by the test, which is the only way to
+#                   reach the shapes a real declaration should never have.
 #
-# In-process only: no children, no sockets. The confirmation cases use a bus the
-# test owns, so nothing is left subscribed on the process-wide one.
-add_executable(test_tool_base test_tool_base.cpp)
-target_compile_options(test_tool_base PRIVATE
-    $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
-)
-target_link_libraries(test_tool_base PRIVATE
-    tools_intrinsic
-    Boost::unit_test_framework
-)
-add_test(NAME test_tool_base COMMAND test_tool_base)
+# In-process only: no children, no sockets, and the only I/O is the scratch
+# directory test_tool_declaration makes for itself. The confirmation cases use a
+# bus the test owns, so nothing is left subscribed on the process-wide one.
+function(intrinsic_add_test name)
+    add_executable(${name} ${name}.cpp)
+    target_compile_options(${name} PRIVATE
+        $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
+        $<$<CONFIG:Release>:-O3 -DNDEBUG>
+    )
+    target_link_libraries(${name} PRIVATE
+        tools_intrinsic
+        Boost::unit_test_framework
+    )
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+intrinsic_add_test(test_tool_base)
+intrinsic_add_test(test_tool_declaration)

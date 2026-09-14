@@ -4,6 +4,7 @@
 #include <optional>
 #include <utility>
 
+#include "tools/intrinsic/tool_declaration.hpp"
 #include "tools/invoke_exception.hpp"
 
 namespace tools::intrinsic {
@@ -15,6 +16,28 @@ IntrinsicTool::IntrinsicTool(eventbus::AsyncEventBus* bus) noexcept
 const model_io::Invocable& IntrinsicTool::get_details() const noexcept
 {
     return _details;
+}
+
+// ---- the declared form ------------------------------------------------------
+
+DeclaredTool::DeclaredTool(const std::filesystem::path& declaration_file,
+                           eventbus::AsyncEventBus* bus)
+    : IntrinsicTool(bus)
+{
+    // Reported, not thrown: the tool is left UNNAMED, and that is the whole
+    // mechanism — IntrinsicToolSet::register_tools() skips a tool with no name,
+    // so a declaration nobody can load costs this one tool and not the host.
+    std::optional<ToolDeclaration> declaration =
+        try_load_tool_declaration(declaration_file);
+    if (!declaration) {
+        return;
+    }
+
+    // Copied into the tool's own storage: get_details() hands out a reference,
+    // so what it points at has to live as long as the tool does.
+    _details.name = std::move(declaration->name);
+    _details.description = std::move(declaration->description);
+    _details.argument_schema = std::move(declaration->argument_schema);
 }
 
 boost::asio::awaitable<std::tuple<bool, std::string>>

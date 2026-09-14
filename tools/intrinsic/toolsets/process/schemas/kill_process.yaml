@@ -1,0 +1,32 @@
+# kill_process — end a child, hard or graceful.
+#
+# THIS FILE IS THE DECLARATION, and src/tools.cpp is the implementation. See
+# tools/intrinsic/tool_declaration.hpp for the format and spawn_process.yaml
+# for the full explanation of how the two are kept together.
+
+name: kill_process
+description: >-
+  End a running process. By default this kills it outright; pass graceful to
+  ask it to shut down instead, which a process may handle or ignore. The
+  session stays readable afterwards, so its output can still be collected.
+
+# READ BY A HUMAN, NOT BY THE LOADER. SerialWrite / RequireConfirm: ending a
+# process is a state change outside this host, and an unattended kill of the
+# wrong session is not recoverable.
+type: serial_write
+security: require_confirm
+
+argument_schema:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      description: >-
+        The session to end, as returned by spawn_process
+    graceful:
+      type: boolean
+      default: false
+      description: >-
+        Whether to ask the process to shut down (a signal it may handle)
+        instead of killing it outright

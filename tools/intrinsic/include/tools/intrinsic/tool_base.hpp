@@ -31,6 +31,23 @@
 // "no such session" failure — and this class stays the part a second toolset
 // family can inherit unchanged.
 //
+// WHERE THE INVOCABLE COMES FROM, and why there are two bases for it. A tool's
+// name, description and argument schema are the whole of what a model is told
+// about it, and there are two honest ways to have them:
+//
+//   IntrinsicTool  the tool fills `_details` itself — a hand-written tool, a
+//                  family that computes one, or a test double;
+//   DeclaredTool   the three come from a YAML declaration file that the tool
+//                  names when it is built, one file per tool, in the toolset's
+//                  own package (tools/intrinsic/tool_declaration.hpp).
+//
+// Either way `_details` is filled before the derived constructor's body runs,
+// because get_details() hands out a reference the tool has to own by then.
+// DeclaredTool adds exactly one rule on top of that, and it is the rule that
+// makes a missing file survivable: a declaration that cannot be loaded is
+// REPORTED and the tool is left UNNAMED, which is how a set skips a tool it
+// cannot describe (toolset_base.hpp, register_tools()).
+//
 // ARGUMENTS ARE CHECKED IN ensure_arguments(), NEVER IN invoke(). That is the
 // invocation layer's dependency order (tools/toolsets.hpp): the security check
 // and the human confirmation must see the SETTLED arguments, so defaults are
@@ -63,6 +80,7 @@
 //
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -256,6 +274,39 @@ private:
     /// binding it in a constructor would tie a tool to whichever module built
     /// it.
     eventbus::AsyncEventBus* _bus = nullptr;
+};
+
+/**
+ * The base for a tool whose name, description and argument schema are DECLARED
+ * in a YAML file rather than written into its constructor.
+ *
+ * A derived tool names its file and stops there. Everything else — what it
+ * validates in ensure_arguments(), the type/security pair it declares in
+ * write_attributes(), and what invoke() does — is unchanged from IntrinsicTool
+ * and stays in C++: the declaration says what the model is told, the
+ * implementation says what happens, and the process toolset's suite pins the
+ * two together so neither can drift unnoticed
+ * (toolsets/process/test/test_tools.cpp). See tool_declaration.hpp for the
+ * file format, and for what is deliberately NOT loaded from it (`type` and
+ * `security` among it).
+ */
+class DeclaredTool : public IntrinsicTool {
+protected:
+    /**
+     * @param declaration_file the YAML file this tool is declared in. Taken as
+     *        a whole path: where a package's declarations live is that
+     *        package's decision, made once (process/schemas.hpp is the process
+     *        toolset's), and resolving it here would be a second one.
+     * @param bus the bus a RequireConfirm call asks its confirmation on; see
+     *        IntrinsicTool.
+     *
+     * A file that cannot be loaded is reported through the log and leaves the
+     * tool with no name — which is what keeps it out of a set's catalogue.
+     * Construction does not throw (tool_declaration.hpp,
+     * try_load_tool_declaration).
+     */
+    DeclaredTool(const std::filesystem::path& declaration_file,
+                 eventbus::AsyncEventBus* bus = nullptr);
 };
 
 } // namespace tools::intrinsic

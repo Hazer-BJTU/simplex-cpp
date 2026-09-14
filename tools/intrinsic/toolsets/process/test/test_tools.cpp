@@ -1,12 +1,15 @@
 #define BOOST_TEST_MODULE ProcessToolsTests
 #include <boost/test/unit_test.hpp>
 
+#include "tools/intrinsic/process/schemas.hpp"
 #include "tools/intrinsic/process/toolset.hpp"
 #include "tools/intrinsic/process/tools.hpp"
+#include "tools/intrinsic/tool_declaration.hpp"
 
 #include "tools/invoke_exception.hpp"
 #include "tools/registry.hpp"
 #include "tools/security_check.hpp"
+#include "yamlconfig/yaml_json.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -229,6 +232,256 @@ BOOST_AUTO_TEST_CASE(the_set_offers_six_routable_tools)
         BOOST_TEST(!tool.description.empty());
         BOOST_TEST(tool.argument_schema.at("type") == nlohmann::json("object"));
         BOOST_TEST(tool.argument_schema.contains("properties"));
+    }
+}
+
+// ---- the declarations on disk -----------------------------------------------
+//
+// The six tools are DECLARED in schemas/*.yaml, one file per tool, next to this
+// package's sources, and the case below is what keeps a declaration and the
+// implementation from drifting apart. Every check in it is generic over the
+// tools: the file states the properties, their types, their defaults, their
+// enum members and which of them are required, and each check asks the
+// IMPLEMENTATION the same question. A schema that stopped describing its tool
+// therefore fails here, rather than quietly misinforming a model — which is the
+// only thing that makes a declaration file safe to keep prose in.
+
+namespace {
+
+/// One tool and a call that must settle: the starting point every check below
+/// perturbs.
+struct DeclaredTool {
+    std::string_view name;
+    nlohmann::json minimal_arguments;
+};
+
+/// A value of the WRONG JSON kind for a property declaring `kind` — the one
+/// disagreement between a schema and its implementation that can be found
+/// without knowing anything about the tool. An unrecognised kind gets an
+/// object, which is the wrong kind for every kind this project declares.
+[[nodiscard]] nlohmann::json wrong_kind_for(std::string_view kind)
+{
+    if (kind == "string") return 7;
+    if (kind == "boolean") return "yes";
+    if (kind == "integer") return "soon";
+    if (kind == "array") return "not a list";
+    return nlohmann::json::object();
+}
+
+/// How phase 1 refused a call.
+struct Refusal {
+    InvokeException::Stage stage = InvokeException::Stage::Unknown;
+    std::string message;
+};
+
+[[nodiscard]] Refusal refusal_of(Fixture& fixture, model_io::InvokeQuery& query)
+{
+    try {
+        (void)fixture.prepare(query);
+    } catch (const InvokeException& failure) {
+        return Refusal{failure.stage(), failure.message()};
+    }
+    BOOST_FAIL("the call was expected to be refused");
+    return {};
+}
+
+/// The Invocable a set offers under `name`.
+[[nodiscard]] model_io::Invocable offered_as(const ProcessToolSet& set,
+                                             std::string_view name)
+{
+    for (const model_io::Invocable& tool : set.get_tools()) {
+        if (tool.name == name) return tool;
+    }
+    BOOST_FAIL("the set offers no tool named " << name);
+    return {};
+}
+
+/// The InvokeType a declaration states for the reader.
+///
+/// Matched EXPLICITLY rather than through nlohmann's from_json, which is the
+/// trap this whole pair of helpers exists for: NLOHMANN_JSON_SERIALIZE_ENUM
+/// answers the FIRST enum value for a word it does not recognise, and for
+/// InvokeType that is ReadOnly — the one direction dataclass/model_io.hpp
+/// forbids, since an unrecognised type must be treated as serial.
+[[nodiscard]] model_io::InvokeType invoke_type_of(std::string_view word)
+{
+    if (word == "read_only") return model_io::InvokeType::ReadOnly;
+    if (word == "parall_write") return model_io::InvokeType::ParallWrite;
+    if (word == "serial_write") return model_io::InvokeType::SerialWrite;
+    BOOST_FAIL("not an InvokeType word: " << word);
+    return model_io::InvokeType::SerialWrite;
+}
+
+[[nodiscard]] model_io::InvokeSecurity invoke_security_of(std::string_view word)
+{
+    if (word == "default_deny") return model_io::InvokeSecurity::DefaultDeny;
+    if (word == "require_confirm") return model_io::InvokeSecurity::RequireConfirm;
+    if (word == "trusted") return model_io::InvokeSecurity::Trusted;
+    BOOST_FAIL("not an InvokeSecurity word: " << word);
+    return model_io::InvokeSecurity::DefaultDeny;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(every_tool_is_declared_by_its_own_yaml_file)
+{
+    Fixture f;
+
+    const std::vector<DeclaredTool> declared{
+        {tool_names::kSpawn, {{"executable", "true"}}},
+        {tool_names::kPoll, nlohmann::json::object()},
+        {tool_names::kRead, {{"session_id", "proc_1"}}},
+        {tool_names::kWait, {{"session_id", "proc_1"}}},
+        {tool_names::kWrite, {{"session_id", "proc_1"}, {"input", "x"}}},
+        {tool_names::kKill, {{"session_id", "proc_1"}}},
+    };
+
+    // The directory holds exactly one file per tool. A declaration nothing
+    // loads is a document nobody will notice going stale; a tool without one is
+    // a tool the loader reports and the set then skips.
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(tools::intrinsic::schema_directory())) {
+        if (entry.path().extension() != ".yaml") continue;
+        const std::string stem = entry.path().stem().string();
+        bool known = false;
+        for (const DeclaredTool& tool : declared) {
+            known = known || stem == tool.name;
+        }
+        BOOST_TEST_CONTEXT("unexpected declaration file " << entry.path()) {
+            BOOST_TEST(known);
+        }
+    }
+    std::size_t present = 0;
+    for (const DeclaredTool& tool : declared) {
+        present += std::filesystem::exists(tools::intrinsic::schema_directory()
+                              / (std::string(tool.name) + ".yaml"))
+                       ? 1u
+                       : 0u;
+    }
+    BOOST_TEST(present == declared.size());
+
+    for (const DeclaredTool& tool : declared) {
+        const std::string name(tool.name);
+        BOOST_TEST_CONTEXT("declaration of " << name) {
+            const std::filesystem::path file = tools::intrinsic::schema_directory() / (name + ".yaml");
+            const tools::intrinsic::ToolDeclaration declaration =
+                tools::intrinsic::load_tool_declaration(file);
+            const nlohmann::json& properties =
+                declaration.argument_schema.at("properties");
+
+            // (1) What the model is shown IS what the file says — verbatim, so
+            //     that reading the file is reading the contract.
+            const model_io::Invocable offered = offered_as(*f.set, tool.name);
+            BOOST_TEST(offered.name == declaration.name);
+            BOOST_TEST(offered.description == declaration.description);
+            BOOST_TEST(offered.argument_schema == declaration.argument_schema);
+            BOOST_TEST(offered.description.empty() == false);
+
+            // (2) A call naming only what is required settles, every property
+            //     is documented for the model, and every declared default is
+            //     the value the implementation really settles — including the
+            //     two numbers (5000 / 30000) a tool class also holds as a
+            //     constant, which is what keeps the pair honest. A property the
+            //     minimal call already names is skipped: there the settled
+            //     value is the caller's, which is the other half of the
+            //     contract — a value that is present is never overwritten.
+            model_io::InvokeQuery query = call_for(name, tool.minimal_arguments);
+            (void)f.prepare(query);
+            for (const auto& property : properties.items()) {
+                const nlohmann::json& schema = property.value();
+                BOOST_TEST_CONTEXT("property " << property.key()) {
+                    BOOST_TEST(schema.contains("type"));
+                    BOOST_TEST(!schema.value("description", std::string()).empty());
+                    if (schema.contains("default")
+                        && !tool.minimal_arguments.contains(property.key())) {
+                        // Guarded: a property the implementation does not
+                        // settle at all should read as ONE failed expectation
+                        // here, not as an out_of_range from the comparison that
+                        // follows it.
+                        BOOST_TEST(query.arguments.contains(property.key()));
+                        if (query.arguments.contains(property.key())) {
+                            BOOST_TEST(query.arguments.at(property.key())
+                                       == schema.at("default"));
+                        }
+                    }
+                }
+            }
+            // ... and it settles nothing the declaration does not name, so a
+            // model reading the schema has been told about every field it will
+            // see in the record.
+            for (const auto& settled : query.arguments.items()) {
+                BOOST_TEST_CONTEXT("settled " << settled.key()) {
+                    BOOST_TEST(properties.contains(settled.key()));
+                }
+            }
+
+            // (3) Every declared property is really validated, with the kind
+            //     the file declares: a wrong JSON kind must be refused at
+            //     ArgumentParse, and the message must name the property.
+            for (const auto& property : properties.items()) {
+                model_io::InvokeQuery probe =
+                    call_for(name, tool.minimal_arguments);
+                probe.arguments[property.key()] = wrong_kind_for(
+                    property.value().at("type").get<std::string>());
+                const Refusal refusal = refusal_of(f, probe);
+                BOOST_TEST_CONTEXT("wrong kind for " << property.key()) {
+                    BOOST_CHECK(refusal.stage
+                               == InvokeException::Stage::ArgumentParse);
+                    BOOST_TEST(refusal.message.find(property.key())
+                               != std::string::npos);
+                }
+            }
+
+            // (4) The enum members and the minimum the file states are the ones
+            //     enforced — the clauses a model reads as its allowed values.
+            for (const auto& property : properties.items()) {
+                const nlohmann::json& schema = property.value();
+                if (schema.contains("enum")) {
+                    model_io::InvokeQuery probe =
+                        call_for(name, tool.minimal_arguments);
+                    probe.arguments[property.key()] = "__not_declared__";
+                    BOOST_TEST_CONTEXT("value outside enum " << property.key()) {
+                        BOOST_CHECK(refusal_of(f, probe).stage
+                                   == InvokeException::Stage::ArgumentParse);
+                    }
+                }
+                if (schema.contains("minimum")) {
+                    model_io::InvokeQuery probe =
+                        call_for(name, tool.minimal_arguments);
+                    probe.arguments[property.key()] = -1;
+                    BOOST_TEST_CONTEXT("value below minimum " << property.key()) {
+                        BOOST_CHECK(refusal_of(f, probe).stage
+                                   == InvokeException::Stage::ArgumentParse);
+                    }
+                }
+            }
+
+            // (5) What the file calls required is required: drop one from a
+            //     call that otherwise settles and phase 1 must refuse it.
+            for (const nlohmann::json& required :
+                 declaration.argument_schema.at("required")) {
+                model_io::InvokeQuery probe =
+                    call_for(name, tool.minimal_arguments);
+                probe.arguments.erase(required.get<std::string>());
+                BOOST_TEST_CONTEXT("missing " << required) {
+                    BOOST_CHECK(refusal_of(f, probe).stage
+                               == InvokeException::Stage::ArgumentParse);
+                }
+            }
+
+            // (6) The type/security pair the file states FOR THE READER is the
+            //     pair the tool really declares. The loader ignores those keys
+            //     on purpose — they are behaviour, and write_attributes() owns
+            //     them — so this comparison is the only thing standing between
+            //     a declaration and a wrong claim about what a call will do and
+            //     whether it asks first.
+            const nlohmann::json document = yamlconfig::load_file(file);
+            BOOST_CHECK(invoke_type_of(document.at("type").get<std::string>())
+                       == query.type);
+            BOOST_CHECK(
+                invoke_security_of(document.at("security").get<std::string>())
+                == query.security);
+        }
     }
 }
 

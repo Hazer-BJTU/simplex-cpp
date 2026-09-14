@@ -20,6 +20,16 @@
 #                       into the settled query, the refusal of an unconfirmed
 #                       state change, and one end-to-end turn
 #                       (spawn -> write -> wait -> read -> kill).
+#                       It also owns the DECLARATION cross-check: for each of
+#                       the six tools it loads schemas/<tool>.yaml, asserts the
+#                       catalogue entry is that document verbatim, and asks the
+#                       implementation the same questions the document answers
+#                       — every property validated with the declared kind, every
+#                       declared default the value really settled, the declared
+#                       enum members and minimum enforced, the declared
+#                       `required` really required, and the type/security pair
+#                       restated in the file (which the loader deliberately
+#                       ignores) the pair the tool declares.
 #   test_registry_e2e   the composition the agent loop actually uses:
 #                       ToolRegistry + ProcessToolSet + ProcessSessionStore +
 #                       its own bus + real children, on a context with SEVERAL
@@ -36,6 +46,11 @@
 # confirmation handler, and both tool suites subscribe one on a bus THEY own
 # rather than the process-wide default_async_bus(), so the tests leave no global
 # subscription behind for another suite to inherit.
+#
+# test_tools additionally links yamlconfig_iface, because the cross-check above
+# reads the declaration FILES as documents — the `type`/`security` keys the
+# loader does not load are exactly what it has to compare against what the tools
+# declare, and reading them the way the loader reads them is the point.
 #
 # -pthread on all three: the store's coroutines and the registry's parallel
 # branches use asio's concurrent primitives (the same reason tools/test's
@@ -60,3 +75,5 @@ endfunction()
 intrinsic_process_add_test(test_session_store)
 intrinsic_process_add_test(test_tools)
 intrinsic_process_add_test(test_registry_e2e)
+
+target_link_libraries(test_tools PRIVATE yamlconfig_iface)

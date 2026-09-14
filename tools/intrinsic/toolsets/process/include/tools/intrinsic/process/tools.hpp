@@ -107,6 +107,18 @@
 // store, the session id argument, the "no such session" failure, and the wire
 // shape of a session.
 //
+// WHERE THE MODEL-FACING DECLARATION LIVES. Each tool's name, description and
+// argument schema are in schemas/<tool name>.yaml, next to this package's
+// sources, and are loaded when the tool is built (schemas.hpp says where that
+// directory is and how a deployment moves it; tools/intrinsic/tool_declaration.hpp
+// says what a file holds). Those files restate the type/security table above
+// for the reader, and the loader deliberately ignores that: InvokeType and
+// InvokeSecurity are behaviour, declared in write_attributes() and nowhere
+// else. test_tools.cpp pins the file against the implementation — every
+// declared property, every default, and the restated pair — so a declaration
+// that stopped describing its tool fails the suite instead of quietly
+// misinforming whoever reads it.
+//
 
 #include <cstdint>
 #include <memory>
@@ -135,24 +147,29 @@ inline constexpr std::string_view kKill = "kill_process";
 } // namespace tool_names
 
 /**
- * What every process tool adds to IntrinsicTool: the store it works through,
- * and the two things only this family needs — the session id argument, and the
- * "that session is gone" failure.
+ * What every process tool adds to DeclaredTool: the store it works through,
+ * the declaration file it is named by, and the two things only this family
+ * needs — the session id argument, and the "that session is gone" failure.
  *
  * Everything domain-neutral (the Invocable's storage, the argument accessors,
  * the JSON result shape, the confirmation's bus) comes from the base
  * (tools/intrinsic/tool_base.hpp) and is not restated here.
  */
-class ProcessToolBase : public IntrinsicTool {
+class ProcessToolBase : public DeclaredTool {
 public:
     using StorePtr = std::shared_ptr<ProcessSessionStore>;
 
     /**
      * @param store the session table this tool works through.
+     * @param declaration_file the file this tool is DECLARED in, named
+     *        relative to schema_directory() — one file per tool, in this
+     *        package's schemas/ directory. Loading it here, in the base, is
+     *        what leaves a tool class with nothing to say about its own name,
+     *        description or argument schema (tools/intrinsic/tool_declaration.hpp).
      * @param bus the bus a RequireConfirm call asks its confirmation question
      *        on; nullptr means the process-wide one. See IntrinsicTool.
      */
-    explicit ProcessToolBase(StorePtr store,
+    explicit ProcessToolBase(StorePtr store, std::string_view declaration_file,
                              eventbus::AsyncEventBus* bus = nullptr);
 
 protected:
@@ -192,6 +209,11 @@ public:
     /// crosses it and becomes a session. Too short and every command costs a
     /// second round trip; too long and a model waiting on a daemon looks stuck.
     /// A caller that knows better says so per call, and 0 skips the wait.
+    ///
+    /// Stated twice on purpose, and pinned: this is what ensure_arguments()
+    /// settles, and the `default` in schemas/spawn_process.yaml is what a model
+    /// reads before calling. test_tools.cpp loads that file and fails if the
+    /// two numbers ever disagree.
     static constexpr std::uint64_t kDefaultExpectedRuntimeMilliseconds = 5000;
 
     explicit SpawnProcessTool(StorePtr store,
@@ -256,6 +278,10 @@ public:
     /// The default deadline, in milliseconds. Long enough for an ordinary
     /// command, short enough that a stuck child comes back as a result the
     /// model can act on rather than a hang.
+    ///
+    /// Stated twice on purpose, and pinned, exactly like SpawnProcessTool's: it
+    /// is what ensure_arguments() settles and the `default` in
+    /// schemas/wait_process.yaml is what a model reads.
     static constexpr std::uint64_t kDefaultTimeoutMilliseconds = 30000;
 
     explicit WaitProcessTool(StorePtr store,

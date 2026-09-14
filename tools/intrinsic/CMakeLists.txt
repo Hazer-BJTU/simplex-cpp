@@ -18,6 +18,13 @@
 #                     accessors (which refuse rather than coerce), the JSON
 #                     result shape, the JSON-Schema builders, and the routing of
 #                     a RequireConfirm confirmation at a chosen event bus.
+#                     DeclaredTool is the IntrinsicTool whose Invocable comes
+#                     from a declaration file instead.
+#   tool_declaration.hpp  one tool's name, description and argument schema as a
+#                     YAML document, with the loader that reads and validates it
+#                     (load_tool_declaration) and the reporting form a tool uses
+#                     so that a broken file costs one tool rather than the host
+#                     (try_load_tool_declaration).
 #   toolset_base.hpp  IntrinsicToolSet: the ordered catalogue get_tools() hands
 #                     out, the name->tool table dispatch() routes by, and the
 #                     tools' build()/release() lifecycle. It deliberately does
@@ -26,7 +33,15 @@
 #                     contracts, and an in-process set wants them unchanged.
 #
 # A toolset package therefore supplies only its domain: its tools, their
-# schemas, and whatever state they share.
+# declarations, and whatever state they share.
+#
+# YAML DECLARATIONS, and why the YAML reader is a PRIVATE dependency here: a
+# declaration file is a document (comments, block scalars, anchors), and
+# yamlconfig/yaml_json.hpp is the project's one YAML boundary. It is linked
+# PRIVATE because it is an implementation detail of the loader — no public
+# header of this library mentions yamlconfig or yaml-cpp, so nothing that links
+# this library inherits either, and the vendored yaml-cpp archive is linked into
+# this shared object alone.
 #
 # SHARED, following docs/abi-context.md: these are classes a host and a dlopened
 # plugin may both subclass or catch across the boundary, so their typeinfo,
@@ -37,6 +52,7 @@
 # =============================================================================
 add_library(tools_intrinsic SHARED
     src/tool_base.cpp
+    src/tool_declaration.cpp
     src/toolset_base.cpp
 )
 target_include_directories(tools_intrinsic PUBLIC
@@ -47,6 +63,8 @@ target_link_libraries(tools_intrinsic PUBLIC
     asio_iface
     logging_lib
 )
+# The YAML reader behind the declaration loader; PRIVATE on purpose, see above.
+target_link_libraries(tools_intrinsic PRIVATE yamlconfig_iface)
 target_compile_options(tools_intrinsic PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
