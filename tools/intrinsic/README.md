@@ -149,12 +149,13 @@ declarations, and whatever state they share.
    write, and `SerialWrite` when the order between two of them is observable out
    there.
 4. Test the pair: load each declaration and ask the implementation the same
-   questions the document answers (the declared kinds, defaults, enum members,
-   minimums, minLengths, element types, `anyOf` alternatives and `required`) —
-   each clause from BOTH sides, so "the implementation restricts something here"
-   is never mistaken for "the declaration and the implementation agree". That
-   check is generic over a toolset, and `toolsets/process/test/test_tools.cpp`
-   is the worked example.
+   questions the document answers (the declared kinds, defaults — in both
+   directions, so a default the file drops is caught as well as one it states
+   wrongly — enum members, minimums, minLengths, element types, `anyOf`
+   alternatives and `required`), each clause from BOTH sides, so "the
+   implementation restricts something here" is never mistaken for "the
+   declaration and the implementation agree". That check is generic over a
+   toolset, and `toolsets/process/test/test_tools.cpp` is the worked example.
 5. If the tools are a capability family — offered together or not at all — say so
    with `declare_capability_group()` after `register_tools()`, so a package that
    lost one declaration is reported as a degraded family rather than as healthy

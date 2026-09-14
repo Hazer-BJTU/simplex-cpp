@@ -750,17 +750,31 @@ BOOST_AUTO_TEST_CASE(every_tool_is_declared_by_its_own_yaml_file)
                             // there the settled value is the caller's, which is
                             // the other half of the contract — a value that is
                             // present is never overwritten.
-                            if (property_schema.contains("default")
-                                && !arguments.contains(property.key())) {
-                                // Guarded: a property the implementation does
-                                // not settle at all should read as ONE failed
-                                // expectation here, not as an out_of_range from
-                                // the comparison that follows it.
-                                BOOST_TEST(
-                                    query.arguments.contains(property.key()));
-                                if (query.arguments.contains(property.key())) {
-                                    BOOST_TEST(query.arguments.at(property.key())
-                                               == property_schema.at("default"));
+                            //
+                            // For one the call leaves out, the default contract
+                            // holds in BOTH directions: a property the
+                            // declaration gives a default to is settled at that
+                            // value, and one it does not is left alone, because
+                            // the implementation settles nothing a model was not
+                            // told about. The second half is what makes a
+                            // DELETED `default:` visible — the settled query
+                            // keeps carrying the value, and the guards below
+                            // keep a missing key reading as ONE failed
+                            // expectation rather than an out_of_range from the
+                            // comparison that follows it.
+                            if (!arguments.contains(property.key())) {
+                                if (property_schema.contains("default")) {
+                                    BOOST_TEST(
+                                        query.arguments.contains(property.key()));
+                                    if (query.arguments.contains(
+                                            property.key())) {
+                                        BOOST_TEST(
+                                            query.arguments.at(property.key())
+                                            == property_schema.at("default"));
+                                    }
+                                } else {
+                                    BOOST_TEST(!query.arguments.contains(
+                                        property.key()));
                                 }
                             }
                         }

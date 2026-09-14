@@ -598,15 +598,18 @@ Which leaves a file free to claim something the implementation does not do, so
 `test_tools` closes that gap: for each of the six tools it loads the file,
 asserts the catalogue entry is that document verbatim, and asks the
 implementation the same questions the document answers — every property
-validated with the declared kind, every declared default the value really
-settled, every value clause probed from **both** sides (each declared enum
-member accepted and one outside refused, the declared minimum accepted and one
-below it refused, a string of exactly `minLength` accepted and a shorter one
-refused, an element of the declared type accepted and one of another refused),
-each `anyOf` alternative a call the tool accepts, the required-only call refused
-whenever the declaration states a cross-property rule, the declared `required`
-really required, and the restated `type`/`security` pair the pair the tool
-declares. A declaration that stops describing its tool fails the suite.
+validated with the declared kind, the default contract held in **both**
+directions (every declared default the value really settled, on every call the
+declaration allows, and nothing settled that the file does not declare), every
+value clause probed from **both** sides (each declared enum member accepted and
+one outside refused, the declared minimum accepted and one below it refused, a
+string of exactly `minLength` accepted and a shorter one refused, an element of
+the declared type accepted and one of another refused), each `anyOf`
+alternative a call the tool accepts, the required-only call refused whenever the
+declaration states a cross-property rule, the declared `required` really
+required, and the restated `type`/`security` pair the pair the tool declares. A
+declaration that stops describing its tool fails the suite — including one that
+quietly drops a `default:`.
 
 One rule deliberately lives on the implementation side of that line:
 `environment` entries must be `"KEY=VALUE"`, which no keyword in the vocabulary

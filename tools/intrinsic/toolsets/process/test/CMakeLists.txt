@@ -24,11 +24,14 @@
 #                       the six tools it loads schemas/<tool>.yaml, asserts the
 #                       catalogue entry is that document verbatim, and asks the
 #                       implementation the same questions the document answers
-#                       — every property validated with the declared kind, every
-#                       declared default the value really settled on every call
-#                       the declaration allows, every value clause probed from
-#                       BOTH sides (each enum member accepted and one outside
-#                       refused, `minimum` accepted and `minimum - 1` refused,
+#                       — every property validated with the declared kind, the
+#                       default contract held in BOTH directions (every declared
+#                       default the value really settled on every call the
+#                       declaration allows, and nothing settled that the file
+#                       does not declare, so a dropped `default:` fails too),
+#                       every value clause probed from BOTH sides (each enum
+#                       member accepted and one outside refused, `minimum`
+#                       accepted and `minimum - 1` refused,
 #                       a string of exactly `minLength` accepted and a shorter
 #                       one refused, an element of the declared type accepted
 #                       and one of another refused), each `anyOf` alternative a

@@ -48,6 +48,13 @@ argument_schema:
       type: array
       items:
         type: string
+      # Declared like environment's, because the implementation settles it the
+      # same way: a call naming no arguments runs with none, and
+      # settle_string_list() puts the empty list in the query the model is
+      # shown, so the declaration has to say so (test_tools.cpp holds that in
+      # both directions — a settled value the file does not mention is as much
+      # a mismatch as a missing one).
+      default: []
       description: >-
         Arguments after the program name. Each element is one argument, passed
         verbatim - do not quote or escape them
