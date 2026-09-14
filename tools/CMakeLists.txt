@@ -46,6 +46,12 @@ target_link_libraries(tools_iface INTERFACE
 # typeinfo reason its own CMakeLists states.
 add_subdirectory(intrinsic)
 
+# Manual demos of the whole stack (registry + an intrinsic toolset + the
+# provider plugins). Built always; only their offline --tools mode is
+# CTest-registered, since the conversation needs a live API key. See
+# example/CMakeLists.txt.
+add_subdirectory(example)
+
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()

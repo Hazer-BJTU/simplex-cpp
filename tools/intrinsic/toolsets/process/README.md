@@ -494,6 +494,12 @@ second argument to the set is an `AsyncEventBus*`: `nullptr` (the default) uses
 the process-wide bus, so a confirmer in another module can answer; passing one
 keeps a component's confirmations to itself.
 
+`tools/example/deepseek_chat.cpp` is that wiring in a running host: a live
+provider conversation whose tools are these six, every call going through
+`ToolRegistry::execute`, with an `InvokeConfirmEvent` handler at the terminal
+that answers the RequireConfirm calls — and `--tools`, which prints the
+catalogue this section describes without needing a provider.
+
 Since the state-changing tools declare `RequireConfirm`, a host that wants them
 to run at all must subscribe a handler to `InvokeConfirmEvent` — with none,
 they are refused (silence is not consent). What the handler is shown is the
