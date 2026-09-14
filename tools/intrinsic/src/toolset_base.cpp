@@ -1,11 +1,28 @@
 #include "tools/intrinsic/toolset_base.hpp"
 
 #include <format>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "logging/logger.hpp"
 
 namespace tools::intrinsic {
+namespace {
+
+/// The names, comma-separated, in the order they were declared — how a report
+/// about a group spells its members.
+[[nodiscard]] std::string joined(const std::vector<std::string>& names)
+{
+    std::string text;
+    for (const std::string& name : names) {
+        if (!text.empty()) text += ", ";
+        text += name;
+    }
+    return text;
+}
+
+} // namespace
 
 IntrinsicToolSet::~IntrinsicToolSet()
 {
@@ -87,6 +104,64 @@ IntrinsicToolSet::ToolHandle IntrinsicToolSet::dispatch(
 std::size_t IntrinsicToolSet::tool_count() const noexcept
 {
     return _tools.size();
+}
+
+std::vector<IntrinsicToolSet::CapabilityGroup> IntrinsicToolSet::capability_groups() const
+{
+    std::vector<CapabilityGroup> groups;
+    groups.reserve(_groups.size());
+    for (const DeclaredGroup& group : _groups) {
+        // Looked up now rather than remembered at declaration time: a set that
+        // registers more tools afterwards is answered about the set it has.
+        CapabilityGroup status;
+        status.name = group.name;
+        for (const std::string& tool : group.tools) {
+            if (_lookup_table.contains(tool)) {
+                status.registered.push_back(tool);
+            } else {
+                status.missing.push_back(tool);
+            }
+        }
+        groups.push_back(std::move(status));
+    }
+    return groups;
+}
+
+void IntrinsicToolSet::declare_capability_group(
+    std::string_view group, std::vector<std::string_view> tools)
+{
+    DeclaredGroup declared;
+    declared.name = std::string(group);
+    declared.tools.reserve(tools.size());
+    for (const std::string_view tool : tools) {
+        declared.tools.emplace_back(tool);
+    }
+    _groups.push_back(std::move(declared));
+
+    // Report at declaration time, so the line lands in the log of the
+    // construction that produced the state rather than whenever a host happens
+    // to ask. What it says is deliberately concrete — which family, how much of
+    // it, and by name what is gone — because the alternative is an operator
+    // reading six per-tool lines and working out the shape themselves.
+    const std::vector<CapabilityGroup> groups = capability_groups();
+    const CapabilityGroup& status = groups.back();
+    if (status.missing.empty()) return;
+
+    const std::string missing = joined(status.missing);
+    if (status.registered.empty()) {
+        logging::Logger::error(std::format(
+            "toolset \"{}\": capability group \"{}\" registered NONE of its {} "
+            "tools (missing {}): the whole family is absent, so a model is "
+            "offered none of it", name(), status.name, status.missing.size(),
+            missing));
+        return;
+    }
+    logging::Logger::error(std::format(
+        "toolset \"{}\": capability group \"{}\" is DEGRADED — {} of its {} "
+        "tools registered, missing {}; the rest stay routable, which is a "
+        "partial capability rather than none", name(), status.name,
+        status.registered.size(),
+        status.registered.size() + status.missing.size(), missing));
 }
 
 } // namespace tools::intrinsic

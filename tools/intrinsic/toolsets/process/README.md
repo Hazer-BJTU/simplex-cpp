@@ -585,14 +585,35 @@ target's sources in `CMakeLists.txt`: an IDE shows them with the package, and
 since nothing is compiled from them, editing one takes effect on the next run
 without a rebuild.
 
+The six are also declared to be one **capability group** ("process",
+`declare_capability_group()` in `src/toolset.cpp`), because a tool that fails to
+arrive on its own costs itself and no more is the right rule for one broken file
+but not a safe *state* for a family: five of the six leaves a model able to
+start a process it cannot end. So a partial registration is one error line —
+the group, the count, every missing member — and `capability_groups()` answers
+the same for a host that wants to act on it, while a package carrying none of
+the files is reported as the family being absent rather than as six failures.
+
 Which leaves a file free to claim something the implementation does not do, so
 `test_tools` closes that gap: for each of the six tools it loads the file,
 asserts the catalogue entry is that document verbatim, and asks the
 implementation the same questions the document answers — every property
 validated with the declared kind, every declared default the value really
-settled, the declared enum members and minimum enforced, the declared `required`
+settled, every value clause probed from **both** sides (each declared enum
+member accepted and one outside refused, the declared minimum accepted and one
+below it refused, a string of exactly `minLength` accepted and a shorter one
+refused, an element of the declared type accepted and one of another refused),
+each `anyOf` alternative a call the tool accepts, the required-only call refused
+whenever the declaration states a cross-property rule, the declared `required`
 really required, and the restated `type`/`security` pair the pair the tool
 declares. A declaration that stops describing its tool fails the suite.
+
+One rule deliberately lives on the implementation side of that line:
+`environment` entries must be `"KEY=VALUE"`, which no keyword in the vocabulary
+expresses (`items` says only what an element's *type* is). The file states it in
+prose, `tools.cpp` enforces it, and `test_tools` pins it as an **unstated
+rule** — an element the schema alone would allow and the implementation refuses
+— rather than passing over it.
 
 ### Deliberately absent
 

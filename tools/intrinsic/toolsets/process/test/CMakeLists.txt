@@ -25,11 +25,24 @@
 #                       catalogue entry is that document verbatim, and asks the
 #                       implementation the same questions the document answers
 #                       — every property validated with the declared kind, every
-#                       declared default the value really settled, the declared
-#                       enum members and minimum enforced, the declared
-#                       `required` really required, and the type/security pair
-#                       restated in the file (which the loader deliberately
-#                       ignores) the pair the tool declares.
+#                       declared default the value really settled on every call
+#                       the declaration allows, every value clause probed from
+#                       BOTH sides (each enum member accepted and one outside
+#                       refused, `minimum` accepted and `minimum - 1` refused,
+#                       a string of exactly `minLength` accepted and a shorter
+#                       one refused, an element of the declared type accepted
+#                       and one of another refused), each `anyOf` alternative a
+#                       call the tool accepts, the required-only call refused
+#                       whenever the file states a cross-property rule, the
+#                       declared `required` really required, and the
+#                       type/security pair restated in the file (which the
+#                       loader deliberately ignores) the pair the tool declares.
+#                       The one argument rule the vocabulary cannot express
+#                       (`environment` entries are "KEY=VALUE") is pinned as an
+#                       unstated rule instead of passing over it. The suite also
+#                       builds the set over a package missing one declaration,
+#                       and over one carrying none, to assert what a degraded
+#                       capability group reports.
 #   test_registry_e2e   the composition the agent loop actually uses:
 #                       ToolRegistry + ProcessToolSet + ProcessSessionStore +
 #                       its own bus + real children, on a context with SEVERAL

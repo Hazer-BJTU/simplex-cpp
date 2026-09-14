@@ -23,6 +23,14 @@
 // rather than an executor is also what makes the set testable: a test builds a
 // store on its own io_context and sees exactly the sessions its calls made.
 //
+// THE SIX ARE ONE CAPABILITY FAMILY, and the set says so: it declares the group
+// "process" after registering them, so a package that lost one declaration is
+// reported as a degraded family rather than as five healthy tools and one odd
+// log line (tools/intrinsic/toolset_base.hpp explains what a group is for and
+// why registration stays per tool). A host that wants to act on it reads
+// capability_groups(); one that only logs gets a single error naming the group
+// and each missing tool.
+//
 
 #include <memory>
 #include <string_view>

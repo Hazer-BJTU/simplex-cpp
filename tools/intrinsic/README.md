@@ -64,10 +64,19 @@ and argument schema are the whole of what a model is told about it, and they are
 a document rather than code: one YAML file per tool, kept in the toolset's own
 package next to the sources it describes. `load_tool_declaration()` reads and
 validates one — a mapping, with a non-empty `name`, a non-empty `description`
-and an object-typed `argument_schema` whose `required` names only declared
-properties — and `try_load_tool_declaration()` is the form a tool uses, which
-reports the failure through the log and answers nothing so the tool is left
-unnamed and its set skips it.
+and an object-typed `argument_schema` — and `try_load_tool_declaration()` is the
+form a tool uses, which reports the failure through the log and answers nothing
+so the tool is left unnamed and its set skips it.
+
+The schema's vocabulary is **closed**, because that subtree goes to a provider
+verbatim: `type` (`string` / `boolean` / `integer` / `array`, the kinds the
+argument accessors read), a `description` on every property, `default`, `enum`,
+`minimum`, `minLength`, `items`, and a top-level `anyOf` for a rule that spans
+properties. Each is checked against the kind it applies to and against the
+others — an enum member below the declared minimum, a default outside its own
+enum, an array without `items` are all refusals — and so is any keyword the
+loader does not know, by name. A declaration that would reach a model as a
+contract nothing here could check fails at load time instead.
 
 What the loader does **not** read is as much a part of the design as what it
 does: an `InvokeType`/`InvokeSecurity` pair may be written in the file for the
@@ -90,6 +99,14 @@ model reads, lookup is what routing needs — the same split `ToolRegistry` make
 one level up. A tool whose `build()` refuses, or whose name is empty or already
 taken, is left out of both, so the catalogue never promises what routing cannot
 answer.
+
+A tool that does not arrive costs itself and no more — but a family of tools can
+be left half-offered that way, and *that* is a state worth naming. A set may
+therefore declare its **capability groups** (`declare_capability_group()`): a
+group that came out partial is one error line naming the group, the count and
+every missing member, and `capability_groups()` answers the same thing for a
+host that wants to act on it. Registration itself stays per tool — dropping the
+tools that did arrive is the host's decision, not this class's.
 
 It deliberately does **not** override `prepare()` / `execute()`. Those carry the
 invocation layer's checkpoint sequence and failure contracts (`prepare()` throws
@@ -133,10 +150,16 @@ declarations, and whatever state they share.
    there.
 4. Test the pair: load each declaration and ask the implementation the same
    questions the document answers (the declared kinds, defaults, enum members,
-   minimums and `required`), so the file cannot rot away from the tool. That
+   minimums, minLengths, element types, `anyOf` alternatives and `required`) —
+   each clause from BOTH sides, so "the implementation restricts something here"
+   is never mistaken for "the declaration and the implementation agree". That
    check is generic over a toolset, and `toolsets/process/test/test_tools.cpp`
    is the worked example.
-5. `add_subdirectory(toolsets/<name>)` in this directory's `CMakeLists.txt`;
+5. If the tools are a capability family — offered together or not at all — say so
+   with `declare_capability_group()` after `register_tools()`, so a package that
+   lost one declaration is reported as a degraded family rather than as healthy
+   tools with one odd log line.
+6. `add_subdirectory(toolsets/<name>)` in this directory's `CMakeLists.txt`;
    link `tools_intrinsic`, and build SHARED for the ABI reason below.
 
 ## Why the libraries are SHARED
