@@ -39,9 +39,10 @@
 # declaration file is a document (comments, block scalars, anchors), and
 # yamlconfig/yaml_json.hpp is the project's one YAML boundary. It is linked
 # PRIVATE because it is an implementation detail of the loader — no public
-# header of this library mentions yamlconfig or yaml-cpp, so nothing that links
-# this library inherits either, and the vendored yaml-cpp archive is linked into
-# this shared object alone.
+# header of this library mentions yamlconfig — and because yamlconfig is itself
+# a SHARED library (utils/yamlconfig), this target depends on libyamlconfig.so
+# rather than compiling yaml-cpp into itself. That is what keeps a process with
+# several such consumers down to one copy of the YAML reader.
 #
 # SHARED, following docs/abi-context.md: these are classes a host and a dlopened
 # plugin may both subclass or catch across the boundary, so their typeinfo,

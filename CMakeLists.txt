@@ -142,9 +142,10 @@ option(BUILD_TESTS "Build unit tests" ON)
 #     plugin contract in the tree (the LLM plugin ABI version today).
 #   - utils early: the small shared utilities package. Its logging/ member
 #     exports `logging_lib` (endpoint's public headers use logging::Logger);
-#     its yamlconfig/ member is the header-only YAML->JSON config bridge
-#     (yamlconfig_iface) feeding JSON-shaped config consumers such as the llm
-#     model plugins' config JSON.
+#     its yamlconfig/ member is the YAML->JSON config bridge
+#     (`yamlconfig_lib` + `yamlconfig_iface`) feeding JSON-shaped config
+#     consumers such as the llm model plugins' config JSON and the tools'
+#     declaration files.
 #
 # The legacy language-index domain — languages/ (per-language analyzer
 # plugins) and indextools/ (their host library) — is NOT wired in anymore:
