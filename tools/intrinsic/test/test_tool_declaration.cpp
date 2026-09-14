@@ -136,6 +136,7 @@ argument_schema:
       type: integer
       minimum: 0
       default: 5000
+      description: "How long to wait for the program before letting it continue"
 )");
 
     const tools::intrinsic::ToolDeclaration declaration =
@@ -174,9 +175,11 @@ argument_schema:
       type: string
       enum: [stdout, stderr, both]
       default: both
+      description: "Which stream to read"
     full:
       type: boolean
       default: false
+      description: "Whether to return everything captured so far"
 )");
 
     // The whole point of the file: this subtree goes on the wire as it stands
@@ -194,8 +197,13 @@ argument_schema:
               nlohmann::json{{"type", "string"},
                              {"enum", nlohmann::json::array(
                                           {"stdout", "stderr", "both"})},
-                             {"default", "both"}}},
-             {"full", nlohmann::json{{"type", "boolean"}, {"default", false}}},
+                             {"default", "both"},
+                             {"description", "Which stream to read"}}},
+             {"full",
+              nlohmann::json{
+                  {"type", "boolean"},
+                  {"default", false},
+                  {"description", "Whether to return everything captured so far"}}},
          }},
     };
 
@@ -241,7 +249,609 @@ argument_schema:
     BOOST_TEST(declaration.argument_schema.at("required").empty());
 }
 
+BOOST_AUTO_TEST_CASE(the_whole_vocabulary_arrives_verbatim)
+{
+    Scratch scratch;
+    // Every keyword the loader knows, in one document: the clauses a property
+    // may carry, an array's elements, and the alternatives a call has to
+    // satisfy. This is the shape the process toolset's cross-check leans on — a
+    // schema whose clauses are worth holding against the implementation is
+    // exactly one the loader had to understand first.
+    const fs::path file = scratch.write("vocabulary.yaml", R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      minLength: 1
+      description: "The session"
+    stream:
+      type: string
+      enum: [stdout, stderr]
+      default: stdout
+      description: "Which stream"
+    timeout_milliseconds:
+      type: integer
+      minimum: 0
+      default: 30000
+      description: "How long"
+    arguments:
+      type: array
+      items:
+        type: string
+      default: []
+      description: "The arguments"
+    input:
+      type: string
+      default: ""
+      description: "Text to send"
+    close_input:
+      type: boolean
+      default: false
+      description: "Whether to close"
+  anyOf:
+    - required: [input]
+      properties:
+        input:
+          minLength: 1
+    - required: [close_input]
+      properties:
+        close_input:
+          enum: [true]
+)");
+
+    // The loader CHECKED every word below and changed none of them: what a
+    // provider receives is what the file says.
+    const nlohmann::json schema =
+        load_tool_declaration(file).argument_schema;
+    const nlohmann::json& properties = schema.at("properties");
+    BOOST_TEST(properties.at("session_id").at("minLength") == 1);
+    BOOST_TEST(properties.at("stream").at("enum")
+               == nlohmann::json::array({"stdout", "stderr"}));
+    BOOST_TEST(properties.at("stream").at("default") == "stdout");
+    BOOST_TEST(properties.at("timeout_milliseconds").at("minimum") == 0);
+    BOOST_TEST(properties.at("arguments").at("items").at("type") == "string");
+    BOOST_TEST(properties.at("arguments").at("default")
+               == nlohmann::json::array());
+    BOOST_TEST(schema.at("anyOf").size() == 2u);
+    BOOST_TEST(schema.at("anyOf").at(0).at("required")
+               == nlohmann::json::array({"input"}));
+    BOOST_TEST(
+        schema.at("anyOf").at(0).at("properties").at("input").at("minLength")
+        == 1);
+    BOOST_TEST(schema.at("anyOf").at(1).at("properties").at("close_input")
+                   .at("enum")
+               == nlohmann::json::array({true}));
+}
+
 // ---- what a broken one gets --------------------------------------------------
+//
+// The vocabulary is closed on purpose (tool_declaration.hpp): `argument_schema`
+// goes on the wire verbatim, so a keyword this loader let through unread would
+// be one nothing downstream could notice was wrong. Every case below is a
+// document that would otherwise reach a model as the contract for a call.
+
+BOOST_AUTO_TEST_CASE(a_property_that_is_not_documented_is_refused)
+{
+    Scratch scratch;
+    // The description is the whole of what a model is told about a property, so
+    // a property without one is a field it has to guess at.
+    const std::string missing = refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: string
+)");
+    BOOST_TEST(mentions(missing,
+                        "/argument_schema/properties/executable/description"));
+    BOOST_TEST(mentions(missing, "is missing"));
+
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: string
+      description: ""
+)"), "must not be empty"));
+}
+
+BOOST_AUTO_TEST_CASE(a_type_outside_the_vocabulary_is_refused)
+{
+    Scratch scratch;
+    // The typo this whole layer exists for: `stirng` would reach a provider as
+    // a schema nobody can act on, and the implementation would be validating
+    // the property against a rule the file never stated.
+    const std::string typo = refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: stirng
+      description: the program to run
+)");
+    BOOST_TEST(mentions(typo, "/argument_schema/properties/executable/type"));
+    BOOST_TEST(mentions(typo, "\"stirng\""));
+    BOOST_TEST(mentions(typo, "string, boolean, integer, array"));
+
+    // No type at all is the same failure one step earlier.
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      description: the program to run
+)"), "must declare its type"));
+
+    // A type that is not even a string, and the two kinds this tree has no
+    // accessor for — nothing here reads a float or a nested object.
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: 7
+      description: the program to run
+)"), "must be a string"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: number
+      description: the program to run
+)"), "\"number\""));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: object
+      description: the program to run
+)"), "\"object\""));
+}
+
+BOOST_AUTO_TEST_CASE(a_keyword_outside_the_vocabulary_is_refused)
+{
+    Scratch scratch;
+    // A keyword the loader does not know is one it cannot check, and one a
+    // provider would be handed as part of the contract while the implementation
+    // ignored it. `pattern` and `additionalProperties` are the two an author is
+    // most likely to reach for.
+    const std::string pattern = refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: string
+      description: the program to run
+      pattern: "^[a-z]+$"
+)");
+    BOOST_TEST(mentions(pattern,
+                        "/argument_schema/properties/executable/pattern"));
+    BOOST_TEST(mentions(pattern, "not part of the argument-schema vocabulary"));
+
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  additionalProperties: false
+  properties: {}
+)"), "/argument_schema/additionalProperties"));
+}
+
+BOOST_AUTO_TEST_CASE(clauses_that_disagree_with_their_type_are_refused)
+{
+    Scratch scratch;
+    // An enum is a list of values of the declared kind ...
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    stream:
+      type: string
+      enum: stdout
+      description: which stream
+)"), "must be a non-empty array"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    stream:
+      type: string
+      enum: []
+      description: which stream
+)"), "must be a non-empty array"));
+    const std::string member = refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    stream:
+      type: string
+      enum: [stdout, 3]
+      description: which stream
+)");
+    BOOST_TEST(mentions(member, "/argument_schema/properties/stream/enum/1"));
+    BOOST_TEST(mentions(member, "must be a string"));
+
+    // ... a default is a value the declaration itself would let a caller send,
+    // which the type, the enum and the minimum all have a say in ...
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    full:
+      type: boolean
+      default: "false"
+      description: whether to read everything
+)"), "must be a boolean"));
+    const std::string outside = refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    stream:
+      type: string
+      enum: [stdout, stderr]
+      default: both
+      description: which stream
+)");
+    BOOST_TEST(mentions(outside, "/argument_schema/properties/stream/default"));
+    BOOST_TEST(mentions(outside, "not one of the values"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    timeout_milliseconds:
+      type: integer
+      minimum: 0
+      default: -1
+      description: how long to wait
+)"), "is below the minimum"));
+
+    // ... and the clauses are held against each other, not only against the
+    // type: an enum member its own minimum forbids is a document two readers
+    // would take two ways.
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    count:
+      type: integer
+      minimum: 3
+      enum: [0, 5]
+      description: how many
+)"), "is below the minimum"));
+
+    // A clause on the wrong kind says nothing about any call, so it is refused
+    // rather than passed on as decoration.
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: string
+      minimum: 0
+      description: the program to run
+)"), "minimum applies to an integer property"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    count:
+      type: integer
+      minLength: 2
+      description: how many
+)"), "minLength applies to a string property"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    count:
+      type: integer
+      minimum: 0.5
+      description: how many
+)"), "minimum must be an integer"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: string
+      minLength: -1
+      description: the program to run
+)"), "minLength must not be negative"));
+}
+
+BOOST_AUTO_TEST_CASE(an_array_must_declare_string_elements)
+{
+    Scratch scratch;
+    // An array with no element rule is one a model can only guess about ...
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    arguments:
+      type: array
+      description: the arguments
+)"), "must declare what its elements are"));
+
+    // ... and the one array accessor in this tree reads strings, so anything
+    // else is a rule nothing here could apply.
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    arguments:
+      type: array
+      items: nonsense
+      description: the arguments
+)"), "items must be a mapping"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    arguments:
+      type: array
+      items:
+        type: integer
+      description: the arguments
+)"), "elements must be strings"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    arguments:
+      type: array
+      items:
+        type: string
+        minLength: 1
+      description: the arguments
+)"), "not something this project declares about an array's elements"));
+
+    // And `items` on something that is not an array describes nothing.
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    executable:
+      type: string
+      items:
+        type: string
+      description: the program to run
+)"), "only an array property takes items"));
+}
+
+BOOST_AUTO_TEST_CASE(an_any_of_branch_must_narrow_the_schema)
+{
+    Scratch scratch;
+    // A branch is an alternative about the CALL, so it can only require
+    // properties the schema declares ...
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: the session
+  anyOf: stdout
+)"), "anyOf must be a non-empty array"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: the session
+  anyOf: []
+)"), "anyOf must be a non-empty array"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: the session
+  anyOf: [stdout, stderr]
+)"), "must be a mapping"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: the session
+  anyOf:
+    - required: [nope]
+)"), "no such property is declared"));
+
+    // ... it must actually require something new: a branch satisfied by every
+    // call the schema already allows would make the anyOf say nothing, and the
+    // tests lean on that rule when they ask whether the required-only call is
+    // valid.
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      description: the session
+  anyOf:
+    - required: [session_id]
+)"), "must require a property the schema does not already require"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: the session
+  anyOf:
+    - properties:
+        session_id:
+          minLength: 1
+)"), "must require at least one property"));
+
+    // What a branch states about a property is a NARROWING of the property the
+    // schema declares: it cannot introduce one, it cannot restate the type or
+    // the description, and it has to say something about the values.
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      description: the session
+    input:
+      type: string
+      description: the text to send
+  anyOf:
+    - required: [input]
+      properties:
+        nope:
+          minLength: 1
+)"), "it does not introduce one"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      description: the session
+    input:
+      type: string
+      description: the text to send
+  anyOf:
+    - required: [input]
+      properties:
+        input:
+          type: string
+)"), "is not something an alternative may narrow"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      description: the session
+    input:
+      type: string
+      description: the text to send
+  anyOf:
+    - required: [input]
+      properties:
+        input: {}
+)"), "a narrowing must state one of"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      description: the session
+    count:
+      type: integer
+      description: how many
+  anyOf:
+    - required: [count]
+      properties:
+        count:
+          minLength: 1
+)"), "minLength applies to a string property"));
+
+    // A branch is a mapping with two keys, and nothing else.
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: the session
+  anyOf:
+    - description: an alternative written as prose
+      required: [session_id]
+)"), "is not something an alternative may state"));
+}
+
 
 BOOST_AUTO_TEST_CASE(a_file_that_is_not_there_is_refused)
 {
@@ -409,6 +1019,7 @@ argument_schema:
   properties:
     command:
       type: string
+      description: the property that IS declared
 )");
     BOOST_TEST(mentions(message, "/argument_schema/required/0"));
     BOOST_TEST(mentions(message, "\"executable\" is required"));

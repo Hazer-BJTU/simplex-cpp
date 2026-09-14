@@ -22,6 +22,7 @@ argument_schema:
   properties:
     session_id:
       type: string
+      minLength: 1
       description: >-
         The session to end, as returned by spawn_process
     graceful:

@@ -7,7 +7,10 @@
 #
 # The tests pin the two together (test_tools.cpp): every property here must be
 # one the implementation validates, every `default` must be the value it
-# settles, and the type/security pair below must be the one it declares.
+# settles, every clause a property states (its type, enum, minimum, minLength,
+# items) must be the rule the implementation applies, every `anyOf` branch must
+# be a call it accepts, and the type/security pair below must be the one it
+# declares.
 
 name: spawn_process
 description: >-
@@ -37,6 +40,7 @@ argument_schema:
   properties:
     executable:
       type: string
+      minLength: 1
       description: >-
         Program to run: a name resolved through PATH ('grep') or a path
         ('/usr/bin/grep')
@@ -54,9 +58,11 @@ argument_schema:
         Short label for this process, echoed back in every report about it
     working_directory:
       type: string
-      # No default on purpose: absent means "inherit the host's working
-      # directory", and there is no path that could stand for that. An empty
-      # string is refused rather than read as absent.
+      # An empty string is refused rather than read as absent (spawn cannot
+      # start a child in ""), which is what minLength states. No default on
+      # purpose: absent means "inherit the host's working directory", and there
+      # is no path that could stand for that.
+      minLength: 1
       description: >-
         Directory to start the process in. Defaults to the host's own working
         directory
@@ -65,6 +71,12 @@ argument_schema:
       items:
         type: string
       default: []
+      # The one rule this file cannot state: an element must be "KEY=VALUE"
+      # with a non-empty key, which no keyword in the vocabulary expresses
+      # (`items` says only what an element's TYPE is). The implementation owns
+      # it (tools.cpp), the description below states it for the model, and
+      # test_tools.cpp pins it as an implementation rule the declaration
+      # deliberately does not claim.
       description: >-
         Extra environment entries as "KEY=VALUE" strings, merged over the
         inherited environment by key

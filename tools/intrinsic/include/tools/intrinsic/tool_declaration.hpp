@@ -36,6 +36,51 @@
 // is the reason the file is YAML rather than a C++ builder chain — this is a
 // document, and it reads like one.
 //
+// WHAT THE SCHEMA MAY SAY, AND WHY IT IS A CLOSED LIST
+// ----------------------------------------------------
+// Because that subtree leaves this process verbatim, every keyword in it is one
+// this loader CHECKS: a keyword it let through unread would be one nothing
+// downstream could notice was wrong, shown to a model as the contract for a
+// call while the code that really decides whether the call runs — the accessors
+// in tool_base.hpp, called from ensure_arguments() — knew nothing about it. So
+// the vocabulary is exactly what this tree's tools can express:
+//
+//   argument_schema  type: object, properties, required, anyOf
+//   a property       type (string | boolean | integer | array), description,
+//                    default, enum, minimum, minLength, items
+//   items            type: string — the only array accessor here reads strings
+//   an anyOf branch  required, properties (whose entries may narrow a property
+//                    with enum, minimum or minLength)
+//
+// and everything else is refused BY NAME, with a message that says what the
+// vocabulary is. Adding a keyword is then a deliberate act: the accessor or the
+// implementation rule it describes comes first, and the loader's check for it
+// second.
+//
+// `anyOf` is how a declaration states a rule that spans properties, which no
+// per-property clause can:
+//
+//   argument_schema:
+//     type: object
+//     required: [session_id]
+//     properties:
+//       session_id: {type: string, minLength: 1, description: ...}
+//       input:      {type: string, default: "", description: ...}
+//       close_input: {type: boolean, default: false, description: ...}
+//     anyOf:                      # send something, or close the input
+//       - required: [input]
+//         properties: {input: {minLength: 1}}
+//       - required: [close_input]
+//         properties: {close_input: {enum: [true]}}
+//
+// Every branch must require at least one property `required` does not already
+// name — one that requires nothing (or only what the schema requires anyway)
+// would be satisfied by every call the schema allows and would say nothing.
+// With that rule in place, a call naming only the required properties is
+// INVALID whenever a declaration carries `anyOf`, which is what makes the
+// cross-check in the process toolset's suite able to assert the refusal instead
+// of padding the call until it passes (toolsets/process/test/test_tools.cpp).
+//
 // WHAT IS DELIBERATELY NOT LOADED
 // -------------------------------
 // `type` and `security` (the InvokeType/InvokeSecurity pair a call declares)
@@ -43,7 +88,9 @@
 // completely: they are behaviour, they belong to the tool's write_attributes(),
 // and a declaration file that quietly overrode a security decision would be a
 // way to change policy without touching code or its review. The same goes for
-// every other key: what this header does not name, it does not read.
+// every other key at the document's top level: what this header does not name,
+// it does not read. (Inside `argument_schema` the rule is the opposite — see
+// above — because that is the part that goes on the wire.)
 //
 // That leaves a file able to state something the implementation does not do,
 // which is why a test pins the two together: the process toolset's suite loads
@@ -119,9 +166,14 @@ public:
  *        path (the process toolset's schemas.hpp is that decision, made once).
  * @throws ToolDeclarationError if the file cannot be read, is not YAML, is not
  *         a mapping, or does not carry a non-empty `name`, a non-empty
- *         `description` and an object-typed `argument_schema` whose `required`
- *         names only declared properties. `type`/`security` and any other key
- *         are not read at all (see the file header).
+ *         `description` and an `argument_schema` that is an object schema using
+ *         this header's vocabulary correctly — a supported `type` on every
+ *         property, a description on every property, a `default` (and an
+ *         `enum`) that agrees with the type and the other clauses, `items` on
+ *         every array, a `required` naming only declared properties, and
+ *         `anyOf` branches that narrow rather than introduce. `type`/`security`
+ *         and any other top-level key are not read at all (see the file
+ *         header).
  */
 [[nodiscard]] ToolDeclaration load_tool_declaration(
     const std::filesystem::path& file);

@@ -26,6 +26,7 @@ argument_schema:
   properties:
     session_id:
       type: string
+      minLength: 1
       description: >-
         The session to wait for, as returned by spawn_process
     timeout_milliseconds:
