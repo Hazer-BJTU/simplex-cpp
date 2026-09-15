@@ -5,14 +5,14 @@
 // ===================================================
 //
 // What a host registers with its ToolRegistry to give a model process
-// management: one ToolSet over the six tools in tools.hpp, sharing one
+// management: one ToolSet over the five tools in tools.hpp, sharing one
 // ProcessSessionStore.
 //
 // Almost nothing is left to do here. IntrinsicToolSet
 // (tools/intrinsic/toolset_base.hpp) already carries the ordered catalogue,
 // the routing table, and the tools' build/release lifecycle, and the ToolSet
 // base carries prepare()/execute() with the module's checkpoint sequence and
-// failure contracts. So this class is its name, its six tools, and the store
+// failure contracts. So this class is its name, its five tools, and the store
 // they share.
 //
 // THE STORE IS SHARED, AND OUTLIVES THE SET IF IT HAS TO. It is taken as a
@@ -32,12 +32,12 @@
 // and each missing tool.
 //
 // THE SET ALSO CARRIES A SKILL — schemas/skill.yaml, the prose about using the
-// six together, which is the one thing no per-tool description can say. The
+// five together, which is the one thing no per-tool description can say. The
 // constructor loads it (load_skill()), a host reads it back through skill() and
 // puts it in front of the model with inject_skill(); the registry-level
 // shortcut is ToolRegistry::inject_skills(). It is optional in the strong
 // sense: a file that cannot be read costs the guidance and nothing else, and
-// the six tools stay routable (tools/tool_skill.hpp).
+// the five tools stay routable (tools/tool_skill.hpp).
 //
 
 #include <memory>
@@ -50,7 +50,7 @@
 namespace tools::intrinsic {
 
 /**
- * The process-management tool set: six tools over one session store.
+ * The process-management tool set: five tools over one session store.
  *
  * Registered with a ToolRegistry by the host that owns it
  * (`registry.add(std::make_shared<ProcessToolSet>(store))`).

@@ -28,26 +28,24 @@ ProcessToolSet::ProcessToolSet(std::shared_ptr<ProcessSessionStore> store,
         std::make_shared<PollProcessesTool>(_store, bus),
         std::make_shared<ReadProcessOutputTool>(_store, bus),
         std::make_shared<WaitProcessTool>(_store, bus),
-        std::make_shared<WriteProcessInputTool>(_store, bus),
-        std::make_shared<KillProcessTool>(_store, bus),
+        std::make_shared<SendProcessTool>(_store, bus),
     });
 
-    // The six are one capability family, and what makes them one is the round
+    // The five are one capability family, and what makes them one is the round
     // trip through a session rather than the file layout: every tool here is
     // either the way an id comes into existence (spawn_process) or something
-    // done with one — so a model offered spawn_process WITHOUT kill_process can
+    // done with one — so a model offered spawn_process WITHOUT send_process can
     // start a process it cannot end, while one offered neither has simply not
     // been given this family. Declaring the group is what makes that difference
     // visible: a partial registration becomes one error line and one
-    // capability_groups() answer, instead of six per-tool lines an operator has
+    // capability_groups() answer, instead of five per-tool lines an operator has
     // to assemble (tools/intrinsic/toolset_base.hpp).
     declare_capability_group("process", {
         tool_names::kSpawn,
         tool_names::kPoll,
         tool_names::kRead,
         tool_names::kWait,
-        tool_names::kWrite,
-        tool_names::kKill,
+        tool_names::kSend,
     });
 
     // The set's third job, after its tools and its group: the guidance a model

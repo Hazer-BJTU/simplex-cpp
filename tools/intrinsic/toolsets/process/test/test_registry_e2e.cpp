@@ -424,11 +424,11 @@ BOOST_AUTO_TEST_CASE(the_registry_answers_the_settled_call_it_ran)
 
     const std::vector<model_io::InvokeReturn> records =
         f.batch(std::vector<model_io::InvokeQuery>{
-            call_for(std::string(tool_names::kWrite),
+            call_for(std::string(tool_names::kSend),
                      nlohmann::json{{"session_id", id},
                                     {"input", "hello\n"},
                                     {"close_input", true}},
-                     "call_write"),
+                     "call_send"),
             call_for(std::string(tool_names::kRead),
                      nlohmann::json{{"session_id", id}, {"full", true}},
                      "call_read"),
@@ -437,10 +437,10 @@ BOOST_AUTO_TEST_CASE(the_registry_answers_the_settled_call_it_ran)
 
     // Records are filed by POSITION: results[i] answers queries[i], whatever
     // each one settled to.
-    BOOST_TEST(records[0].query.id == std::string("call_write"));
+    BOOST_TEST(records[0].query.id == std::string("call_send"));
     BOOST_TEST(records[1].query.id == std::string("call_read"));
 
-    // The write settled as the serial, confirmed call it is...
+    // The send settled as the serial, confirmed call it is...
     BOOST_CHECK(records[0].query.type == model_io::InvokeType::SerialWrite);
     BOOST_CHECK(records[0].query.security ==
                 model_io::InvokeSecurity::RequireConfirm);
@@ -450,11 +450,13 @@ BOOST_AUTO_TEST_CASE(the_registry_answers_the_settled_call_it_ran)
     BOOST_TEST(records[1].query.arguments ==
                nlohmann::json({{"session_id", id}, {"full", true},
                                {"stream", "both"}, {"release", false}}));
-    // The write's own defaults are in its settled query too: `close_input` was
-    // named, `input` was named, and nothing was invented.
+    // The send's own defaults are in its settled query too: `input` and
+    // `close_input` were named, `signal` was not — and settling it wrote the
+    // empty word in, so the record shows the call that ran rather than the one
+    // that was sent.
     BOOST_TEST(records[0].query.arguments ==
                nlohmann::json({{"session_id", id}, {"input", "hello\n"},
-                               {"close_input", true}}));
+                               {"close_input", true}, {"signal", ""}}));
 
     // And the human (here: the fixture's handler) was asked about EXACTLY the
     // call that ran. Two calls in this case ask — the spawn that made the
@@ -516,7 +518,7 @@ BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
     const std::string id = f.spawn("cat", {});
 
     BOOST_TEST(!tools::is_error(
-        f.call(call_for(std::string(tool_names::kWrite),
+        f.call(call_for(std::string(tool_names::kSend),
                         nlohmann::json{{"session_id", id},
                                        {"input", "through the registry\n"},
                                        {"close_input", true}}))));
@@ -551,15 +553,15 @@ BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
     BOOST_TEST(polled.field("retained_session_count") == "0");
 }
 
-BOOST_AUTO_TEST_CASE(a_graceful_kill_ends_a_child_and_leaves_it_readable)
+BOOST_AUTO_TEST_CASE(a_graceful_signal_ends_a_child_and_leaves_it_readable)
 {
     Fixture f;
     const std::string id = f.spawn("sleep", {"30"});
 
     const ResultText killed = result_of(f.call(call_for(
-        std::string(tool_names::kKill),
-        nlohmann::json{{"session_id", id}, {"graceful", true}}, "call_kill")));
-    BOOST_TEST(killed.field("graceful") == "true");
+        std::string(tool_names::kSend),
+        nlohmann::json{{"session_id", id}, {"signal", "term"}}, "call_send")));
+    BOOST_TEST(killed.field("signal") == "term");
     BOOST_TEST(killed.field("signalled") == "true");
 
     const ResultText waited = result_of(f.call(call_for(
@@ -567,9 +569,9 @@ BOOST_AUTO_TEST_CASE(a_graceful_kill_ends_a_child_and_leaves_it_readable)
         nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
     BOOST_TEST(waited.field("exited") == "true");
     // sleep does not catch SIGTERM, so it dies of the signal — the difference
-    // between `graceful` and the default, which reports 9.
+    // between "term" and "kill", which reports 9.
     BOOST_TEST(waited.field("exit_code") == "15");
-    // The session survives the kill, so its output is still collectable.
+    // The session survives the signal, so its output is still collectable.
     BOOST_TEST(!tools::is_error(f.call(call_for(
         std::string(tool_names::kRead),
         nlohmann::json{{"session_id", id}, {"full", true}}))));
@@ -593,7 +595,8 @@ BOOST_AUTO_TEST_CASE(a_zero_window_hands_back_a_live_session)
     BOOST_TEST(!polled.records()[1].has("new_stdout"));
 
     const ResultText killed = result_of(f.call(call_for(
-        std::string(tool_names::kKill), nlohmann::json{{"session_id", id}})));
+        std::string(tool_names::kSend),
+        nlohmann::json{{"session_id", id}, {"signal", "kill"}})));
     BOOST_TEST(killed.field("signalled") == "true");
     const ResultText waited = result_of(f.call(call_for(
         std::string(tool_names::kWait),
@@ -819,8 +822,9 @@ BOOST_AUTO_TEST_CASE(kill_wait_and_read_in_one_batch)
 
     const std::vector<model_io::InvokeReturn> records =
         f.batch(std::vector<model_io::InvokeQuery>{
-            call_for(std::string(tool_names::kKill),
-                     nlohmann::json{{"session_id", id}}, "call_kill"),
+            call_for(std::string(tool_names::kSend),
+                     nlohmann::json{{"session_id", id}, {"signal", "kill"}},
+                     "call_send"),
             call_for(std::string(tool_names::kWait),
                      nlohmann::json{{"session_id", id},
                                     {"timeout_milliseconds", 5000}},
@@ -903,13 +907,13 @@ BOOST_AUTO_TEST_CASE(stdin_writes_and_a_close_keep_their_order_in_one_batch)
 
     const std::vector<model_io::InvokeReturn> records =
         f.batch(std::vector<model_io::InvokeQuery>{
-            call_for(std::string(tool_names::kWrite),
+            call_for(std::string(tool_names::kSend),
                      nlohmann::json{{"session_id", id}, {"input", "first\n"}},
-                     "call_write_a"),
-            call_for(std::string(tool_names::kWrite),
+                     "call_send_a"),
+            call_for(std::string(tool_names::kSend),
                      nlohmann::json{{"session_id", id}, {"input", "second\n"},
                                     {"close_input", true}},
-                     "call_write_b"),
+                     "call_send_b"),
         });
     BOOST_TEST_REQUIRE(records.size() == std::size_t{2});
     for (const model_io::InvokeReturn& record : records) {

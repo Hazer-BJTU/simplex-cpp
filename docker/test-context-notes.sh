@@ -23,10 +23,10 @@ Build:     /src/build   (Debug; bin/, lib/, every test binary)
 THE DEMO (tools/example/deepseek_chat.cpp)
   /src/build/bin/tools_deepseek_chat
 
-  A DeepSeek chat whose tools are the six intrinsic process tools, reached
+  A DeepSeek chat whose tools are the five intrinsic process tools, reached
   through ToolRegistry + ProcessToolSet + ProcessSessionStore. The model can
-  ask for real programs on this machine; spawn_process, write_process_input
-  and kill_process are confirmed at the terminal before they run.
+  ask for real programs on this machine; spawn_process and send_process are
+  confirmed at the terminal before they run.
 
   The system prompt is a persona plus the SET'S SKILL: the guidance from
   tools/intrinsic/toolsets/process/schemas/skill.yaml, injected as the
@@ -60,10 +60,11 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
            and the whole output in the same tool result.
   2. "start cat in the background, feed it hello, then read back what it
       printed"
-        -> spawn (session id) -> write_process_input -> read_process_output,
-           three turns that share one session through the store.
+        -> spawn (session id) -> send_process -> read_process_output, three
+           turns that share one session through the store.
   3. "start sleep 600 in the background, then kill it"
-        -> a session that outlives its window, and kill_process ending it.
+        -> a session that outlives its window, and send_process ending it
+           (signal "kill"; "term" asks it to shut down instead).
   4. "what is running right now?"   ->  poll_processes
   5. /sessions                      ->  the host's own view of the same table
   6. Answer "n" to a confirmation   ->  the call is refused, and the refusal
@@ -73,7 +74,7 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
       /src/build/bin/tools_deepseek_chat, then send it a task and tell me what
       it answers"
         -> the outer model bootstraps an inner one and drives it through
-           write_process_input / read_process_output. Each round of
+           send_process / read_process_output. Each round of
            "feed it, look at what it said" is one model exchange, so that kind
            of work runs past the default budget: raise it with
            --max-steps 40 (or answer "continue" when it says it stopped).
@@ -81,7 +82,7 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
 OFFLINE CHECKS (no API key, no network, no child process)
   /src/build/bin/tools_deepseek_chat --tools
       Prints the catalogue the registry hands the model, the set's skill and
-      its section in a prompt, and exits non-zero if any of the six
+      its section in a prompt, and exits non-zero if any of the five
       declarations failed to load, a name is not routable, or skill.yaml did
       not load and inject.
 

@@ -21,7 +21,7 @@
 //                      Reuse would alias a stale handle in the one place
 //                      aliasing is unrecoverable — a model's context still
 //                      says "proc_1 is the build I started three turns ago",
-//                      and a reused proc_1 would make kill_process end a
+//                      and a reused proc_1 would make send_process end a
 //                      process that model never saw. Growth is the cheap
 //                      side of that trade: a uint64 counter does not run out.
 //   READ CURSORS       how much of each stream the model has already been
@@ -254,7 +254,7 @@ public:
      *
      *   detach_on_timeout is forced ON. A session is a child a caller can come
      *   back to, so a store that killed a child at the end of the window would
-     *   hand out ids for processes it had just destroyed — and `kill_process`
+     *   hand out ids for processes it had just destroyed — and `send_process`
      *   already exists for a caller that wants the child dead.
      *
      *   A window of 0 means "wait indefinitely" to the handle, which would

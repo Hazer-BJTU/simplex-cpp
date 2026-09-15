@@ -18,8 +18,8 @@ description: >-
   returns its exit code and its whole output in this one call. A program still
   running when that wait runs out keeps running in the background instead, and
   the result carries a session id for it: use poll_processes or
-  read_process_output to follow it, write_process_input to feed it,
-  wait_process to wait for its exit and kill_process to end it. Set
+  read_process_output to follow it, send_process to feed it or to end it, and
+  wait_process to wait for its exit. Set
   expected_runtime_milliseconds when a command needs longer than the default to
   finish in-call, or 0 to skip the wait and get an id straight away. There is
   no shell - the program is run directly, so pipes, redirections and globs

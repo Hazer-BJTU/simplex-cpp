@@ -8,7 +8,7 @@
 # replaces its hand-rolled tool half (an Invocable built in the file, an
 # if/else chain in execute_tool) with the shipped machinery:
 #
-#   ToolRegistry + ProcessToolSet + ProcessSessionStore, the six process tools
+#   ToolRegistry + ProcessToolSet + ProcessSessionStore, the five process tools
 #   loaded from their YAML declarations, the set's skill (schemas/skill.yaml)
 #   injected into the system prompt the same way a host injects it, and an
 #   InvokeConfirmEvent handler on the process-wide async bus that asks the
@@ -51,7 +51,7 @@ add_dependencies(tools_deepseek_chat llm_deepseek)
 
 if(BUILD_TESTS)
     # The OFFLINE half of the demo, and the only part of it CTest runs: --tools
-    # builds the registry and the process set, loads the six declarations from
+    # builds the registry and the process set, loads the five declarations from
     # schemas/process/, injects the set's skill into a prompt of its own, prints
     # the catalogue and exits — no API key, no network, and no child process
     # started. It exits non-zero when a declaration failed to load, when the

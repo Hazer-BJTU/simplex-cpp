@@ -1,7 +1,7 @@
 #pragma once
 
 //
-// process/tools.hpp — the six process-management tools a model can call
+// process/tools.hpp — the five process-management tools a model can call
 // =====================================================================
 //
 // One ToolInterface per operation, over one shared ProcessSessionStore:
@@ -14,18 +14,22 @@
 //                         call, and the one that also serves as inspect.
 //   read_process_output   one session's output: the delta by default, the
 //                         whole capture on request.
-//   write_process_input   feed a child's stdin, optionally closing it.
 //   wait_process          block until one child has exited and its output is
 //                         complete, with a deadline.
-//   kill_process          end a child, hard or graceful.
+//   send_process          tell a running child something: more input, the end
+//                         of its input, or a signal to stop.
 //
-// WHY SIX AND NOT MORE. There is no separate run_command, because spawn_process
+// WHY FIVE AND NOT MORE. There is no separate run_command, because spawn_process
 // IS one: its initial-wait window covers the ordinary "run this and tell me what
 // it said" case in a single call, and only a program that outlives the window
 // becomes a session to follow. That is the split ProcessHandle's
 // await_initial_execution() was built for, so honouring it here costs nothing
-// and saves the model a round trip on every quick command. Reaping is not a
-// tool either —
+// and saves the model a round trip on every quick command. Feeding a child,
+// ending its input and ending the child are one tool for the same reason read
+// and wait are two: they are the same act at different strengths, answered the
+// same way and refused for the same reason, so `send_process` carries all three
+// rather than making a model pick the right verb for "please stop". Reaping is
+// not a tool either —
 // it is a flag on the two reading tools (`release` / `release_exited`),
 // because the moment a caller has read a dead child's last output is exactly
 // the moment its session becomes garbage, and a separate call would just be a
@@ -37,20 +41,19 @@
 //   spawn_process         SerialWrite   RequireConfirm
 //   poll_processes        ReadOnly      Trusted
 //   read_process_output   ReadOnly      Trusted
-//   write_process_input   SerialWrite   RequireConfirm
 //   wait_process          ReadOnly      Trusted
-//   kill_process          SerialWrite   RequireConfirm
+//   send_process          SerialWrite   RequireConfirm
 //
 // InvokeType is about SCHEDULING — may this run beside its neighbours in a
 // batch — and what it describes is the effect a call has OUTSIDE this host (the
 // definition of the three values is at the enum itself: dataclass/model_io.hpp,
 // InvokeType). InvokeSecurity is about TRUST — may this run unattended. Running
-// an arbitrary executable, feeding it input, and killing it are all state
-// changes outside this process, so they ask (through the async bus's
-// InvokeConfirmEvent, per security_check.hpp: no answer means refused). Looking
-// at what is already running is not, so it does not ask — a confirmation prompt
-// for "read the output you just asked for" trains a user to click through
-// prompts, which costs more than it buys.
+// an arbitrary executable, and telling a running one what to do (feeding it,
+// closing its input, signalling it) are state changes outside this process, so
+// they ask (through the async bus's InvokeConfirmEvent, per security_check.hpp:
+// no answer means refused). Looking at what is already running is not, so it
+// does not ask — a confirmation prompt for "read the output you just asked for"
+// trains a user to click through prompts, which costs more than it buys.
 //
 // INTERNAL BOOKKEEPING IS NOT AN EXTERNAL EFFECT, and keeping the two apart is
 // what makes this column mean something. A delta read advances that session's
@@ -143,9 +146,8 @@ namespace tool_names {
 inline constexpr std::string_view kSpawn = "spawn_process";
 inline constexpr std::string_view kPoll = "poll_processes";
 inline constexpr std::string_view kRead = "read_process_output";
-inline constexpr std::string_view kWrite = "write_process_input";
 inline constexpr std::string_view kWait = "wait_process";
-inline constexpr std::string_view kKill = "kill_process";
+inline constexpr std::string_view kSend = "send_process";
 } // namespace tool_names
 
 /**
@@ -190,7 +192,7 @@ protected:
 
     /// One session as every tool that reports one writes it: id, state, pid,
     /// exit code, timing, in that order — the fields a reader scans before the
-    /// output under them. Shared so the six tools describe a session the same
+    /// output under them. Shared so the five tools describe a session the same
     /// way, and written into the result rather than returned as a value
     /// because the result is built in order and never taken apart
     /// (tools/intrinsic/tool_result.hpp). Output blocks are added by the tools
@@ -260,12 +262,24 @@ public:
         const model_io::InvokeQuery& query) override;
 };
 
-/// Feed one child's stdin, optionally closing it afterwards. SerialWrite (its
-/// effect is outside this host, and the order two writes reach the child in is
-/// what the child reads) / RequireConfirm (it is input to a live process).
-class WriteProcessInputTool final : public ProcessToolBase {
+/// Tell a running child something, at any of the three strengths there are:
+/// here is more input, here is the end of your input, stop. One tool rather
+/// than two because they are one call with one set of outcomes, and because a
+/// model asking a child to shut down should not have to know whether that is a
+/// "write" or a "kill" — the `signal` argument says which it wants.
+///
+/// SerialWrite (the bytes are the child's next input and a signal ends it, so
+/// the order two calls arrive in is what the child gets — and one carrying
+/// `close_input` can drop another outright) / RequireConfirm (it is input to,
+/// or the end of, a live process).
+///
+/// The signal is CARRIED, not delivered by this layer: `term` and `kill` map
+/// onto the store's two terminate paths, so a deployment whose children are not
+/// local processes — a sandbox, a container, a remote host — can answer them
+/// without ever calling kill(2) (src/tools.cpp).
+class SendProcessTool final : public ProcessToolBase {
 public:
-    explicit WriteProcessInputTool(StorePtr store,
+    explicit SendProcessTool(StorePtr store,
                              eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;
@@ -291,19 +305,6 @@ public:
     static constexpr std::uint64_t kDefaultTimeoutMilliseconds = 30000;
 
     explicit WaitProcessTool(StorePtr store,
-                             eventbus::AsyncEventBus* bus = nullptr);
-
-    void ensure_arguments(model_io::InvokeQuery& query) const override;
-    void write_attributes(model_io::InvokeQuery& query) const override;
-    boost::asio::awaitable<model_io::Content> invoke(
-        const model_io::InvokeQuery& query) override;
-};
-
-/// End a child: SIGKILL by default, SIGTERM with `graceful`. SerialWrite /
-/// RequireConfirm.
-class KillProcessTool final : public ProcessToolBase {
-public:
-    explicit KillProcessTool(StorePtr store,
                              eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;

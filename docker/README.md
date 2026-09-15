@@ -175,7 +175,7 @@ stage/
 ├── bin/                  deepseek_chat, llm_deepseek_chat,
 │   │                     tools_deepseek_chat, prompt_template_demo
 │   ├── schemas/process/  the process tools' YAML declarations plus the
-│   │                     set's skill.yaml (how the six fit together)
+│   │                     set's skill.yaml (how the five fit together)
 │   └── plugins/llm/      libllm_openai.so, libllm_deepseek.so
 └── lib/                  the project's shared libraries
                           plus libstdc++.so.6, libgcc_s.so.1, libboost_*.so*

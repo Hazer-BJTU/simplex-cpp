@@ -18,13 +18,13 @@
 //                         parallel ones, and answers with one record per call
 //                         in call order.
 //   ProcessToolSet        the intrinsic toolset the host links and constructs
-//                         directly (no plugin, no dlopen): six ToolInterface
+//                         directly (no plugin, no dlopen): five ToolInterface
 //                         implementations over one ProcessSessionStore.
 //   ProcessSessionStore   the session table behind them — readable ids
 //                         (proc_1, ...) that survive across turns, a strand
 //                         per child, per-stream read cursors, and the
 //                         terminate_all() shutdown path.
-//   ToolSetSkill          the set's guidance for the model — how the six are
+//   ToolSetSkill          the set's guidance for the model — how the five are
 //                         used TOGETHER, which is what a per-tool description
 //                         cannot say. It is loaded from the toolset's own
 //                         schemas/skill.yaml and reaches the model the way the
@@ -34,8 +34,8 @@
 //                         rewrites per turn. `/skill` prints the exact text the
 //                         model was given.
 //   InvokeConfirmEvent    the module's security gate. spawn_process,
-//                         write_process_input and kill_process declare
-//                         RequireConfirm, so before any of them runs, the
+//                         and send_process declare RequireConfirm, so before
+//                         any of them runs, the
 //                         default policy publishes the settled call on the
 //                         async event bus and waits for an answer. This file
 //                         subscribes the one authority that can give it: the
@@ -71,14 +71,14 @@
 //                      account-balance companion) over the same endpoint and
 //                      credential, then exit. No conversation, no tools.
 //   --tools            the tool catalogue ToolRegistry::get_tools() would hand
-//                      the model — the six process tools as the intrinsic set
+//                      the model — the five process tools as the intrinsic set
 //                      loaded them from its YAML declarations, with the
 //                      capability group's state — plus the set's skill and a
 //                      check that it injects into a prompt. Needs NO API key
 //                      and starts NO child, which is what makes it the offline
 //                      smoke check the test suite registers (tools/example/
 //                      CMakeLists.txt): a declaration that failed to load, a
-//                      set that registered five of six tools, a routing table
+//                      set that registered four of five tools, a routing table
 //                      that lost a name, or a skill.yaml that did not load all
 //                      exit non-zero here.
 //   --skill            the guidance in full, exactly as it was injected: what
@@ -104,7 +104,7 @@
 #include "tools/intrinsic/process/session_store.hpp"
 #include "tools/intrinsic/process/toolset.hpp"
 // The family's own name vocabulary (tool_names::kSpawn, ...), so the smoke
-// check below names the same six strings the set registers rather than a
+// check below names the same five strings the set registers rather than a
 // second copy of them.
 #include "tools/intrinsic/process/tools.hpp"
 #include "tools/intrinsic/toolset_base.hpp"
@@ -283,7 +283,7 @@ std::string summary(std::string_view text, std::size_t limit = 140) {
  * `state.tools` is set from below — with the process family's capability group,
  * the set's skill, and the skill's trip into a prompt.
  *
- * @return 0 when the six process tools are all routable, the family is whole
+ * @return 0 when the five process tools are all routable, the family is whole
  *         and the skill loads and injects, 2 otherwise. The non-zero exit is
  *         the offline smoke check: a schema file that failed to load, a routing
  *         table that lost a name, or a skill.yaml that did not arrive fails
@@ -365,8 +365,7 @@ int report_catalogue(const tools::ToolRegistry& registry,
              tools::intrinsic::tool_names::kPoll,
              tools::intrinsic::tool_names::kRead,
              tools::intrinsic::tool_names::kWait,
-             tools::intrinsic::tool_names::kWrite,
-             tools::intrinsic::tool_names::kKill,
+             tools::intrinsic::tool_names::kSend,
          }) {
         if (!registry.contains(name)) {
             std::cerr << "the registry does not route \"" << name << "\"\n";
@@ -376,10 +375,10 @@ int report_catalogue(const tools::ToolRegistry& registry,
 
     if (!whole) {
         std::cerr << "the process tool family is not whole; this demo needs "
-                     "all six tools and the set's skill\n";
+                     "all five tools and the set's skill\n";
         return 2;
     }
-    std::cout << "all six process tools are registered and routable, and the "
+    std::cout << "all five process tools are registered and routable, and the "
                  "skill reaches the prompt\n";
     return 0;
 }
@@ -849,10 +848,10 @@ int main(int argc, char* argv[]) {
         "ordinary command returns its exit code and output in that one call, "
         "while a program that outlives the wait comes back as a session id "
         "(proc_N) to follow with poll_processes, read_process_output, "
-        "wait_process, write_process_input and kill_process. Sessions and "
-        "their output survive across turns until they are released. There is "
-        "no shell: pass the program and its arguments separately, or run "
-        "'sh' with '-c' explicitly. Every state-changing call is confirmed by "
+        "wait_process and send_process. Sessions and their output survive "
+        "across turns until they are released. There is no shell: pass the "
+        "program and its arguments separately, or run 'sh' with '-c' "
+        "explicitly. Every state-changing call is confirmed by "
         "the person at the terminal before it runs, so ask for what you need "
         "directly and keep commands small. You have " +
             std::to_string(options.max_steps) +
@@ -868,7 +867,7 @@ int main(int argc, char* argv[]) {
     // the host is and how it expects to be talked to, the tool catalogue says
     // what each call does, and the skill says how the calls are used together —
     // which no per-tool description can, and which is the part a host that only
-    // forwards `tools` leaves the model to infer from six paragraphs.
+    // forwards `tools` leaves the model to infer from five paragraphs.
     //
     // Injected here rather than after `state.tools` because the two are
     // independent: the skill is prompt text, the catalogue is the request's
@@ -894,8 +893,8 @@ int main(int argc, char* argv[]) {
     }
     std::cout << " (" << state.system_prompt.render().markdown.size()
               << " bytes; /skill prints the guidance)\n";
-    std::cout << "spawn_process / write_process_input / kill_process ask at "
-                 "the terminal before they run";
+    std::cout << "spawn_process / send_process ask at the terminal before "
+                 "they run";
     if (options.assume_yes) {
         std::cout << " (--yes: auto-approved)";
     }

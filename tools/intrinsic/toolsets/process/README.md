@@ -1,16 +1,16 @@
 # process — intrinsic toolset
 
-Six tools that let a model run child processes: start one, check on it, read
-what it printed, feed it input, wait for it, kill it. A process outlives the
-call that started it, so each one gets a **session id** the model uses to come
-back to it in later turns.
+Five tools that let a model run child processes: start one, check on it, read
+what it printed, wait for it, and tell it something — more input, the end of its
+input, or a signal to stop. A process outlives the call that started it, so each
+one gets a **session id** the model uses to come back to it in later turns.
 
 Built on the package's shared core (`tools_intrinsic`, see
 [`../../README.md`](../../README.md)), which carries the argument reading, the
 result shape and the confirmation routing; this directory is only the process
 domain. The manager underneath is `process/`'s `ProcessHandle`.
 
-- [The model's view](#the-models-view) — the six tools, their schemas, the
+- [The model's view](#the-models-view) — the five tools, their schemas, the
   skill that says how they fit together, the shape of a result, and each
   tool's
 - [Worked examples](#worked-examples)
@@ -22,13 +22,13 @@ domain. The manager underneath is `process/`'s `ProcessHandle`.
 
 Every tool's name, description and argument schema are **declared in YAML**,
 one file per tool under [`schemas/`](schemas/) — `spawn_process.yaml`,
-`kill_process.yaml`, and so on — and loaded when the tool is built. What this
+`send_process.yaml`, and so on — and loaded when the tool is built. What this
 section shows is therefore not a copy of something written in C++: it is the
 declaration, and the file is what a model is actually sent. The prose there is
 the same prose below; edit the file and rerun the tests.
 
 The directory carries one more document that is not a tool at all:
-[`schemas/skill.yaml`](schemas/skill.yaml), the set's **skill** — how the six
+[`schemas/skill.yaml`](schemas/skill.yaml), the set's **skill** — how the five
 are used TOGETHER, which is the one thing no per-tool description can say. The
 set loads it when it is built, and it reaches a model as one section of the host's
 system prompt (`ToolRegistry::inject_skills()`), appended after the host's own
@@ -58,8 +58,8 @@ spawn_process ──► finished in time? ──► yes: exit code + whole outpu
                                     └─► no: session_id ──┬──► wait_process        finish and collect
                                                          ├──► poll_processes      what changed since last time
                                                          ├──► read_process_output  incremental output
-                                                         ├──► write_process_input  feed its stdin
-                                                         └──► kill_process         end it
+                                                         └──► send_process         feed its stdin, close
+                                                                                   it, or signal it to stop
 ```
 
 **Output reads are incremental by default.** Each session remembers how much
@@ -80,7 +80,7 @@ by releasing finished sessions.
 host, and after that session is released the number is spent: the next spawn
 gets a fresh one. A model's older context still says "proc_3 is the build I
 started three turns ago", and an id that came back around would make
-`kill_process(proc_3)` end a process that model never saw.
+`send_process(proc_3)` end a process that model never saw.
 
 **There is no shell.** The executable runs directly, so `|`, `>`, `*` and `&&`
 reach it as literal arguments. A model that wants a pipeline asks for
@@ -88,7 +88,7 @@ reach it as literal arguments. A model that wants a pipeline asks for
 
 ### The set's skill
 
-Everything above — the ordinary path through the six, what a session costs, when
+Everything above — the ordinary path through the five, what a session costs, when
 to wait instead of polling, what a denied confirmation means — also ships as a
 document the model itself is given: [`schemas/skill.yaml`](schemas/skill.yaml),
 the set's **skill**. A tool declaration answers "what does this call do"; the
@@ -125,7 +125,7 @@ rather than leaving a model instructions about a call that no longer exists.
 
 | | tools | why |
 | --- | --- | --- |
-| **Asks first** | `spawn_process`, `write_process_input`, `kill_process` | they change state outside this process — running a program, feeding it, ending it |
+| **Asks first** | `spawn_process`, `send_process` | they change state outside this process — running a program, and telling a running one what to do: more input, the end of its input, or a signal |
 | **Runs unattended** | `poll_processes`, `read_process_output`, `wait_process` | looking at what is already running changes nothing |
 
 A confirmation that nobody answers is a refusal, so an unattended host runs the
@@ -143,8 +143,7 @@ may overlap the others. What that declaration describes is the effect a call has
 | `read_process_output` | runs beside others | same, `full` and delta and `release` alike |
 | `wait_process` | runs beside others | watching a child changes nothing outside; `release` is bookkeeping |
 | `spawn_process` | runs alone | it starts a process on the machine, and two launches in one batch contend for the same files |
-| `write_process_input` | runs alone | the bytes are the child's next input, so the order two writes arrive in is what it reads |
-| `kill_process` | runs alone | it ends a process on the machine |
+| `send_process` | runs alone | the bytes are the child's next input and a signal ends it, so the order two calls arrive in is what the child gets; one carrying `close_input` can drop another outright |
 
 "Runs beside others" means what it says about safety, not about determinism:
 the session store is what makes an overlapping poll or read safe — the table is
@@ -159,7 +158,7 @@ anything outside the host.
 
 Calls that run alone go **first**, in call order, and nothing else in the batch
 is in flight while they do — which is why a poll beside a `spawn_process`
-already sees the session that spawn created, and why a `kill_process` beside a
+already sees the session that spawn created, and why a `send_process` beside a
 `wait_process` lets the wait find the child already gone instead of timing out.
 
 ---
@@ -410,38 +409,6 @@ stops there. `*_bytes_read` is the total handed over so far, across all reads.
 `released` reports what actually happened, not what was asked: a running
 process is never released, so it comes back `false`.
 
-### `write_process_input`
-
-Send text to a running process's standard input.
-
-```jsonc
-{
-  "session_id": "proc_1",   // required
-  "input": "some text\n",   // verbatim; include "\n" if it reads by lines
-  "close_input": false      // default false
-}
-```
-
-Either `input` or `close_input` must say something — a call that sends nothing
-and closes nothing is refused as a mistake.
-
-```text
-session_id: proc_1
-state: running
-bytes_queued: 10
-input_closed: false
-
-note: the text is queued for the process's standard input; the process may not have read it yet
-```
-
-A write to a child that has already exited carries one more line —
-`warning: the process has already exited, so the input was discarded` — because
-nothing else in the result would reveal it. `bytes_queued`, not "delivered":
-the write is handed to a background pump and
-this returns before the process reads it. To confirm it was consumed, read the
-output back. Many programs read until end-of-input — for those, send the text
-and then `close_input: true`, or nothing happens.
-
 ### `wait_process`
 
 Wait for a process to finish and report how it ended, with everything it
@@ -485,7 +452,7 @@ waiting again collects the rest.
 
 **A timeout is not an error.** It comes back `exited: false`, `timed_out:
 true` with `state` still `running`, and the process keeps running — wait
-again, read its output, or kill it. `timeout_milliseconds: 0` waits forever,
+again, read its output, or end it with a `send_process` signal. `timeout_milliseconds: 0` waits forever,
 which hangs the turn on a process that never exits; prefer a real timeout and
 wait twice.
 
@@ -494,20 +461,44 @@ waiting for a command to finish wants all its output and cannot know what an
 earlier poll already consumed. Because a full read is an observation and not a
 consumption, a wait running beside a poll loop steals nothing from it.
 
-### `kill_process`
+### `send_process`
 
-End a running process. The session stays readable afterwards, so its output can
-still be collected.
+Tell a running process something — the three strengths there are, in one tool:
+more input, the end of its input, and a signal to stop.
 
 ```jsonc
 {
-  "session_id": "proc_1",  // required
-  "graceful": false        // default false: kill outright
+  "session_id": "proc_1",   // required
+  "input": "some text\n",  // verbatim; include "\n" if it reads by lines
+  "close_input": false,     // default false: end-of-input after sending
+  "signal": ""              // "" (default) none, "term" shut down, "kill" end now
 }
 ```
 
-`graceful: true` asks the process to shut down (a signal it may handle, or
-ignore); the default ends it immediately and cannot be refused.
+A call must do at least one of the three: send something, close the input, or
+name a signal. A call that sends nothing, closes nothing and names no signal is
+refused as one that does nothing at all.
+
+```text
+session_id: proc_1
+state: running
+bytes_queued: 10
+input_closed: false
+
+note: the text is queued for the process's standard input; the process may not have read it yet
+```
+
+`bytes_queued`, not "delivered": the write is handed to a background pump and
+this returns before the process reads it. To confirm it was consumed, read the
+output back. Many programs read until end-of-input — for those, send the text
+and then `close_input: true`, or nothing happens.
+
+Ending a process is the same call, one strength further: **`term` asks, `kill`
+ends.** `term` is a request the
+program may handle (it is the one to prefer for anything that holds state or
+writes files), while `kill` cannot be caught and loses whatever the program was
+holding. The session stays readable either way, so nothing already printed is
+lost — and nothing is waited for, which is why the result says how to confirm:
 
 ```text
 session_id: proc_1
@@ -516,16 +507,26 @@ executable: sleep
 arguments: ["600"]
 pid: 48231
 running_milliseconds: 1200
+signal: term
 signalled: true
-graceful: false
 
-note: signal sent; call wait_process to confirm the process has ended
+hint: signal sent; call wait_process to confirm the process has ended
 ```
 
 The signal is sent, but the death is noticed a moment later, so the result may
-still report `state: running` — that is not a failed kill. Call `wait_process`
-to confirm. A process that had already finished comes back `signalled: false`
-with a note saying so, which is not a failure either.
+still report `state: running` — that is not a failed signal. Call `wait_process`
+to confirm. The two halves can be asked for together, which is the case two
+tools could not spell — feed a program its own quit command and then make sure
+it went:
+
+```jsonc
+{ "session_id": "proc_1", "input": "quit\n", "signal": "term" }
+```
+
+A child that has already exited answers both halves honestly: nothing was
+delivered, and one `warning` line says what was lost — `the process has already
+exited, so the input was discarded`, `... so no signal was sent`, or both in one
+line when the call asked for both.
 
 ---
 
@@ -622,8 +623,9 @@ spawn_process         { "executable": "cat", "description": "echo back",
    …
    finished: false
 
-write_process_input  { "session_id": "proc_3", "input": "hello\n", "close_input": true }
+send_process         { "session_id": "proc_3", "input": "hello\n", "close_input": true }
    session_id: proc_3
+   state: running
    bytes_queued: 6
    input_closed: true
 
@@ -658,10 +660,11 @@ wait_process { "session_id": "proc_4", "timeout_milliseconds": 5000 }
    output_complete: false
    timed_out: true                       // not an error
 
-kill_process { "session_id": "proc_4" }
+send_process { "session_id": "proc_4", "signal": "kill" }
+   signal: kill
    signalled: true
-   graceful: false
-   note: signal sent; call wait_process to confirm the process has ended
+
+   hint: signal sent; call wait_process to confirm the process has ended
 
 read_process_output { "session_id": "proc_4", "full": true, "release": true }
    stdout (… bytes):
@@ -688,7 +691,7 @@ the process-wide bus, so a confirmer in another module can answer; passing one
 keeps a component's confirmations to itself.
 
 `tools/example/deepseek_chat.cpp` is that wiring in a running host: a live
-provider conversation whose tools are these six, every call going through
+provider conversation whose tools are these five, every call going through
 `ToolRegistry::execute`, with an `InvokeConfirmEvent` handler at the terminal
 that answers the RequireConfirm calls — plus the offline halves of what the
 model is given: `--tools`, which prints the catalogue this section describes,
@@ -735,7 +738,7 @@ first, for exactly that reason).
   single-runner test. It owns `ProcessHandle`'s lifecycle contract in full:
   start the io tasks, then drive the handle to a terminal observation with a
   detached await task, and never block a spawn on the child.
-- **`process/tools.hpp`** — the six `ToolInterface` implementations. Each
+- **`process/tools.hpp`** — the five `ToolInterface` implementations. Each
   checks its arguments in `ensure_arguments()` and writes the defaults into the
   query there (so the security check and the human confirmation see settled
   arguments), and answers with a `ToolResult` — field lines and the child's
@@ -747,7 +750,7 @@ first, for exactly that reason).
   description and its argument schema — is not here: it is declared in
   `schemas/<tool>.yaml`, and `ProcessToolBase` loads it.
 - **`process/toolset.hpp`** — the `ProcessToolSet` a host registers. Its name,
-  its six tools, the store they share and the skill it loads; the catalogue, the
+  its five tools, the store they share and the skill it loads; the catalogue, the
   routing, the build/release lifecycle and `skill()` come from
   `IntrinsicToolSet`, and `prepare()` / `execute()` stay as `ToolSet` defines
   them, since those carry the invocation layer's checkpoint sequence and failure
@@ -796,17 +799,17 @@ without a rebuild. `skill.yaml` is listed there too and is read the same way,
 with the milder outcome [the skill
 section](#the-sets-skill) describes: the guidance is lost, the tools are not.
 
-The six are also declared to be one **capability group** ("process",
+The five are also declared to be one **capability group** ("process",
 `declare_capability_group()` in `src/toolset.cpp`), because a tool that fails to
 arrive on its own costs itself and no more is the right rule for one broken file
-but not a safe *state* for a family: five of the six leaves a model able to
+but not a safe *state* for a family: four of the five leaves a model able to
 start a process it cannot end. So a partial registration is one error line —
 the group, the count, every missing member — and `capability_groups()` answers
 the same for a host that wants to act on it, while a package carrying none of
-the files is reported as the family being absent rather than as six failures.
+the files is reported as the family being absent rather than as five failures.
 
 Which leaves a file free to claim something the implementation does not do, so
-`test_tools` closes that gap: for each of the six tools it loads the file,
+`test_tools` closes that gap: for each of the five tools it loads the file,
 asserts the catalogue entry is that document verbatim, and asks the
 implementation the same questions the document answers — every property
 validated with the declared kind, the default contract held in **both**

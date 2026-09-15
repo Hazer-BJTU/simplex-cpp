@@ -33,6 +33,38 @@ std::string_view stream_word(OutputStream stream)
     return "both"; // unreachable; keeps -Wreturn-type quiet
 }
 
+/// What a send_process call asks a child to do about STOPPING — the `signal`
+/// argument, which is how a process is ended: ending it is one of the three
+/// things this one tool can be asked for, not a tool of its own.
+///
+/// None is the empty word, and it is the default: a call that only writes says
+/// so by leaving the signal out rather than by naming one it does not want, and
+/// the schema's enum makes the two live signals the only other words there are.
+/// The distinction this enum draws is the one the store's terminate() draws —
+/// ask, or end — rather than a signal NUMBER: which signal a deployment really
+/// delivers is that deployment's business (this layer never calls kill(2)
+/// itself), so a model asks for the INTENT and the host answers with the
+/// mechanism.
+enum class Signal { None, Terminate, Kill };
+
+std::optional<Signal> parse_signal(std::string_view word)
+{
+    if (word.empty()) return Signal::None;
+    if (word == "term") return Signal::Terminate;
+    if (word == "kill") return Signal::Kill;
+    return std::nullopt;
+}
+
+std::string_view signal_word(Signal signal)
+{
+    switch (signal) {
+        case Signal::None:      return "";
+        case Signal::Terminate: return "term";
+        case Signal::Kill:      return "kill";
+    }
+    return ""; // unreachable; keeps -Wreturn-type quiet
+}
+
 } // namespace
 
 // ---- ProcessToolBase --------------------------------------------------------
@@ -461,92 +493,6 @@ boost::asio::awaitable<model_io::Content> ReadProcessOutputTool::invoke(
     co_return result.render();
 }
 
-// ---- write_process_input ----------------------------------------------------
-
-WriteProcessInputTool::WriteProcessInputTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    // Name, description and argument schema: schemas/write_process_input.yaml.
-    : ProcessToolBase(std::move(store), "write_process_input.yaml", bus)
-{}
-
-void WriteProcessInputTool::ensure_arguments(model_io::InvokeQuery& query) const
-{
-    (void)require_session_id(query);
-    const std::string input = settle_string(query, "input");
-    const bool close_input = settle_bool(query, "close_input", false);
-    if (input.empty() && !close_input) {
-        // Neither writing nor closing: the call would do nothing at all, and
-        // silently succeeding at nothing is worse than saying so. Checked on
-        // the SETTLED values, so the refusal and the payload agree on what an
-        // absent `input` came to.
-        bad_argument("nothing to do: provide \"input\" to send, or "
-                     "\"close_input\": true to end the process's input");
-    }
-}
-
-void WriteProcessInputTool::write_attributes(model_io::InvokeQuery& query) const
-{
-    // The one write among the reading-looking tools, and a write by the rule
-    // that decides this column: what it changes is OUTSIDE the host. Bytes
-    // queued for a live child's standard input are the child's next input, not
-    // this layer's bookkeeping.
-    //
-    // SerialWrite rather than ParallWrite, and the reason is the same rule read
-    // one level further: ParallWrite means the order between writers is not
-    // observable, while here it is. Two writes to one child land in the order
-    // they arrive — that is what the child reads — and when one of them carries
-    // `close_input` the other can be DROPPED outright, since a send onto a
-    // closed channel is discarded. So the batch's call order is what the child
-    // sees, which is only true if the batch runs these one at a time.
-    //
-    // Note what does NOT decide it: the handle's stdin channel is a
-    // concurrent_channel, so overlapping writes cannot corrupt memory. That is
-    // the store's concurrency contract doing its job; it says nothing about
-    // whether the two orders mean the same thing.
-    //
-    // RequireConfirm: it is input to a live process, which can do anything with
-    // it.
-    query.type = model_io::InvokeType::SerialWrite;
-    query.security = model_io::InvokeSecurity::RequireConfirm;
-}
-
-boost::asio::awaitable<model_io::Content> WriteProcessInputTool::invoke(
-    const model_io::InvokeQuery& query)
-{
-    const std::string id = require_session_id(query);
-    std::string input = optional_string(query, "input");
-    const bool close_input = optional_bool(query, "close_input", false);
-    const std::size_t byte_count = input.size();
-
-    if (!co_await _store->write_input(id, std::move(input), close_input)) {
-        no_such_session(id);
-    }
-
-    const std::optional<SessionSnapshot> snapshot =
-        co_await _store->snapshot(id);
-
-    ToolResult result;
-    result.field("session_id", id);
-    if (snapshot) {
-        result.field("state", snapshot->result.execution.state);
-    }
-    result.field("bytes_queued", byte_count);
-    result.field("input_closed", close_input);
-    // Queued, not delivered: write_input is fire-and-forget by design (the
-    // pump owns delivery), so the result must not claim the child has read
-    // it. A model that needs to know reads the output back.
-    result.field("note",
-                 "the text is queued for the process's standard input; the "
-                 "process may not have read it yet");
-    if (snapshot && snapshot->exited) {
-        // Worth saying plainly: a write to a dead child is dropped by the
-        // pump, and nothing else in the result would reveal that.
-        result.field("warning",
-                     "the process has already exited, so the input was "
-                     "discarded");
-    }
-    co_return result.render();
-}
-
 // ---- wait_process ----------------------------------------------------------
 
 WaitProcessTool::WaitProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
@@ -642,59 +588,145 @@ boost::asio::awaitable<model_io::Content> WaitProcessTool::invoke(
     co_return result.render();
 }
 
-// ---- kill_process ----------------------------------------------------------
+// ---- send_process -----------------------------------------------------------
 
-KillProcessTool::KillProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    // Name, description and argument schema: schemas/kill_process.yaml.
-    : ProcessToolBase(std::move(store), "kill_process.yaml", bus)
+SendProcessTool::SendProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
+    // Name, description and argument schema: schemas/send_process.yaml.
+    : ProcessToolBase(std::move(store), "send_process.yaml", bus)
 {}
 
-void KillProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
+void SendProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_session_id(query);
-    (void)settle_bool(query, "graceful", false);
+    const std::string input = settle_string(query, "input");
+    const bool close_input = settle_bool(query, "close_input", false);
+    const std::string signal = settle_string(query, "signal");
+    if (!parse_signal(signal)) {
+        // Checked on the SETTLED value, so the refusal and the payload agree on
+        // what an absent `signal` came to — and so a model that sent "SIGKILL"
+        // is told the words there are rather than having it read as "none".
+        bad_argument(std::format(
+            "property \"signal\" must be one of \"\" (no signal), \"term\" or "
+            "\"kill\", got \"{}\"", signal));
+    }
+    if (input.empty() && !close_input && signal.empty()) {
+        // Nothing to write, nothing to close, nothing to send: the call would
+        // do nothing at all, and silently succeeding at nothing is worse than
+        // saying so. Checked on the SETTLED values, so the refusal and the
+        // payload agree on what an absent `input` came to.
+        bad_argument("nothing to do: provide \"input\" to send, "
+                     "\"close_input\": true to end the process's input, or a "
+                     "\"signal\" (\"term\" or \"kill\") to send it");
+    }
 }
 
-void KillProcessTool::write_attributes(model_io::InvokeQuery& query) const
+void SendProcessTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // SerialWrite / RequireConfirm: ending a process is a state change
-    // outside this host, and an unattended kill of the wrong session is not
-    // recoverable.
+    // The one write among the reading-looking tools, and a write by the rule
+    // that decides this column: what it changes is OUTSIDE the host. Bytes
+    // queued for a live child's standard input are the child's next input, not
+    // this layer's bookkeeping — and a signal ends the child outright.
+    //
+    // SerialWrite rather than ParallWrite, and the reason is the same rule read
+    // one level further: ParallWrite means the order between writers is not
+    // observable, while here it is. Two calls to one child land in the order
+    // they arrive — that is what the child reads and what it does — and when
+    // one of them carries `close_input` the other can be DROPPED outright,
+    // since a send onto a closed channel is discarded. So the batch's call
+    // order is what the child sees, which is only true if the batch runs these
+    // one at a time.
+    //
+    // Note what does NOT decide it: the handle's stdin channel is a
+    // concurrent_channel, so overlapping sends cannot corrupt memory. That is
+    // the store's concurrency contract doing its job; it says nothing about
+    // whether the two orders mean the same thing.
+    //
+    // RequireConfirm: it is input to a live process, which can do anything with
+    // it — and, for the same reason, the signal that ends one.
     query.type = model_io::InvokeType::SerialWrite;
     query.security = model_io::InvokeSecurity::RequireConfirm;
 }
 
-boost::asio::awaitable<model_io::Content> KillProcessTool::invoke(
+boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
     const model_io::InvokeQuery& query)
 {
     const std::string id = require_session_id(query);
-    const bool graceful = optional_bool(query, "graceful", false);
+    std::string input = optional_string(query, "input");
+    const bool close_input = optional_bool(query, "close_input", false);
+    // Already validated in ensure_arguments, so the optional is engaged.
+    const Signal signal = *parse_signal(optional_string(query, "signal"));
+    const std::size_t byte_count = input.size();
 
-    // The store answers false for BOTH "no such session" and "the child was
-    // already gone", so the snapshot below is what tells them apart: a
-    // session that exists and has exited was simply already finished, which
-    // is not a failure.
-    const bool signalled = co_await _store->terminate(id, graceful);
+    // What the call asked for, in the order it has to happen: the input first,
+    // the signal after. A child told to stop would rarely read what arrived
+    // with the same breath, while a child told to quit and THEN stopped has had
+    // its chance to.
+    const bool writes = byte_count != 0 || close_input;
+    const bool queued =
+        writes && co_await _store->write_input(id, std::move(input), close_input);
+    const bool signalled =
+        signal != Signal::None &&
+        co_await _store->terminate(id, signal == Signal::Terminate);
+
     const std::optional<SessionSnapshot> snapshot =
         co_await _store->snapshot(id);
-    if (!snapshot) {
+    if (!snapshot && !queued) {
+        // Nothing landed and there is no session to describe: the call named an
+        // id this table does not know. A signal-only call that DID land is not
+        // this case — it answered for a session that was there a moment ago —
+        // so it reports what happened rather than failing.
         no_such_session(id);
     }
 
     ToolResult result;
-    write_session(result, *snapshot);
-    result.field("signalled", signalled);
-    result.field("graceful", graceful);
-    if (!signalled) {
+    result.field("session_id", id);
+    if (snapshot) {
+        result.field("state", snapshot->result.execution.state);
+    }
+    // Only the halves the call asked for: a signal-only call has no queued
+    // bytes to report, and `bytes_queued: 0` would read as "it wrote nothing
+    // when it meant to".
+    if (writes) {
+        result.field("bytes_queued", byte_count);
+        result.field("input_closed", close_input);
+    }
+    if (signal != Signal::None) {
+        // What was asked for, then whether it happened: the word is echoed back
+        // because the record's arguments are the settled call the confirmer saw,
+        // and this is what a reader compares against `signalled`.
+        result.field("signal", signal_word(signal));
+        result.field("signalled", signalled);
+    }
+    // Queued, not delivered: write_input is fire-and-forget by design (the
+    // pump owns delivery), so the result must not claim the child has read it.
+    // A model that needs to know reads the output back.
+    if (byte_count != 0) {
         result.field("note",
-                     "the process had already finished; no signal was sent");
-    } else {
+                     "the text is queued for the process's standard input; the "
+                     "process may not have read it yet");
+    }
+    if (signalled) {
         // The signal is sent, but the death is observed by the handle's own
         // watcher a moment later, so this result may still say "running".
-        // Saying so beats a caller concluding the kill failed.
-        result.field("note", std::format(
+        // Saying so beats a caller concluding the signal failed.
+        result.field("hint", std::format(
             "signal sent; call {} to confirm the process has ended",
             tool_names::kWait));
+    }
+    if (snapshot && snapshot->exited) {
+        // Worth saying plainly: a call to a child that is already gone had
+        // nowhere to land, and nothing else in the result would reveal it. What
+        // it says depends on what was lost — the bytes, the signal, or both.
+        std::string dropped;
+        if (byte_count != 0) dropped = "the input was discarded";
+        if (signal != Signal::None) {
+            if (!dropped.empty()) dropped += " and ";
+            dropped += "no signal was sent";
+        }
+        if (!dropped.empty()) {
+            result.field("warning", std::format(
+                "the process has already exited, so {}", dropped));
+        }
     }
     co_return result.render();
 }

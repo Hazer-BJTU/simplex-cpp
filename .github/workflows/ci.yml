@@ -152,21 +152,21 @@ jobs:
       - name: Assert the release carries the tools' declarations
         # The process tools are DECLARED in YAML files that are loaded at run
         # time from beside the executable (<exe_dir>/schemas/process) — nothing
-        # about them is compiled in — and the set's skill (how the six are used
+        # about them is compiled in — and the set's skill (how the five are used
         # together) is one more document in the same directory. No test in the
         # build tree can see whether they were installed, because the suite
         # reaches them through the source path CMake baked in, and that path
         # exists in every job here (a release tree reaches them the other way;
         # staged-runtime exercises that). A release that quietly stopped
-        # shipping these files would lose all six process tools — or the
+        # shipping these files would lose all five process tools — or the
         # guidance that says how to use them — at run time with nothing red to
-        # show for it, so the packaging is asserted explicitly: six tool
+        # show for it, so the packaging is asserted explicitly: five tool
         # declarations and skill.yaml.
         run: |
           set -euo pipefail
           found=$(find stage/bin/schemas/process -maxdepth 1 -name '*.yaml' | wc -l)
           echo "staged declaration files: $found"
-          test "$found" -eq 7
+          test "$found" -eq 6
           test -f stage/bin/schemas/process/skill.yaml
 
       - name: Test
@@ -364,11 +364,11 @@ jobs:
         # YAML declarations are found through that path whether or not the
         # install shipped them. A packaging regression would therefore keep CI
         # green while every real release (which has no source tree) silently lost
-        # all six process tools.
+        # all five process tools.
         #
         # So: hide the source copy, put a suite in the staged bin/ — the lookup
         # is relative to /proc/self/exe, so that is what makes it read the
-        # installed layout — and have it load all six tools from there, along
+        # installed layout — and have it load all five tools from there, along
         # with the set's skill (the third case, which is the same question asked
         # of the document that is not a tool). The trap restores the tree
         # whether the assertion passes or fails.
@@ -380,4 +380,4 @@ jobs:
           cp build/bin/test_tools stage/bin/
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_tools --log_level=error \
-            --run_test=the_set_offers_six_routable_tools,every_tool_is_declared_by_its_own_yaml_file,the_set_carries_its_skill_and_hands_it_to_a_prompt
+            --run_test=the_set_offers_five_routable_tools,every_tool_is_declared_by_its_own_yaml_file,the_set_carries_its_skill_and_hands_it_to_a_prompt

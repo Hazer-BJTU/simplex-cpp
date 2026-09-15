@@ -18,7 +18,7 @@
 //   name: process                 # required — the skill's identity
 //   title: Working with processes # optional — the prompt section's heading
 //   description: >-               # optional — one line, for a catalogue
-//     Run and drive child processes from the six process tools.
+//     Run and drive child processes from the process tools.
 //   keywords: [process, shell]    # optional — free-form selection hints
 //   text: |                       # required — the guidance itself
 //     Start with spawn_process ...

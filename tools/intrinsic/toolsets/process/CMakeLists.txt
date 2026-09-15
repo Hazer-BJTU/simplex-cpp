@@ -1,7 +1,7 @@
 # =============================================================================
 # process — intrinsic toolset (tools/intrinsic package)
 #
-# Process management as a tool family: the six calls a model makes to run a
+# Process management as a tool family: the five calls a model makes to run a
 # child process, feed it, read its output incrementally, wait on it and kill it.
 # It joins the invocation layer (tools/) to process/'s single-child manager
 # (ProcessHandle) with the piece neither owns — a table of live children a model
@@ -12,7 +12,7 @@
 #                              cursors that make "what is new since I last
 #                              looked" answerable, reaping, and the
 #                              terminate_all() shutdown path;
-#   process/tools.hpp          the six ToolInterface implementations and the
+#   process/tools.hpp          the five ToolInterface implementations and the
 #                              ProcessToolBase that adds this family's session
 #                              id argument to the shared IntrinsicTool;
 #   process/toolset.hpp        the ToolSet a host registers with its
@@ -27,7 +27,7 @@
 #
 # THE DECLARATIONS THEMSELVES are schemas/*.yaml, one file per tool, loaded at
 # run time by the tool that names it — plus schemas/skill.yaml, the set's own
-# guidance for a model (how the six are used together), loaded by the set. They
+# guidance for a model (how the five are used together), loaded by the set. They
 # are listed as target sources for the sake of an IDE and of `make`'s dependency
 # tracking only — nothing is compiled from them, and editing one takes effect on
 # the next run without a rebuild.
@@ -50,13 +50,12 @@ add_library(tools_intrinsic_process SHARED
     src/tools.cpp
     src/toolset.cpp
     # Not compiled: the model-facing declarations, one file per tool.
-    schemas/kill_process.yaml
     schemas/poll_processes.yaml
     schemas/read_process_output.yaml
+    schemas/send_process.yaml
     schemas/spawn_process.yaml
     schemas/wait_process.yaml
-    schemas/write_process_input.yaml
-    # Not compiled either: the set's skill, which is about using all six.
+    # Not compiled either: the set's skill, which is about using all five.
     schemas/skill.yaml
 )
 target_include_directories(tools_intrinsic_process PUBLIC

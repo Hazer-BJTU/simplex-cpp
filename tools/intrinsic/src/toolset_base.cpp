@@ -165,7 +165,7 @@ void IntrinsicToolSet::declare_capability_group(
     // construction that produced the state rather than whenever a host happens
     // to ask. What it says is deliberately concrete — which family, how much of
     // it, and by name what is gone — because the alternative is an operator
-    // reading six per-tool lines and working out the shape themselves.
+    // reading five per-tool lines and working out the shape themselves.
     const std::vector<CapabilityGroup> groups = capability_groups();
     const CapabilityGroup& status = groups.back();
     if (status.missing.empty()) return;

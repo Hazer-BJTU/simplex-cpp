@@ -40,7 +40,7 @@
 // blast radius for one broken thing (a declaration file that cannot be read,
 // tool_declaration.hpp) but not always a safe STATE to leave a model in. Six
 // process tools are a capability family: a model offered spawn_process without
-// kill_process can start a process it cannot end. So a set may DECLARE its
+// send_process can start a process it cannot end. So a set may DECLARE its
 // families — declare_capability_group() — and is then held to this: a family
 // that came out PARTIAL is reported as one error line naming the group and
 // every tool it is missing, and is answered by capability_groups() for a host
@@ -50,7 +50,7 @@
 // "half of it is".
 //
 // Registration stays per tool deliberately. Registering a group ATOMICALLY —
-// dropping the five that did arrive because the sixth did not — would trade a
+// dropping the four that did arrive because the fifth did not — would trade a
 // degraded toolset for none at all, and a host that wants that trade can read
 // capability_groups() and drop the set itself. What this class will not do is
 // let the degraded state pass unremarked.

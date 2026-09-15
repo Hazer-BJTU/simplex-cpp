@@ -1,6 +1,6 @@
 # skill.yaml — how the process tools are used TOGETHER.
 #
-# The six declarations beside this file each answer "what does this call do".
+# The five declarations beside this file each answer "what does this call do".
 # This one answers the question none of them can between them: which call comes
 # first, what the ordinary path through the family looks like, what the wrong
 # path costs, and which of two overlapping calls to prefer. It is injected into
@@ -24,14 +24,14 @@ name: process
 title: Driving processes with the process tools
 
 description: >-
-  How the six process tools fit together: one session per program, spawn and
+  How the five process tools fit together: one session per program, spawn and
   observe, feed and read, wait instead of polling, and release what is done.
 
 keywords: [process, subprocess, command, shell, session, stdout, stdin]
 
 text: |
-  The six process tools are one workflow around one thing — a session — rather
-  than six alternative ways to run a command. spawn_process both starts a
+  The five process tools are one workflow around one thing — a session — rather
+  than five alternative ways to run a command. spawn_process both starts a
   program and decides whether it needs following; everything else is what you do
   with a program that is still running.
 
@@ -53,11 +53,13 @@ text: |
   4. `read_process_output` returns what the child has printed. By default only
      what is NEW since the last read of that session, which is what makes it
      safe to call repeatedly while a program runs.
-  5. `write_process_input` feeds a live child's standard input, and
-     `close_input: true` gives it end-of-input.
-  6. `kill_process` ends a child that should not keep running. The session stays
-     readable afterwards, so its output can still be collected.
-  7. Release sessions once they are done and their output has been collected
+  5. `send_process` is how a live child is told anything, at any of the three
+     strengths there are: text goes to its standard input, `close_input: true`
+     gives it end-of-input, and `signal` ends it — `"term"` asks it to shut down
+     (it may handle that or ignore it), `"kill"` ends it outright. A call must do
+     at least one of the three. A child that is ended this way stays readable, so
+     its output can still be collected.
+  6. Release sessions once they are done and their output has been collected
      (`release: true` on a read or a wait, `release_exited: true` on a poll).
      The table is bounded, and an exited session keeps its slot until it is
      released.
@@ -82,13 +84,18 @@ text: |
     shell command line.
   - **Write what the program is waiting for.** A program that reads lines needs
     the trailing newline inside `input`; a program that reads until end-of-input
-    prints nothing until you send `close_input: true`. A call must either send
-    something or close the input.
-  - **Ask for what you need, once.** `spawn_process`, `write_process_input` and
-    `kill_process` change the machine, so the person at the terminal is asked to
-    approve each one. A denial is an answer, not a failure: do not resend the
-    same call in a loop — say what you are trying to do and offer the smallest
-    command that would show it.
+    prints nothing until you send `close_input: true`.
+  - **Ask for the strength you mean.** `"term"` is a request a program can
+    handle — the right one for anything that writes files or has state to save —
+    while `"kill"` cannot be caught and loses whatever the program was holding.
+    Prefer `"term"`, and prefer feeding a program its own quit command when it
+    has one. Either way the session stays readable, so nothing already printed is
+    lost.
+  - **Ask for what you need, once.** `spawn_process` and `send_process` change
+    the machine, so the person at the terminal is asked to approve each one. A
+    denial is an answer, not a failure: do not resend the same call in a loop —
+    say what you are trying to do and offer the smallest command that would show
+    it.
   - **Prefer a command that finishes.** Break work into small programs that exit
     rather than one long-lived process, unless the point really is a background
     program — in which case spawn it with `expected_runtime_milliseconds: 0` to
@@ -103,7 +110,6 @@ text: |
   - A session id from an earlier turn may be gone — released, or never this
     process's. That failure comes back naming the id; `poll_processes` lists the
     sessions that do exist.
-  - `kill_process` sends a signal the child cannot refuse by default; pass
-    `graceful: true` to ask it to shut down instead, which a program may ignore.
-    Nothing guarantees grandchildren die with it — end what you started, and
-    prefer `graceful: true` for anything that writes files.
+  - A signal reaches the child, not its children: nothing guarantees
+    grandchildren die with it. End what you started, and prefer `"term"` over
+    `"kill"` for anything that writes files.
