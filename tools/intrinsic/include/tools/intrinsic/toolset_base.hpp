@@ -55,14 +55,26 @@
 // capability_groups() and drop the set itself. What this class will not do is
 // let the degraded state pass unremarked.
 //
+// THE SET'S SKILL IS THE THIRD THING A DERIVED CONSTRUCTOR TAKES ON, after its
+// tools and optionally its groups: one YAML document beside the tool
+// declarations saying how the tools are used TOGETHER (tools/tool_skill.hpp),
+// which load_skill() reads and skill() answers. It is the one part of a
+// derived set that is OPTIONAL in the strong sense: a skill that cannot be read
+// is reported and the set carries none, so its tools stay routable and a model
+// is still told what each of them does. The blast radius is the guidance, never
+// the capability.
+//
 
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
 #include "dataclass/model_io.hpp"
+#include "tools/tool_skill.hpp"
 #include "tools/toolsets.hpp"
 
 namespace tools::intrinsic {
@@ -127,6 +139,16 @@ public:
      */
     [[nodiscard]] std::vector<CapabilityGroup> capability_groups() const;
 
+    /**
+     * The guidance this set loaded for the model, or nullopt when it carries
+     * none — what load_skill() read, straight out of the struct.
+     *
+     * Overridable rather than final, for the set that has guidance to give
+     * without a file to read it from; the default is the loaded skill and
+     * nothing else. Nothing about it is part of a call (tools/tool_skill.hpp).
+     */
+    [[nodiscard]] std::optional<tools::ToolSetSkill> skill() const override;
+
 protected:
     IntrinsicToolSet() = default;
 
@@ -162,6 +184,30 @@ protected:
     void declare_capability_group(std::string_view group,
                                   std::vector<std::string_view> tools);
 
+    /**
+     * Take on the skill declared in `file` — the derived constructor's third
+     * job, after register_tools() and any capability group, and the one it may
+     * skip: a set with nothing to say about using its tools together is an
+     * ordinary set (tools/tool_skill.hpp).
+     *
+     * The document's shape is tools/intrinsic/skill_declaration.hpp's; nothing
+     * about the path is interpreted here, so the same rule as a tool's
+     * declaration applies — the package decides where its files live and names
+     * this one (the process set passes schema_directory()/"skill.yaml").
+     *
+     * A file that cannot be read is REPORTED through the log and leaves the set
+     * with no skill, which is the whole of what it costs: the tools stay
+     * routable and the model is still told what each one does. That is the
+     * opposite of the trade register_tools() makes for a tool (where an
+     * unreadable declaration withholds a capability), and deliberately so —
+     * guidance is not a capability.
+     *
+     * Called more than once, the last skill that LOADED is the one the set
+     * carries: a later file that fails to load does not take an earlier one
+     * away.
+     */
+    void load_skill(const std::filesystem::path& file);
+
 private:
     /// One declared group, as the set declared it: the name and the whole
     /// membership list, in declaration order.
@@ -176,6 +222,8 @@ private:
     std::unordered_map<std::string, ToolHandle> _lookup_table;
     /// The capability families this set declared, in the order it declared them.
     std::vector<DeclaredGroup> _groups;
+    /// The skill load_skill() took on, when one loaded.
+    std::optional<tools::ToolSetSkill> _skill;
 };
 
 } // namespace tools::intrinsic

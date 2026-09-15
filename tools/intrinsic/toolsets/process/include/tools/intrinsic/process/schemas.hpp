@@ -12,6 +12,12 @@
 // tools/intrinsic/tool_declaration.hpp for the format and for what is
 // deliberately not loaded from it.
 //
+// The directory carries one more document that is not a tool: skill.yaml, the
+// set's skill — how the six are used TOGETHER, which no per-tool description
+// can say. It is loaded by the set rather than by a tool
+// (ProcessToolSet's constructor, tools/intrinsic/toolset_base.hpp's
+// load_skill()), and its format is tools/intrinsic/skill_declaration.hpp.
+//
 // This header is that location, decided ONCE. The tools name a file
 // ("spawn_process.yaml"); where the directory is, and how a deployment moves
 // it, is answered here and nowhere else:
@@ -29,7 +35,9 @@
 //
 // A path that does not exist is not an error here: the loader reports the file
 // it could not read and the tool is skipped, which is the same handling every
-// other broken declaration gets (tool_declaration.hpp).
+// other broken declaration gets (tool_declaration.hpp). For skill.yaml the
+// answer is milder still — the set keeps every tool and carries no guidance
+// (skill_declaration.hpp).
 //
 
 #include <filesystem>

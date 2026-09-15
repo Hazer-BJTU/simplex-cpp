@@ -28,6 +28,12 @@ THE DEMO (tools/example/deepseek_chat.cpp)
   ask for real programs on this machine; spawn_process, write_process_input
   and kill_process are confirmed at the terminal before they run.
 
+  The system prompt is a persona plus the SET'S SKILL: the guidance from
+  tools/intrinsic/toolsets/process/schemas/skill.yaml, injected as the
+  skill.process section (ToolRegistry::inject_skills). That is what tells the
+  model to wait rather than poll, what a session costs, and what a denied
+  confirmation means — read it with /skill or --skill.
+
   Requirements:  an API key, and a TTY for the confirmation prompts.
 
   Start it with a key in the environment so the first prompt is only the
@@ -38,13 +44,15 @@ THE DEMO (tools/example/deepseek_chat.cpp)
   Flags:
       --yes          approve every confirmed call without asking
       --tools        print the tool catalogue and exit (no key, no child)
+      --skill        print the guidance the model was given, in full, and
+                     exit (also no key, no child)
       --list-models  the provider's live model list and balance, then exit
       --max-steps N  model exchanges one message may take (default 12; raise
                      it when driving an interactive child, which costs one
                      round trip per look)
       --help         usage
 
-  In the REPL: /tools, /sessions, /help, empty line quits.
+  In the REPL: /tools, /skill, /sessions, /help, empty line quits.
 
 THINGS WORTH TRYING (each one exercises a different part of the chain)
   1. "run seq 1 5 and show me the output"
@@ -72,8 +80,13 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
 
 OFFLINE CHECKS (no API key, no network, no child process)
   /src/build/bin/tools_deepseek_chat --tools
-      Prints the catalogue the registry hands the model and exits non-zero if
-      any of the six declarations failed to load or a name is not routable.
+      Prints the catalogue the registry hands the model, the set's skill and
+      its section in a prompt, and exits non-zero if any of the six
+      declarations failed to load, a name is not routable, or skill.yaml did
+      not load and inject.
+
+  /src/build/bin/tools_deepseek_chat --skill
+      The guidance itself, exactly as the model receives it.
 
   ctest --test-dir /src/build -R tools_deepseek_chat_catalogue --output-on-failure
       The same thing, as the suite the build ran.
@@ -89,9 +102,9 @@ THE WHOLE SUITE
 A STAGED RELEASE (already built; exercises the other schema location)
   /src/stage/bin/tools_deepseek_chat
       The same demo as installed by `cmake --install`: the tool declarations
-      travel with it at /src/stage/bin/schemas/process, which is the "beside
-      the executable" path a deployment uses — this binary needs no source
-      tree at all. Re-stage after a rebuild with:
+      AND skill.yaml travel with it at /src/stage/bin/schemas/process, which is
+      the "beside the executable" path a deployment uses — this binary needs no
+      source tree at all. Re-stage after a rebuild with:
 
           cmake --install /src/build --prefix /src/stage
 

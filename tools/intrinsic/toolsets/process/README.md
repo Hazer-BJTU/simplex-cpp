@@ -10,8 +10,8 @@ Built on the package's shared core (`tools_intrinsic`, see
 JSON result shape and the confirmation routing; this directory is only the
 process domain. The manager underneath is `process/`'s `ProcessHandle`.
 
-- [The model's view](#the-models-view) — the six tools, their schemas and
-  results
+- [The model's view](#the-models-view) — the six tools, their schemas, the
+  skill that says how they fit together, and results
 - [Worked examples](#worked-examples)
 - [The host's view](#the-hosts-view) — wiring, shutdown, internals
 
@@ -25,6 +25,15 @@ one file per tool under [`schemas/`](schemas/) — `spawn_process.yaml`,
 section shows is therefore not a copy of something written in C++: it is the
 declaration, and the file is what a model is actually sent. The prose there is
 the same prose below; edit the file and rerun the tests.
+
+The directory carries one more document that is not a tool at all:
+[`schemas/skill.yaml`](schemas/skill.yaml), the set's **skill** — how the six
+are used TOGETHER, which is the one thing no per-tool description can say. The
+set loads it when it is built, and it reaches a model as one section of the host's
+system prompt (`ToolRegistry::inject_skills()`), appended after the host's own
+instructions; `ToolSet::skill()` is where a host reads it back, and
+`deepseek_chat --skill` prints it in full. See
+[The set's skill](#the-sets-skill).
 
 Those files also restate each tool's `type`/`security` pair for the reader.
 That part is documentation, not configuration: the loader does not read it, the
@@ -75,6 +84,41 @@ started three turns ago", and an id that came back around would make
 **There is no shell.** The executable runs directly, so `|`, `>`, `*` and `&&`
 reach it as literal arguments. A model that wants a pipeline asks for
 `sh -c '...'` explicitly.
+
+### The set's skill
+
+Everything above — the ordinary path through the six, what a session costs, when
+to wait instead of polling, what a denied confirmation means — also ships as a
+document the model itself is given: [`schemas/skill.yaml`](schemas/skill.yaml),
+the set's **skill**. A tool declaration answers "what does this call do"; the
+skill answers what none of them can between them, and it is prose rather than
+behaviour: a model that ignores it can still call every tool, so the
+declarations stay the contract and the skill stays advice.
+
+The document holds a `name`, an optional `title` (the prompt section's
+heading), a one-line `description`, `keywords` for a host that selects skills,
+and the `text` — markdown, carried into the prompt verbatim. Its format and the
+rules it is held to are `tools/intrinsic/skill_declaration.hpp`; the type is
+`tools::ToolSetSkill` (`tools/include/tools/tool_skill.hpp`).
+
+It reaches a model through the prompt template, not the tool list:
+`ToolSet::inject_skill()` appends one Growing section, named
+`skill.<name>` (here `skill.process`), after whatever the host has already said,
+and `ToolRegistry::inject_skills()` is the same call over every registered set
+in registration order. A host injects them with the rest of its fixed context —
+after the persona and the tool listing, before anything it rewrites per turn,
+which is the layout rule the template's stability tiers exist for. The demo does
+exactly that (`tools/example/deepseek_chat.cpp`) and prints the result with
+`/skill` or `--skill`.
+
+A skill that cannot be read is the mildest failure in this package: the loader
+reports the file and the set carries **no** skill, while every one of its tools
+stays routable — guidance is not a capability. What that costs is quiet, though
+— a model that was never told how the tools fit together still uses them, just
+worse — so `test_tools` loads the real file and holds it against the set: it
+must name every tool that actually registered, and it must arrive in a prompt
+unchanged. A tool renamed in code and not in the skill fails the build's tests
+rather than leaving a model instructions about a call that no longer exists.
 
 ### Which calls need confirmation
 
@@ -497,8 +541,10 @@ keeps a component's confirmations to itself.
 `tools/example/deepseek_chat.cpp` is that wiring in a running host: a live
 provider conversation whose tools are these six, every call going through
 `ToolRegistry::execute`, with an `InvokeConfirmEvent` handler at the terminal
-that answers the RequireConfirm calls — and `--tools`, which prints the
-catalogue this section describes without needing a provider.
+that answers the RequireConfirm calls — plus the offline halves of what the
+model is given: `--tools`, which prints the catalogue this section describes,
+and `--skill`, which prints the guidance
+[above](#the-sets-skill) in full. Neither needs a provider.
 
 Since the state-changing tools declare `RequireConfirm`, a host that wants them
 to run at all must subscribe a handler to `InvokeConfirmEvent` — with none,
@@ -551,10 +597,11 @@ first, for exactly that reason).
   description and its argument schema — is not here: it is declared in
   `schemas/<tool>.yaml`, and `ProcessToolBase` loads it.
 - **`process/toolset.hpp`** — the `ProcessToolSet` a host registers. Its name,
-  its six tools and the store they share; the catalogue, the routing and the
-  build/release lifecycle come from `IntrinsicToolSet`, and
-  `prepare()` / `execute()` stay as `ToolSet` defines them, since those carry
-  the invocation layer's checkpoint sequence and failure contracts.
+  its six tools, the store they share and the skill it loads; the catalogue, the
+  routing, the build/release lifecycle and `skill()` come from
+  `IntrinsicToolSet`, and `prepare()` / `execute()` stay as `ToolSet` defines
+  them, since those carry the invocation layer's checkpoint sequence and failure
+  contracts.
 - **`process/schemas.hpp`** — where the declarations live, answered once (see
   below). The header a deployment's configuration question belongs in.
 
@@ -566,6 +613,12 @@ and each tool names its own when it is built
 tool's name, the prose a model reads and the JSON Schema of its arguments, and
 nothing about how the tool behaves — the format, and what is deliberately not
 loaded from it, is `tools/intrinsic/tool_declaration.hpp`.
+
+The same directory holds `schemas/skill.yaml`, which the SET loads rather than a
+tool (`ProcessToolSet`'s constructor calls `load_skill(schema_directory() /
+"skill.yaml")`). It is a document of the same package and is resolved the same
+way — one directory, one lookup rule — but it is not a seventh tool: it has no
+argument schema and no call, and the tool-declaration loader would refuse it.
 
 The directory is resolved in exactly one place, `process/schemas.hpp`:
 
@@ -589,7 +642,9 @@ description and schema nobody could find, and the rest of the set is
 unaffected. That failure mode is also why the files are listed among the
 target's sources in `CMakeLists.txt`: an IDE shows them with the package, and
 since nothing is compiled from them, editing one takes effect on the next run
-without a rebuild.
+without a rebuild. `skill.yaml` is listed there too and is read the same way,
+with the milder outcome [the skill
+section](#the-sets-skill) describes: the guidance is lost, the tools are not.
 
 The six are also declared to be one **capability group** ("process",
 `declare_capability_group()` in `src/toolset.cpp`), because a tool that fails to
@@ -693,7 +748,9 @@ the settled query, the unconfirmed-call refusal, and a whole turn through a
 catalogue entry is compared against its `schemas/*.yaml` file, and the
 implementation is asked the same questions the file answers — declared kinds,
 defaults, enum members, minimums, `required` and the restated type/security
-pair — so a declaration and its tool cannot drift apart.
+pair — so a declaration and its tool cannot drift apart. The same idea one level
+up is the skill check: `schemas/skill.yaml` must load, must name every tool the
+set registered, and must arrive in a prompt template unchanged.
 
 `test_registry_e2e` — the composition the agent loop uses, at the registry
 boundary: `ToolRegistry` + `ProcessToolSet` + `ProcessSessionStore` + its own

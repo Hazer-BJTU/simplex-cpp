@@ -32,10 +32,25 @@
 #                   nothing new, or says nothing. The files are written by the
 #                   test, which is the only way to reach the shapes a real
 #                   declaration should never have.
+#   test_skill_declaration
+#                   the skill loader: the document one level up from a tool —
+#                   what a TOOLSET says about using its tools together. A
+#                   well-formed file arriving whole (the guidance is carried
+#                   into the system prompt verbatim, so its interior lines are
+#                   the part that must not be normalized), a skill stating only
+#                   its two required fields, and every shape it refuses — a
+#                   document that is not a mapping (the empty file included), a
+#                   missing/empty/mistyped name or text, a title or description
+#                   present but saying nothing, a keyword list that is not a
+#                   list or carries a non-string, an empty or duplicated word,
+#                   and a file that cannot be read at all (the path in the
+#                   message either way). The reporting form a toolset uses is
+#                   pinned too: nullopt instead of a throw.
 #
 # In-process only: no children, no sockets, and the only I/O is the scratch
-# directory test_tool_declaration makes for itself. The confirmation cases use a
-# bus the test owns, so nothing is left subscribed on the process-wide one.
+# directories test_tool_declaration and test_skill_declaration make for
+# themselves. The confirmation cases use a bus the test owns, so nothing is left
+# subscribed on the process-wide one.
 function(intrinsic_add_test name)
     add_executable(${name} ${name}.cpp)
     target_compile_options(${name} PRIVATE
@@ -51,3 +66,4 @@ endfunction()
 
 intrinsic_add_test(test_tool_base)
 intrinsic_add_test(test_tool_declaration)
+intrinsic_add_test(test_skill_declaration)

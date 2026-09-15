@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 
+#include "tools/intrinsic/process/schemas.hpp"
 #include "tools/intrinsic/process/tools.hpp"
 
 namespace tools::intrinsic {
@@ -48,6 +49,17 @@ ProcessToolSet::ProcessToolSet(std::shared_ptr<ProcessSessionStore> store,
         tool_names::kWrite,
         tool_names::kKill,
     });
+
+    // The set's third job, after its tools and its group: the guidance a model
+    // needs to use them TOGETHER — which call comes first, why waiting beats
+    // polling, what a denied confirmation means (tools/tool_skill.hpp). It
+    // lives beside the tool declarations, because it is the same kind of
+    // document: written for a model, loaded at run time, no rebuild to change.
+    //
+    // It is also the one part of the set that is OPTIONAL in the strong sense:
+    // a file that cannot be read is reported and leaves the set carrying no
+    // skill, with every tool still routable (toolset_base.hpp, load_skill()).
+    load_skill(schema_directory() / "skill.yaml");
 }
 
 std::string_view ProcessToolSet::name() const noexcept

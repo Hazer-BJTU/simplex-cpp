@@ -21,6 +21,7 @@
 #
 #   /src/build/bin/tools_deepseek_chat            the demo
 #   /src/build/bin/tools_deepseek_chat --tools    the catalogue, no key needed
+#   /src/build/bin/tools_deepseek_chat --skill    the model's guidance, same
 #   /src/stage/bin/tools_deepseek_chat            the same demo, installed
 #   ctest --test-dir /src/build                   the suite, runnable again
 #

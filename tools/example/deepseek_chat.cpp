@@ -24,6 +24,15 @@
 //                         (proc_1, ...) that survive across turns, a strand
 //                         per child, per-stream read cursors, and the
 //                         terminate_all() shutdown path.
+//   ToolSetSkill          the set's guidance for the model — how the six are
+//                         used TOGETHER, which is what a per-tool description
+//                         cannot say. It is loaded from the toolset's own
+//                         schemas/skill.yaml and reaches the model the way the
+//                         rest of the prompt does: ToolRegistry::inject_skills()
+//                         appends one section per set to the system prompt,
+//                         after the persona and before anything the host
+//                         rewrites per turn. `/skill` prints the exact text the
+//                         model was given.
 //   InvokeConfirmEvent    the module's security gate. spawn_process,
 //                         write_process_input and kill_process declare
 //                         RequireConfirm, so before any of them runs, the
@@ -64,12 +73,18 @@
 //   --tools            the tool catalogue ToolRegistry::get_tools() would hand
 //                      the model — the six process tools as the intrinsic set
 //                      loaded them from its YAML declarations, with the
-//                      capability group's state. Needs NO API key and starts
-//                      NO child, which is what makes it the offline smoke
-//                      check the test suite registers (tools/example/
+//                      capability group's state — plus the set's skill and a
+//                      check that it injects into a prompt. Needs NO API key
+//                      and starts NO child, which is what makes it the offline
+//                      smoke check the test suite registers (tools/example/
 //                      CMakeLists.txt): a declaration that failed to load, a
-//                      set that registered five of six tools, or a routing
-//                      table that lost a name all exit non-zero here.
+//                      set that registered five of six tools, a routing table
+//                      that lost a name, or a skill.yaml that did not load all
+//                      exit non-zero here.
+//   --skill            the guidance in full, exactly as it was injected: what
+//                      the model reads about using the tools together. Also
+//                      needs no API key and starts no child, and is the flag to
+//                      reach for when the question is "what was it told".
 //   --yes              approve every confirmed call without prompting.
 //   --max-steps N      how many model exchanges one user turn may take
 //                      (default 12). Driving an interactive child — another
@@ -80,7 +95,7 @@
 //                      already ran and its result is in the conversation, so
 //                      the next message continues from there.
 //
-// REPL COMMANDS (empty line quits): /tools /sessions /help
+// REPL COMMANDS (empty line quits): /tools /skill /sessions /help
 
 #include "eventbus/async_event_bus.hpp"
 #include "eventbus/event_bus.hpp"
@@ -96,6 +111,9 @@
 #include "tools/invoke_exception.hpp"
 #include "tools/registry.hpp"
 #include "tools/security_check.hpp"
+// tools::ToolSetSkill and the section name it takes in a prompt, which this
+// file prints and injects (tools/tool_skill.hpp).
+#include "tools/tool_skill.hpp"
 
 #include <boost/asio.hpp>
 
@@ -138,6 +156,7 @@ constexpr std::size_t kDefaultMaxAgentSteps = 12;
 struct Options {
     bool list_models_only = false;
     bool catalogue_only = false;
+    bool skill_only = false;
     bool assume_yes = false;
     bool help = false;
     std::size_t max_steps = kDefaultMaxAgentSteps;
@@ -146,13 +165,16 @@ struct Options {
 void print_usage(const char* executable) {
     std::cout
         << "usage: " << executable
-        << " [--tools] [--list-models] [--yes] [--max-steps N]\n"
+        << " [--tools] [--skill] [--list-models] [--yes] [--max-steps N]\n"
         << "\n"
         << "  (no flags)      chat: one turn at a time, tools behind a\n"
         << "                  terminal confirmation prompt\n"
         << "  --tools         print the tool catalogue the registry would\n"
         << "                  give the model and exit (no API key needed,\n"
         << "                  starts no child process)\n"
+        << "  --skill         print the guidance the model is given about\n"
+        << "                  using those tools together — the prompt\n"
+        << "                  section inject_skills() adds — and exit\n"
         << "  --list-models   print the provider's live model list and\n"
         << "                  balance, then exit\n"
         << "  --yes           approve every confirmed tool call without\n"
@@ -185,6 +207,8 @@ bool parse_options(int argc, char* argv[], Options& options) {
 
         if (flag == "--tools") {
             options.catalogue_only = true;
+        } else if (flag == "--skill") {
+            options.skill_only = true;
         } else if (flag == "--list-models") {
             options.list_models_only = true;
         } else if (flag == "--yes" || flag == "-y") {
@@ -256,12 +280,14 @@ std::string summary(std::string_view text, std::size_t limit = 140) {
 
 /**
  * Print the flattened catalogue — ToolRegistry::get_tools(), the exact list
- * `state.tools` is set from below — with the process family's capability group.
+ * `state.tools` is set from below — with the process family's capability group,
+ * the set's skill, and the skill's trip into a prompt.
  *
- * @return 0 when the six process tools are all routable and the family is
- *         whole, 2 otherwise. The non-zero exit is the offline smoke check:
- *         a schema file that failed to load, or a routing table that lost a
- *         name, fails here without touching a child process or the network.
+ * @return 0 when the six process tools are all routable, the family is whole
+ *         and the skill loads and injects, 2 otherwise. The non-zero exit is
+ *         the offline smoke check: a schema file that failed to load, a routing
+ *         table that lost a name, or a skill.yaml that did not arrive fails
+ *         here without touching a child process or the network.
  */
 int report_catalogue(const tools::ToolRegistry& registry,
                      const tools::intrinsic::ProcessToolSet& process_set) {
@@ -292,6 +318,45 @@ int report_catalogue(const tools::ToolRegistry& registry,
         }
     }
 
+    // The set's skill, and the two things that can go wrong with it: a
+    // skill.yaml that did not load (the set carries none), or one that loads
+    // and does not reach a prompt. Both are silent at run time otherwise — a
+    // model that was never told how to use the tools still calls them, just
+    // worse — so the offline check asks here.
+    std::cout << "skills (ToolSet::skill()):\n";
+    for (const tools::ToolRegistry::ToolSetPtr& tool_set :
+         registry.get_registered()) {
+        const std::optional<tools::ToolSetSkill> skill = tool_set->skill();
+        if (!skill.has_value()) {
+            std::cerr << "  toolset \"" << tool_set->name()
+                      << "\" carries no skill\n";
+            whole = false;
+            continue;
+        }
+        std::cout << "  " << skill->name << " — " << skill->description << "\n"
+                  << "    " << skill->keywords.size() << " keyword(s), "
+                  << skill->text.size() << " bytes of guidance\n";
+    }
+
+    // Injected into a prompt of its own, which is what the conversation below
+    // does with the real system prompt: one section per set that has a skill.
+    model_io::PromptTemplate prompt;
+    const std::size_t injected = registry.inject_skills(prompt);
+    std::cout << "injected " << injected << " of " << registry.size()
+              << " set(s) as section(s) of an empty prompt ("
+              << prompt.render().markdown.size() << " bytes)\n";
+    for (const model_io::PromptSection& section : prompt) {
+        std::cout << "  " << section.name;
+        if (!section.title.empty()) {
+            std::cout << "  \"" << section.title << "\"";
+        }
+        std::cout << "\n";
+    }
+    if (injected != registry.size()) {
+        std::cerr << "a registered toolset contributed no skill section\n";
+        whole = false;
+    }
+
     // The group and the routing table are two different answers, so the smoke
     // check asks both: a name can be announced by the set and still be
     // unreachable if the registry refused it.
@@ -311,11 +376,50 @@ int report_catalogue(const tools::ToolRegistry& registry,
 
     if (!whole) {
         std::cerr << "the process tool family is not whole; this demo needs "
-                     "all six tools\n";
+                     "all six tools and the set's skill\n";
         return 2;
     }
-    std::cout << "all six process tools are registered and routable\n";
+    std::cout << "all six process tools are registered and routable, and the "
+                 "skill reaches the prompt\n";
     return 0;
+}
+
+/// `/skill`: the guidance the model was given, in full — the section
+/// inject_skills() added to the system prompt, not a summary of it. Reading it
+/// next to the catalogue above is how the two halves of what the model knows
+/// (what each tool does, how they are used together) are seen at once.
+int report_skill(const tools::ToolRegistry& registry) {
+    int status = 0;
+    for (const tools::ToolRegistry::ToolSetPtr& tool_set :
+         registry.get_registered()) {
+        const std::optional<tools::ToolSetSkill> skill = tool_set->skill();
+        if (!skill.has_value()) {
+            std::cerr << "toolset \"" << tool_set->name()
+                      << "\" carries no skill (its skill.yaml did not load; "
+                         "see the log above)\n";
+            status = 2;
+            continue;
+        }
+        std::cout << "skill \"" << skill->name << "\" from toolset \""
+                  << tool_set->name() << "\"\n";
+        if (!skill->title.empty()) {
+            std::cout << "title: " << skill->title << "\n";
+        }
+        if (!skill->description.empty()) {
+            std::cout << "description: " << skill->description << "\n";
+        }
+        if (!skill->keywords.empty()) {
+            std::cout << "keywords:";
+            for (const std::string& keyword : skill->keywords) {
+                std::cout << " " << keyword;
+            }
+            std::cout << "\n";
+        }
+        std::cout << "prompt section: "
+                  << tools::skill_section_name(skill->name) << "\n\n"
+                  << skill->text << "\n";
+    }
+    return status;
 }
 
 // ---- the human in the loop ---------------------------------------------------
@@ -630,6 +734,9 @@ int main(int argc, char* argv[]) {
     if (options.catalogue_only) {
         return report_catalogue(registry, *process_set);
     }
+    if (options.skill_only) {
+        return report_skill(registry);
+    }
 
     // ---- the provider side ---------------------------------------------------
     std::string api_key;
@@ -748,6 +855,20 @@ int main(int argc, char* argv[]) {
             "again and again), and if a task needs more rounds than that, say "
             "where you got to so the person can answer \"continue\".",
         model_io::SectionStability::Immutable);
+
+    // The sets' own guidance, appended after the persona — one Growing section
+    // per set that carries a skill, in registration order (tools/tool_skill.hpp).
+    // This is the second half of what the model knows: the persona says what
+    // the host is and how it expects to be talked to, the tool catalogue says
+    // what each call does, and the skill says how the calls are used together —
+    // which no per-tool description can, and which is the part a host that only
+    // forwards `tools` leaves the model to infer from six paragraphs.
+    //
+    // Injected here rather than after `state.tools` because the two are
+    // independent: the skill is prompt text, the catalogue is the request's
+    // tool list.
+    const std::size_t skills_injected =
+        registry.inject_skills(state.system_prompt);
     state.tools = registry.get_tools();
 
     std::cout << "model: " << model_name() << " (thinking "
@@ -760,6 +881,13 @@ int main(int argc, char* argv[]) {
         std::cout << " " << tool.name;
     }
     std::cout << "\n";
+    std::cout << "system prompt: persona + " << skills_injected
+              << " skill section(s) —";
+    for (const model_io::PromptSection& section : state.system_prompt) {
+        std::cout << " " << section.name;
+    }
+    std::cout << " (" << state.system_prompt.render().markdown.size()
+              << " bytes; /skill prints the guidance)\n";
     std::cout << "spawn_process / write_process_input / kill_process ask at "
                  "the terminal before they run";
     if (options.assume_yes) {
@@ -768,7 +896,7 @@ int main(int argc, char* argv[]) {
     std::cout << ".\n";
     std::cout << "budget: " << options.max_steps
               << " tool-call rounds per message (--max-steps N to change).\n";
-    std::cout << "commands: /tools /sessions /help; empty line to quit.\n";
+    std::cout << "commands: /tools /skill /sessions /help; empty line to quit.\n";
     std::cout << "try: \"run seq 1 5 and show me the output\", or \"start cat, "
                  "feed it hello, then read back what it printed\".\n";
     std::cout << "reasoning streams live to stderr; tool results print as they "
@@ -798,9 +926,16 @@ int main(int argc, char* argv[]) {
         if (line == "/help") {
             std::cout << "commands:\n"
                       << "  /tools     the catalogue the model was given\n"
+                      << "  /skill     the guidance the model was given about\n"
+                      << "             using these tools together (the exact\n"
+                      << "             prompt section inject_skills() added)\n"
                       << "  /sessions  the sessions the store is holding\n"
                       << "  /help      this\n"
                       << "  (empty)    quit\n";
+            continue;
+        }
+        if (line == "/skill") {
+            report_skill(registry);
             continue;
         }
         if (line == "/tools") {

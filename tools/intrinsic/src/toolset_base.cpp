@@ -1,11 +1,13 @@
 #include "tools/intrinsic/toolset_base.hpp"
 
 #include <format>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "logging/logger.hpp"
+#include "tools/intrinsic/skill_declaration.hpp"
 
 namespace tools::intrinsic {
 namespace {
@@ -104,6 +106,27 @@ IntrinsicToolSet::ToolHandle IntrinsicToolSet::dispatch(
 std::size_t IntrinsicToolSet::tool_count() const noexcept
 {
     return _tools.size();
+}
+
+std::optional<tools::ToolSetSkill> IntrinsicToolSet::skill() const
+{
+    // Copied, not referenced: ToolSet::skill() answers by value, and the skill
+    // is read by a host that may keep it past the next registration.
+    return _skill;
+}
+
+void IntrinsicToolSet::load_skill(const std::filesystem::path& file)
+{
+    // The loader reports its own refusal (missing file, YAML error, a document
+    // without a name or without text), so this only has to decide what the set
+    // does about it: nothing. The tools stay routable and the model is still
+    // told what each one does — guidance is not a capability.
+    if (std::optional<tools::ToolSetSkill> loaded =
+            try_load_skill_declaration(file)) {
+        // Only on success, so a later file that fails to load cannot take an
+        // earlier skill away from the set.
+        _skill = std::move(loaded);
+    }
 }
 
 std::vector<IntrinsicToolSet::CapabilityGroup> IntrinsicToolSet::capability_groups() const

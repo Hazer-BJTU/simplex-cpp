@@ -26,9 +26,11 @@
 # parent CMakeLists.
 #
 # THE DECLARATIONS THEMSELVES are schemas/*.yaml, one file per tool, loaded at
-# run time by the tool that names it. They are listed as target sources for the
-# sake of an IDE and of `make`'s dependency tracking only — nothing is compiled
-# from them, and editing one takes effect on the next run without a rebuild.
+# run time by the tool that names it — plus schemas/skill.yaml, the set's own
+# guidance for a model (how the six are used together), loaded by the set. They
+# are listed as target sources for the sake of an IDE and of `make`'s dependency
+# tracking only — nothing is compiled from them, and editing one takes effect on
+# the next run without a rebuild.
 #
 # The directory is handed to the library as the SIMPLEX_PROCESS_SCHEMA_DIR
 # macro, which is the development/test answer to "where are the declarations?":
@@ -54,6 +56,8 @@ add_library(tools_intrinsic_process SHARED
     schemas/spawn_process.yaml
     schemas/wait_process.yaml
     schemas/write_process_input.yaml
+    # Not compiled either: the set's skill, which is about using all six.
+    schemas/skill.yaml
 )
 target_include_directories(tools_intrinsic_process PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -65,7 +69,8 @@ target_compile_definitions(tools_intrinsic_process PRIVATE
     SIMPLEX_PROCESS_SCHEMA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/schemas")
 
 # ---- Release layout ---------------------------------------------------------
-# A staged release carries the declarations BESIDE ITS EXECUTABLES
+# A staged release carries the declarations — and the set's skill.yaml with
+# them, since the whole directory is installed — BESIDE ITS EXECUTABLES
 # (<prefix>/bin/schemas/process), which is the second place
 # process/schemas.hpp looks — the same "relative to the executable"
 # convention the host already uses for its plugins, so the installed tree

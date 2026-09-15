@@ -9,9 +9,10 @@
 # if/else chain in execute_tool) with the shipped machinery:
 #
 #   ToolRegistry + ProcessToolSet + ProcessSessionStore, the six process tools
-#   loaded from their YAML declarations, and an InvokeConfirmEvent handler on
-#   the process-wide async bus that asks the human at the terminal before any
-#   state-changing call runs.
+#   loaded from their YAML declarations, the set's skill (schemas/skill.yaml)
+#   injected into the system prompt the same way a host injects it, and an
+#   InvokeConfirmEvent handler on the process-wide async bus that asks the
+#   human at the terminal before any state-changing call runs.
 #
 # The dependency on llm_deepseek guarantees the provider .so sits under the
 # executable's plugins/llm directory, where load_default_models() looks. The
@@ -51,10 +52,11 @@ add_dependencies(tools_deepseek_chat llm_deepseek)
 if(BUILD_TESTS)
     # The OFFLINE half of the demo, and the only part of it CTest runs: --tools
     # builds the registry and the process set, loads the six declarations from
-    # schemas/process/, prints the catalogue and exits — no API key, no
-    # network, and no child process started. It exits non-zero when a
-    # declaration failed to load, when the capability group came out partial,
-    # or when the routing table lost a name, which is what makes it a smoke
+    # schemas/process/, injects the set's skill into a prompt of its own, prints
+    # the catalogue and exits — no API key, no network, and no child process
+    # started. It exits non-zero when a declaration failed to load, when the
+    # capability group came out partial, when the routing table lost a name, or
+    # when skill.yaml did not load and inject, which is what makes it a smoke
     # test of the example's own wiring rather than a print-out.
     #
     # The conversation itself is deliberately NOT registered: it needs a live

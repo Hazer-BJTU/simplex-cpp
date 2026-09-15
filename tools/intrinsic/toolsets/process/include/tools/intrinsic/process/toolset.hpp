@@ -31,6 +31,14 @@
 // capability_groups(); one that only logs gets a single error naming the group
 // and each missing tool.
 //
+// THE SET ALSO CARRIES A SKILL — schemas/skill.yaml, the prose about using the
+// six together, which is the one thing no per-tool description can say. The
+// constructor loads it (load_skill()), a host reads it back through skill() and
+// puts it in front of the model with inject_skill(); the registry-level
+// shortcut is ToolRegistry::inject_skills(). It is optional in the strong
+// sense: a file that cannot be read costs the guidance and nothing else, and
+// the six tools stay routable (tools/tool_skill.hpp).
+//
 
 #include <memory>
 #include <string_view>

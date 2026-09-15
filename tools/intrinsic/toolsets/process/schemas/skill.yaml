@@ -1,0 +1,109 @@
+# skill.yaml — how the process tools are used TOGETHER.
+#
+# The six declarations beside this file each answer "what does this call do".
+# This one answers the question none of them can between them: which call comes
+# first, what the ordinary path through the family looks like, what the wrong
+# path costs, and which of two overlapping calls to prefer. It is injected into
+# the system prompt as one section (ToolSet::inject_skill), appended after the
+# host's own instructions — so it is read by a model that has already been told
+# who it is, and before it starts calling anything.
+#
+# FORMAT: tools/intrinsic/skill_declaration.hpp. `name`, `title`, `description`
+# and `keywords` are metadata for a host (a catalogue, a `/skill` command, a log
+# line); `text` is the guidance itself, carried VERBATIM into the prompt, which
+# is why it is markdown and why it is the part to read before editing.
+#
+# The suite pins the two ends together (test_tools.cpp): the skill must load, it
+# must name every tool the set actually registered, and it must survive the trip
+# into a prompt template unchanged. A tool renamed in code and not in this file
+# fails the build's tests rather than quietly leaving a model instructions about
+# a call that no longer exists.
+
+name: process
+
+title: Driving processes with the process tools
+
+description: >-
+  How the six process tools fit together: one session per program, spawn and
+  observe, feed and read, wait instead of polling, and release what is done.
+
+keywords: [process, subprocess, command, shell, session, stdout, stdin]
+
+text: |
+  The six process tools are one workflow around one thing — a session — rather
+  than six alternative ways to run a command. spawn_process both starts a
+  program and decides whether it needs following; everything else is what you do
+  with a program that is still running.
+
+  ## The ordinary path
+
+  1. `spawn_process` runs the program and waits a short while (5000 ms unless
+     you raise `expected_runtime_milliseconds`). A command that finishes inside
+     that wait comes back with its exit code and its WHOLE output in this one
+     call, and there is nothing left to do: do not poll a process that has
+     already exited.
+  2. A program still running when the wait runs out keeps running, and the
+     result carries a `session_id` (`proc_1`, `proc_2`, ...). That id is the
+     handle for every other tool, and it survives across turns.
+  3. To find out how it ends, call `wait_process` with a real
+     `timeout_milliseconds`: it returns when the child exits AND its output
+     capture is complete, or when the timeout runs out. A timeout is not an
+     error — the result reports `exited` and `output_complete` separately, and
+     the process keeps running.
+  4. `read_process_output` returns what the child has printed. By default only
+     what is NEW since the last read of that session, which is what makes it
+     safe to call repeatedly while a program runs.
+  5. `write_process_input` feeds a live child's standard input, and
+     `close_input: true` gives it end-of-input.
+  6. `kill_process` ends a child that should not keep running. The session stays
+     readable afterwards, so its output can still be collected.
+  7. Release sessions once they are done and their output has been collected
+     (`release: true` on a read or a wait, `release_exited: true` on a poll).
+     The table is bounded, and an exited session keeps its slot until it is
+     released.
+
+  ## Principles
+
+  - **Wait, do not poll.** One `wait_process` with a timeout answers "is it done
+    yet" in a single round; a `poll_processes` loop costs one round per look and
+    tells you less. Poll when you have something to do meanwhile, or when you
+    are interleaving reads and writes with a program that talks back.
+  - **New output is consumed by whoever reads it.** `poll_processes` with
+    `include_output: true` (the default) reports each session's new output and
+    consumes it, exactly as a default `read_process_output` does. Use
+    `full: true` when you want everything captured so far without consuming it,
+    and do not expect the same lines twice.
+  - **One call per question.** `poll_processes` with no `session_ids` is the
+    overview of every session — use it when you have lost track, not between
+    every other call.
+  - **There is no shell.** The program runs directly, so pipes, redirections,
+    globs and quotes reach it as literal arguments. Pass the program and each
+    argument separately, or run `sh` with `-c` explicitly when you really want a
+    shell command line.
+  - **Write what the program is waiting for.** A program that reads lines needs
+    the trailing newline inside `input`; a program that reads until end-of-input
+    prints nothing until you send `close_input: true`. A call must either send
+    something or close the input.
+  - **Ask for what you need, once.** `spawn_process`, `write_process_input` and
+    `kill_process` change the machine, so the person at the terminal is asked to
+    approve each one. A denial is an answer, not a failure: do not resend the
+    same call in a loop — say what you are trying to do and offer the smallest
+    command that would show it.
+  - **Prefer a command that finishes.** Break work into small programs that exit
+    rather than one long-lived process, unless the point really is a background
+    program — in which case spawn it with `expected_runtime_milliseconds: 0` to
+    get its id immediately.
+
+  ## Worth knowing
+
+  - A child that exits while a program IT started still holds its stdout open
+    keeps `wait_process` waiting: that is what `output_complete` reports, and
+    why a finished process can still be waited on (and why `release: true` is
+    only honoured once the capture is complete).
+  - A session id from an earlier turn may be gone — released, or never this
+    process's. That failure comes back naming the id; `poll_processes` lists the
+    sessions that do exist.
+  - `kill_process` sends a signal the child cannot refuse by default; pass
+    `graceful: true` to ask it to shut down instead, which a program may ignore.
+    Nothing guarantees grandchildren die with it — end what you started, and
+    prefer `graceful: true` for anything that writes files.

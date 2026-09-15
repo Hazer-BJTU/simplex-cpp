@@ -225,7 +225,11 @@ struct SchemaDirectoryOverride {
 };
 
 /// A package of declarations: `directory` holding a copy of exactly `tools`'s
-/// files, taken from the real package.
+/// files, taken from the real package — plus the set's skill.yaml, which is a
+/// document of the same package rather than a seventh tool (skill_declaration.hpp).
+/// Leaving it out would make every package built here one that also fails to
+/// describe how its tools are used, which is a second failure these cases are
+/// not about.
 ///
 /// Call it BEFORE pointing the override at the result: it reads the files from
 /// wherever schema_directory() answers at the time.
@@ -244,6 +248,9 @@ struct SchemaDirectoryOverride {
                                    std::filesystem::copy_options::overwrite_existing,
                                    ignored);
     }
+    std::filesystem::copy_file(source / "skill.yaml", directory / "skill.yaml",
+                               std::filesystem::copy_options::overwrite_existing,
+                               ignored);
     return directory;
 }
 
@@ -304,6 +311,54 @@ BOOST_AUTO_TEST_CASE(the_set_offers_six_routable_tools)
     BOOST_TEST(groups[0].name == "process");
     BOOST_TEST(groups[0].missing.empty());
     BOOST_TEST(groups[0].registered.size() == std::size_t{6});
+}
+
+BOOST_AUTO_TEST_CASE(the_set_carries_its_skill_and_hands_it_to_a_prompt)
+{
+    Fixture f;
+
+    // The one document in the package that is not a tool: how the six are used
+    // TOGETHER, which is the thing no per-tool description can say
+    // (tools/tool_skill.hpp).
+    const std::optional<tools::ToolSetSkill> skill = f.set->skill();
+    BOOST_TEST_REQUIRE(skill.has_value());
+    BOOST_TEST(skill->name == "process");
+    // Every field a host files a skill by, and the text a model reads.
+    BOOST_TEST(!skill->title.empty());
+    BOOST_TEST(!skill->description.empty());
+    BOOST_TEST(!skill->keywords.empty());
+    BOOST_TEST(!skill->text.empty());
+
+    // What the skill is FOR, held against the set it belongs to: it must name
+    // every tool the set actually registered. A tool renamed in code and not in
+    // this file would otherwise leave a model following instructions about a
+    // call that no longer exists — the same cross-check the declarations get
+    // (every_tool_is_declared_by_its_own_yaml_file), one level up.
+    for (const std::string& name : f.set->supported_names()) {
+        BOOST_TEST_CONTEXT("the skill mentions " << name) {
+            BOOST_TEST(skill->text.find(name) != std::string::npos);
+        }
+    }
+
+    // And it reaches a prompt whole: one section, named after the skill,
+    // carrying the file's text verbatim (which is the loader's promise about
+    // `text`, and the reason the whole document is written by hand).
+    model_io::PromptTemplate prompt;
+    prompt.add_section("persona", "", "You are a helpful assistant.",
+                       model_io::SectionStability::Immutable);
+    BOOST_TEST(f.set->inject_skill(prompt));
+
+    const auto injected = prompt.find(tools::skill_section_name(skill->name));
+    BOOST_REQUIRE(injected != prompt.end());
+    BOOST_TEST(injected->title == skill->title);
+    BOOST_TEST(injected->text == skill->text);
+
+    const std::string markdown = prompt.render().markdown;
+    BOOST_TEST(markdown.find("You are a helpful assistant.") == 0u);
+    BOOST_CHECK(markdown.find(skill->text) != std::string::npos);
+    // After what the host had already said, never before it.
+    BOOST_CHECK(markdown.find("You are a helpful assistant.")
+                < markdown.find(skill->text));
 }
 
 BOOST_AUTO_TEST_CASE(a_package_missing_a_declaration_reports_a_degraded_family)
@@ -655,14 +710,16 @@ BOOST_AUTO_TEST_CASE(every_tool_is_declared_by_its_own_yaml_file)
         {tool_names::kKill, {{"session_id", "proc_1"}}},
     };
 
-    // The directory holds exactly one file per tool. A declaration nothing
-    // loads is a document nobody will notice going stale; a tool without one is
-    // a tool the loader reports and the set then skips.
+    // The directory holds exactly one declaration file per tool — and one
+    // document that is not a tool at all, the set's skill.yaml, which the next
+    // case loads (a declaration nothing loads is a document nobody will notice
+    // going stale; a tool without one is a tool the loader reports and the set
+    // then skips).
     for (const std::filesystem::directory_entry& entry :
          std::filesystem::directory_iterator(tools::intrinsic::schema_directory())) {
         if (entry.path().extension() != ".yaml") continue;
         const std::string stem = entry.path().stem().string();
-        bool known = false;
+        bool known = stem == "skill";
         for (const DeclaredTool& tool : declared) {
             known = known || stem == tool.name;
         }
