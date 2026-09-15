@@ -65,12 +65,18 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
   3. "start sleep 600 in the background, then kill it"
         -> a session that outlives its window, and send_process ending it
            (signal "kill"; "term" asks it to shut down instead).
-  4. "what is running right now?"   ->  poll_process (wait_timeout_milliseconds: 0)
-  5. /sessions                      ->  the host's own view of the same table
-  6. Answer "n" to a confirmation   ->  the call is refused, and the refusal
+  4. "start three jobs that take 2, 5 and 20 seconds, and tell me the moment
+      the first one finishes"
+        -> ONE poll_process naming all three. It returns as soon as any one of
+           them finishes and reports all three states in that same result
+           (timed_out: false, finished_count, waited_milliseconds), leaving the
+           two that are still running alone — no per-session call, no poll loop.
+  5. "what is running right now?"   ->  poll_process (wait_timeout_milliseconds: 0)
+  6. /sessions                      ->  the host's own view of the same table
+  7. Answer "n" to a confirmation   ->  the call is refused, and the refusal
       is a tool RESULT: the model reads "security check denied: ..." and can
       adapt, instead of the turn dying.
-  7. Drive another agent: "spawn a second copy of this program with
+  8. Drive another agent: "spawn a second copy of this program with
       /src/build/bin/tools_deepseek_chat, then send it a task and tell me what
       it answers"
         -> the outer model bootstraps an inner one and drives it through
