@@ -20,7 +20,7 @@
 namespace tools::intrinsic {
 namespace {
 
-// How often wait_for_exit() re-reads the handle's observation. Matched to
+// How often the waiting reader re-reads the handles' observations. Matched to
 // ProcessHandle's own probe cadence: the await task there notices a missed
 // exit within one such interval, so watching faster would only spin.
 constexpr auto kExitPollInterval = std::chrono::milliseconds{50};
@@ -210,7 +210,7 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
         // are still draining the pipes. Answering "finished" without waiting
         // for that would let a caller report an exit code with empty output —
         // the race process/process_handle.hpp's output_drained() exists for,
-        // and the one wait_for_exit() waits out for the same reason.
+        // and the one wait_for_any() waits out for the same reason.
         //
         // Bounded by the window that has already been granted: a child whose
         // output somehow never drains must not turn a finished spawn into a
@@ -257,15 +257,13 @@ ProcessSessionStore::snapshot_on_session(SessionPtr session)
     };
 }
 
-boost::asio::awaitable<std::vector<SessionSnapshot>>
-ProcessSessionStore::snapshots(std::vector<SessionId> ids) const
+std::vector<ProcessSessionStore::SessionPtr> ProcessSessionStore::select_on_strand(
+    const std::vector<SessionId>& ids) const
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-
-    // Collected first, on the store's strand, so the table is not read again
-    // after the hops below suspend: a session released meanwhile keeps its
-    // snapshot (it is still the answer for this call), and the map is never
-    // iterated across a suspension point.
+    // Collected up front, on the store's strand, so the table is not read
+    // again after the hops that follow suspend: a session released meanwhile
+    // keeps its place in the answer (it is still what this call selected), and
+    // the map is never iterated across a suspension point.
     std::vector<SessionPtr> selected;
     if (ids.empty()) {
         selected.reserve(_sessions.size());
@@ -291,7 +289,15 @@ ProcessSessionStore::snapshots(std::vector<SessionId> ids) const
               [](const SessionPtr& left, const SessionPtr& right) {
                   return left->id < right->id;
               });
+    return selected;
+}
 
+boost::asio::awaitable<std::vector<SessionSnapshot>>
+ProcessSessionStore::snapshots(std::vector<SessionId> ids) const
+{
+    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
+
+    const std::vector<SessionPtr> selected = select_on_strand(ids);
     std::vector<SessionSnapshot> results;
     results.reserve(selected.size());
     for (const SessionPtr& session : selected) {
@@ -405,36 +411,59 @@ boost::asio::awaitable<bool> ProcessSessionStore::write_input(
 
 // ---- waiting ----------------------------------------------------------------
 
-boost::asio::awaitable<std::optional<SessionSnapshot>>
-ProcessSessionStore::wait_for_exit(
-    SessionId id, std::uint64_t timeout_milliseconds)
+boost::asio::awaitable<WaitOutcome>
+ProcessSessionStore::wait_for_any(
+    std::vector<SessionId> ids, std::uint64_t timeout_milliseconds)
 {
     co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-    SessionPtr session = find_on_strand(id);
-    if (session == nullptr) {
-        co_return std::nullopt;
-    }
+    // The selection is taken once, on the way in: the ids are resolved to
+    // handles here and the loop below only ever reads those, so a session
+    // spawned while this waits is not silently added to what it waits for —
+    // "the sessions named (or existing) when the call arrived" is a set the
+    // caller can reason about, and one that grew mid-wait is not.
+    const std::vector<SessionPtr> selected = select_on_strand(ids);
 
-    // Watched, not re-waited. The handle's own await task is the one
-    // authority on the terminal state (and its initial wait is one-shot by
-    // contract), so this polls the observation it publishes. The cadence
-    // matches that task's own probe interval — watching faster would spin
-    // without noticing anything sooner.
-    co_await boost::asio::dispatch(session->strand, boost::asio::use_awaitable);
+    const auto started = std::chrono::steady_clock::now();
+    const auto deadline =
+        started + std::chrono::milliseconds{timeout_milliseconds};
+    // On the store's strand, not on a session's: the timer is this call's own
+    // wait, not a child's, and every actual read below hops to the session it
+    // belongs to anyway.
+    boost::asio::steady_timer poll{_strand};
 
-    boost::asio::steady_timer poll{session->strand};
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds{timeout_milliseconds};
-    // BOTH conditions, and the second is not redundant: exited() is written by
-    // the await task the moment it observes the child, while the output the
-    // child already wrote may still be sitting in the pipes waiting for the
-    // read tasks. Waiting on exited() alone reports an exit code with EMPTY
-    // output for a child that printed and exited promptly — which is exactly
-    // what a caller waiting for a command to finish must not be told. The pair
-    // is the handle's own "work runs out" condition (process_handle.hpp).
-    while (!session->handle->exited() || !session->handle->output_drained()) {
-        // 0 disables the deadline: wait for the exit, however long it takes.
-        if (timeout_milliseconds != 0 &&
+    std::vector<SessionSnapshot> snapshots;
+    bool finished = false;
+    for (;;) {
+        // Every pass reads EVERY selected session, even once one of them is
+        // known finished: the answer is the whole set, and a pass that stopped
+        // early would report one session's ending beside stale neighbours.
+        snapshots.clear();
+        snapshots.reserve(selected.size());
+        for (const SessionPtr& session : selected) {
+            snapshots.push_back(co_await snapshot_on_session(session));
+        }
+        // The handle's own "work runs out" pair, and the second half is not
+        // redundant: exited() is written by the await task the moment it
+        // observes the child, while the bytes the child already wrote may
+        // still be sitting in the pipes waiting for the read tasks. Ending the
+        // wait on exited() alone answers with an exit code and EMPTY output
+        // for a command that printed and exited promptly — the one thing a
+        // caller waiting for a command must not be told
+        // (ProcessHandle::output_drained).
+        finished = std::any_of(
+            snapshots.begin(), snapshots.end(),
+            [](const SessionSnapshot& snapshot) {
+                return snapshot.exited && snapshot.output_drained;
+            });
+        if (finished) {
+            break;
+        }
+        // The deadline, and 0 falls out of it rather than being a special
+        // case: 0 puts the deadline in the past, so the pass just taken is the
+        // answer. A selection that resolved to nothing breaks here too — there
+        // is no child whose ending could end the wait, and holding the call
+        // open over an empty table would spend a timeout to learn nothing.
+        if (selected.empty() ||
             std::chrono::steady_clock::now() >= deadline) {
             break;
         }
@@ -442,17 +471,14 @@ ProcessSessionStore::wait_for_exit(
         co_await poll.async_wait(boost::asio::use_awaitable);
     }
 
-    // Either way the snapshot is the answer, and it carries BOTH facts: which
-    // of the two conditions the wait reached is exactly what tells a caller
-    // "it finished" from "it finished but its output is not all here yet" from
-    // "the deadline came first". Already on the session's strand, so this
-    // reads directly rather than hopping again.
-    co_return SessionSnapshot{
-        .id = session->id,
-        .result = session->handle->snapshot(),
-        .exited = session->handle->exited(),
-        .output_drained = session->handle->output_drained(),
-    };
+    WaitOutcome outcome;
+    outcome.snapshots = std::move(snapshots);
+    outcome.finished = finished;
+    outcome.timed_out = !finished;
+    outcome.waited_milliseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count());
+    co_return outcome;
 }
 
 // ---- termination and release ------------------------------------------------

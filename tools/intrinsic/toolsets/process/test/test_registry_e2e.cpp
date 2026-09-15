@@ -403,6 +403,21 @@ struct Fixture {
 
 } // namespace
 
+/// Wait for `id` through the poll tool and hand back its result — how the cases
+/// below get a child to its terminal state before arranging a batch around it.
+/// `include_output` is false by default: this is a wait, not a read, and the
+/// cases using it are usually about to assert on the output themselves.
+ResultText wait_for_one(Fixture& f, const std::string& id,
+                        std::uint64_t wait_timeout = 5000,
+                        bool include_output = false)
+{
+    return result_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"session_ids", nlohmann::json::array({id})},
+                       {"wait_timeout_milliseconds", wait_timeout},
+                       {"include_output", include_output}})));
+}
+
 // ---- the settled call at the registry boundary ------------------------------
 
 BOOST_AUTO_TEST_CASE(the_registry_answers_the_settled_call_it_ran)
@@ -524,22 +539,25 @@ BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
                                        {"close_input", true}}))));
 
     const ResultText waited = result_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.field("exited") == "true");
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"session_ids", nlohmann::json::array({id})},
+                       {"wait_timeout_milliseconds", 5000}})));
+    BOOST_TEST(waited.field("state") == "exited");
     BOOST_TEST(waited.field("output_complete") == "true");
     BOOST_TEST(waited.field("timed_out") == "false");
-    BOOST_TEST(waited.block("stdout") == "through the registry\n");
+    BOOST_TEST(waited.block("new_stdout") == "through the registry\n");
 
-    // The delta still holds the text — the wait read the capture with
-    // `full = true`, which is an observation and consumes nothing — and a
-    // second delta is then empty.
+    // The wait reported the session's NEW output, which is a delta read — so it
+    // consumed it, and a read now finds nothing new. `full` still finds the
+    // whole capture, because a full read is an observation and consumes
+    // nothing.
     const ResultText delta = result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(delta.block("stdout") == "through the registry\n");
-    const ResultText empty = result_of(f.call(call_for(
-        std::string(tool_names::kRead), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(empty.block("stdout").empty());
+    BOOST_TEST(delta.block("stdout").empty());
+    const ResultText full = result_of(f.call(call_for(
+        std::string(tool_names::kRead),
+        nlohmann::json{{"session_id", id}, {"full", true}})));
+    BOOST_TEST(full.block("stdout") == "through the registry\n");
 
     // Reaping through a poll: the session goes, and the poll says which ones
     // went. Like every other poll the call is ReadOnly — the removal is the
@@ -548,7 +566,8 @@ BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
     // apart from it.
     const ResultText polled = result_of(f.call(call_for(
         std::string(tool_names::kPoll),
-        nlohmann::json{{"release_exited", true}}, "call_poll")));
+        nlohmann::json{{"wait_timeout_milliseconds", 0},
+                       {"release_exited", true}}, "call_poll")));
     BOOST_TEST(polled.field("released") == "[\"" + id + "\"]");
     BOOST_TEST(polled.field("retained_session_count") == "0");
 }
@@ -565,9 +584,10 @@ BOOST_AUTO_TEST_CASE(a_graceful_signal_ends_a_child_and_leaves_it_readable)
     BOOST_TEST(killed.field("signalled") == "true");
 
     const ResultText waited = result_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.field("exited") == "true");
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"session_ids", nlohmann::json::array({id})},
+                       {"wait_timeout_milliseconds", 5000}})));
+    BOOST_TEST(waited.field("state") == "exited");
     // sleep does not catch SIGTERM, so it dies of the signal — the difference
     // between "term" and "kill", which reports 9.
     BOOST_TEST(waited.field("exit_code") == "15");
@@ -587,6 +607,8 @@ BOOST_AUTO_TEST_CASE(a_zero_window_hands_back_a_live_session)
     const ResultText polled = result_of(f.call(call_for(
         std::string(tool_names::kPoll),
         nlohmann::json{{"session_ids", nlohmann::json::array({id})},
+                       // A look, not a wait: this is a live child.
+                       {"wait_timeout_milliseconds", 0},
                        // Non-consuming, so this poll is ReadOnly — the shape a
                        // batch may run beside anything.
                        {"include_output", false}})));
@@ -598,9 +620,7 @@ BOOST_AUTO_TEST_CASE(a_zero_window_hands_back_a_live_session)
         std::string(tool_names::kSend),
         nlohmann::json{{"session_id", id}, {"signal", "kill"}})));
     BOOST_TEST(killed.field("signalled") == "true");
-    const ResultText waited = result_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
+    const ResultText waited = wait_for_one(f, id);
     BOOST_TEST(waited.field("exit_code") == "9");
 }
 
@@ -622,7 +642,8 @@ BOOST_AUTO_TEST_CASE(a_serial_call_runs_before_the_observing_ones_in_its_batch)
                                     {"expected_runtime_milliseconds", 0}},
                      "call_spawn"),
             call_for(std::string(tool_names::kPoll),
-                     nlohmann::json{{"include_output", false}}, "call_poll"),
+                     nlohmann::json{{"wait_timeout_milliseconds", 0},
+                                    {"include_output", false}}, "call_poll"),
         });
     BOOST_TEST_REQUIRE(records.size() == std::size_t{2});
     BOOST_CHECK(records[0].query.type == model_io::InvokeType::SerialWrite);
@@ -651,9 +672,7 @@ BOOST_AUTO_TEST_CASE(two_delta_reads_of_one_session_split_the_output_between_the
     // store's contract (no loss, no duplication) is what it gets.
     Fixture f;
     const std::string id = f.spawn("echo", {"only-once"});
-    (void)f.call(call_for(std::string(tool_names::kWait),
-                          nlohmann::json{{"session_id", id},
-                                         {"timeout_milliseconds", 5000}}));
+    (void)wait_for_one(f, id, 5000);
 
     const std::vector<model_io::InvokeReturn> records =
         f.batch(std::vector<model_io::InvokeQuery>{
@@ -716,12 +735,8 @@ BOOST_AUTO_TEST_CASE(reads_of_two_sessions_in_one_batch_do_not_interfere)
 
     // And after the drains have finished, each session holds its own output —
     // proof that the batch's two readers did not mix them up.
-    (void)f.call(call_for(std::string(tool_names::kWait),
-                          nlohmann::json{{"session_id", first},
-                                         {"timeout_milliseconds", 5000}}));
-    (void)f.call(call_for(std::string(tool_names::kWait),
-                          nlohmann::json{{"session_id", second},
-                                         {"timeout_milliseconds", 5000}}));
+    (void)wait_for_one(f, first, 5000);
+    (void)wait_for_one(f, second, 5000);
     const ResultText delta_a = result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", first}})));
     const ResultText delta_b = result_of(f.call(call_for(
@@ -753,7 +768,8 @@ BOOST_AUTO_TEST_CASE(read_only_calls_in_one_batch_consume_nothing)
                      nlohmann::json{{"session_id", id}, {"full", true}},
                      "call_full_b"),
             call_for(std::string(tool_names::kPoll),
-                     nlohmann::json{{"include_output", false}}, "call_poll"),
+                     nlohmann::json{{"wait_timeout_milliseconds", 0},
+                                    {"include_output", false}}, "call_poll"),
         });
     for (const model_io::InvokeReturn& record : records) {
         // Every one of them is the parallelisable kind — that is the premise of
@@ -773,24 +789,28 @@ BOOST_AUTO_TEST_CASE(read_only_calls_in_one_batch_consume_nothing)
     BOOST_TEST(delta.block("stdout") == "kept\n");
 }
 
-BOOST_AUTO_TEST_CASE(wait_and_poll_on_one_session_in_one_batch)
+BOOST_AUTO_TEST_CASE(a_waiting_poll_and_a_looking_poll_in_one_batch)
 {
-    // A wait and a non-consuming poll address the same session and are both
-    // ReadOnly, so they overlap by design: waiting observes, and this poll
-    // consumes nothing. The wait's deadline is what makes it a bounded
-    // neighbour — an unbounded wait would hold a parallel branch forever.
+    // Two polls of the SAME session in one batch: one waits out a deadline, one
+    // does not wait at all. Both are ReadOnly, so they overlap by design —
+    // waiting observes and ends no child — and each answers for itself, which
+    // is what a model asking two different questions at once gets. The bounded
+    // deadline is what makes the waiting one a good neighbour: there is no
+    // spelling of this call that holds a parallel branch open forever.
     Fixture f;
     const std::string id = f.spawn("sleep", {"30"});
 
     const std::vector<model_io::InvokeReturn> records =
         f.batch(std::vector<model_io::InvokeQuery>{
-            call_for(std::string(tool_names::kWait),
-                     nlohmann::json{{"session_id", id},
-                                    {"timeout_milliseconds", 300}},
+            call_for(std::string(tool_names::kPoll),
+                     nlohmann::json{{"session_ids",
+                                     nlohmann::json::array({id})},
+                                    {"wait_timeout_milliseconds", 300}},
                      "call_wait"),
             call_for(std::string(tool_names::kPoll),
                      nlohmann::json{{"session_ids",
                                      nlohmann::json::array({id})},
+                                    {"wait_timeout_milliseconds", 0},
                                     {"include_output", false}},
                      "call_poll"),
         });
@@ -800,10 +820,11 @@ BOOST_AUTO_TEST_CASE(wait_and_poll_on_one_session_in_one_batch)
 
     // A timeout is a result, not a failure: the child is still running.
     const ResultText waited = result_of(records[0]);
-    BOOST_TEST(waited.field("exited") == "false");
     BOOST_TEST(waited.field("timed_out") == "true");
-    // And the poll beside it saw the same running child.
+    BOOST_TEST(waited.field("state") == "running");
+    // And the look beside it saw the same running child, without waiting.
     const ResultText polled = result_of(records[1]);
+    BOOST_TEST(polled.field("timed_out") == "true");
     BOOST_TEST_REQUIRE(polled.records().size() == std::size_t{2});
     BOOST_TEST(polled.records()[1].field("state") == "running");
 }
@@ -816,18 +837,17 @@ BOOST_AUTO_TEST_CASE(kill_wait_and_read_in_one_batch)
     // it in the same batch can already see the exit instead of timing out.
     Fixture f;
     const std::string id = f.spawn("sh", {"-c", "printf 'before the signal\\n'; sleep 30"});
-    (void)f.call(call_for(std::string(tool_names::kWait),
-                          nlohmann::json{{"session_id", id},
-                                         {"timeout_milliseconds", 300}}));
+    (void)wait_for_one(f, id, 300);
 
     const std::vector<model_io::InvokeReturn> records =
         f.batch(std::vector<model_io::InvokeQuery>{
             call_for(std::string(tool_names::kSend),
                      nlohmann::json{{"session_id", id}, {"signal", "kill"}},
                      "call_send"),
-            call_for(std::string(tool_names::kWait),
-                     nlohmann::json{{"session_id", id},
-                                    {"timeout_milliseconds", 5000}},
+            call_for(std::string(tool_names::kPoll),
+                     nlohmann::json{{"session_ids",
+                                     nlohmann::json::array({id})},
+                                    {"wait_timeout_milliseconds", 5000}},
                      "call_wait"),
             call_for(std::string(tool_names::kRead),
                      nlohmann::json{{"session_id", id}, {"full", true}},
@@ -840,9 +860,9 @@ BOOST_AUTO_TEST_CASE(kill_wait_and_read_in_one_batch)
 
     BOOST_TEST(result_of(records[0]).field("signalled") == "true");
     const ResultText waited = result_of(records[1]);
-    BOOST_TEST(waited.field("exited") == "true");
+    BOOST_TEST(waited.field("state") == "exited");
     BOOST_TEST(waited.field("exit_code") == "9");
-    BOOST_TEST(waited.block("stdout") == "before the signal\n");
+    BOOST_TEST(waited.block("new_stdout") == "before the signal\n");
     // The read ran beside the wait and sees the same capture.
     BOOST_TEST(result_of(records[2]).block("stdout") ==
                "before the signal\n");
@@ -867,7 +887,8 @@ BOOST_AUTO_TEST_CASE(a_release_in_one_batch_leaves_the_table_empty_for_the_next_
                                     {"release", true}},
                      "call_release"),
             call_for(std::string(tool_names::kPoll),
-                     nlohmann::json{{"include_output", false}}, "call_poll"),
+                     nlohmann::json{{"wait_timeout_milliseconds", 0},
+                                    {"include_output", false}}, "call_poll"),
         });
     BOOST_TEST_REQUIRE(records.size() == std::size_t{2});
     BOOST_CHECK(records[0].query.type == model_io::InvokeType::ReadOnly);
@@ -891,7 +912,8 @@ BOOST_AUTO_TEST_CASE(a_release_in_one_batch_leaves_the_table_empty_for_the_next_
     // is not "may or may not", it is "done by the time this batch answers".
     const ResultText afterwards = result_of(f.call(call_for(
         std::string(tool_names::kPoll),
-        nlohmann::json{{"include_output", false}}, "call_after")));
+        nlohmann::json{{"wait_timeout_milliseconds", 0},
+                       {"include_output", false}}, "call_after")));
     BOOST_TEST(afterwards.records().size() == std::size_t{1});
     BOOST_TEST(afterwards.field("retained_session_count") == "0");
 }
@@ -921,11 +943,9 @@ BOOST_AUTO_TEST_CASE(stdin_writes_and_a_close_keep_their_order_in_one_batch)
         BOOST_TEST(!tools::is_error(record));
     }
 
-    const ResultText waited = result_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.field("exited") == "true");
-    BOOST_TEST(waited.block("stdout") == "first\nsecond\n");
+    const ResultText waited = wait_for_one(f, id, 5000, true);
+    BOOST_TEST(waited.field("state") == "exited");
+    BOOST_TEST(waited.block("new_stdout") == "first\nsecond\n");
 }
 
 // ---- scheduling, asserted rather than inferred -------------------------------
@@ -1004,7 +1024,9 @@ BOOST_AUTO_TEST_CASE(a_batch_mixing_process_calls_and_probes_keeps_both_rules)
             // the poll's cursor work is this layer's own state — so this whole
             // batch runs in the parallel phase, together.
             call_for(std::string(tool_names::kPoll),
-                     nlohmann::json{{"session_id", id},
+                     nlohmann::json{{"session_ids",
+                                     nlohmann::json::array({id})},
+                                    {"wait_timeout_milliseconds", 0},
                                     {"include_output", true}},
                      "call_poll"),
             call_for(std::string(Fixture::kReadOnlyProbeA), {}, "call_probe_a"),
@@ -1064,14 +1086,16 @@ BOOST_AUTO_TEST_CASE(repeated_turns_keep_their_records_and_their_sessions)
                     call_for(std::string(tool_names::kPoll),
                              nlohmann::json{{"session_ids",
                                              nlohmann::json::array({id})},
+                                            {"wait_timeout_milliseconds", 0},
                                             {"include_output", false}},
                              std::format("call_{}_poll", turn)),
                     call_for(std::string(tool_names::kRead),
                              nlohmann::json{{"session_id", id}, {"full", true}},
                              std::format("call_{}_read", turn)),
-                    call_for(std::string(tool_names::kWait),
-                             nlohmann::json{{"session_id", id},
-                                            {"timeout_milliseconds", 5000}},
+                    call_for(std::string(tool_names::kPoll),
+                             nlohmann::json{{"session_ids",
+                                             nlohmann::json::array({id})},
+                                            {"wait_timeout_milliseconds", 5000}},
                              std::format("call_{}_wait", turn)),
                 });
             BOOST_TEST_REQUIRE(records.size() == std::size_t{3});
@@ -1086,12 +1110,13 @@ BOOST_AUTO_TEST_CASE(repeated_turns_keep_their_records_and_their_sessions)
                 BOOST_CHECK(records[index].query.type ==
                             model_io::InvokeType::ReadOnly);
             }
-            // The wait is the one that cannot return before the capture is
-            // complete, so it is the one the output is asserted on.
+            // The waiting poll is the one that cannot return before the
+            // capture is complete, so it is the one the output is asserted on.
             const ResultText waited = result_of(records[2]);
-            BOOST_TEST(waited.field("exited") == "true");
+            BOOST_TEST(waited.field("state") == "exited");
             BOOST_TEST(waited.field("output_complete") == "true");
-            BOOST_TEST(waited.block("stdout") == "turn\n");
+            BOOST_TEST(waited.field("timed_out") == "false");
+            BOOST_TEST(waited.block("new_stdout") == "turn\n");
 
             // Reap it, so the table is empty at the end of every turn and the
             // session cap can never be what fails a later iteration.
@@ -1106,8 +1131,9 @@ BOOST_AUTO_TEST_CASE(repeated_turns_keep_their_records_and_their_sessions)
 
     // Nothing is left behind: every turn released what it spawned, so the table
     // is empty and no child is running.
-    const ResultText polled = result_of(
-        f.call(call_for(std::string(tool_names::kPoll), {}, "call_final")));
+    const ResultText polled = result_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"wait_timeout_milliseconds", 0}}, "call_final")));
     BOOST_TEST(polled.records().size() == std::size_t{1});
     BOOST_TEST(polled.field("retained_session_count") == "0");
 }

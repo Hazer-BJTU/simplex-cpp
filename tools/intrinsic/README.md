@@ -101,7 +101,8 @@ cannot be loaded leaves the tool unnamed, which is how `register_tools()` skips
 it rather than advertising a schema nobody could find.
 
 **`skill_declaration.hpp` — the skill loader, one level up.** A tool's
-declaration says what one call does; nothing in five of them says how they are
+declaration says what one call does; nothing in the set of them says how they
+are
 used *together* — which call comes first, what the ordinary path looks like,
 which of two overlapping calls to prefer. That prose is a toolset's **skill**,
 one YAML document per set (a `name`, an optional `title` and `description`,
@@ -147,7 +148,7 @@ declarations, its skill, and whatever state they share.
 ## Toolsets
 
 - **[toolsets/process/](toolsets/process/)** — process management: `spawn_process`
-  / `poll_processes` / `read_process_output` / `wait_process` /
+  / `poll_process` / `read_process_output` /
   `send_process`, over a session table that gives each child a
   name a model can return to across turns. See its own README.
 

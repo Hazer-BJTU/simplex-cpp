@@ -13,7 +13,7 @@
 // deliberately not loaded from it.
 //
 // The directory carries one more document that is not a tool: skill.yaml, the
-// set's skill — how the five are used TOGETHER, which no per-tool description
+// set's skill — how the four are used TOGETHER, which no per-tool description
 // can say. It is loaded by the set rather than by a tool
 // (ProcessToolSet's constructor, tools/intrinsic/toolset_base.hpp's
 // load_skill()), and its format is tools/intrinsic/skill_declaration.hpp.

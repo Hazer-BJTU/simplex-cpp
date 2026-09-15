@@ -246,9 +246,10 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
             // Still running: the id is the useful part of the answer, and the
             // output would be a partial slice the caller did not ask for.
             result.field("hint", std::format(
-                "the process is still running; call {} to check on it, {} to "
-                "wait for it, {} to read its output",
-                tool_names::kPoll, tool_names::kWait, tool_names::kRead));
+                "the process is still running; call {} with a "
+                "wait_timeout_milliseconds to wait for it to finish, or {} to "
+                "read what it has printed so far",
+                tool_names::kPoll, tool_names::kRead));
             co_return result.render();
         }
 
@@ -280,7 +281,7 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
                 "the process finished, but its output capture is not complete "
                 "yet: the text above is what has arrived so far. Something "
                 "may still hold its output open; call {} to collect the rest",
-                tool_names::kWait));
+                tool_names::kPoll));
             co_return result.render();
         }
         result.field("hint", std::format(
@@ -296,21 +297,23 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
     }
 }
 
-// ---- poll_processes ---------------------------------------------------------
+// ---- poll_process -----------------------------------------------------------
 
-PollProcessesTool::PollProcessesTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    // Name, description and argument schema: schemas/poll_processes.yaml.
-    : ProcessToolBase(std::move(store), "poll_processes.yaml", bus)
+PollProcessTool::PollProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
+    // Name, description and argument schema: schemas/poll_process.yaml.
+    : ProcessToolBase(std::move(store), "poll_process.yaml", bus)
 {}
 
-void PollProcessesTool::ensure_arguments(model_io::InvokeQuery& query) const
+void PollProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)settle_string_list(query, "session_ids");
+    (void)settle_uint(query, "wait_timeout_milliseconds",
+                      kDefaultWaitTimeoutMilliseconds);
     (void)settle_bool(query, "include_output", true);
     (void)settle_bool(query, "release_exited", false);
 }
 
-void PollProcessesTool::write_attributes(model_io::InvokeQuery& query) const
+void PollProcessTool::write_attributes(model_io::InvokeQuery& query) const
 {
     // ReadOnly, unconditionally — what the type describes is the effect this
     // call has OUTSIDE the host, and a poll has none: it asks the table what
@@ -322,32 +325,53 @@ void PollProcessesTool::write_attributes(model_io::InvokeQuery& query) const
     // double-hand a byte. `release_exited` removes a table entry, which is
     // again internal.
     //
+    // The WAIT is ReadOnly for the same reason and it is the interesting half:
+    // watching a child is not driving it. This call ends no process, sends it
+    // nothing, and leaves every session exactly as it found it — the store's
+    // wait_for_any() only re-reads what the handles publish. A model that wants
+    // a child gone says so through send_process, which asks.
+    //
     // What ReadOnly does NOT promise is that a batch's RESULT is independent of
     // its interleaving: two consuming polls of one session in the same batch
     // split that session's new output between them, and which one gets it
     // depends on the schedule. That is a determinism caveat on a call the model
     // made twice, not a data race, and it is documented where a reader will
     // meet it (tools.hpp's header, and the README).
+    //
+    // Worth stating here as well: this is the one call that can hold a parallel
+    // branch open for its whole deadline. That is still the right trade —
+    // SerialWrite would make every wait block every other call in the turn —
+    // and it is why the deadline defaults to a bounded value rather than to
+    // "forever".
     query.type = model_io::InvokeType::ReadOnly;
     query.security = model_io::InvokeSecurity::Trusted;
 }
 
-boost::asio::awaitable<model_io::Content> PollProcessesTool::invoke(
+boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
     const model_io::InvokeQuery& query)
 {
     const std::vector<ProcessSessionStore::SessionId> ids =
         optional_string_list(query, "session_ids");
+    const std::uint64_t wait_timeout = optional_uint(
+        query, "wait_timeout_milliseconds", kDefaultWaitTimeoutMilliseconds);
     const bool include_output = optional_bool(query, "include_output", true);
     const bool release_exited = optional_bool(query, "release_exited", false);
 
-    const std::vector<SessionSnapshot> snapshots =
-        co_await _store->snapshots(ids);
+    // The wait and the report are one call, and this is where the two meet: the
+    // store returns as soon as ANY session in the selection has finished (its
+    // child exited AND its output capture complete) or when the deadline runs
+    // out — and it hands back EVERY selected session either way. Which child
+    // ended is not decided here; it is readable per session on the snapshots
+    // below, and there can be more than one.
+    const WaitOutcome outcome = co_await _store->wait_for_any(ids, wait_timeout);
+    const std::vector<SessionSnapshot>& snapshots = outcome.snapshots;
 
     // Everything this call needs from the store is taken FIRST, so that the
-    // result can be written in the order a reader wants it — the count of what
-    // the table retains, then one record per session — while the count still
-    // describes the table this call LEAVES BEHIND rather than the one it found
-    // (a poll that reaps exited sessions must not report them as retained).
+    // result can be written in the order a reader wants it — the verdict, the
+    // count of what the table retains, then one record per session — while the
+    // count still describes the table this call LEAVES BEHIND rather than the
+    // one it found (a poll that reaps exited sessions must not report them as
+    // retained).
     //
     // The order between the two passes is the contract: every session's output
     // is read BEFORE anything is released, because a released session's bytes
@@ -372,7 +396,31 @@ boost::asio::awaitable<model_io::Content> PollProcessesTool::invoke(
         }
     }
 
+    // Counted from the snapshots rather than inferred from the wait's verdict:
+    // more than one session can be finished here (the ones that already were
+    // when the call arrived), and `exited` alone is not finished — a child
+    // whose capture something else still holds open is the case this is here
+    // to name.
+    std::size_t finished_count = 0;
+    std::vector<ProcessSessionStore::SessionId> unfinished_output;
+    for (const SessionSnapshot& snapshot : snapshots) {
+        if (snapshot.exited && snapshot.output_drained) {
+            ++finished_count;
+        } else if (snapshot.exited) {
+            unfinished_output.push_back(snapshot.id);
+        }
+    }
+
     ToolResult result;
+    // Why the wait ended, before what it found: a reader that knows this was a
+    // deadline reads the records below as a snapshot, and one that knows a
+    // child has finished reads them as a result.
+    result.field("timed_out", outcome.timed_out);
+    // What the waiting cost, which is also how a reader tells "it was already
+    // finished when I asked" from "it finished just now".
+    result.field("waited_milliseconds", outcome.waited_milliseconds);
+    result.field("finished_count", finished_count);
+    result.field("session_count", snapshots.size());
     // RETAINED, not alive: an exited session stays in the table (and in this
     // count) until it is released, which is what the cap counts too. The name
     // says so rather than leaving the reader to work out which number "live"
@@ -385,6 +433,12 @@ boost::asio::awaitable<model_io::Content> PollProcessesTool::invoke(
         // where each one starts (tool_result.hpp, separate()).
         result.separate();
         write_session(result, snapshots[index]);
+        // Only once the child is gone: a running process's capture is not
+        // incomplete, it is still arriving, and "output_complete: false" would
+        // read as a verdict on a live process.
+        if (snapshots[index].exited) {
+            result.field("output_complete", snapshots[index].output_drained);
+        }
         if (include_output && reads[index]) {
             // A stream that printed nothing is still a block — "(empty)" is
             // the answer to "what is new" — while a call that did not ask for
@@ -399,6 +453,24 @@ boost::asio::awaitable<model_io::Content> PollProcessesTool::invoke(
     if (!released.empty()) {
         result.separate();
         result.field("released", released);
+    }
+    if (!unfinished_output.empty()) {
+        // Said in prose as well as in the per-session `output_complete`,
+        // because the cause is not something the reader can see in the output
+        // itself: the child is gone, and the pipe is still open in somebody
+        // else's hands.
+        std::string names;
+        for (const ProcessSessionStore::SessionId& id : unfinished_output) {
+            if (!names.empty()) {
+                names += ", ";
+            }
+            names += id;
+        }
+        result.field("hint", std::format(
+            "{} exited, but the output capture is not complete yet: something "
+            "it started may still hold its stdout/stderr open. Call {} again to "
+            "collect the rest",
+            names, tool_names::kPoll));
     }
     co_return result.render();
 }
@@ -487,101 +559,6 @@ boost::asio::awaitable<model_io::Content> ReadProcessOutputTool::invoke(
     if (release) {
         // release() refuses a running child, so this is honest either way:
         // "released" says what actually happened, not what was asked for.
-        result.separate();
-        result.field("released", co_await _store->release(id));
-    }
-    co_return result.render();
-}
-
-// ---- wait_process ----------------------------------------------------------
-
-WaitProcessTool::WaitProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    // Name, description and argument schema: schemas/wait_process.yaml.
-    : ProcessToolBase(std::move(store), "wait_process.yaml", bus)
-{}
-
-void WaitProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
-{
-    (void)require_session_id(query);
-    (void)settle_uint(query, "timeout_milliseconds", kDefaultTimeoutMilliseconds);
-    (void)settle_bool(query, "release", false);
-}
-
-void WaitProcessTool::write_attributes(model_io::InvokeQuery& query) const
-{
-    // ReadOnly, unconditionally: waiting watches a child the host already
-    // started and changes nothing outside this host. `release` removes the
-    // session it waited on, which is the table's own bookkeeping — the store
-    // serialises that on its strand, so a neighbour addressing the same id is
-    // safe rather than corrupted.
-    //
-    // What ReadOnly means for a batch here is worth stating, because a wait is
-    // the one call that can hold a parallel branch open for its whole timeout:
-    // it may occupy the executor for that long, alongside anything else that
-    // overlaps. That is still the right trade — SerialWrite would make every
-    // wait block every other call in the turn — and it is why the timeout
-    // defaults to a bounded value rather than to "forever".
-    query.type = model_io::InvokeType::ReadOnly;
-    query.security = model_io::InvokeSecurity::Trusted;
-}
-
-boost::asio::awaitable<model_io::Content> WaitProcessTool::invoke(
-    const model_io::InvokeQuery& query)
-{
-    const std::string id = require_session_id(query);
-    const std::uint64_t timeout =
-        optional_uint(query, "timeout_milliseconds",
-                      kDefaultTimeoutMilliseconds);
-    const bool release = optional_bool(query, "release", false);
-
-    const std::optional<SessionSnapshot> snapshot =
-        co_await _store->wait_for_exit(id, timeout);
-    if (!snapshot) {
-        no_such_session(id);
-    }
-
-    ToolResult result;
-    write_session(result, *snapshot);
-    result.field("exited", snapshot->exited);
-    // THREE facts, not two, because "the child is gone" and "the output is all
-    // here" are settled by different tasks and a caller told only the first
-    // would treat a partial capture as the whole result (SessionSnapshot).
-    // The pair that matters is the descendant-holding-the-pipes case: the
-    // direct child exits at once while something it started keeps stdout open,
-    // so the wait can end with `exited: true, output_complete: false`.
-    result.field("output_complete", snapshot->output_drained);
-    // A timeout is a result, not a failure: it says the wait ended without
-    // reaching the COMPLETE condition — the child gone AND its capture
-    // finished — and the session is still there to be waited on again. Defined
-    // as the negation of that condition rather than of `exited` alone, so the
-    // three fields cannot disagree: timed_out is exactly the case where the
-    // answer below is not the finished article.
-    result.field("timed_out", !(snapshot->exited && snapshot->output_drained));
-
-    // The whole capture, not the delta: a caller waiting for a command to
-    // finish wants its output, and cannot know whether an earlier poll
-    // already consumed part of it. A full read leaves the delta cursor alone,
-    // so this does not steal bytes from a concurrent poll loop either. Both
-    // streams get a block, printed or not: this is the call that answers "what
-    // did it say".
-    if (const std::optional<OutputRead> read =
-            co_await _store->read_output(id, OutputStream::Both, true)) {
-        result.block("stdout", read->standard_output.text,
-                     read->standard_output.truncated);
-        result.block("stderr", read->standard_error.text,
-                     read->standard_error.truncated);
-    }
-    if (snapshot->exited && !snapshot->output_drained) {
-        // Said in prose as well as in the fields: the cause is not something
-        // the reader can see in the output itself.
-        result.field("hint", std::format(
-            "the process has exited, but its output is still incomplete: "
-            "something it started may hold its stdout/stderr open. Call {} "
-            "again to collect the rest",
-            tool_names::kWait));
-    }
-
-    if (release) {
         result.separate();
         result.field("released", co_await _store->release(id));
     }
@@ -710,8 +687,9 @@ boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
         // watcher a moment later, so this result may still say "running".
         // Saying so beats a caller concluding the signal failed.
         result.field("hint", std::format(
-            "signal sent; call {} to confirm the process has ended",
-            tool_names::kWait));
+            "signal sent; call {} with a wait_timeout_milliseconds to confirm "
+            "the process has ended",
+            tool_names::kPoll));
     }
     if (snapshot && snapshot->exited) {
         // Worth saying plainly: a call to a child that is already gone had

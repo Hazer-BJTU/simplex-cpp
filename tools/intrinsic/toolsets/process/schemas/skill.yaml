@@ -1,12 +1,12 @@
 # skill.yaml — how the process tools are used TOGETHER.
 #
-# The five declarations beside this file each answer "what does this call do".
+# The four declarations beside this file each answer "what does this call do".
 # This one answers the question none of them can between them: which call comes
 # first, what the ordinary path through the family looks like, what the wrong
-# path costs, and which of two overlapping calls to prefer. It is injected into
-# the system prompt as one section (ToolSet::inject_skill), appended after the
-# host's own instructions — so it is read by a model that has already been told
-# who it is, and before it starts calling anything.
+# path costs, and how long to wait for what. It is injected into the system
+# prompt as one section (ToolSet::inject_skill), appended after the host's own
+# instructions — so it is read by a model that has already been told who it is,
+# and before it starts calling anything.
 #
 # FORMAT: tools/intrinsic/skill_declaration.hpp. `name`, `title`, `description`
 # and `keywords` are metadata for a host (a catalogue, a `/skill` command, a log
@@ -24,14 +24,15 @@ name: process
 title: Driving processes with the process tools
 
 description: >-
-  How the five process tools fit together: one session per program, spawn and
-  observe, feed and read, wait instead of polling, and release what is done.
+  How the four process tools fit together: one session per program, spawn and
+  observe, feed and read, one call that waits for any of them, and release what
+  is done.
 
-keywords: [process, subprocess, command, shell, session, stdout, stdin]
+keywords: [process, subprocess, command, shell, session, stdout, stdin, wait, poll]
 
 text: |
-  The five process tools are one workflow around one thing — a session — rather
-  than five alternative ways to run a command. spawn_process both starts a
+  The four process tools are one workflow around one thing — a session — rather
+  than four alternative ways to run a command. spawn_process both starts a
   program and decides whether it needs following; everything else is what you do
   with a program that is still running.
 
@@ -45,11 +46,14 @@ text: |
   2. A program still running when the wait runs out keeps running, and the
      result carries a `session_id` (`proc_1`, `proc_2`, ...). That id is the
      handle for every other tool, and it survives across turns.
-  3. To find out how it ends, call `wait_process` with a real
-     `timeout_milliseconds`: it returns when the child exits AND its output
-     capture is complete, or when the timeout runs out. A timeout is not an
-     error — the result reports `exited` and `output_complete` separately, and
-     the process keeps running.
+  3. `poll_process` is both how you wait and how you look. With its default
+     `wait_timeout_milliseconds` (30000) it returns the moment ANY session it
+     was asked about has finished — exited with its output capture complete —
+     or immediately if one already had, and it reports EVERY session either way.
+     Waiting for one named process is that call with
+     `session_ids: ["proc_1"]`; `wait_timeout_milliseconds: 0` is a plain "where
+     does this stand" look. A timeout is not an error: the result says
+     `timed_out`, the processes are untouched, and you may wait again.
   4. `read_process_output` returns what the child has printed. By default only
      what is NEW since the last read of that session, which is what makes it
      safe to call repeatedly while a program runs.
@@ -60,23 +64,29 @@ text: |
      at least one of the three. A child that is ended this way stays readable, so
      its output can still be collected.
   6. Release sessions once they are done and their output has been collected
-     (`release: true` on a read or a wait, `release_exited: true` on a poll).
-     The table is bounded, and an exited session keeps its slot until it is
-     released.
+     (`release: true` on a read, `release_exited: true` on a poll). The table is
+     bounded, and an exited session keeps its slot until it is released.
 
   ## Principles
 
-  - **Wait, do not poll.** One `wait_process` with a timeout answers "is it done
-    yet" in a single round; a `poll_processes` loop costs one round per look and
-    tells you less. Poll when you have something to do meanwhile, or when you
-    are interleaving reads and writes with a program that talks back.
-  - **New output is consumed by whoever reads it.** `poll_processes` with
+  - **One call does the waiting.** `poll_process` returns the moment one of the
+    sessions it was given has finished, so there is no need to loop it yourself,
+    sleep, or read a process you are only waiting on. Ask it to wait when you
+    have nothing to do until something ends; ask with
+    `wait_timeout_milliseconds: 0` when you want the state right now.
+  - **Wait for the whole fan at once.** When several processes are running, one
+    `poll_process` naming all of them — or naming none, which means every
+    session — waits for whichever finishes first and reports all of them in the
+    same answer. The one that ended is what you were waiting for; its siblings
+    are the context. A call per session only costs turns.
+  - **New output is consumed by whoever reads it.** `poll_process` with
     `include_output: true` (the default) reports each session's new output and
     consumes it, exactly as a default `read_process_output` does. Use
     `full: true` when you want everything captured so far without consuming it,
     and do not expect the same lines twice.
-  - **One call per question.** `poll_processes` with no `session_ids` is the
-    overview of every session — use it when you have lost track, not between
+  - **Look once, when you have lost track.** A `poll_process` with
+    `wait_timeout_milliseconds: 0` and no `session_ids` is the overview of every
+    session — use it when you are unsure what is still running, not between
     every other call.
   - **There is no shell.** The program runs directly, so pipes, redirections,
     globs and quotes reach it as literal arguments. Pass the program and each
@@ -103,12 +113,16 @@ text: |
 
   ## Worth knowing
 
-  - A child that exits while a program IT started still holds its stdout open
-    keeps `wait_process` waiting: that is what `output_complete` reports, and
-    why a finished process can still be waited on (and why `release: true` is
-    only honoured once the capture is complete).
+  - A child that exits while a program IT started still holds its stdout open is
+    not finished as far as `poll_process` is concerned: it waits for the capture
+    to complete, and reports `output_complete: false` when a timeout got there
+    first. That is why a process that has already exited can still be waited on
+    (and why `release: true` is only honoured once the capture is complete).
+  - `output` you have already been given is gone: a poll with `include_output`
+    and a default read both consume what they report, and only the session that
+    printed it can be read again.
   - A session id from an earlier turn may be gone — released, or never this
-    process's. That failure comes back naming the id; `poll_processes` lists the
+    process's. That failure comes back naming the id; `poll_process` reports the
     sessions that do exist.
   - A signal reaches the child, not its children: nothing guarantees
     grandchildren die with it. End what you started, and prefer `"term"` over

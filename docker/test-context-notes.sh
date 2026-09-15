@@ -23,7 +23,7 @@ Build:     /src/build   (Debug; bin/, lib/, every test binary)
 THE DEMO (tools/example/deepseek_chat.cpp)
   /src/build/bin/tools_deepseek_chat
 
-  A DeepSeek chat whose tools are the five intrinsic process tools, reached
+  A DeepSeek chat whose tools are the four intrinsic process tools, reached
   through ToolRegistry + ProcessToolSet + ProcessSessionStore. The model can
   ask for real programs on this machine; spawn_process and send_process are
   confirmed at the terminal before they run.
@@ -65,7 +65,7 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
   3. "start sleep 600 in the background, then kill it"
         -> a session that outlives its window, and send_process ending it
            (signal "kill"; "term" asks it to shut down instead).
-  4. "what is running right now?"   ->  poll_processes
+  4. "what is running right now?"   ->  poll_process (wait_timeout_milliseconds: 0)
   5. /sessions                      ->  the host's own view of the same table
   6. Answer "n" to a confirmation   ->  the call is refused, and the refusal
       is a tool RESULT: the model reads "security check denied: ..." and can
@@ -82,7 +82,7 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
 OFFLINE CHECKS (no API key, no network, no child process)
   /src/build/bin/tools_deepseek_chat --tools
       Prints the catalogue the registry hands the model, the set's skill and
-      its section in a prompt, and exits non-zero if any of the five
+      its section in a prompt, and exits non-zero if any of the four
       declarations failed to load, a name is not routable, or skill.yaml did
       not load and inject.
 

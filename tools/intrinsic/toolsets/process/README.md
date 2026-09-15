@@ -1,16 +1,17 @@
 # process — intrinsic toolset
 
-Five tools that let a model run child processes: start one, check on it, read
-what it printed, wait for it, and tell it something — more input, the end of its
-input, or a signal to stop. A process outlives the call that started it, so each
-one gets a **session id** the model uses to come back to it in later turns.
+Four tools that let a model run child processes: start one, wait for it (or
+just look at it), read what it printed, and tell it something — more input, the
+end of its input, or a signal to stop. A process outlives the call that started
+it, so each one gets a **session id** the model uses to come back to it in later
+turns.
 
 Built on the package's shared core (`tools_intrinsic`, see
 [`../../README.md`](../../README.md)), which carries the argument reading, the
 result shape and the confirmation routing; this directory is only the process
 domain. The manager underneath is `process/`'s `ProcessHandle`.
 
-- [The model's view](#the-models-view) — the five tools, their schemas, the
+- [The model's view](#the-models-view) — the four tools, their schemas, the
   skill that says how they fit together, the shape of a result, and each
   tool's
 - [Worked examples](#worked-examples)
@@ -28,7 +29,7 @@ declaration, and the file is what a model is actually sent. The prose there is
 the same prose below; edit the file and rerun the tests.
 
 The directory carries one more document that is not a tool at all:
-[`schemas/skill.yaml`](schemas/skill.yaml), the set's **skill** — how the five
+[`schemas/skill.yaml`](schemas/skill.yaml), the set's **skill** — how the four
 are used TOGETHER, which is the one thing no per-tool description can say. The
 set loads it when it is built, and it reaches a model as one section of the host's
 system prompt (`ToolRegistry::inject_skills()`), appended after the host's own
@@ -55,23 +56,32 @@ to come back to it with.
 ```
 spawn_process ──► finished in time? ──► yes: exit code + whole output, done
                                     │
-                                    └─► no: session_id ──┬──► wait_process        finish and collect
-                                                         ├──► poll_processes      what changed since last time
+                                    └─► no: session_id ──┬──► poll_process         wait for one of them, or look
+                                                         │                           at where they all stand
                                                          ├──► read_process_output  incremental output
                                                          └──► send_process         feed its stdin, close
                                                                                    it, or signal it to stop
 ```
 
+**Looking and waiting are one call.** `poll_process` reports the state of every
+session (or the named ones), and its `wait_timeout_milliseconds` says how long
+to wait for one of them to finish: the call returns the moment ANY of them has,
+or when the deadline runs out, and either way the answer is every session in the
+selection. Waiting for one named process is that call with a one-element list;
+`wait_timeout_milliseconds: 0` is the plain "what is going on right now" look.
+There is no separate wait tool and no separate listing tool because they would
+have been the same call with a different number in it.
+
 **Output reads are incremental by default.** Each session remembers how much
 of its output has already been handed over, so `read_process_output` and
-`poll_processes` return only what is *new* — a poll loop does not re-read the
+`poll_process` return only what is *new* — a poll loop does not re-read the
 same text every turn. Pass `full: true` for the whole capture; a full read
 leaves the incremental position alone, so it never steals bytes from a poll
 loop.
 
 **Sessions have to be let go.** A finished process keeps its session (and its
 output) until it is released, so the model can still read it. Release with
-`release` on a read or wait, or `release_exited` on a poll. At most **32**
+`release` on a read, or `release_exited` on a poll. At most **32**
 sessions may be retained at once — an exited-but-unreleased session still counts
 — and spawn refuses past that, which is a failure the model reads and can act on
 by releasing finished sessions.
@@ -88,8 +98,8 @@ reach it as literal arguments. A model that wants a pipeline asks for
 
 ### The set's skill
 
-Everything above — the ordinary path through the five, what a session costs, when
-to wait instead of polling, what a denied confirmation means — also ships as a
+Everything above — the ordinary path through the four, what a session costs,
+what to wait for and how long, what a denied confirmation means — also ships as a
 document the model itself is given: [`schemas/skill.yaml`](schemas/skill.yaml),
 the set's **skill**. A tool declaration answers "what does this call do"; the
 skill answers what none of them can between them, and it is prose rather than
@@ -126,7 +136,7 @@ rather than leaving a model instructions about a call that no longer exists.
 | | tools | why |
 | --- | --- | --- |
 | **Asks first** | `spawn_process`, `send_process` | they change state outside this process — running a program, and telling a running one what to do: more input, the end of its input, or a signal |
-| **Runs unattended** | `poll_processes`, `read_process_output`, `wait_process` | looking at what is already running changes nothing |
+| **Runs unattended** | `poll_process`, `read_process_output` | looking at what is already running changes nothing, and so does waiting for it |
 
 A confirmation that nobody answers is a refusal, so an unattended host runs the
 observing calls and refuses the rest.
@@ -139,9 +149,8 @@ may overlap the others. What that declaration describes is the effect a call has
 
 | call | | why |
 | --- | --- | --- |
-| `poll_processes` | runs beside others | it asks what the children are doing; the cursors and table entries it touches are this layer's own bookkeeping |
+| `poll_process` | runs beside others | it asks what the children are doing and, with a timeout, waits for one of them; neither ends a child, and the cursors and table entries it touches are this layer's own bookkeeping |
 | `read_process_output` | runs beside others | same, `full` and delta and `release` alike |
-| `wait_process` | runs beside others | watching a child changes nothing outside; `release` is bookkeeping |
 | `spawn_process` | runs alone | it starts a process on the machine, and two launches in one batch contend for the same files |
 | `send_process` | runs alone | the bytes are the child's next input and a signal ends it, so the order two calls arrive in is what the child gets; one carrying `close_input` can drop another outright |
 
@@ -159,7 +168,8 @@ anything outside the host.
 Calls that run alone go **first**, in call order, and nothing else in the batch
 is in flight while they do — which is why a poll beside a `spawn_process`
 already sees the session that spawn created, and why a `send_process` beside a
-`wait_process` lets the wait find the child already gone instead of timing out.
+waiting `poll_process` lets the wait find the child already gone instead of
+timing out.
 
 ---
 
@@ -288,7 +298,7 @@ stdout: (empty)
 
 stderr: (empty)
 
-hint: the process finished, but its output capture is not complete yet: the text above is what has arrived so far. Something may still hold its output open; call wait_process to collect the rest
+hint: the process finished, but its output capture is not complete yet: the text above is what has arrived so far. Something may still hold its output open; call poll_process to collect the rest
 ```
 
 **A program that outlives the window** comes back as just the id and the
@@ -305,7 +315,7 @@ running_milliseconds: 5000
 finished: false
 output_complete: false
 
-hint: the process is still running; call poll_processes to check on it, wait_process to wait for it, read_process_output to read its output
+hint: the process is still running; call poll_process with a wait_timeout_milliseconds to wait for it to finish, or read_process_output to read what it has printed so far
 ```
 
 Raise `expected_runtime_milliseconds` for a command that legitimately needs
@@ -317,29 +327,49 @@ A launch that fails — no such executable, a working directory that is not a
 directory, a malformed environment entry — comes back as a failure naming what
 went wrong, not as a session.
 
-### `poll_processes`
+### `poll_process`
 
-The state of every session, and what each has printed since the last read.
-This is the call for checking on work started earlier.
+The state of every session — and the family's **wait**: it returns as soon as
+ANY one of the sessions it was asked about has finished, or when its deadline
+runs out, and either way it reports ALL of them. This is the call for checking
+on work started earlier and the call for waiting on it, because those were never
+two questions: what a caller wants in both cases is the state of a set of
+sessions, and the only thing that ever differed was how long it was willing to
+wait for one of them to change.
 
 ```jsonc
 {
-  "session_ids": ["proc_1", "proc_2"],  // omit for all sessions
-  "include_output": true,               // default true
-  "release_exited": false               // default false
+  "session_ids": ["proc_1", "proc_2"],   // omit or leave empty for every session
+  "wait_timeout_milliseconds": 30000,    // default 30000; 0 does not wait at all
+  "include_output": true,                // default true
+  "release_exited": false                // default false
 }
 ```
 
-All three are optional; `{}` reports everything.
+All four are optional; `{}` waits for the first session to finish.
+
+**What finishes the wait.** A session counts as *finished* when its child has
+exited AND its output capture is complete — the same pair of facts
+`spawn_process` reports as `finished` and `output_complete`, and for the same
+reason: a child that exits while something it started still holds its
+stdout/stderr open is gone with its output still arriving, and ending the wait
+there would hand back an exit code with half its output. A session already in
+that state ends the wait at once, without waiting at all — so this is also the
+cheap way to ask "is it done yet".
 
 ```text
-retained_session_count: 1
+timed_out: false
+waited_milliseconds: 412
+finished_count: 1
+session_count: 2
+retained_session_count: 2
 
 ---
 
 session_id: proc_1
 state: exited
 exit_code: 0
+output_complete: true
 executable: grep
 arguments: ["-rn","TODO","src/"]
 description: find TODOs
@@ -353,113 +383,56 @@ new_stderr: (empty)
 
 ---
 
-released: ["proc_1"]
-```
-
-One session is one record, set off by a `---` rule; `new_stdout` holds what
-that session printed since it was last read, and is `(empty)` when there is
-nothing new — while a poll that did not ask for output has no such block at
-all. `exit_code` has **no line** while a process runs: an absent exit code is
-not a zero one. The `released` record appears only when `release_exited`
-actually freed something. With `release_exited: true`, output is reported
-*before* the session
-is freed, so nothing is lost. `retained_session_count` counts what the table is
-holding, exited-but-unreleased sessions included — the same number the
-32-session cap counts, so it is not the number of *running* processes.
-
-### `read_process_output`
-
-Read what one process has printed. Incremental by default, so it can be called
-repeatedly while the process runs.
-
-```jsonc
-{
-  "session_id": "proc_1",  // required
-  "stream": "both",        // "stdout" | "stderr" | "both" (default)
-  "full": false,           // default false: only what is new
-  "release": false         // default false; only applies once exited
-}
-```
-
-```text
-session_id: proc_1
+session_id: proc_2
 state: running
-executable: grep
-arguments: ["-rn","TODO","src/"]
-pid: 48231
-running_milliseconds: 412
-stream: both
-full: false
+executable: make
+arguments: ["-j4"]
+description: build
+pid: 48244
+running_milliseconds: 5000
 
-stdout (25 bytes):
-src/main.cpp:12: // TODO
+new_stdout: (empty)
 
-stdout_bytes_read: 25
-
-stderr: (empty)
-
-stderr_bytes_read: 0
-
-released: true
+new_stderr: (empty)
 ```
 
-A stream whose block header says `(truncated, first N bytes)` printed more than
-the capture limit (4 MiB shared between the two streams), and the text under it
-stops there. `*_bytes_read` is the total handed over so far, across all reads.
-`released` reports what actually happened, not what was asked: a running
-process is never released, so it comes back `false`.
+The header says **why the call came back** before it says what it found.
+`timed_out: false` means one of the sessions finished; `true` means the deadline
+came first, which is a result and not an error — every session is exactly as it
+was, still in the table, and waitable again. `waited_milliseconds` is how long
+the call actually watched, which is also how "it was already finished when I
+asked" reads. `finished_count` counts the sessions that are finished in this
+answer (there can be more than one — the ones that already were), and
+`session_count` is how many sessions the answer describes.
 
-### `wait_process`
+One session is one record, set off by a `---` rule; `new_stdout` holds what that
+session printed since it was last read, and is `(empty)` when there is nothing
+new — while a poll that did not ask for output has no such block at all.
+`exit_code` and `output_complete` have **no line** while a process runs: an
+absent exit code is not a zero one, and a running capture is arriving rather
+than incomplete. The `released` record appears only when `release_exited`
+actually freed something, and output is reported *before* the session is freed,
+so nothing is lost — with one honest exception: a session whose child has exited
+but whose capture is still open is freed like any other exited session, and what
+has not arrived yet goes with it. Do not ask for a reap and the rest of an
+incomplete capture in the same call. `retained_session_count` counts what the
+table is holding,
+exited-but-unreleased sessions included — the same number the 32-session cap
+counts, so it is not the number of *running* processes.
 
-Wait for a process to finish and report how it ended, with everything it
-printed.
+**`wait_timeout_milliseconds: 0` does not wait at all**: the call takes one look
+and returns, which is what a model uses when it wants the state right now rather
+than a wait. A selection that resolves to nothing — an empty table, or ids that
+name no session — answers at once either way, since there is no child whose
+ending could end the wait.
 
-```jsonc
-{
-  "session_id": "proc_1",           // required
-  "timeout_milliseconds": 30000,    // default 30000; 0 waits indefinitely
-  "release": false                  // default false
-}
-```
-
-```text
-session_id: proc_1
-state: exited
-exit_code: 0
-executable: grep
-arguments: ["-rn","TODO","src/"]
-pid: 48231
-running_milliseconds: 412
-exited: true
-output_complete: true
-timed_out: false
-
-stdout (25 bytes):
-src/main.cpp:12: // TODO
-
-stderr: (empty)
-```
-
-The three fields say which of the two things the wait was waiting for it
-reached: `exited` — the child is gone, its exit code readable; `output_complete`
-— its output is all here, both pipes closed; `timed_out` — the wait ended
-without reaching both, which is the negation of `exited && output_complete`
-rather than of `exited` alone, so the three can never disagree. A child that
-exits while something it started still holds its stdout open ends the wait with
-`exited: true, output_complete: false, timed_out: true` — a real state, and the
-reason the distinction exists; the result then carries a hint saying so, and
-waiting again collects the rest.
-
-**A timeout is not an error.** It comes back `exited: false`, `timed_out:
-true` with `state` still `running`, and the process keeps running — wait
-again, read its output, or end it with a `send_process` signal. `timeout_milliseconds: 0` waits forever,
-which hangs the turn on a process that never exits; prefer a real timeout and
-wait twice.
-
-Unlike a read, this returns the **whole** capture, with `full = true`: a caller
-waiting for a command to finish wants all its output and cannot know what an
-earlier poll already consumed. Because a full read is an observation and not a
-consumption, a wait running beside a poll loop steals nothing from it.
+**One call, not one per session.** With a real timeout this replaces the poll
+loop: a model watching five builds makes one call that returns when the first of
+them finishes and tells it about all five, rather than one call per process per
+turn. And a session that has exited but whose capture is not complete yet keeps
+the wait going, so `output_complete: false` in the answer always comes with
+`timed_out: true` — the descendant-holding-the-pipes case, reported rather than
+hidden, with a hint naming the session and the way to collect the rest.
 
 ### `send_process`
 
@@ -510,12 +483,12 @@ running_milliseconds: 1200
 signal: term
 signalled: true
 
-hint: signal sent; call wait_process to confirm the process has ended
+hint: signal sent; call poll_process with a wait_timeout_milliseconds to confirm the process has ended
 ```
 
 The signal is sent, but the death is noticed a moment later, so the result may
-still report `state: running` — that is not a failed signal. Call `wait_process`
-to confirm. The two halves can be asked for together, which is the case two
+still report `state: running` — that is not a failed signal. Call `poll_process`
+to wait for the end. The two halves can be asked for together, which is the case two
 tools could not spell — feed a program its own quit command and then make sure
 it went:
 
@@ -572,7 +545,8 @@ read_process_output { "session_id": "proc_1", "release": true }
 ```
 
 **Watch a long build.** Spawn with a short window (or `0`) so it becomes a
-session at once, then poll as often as needed:
+session at once, then wait for it — one call that returns when it finishes, or
+after the timeout:
 
 ```text
 spawn_process   { "executable": "make", "arguments": ["-j4"], "description": "build",
@@ -582,7 +556,11 @@ spawn_process   { "executable": "make", "arguments": ["-j4"], "description": "bu
    …
    finished: false
 
-poll_processes  { "session_ids": ["proc_2"] }
+poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 0 }
+   timed_out: true                     // a look, not a wait: still building
+   waited_milliseconds: 1
+   finished_count: 0
+   session_count: 1
    retained_session_count: 1
 
    ---
@@ -593,21 +571,26 @@ poll_processes  { "session_ids": ["proc_2"] }
    new_stdout (19 bytes):
    [ 10%] Building…
 
-poll_processes  { "session_ids": ["proc_2"] }          // only what is NEW
-   …
-   new_stdout (19 bytes):
-   [ 45%] Building…
-
-poll_processes  { "session_ids": ["proc_2"], "release_exited": true }
-   …
-   session_id: proc_2
-   state: exited
-   exit_code: 0
-   new_stdout (14 bytes):
-   [100%] Built
+poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 60000 }
+   timed_out: false                    // it finished inside the wait
+   waited_milliseconds: 18422
+   finished_count: 1
+   session_count: 1
+   retained_session_count: 1
 
    ---
 
+   session_id: proc_2
+   state: exited
+   exit_code: 0
+   output_complete: true
+   …
+   new_stdout (14 bytes):
+   [100%] Built
+
+poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 0,
+                  "release_exited": true }
+   …
    released: ["proc_2"]
 ```
 
@@ -629,18 +612,24 @@ send_process         { "session_id": "proc_3", "input": "hello\n", "close_input"
    bytes_queued: 6
    input_closed: true
 
-wait_process         { "session_id": "proc_3", "release": true }
+poll_process         { "session_ids": ["proc_3"] }
+   timed_out: false
+   waited_milliseconds: 4
+   finished_count: 1
+   session_count: 1
+   retained_session_count: 1
+
+   ---
+
    session_id: proc_3
    state: exited
    exit_code: 0
-   exited: true
    output_complete: true
-   timed_out: false
 
-   stdout (6 bytes):
+   new_stdout (6 bytes):
    hello
 
-   released: true
+   new_stderr: (empty)
 ```
 
 **A pipeline needs an explicit shell:**
@@ -654,17 +643,22 @@ Without `sh -c`, `|` and `wc` would reach `ls` as literal arguments.
 **Stop something that is taking too long:**
 
 ```text
-wait_process { "session_id": "proc_4", "timeout_milliseconds": 5000 }
+poll_process { "session_ids": ["proc_4"], "wait_timeout_milliseconds": 5000 }
+   timed_out: true                       // not an error: still running
+   waited_milliseconds: 5001
+   finished_count: 0
+   session_count: 1
+
+   ---
+
+   session_id: proc_4
    state: running
-   exited: false
-   output_complete: false
-   timed_out: true                       // not an error
 
 send_process { "session_id": "proc_4", "signal": "kill" }
    signal: kill
    signalled: true
 
-   hint: signal sent; call wait_process to confirm the process has ended
+   hint: signal sent; call poll_process with a wait_timeout_milliseconds to confirm the process has ended
 
 read_process_output { "session_id": "proc_4", "full": true, "release": true }
    stdout (… bytes):
@@ -691,7 +685,7 @@ the process-wide bus, so a confirmer in another module can answer; passing one
 keeps a component's confirmations to itself.
 
 `tools/example/deepseek_chat.cpp` is that wiring in a running host: a live
-provider conversation whose tools are these five, every call going through
+provider conversation whose tools are these four, every call going through
 `ToolRegistry::execute`, with an `InvokeConfirmEvent` handler at the terminal
 that answers the RequireConfirm calls — plus the offline halves of what the
 model is given: `--tools`, which prints the catalogue this section describes,
@@ -738,19 +732,19 @@ first, for exactly that reason).
   single-runner test. It owns `ProcessHandle`'s lifecycle contract in full:
   start the io tasks, then drive the handle to a terminal observation with a
   detached await task, and never block a spawn on the child.
-- **`process/tools.hpp`** — the five `ToolInterface` implementations. Each
+- **`process/tools.hpp`** — the four `ToolInterface` implementations. Each
   checks its arguments in `ensure_arguments()` and writes the defaults into the
   query there (so the security check and the human confirmation see settled
   arguments), and answers with a `ToolResult` — field lines and the child's
   output verbatim. `InvokeType`
-  describes what a call changes OUTSIDE the host: the three observing tools are
-  `ReadOnly` (the cursors and table entries they touch are internal, and the
-  store's strands make them safe to overlap), and the three that launch, feed or
-  end a process are `SerialWrite`. What each tool *is* — its name, its
+  describes what a call changes OUTSIDE the host: the two observing tools are
+  `ReadOnly` (the cursors and table entries they touch are internal, the wait
+  ends no child, and the store's strands make them safe to overlap), and the two
+  that launch, feed or end a process are `SerialWrite`. What each tool *is* — its name, its
   description and its argument schema — is not here: it is declared in
   `schemas/<tool>.yaml`, and `ProcessToolBase` loads it.
 - **`process/toolset.hpp`** — the `ProcessToolSet` a host registers. Its name,
-  its five tools, the store they share and the skill it loads; the catalogue, the
+  its four tools, the store they share and the skill it loads; the catalogue, the
   routing, the build/release lifecycle and `skill()` come from
   `IntrinsicToolSet`, and `prepare()` / `execute()` stay as `ToolSet` defines
   them, since those carry the invocation layer's checkpoint sequence and failure
@@ -770,7 +764,7 @@ loaded from it, is `tools/intrinsic/tool_declaration.hpp`.
 The same directory holds `schemas/skill.yaml`, which the SET loads rather than a
 tool (`ProcessToolSet`'s constructor calls `load_skill(schema_directory() /
 "skill.yaml")`). It is a document of the same package and is resolved the same
-way — one directory, one lookup rule — but it is not a seventh tool: it has no
+way — one directory, one lookup rule — but it is not a fifth tool: it has no
 argument schema and no call, and the tool-declaration loader would refuse it.
 
 The directory is resolved in exactly one place, `process/schemas.hpp`:
@@ -799,17 +793,17 @@ without a rebuild. `skill.yaml` is listed there too and is read the same way,
 with the milder outcome [the skill
 section](#the-sets-skill) describes: the guidance is lost, the tools are not.
 
-The five are also declared to be one **capability group** ("process",
+The four are also declared to be one **capability group** ("process",
 `declare_capability_group()` in `src/toolset.cpp`), because a tool that fails to
 arrive on its own costs itself and no more is the right rule for one broken file
-but not a safe *state* for a family: four of the five leaves a model able to
+but not a safe *state* for a family: three of the four leaves a model able to
 start a process it cannot end. So a partial registration is one error line —
 the group, the count, every missing member — and `capability_groups()` answers
 the same for a host that wants to act on it, while a package carrying none of
-the files is reported as the family being absent rather than as five failures.
+the files is reported as the family being absent rather than as four failures.
 
 Which leaves a file free to claim something the implementation does not do, so
-`test_tools` closes that gap: for each of the five tools it loads the file,
+`test_tools` closes that gap: for each of the four tools it loads the file,
 asserts the catalogue entry is that document verbatim, and asks the
 implementation the same questions the document answers — every property
 validated with the declared kind, the default contract held in **both**
@@ -842,6 +836,15 @@ if it did not. The tool honours that window instead of disabling it, which is
 what turns a program's own runtime into the signal, rather than putting that
 decision on the model.
 
+No separate `wait_process`, and no read-only listing beside `poll_process`,
+because those two were one call with two different timeouts: both answered "the
+state of this set of sessions", and the wait is the same call with patience.
+Keeping both names would have made "wait for a process" and "check on a process"
+look like different operations when the second is the first with the timeout at
+0 — and would have left a model choosing between synonyms. What a one-session
+wait used to spell as a required `session_id` is now the one-element list, which
+is the same call the multi-session case needs.
+
 No shell parsing — there is no shell on the other side, and a model that wants
 a pipeline says so by spawning `sh -c`. No reap tool — reaping is a flag on the
 reading tools, because the moment a dead child's last output has been read is
@@ -862,9 +865,10 @@ All three landed with this toolset and are used by it:
   **Not** implied by `exited()`: the await task records the terminal status as
   soon as it observes the child, while the readers may still be draining what
   is in the pipe buffers, or may be unable to finish at all because a descendant
-  inherited the pipes and is still holding them. `wait_for_exit()` waits for the
-  pair and reports both facts, and `spawn_process` reports `finished` and
-  `output_complete` separately for the same reason. Pinned by a repeated test
+  inherited the pipes and is still holding them. `wait_for_any()` waits for the
+  pair on every session it was given and reports both facts per session;
+  `spawn_process` reports `finished` and `output_complete` separately for the
+  same reason. Pinned by a repeated test
   that runs the spawn and the wait in one coroutine — the usual per-call round
   trip adds enough latency to hide the race — and by a regression test whose
   direct child exits while a background descendant keeps its stdout open.
@@ -887,7 +891,7 @@ resolve to one authoritative copy per process.
 `test_session_store` — ids (monotonic, never reused), the delta/full read
 distinction and its per-stream cursors, the difference between a finished child
 and a finished capture, the deadline override, the retained-session cap, waiting
-with and without a deadline, the refusal to release a live child (and a
+for any of a set with and without a deadline, the refusal to release a live child (and a
 concurrent release of one session having exactly one winner), both shutdown
 paths — the last of them on a context with three worker threads, where a
 strand mistake has somewhere to show up.

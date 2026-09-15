@@ -1,35 +1,51 @@
 #pragma once
 
 //
-// process/tools.hpp — the five process-management tools a model can call
-// =====================================================================
+// process/tools.hpp — the four process-management tools a model can call
+// ======================================================================
 //
 // One ToolInterface per operation, over one shared ProcessSessionStore:
 //
 //   spawn_process         run a program: wait out its expected runtime, and
 //                         answer with the whole result if it finished inside
 //                         that window, or a live session id if it did not.
-//   poll_processes        the state of every session (or named ones), with
-//                         each one's new output; the "what is going on"
-//                         call, and the one that also serves as inspect.
+//   poll_process          the state of every session (or named ones), each
+//                         with its new output — and the family's WAIT: it
+//                         returns as soon as any one of them has finished, or
+//                         when its deadline runs out. The "what is going on"
+//                         call, the one that waits, and the one that also
+//                         serves as inspect.
 //   read_process_output   one session's output: the delta by default, the
 //                         whole capture on request.
-//   wait_process          block until one child has exited and its output is
-//                         complete, with a deadline.
 //   send_process          tell a running child something: more input, the end
 //                         of its input, or a signal to stop.
 //
-// WHY FIVE AND NOT MORE. There is no separate run_command, because spawn_process
+// WHY FOUR AND NOT MORE. There is no separate run_command, because spawn_process
 // IS one: its initial-wait window covers the ordinary "run this and tell me what
 // it said" case in a single call, and only a program that outlives the window
 // becomes a session to follow. That is the split ProcessHandle's
 // await_initial_execution() was built for, so honouring it here costs nothing
-// and saves the model a round trip on every quick command. Feeding a child,
-// ending its input and ending the child are one tool for the same reason read
-// and wait are two: they are the same act at different strengths, answered the
-// same way and refused for the same reason, so `send_process` carries all three
-// rather than making a model pick the right verb for "please stop". Reaping is
-// not a tool either —
+// and saves the model a round trip on every quick command.
+//
+// There is no separate wait_process either, and no read-only listing beside
+// poll_process, because those two were one call wearing different timeouts.
+// Both answered the same question — the state of a set of sessions — and the
+// only thing that ever differed was how long the caller would wait for one of
+// them to change. So poll_process waits, with a deadline a caller sets (0 =
+// do not wait: tell me where things stand), and answers with EVERY session in
+// the selection however the wait ended: the child that finished is what the
+// wait was for, and its siblings are the context it is read in. Waiting for one
+// named session is this call with a one-element list; a plain listing is this
+// call with a timeout of 0. Keeping two names for that would only have made a
+// model pick between synonyms — and, worse, made "wait for a process" and
+// "check on a process" look like different operations when the second is the
+// first with no patience.
+//
+// Feeding a child, ending its input and ending the child are one tool for the
+// same reason read and wait are two: they are the same act at different
+// strengths, answered the same way and refused for the same reason, so
+// `send_process` carries all three rather than making a model pick the right
+// verb for "please stop". Reaping is not a tool either —
 // it is a flag on the two reading tools (`release` / `release_exited`),
 // because the moment a caller has read a dead child's last output is exactly
 // the moment its session becomes garbage, and a separate call would just be a
@@ -39,9 +55,8 @@
 //
 //   tool                  InvokeType    InvokeSecurity
 //   spawn_process         SerialWrite   RequireConfirm
-//   poll_processes        ReadOnly      Trusted
+//   poll_process          ReadOnly      Trusted
 //   read_process_output   ReadOnly      Trusted
-//   wait_process          ReadOnly      Trusted
 //   send_process          SerialWrite   RequireConfirm
 //
 // InvokeType is about SCHEDULING — may this run beside its neighbours in a
@@ -144,9 +159,8 @@ namespace tools::intrinsic {
 /// routing table, the tests and a host's allow-list cannot drift apart.
 namespace tool_names {
 inline constexpr std::string_view kSpawn = "spawn_process";
-inline constexpr std::string_view kPoll = "poll_processes";
+inline constexpr std::string_view kPoll = "poll_process";
 inline constexpr std::string_view kRead = "read_process_output";
-inline constexpr std::string_view kWait = "wait_process";
 inline constexpr std::string_view kSend = "send_process";
 } // namespace tool_names
 
@@ -192,7 +206,7 @@ protected:
 
     /// One session as every tool that reports one writes it: id, state, pid,
     /// exit code, timing, in that order — the fields a reader scans before the
-    /// output under them. Shared so the five tools describe a session the same
+    /// output under them. Shared so the four tools describe a session the same
     /// way, and written into the result rather than returned as a value
     /// because the result is built in order and never taken apart
     /// (tools/intrinsic/tool_result.hpp). Output blocks are added by the tools
@@ -233,13 +247,32 @@ public:
         const model_io::InvokeQuery& query) override;
 };
 
-/// The state of every session (or the named ones), each with its new output.
-/// ReadOnly / Trusted: it changes nothing outside this host, and the cursors
-/// and table entries it touches are the store's own state, which the store's
-/// strands make safe to overlap.
-class PollProcessesTool final : public ProcessToolBase {
+/// The state of every session (or the named ones), each with its new output —
+/// and the family's wait: with `wait_timeout_milliseconds` the call returns as
+/// soon as ANY one of the sessions has finished, or when the deadline runs out,
+/// and either way it reports ALL of them. ReadOnly / Trusted: it changes
+/// nothing outside this host — a wait ends no child — and the cursors and table
+/// entries it touches are the store's own state, which the store's strands make
+/// safe to overlap.
+///
+/// A timeout is not a failure: the result says `timed_out`, names how long it
+/// actually waited, and the sessions are all still there to be waited on again.
+/// It is also the one call that can hold a parallel branch open for its whole
+/// deadline, which is why the deadline defaults to a bounded value rather than
+/// to "forever".
+class PollProcessTool final : public ProcessToolBase {
 public:
-    explicit PollProcessesTool(StorePtr store,
+    /// The default deadline, in milliseconds. Long enough for an ordinary
+    /// command, short enough that a stuck child comes back as a result the
+    /// model can act on rather than a hang.
+    ///
+    /// Stated twice on purpose, and pinned, exactly like SpawnProcessTool's:
+    /// this is what ensure_arguments() settles, and the `default` in
+    /// schemas/poll_process.yaml is what a model reads before calling.
+    /// test_tools.cpp loads that file and fails if the two ever disagree.
+    static constexpr std::uint64_t kDefaultWaitTimeoutMilliseconds = 30000;
+
+    explicit PollProcessTool(StorePtr store,
                              eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;
@@ -280,31 +313,6 @@ public:
 class SendProcessTool final : public ProcessToolBase {
 public:
     explicit SendProcessTool(StorePtr store,
-                             eventbus::AsyncEventBus* bus = nullptr);
-
-    void ensure_arguments(model_io::InvokeQuery& query) const override;
-    void write_attributes(model_io::InvokeQuery& query) const override;
-    boost::asio::awaitable<model_io::Content> invoke(
-        const model_io::InvokeQuery& query) override;
-};
-
-/// Wait for one child to exit, with a deadline that defaults to nonzero: an
-/// unbounded wait would hand a never-exiting child the agent loop. A timeout
-/// is not a failure — the result says the child is still running.
-/// ReadOnly / Trusted: waiting changes nothing outside this host, `release`
-/// included.
-class WaitProcessTool final : public ProcessToolBase {
-public:
-    /// The default deadline, in milliseconds. Long enough for an ordinary
-    /// command, short enough that a stuck child comes back as a result the
-    /// model can act on rather than a hang.
-    ///
-    /// Stated twice on purpose, and pinned, exactly like SpawnProcessTool's: it
-    /// is what ensure_arguments() settles and the `default` in
-    /// schemas/wait_process.yaml is what a model reads.
-    static constexpr std::uint64_t kDefaultTimeoutMilliseconds = 30000;
-
-    explicit WaitProcessTool(StorePtr store,
                              eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;

@@ -418,7 +418,7 @@ BOOST_AUTO_TEST_CASE(a_result_is_field_lines_and_verbatim_blocks)
     result.field("arguments", nlohmann::json::array({"1", "5"}));
     result.field("finished", true);
     result.block("stdout", "1\n2\n");
-    result.field("hint", "call wait_process to collect the rest");
+    result.field("hint", "call poll_process to collect the rest");
 
     BOOST_TEST(result.render().raw ==
                "session_id: proc_1\n"
@@ -429,7 +429,7 @@ BOOST_AUTO_TEST_CASE(a_result_is_field_lines_and_verbatim_blocks)
                "1\n"
                "2\n"
                "\n"
-               "hint: call wait_process to collect the rest\n");
+               "hint: call poll_process to collect the rest\n");
 }
 
 BOOST_AUTO_TEST_CASE(a_field_with_nothing_in_it_writes_no_line)

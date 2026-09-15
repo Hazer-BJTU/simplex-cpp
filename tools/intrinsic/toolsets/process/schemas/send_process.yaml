@@ -70,8 +70,8 @@ argument_schema:
         Signal to send: "" (the default) sends none, "term" asks the process to
         shut down (a signal it may handle or ignore), "kill" ends it
         immediately and cannot be refused. The session stays readable either
-        way, and the process is not waited for - call wait_process to confirm
-        it has ended
+        way, and the process is not waited for - call poll_process to wait for
+        it to end
   # The tool's one cross-property rule, stated the way JSON Schema states one:
   # a call must send something, OR close the input, OR name a signal. Every
   # property has a default, so without this a call naming only session_id would
