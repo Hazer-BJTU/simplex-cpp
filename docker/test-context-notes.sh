@@ -60,7 +60,7 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
            and the whole output in the same tool result.
   2. "start cat in the background, feed it hello, then read back what it
       printed"
-        -> spawn (session id) -> send_process -> read_process_output, three
+        -> spawn (session id) -> send_process -> read_process, three
            turns that share one session through the store.
   3. "start sleep 600 in the background, then kill it"
         -> a session that outlives its window, and send_process ending it
@@ -80,7 +80,7 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
       /src/build/bin/tools_deepseek_chat, then send it a task and tell me what
       it answers"
         -> the outer model bootstraps an inner one and drives it through
-           send_process / read_process_output. Each round of
+           send_process / read_process. Each round of
            "feed it, look at what it said" is one model exchange, so that kind
            of work runs past the default budget: raise it with
            --max-steps 40 (or answer "continue" when it says it stopped).

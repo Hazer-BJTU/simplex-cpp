@@ -61,7 +61,7 @@ argument_schema:
       default: true
       description: >-
         Whether to include each session's new output since the last read. It is
-        consumed by this call, exactly as a default read_process_output
+        consumed by this call, exactly as a default read_process
         consumes it
     release_exited:
       type: boolean

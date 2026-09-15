@@ -1,10 +1,10 @@
-# read_process_output — one session's output: the delta by default.
+# read_process — one session's output: the delta by default.
 #
 # THIS FILE IS THE DECLARATION, and src/tools.cpp is the implementation. See
 # tools/intrinsic/tool_declaration.hpp for the format and spawn_process.yaml
 # for the full explanation of how the two are kept together.
 
-name: read_process_output
+name: read_process
 description: >-
   Read what one process has printed. By default this returns only what is new
   since the last read of that session, so it can be called repeatedly while a

@@ -475,14 +475,14 @@ boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
     co_return result.render();
 }
 
-// ---- read_process_output ----------------------------------------------------
+// ---- read_process -----------------------------------------------------------
 
-ReadProcessOutputTool::ReadProcessOutputTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    // Name, description and argument schema: schemas/read_process_output.yaml.
-    : ProcessToolBase(std::move(store), "read_process_output.yaml", bus)
+ReadProcessTool::ReadProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
+    // Name, description and argument schema: schemas/read_process.yaml.
+    : ProcessToolBase(std::move(store), "read_process.yaml", bus)
 {}
 
-void ReadProcessOutputTool::ensure_arguments(model_io::InvokeQuery& query) const
+void ReadProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_session_id(query);
     if (const std::string stream = settle_string(query, "stream", "both");
@@ -495,7 +495,7 @@ void ReadProcessOutputTool::ensure_arguments(model_io::InvokeQuery& query) const
     (void)settle_bool(query, "release", false);
 }
 
-void ReadProcessOutputTool::write_attributes(model_io::InvokeQuery& query) const
+void ReadProcessTool::write_attributes(model_io::InvokeQuery& query) const
 {
     // ReadOnly, unconditionally, for the reason given on PollProcessesTool: a
     // read touches nothing outside this host. `full` and the delta both leave
@@ -510,7 +510,7 @@ void ReadProcessOutputTool::write_attributes(model_io::InvokeQuery& query) const
     query.security = model_io::InvokeSecurity::Trusted;
 }
 
-boost::asio::awaitable<model_io::Content> ReadProcessOutputTool::invoke(
+boost::asio::awaitable<model_io::Content> ReadProcessTool::invoke(
     const model_io::InvokeQuery& query)
 {
     const std::string id = require_session_id(query);

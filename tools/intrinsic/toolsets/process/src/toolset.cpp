@@ -26,7 +26,7 @@ ProcessToolSet::ProcessToolSet(std::shared_ptr<ProcessSessionStore> store,
     register_tools({
         std::make_shared<SpawnProcessTool>(_store, bus),
         std::make_shared<PollProcessTool>(_store, bus),
-        std::make_shared<ReadProcessOutputTool>(_store, bus),
+        std::make_shared<ReadProcessTool>(_store, bus),
         std::make_shared<SendProcessTool>(_store, bus),
     });
 

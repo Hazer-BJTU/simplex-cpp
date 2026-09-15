@@ -285,7 +285,7 @@ std::string spawn_through_tool(Fixture& f, std::string executable,
 /// `include_output` is FALSE by default on purpose: this is a WAIT, not a read,
 /// and a poll with the default would consume the session's new bytes — which
 /// the cases using this helper are about to assert on, through
-/// read_process_output. The ones that want the output in this answer ask for it.
+/// read_process. The ones that want the output in this answer ask for it.
 process_test::ResultText wait_through_tool(Fixture& f, const std::string& id,
                                            std::uint64_t wait_timeout = 5000,
                                            bool include_output = false)

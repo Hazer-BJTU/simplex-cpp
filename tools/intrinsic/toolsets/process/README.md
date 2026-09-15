@@ -56,11 +56,11 @@ to come back to it with.
 ```
 spawn_process ──► finished in time? ──► yes: exit code + whole output, done
                                     │
-                                    └─► no: session_id ──┬──► poll_process         wait for one of them, or look
-                                                         │                           at where they all stand
-                                                         ├──► read_process_output  incremental output
-                                                         └──► send_process         feed its stdin, close
-                                                                                   it, or signal it to stop
+                                    └─► no: session_id ──┬──► poll_process   wait for one of them, or look
+                                                         │                   at where they all stand
+                                                         ├──► read_process   incremental output
+                                                         └──► send_process   feed its stdin, close it,
+                                                                             or signal it to stop
 ```
 
 **Looking and waiting are one call.** `poll_process` reports the state of every
@@ -73,7 +73,7 @@ There is no separate wait tool and no separate listing tool because they would
 have been the same call with a different number in it.
 
 **Output reads are incremental by default.** Each session remembers how much
-of its output has already been handed over, so `read_process_output` and
+of its output has already been handed over, so `read_process` and
 `poll_process` return only what is *new* — a poll loop does not re-read the
 same text every turn. Pass `full: true` for the whole capture; a full read
 leaves the incremental position alone, so it never steals bytes from a poll
@@ -136,7 +136,7 @@ rather than leaving a model instructions about a call that no longer exists.
 | | tools | why |
 | --- | --- | --- |
 | **Asks first** | `spawn_process`, `send_process` | they change state outside this process — running a program, and telling a running one what to do: more input, the end of its input, or a signal |
-| **Runs unattended** | `poll_process`, `read_process_output` | looking at what is already running changes nothing, and so does waiting for it |
+| **Runs unattended** | `poll_process`, `read_process` | looking at what is already running changes nothing, and so does waiting for it |
 
 A confirmation that nobody answers is a refusal, so an unattended host runs the
 observing calls and refuses the rest.
@@ -150,7 +150,7 @@ may overlap the others. What that declaration describes is the effect a call has
 | call | | why |
 | --- | --- | --- |
 | `poll_process` | runs beside others | it asks what the children are doing and, with a timeout, waits for one of them; neither ends a child, and the cursors and table entries it touches are this layer's own bookkeeping |
-| `read_process_output` | runs beside others | same, `full` and delta and `release` alike |
+| `read_process` | runs beside others | same, `full` and delta and `release` alike |
 | `spawn_process` | runs alone | it starts a process on the machine, and two launches in one batch contend for the same files |
 | `send_process` | runs alone | the bytes are the child's next input and a signal ends it, so the order two calls arrive in is what the child gets; one carrying `close_input` can drop another outright |
 
@@ -262,7 +262,7 @@ src/main.cpp:12: // TODO
 
 stderr: (empty)
 
-hint: the process finished; its output is above. Call read_process_output with release to forget the session when done with it
+hint: the process finished; its output is above. Call read_process with release to forget the session when done with it
 ```
 
 Values a caller would otherwise have to un-escape arrive as themselves
@@ -273,7 +273,7 @@ names it and counts its bytes, and a stream that printed nothing says
 
 The session is **kept**, not reaped, even though it already finished: its
 output stays readable, and the model releases it when done (`release: true` on
-a later `read_process_output`, or `release_exited` on a poll).
+a later `read_process`, or `release_exited` on a poll).
 
 **`finished` and `output_complete` are two different facts**, and the second is
 not implied by the first. `finished` is about the child: it exited inside the
@@ -315,7 +315,7 @@ running_milliseconds: 5000
 finished: false
 output_complete: false
 
-hint: the process is still running; call poll_process with a wait_timeout_milliseconds to wait for it to finish, or read_process_output to read what it has printed so far
+hint: the process is still running; call poll_process with a wait_timeout_milliseconds to wait for it to finish, or read_process to read what it has printed so far
 ```
 
 Raise `expected_runtime_milliseconds` for a command that legitimately needs
@@ -434,6 +434,52 @@ the wait going, so `output_complete: false` in the answer always comes with
 `timed_out: true` — the descendant-holding-the-pipes case, reported rather than
 hidden, with a hint naming the session and the way to collect the rest.
 
+### `read_process`
+
+Read what one process has printed. Incremental by default, so it can be called
+repeatedly while the process runs.
+
+```jsonc
+{
+  "session_id": "proc_1",  // required
+  "stream": "both",        // "stdout" | "stderr" | "both" (default)
+  "full": false,           // default false: only what is new
+  "release": false         // default false; only applies once exited
+}
+```
+
+```text
+session_id: proc_1
+state: running
+executable: grep
+arguments: ["-rn","TODO","src/"]
+pid: 48231
+running_milliseconds: 412
+stream: both
+full: false
+
+stdout (25 bytes):
+src/main.cpp:12: // TODO
+
+stdout_bytes_read: 25
+
+stderr: (empty)
+
+stderr_bytes_read: 0
+
+released: true
+```
+
+A stream whose block header says `(truncated, first N bytes)` printed more than
+the capture limit (4 MiB shared between the two streams), and the text under it
+stops there. `*_bytes_read` is the total handed over so far, across all reads.
+`released` reports what actually happened, not what was asked: a running
+process is never released, so it comes back `false`.
+
+Unlike a poll, this reads ONE named session, and `full: true` reads the whole
+capture rather than the delta — which is what to reach for when the delta has
+already been consumed by a poll and the text is wanted again.
+
 ### `send_process`
 
 Tell a running process something — the three strengths there are, in one tool:
@@ -533,7 +579,7 @@ The session is kept in case its output is wanted again; release it once done —
 the delta is empty because the spawn already handed the whole capture over:
 
 ```text
-read_process_output { "session_id": "proc_1", "release": true }
+read_process { "session_id": "proc_1", "release": true }
 
    session_id: proc_1
    …
@@ -660,7 +706,7 @@ send_process { "session_id": "proc_4", "signal": "kill" }
 
    hint: signal sent; call poll_process with a wait_timeout_milliseconds to confirm the process has ended
 
-read_process_output { "session_id": "proc_4", "full": true, "release": true }
+read_process { "session_id": "proc_4", "full": true, "release": true }
    stdout (… bytes):
    …everything it printed before it died…
 

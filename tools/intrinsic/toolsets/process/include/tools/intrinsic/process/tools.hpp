@@ -15,7 +15,7 @@
 //                         when its deadline runs out. The "what is going on"
 //                         call, the one that waits, and the one that also
 //                         serves as inspect.
-//   read_process_output   one session's output: the delta by default, the
+//   read_process          one session's output: the delta by default, the
 //                         whole capture on request.
 //   send_process          tell a running child something: more input, the end
 //                         of its input, or a signal to stop.
@@ -56,7 +56,7 @@
 //   tool                  InvokeType    InvokeSecurity
 //   spawn_process         SerialWrite   RequireConfirm
 //   poll_process          ReadOnly      Trusted
-//   read_process_output   ReadOnly      Trusted
+//   read_process          ReadOnly      Trusted
 //   send_process          SerialWrite   RequireConfirm
 //
 // InvokeType is about SCHEDULING — may this run beside its neighbours in a
@@ -160,7 +160,7 @@ namespace tools::intrinsic {
 namespace tool_names {
 inline constexpr std::string_view kSpawn = "spawn_process";
 inline constexpr std::string_view kPoll = "poll_process";
-inline constexpr std::string_view kRead = "read_process_output";
+inline constexpr std::string_view kRead = "read_process";
 inline constexpr std::string_view kSend = "send_process";
 } // namespace tool_names
 
@@ -284,9 +284,9 @@ public:
 /// One session's captured output: the delta since the last read by default,
 /// the whole capture with `full`. ReadOnly / Trusted, whether it consumes the
 /// cursor or releases the session — both are this layer's bookkeeping.
-class ReadProcessOutputTool final : public ProcessToolBase {
+class ReadProcessTool final : public ProcessToolBase {
 public:
-    explicit ReadProcessOutputTool(StorePtr store,
+    explicit ReadProcessTool(StorePtr store,
                              eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;

@@ -54,7 +54,7 @@ text: |
      `session_ids: ["proc_1"]`; `wait_timeout_milliseconds: 0` is a plain "where
      does this stand" look. A timeout is not an error: the result says
      `timed_out`, the processes are untouched, and you may wait again.
-  4. `read_process_output` returns what the child has printed. By default only
+  4. `read_process` returns what the child has printed. By default only
      what is NEW since the last read of that session, which is what makes it
      safe to call repeatedly while a program runs.
   5. `send_process` is how a live child is told anything, at any of the three
@@ -81,7 +81,7 @@ text: |
     are the context. A call per session only costs turns.
   - **New output is consumed by whoever reads it.** `poll_process` with
     `include_output: true` (the default) reports each session's new output and
-    consumes it, exactly as a default `read_process_output` does. Use
+    consumes it, exactly as a default `read_process` does. Use
     `full: true` when you want everything captured so far without consuming it,
     and do not expect the same lines twice.
   - **Look once, when you have lost track.** A `poll_process` with

@@ -52,7 +52,7 @@ add_library(tools_intrinsic_process SHARED
     src/toolset.cpp
     # Not compiled: the model-facing declarations, one file per tool.
     schemas/poll_process.yaml
-    schemas/read_process_output.yaml
+    schemas/read_process.yaml
     schemas/send_process.yaml
     schemas/spawn_process.yaml
     # Not compiled either: the set's skill, which is about using all four.

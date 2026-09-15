@@ -18,7 +18,7 @@ description: >-
   returns its exit code and its whole output in this one call. A program still
   running when that wait runs out keeps running in the background instead, and
   the result carries a session id for it: use poll_process to wait for it to
-  finish or to check on it, read_process_output to read what it has printed,
+  finish or to check on it, read_process to read what it has printed,
   and send_process to feed it or to end it. Set
   expected_runtime_milliseconds when a command needs longer than the default to
   finish in-call, or 0 to skip the wait and get an id straight away. There is

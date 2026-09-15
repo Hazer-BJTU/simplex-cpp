@@ -846,7 +846,7 @@ int main(int argc, char* argv[]) {
         "process-management toolset. Use spawn_process to run programs: an "
         "ordinary command returns its exit code and output in that one call, "
         "while a program that outlives the wait comes back as a session id "
-        "(proc_N) to follow with poll_process, read_process_output and "
+        "(proc_N) to follow with poll_process, read_process and "
         "send_process. poll_process waits: it returns as soon as any one of "
         "the sessions you named has finished, or when its "
         "wait_timeout_milliseconds runs out (0 just looks). Sessions and their "
