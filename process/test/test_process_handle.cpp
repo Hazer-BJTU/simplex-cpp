@@ -238,6 +238,90 @@ BOOST_AUTO_TEST_CASE(resolves_the_executable_through_the_spec_supplied_path)
                    "path-is-set=yes\n") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(a_path_that_exists_is_the_executable_path_is_not_consulted)
+{
+    // Resolution step 1: what the caller wrote, when it is there, is what runs.
+    // The two fixtures share a FILE NAME and print different words, so this can
+    // only pass if the one on PATH was NOT substituted for the one the spec
+    // named — which is the point of checking the path first. A caller that
+    // wrote a path meant that file, and a same-named program from PATH is a
+    // different program.
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() /
+        ("simplex-process-path-test-" + std::to_string(::getpid()));
+    const fs::path by_path = dir / "by-path";
+    const fs::path on_path = dir / "on-path";
+    fs::create_directories(by_path);
+    fs::create_directories(on_path);
+
+    const auto write_tool = [](const fs::path& file, const std::string& word) {
+        {
+            std::ofstream out{file};
+            out << "#!/bin/sh\necho " << word << "\n";
+        }
+        fs::permissions(file, fs::perms::owner_exec, fs::perm_options::add);
+    };
+    write_tool(by_path / "simplex-fixture-tool", "ran-the-named-path");
+    write_tool(on_path / "simplex-fixture-tool", "ran-the-path-lookup");
+
+    // The child's PATH holds ONLY the other directory, and inheritance is off,
+    // so a PATH search would find the other fixture — and nothing else in the
+    // environment can rescue the launch either way.
+    auto s = run_scenario(process::LaunchSpec{
+        .executable = (by_path / "simplex-fixture-tool").string(),
+        .arguments = {},
+        .description = "the named path wins",
+        .initial_wait_timeout_milliseconds = std::uint64_t{5000},
+        .environment = std::vector<std::string>{
+            std::format("PATH={}", on_path.string()),
+        },
+        .inherit_environment = false,
+    });
+    std::error_code cleanup_ec;
+    fs::remove_all(dir, cleanup_ec);
+
+    BOOST_TEST(s.finished_on_time);
+    BOOST_TEST(s.handle->status().exit_code.value() == 0);
+    BOOST_TEST(s.handle->standard_output() == "ran-the-named-path\n");
+}
+
+BOOST_AUTO_TEST_CASE(a_path_that_is_not_there_falls_back_to_its_file_name_on_path)
+{
+    // Resolution step 2, and the case it exists for: a path from somewhere
+    // else's layout. The fixture lives in the directory the spec's PATH names
+    // and nowhere else, while the spec names it under a directory that does
+    // not exist at all — so the launch can only succeed by searching PATH for
+    // the FILE NAME the path ends in.
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() /
+        ("simplex-process-name-test-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    const fs::path tool = dir / "simplex-fixture-tool";
+    {
+        std::ofstream file{tool};
+        file << "#!/bin/sh\necho resolved-by-file-name\n";
+    }
+    fs::permissions(tool, fs::perms::owner_exec, fs::perm_options::add);
+
+    auto s = run_scenario(process::LaunchSpec{
+        .executable = (dir / "not-installed-here" / "simplex-fixture-tool")
+                          .string(),
+        .arguments = {},
+        .description = "path missing, name found",
+        .initial_wait_timeout_milliseconds = std::uint64_t{5000},
+        .environment = std::vector<std::string>{
+            std::format("PATH={}", dir.string()),
+        },
+        .inherit_environment = false,
+    });
+    std::error_code cleanup_ec;
+    fs::remove_all(dir, cleanup_ec);
+
+    BOOST_TEST(s.finished_on_time);
+    BOOST_TEST(s.handle->status().exit_code.value() == 0);
+    BOOST_TEST(s.handle->standard_output() == "resolved-by-file-name\n");
+}
+
 BOOST_AUTO_TEST_CASE(resolves_bare_names_via_parent_path_when_child_env_has_none)
 {
     // The documented fallback: with inherit_environment=false and no PATH

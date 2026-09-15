@@ -42,8 +42,9 @@ argument_schema:
       type: string
       minLength: 1
       description: >-
-        Program to run: a name resolved through PATH ('grep') or a path
-        ('/usr/bin/grep')
+        Program to run: a name resolved through PATH ('grep'), or a path
+        ('/usr/bin/grep'). A path that exists is run as given; one that does
+        not is looked up again by its file name
     arguments:
       type: array
       items:

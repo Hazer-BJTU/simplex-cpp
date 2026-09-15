@@ -1510,11 +1510,14 @@ BOOST_AUTO_TEST_CASE(run_command_runs_a_line_through_the_platform_shell)
 
     // What the tool built from that one property: the host's own interpreter as
     // the executable, and the line as the single argument after the flag that
-    // says "this is the command". The model wrote neither.
+    // says "this is the command". The model wrote neither. The interpreter is
+    // named by PATH — an absolute one, so the environment the call passes along
+    // cannot decide which shell reads the line — and the flag is the POSIX one.
     const std::string shell = result.field("executable");
+    BOOST_TEST(shell.starts_with("/"));
     BOOST_TEST(shell.find("sh") != std::string::npos);
     const std::string arguments = result.field("arguments");
-    BOOST_TEST(arguments.find("-c") != std::string::npos);
+    BOOST_TEST(arguments.starts_with("[\"-c\","));
     BOOST_TEST(arguments.find(line) != std::string::npos);
     // ...and the command is the session's label, so every later report about
     // this session says what it was. There is no `description` argument to ask
@@ -1579,6 +1582,28 @@ BOOST_AUTO_TEST_CASE(a_zero_window_run_command_starts_in_the_background_at_once)
     const std::string hint = result.field("hint");
     BOOST_TEST(hint.find("without waiting") != std::string::npos);
     BOOST_TEST(hint.find(std::string(tool_names::kPoll)) != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(spawn_accepts_a_path_as_the_executable)
+{
+    // A path that exists is the executable (process/src/process_handle.cpp:
+    // resolution checks the path first and only then searches PATH by file
+    // name), so a caller that knows where its program is says so and gets THAT
+    // file. /bin/sh is the one shell path POSIX guarantees, which is what makes
+    // this case portable across the hosts the suite runs on — and it is also
+    // the shape run_command relies on when it names the interpreter.
+    Fixture f;
+    const auto record = f.call(call_for(
+        std::string(tool_names::kSpawn),
+        nlohmann::json{{"executable", "/bin/sh"},
+                       {"arguments", nlohmann::json::array(
+                                         {"-c", "printf %s ran-from-a-path"})}}));
+
+    const ResultText result = f.result_of(record);
+    BOOST_TEST(result.field("finished") == "true");
+    BOOST_TEST(result.field("exit_code") == "0");
+    BOOST_TEST(result.field("executable") == "/bin/sh");
+    BOOST_TEST(result.block("stdout") == "ran-from-a-path");
 }
 
 BOOST_AUTO_TEST_CASE(run_command_takes_the_same_launch_arguments_as_spawn_process)

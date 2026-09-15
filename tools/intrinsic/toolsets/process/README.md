@@ -234,7 +234,7 @@ not, it keeps running and the result carries a `session_id` instead.
 
 ```jsonc
 {
-  "executable": "grep",                    // required: PATH name or path
+  "executable": "grep",                    // required: a name (PATH) or a path
   "arguments": ["-rn", "TODO", "src/"],    // one element per argument, verbatim
   "description": "find TODOs",             // label echoed in every later report
   "working_directory": "/home/me/project", // defaults to the host's own cwd; "" is refused
@@ -249,6 +249,15 @@ or escape them, and do not put them all in one string. `working_directory: ""`
 is refused rather than read as "not given": a child cannot be started in the
 empty path, and silently inheriting the host's directory would run the command
 somewhere the model did not ask for.
+
+**`executable` is a name or a path, and the path is checked first.** A path that
+exists is run as written — `/usr/bin/grep` is that file, and a same-named
+program from PATH is not substituted for it — while one that does not exist is
+looked up again by its **file name**, so a path copied from another host's
+layout still finds the tool here. The search goes through the child's own PATH
+(the `environment` and `inherit_environment` arguments decide which), falling
+back to the host's when the child gets none. There is no shell in between: the
+program is exec'd directly, whatever the path looks like.
 
 **A quick command finishes inside the window**, and the answer is the facts
 about the call with the child's own text under them. `stdout` and `stderr` are
@@ -364,7 +373,7 @@ actually runs, and the `arguments` line of the result says so:
 session_id: proc_1
 state: exited
 exit_code: 0
-executable: bash
+executable: /bin/bash
 arguments: ["-c","ls -l /tmp | wc -l"]
 description: ls -l /tmp | wc -l
 pid: 48255
@@ -389,9 +398,10 @@ The interpreter is chosen by the tool, not by the caller: bash where the host
 has one, the POSIX `sh` otherwise. Which one it got is visible in the
 `executable` line, and the choice is deliberately not the model's — a command
 line written the ordinary way then behaves the same either way, and nothing has
-to know the host's shell in advance. (The name, not a path, is what the launch
-receives: the manager resolves executables through PATH, so `bash` is looked up
-the same way the model's own `spawn_process` calls are.)
+to know the host's shell in advance. What the launch receives is the **absolute
+path** the shell was found at (`/bin/bash`, `/usr/bin/bash`, `/bin/sh`), and a
+path that exists is used as written — so nothing the call puts in `environment`,
+PATH included, can change which interpreter parses the line.
 
 **A command that outlives its window** is the case the shortcut's hint is
 written for. The command did not fail and was not killed — it is still running,
@@ -400,7 +410,7 @@ as a session like any other:
 ```text
 session_id: proc_2
 state: running
-executable: bash
+executable: /bin/bash
 arguments: ["-c","sleep 600"]
 description: sleep 600
 pid: 48261
@@ -775,7 +785,7 @@ run_command { "command": "ls /tmp | wc -l" }
    session_id: proc_1
    state: exited
    exit_code: 0
-   executable: bash
+   executable: /bin/bash
    arguments: ["-c","ls /tmp | wc -l"]
    …
    stdout (3 bytes):
@@ -1002,11 +1012,25 @@ difference is in what the caller writes rather than in what the call does.
 
 ### Supporting changes in the layers below
 
-All three landed with this toolset and are used by it:
+All of them landed with this toolset and are used by it:
 
 - `LaunchSpec::working_directory` (dataclass; applied by Boost.Process v2 as a
   `chdir` in the child, checked before the launch so a bad path names itself at
   `Stage::Spawn`).
+- **`ProcessHandle`'s executable resolution checks the path before the PATH.**
+  A path that exists is used as written; one that does not is looked up again by
+  its file name. Before this only bare names resolved at all, because Boost's
+  `environment::find_executable()` is a PATH search that APPENDS the name to
+  each PATH entry (`operator/` concatenates rather than replacing), so
+  `/usr/bin/grep` was looked for as `<PATH entry>/usr/bin/grep` and never found.
+  `run_command` is what made it matter — it names its interpreter by absolute
+  path, so that nothing a call passes in `environment` decides which shell
+  parses the line — and `spawn_process` had been promising paths in its schema
+  all along. The two steps and what follows from them are stated in
+  [`process/README.md`](../../../../process/README.md#how-the-executable-is-resolved)
+  and pinned by the manager's own suite
+  (`a_path_that_exists_is_the_executable_path_is_not_consulted`,
+  `a_path_that_is_not_there_falls_back_to_its_file_name_on_path`).
 - `ProcessHandle::terminate()` / `request_exit()` — on-demand SIGKILL / SIGTERM
   that send the signal only, leaving the terminal observation to the await task
   that owns it.

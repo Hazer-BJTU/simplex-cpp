@@ -338,9 +338,11 @@ public:
 ///
 /// The interpreter is the PLATFORM's, resolved when the call runs (src/tools.cpp)
 /// rather than named by the model: bash where the host has one, the POSIX `sh`
-/// otherwise. So a command line written the ordinary way works on a host whose
-/// only shell is `sh`, and a model never has to know which one it is talking to
-/// — the shell it got is visible in the result's `executable` line.
+/// otherwise, and it is passed to the launch as the absolute path it was found
+/// at. So a command line written the ordinary way works on a host whose only
+/// shell is `sh`, a model never has to know which one it is talking to, and
+/// nothing the call puts in `environment` can change which shell reads the
+/// line — the result's `executable` line says which file it got.
 class RunCommandTool final : public ProcessToolBase {
 public:
     /// How long a command is waited for before its child is left running in the

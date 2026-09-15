@@ -64,8 +64,19 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ProcessState, {
 // (the legacy manager took description/executable/args as loose parameters;
 // timeout, env and post-timeout behaviour were call-site conventions).
 struct LaunchSpec {
-    // Executable name (resolved through PATH) or a path. Resolution failures
-    // surface as process::ProcessException at Stage::ResolveExecutable.
+    // Executable name or a path, resolved in TWO steps whose order is the
+    // contract: a path that EXISTS is used exactly as written — the caller
+    // named that file, and a same-named program from PATH is not substituted
+    // for it — while one that does not exist falls back to a PATH search for
+    // its FILE NAME (the last path component), so a path copied from another
+    // host's layout still finds the tool here. A bare name is the same rule
+    // with nothing to strip. Existence is what the first step tests, not
+    // executability: a path that is there but cannot be executed fails at the
+    // launch with the OS's own error rather than quietly becoming a different
+    // program. A relative path is checked against the host's working
+    // directory, which is not necessarily the child's working_directory.
+    // Resolution failures surface as process::ProcessException at
+    // Stage::ResolveExecutable.
     std::string executable;
     // argv tail — argv[0] is the executable itself, not repeated here.
     // Passed through verbatim: there is no shell on the other side, so

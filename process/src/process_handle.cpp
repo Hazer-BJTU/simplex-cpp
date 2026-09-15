@@ -93,10 +93,54 @@ ProcessHandle::ProcessHandle(
             return std::string_view{kv.data(), kv.size()}
                 .starts_with("PATH=");
         });
-    auto exec_path = child_env_has_path
-        ? boost::process::environment::find_executable(
-              _spec.executable, used_envs)
-        : boost::process::environment::find_executable(_spec.executable);
+
+    // The PATH half of the rule below, against whichever environment the
+    // comment above selected.
+    const auto search_path = [&](const std::filesystem::path& name) {
+        const boost::process::v2::filesystem::path lookup(name.string());
+        return child_env_has_path
+            ? boost::process::environment::find_executable(lookup, used_envs)
+            : boost::process::environment::find_executable(lookup);
+    };
+
+    // RESOLUTION IS TWO STEPS, AND THE ORDER IS THE CONTRACT:
+    //
+    //   1. A PATH THAT EXISTS IS THE EXECUTABLE. Whatever the spec named — an
+    //      absolute path, a relative one with a directory in it, or a bare
+    //      name that happens to be a file of the host's working directory —
+    //      if it is there, that is what runs. A caller that wrote a path meant
+    //      THAT file, and substituting a different program of the same name
+    //      from PATH would run something nobody asked for.
+    //   2. OTHERWISE ITS FILE NAME GOES THROUGH PATH. What is searched is
+    //      path::filename(), the last component, so "/usr/bin/grep" on a host
+    //      whose grep lives elsewhere still finds that grep instead of failing
+    //      on a path that is not this machine's layout. A bare name is the
+    //      same rule with nothing to strip.
+    //
+    // Existence, not executability, is what step 1 tests: a path that is there
+    // but cannot be executed (a directory, a file without the execute bit)
+    // fails at the launch with the OS's own error, which names the thing the
+    // caller actually pointed at — silently falling through to a same-named
+    // program from PATH would be a worse answer than a failure.
+    //
+    // STEP 1 IS NOT SOMETHING BOOST.PROCESS CAN DO FOR US.
+    // environment::find_executable() is a PATH search and nothing else: it
+    // appends the name to each PATH entry with Boost.Filesystem's operator/,
+    // which CONCATENATES rather than replacing, so an absolute name is looked
+    // for as "<PATH entry>/usr/bin/grep" and never found. Hence the stat
+    // first, and hence find_executable is handed a file name rather than
+    // whatever the caller wrote.
+    //
+    // For a RELATIVE path the stat is relative to the host's working directory,
+    // which is the one the caller's process runs in; when the spec also names a
+    // working_directory the child is chdir'd into before exec, so a relative
+    // executable is resolved there and the two can disagree. Name an absolute
+    // path when that matters.
+    std::error_code stat_ec;
+    const std::filesystem::path requested{_spec.executable};
+    auto exec_path = std::filesystem::exists(requested, stat_ec) && !stat_ec
+        ? boost::process::v2::filesystem::path(requested.string())
+        : search_path(requested.filename());
 
     // find_executable reports "not found" as an empty path rather than an
     // error, so the check has to happen before the spawn try-block.

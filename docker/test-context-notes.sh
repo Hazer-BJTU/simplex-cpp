@@ -60,6 +60,10 @@ THINGS WORTH TRYING (each one exercises a different part of the chain)
            the whole output in the same tool result. Ask for a pipeline next
            ("count the files in /tmp by extension") to see the shell do the
            work spawn_process would have needed an arguments list for.
+           Ask for a program BY PATH ("run /usr/bin/seq 1 3 with
+           spawn_process") to watch the resolution rule: a path that exists is
+           used as written, and only a path that is NOT there is looked up
+           again by its file name.
   2. "run sleep 600 in the background and tell me how to check on it"
         -> run_command that outlives its 3 s window: the result names the
            session and the hint says the command was NOT killed and which calls

@@ -79,16 +79,12 @@ std::string_view signal_word(Signal signal)
 /// which POSIX guarantees is there, and under which every command line that
 /// does not reach for bash extensions behaves the same.
 ///
-/// The EXISTENCE CHECK asks the conventional absolute paths (that is where a
-/// bash is, and it costs one stat), but what the launch is handed is the NAME.
-/// Executables reach the child through the manager's own resolution, which
-/// searches PATH, and it does so with Boost.Filesystem's path append —
-/// `operator/` CONCATENATES rather than replacing, so an absolute name is
-/// looked for as "<PATH entry>/bin/bash" and never found
-/// (process/src/process_handle.cpp). A bare name is what resolves; it resolves
-/// through the CHILD's environment, which is why a call may steer it with
-/// `environment`, and why the result's `executable` line reads "bash" rather
-/// than a path.
+/// The interpreter is named by its CONVENTIONAL ABSOLUTE PATH, and handed to
+/// the launch as a path: the manager uses a path that exists exactly as written
+/// (process/src/process_handle.cpp, resolution step 1), so nothing the model
+/// puts in `environment` — PATH included — can change which interpreter reads
+/// the line. The result's `executable` line names the file that was chosen, so
+/// the caller can see what its command was parsed by.
 ///
 /// One branch only, because this whole toolset is POSIX: the session store
 /// signals pids and includes <sys/types.h>, so there is no build of this layer
@@ -100,13 +96,13 @@ struct Shell {
 
 [[nodiscard]] Shell platform_shell()
 {
-    for (const char* candidate : {"/bin/bash", "/usr/bin/bash"}) {
+    for (const std::string_view candidate : {"/bin/bash", "/usr/bin/bash"}) {
         std::error_code ignored;
         if (std::filesystem::is_regular_file(candidate, ignored)) {
-            return Shell{"bash", "-c"};
+            return Shell{std::string(candidate), "-c"};
         }
     }
-    return Shell{"sh", "-c"};
+    return Shell{"/bin/sh", "-c"};
 }
 
 } // namespace
