@@ -7,11 +7,12 @@ back to it in later turns.
 
 Built on the package's shared core (`tools_intrinsic`, see
 [`../../README.md`](../../README.md)), which carries the argument reading, the
-JSON result shape and the confirmation routing; this directory is only the
-process domain. The manager underneath is `process/`'s `ProcessHandle`.
+result shape and the confirmation routing; this directory is only the process
+domain. The manager underneath is `process/`'s `ProcessHandle`.
 
 - [The model's view](#the-models-view) — the six tools, their schemas, the
-  skill that says how they fit together, and results
+  skill that says how they fit together, the shape of a result, and each
+  tool's
 - [Worked examples](#worked-examples)
 - [The host's view](#the-hosts-view) — wiring, shutdown, internals
 
@@ -163,6 +164,49 @@ already sees the session that spawn created, and why a `kill_process` beside a
 
 ---
 
+### The result shape
+
+Every tool answers with one text part, and it is written for a reader — the
+model, and a human looking at the transcript over its shoulder — rather than
+serialised for a program:
+
+```text
+session_id: proc_1
+state: exited
+exit_code: 0
+executable: seq
+arguments: ["1","5"]
+pid: 4242
+running_milliseconds: 12
+
+stdout (10 bytes):
+1
+2
+3
+4
+5
+
+stderr: (empty)
+```
+
+- **A field is one line**, `name: value`. A string arrives as itself — a path, a
+  command, a label — and so does everything else that fits on a line; an array
+  or a value that spans lines is compact JSON.
+- **A field with nothing in it writes no line at all.** An exit code that does
+  not exist yet, an empty argument list, an absent working directory: the
+  absence says it, and `exit_code:` followed by nothing would be a line to
+  interpret.
+- **A block is verbatim text under a header**: `stdout (10 bytes):` and then the
+  bytes the child printed. Nothing is escaped, quoted or folded — the text is
+  the text. `(empty)` is a stream that printed nothing, `(truncated, first N
+  bytes)` is a capture cut at the limit, and a `---` rule sets one record (a
+  poll's session) off from the next.
+
+The reasons for this over a JSON object are in
+`tools/intrinsic/tool_result.hpp`: an object has to carry every string inside a
+string, so the one part a caller asked for — what the child printed — arrives
+escaped, and the facts around it arrive between braces.
+
 ### `spawn_process`
 
 Run a program. Waits up to `expected_runtime_milliseconds` for it to finish; if
@@ -187,27 +231,36 @@ is refused rather than read as "not given": a child cannot be started in the
 empty path, and silently inheriting the host's directory would run the command
 somewhere the model did not ask for.
 
-**A quick command finishes inside the window** and comes back complete:
+**A quick command finishes inside the window**, and the answer is the facts
+about the call with the child's own text under them. `stdout` and `stderr` are
+the bytes it printed — not a string with `\n` escapes in it, which is what a
+JSON object would have made of them:
 
-```jsonc
-{
-  "session_id": "proc_1",
-  "executable": "grep",
-  "arguments": ["-rn", "TODO", "src/"],
-  "description": "find TODOs",
-  "pid": 48231,
-  "finished": true,
-  "output_complete": true,
-  "state": "exited",
-  "exit_code": 0,
-  "running_milliseconds": 8,
-  "stdout_text": "src/main.cpp:12: // TODO\n",
-  "stderr_text": "",
-  "stdout_truncated": false,
-  "stderr_truncated": false,
-  "hint": "the process finished; its output is above. Call read_process_output with release to forget the session when done with it"
-}
+```text
+session_id: proc_1
+state: exited
+exit_code: 0
+executable: grep
+arguments: ["-rn","TODO","src/"]
+description: find TODOs
+pid: 48231
+running_milliseconds: 8
+finished: true
+output_complete: true
+
+stdout (34 bytes):
+src/main.cpp:12: // TODO
+
+stderr: (empty)
+
+hint: the process finished; its output is above. Call read_process_output with release to forget the session when done with it
 ```
+
+Values a caller would otherwise have to un-escape arrive as themselves
+(`executable: grep`, a path, a label); a block is introduced by a header that
+names it and counts its bytes, and a stream that printed nothing says
+`(empty)`. See [The result shape](#the-result-shape) for the rules, and
+`tools/intrinsic/tool_result.hpp` for why it is this and not JSON.
 
 The session is **kept**, not reaped, even though it already finished: its
 output stays readable, and the model releases it when done (`release: true` on
@@ -221,31 +274,39 @@ part company when a command starts something else that inherits its output and
 then exits itself — a launcher, a background job — because the descendant keeps
 those pipes open after the child is gone:
 
-```jsonc
-{
-  "session_id": "proc_2",
-  "finished": true,
-  "output_complete": false,
-  "state": "exited", "exit_code": 0,
-  "stdout_text": "…what has arrived so far…",
-  "hint": "the process finished, but its output capture is not complete yet: … call wait_process to collect the rest"
-}
+```text
+session_id: proc_2
+state: exited
+exit_code: 0
+executable: sh
+arguments: ["-c","sleep 30 & exit 0"]
+pid: 48237
+running_milliseconds: 3
+finished: true
+output_complete: false
+
+stdout: (empty)
+
+stderr: (empty)
+
+hint: the process finished, but its output capture is not complete yet: the text above is what has arrived so far. Something may still hold its output open; call wait_process to collect the rest
 ```
 
 **A program that outlives the window** comes back as just the id and the
-in-progress state — no `exit_code`, no output slice:
+in-progress state — no `exit_code` line at all, and no output slice:
 
-```jsonc
-{
-  "session_id": "proc_3",
-  "executable": "make",
-  "pid": 48244,
-  "finished": false,
-  "output_complete": false,
-  "state": "running",
-  "running_milliseconds": 5000,
-  "hint": "the process is still running; call poll_processes to check on it, wait_process to wait for it, read_process_output to read its output"
-}
+```text
+session_id: proc_3
+state: running
+executable: make
+arguments: ["-j4"]
+description: build
+pid: 48244
+running_milliseconds: 5000
+finished: false
+output_complete: false
+
+hint: the process is still running; call poll_processes to check on it, wait_process to wait for it, read_process_output to read its output
 ```
 
 Raise `expected_runtime_milliseconds` for a command that legitimately needs
@@ -272,27 +333,37 @@ This is the call for checking on work started earlier.
 
 All three are optional; `{}` reports everything.
 
-```jsonc
-{
-  "sessions": [
-    {
-      "session_id": "proc_1",
-      "executable": "grep", "arguments": ["-rn", "TODO", "src/"],
-      "description": "find TODOs", "pid": 48231,
-      "state": "exited",              // "running" | "exited" | "unknown"
-      "exit_code": 0,                 // absent while still running
-      "running_milliseconds": 412,
-      "new_stdout": "src/main.cpp:12: // TODO\n",   // since the last read
-      "new_stderr": ""
-    }
-  ],
-  "retained_session_count": 1,
-  "released": ["proc_1"]              // only when release_exited actually freed some
-}
+```text
+retained_session_count: 1
+
+---
+
+session_id: proc_1
+state: exited
+exit_code: 0
+executable: grep
+arguments: ["-rn","TODO","src/"]
+description: find TODOs
+pid: 48231
+running_milliseconds: 412
+
+new_stdout (25 bytes):
+src/main.cpp:12: // TODO
+
+new_stderr: (empty)
+
+---
+
+released: ["proc_1"]
 ```
 
-`exit_code` is **absent** while a process runs — an absent exit code is not a
-zero one. With `release_exited: true`, output is reported *before* the session
+One session is one record, set off by a `---` rule; `new_stdout` holds what
+that session printed since it was last read, and is `(empty)` when there is
+nothing new — while a poll that did not ask for output has no such block at
+all. `exit_code` has **no line** while a process runs: an absent exit code is
+not a zero one. The `released` record appears only when `release_exited`
+actually freed something. With `release_exited: true`, output is reported
+*before* the session
 is freed, so nothing is lost. `retained_session_count` counts what the table is
 holding, exited-but-unreleased sessions included — the same number the
 32-session cap counts, so it is not the number of *running* processes.
@@ -311,26 +382,33 @@ repeatedly while the process runs.
 }
 ```
 
-```jsonc
-{
-  "session_id": "proc_1",
-  "stream": "both",
-  "full": false,
-  "state": "running", "pid": 48231, "executable": "grep", /* …session fields… */
-  "stdout_text": "src/main.cpp:12: // TODO\n",
-  "stdout_truncated": false,
-  "stdout_bytes_read": 34,     // total handed over so far, across all reads
-  "stderr_text": "",
-  "stderr_truncated": false,
-  "stderr_bytes_read": 0,
-  "released": true             // present only when release was asked for
-}
+```text
+session_id: proc_1
+state: running
+executable: grep
+arguments: ["-rn","TODO","src/"]
+pid: 48231
+running_milliseconds: 412
+stream: both
+full: false
+
+stdout (25 bytes):
+src/main.cpp:12: // TODO
+
+stdout_bytes_read: 25
+
+stderr: (empty)
+
+stderr_bytes_read: 0
+
+released: true
 ```
 
-`*_truncated` means the process printed more than the capture limit (4 MiB
-shared between the two streams) and the text stops there. `released` reports
-what actually happened, not what was asked: a running process is never
-released, so it comes back `false`.
+A stream whose block header says `(truncated, first N bytes)` printed more than
+the capture limit (4 MiB shared between the two streams), and the text under it
+stops there. `*_bytes_read` is the total handed over so far, across all reads.
+`released` reports what actually happened, not what was asked: a running
+process is never released, so it comes back `false`.
 
 ### `write_process_input`
 
@@ -347,18 +425,19 @@ Send text to a running process's standard input.
 Either `input` or `close_input` must say something — a call that sends nothing
 and closes nothing is refused as a mistake.
 
-```jsonc
-{
-  "session_id": "proc_1",
-  "bytes_queued": 10,
-  "input_closed": false,
-  "state": "running",
-  "note": "the text is queued for the process's standard input; the process may not have read it yet",
-  "warning": "the process has already exited, so the input was discarded"  // only if it had
-}
+```text
+session_id: proc_1
+state: running
+bytes_queued: 10
+input_closed: false
+
+note: the text is queued for the process's standard input; the process may not have read it yet
 ```
 
-`bytes_queued`, not "delivered": the write is handed to a background pump and
+A write to a child that has already exited carries one more line —
+`warning: the process has already exited, so the input was discarded` — because
+nothing else in the result would reveal it. `bytes_queued`, not "delivered":
+the write is handed to a background pump and
 this returns before the process reads it. To confirm it was consumed, read the
 output back. Many programs read until end-of-input — for those, send the text
 and then `close_input: true`, or nothing happens.
@@ -376,21 +455,22 @@ printed.
 }
 ```
 
-```jsonc
-{
-  "session_id": "proc_1",
-  "executable": "grep", "pid": 48231, /* …session fields… */
-  "state": "exited",
-  "exit_code": 0,
-  "running_milliseconds": 412,
-  "exited": true,
-  "output_complete": true,
-  "timed_out": false,
-  "stdout_text": "src/main.cpp:12: // TODO\n",   // the FULL capture
-  "stderr_text": "",
-  "stdout_truncated": false,
-  "stderr_truncated": false
-}
+```text
+session_id: proc_1
+state: exited
+exit_code: 0
+executable: grep
+arguments: ["-rn","TODO","src/"]
+pid: 48231
+running_milliseconds: 412
+exited: true
+output_complete: true
+timed_out: false
+
+stdout (25 bytes):
+src/main.cpp:12: // TODO
+
+stderr: (empty)
 ```
 
 The three fields say which of the two things the wait was waiting for it
@@ -403,8 +483,8 @@ exits while something it started still holds its stdout open ends the wait with
 reason the distinction exists; the result then carries a hint saying so, and
 waiting again collects the rest.
 
-**A timeout is not an error.** It comes back `"exited": false, "timed_out":
-true` with `state` still `"running"`, and the process keeps running — wait
+**A timeout is not an error.** It comes back `exited: false`, `timed_out:
+true` with `state` still `running`, and the process keeps running — wait
 again, read its output, or kill it. `timeout_milliseconds: 0` waits forever,
 which hangs the turn on a process that never exits; prefer a real timeout and
 wait twice.
@@ -429,20 +509,22 @@ still be collected.
 `graceful: true` asks the process to shut down (a signal it may handle, or
 ignore); the default ends it immediately and cannot be refused.
 
-```jsonc
-{
-  "session_id": "proc_1",
-  "state": "running",       // may still say running — see below
-  "pid": 48231, /* …session fields… */
-  "signalled": true,
-  "graceful": false,
-  "note": "signal sent; call wait_process to confirm the process has ended"
-}
+```text
+session_id: proc_1
+state: running
+executable: sleep
+arguments: ["600"]
+pid: 48231
+running_milliseconds: 1200
+signalled: true
+graceful: false
+
+note: signal sent; call wait_process to confirm the process has ended
 ```
 
 The signal is sent, but the death is noticed a moment later, so the result may
-still report `"running"` — that is not a failed kill. Call `wait_process` to
-confirm. A process that had already finished comes back `"signalled": false`
+still report `state: running` — that is not a failed kill. Call `wait_process`
+to confirm. A process that had already finished comes back `signalled: false`
 with a note saying so, which is not a failure either.
 
 ---
@@ -452,57 +534,116 @@ with a note saying so, which is not a failure either.
 **Run a command and get its output.** One call — it finishes inside the
 default window:
 
-```jsonc
+```text
 spawn_process { "executable": "ls", "arguments": ["-la", "/tmp"], "description": "list /tmp" }
-   → { "session_id": "proc_1", "finished": true, "state": "exited", "exit_code": 0,
-       "stdout_text": "total 48\n…" }
+
+   session_id: proc_1
+   state: exited
+   exit_code: 0
+   executable: ls
+   arguments: ["-la","/tmp"]
+   description: list /tmp
+   pid: 48231
+   running_milliseconds: 4
+   finished: true
+   output_complete: true
+
+   stdout (48 bytes):
+   total 48
+   …
+
+   stderr: (empty)
 ```
 
-The session is kept in case its output is wanted again; release it once done:
+The session is kept in case its output is wanted again; release it once done —
+the delta is empty because the spawn already handed the whole capture over:
 
-```jsonc
+```text
 read_process_output { "session_id": "proc_1", "release": true }
-   → { "stdout_text": "", "released": true }   // full text already returned by spawn
+
+   session_id: proc_1
+   …
+   stdout: (empty)
+
+   stderr: (empty)
+
+   released: true
 ```
 
 **Watch a long build.** Spawn with a short window (or `0`) so it becomes a
 session at once, then poll as often as needed:
 
-```jsonc
+```text
 spawn_process   { "executable": "make", "arguments": ["-j4"], "description": "build",
                   "expected_runtime_milliseconds": 0 }
-   → { "session_id": "proc_2", "finished": false, "state": "running", … }
+   session_id: proc_2
+   state: running
+   …
+   finished: false
 
 poll_processes  { "session_ids": ["proc_2"] }
-   → { "sessions": [{ "state": "running", "new_stdout": "[ 10%] Building…\n" }] }
+   retained_session_count: 1
+
+   ---
+
+   session_id: proc_2
+   state: running
+   …
+   new_stdout (19 bytes):
+   [ 10%] Building…
 
 poll_processes  { "session_ids": ["proc_2"] }          // only what is NEW
-   → { "sessions": [{ "state": "running", "new_stdout": "[ 45%] Building…\n" }] }
+   …
+   new_stdout (19 bytes):
+   [ 45%] Building…
 
 poll_processes  { "session_ids": ["proc_2"], "release_exited": true }
-   → { "sessions": [{ "state": "exited", "exit_code": 0, "new_stdout": "[100%] Built\n" }],
-       "released": ["proc_2"] }
+   …
+   session_id: proc_2
+   state: exited
+   exit_code: 0
+   new_stdout (14 bytes):
+   [100%] Built
+
+   ---
+
+   released: ["proc_2"]
 ```
 
 **Feed a program on stdin.** `cat` reads until end-of-input, so it has to
 become a session before there is anything to write to — pass `0` so the spawn
 does not wait for a program that is waiting right back:
 
-```jsonc
+```text
 spawn_process         { "executable": "cat", "description": "echo back",
                         "expected_runtime_milliseconds": 0 }
-   → { "session_id": "proc_3", "finished": false, … }
+   session_id: proc_3
+   state: running
+   …
+   finished: false
 
 write_process_input  { "session_id": "proc_3", "input": "hello\n", "close_input": true }
-   → { "bytes_queued": 6, "input_closed": true }
+   session_id: proc_3
+   bytes_queued: 6
+   input_closed: true
 
 wait_process         { "session_id": "proc_3", "release": true }
-   → { "exited": true, "exit_code": 0, "stdout_text": "hello\n" }
+   session_id: proc_3
+   state: exited
+   exit_code: 0
+   exited: true
+   output_complete: true
+   timed_out: false
+
+   stdout (6 bytes):
+   hello
+
+   released: true
 ```
 
 **A pipeline needs an explicit shell:**
 
-```jsonc
+```text
 spawn_process { "executable": "sh", "arguments": ["-c", "ls /tmp | wc -l"], "description": "count files" }
 ```
 
@@ -510,15 +651,23 @@ Without `sh -c`, `|` and `wc` would reach `ls` as literal arguments.
 
 **Stop something that is taking too long:**
 
-```jsonc
+```text
 wait_process { "session_id": "proc_4", "timeout_milliseconds": 5000 }
-   → { "exited": false, "timed_out": true, "state": "running" }   // not an error
+   state: running
+   exited: false
+   output_complete: false
+   timed_out: true                       // not an error
 
 kill_process { "session_id": "proc_4" }
-   → { "signalled": true, "note": "signal sent; call wait_process to confirm…" }
+   signalled: true
+   graceful: false
+   note: signal sent; call wait_process to confirm the process has ended
 
 read_process_output { "session_id": "proc_4", "full": true, "release": true }
-   → { "stdout_text": "…everything it printed before it died…", "released": true }
+   stdout (… bytes):
+   …everything it printed before it died…
+
+   released: true
 ```
 
 ---
@@ -589,7 +738,8 @@ first, for exactly that reason).
 - **`process/tools.hpp`** — the six `ToolInterface` implementations. Each
   checks its arguments in `ensure_arguments()` and writes the defaults into the
   query there (so the security check and the human confirmation see settled
-  arguments), and answers with a JSON object in a text part. `InvokeType`
+  arguments), and answers with a `ToolResult` — field lines and the child's
+  output verbatim. `InvokeType`
   describes what a call changes OUTSIDE the host: the three observing tools are
   `ReadOnly` (the cursors and table entries they touch are internal, and the
   store's strands make them safe to overlap), and the three that launch, feed or

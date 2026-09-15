@@ -25,6 +25,10 @@
 #                     (load_tool_declaration) and the reporting form a tool uses
 #                     so that a broken file costs one tool rather than the host
 #                     (try_load_tool_declaration).
+#   tool_result.hpp   ToolResult: how an intrinsic tool answers a call — the
+#                     fields a reader scans and the verbatim text blocks they
+#                     read, so a child's output arrives as the bytes it printed
+#                     rather than escaped inside a JSON string.
 #   skill_declaration.hpp  the same idea one level up: a TOOLSET's skill — the
 #                     prose about how its tools are used together — as a YAML
 #                     document, with load_skill_declaration() and the reporting
@@ -61,6 +65,7 @@ add_library(tools_intrinsic SHARED
     src/skill_declaration.cpp
     src/tool_base.cpp
     src/tool_declaration.cpp
+    src/tool_result.cpp
     src/toolset_base.cpp
 )
 target_include_directories(tools_intrinsic PUBLIC

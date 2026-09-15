@@ -1,6 +1,8 @@
 #define BOOST_TEST_MODULE ProcessRegistryEndToEndTests
 #include <boost/test/unit_test.hpp>
 
+#include "result_text.hpp"
+
 #include "tools/intrinsic/process/toolset.hpp"
 #include "tools/intrinsic/process/tools.hpp"
 #include "tools/intrinsic/tool_base.hpp"
@@ -50,7 +52,7 @@
 //
 // The shape of a case here is therefore always the same:
 //
-//   model call(s) -> ToolRegistry::execute -> records -> JSON payload
+//   model call(s) -> ToolRegistry::execute -> records -> result text
 //
 // never a tool hook directly, and never a toolset phase directly. The registry
 // is the composition the agent loop actually uses.
@@ -67,6 +69,8 @@
 // so what a case observes is only what its own calls made.
 
 namespace asio = boost::asio;
+using process_test::ResultText;
+using tools::intrinsic::ToolResult;
 using tools::ConfirmDecision;
 using tools::InvokeConfirmEvent;
 using tools::intrinsic::ProcessSessionStore;
@@ -92,14 +96,15 @@ model_io::InvokeQuery call_for(std::string name, nlohmann::json arguments = {},
     return query;
 }
 
-/// The JSON a successful tool result carries. Fails the case when the record is
-/// a failure record instead.
-nlohmann::json payload_of(const model_io::InvokeReturn& record)
+/// One successful tool result, read back into the fields and blocks the model
+/// was given (result_text.hpp). Fails the case when the record is a failure
+/// record instead.
+ResultText result_of(const model_io::InvokeReturn& record)
 {
     BOOST_TEST_REQUIRE(!tools::is_error(record),
                        "expected a result, got a failure: "
                            << record.output.raw);
-    return nlohmann::json::parse(record.output.raw);
+    return ResultText(record.output.raw);
 }
 
 // ---- the scheduling instrument ----------------------------------------------
@@ -154,8 +159,8 @@ struct ProbeLog {
  * was asked to spend.
  *
  * It derives from IntrinsicTool so it is a tool in every structural sense (the
- * same Invocable storage, the same JSON result shape) and differs from a real
- * one only in what invoke() does. The type and security it declares come from
+ * same Invocable storage, the same ToolResult) and differs from a real one only
+ * in what invoke() does. The type and security it declares come from
  * the case, which is the whole point: the same tool can be registered as
  * ReadOnly, ParallWrite or SerialWrite, and the batch's behavior must differ
  * accordingly.
@@ -194,7 +199,11 @@ public:
         timer.expires_after(_work);
         co_await timer.async_wait(asio::use_awaitable);
         _log->leave(query.name);
-        co_return json_content(nlohmann::json{{"probe", query.name}});
+        // A probe's answer is its own name, and nothing else: the cases read
+        // the SHAPE of the batch, not this result.
+        ToolResult result;
+        result.field("probe", query.name);
+        co_return result.render();
     }
 
 private:
@@ -382,7 +391,7 @@ struct Fixture {
                            {"arguments", std::move(arguments)},
                            {"expected_runtime_milliseconds", window}},
             std::move(id)));
-        return payload_of(record).at("session_id").get<std::string>();
+        return result_of(record).field("session_id");
     }
 
     std::vector<model_io::InvokeQuery> questions_asked()
@@ -480,22 +489,22 @@ BOOST_AUTO_TEST_CASE(a_quick_command_finishes_inside_its_spawn_window)
                        {"expected_runtime_milliseconds", 5000}},
         "call_spawn"));
 
-    const nlohmann::json payload = payload_of(record);
-    BOOST_TEST(payload.at("finished") == nlohmann::json(true));
-    BOOST_TEST(payload.at("output_complete") == nlohmann::json(true));
-    BOOST_TEST(payload.at("exit_code") == nlohmann::json(0));
-    BOOST_TEST(payload.at("stdout_text") == nlohmann::json("done already\n"));
+    const ResultText result = result_of(record);
+    BOOST_TEST(result.field("finished") == "true");
+    BOOST_TEST(result.field("output_complete") == "true");
+    BOOST_TEST(result.field("exit_code") == "0");
+    BOOST_TEST(result.block("stdout") == "done already\n");
 
     // The session is kept, so the release is a call of its own — a ReadOnly
     // one, because removing a table entry is this layer's own bookkeeping and
     // nothing outside the host changes.
-    const std::string id = payload.at("session_id").get<std::string>();
+    const std::string id = result.field("session_id");
     const auto released = f.call(call_for(
         std::string(tool_names::kRead),
         nlohmann::json{{"session_id", id}, {"full", true}, {"release", true}},
         "call_release"));
     BOOST_CHECK(released.query.type == model_io::InvokeType::ReadOnly);
-    BOOST_TEST(payload_of(released).at("released") == nlohmann::json(true));
+    BOOST_TEST(result_of(released).field("released") == "true");
 }
 
 BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
@@ -512,36 +521,34 @@ BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
                                        {"input", "through the registry\n"},
                                        {"close_input", true}}))));
 
-    const nlohmann::json waited = payload_of(f.call(call_for(
+    const ResultText waited = result_of(f.call(call_for(
         std::string(tool_names::kWait),
         nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.at("exited") == nlohmann::json(true));
-    BOOST_TEST(waited.at("output_complete") == nlohmann::json(true));
-    BOOST_TEST(waited.at("timed_out") == nlohmann::json(false));
-    BOOST_TEST(waited.at("stdout_text") ==
-               nlohmann::json("through the registry\n"));
+    BOOST_TEST(waited.field("exited") == "true");
+    BOOST_TEST(waited.field("output_complete") == "true");
+    BOOST_TEST(waited.field("timed_out") == "false");
+    BOOST_TEST(waited.block("stdout") == "through the registry\n");
 
     // The delta still holds the text — the wait read the capture with
     // `full = true`, which is an observation and consumes nothing — and a
     // second delta is then empty.
-    const nlohmann::json delta = payload_of(f.call(call_for(
+    const ResultText delta = result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(delta.at("stdout_text") ==
-               nlohmann::json("through the registry\n"));
-    const nlohmann::json empty = payload_of(f.call(call_for(
+    BOOST_TEST(delta.block("stdout") == "through the registry\n");
+    const ResultText empty = result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(empty.at("stdout_text") == nlohmann::json(""));
+    BOOST_TEST(empty.block("stdout").empty());
 
     // Reaping through a poll: the session goes, and the poll says which ones
     // went. Like every other poll the call is ReadOnly — the removal is the
     // table's own bookkeeping — so the reason a neighbour addressing the same
     // id is safe is the store's strand, not the scheduler holding this call
     // apart from it.
-    const nlohmann::json polled = payload_of(f.call(call_for(
+    const ResultText polled = result_of(f.call(call_for(
         std::string(tool_names::kPoll),
         nlohmann::json{{"release_exited", true}}, "call_poll")));
-    BOOST_TEST(polled.at("released") == nlohmann::json::array({id}));
-    BOOST_TEST(polled.at("retained_session_count") == nlohmann::json(0));
+    BOOST_TEST(polled.field("released") == "[\"" + id + "\"]");
+    BOOST_TEST(polled.field("retained_session_count") == "0");
 }
 
 BOOST_AUTO_TEST_CASE(a_graceful_kill_ends_a_child_and_leaves_it_readable)
@@ -549,19 +556,19 @@ BOOST_AUTO_TEST_CASE(a_graceful_kill_ends_a_child_and_leaves_it_readable)
     Fixture f;
     const std::string id = f.spawn("sleep", {"30"});
 
-    const nlohmann::json killed = payload_of(f.call(call_for(
+    const ResultText killed = result_of(f.call(call_for(
         std::string(tool_names::kKill),
         nlohmann::json{{"session_id", id}, {"graceful", true}}, "call_kill")));
-    BOOST_TEST(killed.at("graceful") == nlohmann::json(true));
-    BOOST_TEST(killed.at("signalled") == nlohmann::json(true));
+    BOOST_TEST(killed.field("graceful") == "true");
+    BOOST_TEST(killed.field("signalled") == "true");
 
-    const nlohmann::json waited = payload_of(f.call(call_for(
+    const ResultText waited = result_of(f.call(call_for(
         std::string(tool_names::kWait),
         nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.at("exited") == nlohmann::json(true));
+    BOOST_TEST(waited.field("exited") == "true");
     // sleep does not catch SIGTERM, so it dies of the signal — the difference
     // between `graceful` and the default, which reports 9.
-    BOOST_TEST(waited.at("exit_code") == nlohmann::json(15));
+    BOOST_TEST(waited.field("exit_code") == "15");
     // The session survives the kill, so its output is still collectable.
     BOOST_TEST(!tools::is_error(f.call(call_for(
         std::string(tool_names::kRead),
@@ -575,23 +582,23 @@ BOOST_AUTO_TEST_CASE(a_zero_window_hands_back_a_live_session)
     Fixture f;
     const std::string id = f.spawn("sleep", {"30"});
 
-    const nlohmann::json polled = payload_of(f.call(call_for(
+    const ResultText polled = result_of(f.call(call_for(
         std::string(tool_names::kPoll),
         nlohmann::json{{"session_ids", nlohmann::json::array({id})},
                        // Non-consuming, so this poll is ReadOnly — the shape a
                        // batch may run beside anything.
                        {"include_output", false}})));
-    BOOST_TEST_REQUIRE(polled.at("sessions").size() == std::size_t{1});
-    BOOST_TEST(polled.at("sessions")[0].at("state") == nlohmann::json("running"));
-    BOOST_TEST(!polled.at("sessions")[0].contains("new_stdout"));
+    BOOST_TEST_REQUIRE(polled.records().size() == std::size_t{2});
+    BOOST_TEST(polled.records()[1].field("state") == "running");
+    BOOST_TEST(!polled.records()[1].has("new_stdout"));
 
-    const nlohmann::json killed = payload_of(f.call(call_for(
+    const ResultText killed = result_of(f.call(call_for(
         std::string(tool_names::kKill), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(killed.at("signalled") == nlohmann::json(true));
-    const nlohmann::json waited = payload_of(f.call(call_for(
+    BOOST_TEST(killed.field("signalled") == "true");
+    const ResultText waited = result_of(f.call(call_for(
         std::string(tool_names::kWait),
         nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.at("exit_code") == nlohmann::json(9));
+    BOOST_TEST(waited.field("exit_code") == "9");
 }
 
 // ---- mixed batches -----------------------------------------------------------
@@ -619,10 +626,10 @@ BOOST_AUTO_TEST_CASE(a_serial_call_runs_before_the_observing_ones_in_its_batch)
     BOOST_CHECK(records[1].query.type == model_io::InvokeType::ReadOnly);
 
     const std::string id =
-        payload_of(records[0]).at("session_id").get<std::string>();
-    const nlohmann::json polled = payload_of(records[1]);
-    BOOST_TEST_REQUIRE(polled.at("sessions").size() == std::size_t{1});
-    BOOST_TEST(polled.at("sessions")[0].at("session_id") == nlohmann::json(id));
+        result_of(records[0]).field("session_id");
+    const ResultText polled = result_of(records[1]);
+    BOOST_TEST_REQUIRE(polled.records().size() == std::size_t{2});
+    BOOST_TEST(polled.records()[1].field("session_id") == id);
 }
 
 BOOST_AUTO_TEST_CASE(two_delta_reads_of_one_session_split_the_output_between_them)
@@ -658,19 +665,17 @@ BOOST_AUTO_TEST_CASE(two_delta_reads_of_one_session_split_the_output_between_the
 
     // The bytes went to one of them, whole, and to exactly one: never split
     // across the two answers, never handed out twice.
-    const std::string first =
-        payload_of(records[0]).at("stdout_text").get<std::string>();
-    const std::string second =
-        payload_of(records[1]).at("stdout_text").get<std::string>();
+    const std::string first = result_of(records[0]).block("stdout");
+    const std::string second = result_of(records[1]).block("stdout");
     const std::size_t delivered = (first == "only-once\n" ? 1 : 0) +
                                   (second == "only-once\n" ? 1 : 0);
     BOOST_TEST(delivered == std::size_t{1});
     BOOST_TEST((first.empty() || second.empty()));
     // And the session is still readable afterwards: a delta read consumes only
     // what it handed over.
-    const nlohmann::json afterwards = payload_of(f.call(call_for(
+    const ResultText afterwards = result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(afterwards.at("stdout_text") == nlohmann::json(""));
+    BOOST_TEST(afterwards.block("stdout").empty());
 }
 
 BOOST_AUTO_TEST_CASE(reads_of_two_sessions_in_one_batch_do_not_interfere)
@@ -699,16 +704,12 @@ BOOST_AUTO_TEST_CASE(reads_of_two_sessions_in_one_batch_do_not_interfere)
     // wait for anything — so the assertion is on the CROSSOVER: neither answer
     // carries the other session's text, whichever of the two happened to run
     // first.
-    const std::string first_text =
-        payload_of(records[0]).at("stdout_text").get<std::string>();
-    const std::string second_text =
-        payload_of(records[1]).at("stdout_text").get<std::string>();
+    const std::string first_text = result_of(records[0]).block("stdout");
+    const std::string second_text = result_of(records[1]).block("stdout");
     BOOST_TEST(first_text.find("second-output") == std::string::npos);
     BOOST_TEST(second_text.find("first-output") == std::string::npos);
-    BOOST_TEST(payload_of(records[0]).at("session_id") ==
-               nlohmann::json(first));
-    BOOST_TEST(payload_of(records[1]).at("session_id") ==
-               nlohmann::json(second));
+    BOOST_TEST(result_of(records[0]).field("session_id") == first);
+    BOOST_TEST(result_of(records[1]).field("session_id") == second);
 
     // And after the drains have finished, each session holds its own output —
     // proof that the batch's two readers did not mix them up.
@@ -718,12 +719,12 @@ BOOST_AUTO_TEST_CASE(reads_of_two_sessions_in_one_batch_do_not_interfere)
     (void)f.call(call_for(std::string(tool_names::kWait),
                           nlohmann::json{{"session_id", second},
                                          {"timeout_milliseconds", 5000}}));
-    const nlohmann::json delta_a = payload_of(f.call(call_for(
+    const ResultText delta_a = result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", first}})));
-    const nlohmann::json delta_b = payload_of(f.call(call_for(
+    const ResultText delta_b = result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", second}})));
-    BOOST_TEST(delta_a.at("stdout_text") == nlohmann::json("first-output\n"));
-    BOOST_TEST(delta_b.at("stdout_text") == nlohmann::json("second-output\n"));
+    BOOST_TEST(delta_a.block("stdout") == "first-output\n");
+    BOOST_TEST(delta_b.block("stdout") == "second-output\n");
 }
 
 BOOST_AUTO_TEST_CASE(read_only_calls_in_one_batch_consume_nothing)
@@ -735,10 +736,10 @@ BOOST_AUTO_TEST_CASE(read_only_calls_in_one_batch_consume_nothing)
     // output from the call that comes next.
     Fixture f;
     const std::string id = f.spawn("echo", {"kept"}, 5000);
-    const nlohmann::json spawned = payload_of(f.call(call_for(
+    const ResultText before = result_of(f.call(call_for(
         std::string(tool_names::kRead),
         nlohmann::json{{"session_id", id}, {"full", true}})));
-    BOOST_TEST(spawned.at("stdout_text") == nlohmann::json("kept\n"));
+    BOOST_TEST(before.block("stdout") == "kept\n");
 
     const std::vector<model_io::InvokeReturn> records =
         f.batch(std::vector<model_io::InvokeQuery>{
@@ -759,14 +760,14 @@ BOOST_AUTO_TEST_CASE(read_only_calls_in_one_batch_consume_nothing)
     }
     // The non-consuming poll reports no output at all, which is the difference
     // between this call and the consuming one.
-    const nlohmann::json polled = payload_of(records[2]);
-    BOOST_TEST_REQUIRE(polled.at("sessions").size() == std::size_t{1});
-    BOOST_TEST(!polled.at("sessions")[0].contains("new_stdout"));
+    const ResultText polled = result_of(records[2]);
+    BOOST_TEST_REQUIRE(polled.records().size() == std::size_t{2});
+    BOOST_TEST(!polled.records()[1].has("new_stdout"));
 
     // The proof: the delta is still untouched after three overlapping readers.
-    const nlohmann::json delta = payload_of(f.call(call_for(
+    const ResultText delta = result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(delta.at("stdout_text") == nlohmann::json("kept\n"));
+    BOOST_TEST(delta.block("stdout") == "kept\n");
 }
 
 BOOST_AUTO_TEST_CASE(wait_and_poll_on_one_session_in_one_batch)
@@ -795,14 +796,13 @@ BOOST_AUTO_TEST_CASE(wait_and_poll_on_one_session_in_one_batch)
     BOOST_CHECK(records[1].query.type == model_io::InvokeType::ReadOnly);
 
     // A timeout is a result, not a failure: the child is still running.
-    const nlohmann::json waited = payload_of(records[0]);
-    BOOST_TEST(waited.at("exited") == nlohmann::json(false));
-    BOOST_TEST(waited.at("timed_out") == nlohmann::json(true));
+    const ResultText waited = result_of(records[0]);
+    BOOST_TEST(waited.field("exited") == "false");
+    BOOST_TEST(waited.field("timed_out") == "true");
     // And the poll beside it saw the same running child.
-    BOOST_TEST_REQUIRE(payload_of(records[1]).at("sessions").size() ==
-                       std::size_t{1});
-    BOOST_TEST(payload_of(records[1]).at("sessions")[0].at("state") ==
-               nlohmann::json("running"));
+    const ResultText polled = result_of(records[1]);
+    BOOST_TEST_REQUIRE(polled.records().size() == std::size_t{2});
+    BOOST_TEST(polled.records()[1].field("state") == "running");
 }
 
 BOOST_AUTO_TEST_CASE(kill_wait_and_read_in_one_batch)
@@ -834,15 +834,14 @@ BOOST_AUTO_TEST_CASE(kill_wait_and_read_in_one_batch)
     BOOST_CHECK(records[1].query.type == model_io::InvokeType::ReadOnly);
     BOOST_CHECK(records[2].query.type == model_io::InvokeType::ReadOnly);
 
-    BOOST_TEST(payload_of(records[0]).at("signalled") == nlohmann::json(true));
-    const nlohmann::json waited = payload_of(records[1]);
-    BOOST_TEST(waited.at("exited") == nlohmann::json(true));
-    BOOST_TEST(waited.at("exit_code") == nlohmann::json(9));
-    BOOST_TEST(waited.at("stdout_text") ==
-               nlohmann::json("before the signal\n"));
+    BOOST_TEST(result_of(records[0]).field("signalled") == "true");
+    const ResultText waited = result_of(records[1]);
+    BOOST_TEST(waited.field("exited") == "true");
+    BOOST_TEST(waited.field("exit_code") == "9");
+    BOOST_TEST(waited.block("stdout") == "before the signal\n");
     // The read ran beside the wait and sees the same capture.
-    BOOST_TEST(payload_of(records[2]).at("stdout_text") ==
-               nlohmann::json("before the signal\n"));
+    BOOST_TEST(result_of(records[2]).block("stdout") ==
+               "before the signal\n");
 }
 
 BOOST_AUTO_TEST_CASE(a_release_in_one_batch_leaves_the_table_empty_for_the_next_one)
@@ -872,24 +871,25 @@ BOOST_AUTO_TEST_CASE(a_release_in_one_batch_leaves_the_table_empty_for_the_next_
 
     // The read answered for its own session, with its whole capture, and the
     // removal it asked for happened.
-    const nlohmann::json released = payload_of(records[0]);
-    BOOST_TEST(released.at("released") == nlohmann::json(true));
-    BOOST_TEST(released.at("stdout_text") == nlohmann::json("gone\n"));
+    const ResultText released = result_of(records[0]);
+    BOOST_TEST(released.field("released") == "true");
+    BOOST_TEST(released.block("stdout") == "gone\n");
     // The poll beside it answered honestly either way — a session it saw, or
-    // none — but never a half-removed one.
-    const nlohmann::json polled = payload_of(records[1]);
-    BOOST_TEST(polled.at("retained_session_count").get<int>() <= 1);
-    BOOST_TEST(polled.at("sessions").size() ==
-               static_cast<std::size_t>(
-                   polled.at("retained_session_count").get<int>()));
+    // none — but never a half-removed one: its records are the count and then
+    // one per session it saw.
+    const ResultText polled = result_of(records[1]);
+    const int retained = std::stoi(polled.field("retained_session_count"));
+    BOOST_TEST(retained <= 1);
+    BOOST_TEST(polled.records().size() ==
+               static_cast<std::size_t>(retained + 1));
 
     // The next batch sees a table the release has already emptied: the effect
     // is not "may or may not", it is "done by the time this batch answers".
-    const nlohmann::json afterwards = payload_of(f.call(call_for(
+    const ResultText afterwards = result_of(f.call(call_for(
         std::string(tool_names::kPoll),
         nlohmann::json{{"include_output", false}}, "call_after")));
-    BOOST_TEST(afterwards.at("sessions") == nlohmann::json::array());
-    BOOST_TEST(afterwards.at("retained_session_count") == nlohmann::json(0));
+    BOOST_TEST(afterwards.records().size() == std::size_t{1});
+    BOOST_TEST(afterwards.field("retained_session_count") == "0");
 }
 
 BOOST_AUTO_TEST_CASE(stdin_writes_and_a_close_keep_their_order_in_one_batch)
@@ -917,12 +917,11 @@ BOOST_AUTO_TEST_CASE(stdin_writes_and_a_close_keep_their_order_in_one_batch)
         BOOST_TEST(!tools::is_error(record));
     }
 
-    const nlohmann::json waited = payload_of(f.call(call_for(
+    const ResultText waited = result_of(f.call(call_for(
         std::string(tool_names::kWait),
         nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.at("exited") == nlohmann::json(true));
-    BOOST_TEST(waited.at("stdout_text") ==
-               nlohmann::json("first\nsecond\n"));
+    BOOST_TEST(waited.field("exited") == "true");
+    BOOST_TEST(waited.block("stdout") == "first\nsecond\n");
 }
 
 // ---- scheduling, asserted rather than inferred -------------------------------
@@ -1018,12 +1017,11 @@ BOOST_AUTO_TEST_CASE(a_batch_mixing_process_calls_and_probes_keeps_both_rules)
     // The poll took the session's new output, and the full read beside it still
     // sees the whole capture: `full` consumes nothing, so the two do not fight
     // over the same bytes even though they ran together.
-    BOOST_TEST(payload_of(records[0]).at("sessions")[0].at("new_stdout") ==
-               nlohmann::json("mixed\n"));
+    BOOST_TEST(result_of(records[0]).records()[1].block("new_stdout") ==
+               "mixed\n");
     // The full read in the parallel phase still sees the whole capture, which is
     // what `full` promises against a neighbour that consumes.
-    BOOST_TEST(payload_of(records[3]).at("stdout_text") ==
-               nlohmann::json("mixed\n"));
+    BOOST_TEST(result_of(records[3]).block("stdout") == "mixed\n");
     // And the two probes did overlap: the batch's parallel phase really did
     // start them together, with the process call running beside them.
     BOOST_TEST(f.probes->peak_concurrency() == 2);
@@ -1055,8 +1053,7 @@ BOOST_AUTO_TEST_CASE(repeated_turns_keep_their_records_and_their_sessions)
                                {"arguments", nlohmann::json::array({"turn"})},
                                {"expected_runtime_milliseconds", 0}},
                 spawn_call));
-            const std::string id =
-                payload_of(spawned).at("session_id").get<std::string>();
+            const std::string id = result_of(spawned).field("session_id");
 
             const std::vector<model_io::InvokeReturn> records =
                 f.batch(std::vector<model_io::InvokeQuery>{
@@ -1087,12 +1084,10 @@ BOOST_AUTO_TEST_CASE(repeated_turns_keep_their_records_and_their_sessions)
             }
             // The wait is the one that cannot return before the capture is
             // complete, so it is the one the output is asserted on.
-            BOOST_TEST(payload_of(records[2]).at("exited") ==
-                       nlohmann::json(true));
-            BOOST_TEST(payload_of(records[2]).at("output_complete") ==
-                       nlohmann::json(true));
-            BOOST_TEST(payload_of(records[2]).at("stdout_text") ==
-                       nlohmann::json("turn\n"));
+            const ResultText waited = result_of(records[2]);
+            BOOST_TEST(waited.field("exited") == "true");
+            BOOST_TEST(waited.field("output_complete") == "true");
+            BOOST_TEST(waited.block("stdout") == "turn\n");
 
             // Reap it, so the table is empty at the end of every turn and the
             // session cap can never be what fails a later iteration.
@@ -1101,15 +1096,14 @@ BOOST_AUTO_TEST_CASE(repeated_turns_keep_their_records_and_their_sessions)
                 nlohmann::json{{"session_id", id}, {"full", true},
                                {"release", true}},
                 std::format("call_{}_release", turn)));
-            BOOST_TEST(payload_of(released).at("released") ==
-                       nlohmann::json(true));
+            BOOST_TEST(result_of(released).field("released") == "true");
         }
     }
 
     // Nothing is left behind: every turn released what it spawned, so the table
     // is empty and no child is running.
-    const nlohmann::json polled = payload_of(
+    const ResultText polled = result_of(
         f.call(call_for(std::string(tool_names::kPoll), {}, "call_final")));
-    BOOST_TEST(polled.at("sessions") == nlohmann::json::array());
-    BOOST_TEST(polled.at("retained_session_count") == nlohmann::json(0));
+    BOOST_TEST(polled.records().size() == std::size_t{1});
+    BOOST_TEST(polled.field("retained_session_count") == "0");
 }

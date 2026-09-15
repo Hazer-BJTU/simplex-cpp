@@ -57,6 +57,13 @@
 #                       recording probe tool, and a repeated turn that gives an
 #                       ordering regression somewhere to show up.
 #
+# test_tools and test_registry_e2e read a tool result back with
+# result_text.hpp, a test-only reader for the result format
+# (tools/intrinsic/tool_result.hpp): the fields as a case asks for them and the
+# text blocks as the model received them, grouped by record. Nothing in the
+# package parses a result — the format is written for a reader, and the tests
+# are the one place that needs to ask it precise questions.
+#
 # All three link the toolset, which carries the async event bus transitively
 # through tools_intrinsic -> tools_iface: the RequireConfirm tools need a
 # confirmation handler, and both tool suites subscribe one on a bus THEY own

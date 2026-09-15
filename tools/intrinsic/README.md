@@ -36,9 +36,8 @@ a provider.
 
 **`tool_base.hpp` — `IntrinsicTool`.** The `Invocable`'s storage (`get_details()`
 returns a reference by contract, so the description has to live somewhere the
-tool owns); the argument accessors; the JSON result shape; the JSON-Schema
-builders; and the routing of a `RequireConfirm` confirmation at a chosen event
-bus, so a component — or a test — can keep its confirmations to itself rather
+tool owns); the argument accessors; the JSON-Schema builders; and the routing of
+a `RequireConfirm` confirmation at a chosen event bus, so a component — or a test — can keep its confirmations to itself rather
 than subscribing to the process-wide bus where a handler would answer for
 everyone.
 
@@ -59,6 +58,14 @@ and what the returned record carries — so a default the tool merely knew about
 would mean all four saw a different call from the one that ran. A call whose
 `arguments` is not a JSON object is refused rather than settled as "every
 property absent".
+
+**`tool_result.hpp` — `ToolResult`.** How a tool answers a call: the fields a
+reader scans (`name: value`, one per line) and the text blocks they read
+(`stdout (10 bytes):` and then the bytes, verbatim). It replaced a
+pretty-printed JSON object in a text part, and the header says why — the object
+had to carry the child's output inside a string, so the one thing a caller asked
+for arrived escaped between quotes. See **[toolsets/process/](toolsets/process/)**
+for a family whose results are all built this way.
 
 **`tool_declaration.hpp` — the declaration loader.** A tool's name, description
 and argument schema are the whole of what a model is told about it, and they are

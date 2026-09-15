@@ -6,7 +6,7 @@
 #   test_tool_base  IntrinsicTool's argument accessors (null-as-absent, the
 #                   refuse-rather-than-coerce rule for every type, the signed/
 #                   unsigned integer trap, element-wise list checking and the
-#                   messages a model reads), the JSON result shape, the schema
+#                   messages a model reads), the schema
 #                   builders, and the routing of a confirmation at the tool's
 #                   own bus (approved, refused by silence, Trusted unasked).
 #                   Also IntrinsicToolSet: presentation order vs. routing, a

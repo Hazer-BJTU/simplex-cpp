@@ -61,29 +61,33 @@ void ProcessToolBase::no_such_session(const std::string& id)
         "exist", id, tool_names::kPoll));
 }
 
-nlohmann::json ProcessToolBase::session_json(const SessionSnapshot& snapshot)
+void ProcessToolBase::write_session(ToolResult& result,
+                                    const SessionSnapshot& snapshot)
 {
     const process::ExecutionStatus& execution = snapshot.result.execution;
-    nlohmann::json entry{
-        {"session_id", snapshot.id},
-        {"executable", snapshot.result.spec.executable},
-        {"arguments", snapshot.result.spec.arguments},
-        {"description", snapshot.result.spec.description},
-        {"pid", snapshot.result.spec.pid},
-        // The contract's own enum wording ("running" / "exited" / "unknown"),
-        // through its ADL serialiser rather than a second spelling here.
-        {"state", execution.state},
-        {"running_milliseconds", execution.cumulative_execution_milliseconds},
-    };
-    // Omitted while the child lives, rather than sent as null: an exit code
-    // that is absent is not an exit code that is zero.
+    // What the process IS, then what it is doing: a reader meets the id the
+    // call was about before the facts about it. Every one of these is a field
+    // the format writes as itself — a path, a command, a label — because that
+    // is what a reader wants to see (tool_result.hpp).
+    result.field("session_id", snapshot.id);
+    // The contract's own enum wording ("running" / "exited" / "unknown"),
+    // through its ADL serialiser rather than a second spelling here.
+    result.field("state", execution.state);
+    // Omitted while the child lives, rather than written as nothing: an exit
+    // code that is absent is not an exit code that is zero.
     if (execution.exit_code) {
-        entry["exit_code"] = *execution.exit_code;
+        result.field("exit_code", *execution.exit_code);
     }
+    result.field("executable", snapshot.result.spec.executable);
+    result.field("arguments", snapshot.result.spec.arguments);
+    result.field("description", snapshot.result.spec.description);
     if (snapshot.result.spec.working_directory) {
-        entry["working_directory"] = *snapshot.result.spec.working_directory;
+        result.field("working_directory",
+                     *snapshot.result.spec.working_directory);
     }
-    return entry;
+    result.field("pid", snapshot.result.spec.pid);
+    result.field("running_milliseconds",
+                 execution.cumulative_execution_milliseconds);
 }
 
 // ---- spawn_process ----------------------------------------------------------
@@ -191,26 +195,29 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
             // Only reachable if the session went away between the spawn and
             // this read — nothing in this module does that, and answering
             // with the id alone is still a usable result.
-            co_return json_content(nlohmann::json{{"session_id", spawned.id}});
+            ToolResult lone;
+            lone.field("session_id", spawned.id);
+            co_return lone.render();
         }
 
-        nlohmann::json payload = session_json(*snapshot);
-        payload["finished"] = spawned.finished;
+        ToolResult result;
+        write_session(result, *snapshot);
+        result.field("finished", spawned.finished);
         // The second, separate fact (SpawnResult): the child ended inside the
         // window, but a descendant holding the inherited pipes open keeps the
         // capture from being complete. Reported rather than folded into
         // `finished`, because a caller told only "finished" would read the
         // output below as the whole of what the child printed.
-        payload["output_complete"] = spawned.output_drained;
+        result.field("output_complete", spawned.output_drained);
 
         if (!spawned.finished) {
             // Still running: the id is the useful part of the answer, and the
             // output would be a partial slice the caller did not ask for.
-            payload["hint"] = std::format(
+            result.field("hint", std::format(
                 "the process is still running; call {} to check on it, {} to "
                 "wait for it, {} to read its output",
-                tool_names::kPoll, tool_names::kWait, tool_names::kRead);
-            co_return json_content(std::move(payload));
+                tool_names::kPoll, tool_names::kWait, tool_names::kRead));
+            co_return result.render();
         }
 
         // Finished inside the window, which is the whole point of waiting: the
@@ -220,10 +227,13 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
         // silently consumed here.
         if (const std::optional<OutputRead> read = co_await _store->read_output(
                 spawned.id, OutputStream::Both, true)) {
-            payload["stdout_text"] = read->standard_output.text;
-            payload["stderr_text"] = read->standard_error.text;
-            payload["stdout_truncated"] = read->standard_output.truncated;
-            payload["stderr_truncated"] = read->standard_error.truncated;
+            // Verbatim, both streams, even when a stream printed nothing: the
+            // caller asked for the output, and "stderr: (empty)" is part of
+            // the answer.
+            result.block("stdout", read->standard_output.text,
+                         read->standard_output.truncated);
+            result.block("stderr", read->standard_error.text,
+                         read->standard_error.truncated);
         }
         // The session is kept, not reaped: its output stays readable, and the
         // caller decides when to let it go. Saying so beats a caller assuming
@@ -234,17 +244,17 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
             // that started something with the same stdout/stderr and exited
             // itself, leaving the pipes open in the descendant's hands. The
             // session is still the way to the rest of it.
-            payload["hint"] = std::format(
+            result.field("hint", std::format(
                 "the process finished, but its output capture is not complete "
                 "yet: the text above is what has arrived so far. Something "
                 "may still hold its output open; call {} to collect the rest",
-                tool_names::kWait);
-            co_return json_content(std::move(payload));
+                tool_names::kWait));
+            co_return result.render();
         }
-        payload["hint"] = std::format(
+        result.field("hint", std::format(
             "the process finished; its output is above. Call {} with release "
-            "to forget the session when done with it", tool_names::kRead);
-        co_return json_content(std::move(payload));
+            "to forget the session when done with it", tool_names::kRead));
+        co_return result.render();
     } catch (const process::ProcessException& failure) {
         // The launch failed: translated at this boundary into the tool
         // module's own failure type, at the Invoke checkpoint. what() already
@@ -301,49 +311,64 @@ boost::asio::awaitable<model_io::Content> PollProcessesTool::invoke(
     const std::vector<SessionSnapshot> snapshots =
         co_await _store->snapshots(ids);
 
-    nlohmann::json entries = nlohmann::json::array();
-    std::vector<ProcessSessionStore::SessionId> released;
-    for (const SessionSnapshot& snapshot : snapshots) {
-        nlohmann::json entry = session_json(snapshot);
-        if (include_output) {
-            // The delta, so a poll loop reports what is NEW rather than
-            // re-sending the whole capture every turn.
-            if (const std::optional<OutputRead> read =
-                    co_await _store->read_output(
-                        snapshot.id, OutputStream::Both, false)) {
-                entry["new_stdout"] = read->standard_output.text;
-                entry["new_stderr"] = read->standard_error.text;
-                if (read->standard_output.truncated) {
-                    entry["stdout_truncated"] = true;
-                }
-                if (read->standard_error.truncated) {
-                    entry["stderr_truncated"] = true;
-                }
-            }
+    // Everything this call needs from the store is taken FIRST, so that the
+    // result can be written in the order a reader wants it — the count of what
+    // the table retains, then one record per session — while the count still
+    // describes the table this call LEAVES BEHIND rather than the one it found
+    // (a poll that reaps exited sessions must not report them as retained).
+    //
+    // The order between the two passes is the contract: every session's output
+    // is read BEFORE anything is released, because a released session's bytes
+    // are gone for good.
+    std::vector<std::optional<OutputRead>> reads;
+    if (include_output) {
+        // The delta, so a poll loop reports what is NEW rather than re-sending
+        // the whole capture every turn.
+        reads.reserve(snapshots.size());
+        for (const SessionSnapshot& snapshot : snapshots) {
+            reads.push_back(co_await _store->read_output(
+                snapshot.id, OutputStream::Both, false));
         }
-        entries.push_back(std::move(entry));
+    }
 
-        // Reaped only AFTER its output is in the payload above: the other
-        // order would hand the model a released session it never got to read.
-        if (release_exited && snapshot.exited) {
-            if (co_await _store->release(snapshot.id)) {
+    std::vector<ProcessSessionStore::SessionId> released;
+    if (release_exited) {
+        for (const SessionSnapshot& snapshot : snapshots) {
+            if (snapshot.exited && co_await _store->release(snapshot.id)) {
                 released.push_back(snapshot.id);
             }
         }
     }
 
-    nlohmann::json payload{
-        {"sessions", std::move(entries)},
-        // RETAINED, not alive: an exited session stays in the table (and in
-        // this count) until it is released, which is what the cap counts too.
-        // The name says so rather than leaving the reader to work out which
-        // number "live" was meant to be.
-        {"retained_session_count", co_await _store->size()},
-    };
-    if (!released.empty()) {
-        payload["released"] = released;
+    ToolResult result;
+    // RETAINED, not alive: an exited session stays in the table (and in this
+    // count) until it is released, which is what the cap counts too. The name
+    // says so rather than leaving the reader to work out which number "live"
+    // was meant to be.
+    result.field("retained_session_count", co_await _store->size());
+
+    for (std::size_t index = 0; index < snapshots.size(); ++index) {
+        // One record per session, set apart from the neighbours: a poll is
+        // about several things at once, and a reader has to be able to tell
+        // where each one starts (tool_result.hpp, separate()).
+        result.separate();
+        write_session(result, snapshots[index]);
+        if (include_output && reads[index]) {
+            // A stream that printed nothing is still a block — "(empty)" is
+            // the answer to "what is new" — while a call that did not ask for
+            // output has none at all.
+            result.block("new_stdout", reads[index]->standard_output.text,
+                         reads[index]->standard_output.truncated);
+            result.block("new_stderr", reads[index]->standard_error.text,
+                         reads[index]->standard_error.truncated);
+        }
     }
-    co_return json_content(std::move(payload));
+
+    if (!released.empty()) {
+        result.separate();
+        result.field("released", released);
+    }
+    co_return result.render();
 }
 
 // ---- read_process_output ----------------------------------------------------
@@ -401,35 +426,39 @@ boost::asio::awaitable<model_io::Content> ReadProcessOutputTool::invoke(
     const std::optional<SessionSnapshot> snapshot =
         co_await _store->snapshot(id);
 
-    nlohmann::json payload{
-        {"session_id", id},
-        {"stream", stream_word(stream)},
-        {"full", full},
-    };
+    ToolResult result;
     if (snapshot) {
-        payload.update(session_json(*snapshot));
-        // update() would otherwise let the snapshot's own session_id key win;
-        // they are the same value, so this is only about keeping the shape
-        // predictable.
-        payload["session_id"] = id;
+        write_session(result, *snapshot);
+    } else {
+        // The session was there for the read and gone for the snapshot, which
+        // is still worth naming: the output below answers for it.
+        result.field("session_id", id);
     }
+    // What the call asked for, echoed back: the result stands on its own in a
+    // transcript, where the call it answers may be well above it.
+    result.field("stream", stream_word(stream));
+    result.field("full", full);
     if (stream == OutputStream::Stdout || stream == OutputStream::Both) {
-        payload["stdout_text"] = read->standard_output.text;
-        payload["stdout_truncated"] = read->standard_output.truncated;
-        payload["stdout_bytes_read"] = read->stdout_cursor;
+        // A block for each stream READ, even when it printed nothing: the
+        // caller asked for this stream, and one that is not in the answer
+        // would read as one that was not asked about.
+        result.block("stdout", read->standard_output.text,
+                     read->standard_output.truncated);
+        result.field("stdout_bytes_read", read->stdout_cursor);
     }
     if (stream == OutputStream::Stderr || stream == OutputStream::Both) {
-        payload["stderr_text"] = read->standard_error.text;
-        payload["stderr_truncated"] = read->standard_error.truncated;
-        payload["stderr_bytes_read"] = read->stderr_cursor;
+        result.block("stderr", read->standard_error.text,
+                     read->standard_error.truncated);
+        result.field("stderr_bytes_read", read->stderr_cursor);
     }
 
     if (release) {
         // release() refuses a running child, so this is honest either way:
         // "released" says what actually happened, not what was asked for.
-        payload["released"] = co_await _store->release(id);
+        result.separate();
+        result.field("released", co_await _store->release(id));
     }
-    co_return json_content(std::move(payload));
+    co_return result.render();
 }
 
 // ---- write_process_input ----------------------------------------------------
@@ -492,28 +521,30 @@ boost::asio::awaitable<model_io::Content> WriteProcessInputTool::invoke(
         no_such_session(id);
     }
 
-    nlohmann::json payload{
-        {"session_id", id},
-        {"bytes_queued", byte_count},
-        {"input_closed", close_input},
-    };
+    const std::optional<SessionSnapshot> snapshot =
+        co_await _store->snapshot(id);
+
+    ToolResult result;
+    result.field("session_id", id);
+    if (snapshot) {
+        result.field("state", snapshot->result.execution.state);
+    }
+    result.field("bytes_queued", byte_count);
+    result.field("input_closed", close_input);
     // Queued, not delivered: write_input is fire-and-forget by design (the
     // pump owns delivery), so the result must not claim the child has read
     // it. A model that needs to know reads the output back.
-    payload["note"] =
-        "the text is queued for the process's standard input; the process may "
-        "not have read it yet";
-    if (const std::optional<SessionSnapshot> snapshot =
-            co_await _store->snapshot(id)) {
-        payload["state"] = snapshot->result.execution.state;
-        if (snapshot->exited) {
-            // Worth saying plainly: a write to a dead child is dropped by the
-            // pump, and nothing else in the result would reveal that.
-            payload["warning"] =
-                "the process has already exited, so the input was discarded";
-        }
+    result.field("note",
+                 "the text is queued for the process's standard input; the "
+                 "process may not have read it yet");
+    if (snapshot && snapshot->exited) {
+        // Worth saying plainly: a write to a dead child is dropped by the
+        // pump, and nothing else in the result would reveal that.
+        result.field("warning",
+                     "the process has already exited, so the input was "
+                     "discarded");
     }
-    co_return json_content(std::move(payload));
+    co_return result.render();
 }
 
 // ---- wait_process ----------------------------------------------------------
@@ -563,48 +594,52 @@ boost::asio::awaitable<model_io::Content> WaitProcessTool::invoke(
         no_such_session(id);
     }
 
-    nlohmann::json payload = session_json(*snapshot);
-    payload["exited"] = snapshot->exited;
+    ToolResult result;
+    write_session(result, *snapshot);
+    result.field("exited", snapshot->exited);
     // THREE facts, not two, because "the child is gone" and "the output is all
     // here" are settled by different tasks and a caller told only the first
     // would treat a partial capture as the whole result (SessionSnapshot).
     // The pair that matters is the descendant-holding-the-pipes case: the
     // direct child exits at once while something it started keeps stdout open,
     // so the wait can end with `exited: true, output_complete: false`.
-    payload["output_complete"] = snapshot->output_drained;
+    result.field("output_complete", snapshot->output_drained);
     // A timeout is a result, not a failure: it says the wait ended without
     // reaching the COMPLETE condition — the child gone AND its capture
     // finished — and the session is still there to be waited on again. Defined
     // as the negation of that condition rather than of `exited` alone, so the
     // three fields cannot disagree: timed_out is exactly the case where the
     // answer below is not the finished article.
-    payload["timed_out"] = !(snapshot->exited && snapshot->output_drained);
+    result.field("timed_out", !(snapshot->exited && snapshot->output_drained));
 
     // The whole capture, not the delta: a caller waiting for a command to
     // finish wants its output, and cannot know whether an earlier poll
     // already consumed part of it. A full read leaves the delta cursor alone,
-    // so this does not steal bytes from a concurrent poll loop either.
+    // so this does not steal bytes from a concurrent poll loop either. Both
+    // streams get a block, printed or not: this is the call that answers "what
+    // did it say".
     if (const std::optional<OutputRead> read =
             co_await _store->read_output(id, OutputStream::Both, true)) {
-        payload["stdout_text"] = read->standard_output.text;
-        payload["stderr_text"] = read->standard_error.text;
-        payload["stdout_truncated"] = read->standard_output.truncated;
-        payload["stderr_truncated"] = read->standard_error.truncated;
+        result.block("stdout", read->standard_output.text,
+                     read->standard_output.truncated);
+        result.block("stderr", read->standard_error.text,
+                     read->standard_error.truncated);
     }
     if (snapshot->exited && !snapshot->output_drained) {
         // Said in prose as well as in the fields: the cause is not something
         // the reader can see in the output itself.
-        payload["hint"] = std::format(
+        result.field("hint", std::format(
             "the process has exited, but its output is still incomplete: "
             "something it started may hold its stdout/stderr open. Call {} "
             "again to collect the rest",
-            tool_names::kWait);
+            tool_names::kWait));
     }
 
     if (release) {
-        payload["released"] = co_await _store->release(id);
+        result.separate();
+        result.field("released", co_await _store->release(id));
     }
-    co_return json_content(std::move(payload));
+    co_return result.render();
 }
 
 // ---- kill_process ----------------------------------------------------------
@@ -646,20 +681,22 @@ boost::asio::awaitable<model_io::Content> KillProcessTool::invoke(
         no_such_session(id);
     }
 
-    nlohmann::json payload = session_json(*snapshot);
-    payload["signalled"] = signalled;
-    payload["graceful"] = graceful;
+    ToolResult result;
+    write_session(result, *snapshot);
+    result.field("signalled", signalled);
+    result.field("graceful", graceful);
     if (!signalled) {
-        payload["note"] = "the process had already finished; no signal was sent";
+        result.field("note",
+                     "the process had already finished; no signal was sent");
     } else {
         // The signal is sent, but the death is observed by the handle's own
         // watcher a moment later, so this result may still say "running".
         // Saying so beats a caller concluding the kill failed.
-        payload["note"] = std::format(
+        result.field("note", std::format(
             "signal sent; call {} to confirm the process has ended",
-            tool_names::kWait);
+            tool_names::kWait));
     }
-    co_return json_content(std::move(payload));
+    co_return result.render();
 }
 
 } // namespace tools::intrinsic

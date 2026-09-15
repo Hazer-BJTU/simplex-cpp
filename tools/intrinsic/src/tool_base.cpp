@@ -242,19 +242,6 @@ void IntrinsicTool::invoke_failed(std::string message)
     throw InvokeException(InvokeException::Stage::Invoke, std::move(message));
 }
 
-// ---- results ----------------------------------------------------------------
-
-model_io::Content IntrinsicTool::json_content(nlohmann::json payload)
-{
-    return model_io::Content{
-        .type = model_io::ContentType::Text,
-        // Indented: this is read by a model, and by a human reading the
-        // transcript over its shoulder.
-        .raw = payload.dump(2),
-        .extras = std::nullopt,
-    };
-}
-
 // ---- schema helpers ---------------------------------------------------------
 
 nlohmann::json IntrinsicTool::string_property(std::string_view description)

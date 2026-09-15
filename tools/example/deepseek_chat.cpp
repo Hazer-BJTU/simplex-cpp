@@ -571,10 +571,12 @@ private:
 
 // ---- one user turn: the ReAct agent loop --------------------------------------
 
-/// One record as the terminal shows it: the SETTLED call (which is what the
-/// registry answers with — defaults filled in, type and security written by the
-/// tool), the failure stage when the record is a failure, and the payload the
-/// model is about to read.
+/// One record as the terminal shows it: a line for the SETTLED call (which is
+/// what the registry answers with — defaults filled in, type and security
+/// written by the tool), then the result text the model is about to read. For
+/// these tools that text is mostly the child's own output, and it is printed
+/// here as the model receives it — which is why the header line is a header and
+/// the result is not indented under it.
 void report_record(const model_io::InvokeReturn& record) {
     std::cout << "  [tool] " << record.query.id << " " << record.query.name
               << " " << record.query.arguments.dump() << " — settled "
@@ -589,7 +591,11 @@ void report_record(const model_io::InvokeReturn& record) {
                   << "): " << record.output.raw << "\n";
         return;
     }
-    std::cout << "         -> " << record.output.raw << "\n";
+    // The result text VERBATIM, at the left margin: it is the same bytes the
+    // model is sent, which is the point of the format — a human reading the
+    // transcript over the model's shoulder sees a child's output as the child
+    // printed it, not as an escaped string inside an object.
+    std::cout << record.output.raw << "\n";
 }
 
 /// Run the agent loop for the last user turn through the LLMModel contract and
@@ -649,7 +655,7 @@ asio::awaitable<void> run_turn(llm::LLMModel& model,
         for (const model_io::InvokeReturn& record : records) {
             report_record(record);
 
-            // The record IS the tool result: the payload the model reads
+            // The record IS the tool result: the text the model reads
             // (output), plus the settled query whose id the next request
             // correlates it by (invoke_return). Nothing here rebuilds or
             // annotates it.

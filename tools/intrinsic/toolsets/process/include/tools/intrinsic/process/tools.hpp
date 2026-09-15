@@ -90,18 +90,19 @@
 // interface and never touches a ProcessHandle directly: the handles live on
 // per-session strands, and invoke() runs on whatever executor the registry
 // gave the batch. The store owns that hop (process/session_store.hpp,
-// threading), so a tool here is argument checking, one store call, and a JSON
+// threading), so a tool here is argument checking, one store call, and a
 // result.
 //
 // WHAT COMES FROM THE SHARED CORE. Argument reading and validation, the
 // settling of defaults into the query (so the confirmation and the record
-// carry the call that actually runs), the JSON result shape, the
-// confirmation's bus routing and the Invocable's storage all live in
+// carry the call that actually runs), the result shape, the confirmation's bus
+// routing and the Invocable's storage all live in
 // IntrinsicTool (tools/intrinsic/tool_base.hpp), which every intrinsic toolset
 // derives from. The rules those encode — arguments checked in
 // ensure_arguments() and never in invoke(); a wrong type refused rather than
-// coerced; results as a JSON object in a text part — are stated there and not
-// restated per tool.
+// coerced; results as field lines with the child's output verbatim under them
+// (tools/intrinsic/tool_result.hpp) — are stated there and not restated per
+// tool.
 //
 // What ProcessToolBase adds below is only what is specific to this family: the
 // store, the session id argument, the "no such session" failure, and the wire
@@ -132,6 +133,7 @@
 #include "eventbus/async_event_bus.hpp"
 #include "tools/intrinsic/process/session_store.hpp"
 #include "tools/intrinsic/tool_base.hpp"
+#include "tools/intrinsic/tool_result.hpp"
 
 namespace tools::intrinsic {
 
@@ -152,7 +154,7 @@ inline constexpr std::string_view kKill = "kill_process";
  * needs — the session id argument, and the "that session is gone" failure.
  *
  * Everything domain-neutral (the Invocable's storage, the argument accessors,
- * the JSON result shape, the confirmation's bus) comes from the base
+ * the result shape, the confirmation's bus) comes from the base
  * (tools/intrinsic/tool_base.hpp) and is not restated here.
  */
 class ProcessToolBase : public DeclaredTool {
@@ -186,11 +188,15 @@ protected:
     /// call and the second by polling. The message says so.
     [[noreturn]] static void no_such_session(const std::string& id);
 
-    /// The wire shape of one session, shared by every tool that reports one:
-    /// id, state, pid, exit code, timing. Output is added by the tools that
-    /// read it.
-    [[nodiscard]] static nlohmann::json session_json(
-        const SessionSnapshot& snapshot);
+    /// One session as every tool that reports one writes it: id, state, pid,
+    /// exit code, timing, in that order — the fields a reader scans before the
+    /// output under them. Shared so the six tools describe a session the same
+    /// way, and written into the result rather than returned as a value
+    /// because the result is built in order and never taken apart
+    /// (tools/intrinsic/tool_result.hpp). Output blocks are added by the tools
+    /// that read it.
+    static void write_session(tools::intrinsic::ToolResult& result,
+                              const SessionSnapshot& snapshot);
 
     StorePtr _store;
 };
