@@ -524,6 +524,40 @@ BOOST_AUTO_TEST_CASE(a_quick_command_finishes_inside_its_spawn_window)
     BOOST_TEST(result_of(released).field("released") == "true");
 }
 
+BOOST_AUTO_TEST_CASE(a_command_line_runs_through_its_shell_at_the_registry_boundary)
+{
+    // The shortcut through the same composition: ONE property from the model,
+    // and the record the registry files carries the settled call — the command
+    // plus the launch defaults, with no executable or arguments list for the
+    // model to get right — which is exactly what the confirmer was asked about.
+    Fixture f;
+    const std::string line = "echo one && echo two | cat";
+    const auto record = f.call(call_for(
+        std::string(tool_names::kRun), nlohmann::json{{"command", line}},
+        "call_run"));
+
+    BOOST_CHECK(record.query.type == model_io::InvokeType::SerialWrite);
+    BOOST_CHECK(record.query.security ==
+                model_io::InvokeSecurity::RequireConfirm);
+    BOOST_TEST(record.query.arguments ==
+               nlohmann::json(
+                   {{"command", line},
+                    {"environment", nlohmann::json::array()},
+                    {"inherit_environment", true},
+                    {"expected_runtime_milliseconds",
+                     tools::intrinsic::RunCommandTool::
+                         kDefaultExpectedRuntimeMilliseconds}}));
+
+    const ResultText result = result_of(record);
+    BOOST_TEST(result.field("finished") == "true");
+    BOOST_TEST(result.field("exit_code") == "0");
+    BOOST_TEST(result.block("stdout") == "one\ntwo\n");
+
+    const std::vector<model_io::InvokeQuery> questions = f.questions_asked();
+    BOOST_TEST_REQUIRE(questions.size() == std::size_t{1});
+    BOOST_TEST(questions[0].arguments == record.query.arguments);
+}
+
 BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
 {
     // The workflow the session tools exist for, in registry batches: feed a

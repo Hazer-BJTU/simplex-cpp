@@ -11,7 +11,7 @@
 #                       the refusal to release a live child, and both shutdown
 #                       paths (terminate_all and the destructor's last-resort
 #                       tail, on one worker thread and on three).
-#   test_tools          the four tools through the ToolSet and through a
+#   test_tools          the five tools through the ToolSet and through a
 #                       ToolRegistry batch: each tool's happy path, the
 #                       ArgumentParse failure for every malformed argument, the
 #                       Invoke failure for a session that is gone, the
@@ -22,7 +22,7 @@
 #                       state change, and one end-to-end turn
 #                       (spawn -> send -> poll -> read).
 #                       It also owns the DECLARATION cross-check: for each of
-#                       the four tools it loads schemas/<tool>.yaml, asserts the
+#                       the five tools it loads schemas/<tool>.yaml, asserts the
 #                       catalogue entry is that document verbatim, and asks the
 #                       implementation the same questions the document answers
 #                       — every property validated with the declared kind, the

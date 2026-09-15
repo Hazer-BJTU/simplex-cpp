@@ -1,6 +1,6 @@
 # skill.yaml — how the process tools are used TOGETHER.
 #
-# The four declarations beside this file each answer "what does this call do".
+# The five declarations beside this file each answer "what does this call do".
 # This one answers the question none of them can between them: which call comes
 # first, what the ordinary path through the family looks like, what the wrong
 # path costs, and how long to wait for what. It is injected into the system
@@ -24,28 +24,33 @@ name: process
 title: Driving processes with the process tools
 
 description: >-
-  How the four process tools fit together: one session per program, spawn and
-  observe, feed and read, one call that waits for any of them, and release what
-  is done.
+  How the five process tools fit together: two ways to start a child — a command
+  line through a shell, or one program with its arguments — then observe, feed,
+  read, wait for any of them, and release what is done.
 
 keywords: [process, subprocess, command, shell, session, stdout, stdin, wait, poll]
 
 text: |
-  The four process tools are one workflow around one thing — a session — rather
-  than four alternative ways to run a command. spawn_process both starts a
-  program and decides whether it needs following; everything else is what you do
-  with a program that is still running.
+  The five process tools are one workflow around one thing — a session — rather
+  than five alternative ways to run something. Two of them start a child and
+  decide whether it needs following; everything else is what you do with a child
+  that is still running.
 
   ## The ordinary path
 
-  1. `spawn_process` runs the program and waits a short while (5000 ms unless
-     you raise `expected_runtime_milliseconds`). A command that finishes inside
-     that wait comes back with its exit code and its WHOLE output in this one
-     call, and there is nothing left to do: do not poll a process that has
-     already exited.
-  2. A program still running when the wait runs out keeps running, and the
-     result carries a `session_id` (`proc_1`, `proc_2`, ...). That id is the
-     handle for every other tool, and it survives across turns.
+  1. Start it: `run_command` runs a command LINE through the platform's shell,
+     so pipes, redirections, `&&`, `$VARS` and globs all work; `spawn_process`
+     runs one program directly, with each argument passed verbatim and nothing
+     parsed. Either way the call waits a short while first — 3000 ms for a
+     command line, 5000 ms for a program, unless you raise
+     `expected_runtime_milliseconds`. A child that finishes inside that wait
+     comes back with its exit code and its WHOLE output in this one call, and
+     there is nothing left to do: do not poll a process that has already
+     exited.
+  2. A child still running when the wait runs out keeps running in the
+     background instead, and the result carries a `session_id` (`proc_1`,
+     `proc_2`, ...) plus a hint saying so. That id is the handle for every other
+     tool, and it survives across turns.
   3. `poll_process` is both how you wait and how you look. With its default
      `wait_timeout_milliseconds` (30000) it returns the moment ANY session it
      was asked about has finished — exited with its output capture complete —
@@ -69,6 +74,13 @@ text: |
 
   ## Principles
 
+  - **Pick the launcher that matches what you have.** `run_command` when the
+    command needs a shell — pipes, redirections, `&&`, `$VARS`, globs, quoting —
+    or when it is a line you already know reads correctly. `spawn_process` when
+    it is one program plus arguments: nothing there is parsed, so a filename
+    containing a space, a `*` or a `;` is data rather than syntax. There is no
+    shell behind `spawn_process`, so `|`, `>` and `&&` reach the program as
+    literal arguments and no glob is expanded.
   - **One call does the waiting.** `poll_process` returns the moment one of the
     sessions it was given has finished, so there is no need to loop it yourself,
     sleep, or read a process you are only waiting on. Ask it to wait when you
@@ -88,10 +100,6 @@ text: |
     `wait_timeout_milliseconds: 0` and no `session_ids` is the overview of every
     session — use it when you are unsure what is still running, not between
     every other call.
-  - **There is no shell.** The program runs directly, so pipes, redirections,
-    globs and quotes reach it as literal arguments. Pass the program and each
-    argument separately, or run `sh` with `-c` explicitly when you really want a
-    shell command line.
   - **Write what the program is waiting for.** A program that reads lines needs
     the trailing newline inside `input`; a program that reads until end-of-input
     prints nothing until you send `close_input: true`.
@@ -101,14 +109,14 @@ text: |
     Prefer `"term"`, and prefer feeding a program its own quit command when it
     has one. Either way the session stays readable, so nothing already printed is
     lost.
-  - **Ask for what you need, once.** `spawn_process` and `send_process` change
-    the machine, so the person at the terminal is asked to approve each one. A
-    denial is an answer, not a failure: do not resend the same call in a loop —
-    say what you are trying to do and offer the smallest command that would show
-    it.
+  - **Ask for what you need, once.** `spawn_process`, `run_command` and
+    `send_process` change the machine, so the person at the terminal is asked to
+    approve each one. A denial is an answer, not a failure: do not resend the
+    same call in a loop — say what you are trying to do and offer the smallest
+    command that would show it.
   - **Prefer a command that finishes.** Break work into small programs that exit
     rather than one long-lived process, unless the point really is a background
-    program — in which case spawn it with `expected_runtime_milliseconds: 0` to
+    program — in which case start it with `expected_runtime_milliseconds: 0` to
     get its id immediately.
 
   ## Worth knowing
@@ -118,9 +126,13 @@ text: |
     to complete, and reports `output_complete: false` when a timeout got there
     first. That is why a process that has already exited can still be waited on
     (and why `release: true` is only honoured once the capture is complete).
-  - `output` you have already been given is gone: a poll with `include_output`
+  - Output you have already been given is gone: a poll with `include_output`
     and a default read both consume what they report, and only the session that
     printed it can be read again.
+  - `run_command` chooses the shell, not you — the host's own interpreter, named
+    in the result's `executable` line — and the session's `description` is the
+    command line itself, so a poll of several sessions says which command each
+    one is.
   - A session id from an earlier turn may be gone — released, or never this
     process's. That failure comes back naming the id; `poll_process` reports the
     sessions that do exist.

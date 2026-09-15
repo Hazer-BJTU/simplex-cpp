@@ -1,7 +1,7 @@
 #pragma once
 
 //
-// process/tools.hpp — the four process-management tools a model can call
+// process/tools.hpp — the five process-management tools a model can call
 // ======================================================================
 //
 // One ToolInterface per operation, over one shared ProcessSessionStore:
@@ -9,6 +9,10 @@
 //   spawn_process         run a program: wait out its expected runtime, and
 //                         answer with the whole result if it finished inside
 //                         that window, or a live session id if it did not.
+//   run_command           the same launch, for a command LINE: the platform's
+//                         shell is the executable and the line is what it is
+//                         asked to run, so pipes, redirections and globs work
+//                         without a model spelling out `sh -c` by hand.
 //   poll_process          the state of every session (or named ones), each
 //                         with its new output — and the family's WAIT: it
 //                         returns as soon as any one of them has finished, or
@@ -20,12 +24,27 @@
 //   send_process          tell a running child something: more input, the end
 //                         of its input, or a signal to stop.
 //
-// WHY FOUR AND NOT MORE. There is no separate run_command, because spawn_process
-// IS one: its initial-wait window covers the ordinary "run this and tell me what
-// it said" case in a single call, and only a program that outlives the window
-// becomes a session to follow. That is the split ProcessHandle's
-// await_initial_execution() was built for, so honouring it here costs nothing
-// and saves the model a round trip on every quick command.
+// WHY THERE ARE TWO LAUNCHERS, AND WHY THEY ARE NOT ONE TOOL. spawn_process and
+// run_command are the SAME ACT: start a child, wait a bounded while for it, and
+// answer with the whole result if it finished inside that window or with a live
+// session id if it did not. That act is implemented once, in
+// ProcessToolBase::launch_and_report(), and both tools go through it — the
+// initial-wait window covers the ordinary "run this and tell me what it said"
+// case in a single call, and only a child that outlives the window becomes a
+// session to follow. That is the split ProcessHandle's
+// await_initial_execution() was built for, so honouring it costs nothing and
+// saves the model a round trip on every quick command.
+//
+// What the two do not share is what a caller has to WRITE to get a child
+// running, and that is the one part a tool cannot decide for the caller: with
+// spawn_process the executable and each argument are separate values passed
+// verbatim, while a command line is ONE string that something has to interpret.
+// Folding the second into the first would mean an `executable` that is sometimes
+// a program and sometimes a shell, an `arguments` array whose meaning depends on
+// which — or a model that has to know the host's shell and write `sh -c` with
+// the quoting right every time. So the shell is a tool rather than a mode of one:
+// run_command names the platform's own interpreter and hands it the line, and
+// spawn_process keeps its promise that nothing parses what it was given.
 //
 // There is no separate wait_process either, and no read-only listing beside
 // poll_process, because those two were one call wearing different timeouts.
@@ -55,6 +74,7 @@
 //
 //   tool                  InvokeType    InvokeSecurity
 //   spawn_process         SerialWrite   RequireConfirm
+//   run_command           SerialWrite   RequireConfirm
 //   poll_process          ReadOnly      Trusted
 //   read_process          ReadOnly      Trusted
 //   send_process          SerialWrite   RequireConfirm
@@ -63,10 +83,11 @@
 // batch — and what it describes is the effect a call has OUTSIDE this host (the
 // definition of the three values is at the enum itself: dataclass/model_io.hpp,
 // InvokeType). InvokeSecurity is about TRUST — may this run unattended. Running
-// an arbitrary executable, and telling a running one what to do (feeding it,
-// closing its input, signalling it) are state changes outside this process, so
-// they ask (through the async bus's InvokeConfirmEvent, per security_check.hpp:
-// no answer means refused). Looking at what is already running is not, so it
+// an arbitrary executable or command line, and telling a running one what to do
+// (feeding it, closing its input, signalling it) are state changes outside this
+// process, so they ask (through the async bus's InvokeConfirmEvent, per
+// security_check.hpp: no answer means refused). Looking at what is already
+// running is not, so it
 // does not ask — a confirmation prompt for "read the output you just asked for"
 // trains a user to click through prompts, which costs more than it buys.
 //
@@ -159,6 +180,7 @@ namespace tools::intrinsic {
 /// routing table, the tests and a host's allow-list cannot drift apart.
 namespace tool_names {
 inline constexpr std::string_view kSpawn = "spawn_process";
+inline constexpr std::string_view kRun = "run_command";
 inline constexpr std::string_view kPoll = "poll_process";
 inline constexpr std::string_view kRead = "read_process";
 inline constexpr std::string_view kSend = "send_process";
@@ -206,13 +228,68 @@ protected:
 
     /// One session as every tool that reports one writes it: id, state, pid,
     /// exit code, timing, in that order — the fields a reader scans before the
-    /// output under them. Shared so the four tools describe a session the same
+    /// output under them. Shared so the five tools describe a session the same
     /// way, and written into the result rather than returned as a value
     /// because the result is built in order and never taken apart
     /// (tools/intrinsic/tool_result.hpp). Output blocks are added by the tools
     /// that read it.
     static void write_session(tools::intrinsic::ToolResult& result,
                               const SessionSnapshot& snapshot);
+
+    /// The launch arguments BOTH launching tools take — everything the two
+    /// schemas have in common, settled the one way:
+    ///
+    ///   environment       settled (so `[]` is what "none" looks like), and
+    ///                     each entry checked for the execve KEY=VALUE shape
+    ///                     the manager would otherwise refuse at its own
+    ///                     Environment stage — a failure that would reach the
+    ///                     model as a launch that went wrong when it is really
+    ///                     the model's own argument to fix.
+    ///   inherit_environment, expected_runtime_milliseconds
+    ///                     settled at their defaults, @p default_window being
+    ///                     the tool's own constant (5000 for a program, 3000 for
+    ///                     a command line) so each schema can state its own
+    ///                     number.
+    ///   working_directory validated IN PLACE and left as it came: it is the one
+    ///                     optional property with no default to write back,
+    ///                     because absent means "inherit the host's working
+    ///                     directory" and there is no placeholder path that
+    ///                     means that. An EMPTY string is refused rather than
+    ///                     read as absent — the two are different calls and the
+    ///                     empty one cannot be run.
+    static void settle_launch_arguments(model_io::InvokeQuery& query,
+                                        std::uint64_t default_window);
+
+    /// The same arguments, read into `spec` — the pure half, called from
+    /// invoke() on a query settle_launch_arguments() already completed.
+    static void apply_launch_arguments(const model_io::InvokeQuery& query,
+                                       process::LaunchSpec& spec,
+                                       std::uint64_t default_window);
+
+    /// The body the two launching tools share: run `spec`, then answer with all
+    /// of it — the session's facts, whether the child finished inside the
+    /// spec's initial-wait window, whether its capture is complete, and the
+    /// child's output when there is any to report.
+    ///
+    /// It lives here, in the family's base, because spawn_process and
+    /// run_command differ in exactly two things and this is not one of them:
+    /// how the LaunchSpec is built (a program with its arguments, or a command
+    /// line with a shell in front of it), and what @p still_running_hint says
+    /// when the window ran out. Everything else — the fields in their order,
+    /// the full-capture read that leaves the delta cursor alone, the three
+    /// honest reports of `finished` versus `output_complete`, the translated
+    /// launch failure — is the same answer to the same question and is written
+    /// once, here.
+    ///
+    /// @param spec what to launch. The caller reads the settled query so the
+    ///        launch carries exactly what the confirmation was asked about
+    ///        (tool_base.hpp).
+    /// @param still_running_hint the `hint` line for the case the window ran
+    ///        out — the one part of the answer that depends on what the caller
+    ///        asked for, since "still running" reads differently to a model that
+    ///        ran a shell command line than to one that started a program.
+    boost::asio::awaitable<model_io::Content> launch_and_report(
+        process::LaunchSpec spec, std::string still_running_hint);
 
     StorePtr _store;
 };
@@ -240,6 +317,50 @@ public:
 
     explicit SpawnProcessTool(StorePtr store,
                              eventbus::AsyncEventBus* bus = nullptr);
+
+    void ensure_arguments(model_io::InvokeQuery& query) const override;
+    void write_attributes(model_io::InvokeQuery& query) const override;
+    boost::asio::awaitable<model_io::Content> invoke(
+        const model_io::InvokeQuery& query) override;
+};
+
+/// Run a command LINE through the platform's shell — the same launch as
+/// spawn_process, for a caller that holds a line rather than a program and its
+/// arguments. SerialWrite / RequireConfirm, the pair spawn_process declares and
+/// for the same reasons: it runs arbitrary code, and two commands in one batch
+/// contend for the same files.
+///
+/// No `description` argument, unlike spawn_process: the command IS the label,
+/// and the spec's description is filled in with it, so every later report about
+/// the session — a poll's record, a read, a launch failure — says which command
+/// it is about without the model having to remember which call made which
+/// session.
+///
+/// The interpreter is the PLATFORM's, resolved when the call runs (src/tools.cpp)
+/// rather than named by the model: bash where the host has one, the POSIX `sh`
+/// otherwise. So a command line written the ordinary way works on a host whose
+/// only shell is `sh`, and a model never has to know which one it is talking to
+/// — the shell it got is visible in the result's `executable` line.
+class RunCommandTool final : public ProcessToolBase {
+public:
+    /// How long a command is waited for before its child is left running in the
+    /// background, when the call does not say.
+    ///
+    /// Shorter than spawn_process's 5000 ms, because of what the two are usually
+    /// asked for: run_command is the everyday "run this line and show me what it
+    /// said" call — a listing, a grep, a pipe between two small programs — and a
+    /// line still running after three seconds is far more often a server or a
+    /// watch than a command whose output is worth two more seconds of waiting.
+    /// A caller that knows better says so per call, and 0 skips the wait.
+    ///
+    /// Stated twice on purpose, and pinned: this is what ensure_arguments()
+    /// settles, and the `default` in schemas/run_command.yaml is what a model
+    /// reads before calling. test_tools.cpp loads that file and fails if the two
+    /// numbers ever disagree.
+    static constexpr std::uint64_t kDefaultExpectedRuntimeMilliseconds = 3000;
+
+    explicit RunCommandTool(StorePtr store,
+                            eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;
     void write_attributes(model_io::InvokeQuery& query) const override;

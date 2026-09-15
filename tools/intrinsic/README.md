@@ -148,8 +148,10 @@ declarations, its skill, and whatever state they share.
 ## Toolsets
 
 - **[toolsets/process/](toolsets/process/)** — process management: `spawn_process`
-  / `poll_process` / `read_process` / `send_process`, over a session table that
-  gives each child a name a model can return to across turns. See its own README.
+  (one program, arguments verbatim) / `run_command` (one command line, through the
+  platform's shell) / `poll_process` / `read_process` / `send_process`, over a
+  session table that gives each child a name a model can return to across turns.
+  See its own README.
 
 ## Adding a toolset
 

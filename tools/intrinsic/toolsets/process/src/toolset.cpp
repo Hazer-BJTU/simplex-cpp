@@ -19,28 +19,31 @@ ProcessToolSet::ProcessToolSet(std::shared_ptr<ProcessSessionStore> store,
             "advertise tools it cannot answer");
     }
 
-    // Presentation order, which is what the model reads: launch, then the two
-    // observing calls, then the one that acts on a live child — the workflow
+    // Presentation order, which is what the model reads: the two ways to start
+    // something — a program, then a command line through a shell — then the two
+    // observing calls, then the one that acts on a live child. The workflow
     // rather than the alphabet. The base builds each tool, refuses any that
     // will not build, and owns the routing table.
     register_tools({
         std::make_shared<SpawnProcessTool>(_store, bus),
+        std::make_shared<RunCommandTool>(_store, bus),
         std::make_shared<PollProcessTool>(_store, bus),
         std::make_shared<ReadProcessTool>(_store, bus),
         std::make_shared<SendProcessTool>(_store, bus),
     });
 
-    // The four are one capability family, and what makes them one is the round
+    // The five are one capability family, and what makes them one is the round
     // trip through a session rather than the file layout: every tool here is
-    // either the way an id comes into existence (spawn_process) or something
-    // done with one — so a model offered spawn_process WITHOUT send_process can
-    // start a process it cannot end, while one offered neither has simply not
-    // been given this family. Declaring the group is what makes that difference
-    // visible: a partial registration becomes one error line and one
-    // capability_groups() answer, instead of four per-tool lines an operator has
-    // to assemble (tools/intrinsic/toolset_base.hpp).
+    // either the way an id comes into existence (spawn_process, run_command) or
+    // something done with one — so a model offered spawn_process WITHOUT
+    // send_process can start a process it cannot end, while one offered neither
+    // launcher has simply not been given this family. Declaring the group is
+    // what makes that difference visible: a partial registration becomes one
+    // error line and one capability_groups() answer, instead of five per-tool
+    // lines an operator has to assemble (tools/intrinsic/toolset_base.hpp).
     declare_capability_group("process", {
         tool_names::kSpawn,
+        tool_names::kRun,
         tool_names::kPoll,
         tool_names::kRead,
         tool_names::kSend,

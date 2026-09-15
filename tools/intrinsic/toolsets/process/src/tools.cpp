@@ -1,7 +1,12 @@
 #include "tools/intrinsic/process/tools.hpp"
 
+#include <cstddef>
+#include <filesystem>
 #include <format>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -65,6 +70,45 @@ std::string_view signal_word(Signal signal)
     return ""; // unreachable; keeps -Wreturn-type quiet
 }
 
+/// The shell a run_command call is run BY, and the flag that tells it the next
+/// argument is the command line rather than a script file or an option.
+///
+/// The model names a command, not an interpreter (schemas/run_command.yaml), so
+/// which shell that is has to be answered here, once, and the answer is the
+/// platform's own: bash where the host has one, and the POSIX sh otherwise —
+/// which POSIX guarantees is there, and under which every command line that
+/// does not reach for bash extensions behaves the same.
+///
+/// The EXISTENCE CHECK asks the conventional absolute paths (that is where a
+/// bash is, and it costs one stat), but what the launch is handed is the NAME.
+/// Executables reach the child through the manager's own resolution, which
+/// searches PATH, and it does so with Boost.Filesystem's path append —
+/// `operator/` CONCATENATES rather than replacing, so an absolute name is
+/// looked for as "<PATH entry>/bin/bash" and never found
+/// (process/src/process_handle.cpp). A bare name is what resolves; it resolves
+/// through the CHILD's environment, which is why a call may steer it with
+/// `environment`, and why the result's `executable` line reads "bash" rather
+/// than a path.
+///
+/// One branch only, because this whole toolset is POSIX: the session store
+/// signals pids and includes <sys/types.h>, so there is no build of this layer
+/// whose platform shell is something else.
+struct Shell {
+    std::string executable;
+    std::string_view command_flag;
+};
+
+[[nodiscard]] Shell platform_shell()
+{
+    for (const char* candidate : {"/bin/bash", "/usr/bin/bash"}) {
+        std::error_code ignored;
+        if (std::filesystem::is_regular_file(candidate, ignored)) {
+            return Shell{"bash", "-c"};
+        }
+    }
+    return Shell{"sh", "-c"};
+}
+
 } // namespace
 
 // ---- ProcessToolBase --------------------------------------------------------
@@ -122,19 +166,13 @@ void ProcessToolBase::write_session(ToolResult& result,
                  execution.cumulative_execution_milliseconds);
 }
 
-// ---- spawn_process ----------------------------------------------------------
-
-SpawnProcessTool::SpawnProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
-    // Name, description and argument schema: schemas/spawn_process.yaml.
-    : ProcessToolBase(std::move(store), "spawn_process.yaml", bus)
-{}
-
-void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
+void ProcessToolBase::settle_launch_arguments(model_io::InvokeQuery& query,
+                                              std::uint64_t default_window)
 {
-    (void)require_string(query, "executable", "the program to run");
-    // Element-wise, so a single non-string names its own index rather than
-    // failing as a type error from inside the whole-array conversion.
-    (void)settle_string_list(query, "arguments");
+    // Settled so the confirmation and the record carry the list the launch
+    // gets, `[]` when the model named none (the two spellings launch the same
+    // child: the manager merges the entries in, and an empty list merges
+    // nothing).
     const std::vector<std::string> environment =
         settle_string_list(query, "environment");
 
@@ -152,22 +190,11 @@ void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
         }
     }
 
-    // The settled values, written back so the confirmation and the record show
-    // the call that will run (tool_base.hpp). Every one of these has a default
-    // and so every one of them is materialized.
-    (void)settle_string(query, "description");
     (void)settle_bool(query, "inherit_environment", true);
-    (void)settle_uint(query, "expected_runtime_milliseconds",
-                      kDefaultExpectedRuntimeMilliseconds);
+    (void)settle_uint(query, "expected_runtime_milliseconds", default_window);
 
-    // working_directory is the one optional property with NO default to write
-    // back: absent means "inherit the host's working directory", and there is
-    // no placeholder path that means that. So it is validated in place — and
-    // an EMPTY string is refused rather than treated as absent, because the
-    // two are different calls and the empty one cannot be run: a child cannot
-    // be started in "". Refusing at ArgumentParse is the model's chance to fix
-    // a typo; quietly inheriting the host's cwd would run the call somewhere
-    // the model did not ask for.
+    // working_directory is validated here and left as it came: see the header
+    // on this method — absent is a meaning of its own, and "" is not a path.
     if (const std::string directory = optional_string(query, "working_directory");
         find_argument(query, "working_directory") != nullptr && directory.empty()) {
         bad_argument(
@@ -177,31 +204,15 @@ void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
     }
 }
 
-void SpawnProcessTool::write_attributes(model_io::InvokeQuery& query) const
+void ProcessToolBase::apply_launch_arguments(const model_io::InvokeQuery& query,
+                                             process::LaunchSpec& spec,
+                                             std::uint64_t default_window)
 {
-    // SerialWrite: launching a process changes the machine's state, and two
-    // launches in one batch may well contend for the same files. RequireConfirm:
-    // this is the call that runs arbitrary code, so it asks (and, per
-    // security_check.hpp, no answer means refused).
-    query.type = model_io::InvokeType::SerialWrite;
-    query.security = model_io::InvokeSecurity::RequireConfirm;
-}
-
-boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
-    const model_io::InvokeQuery& query)
-{
-    process::LaunchSpec spec;
-    // Read through the pure accessors, on a query ensure_arguments() has
-    // already settled: every property below is present by now, with the value
-    // the confirmation was asked about (tool_base.hpp).
-    spec.executable = require_string(query, "executable", "the program to run");
-    spec.arguments = optional_string_list(query, "arguments");
-    spec.description = optional_string(query, "description");
     spec.inherit_environment = optional_bool(query, "inherit_environment", true);
     // working_directory stays DISENGAGED when the call did not name one: absent
     // means "inherit the parent's cwd", and an empty string is not a path, so
-    // there is nothing to materialize (ensure_arguments refuses the empty one
-    // rather than pretending it meant absent).
+    // there is nothing to materialize (settle_launch_arguments refuses the
+    // empty one rather than pretending it meant absent).
     if (const std::string directory = optional_string(query, "working_directory");
         !directory.empty()) {
         spec.working_directory = directory;
@@ -216,9 +227,12 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
     // store's to force (a killed child would leave an id naming nothing), so
     // it is deliberately not set here.
     spec.initial_wait_timeout_milliseconds =
-        optional_uint(query, "expected_runtime_milliseconds",
-                      kDefaultExpectedRuntimeMilliseconds);
+        optional_uint(query, "expected_runtime_milliseconds", default_window);
+}
 
+boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
+    process::LaunchSpec spec, std::string still_running_hint)
+{
     try {
         const SpawnResult spawned = co_await _store->spawn(std::move(spec));
         const std::optional<SessionSnapshot> snapshot =
@@ -243,13 +257,11 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
         result.field("output_complete", spawned.output_drained);
 
         if (!spawned.finished) {
-            // Still running: the id is the useful part of the answer, and the
-            // output would be a partial slice the caller did not ask for.
-            result.field("hint", std::format(
-                "the process is still running; call {} with a "
-                "wait_timeout_milliseconds to wait for it to finish, or {} to "
-                "read what it has printed so far",
-                tool_names::kPoll, tool_names::kRead));
+            // Still running: the id is the useful part of the answer, the
+            // output would be a partial slice the caller did not ask for, and
+            // what to do about it is the caller's own sentence (the hint its
+            // tool passed in).
+            result.field("hint", std::move(still_running_hint));
             co_return result.render();
         }
 
@@ -295,6 +307,139 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
         // which is exactly what the model needs to see.
         throw InvokeException(InvokeException::Stage::Invoke, failure.what());
     }
+}
+
+// ---- spawn_process ----------------------------------------------------------
+
+SpawnProcessTool::SpawnProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
+    // Name, description and argument schema: schemas/spawn_process.yaml.
+    : ProcessToolBase(std::move(store), "spawn_process.yaml", bus)
+{}
+
+void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
+{
+    (void)require_string(query, "executable", "the program to run");
+    // Element-wise, so a single non-string names its own index rather than
+    // failing as a type error from inside the whole-array conversion.
+    (void)settle_string_list(query, "arguments");
+    // The settled label, written back so the confirmation and the record show
+    // the call that will run (tool_base.hpp). run_command has no such argument:
+    // there the command IS the label, and its tool fills the spec in directly.
+    (void)settle_string(query, "description");
+    // Everything the two launching tools share: environment (validated),
+    // inherit_environment, expected_runtime_milliseconds, working_directory.
+    settle_launch_arguments(query, kDefaultExpectedRuntimeMilliseconds);
+}
+
+void SpawnProcessTool::write_attributes(model_io::InvokeQuery& query) const
+{
+    // SerialWrite: launching a process changes the machine's state, and two
+    // launches in one batch may well contend for the same files. RequireConfirm:
+    // this is the call that runs arbitrary code, so it asks (and, per
+    // security_check.hpp, no answer means refused).
+    query.type = model_io::InvokeType::SerialWrite;
+    query.security = model_io::InvokeSecurity::RequireConfirm;
+}
+
+boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
+    const model_io::InvokeQuery& query)
+{
+    process::LaunchSpec spec;
+    // Read through the pure accessors, on a query ensure_arguments() has
+    // already settled: every property below is present by now, with the value
+    // the confirmation was asked about (tool_base.hpp).
+    spec.executable = require_string(query, "executable", "the program to run");
+    spec.arguments = optional_string_list(query, "arguments");
+    spec.description = optional_string(query, "description");
+    apply_launch_arguments(query, spec, kDefaultExpectedRuntimeMilliseconds);
+
+    // The launch and the whole report are the shared body; what this tool adds
+    // is the one sentence that fits a program nobody told it how long to run.
+    co_return co_await launch_and_report(
+        std::move(spec),
+        std::format(
+            "the process is still running; call {} with a "
+            "wait_timeout_milliseconds to wait for it to finish, or {} to "
+            "read what it has printed so far",
+            tool_names::kPoll, tool_names::kRead));
+}
+
+// ---- run_command ------------------------------------------------------------
+
+RunCommandTool::RunCommandTool(StorePtr store, eventbus::AsyncEventBus* bus)
+    // Name, description and argument schema: schemas/run_command.yaml.
+    : ProcessToolBase(std::move(store), "run_command.yaml", bus)
+{}
+
+void RunCommandTool::ensure_arguments(model_io::InvokeQuery& query) const
+{
+    // The whole call: one line, and the launch arguments it shares with
+    // spawn_process. No `description` — the command is the label (invoke()).
+    (void)require_string(query, "command", "the command line to run");
+    settle_launch_arguments(query, kDefaultExpectedRuntimeMilliseconds);
+}
+
+void RunCommandTool::write_attributes(model_io::InvokeQuery& query) const
+{
+    // The pair spawn_process declares, for the same two reasons: a command line
+    // runs arbitrary code (RequireConfirm — and, per security_check.hpp, no
+    // answer means refused), and it changes the machine outside this process,
+    // where two commands in one batch contend for the same files (SerialWrite).
+    //
+    // The shell in front of it does not change either answer: what the
+    // interpreter is asked to do is exactly what was confirmed.
+    query.type = model_io::InvokeType::SerialWrite;
+    query.security = model_io::InvokeSecurity::RequireConfirm;
+}
+
+boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
+    const model_io::InvokeQuery& query)
+{
+    const std::string command =
+        require_string(query, "command", "the command line to run");
+    const Shell shell = platform_shell();
+
+    process::LaunchSpec spec;
+    // The interpreter IS the executable, and the command line is ONE argument
+    // after the flag that says so. Nothing here splits, quotes or escapes the
+    // line: the shell's own parser is the only thing that reads it, which is
+    // what makes `a | b`, `a && b`, `$VAR`, globs and quoting work — and what
+    // makes this tool different from spawn_process, which promises that nothing
+    // parses what it was given.
+    spec.executable = shell.executable;
+    spec.arguments = {std::string(shell.command_flag), command};
+    // The session's label, and the reason this call needs no `description`
+    // argument: every later report about the session — a poll's record, a read,
+    // a launch failure — then says which command it is about, so a model
+    // holding several sessions can tell them apart from a poll alone.
+    spec.description = command;
+    apply_launch_arguments(query, spec, kDefaultExpectedRuntimeMilliseconds);
+
+    // What the caller is told when the window runs out. It is the one part of
+    // the answer that differs from spawn_process's, and it says what a model
+    // that just ran a command line needs to hear: the command did not fail, it
+    // was not killed, it is still going — and what to call to check on it. The
+    // window is named because THAT is what expired: a caller that expected a
+    // quick command learns its expectation was wrong, and one that asked for 0
+    // is told plainly that nothing was waited for at all.
+    const std::string tail = std::format(
+        " Call {} with a wait_timeout_milliseconds to wait for it to finish, "
+        "{} to read what it has printed so far, and {} to signal it",
+        tool_names::kPoll, tool_names::kRead, tool_names::kSend);
+    const std::uint64_t window = optional_uint(
+        query, "expected_runtime_milliseconds",
+        kDefaultExpectedRuntimeMilliseconds);
+    std::string hint =
+        window == ProcessSessionStore::kNoInitialWait
+            ? std::format("the command was started without waiting, so it is "
+                          "running in the background as the session above; "
+                          "nothing has been read from it yet.{}", tail)
+            : std::format("the command had not finished after {} ms, so it is "
+                          "still running in the background as the session "
+                          "above; it was not killed and its work is not "
+                          "lost.{}", window, tail);
+
+    co_return co_await launch_and_report(std::move(spec), std::move(hint));
 }
 
 // ---- poll_process -----------------------------------------------------------

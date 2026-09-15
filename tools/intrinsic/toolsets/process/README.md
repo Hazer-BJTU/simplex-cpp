@@ -1,9 +1,10 @@
 # process — intrinsic toolset
 
-Four tools that let a model run child processes: start one, wait for it (or
-just look at it), read what it printed, and tell it something — more input, the
-end of its input, or a signal to stop. A process outlives the call that started
-it, so each one gets a **session id** the model uses to come back to it in later
+Five tools that let a model run child processes: start one — a program
+directly, or a command line through the platform's shell — wait for it (or just
+look at it), read what it printed, and tell it something: more input, the end of
+its input, or a signal to stop. A process outlives the call that started it, so
+each one gets a **session id** the model uses to come back to it in later
 turns.
 
 Built on the package's shared core (`tools_intrinsic`, see
@@ -11,7 +12,7 @@ Built on the package's shared core (`tools_intrinsic`, see
 result shape and the confirmation routing; this directory is only the process
 domain. The manager underneath is `process/`'s `ProcessHandle`.
 
-- [The model's view](#the-models-view) — the four tools, their schemas, the
+- [The model's view](#the-models-view) — the five tools, their schemas, the
   skill that says how they fit together, the shape of a result, and each
   tool's
 - [Worked examples](#worked-examples)
@@ -29,7 +30,7 @@ declaration, and the file is what a model is actually sent. The prose there is
 the same prose below; edit the file and rerun the tests.
 
 The directory carries one more document that is not a tool at all:
-[`schemas/skill.yaml`](schemas/skill.yaml), the set's **skill** — how the four
+[`schemas/skill.yaml`](schemas/skill.yaml), the set's **skill** — how the five
 are used TOGETHER, which is the one thing no per-tool description can say. The
 set loads it when it is built, and it reaches a model as one section of the host's
 system prompt (`ToolRegistry::inject_skills()`), appended after the host's own
@@ -45,22 +46,26 @@ and `test_tools` fails if the two ever disagree. See
 
 ### How the tools fit together
 
-`spawn_process` waits a short while (5 seconds by default) for the program to
-finish. An ordinary command — `ls`, `grep`, a quick build step — finishes
-inside that window, so its exit code and its whole output come back in the
-**same call** that started it: no separate `run_command`, because
-`spawn_process` already is one. A program still running when the window closes
-keeps running in the background instead, and the result carries a `session_id`
-to come back to it with.
+Two calls start a child, and which one to reach for is a question about what is
+being run rather than about how long it takes. **`run_command`** takes a command
+*line* and runs it through the platform's shell, so pipes, redirections, `&&`,
+`$VARS` and globs work; **`spawn_process`** takes a program and a list of
+arguments and passes them verbatim, with nothing in between to parse them. Both
+then wait a short while — 3000 ms for a command line, 5000 ms for a program —
+for the child to finish, and that wait is what lets one call serve two jobs: an
+ordinary command finishes inside it, so its exit code and its whole output come
+back in the **same call** that started it, and only a child that outlives the
+window becomes a session to come back to.
 
 ```
-spawn_process ──► finished in time? ──► yes: exit code + whole output, done
-                                    │
-                                    └─► no: session_id ──┬──► poll_process   wait for one of them, or look
-                                                         │                   at where they all stand
-                                                         ├──► read_process   incremental output
-                                                         └──► send_process   feed its stdin, close it,
-                                                                             or signal it to stop
+run_command   ─┐
+               ├─► finished in time? ──► yes: exit code + whole output, done
+spawn_process ─┘                     │
+                                     └─► no: session_id ──┬──► poll_process   wait for one of them, or look
+                                                          │                   at where they all stand
+                                                          ├──► read_process   incremental output
+                                                          └──► send_process   feed its stdin, close it,
+                                                                              or signal it to stop
 ```
 
 **Looking and waiting are one call.** `poll_process` reports the state of every
@@ -92,13 +97,17 @@ gets a fresh one. A model's older context still says "proc_3 is the build I
 started three turns ago", and an id that came back around would make
 `send_process(proc_3)` end a process that model never saw.
 
-**There is no shell.** The executable runs directly, so `|`, `>`, `*` and `&&`
-reach it as literal arguments. A model that wants a pipeline asks for
-`sh -c '...'` explicitly.
+**A shell only where one was asked for.** `run_command` runs its line through
+the platform's own interpreter, so `|`, `>`, `*` and `&&` mean what they mean in
+a shell. `spawn_process` runs the executable directly, so the same characters
+reach the program as literal arguments and no glob is expanded — which is what
+makes it the right call for a filename that contains one. A model that wants a
+pipeline through `spawn_process` has to ask for `sh -c '...'` and get the
+quoting right; with `run_command` that is the call itself.
 
 ### The set's skill
 
-Everything above — the ordinary path through the four, what a session costs,
+Everything above — the ordinary path through the five, what a session costs,
 what to wait for and how long, what a denied confirmation means — also ships as a
 document the model itself is given: [`schemas/skill.yaml`](schemas/skill.yaml),
 the set's **skill**. A tool declaration answers "what does this call do"; the
@@ -135,7 +144,7 @@ rather than leaving a model instructions about a call that no longer exists.
 
 | | tools | why |
 | --- | --- | --- |
-| **Asks first** | `spawn_process`, `send_process` | they change state outside this process — running a program, and telling a running one what to do: more input, the end of its input, or a signal |
+| **Asks first** | `spawn_process`, `run_command`, `send_process` | they change state outside this process — running a program or a command line, and telling a running one what to do: more input, the end of its input, or a signal |
 | **Runs unattended** | `poll_process`, `read_process` | looking at what is already running changes nothing, and so does waiting for it |
 
 A confirmation that nobody answers is a refusal, so an unattended host runs the
@@ -152,6 +161,7 @@ may overlap the others. What that declaration describes is the effect a call has
 | `poll_process` | runs beside others | it asks what the children are doing and, with a timeout, waits for one of them; neither ends a child, and the cursors and table entries it touches are this layer's own bookkeeping |
 | `read_process` | runs beside others | same, `full` and delta and `release` alike |
 | `spawn_process` | runs alone | it starts a process on the machine, and two launches in one batch contend for the same files |
+| `run_command` | runs alone | the same, one shell further out: the command line is the machine's business too, and two of them in one batch contend for the same files |
 | `send_process` | runs alone | the bytes are the child's next input and a signal ends it, so the order two calls arrive in is what the child gets; one carrying `close_input` can drop another outright |
 
 "Runs beside others" means what it says about safety, not about determinism:
@@ -326,6 +336,85 @@ for a while (a server, a watch).
 A launch that fails — no such executable, a working directory that is not a
 directory, a malformed environment entry — comes back as a failure naming what
 went wrong, not as a session.
+
+### `run_command`
+
+Run a command **line** through the platform's shell — the same launch as
+`spawn_process`, for the case where the command is written the way a shell reads
+it. Pipes, redirections, `&&`, `$VARS`, globs and quoting all work, because a
+shell is what parses them; nothing needs quoting twice, and the model never
+names the interpreter.
+
+```jsonc
+{
+  "command": "ls -l /tmp | wc -l",         // required: one line, as a shell reads it
+  "working_directory": "/home/me/project", // defaults to the host's own cwd; "" is refused
+  "environment": ["LANG=C"],               // "KEY=VALUE", merged over the inherited env
+  "inherit_environment": true,             // default true
+  "expected_runtime_milliseconds": 3000    // default 3000; 0 returns a session id at once
+}
+```
+
+Only `command` is required. What the tool builds from it is the host's own
+interpreter as the executable and the line as the single argument after the
+flag that says "this is the command" — so `bash -c 'ls -l /tmp | wc -l'` is what
+actually runs, and the `arguments` line of the result says so:
+
+```text
+session_id: proc_1
+state: exited
+exit_code: 0
+executable: bash
+arguments: ["-c","ls -l /tmp | wc -l"]
+description: ls -l /tmp | wc -l
+pid: 48255
+running_milliseconds: 9
+finished: true
+output_complete: true
+
+stdout (3 bytes):
+42
+
+stderr: (empty)
+
+hint: the process finished; its output is above. Call read_process with release to forget the session when done with it
+```
+
+There is **no `description` argument**: the command is the session's label, so
+every later report about the session — a poll's record, a read, a launch failure
+— says which command it is about. A model holding several sessions can tell
+them apart without remembering which call made which.
+
+The interpreter is chosen by the tool, not by the caller: bash where the host
+has one, the POSIX `sh` otherwise. Which one it got is visible in the
+`executable` line, and the choice is deliberately not the model's — a command
+line written the ordinary way then behaves the same either way, and nothing has
+to know the host's shell in advance. (The name, not a path, is what the launch
+receives: the manager resolves executables through PATH, so `bash` is looked up
+the same way the model's own `spawn_process` calls are.)
+
+**A command that outlives its window** is the case the shortcut's hint is
+written for. The command did not fail and was not killed — it is still running,
+as a session like any other:
+
+```text
+session_id: proc_2
+state: running
+executable: bash
+arguments: ["-c","sleep 600"]
+description: sleep 600
+pid: 48261
+running_milliseconds: 3001
+finished: false
+output_complete: false
+
+hint: the command had not finished after 3000 ms, so it is still running in the background as the session above; it was not killed and its work is not lost. Call poll_process with a wait_timeout_milliseconds to wait for it to finish, read_process to read what it has printed so far, and send_process to signal it
+```
+
+The window is named because that is what ran out, and the three calls it points
+at are the three that check on a background session. A caller that asked for
+`expected_runtime_milliseconds: 0` gets the same paragraph without the window —
+nothing was waited for at all, which is a request rather than a timeout.
 
 ### `poll_process`
 
@@ -678,13 +767,24 @@ poll_process         { "session_ids": ["proc_3"] }
    new_stderr: (empty)
 ```
 
-**A pipeline needs an explicit shell:**
+**A pipeline is one call with `run_command`:**
 
 ```text
-spawn_process { "executable": "sh", "arguments": ["-c", "ls /tmp | wc -l"], "description": "count files" }
+run_command { "command": "ls /tmp | wc -l" }
+
+   session_id: proc_1
+   state: exited
+   exit_code: 0
+   executable: bash
+   arguments: ["-c","ls /tmp | wc -l"]
+   …
+   stdout (3 bytes):
+   42
 ```
 
-Without `sh -c`, `|` and `wc` would reach `ls` as literal arguments.
+Through `spawn_process` the same thing has to spell the shell out —
+`{ "executable": "sh", "arguments": ["-c", "ls /tmp | wc -l"] }` — and get the
+quoting right; without it, `|` and `wc` would reach `ls` as literal arguments.
 
 **Stop something that is taking too long:**
 
@@ -731,7 +831,7 @@ the process-wide bus, so a confirmer in another module can answer; passing one
 keeps a component's confirmations to itself.
 
 `tools/example/deepseek_chat.cpp` is that wiring in a running host: a live
-provider conversation whose tools are these four, every call going through
+provider conversation whose tools are these five, every call going through
 `ToolRegistry::execute`, with an `InvokeConfirmEvent` handler at the terminal
 that answers the RequireConfirm calls — plus the offline halves of what the
 model is given: `--tools`, which prints the catalogue this section describes,
@@ -778,19 +878,20 @@ first, for exactly that reason).
   single-runner test. It owns `ProcessHandle`'s lifecycle contract in full:
   start the io tasks, then drive the handle to a terminal observation with a
   detached await task, and never block a spawn on the child.
-- **`process/tools.hpp`** — the four `ToolInterface` implementations. Each
+- **`process/tools.hpp`** — the five `ToolInterface` implementations. Each
   checks its arguments in `ensure_arguments()` and writes the defaults into the
   query there (so the security check and the human confirmation see settled
   arguments), and answers with a `ToolResult` — field lines and the child's
   output verbatim. `InvokeType`
   describes what a call changes OUTSIDE the host: the two observing tools are
   `ReadOnly` (the cursors and table entries they touch are internal, the wait
-  ends no child, and the store's strands make them safe to overlap), and the two
-  that launch, feed or end a process are `SerialWrite`. What each tool *is* — its name, its
+  ends no child, and the store's strands make them safe to overlap), and the
+  three that launch (a program, a command line), feed or end a process are
+  `SerialWrite`. What each tool *is* — its name, its
   description and its argument schema — is not here: it is declared in
   `schemas/<tool>.yaml`, and `ProcessToolBase` loads it.
 - **`process/toolset.hpp`** — the `ProcessToolSet` a host registers. Its name,
-  its four tools, the store they share and the skill it loads; the catalogue, the
+  its five tools, the store they share and the skill it loads; the catalogue, the
   routing, the build/release lifecycle and `skill()` come from
   `IntrinsicToolSet`, and `prepare()` / `execute()` stay as `ToolSet` defines
   them, since those carry the invocation layer's checkpoint sequence and failure
@@ -839,17 +940,17 @@ without a rebuild. `skill.yaml` is listed there too and is read the same way,
 with the milder outcome [the skill
 section](#the-sets-skill) describes: the guidance is lost, the tools are not.
 
-The four are also declared to be one **capability group** ("process",
+The five are also declared to be one **capability group** ("process",
 `declare_capability_group()` in `src/toolset.cpp`), because a tool that fails to
 arrive on its own costs itself and no more is the right rule for one broken file
-but not a safe *state* for a family: three of the four leaves a model able to
+but not a safe *state* for a family: four of the five leaves a model able to
 start a process it cannot end. So a partial registration is one error line —
 the group, the count, every missing member — and `capability_groups()` answers
 the same for a host that wants to act on it, while a package carrying none of
-the files is reported as the family being absent rather than as four failures.
+the files is reported as the family being absent rather than as five failures.
 
 Which leaves a file free to claim something the implementation does not do, so
-`test_tools` closes that gap: for each of the four tools it loads the file,
+`test_tools` closes that gap: for each of the five tools it loads the file,
 asserts the catalogue entry is that document verbatim, and asks the
 implementation the same questions the document answers — every property
 validated with the declared kind, the default contract held in **both**
@@ -874,14 +975,6 @@ rule** — an element the schema alone would allow and the implementation refuse
 
 ### Deliberately absent
 
-No separate `run_command` — `spawn_process` already is one.
-`ProcessHandle::await_initial_execution()` (`process/`) was designed for
-exactly this split: wait out an initial grace window, answer with the whole
-result if the child finished inside it, or detach and hand back a live session
-if it did not. The tool honours that window instead of disabling it, which is
-what turns a program's own runtime into the signal, rather than putting that
-decision on the model.
-
 No separate `wait_process`, and no read-only listing beside `poll_process`,
 because those two were one call with two different timeouts: both answered "the
 state of this set of sessions", and the wait is the same call with patience.
@@ -891,11 +984,21 @@ look like different operations when the second is the first with the timeout at
 wait used to spell as a required `session_id` is now the one-element list, which
 is the same call the multi-session case needs.
 
-No shell parsing — there is no shell on the other side, and a model that wants
-a pipeline says so by spawning `sh -c`. No reap tool — reaping is a flag on the
-reading tools, because the moment a dead child's last output has been read is
-exactly when its session becomes garbage, and a separate call would be a step
-to forget.
+No reap tool — reaping is a flag on the reading tools, because the moment a dead
+child's last output has been read is exactly when its session becomes garbage,
+and a separate call would be a step to forget.
+
+**The two launchers are two tools, not one tool with a mode.** They are the same
+act — the whole of it, `ProcessToolBase::launch_and_report()`, is written once
+and both go through it — but what a caller has to write to get a child running
+is not: an executable and an argument list, or one line something has to
+interpret. Folding them together would mean an `executable` that is sometimes a
+program and sometimes a shell, an `arguments` array whose meaning depends on
+which, or a model that has to know the host's interpreter and write `sh -c` with
+the quoting right. So `run_command` names the platform's shell and hands it the
+line, and `spawn_process` keeps its promise that nothing parses what it was
+given — and the type/security pair is identical for the two, because the
+difference is in what the caller writes rather than in what the call does.
 
 ### Supporting changes in the layers below
 
