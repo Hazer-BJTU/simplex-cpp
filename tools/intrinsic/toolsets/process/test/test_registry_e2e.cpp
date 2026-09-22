@@ -932,14 +932,22 @@ BOOST_AUTO_TEST_CASE(a_release_in_one_batch_leaves_the_table_empty_for_the_next_
     const ResultText released = result_of(records[0]);
     BOOST_TEST(released.field("released") == "true");
     BOOST_TEST(released.block("stdout") == "gone\n");
-    // The poll beside it answered honestly either way — a session it saw, or
-    // none — but never a half-removed one: its records are the count and then
-    // one per session it saw.
+    // Records describe the sessions selected when the poll began. The retained
+    // count is sampled later: a concurrent release can remove a selected session
+    // before that count is read, without invalidating its owned snapshot.
     const ResultText polled = result_of(records[1]);
+    const int selected = std::stoi(polled.field("session_count"));
     const int retained = std::stoi(polled.field("retained_session_count"));
-    BOOST_TEST(retained <= 1);
-    BOOST_TEST(polled.records().size() ==
-               static_cast<std::size_t>(retained + 1));
+    BOOST_TEST(selected >= 0);
+    BOOST_TEST(selected <= 1);
+    BOOST_TEST(retained >= 0);
+    BOOST_TEST(retained <= selected);
+    BOOST_TEST_REQUIRE(polled.records().size() ==
+                       static_cast<std::size_t>(selected + 1));
+    if (selected == 1) {
+        BOOST_TEST(polled.records()[1].field("session_id") == id);
+        BOOST_TEST(polled.records()[1].field("state") == "exited");
+    }
 
     // The next batch sees a table the release has already emptied: the effect
     // is not "may or may not", it is "done by the time this batch answers".
