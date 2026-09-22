@@ -174,6 +174,10 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
     // The first half of the handle's lifecycle contract.
     co_await handle->start_background_io_tasks();
 
+    // Exception-safety limit: if publication throws (for example, bad_alloc),
+    // the capacity reservation is returned, but I/O tasks have already started
+    // and the terminal watcher has not. Full rollback of this partial lifecycle
+    // requires a separate ProcessHandle lifecycle/RAII change.
     // Publish before the initial wait so concurrent observations can find
     // the running child. Converting the reservation into an entry is atomic.
     {
