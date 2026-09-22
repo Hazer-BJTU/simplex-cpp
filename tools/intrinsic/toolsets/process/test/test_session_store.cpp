@@ -3,6 +3,7 @@
 
 #include "tools/intrinsic/process/session_store.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -79,18 +80,8 @@ struct Fixture {
     Fixture(const Fixture&) = delete;
     Fixture& operator = (const Fixture&) = delete;
 
-    /// Stop the context and join its thread FIRST, then drop the store.
-    ///
-    /// That order is what ThreadSanitizer found the other way round. Killing a
-    /// leaked child is a synchronous ::kill on a pid the spawn recorded, so the
-    /// destructor needs no executor at all — but the table's own strand shares
-    /// refcounted state with the operations still queued on the context, and
-    /// freeing it from the test thread while a worker is finishing one is a
-    /// data race on that shared state (asio's executor refcount), which TSan
-    /// reports as a race in `operator delete`. Nothing that shares an executor
-    /// with a running context should be destroyed before it is quiesced.
-    ///
-    /// Idempotent, so a case may call it early to observe what teardown does.
+    /// Quiesce workers before the destructor's fallback raw-pid cleanup.
+    /// Idempotent, so a case may call it early to observe teardown.
     void shutdown()
     {
         guard.reset();
@@ -148,14 +139,7 @@ process::LaunchSpec spec_for(std::string executable,
     return spec;
 }
 
-/// The same store on a context with SEVERAL worker threads.
-///
-/// The single-runner fixture above is what a case wants when it is testing
-/// behavior, and it is useless for testing strand discipline: with one thread
-/// nothing is ever concurrent, so an off-strand read cannot be observed no
-/// matter how wrong it is. This fixture is the one that gives the two-level
-/// strand model something to actually do — the store's strand and a session's
-/// strand are on different threads often enough to matter.
+/// Multiple workers exercise table locking and per-session strand isolation.
 struct MultiWorkerFixture {
     asio::io_context io;
     asio::executor_work_guard<asio::io_context::executor_type> guard;
@@ -177,13 +161,7 @@ struct MultiWorkerFixture {
     MultiWorkerFixture(const MultiWorkerFixture&) = delete;
     MultiWorkerFixture& operator = (const MultiWorkerFixture&) = delete;
 
-    /// Stop the context, join every worker, and only THEN drop the store —
-    /// the order a host that never called terminate_all() leaves behind, and
-    /// the only order that is free of races: the tail's signal is a synchronous
-    /// ::kill on a recorded pid, which needs no executor, while the table's
-    /// strand shares refcounted state with the operations still queued on the
-    /// context. Freeing it before the workers are joined is a data race in that
-    /// refcount, which ThreadSanitizer reports as a race in operator delete.
+    /// Join workers before fallback cleanup so it cannot race child reaping.
     void shutdown()
     {
         guard.reset();
@@ -362,7 +340,7 @@ BOOST_AUTO_TEST_CASE(a_zero_window_does_not_wait_at_all)
 BOOST_AUTO_TEST_CASE(a_session_is_findable_while_its_spawn_is_still_waiting)
 {
     // The ordering the spawn's shape exists for: the session is registered on
-    // the store's strand BEFORE the wait suspends, so a concurrent caller sees
+    // the table mutex BEFORE the wait suspends, so a concurrent caller sees
     // the child that is running rather than a table that has not caught up. If
     // registration happened after the wait, this poll would find nothing.
     Fixture f;
@@ -697,9 +675,7 @@ BOOST_AUTO_TEST_CASE(release_refuses_a_running_child_and_retires_the_id)
     BOOST_TEST(f.run(f.store->release(live)));
     BOOST_TEST(f.run(f.store->size()) == std::size_t{0});
     BOOST_TEST(!f.run(f.store->snapshot(live)).has_value());
-    // A second release of the same id is false, not a second success: the
-    // removal happens after a strand hop, so the id is looked up again when
-    // the coroutine gets back and "already gone" has to be answered honestly.
+    // A second release observes the missing entry and returns false.
     BOOST_TEST(!f.run(f.store->release(live)));
 
     // The id is SPENT. It does not come back — not for the next spawn, not for
@@ -714,29 +690,8 @@ BOOST_AUTO_TEST_CASE(release_refuses_a_running_child_and_retires_the_id)
 
 BOOST_AUTO_TEST_CASE(a_concurrent_release_of_one_session_has_exactly_one_winner)
 {
-    // release() reads the child's state on the session's strand and removes the
-    // entry on the store's strand, so callers racing for one session must not
-    // both report success. This case puts eight callers inside release() at the
-    // same instant, on a context with three worker threads, and asserts the
-    // contract that has to hold for all of them: exactly one removes the
-    // session, the rest answer false, and the table ends empty.
-    //
-    // The callers are held at a SHARED DEADLINE rather than started in a loop,
-    // because a loop is not a race at all: each release is a few strand hops and
-    // the next caller only starts a moment later, so a loop tests the sequential
-    // path twice and calls it concurrency.
-    //
-    // WHAT THIS CASE DOES NOT DO, stated because the difference matters when
-    // reading a mutation report: it does not drive the re-lookup that release()
-    // performs after its second hop. Every hop in this store is a continuation
-    // of the handler before it, so on a free worker the first caller's three
-    // hops run back to back before another caller's first hop is even dequeued
-    // — the losers here find the session already gone, which is the FIRST
-    // lookup answering. Measured, rather than assumed: with the re-lookup
-    // deleted, 120 rounds of this case still never produced a second winner. So
-    // that check is defensive (it costs one map lookup and turns a "cannot
-    // happen" into an answer), and the assertions below are about the property
-    // a host actually depends on.
+    // Eight callers share a deadline on three workers. The mutex makes the
+    // exit check and removal one transaction: exactly one caller succeeds.
     MultiWorkerFixture f;
     constexpr int kRounds = 20;
     constexpr int kCallers = 8;
@@ -883,13 +838,7 @@ BOOST_AUTO_TEST_CASE(destroying_the_store_under_several_workers_still_reaps_chil
     // answer matters: a child that was observed was also reaped, so its pid may
     // already belong to somebody else.
     //
-    // The teardown ORDER is part of the case rather than incidental: the
-    // context is stopped and every worker joined before the table is dropped
-    // (see MultiWorkerFixture::shutdown). That is not tidiness — the table's
-    // strand shares refcounted state with the operations queued on the context,
-    // and freeing it while a worker is still finishing one is a race that
-    // ThreadSanitizer reports in operator delete. The tail itself needs no
-    // executor, so nothing is lost by quiescing first.
+    // Quiesce the context before raw-pid cleanup to avoid racing child reaping.
     MultiWorkerFixture f;
     const auto id = f.spawn_id(spec_for("sleep", {"60"}));
     const pid_t pid = f.run(f.store->snapshot(id))->result.spec.pid;
@@ -924,4 +873,227 @@ BOOST_AUTO_TEST_CASE(terminate_all_ends_every_live_child)
 
     // Idempotent: nothing is left alive to signal.
     BOOST_TEST(f.run(f.store->terminate_all(false)) == std::size_t{0});
+}
+
+BOOST_AUTO_TEST_CASE(store_operations_can_be_awaited_from_another_context)
+{
+    MultiWorkerFixture f;
+    asio::io_context caller;
+    auto result = asio::co_spawn(
+        caller,
+        [&]() -> asio::awaitable<void> {
+            auto spec = spec_for("cat");
+            spec.initial_wait_timeout_milliseconds = 10;
+            const auto spawned = co_await f.store->spawn(std::move(spec));
+            BOOST_TEST(!spawned.finished);
+            BOOST_TEST(co_await f.store->write_input(spawned.id, "hello\n", true));
+            const std::vector<std::string> ids{spawned.id};
+            const auto waited = co_await f.store->wait_for_any(ids, 5000);
+            BOOST_TEST_REQUIRE(waited.finished);
+            const auto output = co_await f.store->read_output(spawned.id, OutputStream::Both, false);
+            BOOST_TEST_REQUIRE(output.has_value());
+            BOOST_TEST(output->standard_output.text == "hello\n");
+            const auto empty = co_await f.store->read_output(spawned.id, OutputStream::Both, false);
+            BOOST_TEST_REQUIRE(empty.has_value());
+            BOOST_TEST(empty->standard_output.text.empty());
+            BOOST_TEST(co_await f.store->release(spawned.id));
+
+            auto sleeper = spec_for("sleep", {"60"});
+            sleeper.initial_wait_timeout_milliseconds = 10;
+            const auto live = co_await f.store->spawn(std::move(sleeper));
+            BOOST_TEST(co_await f.store->terminate(live.id, false));
+            const std::vector<std::string> live_ids{live.id};
+            const auto stopped = co_await f.store->wait_for_any(live_ids, 5000);
+            BOOST_TEST(stopped.finished);
+            BOOST_TEST(co_await f.store->release(live.id));
+        },
+        asio::use_future
+    );
+    caller.run();
+    result.get();
+}
+
+BOOST_AUTO_TEST_CASE(concurrent_spawns_reserve_capacity_and_failed_launches_return_it)
+{
+    MultiWorkerFixture f;
+    f.store = std::make_shared<ProcessSessionStore>(f.io.get_executor(), 1);
+    BOOST_CHECK_THROW(
+        f.run(f.store->spawn(spec_for("/nonexistent/simplex-process"))),
+        process::ProcessException
+    );
+
+    constexpr int callers = 16;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds{50};
+    std::vector<std::future<bool>> launches;
+    for (int i = 0; i < callers; ++i) {
+        launches.push_back(asio::co_spawn(
+            f.io,
+            [store = f.store, deadline]() -> asio::awaitable<bool> {
+                asio::steady_timer timer{co_await asio::this_coro::executor};
+                timer.expires_at(deadline);
+                co_await timer.async_wait(asio::use_awaitable);
+                auto spec = spec_for("true");
+                spec.initial_wait_timeout_milliseconds = 100;
+                try {
+                    co_await store->spawn(std::move(spec));
+                    co_return true;
+                } catch (const std::runtime_error&) {
+                    co_return false;
+                }
+            },
+            asio::use_future
+        ));
+    }
+    int accepted = 0;
+    for (auto& launch : launches) {
+        if (launch.get()) {
+            ++accepted;
+        }
+    }
+    BOOST_TEST(accepted == 1);
+    BOOST_TEST(f.run(f.store->size()) == std::size_t{1});
+    const auto waited = f.run(f.store->wait_for_any({}, 5000));
+    BOOST_TEST_REQUIRE(waited.finished);
+    BOOST_TEST(f.run(f.store->release(waited.snapshots.front().id)));
+    // Releasing the retained entry makes the same capacity available again.
+    auto next = spec_for("true");
+    next.initial_wait_timeout_milliseconds = 5000;
+    BOOST_TEST(f.run(f.store->spawn(std::move(next))).finished);
+}
+
+BOOST_AUTO_TEST_CASE(live_output_reads_and_snapshots_are_serialized_across_contexts)
+{
+    MultiWorkerFixture f;
+    asio::io_context caller;
+    const auto id = f.spawn_id(spec_for(
+        "sh", {"-c", "while IFS= read -r line; do "
+                     "printf '%s\\n' \"$line\"; "
+                     "printf '%s\\n' \"$line\" >&2; done"}
+    ));
+
+    struct Chunk {
+        std::size_t end;
+        std::string text;
+    };
+    struct Capture {
+        std::vector<Chunk> out;
+        std::vector<Chunk> err;
+        std::size_t live_reads = 0;
+    };
+
+    constexpr int rounds = 32;
+    std::vector<std::string> messages;
+    std::string expected;
+    for (int i = 0; i < rounds; ++i) {
+        messages.push_back(std::format("{}:{}\n", i, std::string(512, 'a' + i % 26)));
+        expected += messages.back();
+    }
+
+    // Only caller.run() accesses these counters, on this test's thread.
+    // The store's three workers concurrently drain the child's output pipes.
+    std::size_t consumed_out = 0;
+    std::size_t consumed_err = 0;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds{10};
+    std::vector<std::future<Capture>> readers;
+    for (int reader = 0; reader < 2; ++reader) {
+        readers.push_back(asio::co_spawn(
+            caller,
+            [&]() -> asio::awaitable<Capture> {
+                Capture captured;
+                asio::steady_timer timer{co_await asio::this_coro::executor};
+                for (;;) {
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        throw std::runtime_error("live output reader timed out");
+                    }
+                    const auto snapshot = co_await f.store->snapshot(id);
+                    BOOST_TEST_REQUIRE(snapshot.has_value());
+                    const auto& output = snapshot->result;
+                    BOOST_TEST(expected.starts_with(output.stdout_text.value_or("")));
+                    BOOST_TEST(expected.starts_with(output.stderr_text.value_or("")));
+
+                    const auto delta = co_await f.store->read_output(
+                        id, OutputStream::Both, false
+                    );
+                    BOOST_TEST_REQUIRE(delta.has_value());
+                    if (!delta->standard_output.text.empty()) {
+                        captured.out.push_back({
+                            delta->stdout_cursor, delta->standard_output.text
+                        });
+                        consumed_out += delta->standard_output.text.size();
+                        if (!snapshot->exited) {
+                            ++captured.live_reads;
+                        }
+                    }
+                    if (!delta->standard_error.text.empty()) {
+                        captured.err.push_back({
+                            delta->stderr_cursor, delta->standard_error.text
+                        });
+                        consumed_err += delta->standard_error.text.size();
+                    }
+                    if (snapshot->exited && snapshot->output_drained) {
+                        co_return captured;
+                    }
+                    timer.expires_after(std::chrono::milliseconds{1});
+                    co_await timer.async_wait(asio::use_awaitable);
+                }
+            },
+            asio::use_future
+        ));
+    }
+    auto writer = asio::co_spawn(
+        caller,
+        [&]() -> asio::awaitable<void> {
+            asio::steady_timer timer{co_await asio::this_coro::executor};
+            std::size_t sent = 0;
+            for (const auto& message : messages) {
+                BOOST_TEST(co_await f.store->write_input(id, message, false));
+                sent += message.size();
+                // Do not let the child exit before readers observe live output.
+                // Each round waits for both streams, without assuming pipe read
+                // boundaries or which competing delta reader consumes a chunk.
+                while (consumed_out < sent || consumed_err < sent) {
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        throw std::runtime_error("live output writer timed out");
+                    }
+                    timer.expires_after(std::chrono::milliseconds{1});
+                    co_await timer.async_wait(asio::use_awaitable);
+                }
+            }
+            BOOST_TEST(co_await f.store->write_input(id, "", true));
+        },
+        asio::use_future
+    );
+    caller.run();
+    writer.get();
+
+    Capture combined;
+    for (auto& reader : readers) {
+        auto captured = reader.get();
+        combined.out.insert(
+            combined.out.end(), captured.out.begin(), captured.out.end()
+        );
+        combined.err.insert(
+            combined.err.end(), captured.err.begin(), captured.err.end()
+        );
+        combined.live_reads += captured.live_reads;
+    }
+    BOOST_TEST(combined.live_reads >= std::size_t{rounds});
+    auto verify = [&](std::vector<Chunk>& chunks) {
+        std::sort(chunks.begin(), chunks.end(), [](const Chunk& a, const Chunk& b) {
+            return a.end < b.end;
+        });
+        std::string actual;
+        for (const auto& chunk : chunks) {
+            actual += chunk.text;
+            // Contiguous cursor ranges prove that competing readers neither
+            // duplicate nor skip bytes, even when reads complete out of order.
+            BOOST_TEST(chunk.end == actual.size());
+        }
+        BOOST_TEST(actual == expected);
+    };
+    verify(combined.out);
+    verify(combined.err);
+    BOOST_TEST(f.run(f.store->release(id)));
 }

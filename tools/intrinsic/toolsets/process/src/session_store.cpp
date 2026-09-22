@@ -11,7 +11,8 @@
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
-#include <boost/asio/dispatch.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/scope/scope_exit.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 
@@ -30,8 +31,7 @@ constexpr auto kExitPollInterval = std::chrono::milliseconds{50};
 ProcessSessionStore::ProcessSessionStore(
     boost::asio::any_io_executor executor,
     std::size_t max_sessions
-): _strand(boost::asio::make_strand(executor)),
-   _executor(std::move(executor)),
+): _executor(std::move(executor)),
    _max_sessions(max_sessions)
 {}
 
@@ -87,7 +87,7 @@ ProcessSessionStore::~ProcessSessionStore()
 
 // ---- id allocation ----------------------------------------------------------
 
-ProcessSessionStore::SessionId ProcessSessionStore::mint_id_on_strand()
+ProcessSessionStore::SessionId ProcessSessionStore::mint_id_locked()
 {
     // Monotonic, always. No pool, no reuse: an agent-facing id that came back
     // around would alias a process the model remembers from an earlier turn
@@ -96,9 +96,10 @@ ProcessSessionStore::SessionId ProcessSessionStore::mint_id_on_strand()
     return std::format("proc_{}", _next_id++);
 }
 
-ProcessSessionStore::SessionPtr ProcessSessionStore::find_on_strand(
+ProcessSessionStore::SessionPtr ProcessSessionStore::find_session(
     const SessionId& id) const
 {
+    const std::lock_guard lock{_sessions_mutex};
     const auto found = _sessions.find(id);
     if (found == _sessions.end()) {
         return nullptr;
@@ -111,14 +112,24 @@ ProcessSessionStore::SessionPtr ProcessSessionStore::find_on_strand(
 boost::asio::awaitable<SpawnResult>
 ProcessSessionStore::spawn(process::LaunchSpec spec)
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-
-    if (_sessions.size() >= _max_sessions) {
-        throw std::runtime_error(std::format(
-            "the process session store is full: {} of {} sessions are in use. "
-            "Release an exited session before spawning another",
-            _sessions.size(), _max_sessions));
+    SessionId id;
+    {
+        const std::lock_guard lock{_sessions_mutex};
+        const std::size_t occupied = _sessions.size() + _pending_spawns;
+        if (occupied >= _max_sessions) {
+            throw std::runtime_error(std::format(
+                "the process session store is full: {} of {} slots are in use. "
+                "Release an exited session before spawning another",
+                occupied, _max_sessions));
+        }
+        ++_pending_spawns;
     }
+    // Keep this slot reserved across launch and I/O startup. No mutex is
+    // held while constructing a process or awaiting its strand operation.
+    boost::scope::scope_exit release_reservation{[this] {
+        const std::lock_guard lock{_sessions_mutex};
+        --_pending_spawns;
+    }};
 
     // The caller's initial-wait window is HONOURED as the spec carries it —
     // that is what lets one spawn serve both `ls` and a server, and it is what
@@ -142,9 +153,13 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
     // so a failed launch leaves the table untouched.
     auto handle = std::make_shared<process::ProcessHandle>(
         std::move(spec), session_strand);
+    {
+        const std::lock_guard lock{_sessions_mutex};
+        id = mint_id_locked();
+    }
 
     auto session = std::make_shared<Session>(Session{
-        .id = mint_id_on_strand(),
+        .id = id,
         .handle = handle,
         .strand = session_strand,
         // Read here, before the handle is shared with any task: the pid is
@@ -159,15 +174,18 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
     // The first half of the handle's lifecycle contract.
     co_await handle->start_background_io_tasks();
 
-    // REGISTERED BEFORE THE WAIT, and that ordering is the point of this
-    // function's shape. The wait below suspends for up to the whole window, and
-    // during it the session must already be findable: a concurrent poll has to
-    // see the child that is running, and — for a window that outlives the
-    // launch — the id this call is about to return must not be mintable twice.
-    // Everything touching _sessions therefore happens here, on the store's
-    // strand, before anything suspends on the child.
-    const SessionId id = session->id;
-    _sessions.emplace(id, session);
+    // Exception-safety limit: if publication throws (for example, bad_alloc),
+    // the capacity reservation is returned, but I/O tasks have already started
+    // and the terminal watcher has not. Full rollback of this partial lifecycle
+    // requires a separate ProcessHandle lifecycle/RAII change.
+    // Publish before the initial wait so concurrent observations can find
+    // the running child. Converting the reservation into an entry is atomic.
+    {
+        const std::lock_guard lock{_sessions_mutex};
+        _sessions.emplace(id, session);
+        --_pending_spawns;
+        release_reservation.set_active(false);
+    }
     logging::Logger::debug(std::format(
         "process session {} spawned (pid {}), initial wait {} ms", id,
         static_cast<int>(handle->pid()), window));
@@ -192,50 +210,32 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
         co_return SpawnResult{.id = id, .finished = false, .output_drained = false};
     }
 
-    // The window applies: race it against the child, which is precisely what
-    // await_initial_execution() does. On expiry it detaches (forced above) and
-    // restarts the await task ITSELF, so the aftermath is still recorded and
-    // there is nothing to co_spawn here for that case.
-    //
-    // This suspends onto the SESSION's strand and stays there, so _sessions is
-    // untouchable from here on — already handled above. The hop is stated
-    // explicitly below rather than left to the propagation rules, because the
-    // code that follows reads the handle's strand-owned output state.
-    const bool finished = co_await handle->await_initial_execution();
-    co_await boost::asio::dispatch(session_strand, boost::asio::use_awaitable);
-
-    if (finished) {
-        // Terminal, but the output may still be in flight: the await task
-        // records the exit as soon as it observes the child, while the readers
-        // are still draining the pipes. Answering "finished" without waiting
-        // for that would let a caller report an exit code with empty output —
-        // the race process/process_handle.hpp's output_drained() exists for,
-        // and the one wait_for_any() waits out for the same reason.
-        //
-        // Bounded by the window that has already been granted: a child whose
-        // output somehow never drains must not turn a finished spawn into a
-        // hang.
-        boost::asio::steady_timer drain{session_strand};
-        const auto drain_deadline = std::chrono::steady_clock::now() +
-                                    std::chrono::milliseconds{window};
-        while (!handle->output_drained() &&
-               std::chrono::steady_clock::now() < drain_deadline) {
-            drain.expires_after(kExitPollInterval);
-            co_await drain.async_wait(boost::asio::use_awaitable);
-        }
-    }
-
-    // `finished` and `output_drained` are reported SEPARATELY, and this is the
-    // one place in the store where they can disagree: the child exited inside
-    // the window, while a descendant it left behind holds the inherited pipes
-    // open, so the capture is still incomplete when the bound above fires. The
-    // caller gets both facts rather than one bool that would have to mean two
-    // things (SpawnResult).
-    co_return SpawnResult{
-        .id = id,
-        .finished = finished,
-        .output_drained = finished && handle->output_drained(),
-    };
+    // Both the initial wait and every output-drain check execute on the
+    // session strand, even after a timer or handle operation suspends.
+    co_return co_await boost::asio::co_spawn(
+        session_strand,
+        [session, window]() -> boost::asio::awaitable<SpawnResult> {
+            const auto& handle = session->handle;
+            const bool finished = co_await handle->await_initial_execution();
+            if (finished) {
+                boost::asio::steady_timer drain{session->strand};
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds{window};
+                while (!handle->output_drained() &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    drain.expires_after(kExitPollInterval);
+                    co_await drain.async_wait(boost::asio::use_awaitable);
+                }
+            }
+            // A descendant may keep the output pipes open after child exit.
+            co_return SpawnResult{
+                .id = session->id,
+                .finished = finished,
+                .output_drained = finished && handle->output_drained(),
+            };
+        },
+        boost::asio::use_awaitable
+    );
 }
 
 // ---- observation ------------------------------------------------------------
@@ -243,40 +243,38 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
 boost::asio::awaitable<SessionSnapshot>
 ProcessSessionStore::snapshot_on_session(SessionPtr session)
 {
-    // snapshot() and exited() read strand-owned state, so the read happens
-    // on the session's own strand and what leaves is a value.
-    co_await boost::asio::dispatch(session->strand, boost::asio::use_awaitable);
-    co_return SessionSnapshot{
-        .id = session->id,
-        .result = session->handle->snapshot(),
-        .exited = session->handle->exited(),
-        // Both facts, always: a caller that only ever sees `exited` cannot
-        // tell a complete capture from one whose pipes somebody else still
-        // holds open (SessionSnapshot).
-        .output_drained = session->handle->output_drained(),
-    };
+    co_return co_await boost::asio::co_spawn(
+        session->strand,
+        [session]() -> boost::asio::awaitable<SessionSnapshot> {
+            co_return SessionSnapshot{
+                .id = session->id,
+                .result = session->handle->snapshot(),
+                .exited = session->handle->exited(),
+                .output_drained = session->handle->output_drained(),
+            };
+        },
+        boost::asio::use_awaitable
+    );
 }
 
-std::vector<ProcessSessionStore::SessionPtr> ProcessSessionStore::select_on_strand(
+std::vector<ProcessSessionStore::SessionPtr> ProcessSessionStore::select_sessions(
     const std::vector<SessionId>& ids) const
 {
-    // Collected up front, on the store's strand, so the table is not read
-    // again after the hops that follow suspend: a session released meanwhile
-    // keeps its place in the answer (it is still what this call selected), and
-    // the map is never iterated across a suspension point.
     std::vector<SessionPtr> selected;
-    if (ids.empty()) {
-        selected.reserve(_sessions.size());
-        for (const auto& [id, session] : _sessions) {
-            selected.push_back(session);
-        }
-    } else {
-        selected.reserve(ids.size());
-        for (const SessionId& id : ids) {
-            // An id naming no session is skipped rather than reported: the
-            // list that comes back IS the answer to "which of these exist".
-            if (SessionPtr session = find_on_strand(id)) {
-                selected.push_back(std::move(session));
+    {
+        const std::lock_guard lock{_sessions_mutex};
+        if (ids.empty()) {
+            selected.reserve(_sessions.size());
+            for (const auto& [id, session] : _sessions) {
+                selected.push_back(session);
+            }
+        } else {
+            selected.reserve(ids.size());
+            for (const SessionId& id : ids) {
+                const auto found = _sessions.find(id);
+                if (found != _sessions.end()) {
+                    selected.push_back(found->second);
+                }
             }
         }
     }
@@ -295,9 +293,7 @@ std::vector<ProcessSessionStore::SessionPtr> ProcessSessionStore::select_on_stra
 boost::asio::awaitable<std::vector<SessionSnapshot>>
 ProcessSessionStore::snapshots(std::vector<SessionId> ids) const
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-
-    const std::vector<SessionPtr> selected = select_on_strand(ids);
+    const std::vector<SessionPtr> selected = select_sessions(ids);
     std::vector<SessionSnapshot> results;
     results.reserve(selected.size());
     for (const SessionPtr& session : selected) {
@@ -309,8 +305,7 @@ ProcessSessionStore::snapshots(std::vector<SessionId> ids) const
 boost::asio::awaitable<std::optional<SessionSnapshot>>
 ProcessSessionStore::snapshot(SessionId id) const
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-    SessionPtr session = find_on_strand(id);
+    SessionPtr session = find_session(id);
     if (session == nullptr) {
         co_return std::nullopt;
     }
@@ -319,7 +314,7 @@ ProcessSessionStore::snapshot(SessionId id) const
 
 boost::asio::awaitable<std::size_t> ProcessSessionStore::size() const
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
+    const std::lock_guard lock{_sessions_mutex};
     co_return _sessions.size();
 }
 
@@ -328,59 +323,61 @@ boost::asio::awaitable<std::size_t> ProcessSessionStore::size() const
 boost::asio::awaitable<std::optional<OutputRead>>
 ProcessSessionStore::read_output(SessionId id, OutputStream stream, bool full)
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-    SessionPtr session = find_on_strand(id);
+    SessionPtr session = find_session(id);
     if (session == nullptr) {
         co_return std::nullopt;
     }
 
-    // The cursors and the captured buffers are both session-strand state, so
-    // reading and advancing happen in one pass there — no window in which a
-    // second reader could see the same bytes.
-    co_await boost::asio::dispatch(session->strand, boost::asio::use_awaitable);
+    // Copy output and advance cursors in one strand operation. No suspension
+    // occurs inside this transaction, so delta readers cannot consume twice.
+    co_return co_await boost::asio::co_spawn(
+        session->strand,
+        [session, stream, full]() -> boost::asio::awaitable<OutputRead> {
+            const process::ProcessHandle& handle = *session->handle;
+            const bool want_stdout =
+                stream == OutputStream::Stdout || stream == OutputStream::Both;
+            const bool want_stderr =
+                stream == OutputStream::Stderr || stream == OutputStream::Both;
 
-    const process::ProcessHandle& handle = *session->handle;
-    const bool want_stdout =
-        stream == OutputStream::Stdout || stream == OutputStream::Both;
-    const bool want_stderr =
-        stream == OutputStream::Stderr || stream == OutputStream::Both;
+            // One rule for both streams: full reads the whole buffer and leaves the
+            // cursor where it was (an observation cannot consume another reader's
+            // unread bytes), delta reads from the cursor and advances it.
+            auto take = [full](const std::string& captured, bool truncated,
+                               std::size_t& cursor) -> OutputSlice {
+                if (full) {
+                    return OutputSlice{.text = captured, .truncated = truncated};
+                }
+                // The cursor can only exceed the buffer if the buffer shrank, which
+                // it never does — the handle only appends. Clamped anyway: a cursor
+                // past the end would otherwise be an out-of-range substr.
+                const std::size_t from = std::min(cursor, captured.size());
+                OutputSlice slice{
+                    .text = captured.substr(from),
+                    .truncated = truncated,
+                };
+                cursor = captured.size();
+                return slice;
+            };
 
-    // One rule for both streams: full reads the whole buffer and leaves the
-    // cursor where it was (an observation cannot consume another reader's
-    // unread bytes), delta reads from the cursor and advances it.
-    auto take = [full](const std::string& captured, bool truncated,
-                       std::size_t& cursor) -> OutputSlice {
-        if (full) {
-            return OutputSlice{.text = captured, .truncated = truncated};
-        }
-        // The cursor can only exceed the buffer if the buffer shrank, which
-        // it never does — the handle only appends. Clamped anyway: a cursor
-        // past the end would otherwise be an out-of-range substr.
-        const std::size_t from = std::min(cursor, captured.size());
-        OutputSlice slice{
-            .text = captured.substr(from),
-            .truncated = truncated,
-        };
-        cursor = captured.size();
-        return slice;
-    };
-
-    OutputRead read;
-    if (want_stdout) {
-        read.standard_output = take(handle.standard_output(),
-                                    handle.stdout_truncated(),
-                                    session->stdout_cursor);
-    }
-    if (want_stderr) {
-        read.standard_error = take(handle.standard_error(),
-                                   handle.stderr_truncated(),
-                                   session->stderr_cursor);
-    }
-    // The cursors travel back whether or not this read moved them, so a
-    // caller can report where a stream stands without asking again.
-    read.stdout_cursor = session->stdout_cursor;
-    read.stderr_cursor = session->stderr_cursor;
-    co_return read;
+            OutputRead read;
+            if (want_stdout) {
+                read.standard_output = take(handle.standard_output(),
+                                            handle.stdout_truncated(),
+                                            session->stdout_cursor);
+            }
+            if (want_stderr) {
+                read.standard_error = take(handle.standard_error(),
+                                           handle.stderr_truncated(),
+                                           session->stderr_cursor);
+            }
+            // The cursors travel back whether or not this read moved them, so a
+            // caller can report where a stream stands without asking again.
+            read.stdout_cursor = session->stdout_cursor;
+            read.stderr_cursor = session->stderr_cursor;
+            co_return read;
+        },
+        boost::asio::use_awaitable
+    );
 }
 
 // ---- input ------------------------------------------------------------------
@@ -388,8 +385,7 @@ ProcessSessionStore::read_output(SessionId id, OutputStream stream, bool full)
 boost::asio::awaitable<bool> ProcessSessionStore::write_input(
     SessionId id, std::string input, bool close_input)
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-    SessionPtr session = find_on_strand(id);
+    SessionPtr session = find_session(id);
     if (session == nullptr) {
         co_return false;
     }
@@ -415,21 +411,18 @@ boost::asio::awaitable<WaitOutcome>
 ProcessSessionStore::wait_for_any(
     std::vector<SessionId> ids, std::uint64_t timeout_milliseconds)
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
     // The selection is taken once, on the way in: the ids are resolved to
     // handles here and the loop below only ever reads those, so a session
     // spawned while this waits is not silently added to what it waits for —
     // "the sessions named (or existing) when the call arrived" is a set the
     // caller can reason about, and one that grew mid-wait is not.
-    const std::vector<SessionPtr> selected = select_on_strand(ids);
+    const std::vector<SessionPtr> selected = select_sessions(ids);
 
     const auto started = std::chrono::steady_clock::now();
     const auto deadline =
         started + std::chrono::milliseconds{timeout_milliseconds};
-    // On the store's strand, not on a session's: the timer is this call's own
-    // wait, not a child's, and every actual read below hops to the session it
-    // belongs to anyway.
-    boost::asio::steady_timer poll{_strand};
+    // The timer belongs to this call; only handle observations need a strand.
+    boost::asio::steady_timer poll{co_await boost::asio::this_coro::executor};
 
     std::vector<SessionSnapshot> snapshots;
     bool finished = false;
@@ -486,8 +479,7 @@ ProcessSessionStore::wait_for_any(
 boost::asio::awaitable<bool> ProcessSessionStore::terminate(
     SessionId id, bool graceful)
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-    SessionPtr session = find_on_strand(id);
+    SessionPtr session = find_session(id);
     if (session == nullptr) {
         co_return false;
     }
@@ -505,22 +497,12 @@ boost::asio::awaitable<bool> ProcessSessionStore::terminate(
 boost::asio::awaitable<std::size_t> ProcessSessionStore::terminate_all(
     bool graceful)
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-
-    // The handles are collected on the store's strand BEFORE any signalling,
-    // so the table is not iterated across the suspensions below: a session
-    // released while this runs keeps its signal (it was live when the sweep
-    // started), and no iterator outlives a hop.
-    std::vector<HandlePtr> handles;
-    handles.reserve(_sessions.size());
-    for (const auto& [id, session] : _sessions) {
-        if (session->handle) {
-            handles.push_back(session->handle);
-        }
-    }
+    // Copy ownership under the table mutex, then signal without holding it.
+    const auto selected = select_sessions({});
 
     std::size_t signalled = 0;
-    for (const HandlePtr& handle : handles) {
+    for (const SessionPtr& session : selected) {
+        const HandlePtr& handle = session->handle;
         // Each handle marshals onto its own strand; an already-exited child
         // answers false, which is not counted and not an error.
         const bool sent = graceful ? co_await handle->request_exit()
@@ -536,49 +518,20 @@ boost::asio::awaitable<std::size_t> ProcessSessionStore::terminate_all(
 
 boost::asio::awaitable<bool> ProcessSessionStore::release(SessionId id)
 {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-    SessionPtr session = find_on_strand(id);
-    if (session == nullptr) {
-        co_return false;
+    SessionPtr removed;
+    {
+        const std::lock_guard lock{_sessions_mutex};
+        const auto found = _sessions.find(id);
+        if (found == _sessions.end() || !found->second->handle->exited()) {
+            co_return false;
+        }
+        // exited() is an atomic, monotonic latch. Lookup, check and removal
+        // form one transaction, so exactly one concurrent release succeeds.
+        removed = std::move(found->second);
+        _sessions.erase(found);
     }
-
-    // Refused while the child lives: dropping the table's reference could
-    // drop the LAST one, and the handle's destructor kills a running child —
-    // a silent kill out of what reads like a bookkeeping call. A caller that
-    // means to end a child calls terminate() and says so.
-    //
-    // The answer is read on the SESSION's strand, where the handle keeps it,
-    // and the coroutine comes back to the store's strand to act on it. The
-    // detour is not ceremony: "exited() only ever transitions once" is an
-    // argument about the value, not about the memory, and a release deciding a
-    // lifetime question from a state read on the wrong strand is exactly the
-    // kind of unsynchronised access that passes every single-runner test and
-    // fails the first time the context gets a second worker thread.
-    //
-    // What is held across the two hops is a shared_ptr, so the session itself
-    // cannot be destroyed under this coroutine; what is NOT held is any belief
-    // about the table (see the re-lookup below).
-    co_await boost::asio::dispatch(session->strand, boost::asio::use_awaitable);
-    const bool exited = session->handle->exited();
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
-
-    if (!exited) {
-        co_return false;
-    }
-
-    // Back on the store's strand, and the table may have moved while we were
-    // away: a concurrent release() of the same session can have won the race,
-    // and erasing on a stale find would drop an entry that is already gone and
-    // report true a second time for one session. So the lookup is redone and
-    // the identity is checked rather than the id — an id is never reused
-    // (mint_id_on_strand), so "the id resolves to MY session" is the precise
-    // question, and a mismatch can only mean somebody else already released
-    // it.
-    if (find_on_strand(id) != session) {
-        co_return false;
-    }
-
-    _sessions.erase(id);
+    // Retain ownership until after unlocking: destruction and logging must
+    // not extend the table's critical section.
     logging::Logger::debug(std::format("process session {} released", id));
     co_return true;
 }

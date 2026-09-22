@@ -96,8 +96,8 @@
 // cursor; `release` removes a table entry; `include_output: false` and
 // `release_exited: false` skip both. Those are changes to THIS LAYER'S OWN
 // state, and the store is what makes them safe to overlap: the table is
-// serialised on the store's strand and each child's handle and cursors on its
-// own (process/session_store.hpp, threading), so two calls touching one session
+// protected by a mutex and each child's handle and cursors by its
+// strand (process/session_store.hpp, threading), so two calls touching one session
 // cannot tear a snapshot or double-hand the same bytes. A call that changes
 // nothing outside the host is ReadOnly, however much internal state it moves.
 //
@@ -375,7 +375,7 @@ public:
 /// soon as ANY one of the sessions has finished, or when the deadline runs out,
 /// and either way it reports ALL of them. ReadOnly / Trusted: it changes
 /// nothing outside this host — a wait ends no child — and the cursors and table
-/// entries it touches are the store's own state, which the store's strands make
+/// entries it touches are the store's own state, which the store's mutex and session strands make
 /// safe to overlap.
 ///
 /// A timeout is not a failure: the result says `timed_out`, names how long it

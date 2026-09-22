@@ -255,9 +255,8 @@ private:
 /// preference: with a single runner nothing in this design is ever concurrent,
 /// so a wrong strand assumption, an off-strand read or a serial/parallel
 /// mistake cannot show up no matter how wrong it is. The store deliberately
-/// runs two levels of strand (its own for the table, one per child for the
-/// handle), and those only have something to serialise when more than one
-/// thread is running.
+/// protects its table with a mutex and each handle with a session strand;
+/// several workers exercise both forms of synchronisation.
 ///
 /// The confirmation handler is subscribed HERE, on the fixture's own bus, and
 /// records every question it is asked: default_async_bus() is process-wide, so
@@ -596,7 +595,7 @@ BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
     // Reaping through a poll: the session goes, and the poll says which ones
     // went. Like every other poll the call is ReadOnly — the removal is the
     // table's own bookkeeping — so the reason a neighbour addressing the same
-    // id is safe is the store's strand, not the scheduler holding this call
+    // id is safe is the store's mutex, not the scheduler holding this call
     // apart from it.
     const ResultText polled = result_of(f.call(call_for(
         std::string(tool_names::kPoll),
@@ -933,14 +932,22 @@ BOOST_AUTO_TEST_CASE(a_release_in_one_batch_leaves_the_table_empty_for_the_next_
     const ResultText released = result_of(records[0]);
     BOOST_TEST(released.field("released") == "true");
     BOOST_TEST(released.block("stdout") == "gone\n");
-    // The poll beside it answered honestly either way — a session it saw, or
-    // none — but never a half-removed one: its records are the count and then
-    // one per session it saw.
+    // Records describe the sessions selected when the poll began. The retained
+    // count is sampled later: a concurrent release can remove a selected session
+    // before that count is read, without invalidating its owned snapshot.
     const ResultText polled = result_of(records[1]);
+    const int selected = std::stoi(polled.field("session_count"));
     const int retained = std::stoi(polled.field("retained_session_count"));
-    BOOST_TEST(retained <= 1);
-    BOOST_TEST(polled.records().size() ==
-               static_cast<std::size_t>(retained + 1));
+    BOOST_TEST(selected >= 0);
+    BOOST_TEST(selected <= 1);
+    BOOST_TEST(retained >= 0);
+    BOOST_TEST(retained <= selected);
+    BOOST_TEST_REQUIRE(polled.records().size() ==
+                       static_cast<std::size_t>(selected + 1));
+    if (selected == 1) {
+        BOOST_TEST(polled.records()[1].field("session_id") == id);
+        BOOST_TEST(polled.records()[1].field("state") == "exited");
+    }
 
     // The next batch sees a table the release has already emptied: the effect
     // is not "may or may not", it is "done by the time this batch answers".
