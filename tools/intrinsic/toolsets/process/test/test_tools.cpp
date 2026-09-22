@@ -1060,7 +1060,7 @@ BOOST_AUTO_TEST_CASE(each_tool_declares_its_type_and_security)
     // describes the effect a call has OUTSIDE this host. Internal bookkeeping
     // never makes a call a write — a delta read advancing a cursor and a poll
     // reaping a session are this layer's own state, and the store is what makes
-    // them safe to overlap (table on the store's strand, handle and cursors on
+    // them safe to overlap (table under its mutex, handle and cursors on
     // the session's). What is a write is launching a program, putting bytes in
     // a live child's input, and ending it.
     struct Expectation {

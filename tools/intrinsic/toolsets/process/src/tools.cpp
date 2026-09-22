@@ -642,7 +642,7 @@ void ReadProcessTool::write_attributes(model_io::InvokeQuery& query) const
     // read touches nothing outside this host. `full` and the delta both leave
     // the child exactly as they found it; the delta advances a cursor and
     // `release` removes a table entry, and both of those are this layer's own
-    // state, serialised by the store's strands.
+    // state, serialised by the store's mutex and session strands.
     //
     // The determinism caveat is the same one: a batch that asks for the same
     // session's delta twice splits the bytes between the two calls, in whatever

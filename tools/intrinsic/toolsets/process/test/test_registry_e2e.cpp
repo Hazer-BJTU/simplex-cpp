@@ -255,9 +255,8 @@ private:
 /// preference: with a single runner nothing in this design is ever concurrent,
 /// so a wrong strand assumption, an off-strand read or a serial/parallel
 /// mistake cannot show up no matter how wrong it is. The store deliberately
-/// runs two levels of strand (its own for the table, one per child for the
-/// handle), and those only have something to serialise when more than one
-/// thread is running.
+/// protects its table with a mutex and each handle with a session strand;
+/// several workers exercise both forms of synchronisation.
 ///
 /// The confirmation handler is subscribed HERE, on the fixture's own bus, and
 /// records every question it is asked: default_async_bus() is process-wide, so
@@ -596,7 +595,7 @@ BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
     // Reaping through a poll: the session goes, and the poll says which ones
     // went. Like every other poll the call is ReadOnly — the removal is the
     // table's own bookkeeping — so the reason a neighbour addressing the same
-    // id is safe is the store's strand, not the scheduler holding this call
+    // id is safe is the store's mutex, not the scheduler holding this call
     // apart from it.
     const ResultText polled = result_of(f.call(call_for(
         std::string(tool_names::kPoll),

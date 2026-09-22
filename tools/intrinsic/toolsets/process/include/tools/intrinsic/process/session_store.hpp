@@ -33,29 +33,21 @@
 //                      terminal, and its id goes nowhere afterwards: the
 //                      table shrinks, the number does not come back.
 //
-// THREADING — TWO LEVELS OF STRAND, on purpose:
+// THREADING — table mutex and per-session strands:
 //
-//   the STORE's strand      serialises the table itself (the map, the id
-//                           pool). Every public coroutine begins with
-//                           `co_await dispatch(_strand, ...)`, so callers may
-//                           come from any executor without locking — the
-//                           pattern ProcessHandle itself follows.
-//   a SESSION's strand      one per child, derived from the store's executor.
-//                           Every ProcessHandle member except its stdin
-//                           channel belongs to its own strand, and two
-//                           children have no reason to queue behind each
-//                           other: a session's handle, and its cursors, are
-//                           touched only there.
+// A short mutex critical section protects the session table, id counter and
+// pending spawn reservations. Copy session ownership before unlocking; never
+// hold the mutex across co_await, process operations or logging.
 //
-// The store's methods therefore hop: onto the store's strand to find the
-// session, onto that session's strand to read or drive its handle. That hop
-// is why they are coroutines rather than plain accessors, and why a caller
-// never gets a Session out — a handle read off-strand would be a data race,
-// so what leaves this class is always a VALUE (a snapshot, a slice of output,
-// a bool), never a reference into the table. release() is the one method that
-// hops TWICE (in, out, and back in), because it must both read the handle's
-// terminal state where that state lives and remove the table entry where the
-// table lives; see its own comment.
+// Each session has a strand. Its handle uses a strand layered over that
+// executor, so handle operations and session output/cursor operations cannot
+// run concurrently. Use co_spawn to execute the whole operation on the strand,
+// including continuations after suspension. A dispatch await alone does not
+// change a coroutine's executor and is not a lock.
+//
+// Public coroutines may be awaited from another executor. Observations return
+// owned values, never references to mutable session state. release() only needs
+// the table mutex and the handle's atomic exited() latch.
 //
 // THE STORE OWNS THE LIFECYCLE CONTRACT. ProcessHandle's contract
 // (process_handle.hpp) says: start the io tasks, then keep driving the handle
@@ -92,20 +84,16 @@
 // pair is what keeps the tail honest: a child that was observed is not
 // signalled, because its pid may already belong to somebody else.
 //
-// DROP THE TABLE AFTER THE CONTEXT IS QUIESCED — stop it and join its threads
-// first, whether or not terminate_all() was awaited. Signalling a pid needs no
-// executor, so the tail works either way, but the table's own strand shares
-// refcounted state with the operations still queued on that context, and
-// freeing it from another thread while a worker finishes one is a data race in
-// that refcount (measured: ThreadSanitizer reports it in operator delete, on
-// every suite that dropped the store with its workers still running). Nothing
-// that shares an executor with a running context should be destroyed before
-// the context is quiesced.
+// Finish all store calls before destroying it. For the fallback destructor's
+// raw-pid cleanup, stop the context and join its workers first, so cleanup does
+// not race the handle's child reaping. Normal shutdown uses terminate_all()
+// while the executor is still running.
 //
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -280,8 +268,8 @@ public:
      *   do not wait at all — because "start it and give me the id" is a
      *   legitimate request and hanging is not. kNoInitialWait spells it.
      *
-     * The wait is bounded by the window, so it does not block the store's
-     * strand: the table is updated and released before the wait begins.
+     * The initial wait is bounded by the window. The table mutex is released
+     * before awaiting the handle, so other sessions remain accessible.
      *
      * @return the new session's id, whether the child finished inside the
      *         window, and whether the capture was complete when this answered.
@@ -402,16 +390,9 @@ public:
      * would kill it — a silent kill from what reads like a bookkeeping call.
      * A caller that means to end a child calls terminate() and says so.
      *
-     * Reads the child's terminal state on the SESSION's strand, where the
-     * handle keeps it, and removes the entry on the STORE's strand, where the
-     * table lives — hopping out and back rather than reading strand state from
-     * the wrong side (`exited()` is a latch and would be safe either way, but
-     * the rule is the rule, and this is the method that made it worth stating:
-     * "the value only ever transitions once" is not a synchronisation
-     * argument). Because the removal happens after a hop, the id is looked up
-     * AGAIN when the coroutine gets back: a concurrent release() of the same
-     * session may have won the race while this one was away, and the second
-     * one has to answer false rather than erase a second time.
+     * Reads the atomic exited() latch and removes the entry in one table
+     * critical section. Exactly one caller can release a given session.
+     * Session ownership is retained until after the mutex is unlocked.
      *
      * @return whether the session was dropped (false: unknown id, the child
      *         is still running, or another caller released it first).
@@ -461,37 +442,30 @@ private:
     };
     using SessionPtr = std::shared_ptr<Session>;
 
-    /// The session for `id`, or nullptr. Callers must already be on the
-    /// store's strand.
-    [[nodiscard]] SessionPtr find_on_strand(const SessionId& id) const;
+    /// Find and copy session ownership under the table mutex.
+    [[nodiscard]] SessionPtr find_session(const SessionId& id) const;
 
-    /// Mint an id: the next number, always. Store's strand only, though the
-    /// monotonic counter alone would make it safe from anywhere — the pool
-    /// that used to sit here is gone precisely because a minted id must never
-    /// name two children (see the header's identity note).
-    [[nodiscard]] SessionId mint_id_on_strand();
+    /// Allocate a never-reused id. Caller must hold _sessions_mutex.
+    [[nodiscard]] SessionId mint_id_locked();
 
     /// The snapshot for `session`, read on its OWN strand.
     static boost::asio::awaitable<SessionSnapshot> snapshot_on_session(
         SessionPtr session);
 
-    /// The sessions `ids` names, in the id order the snapshots come back in —
-    /// shared_ptr copies, so a release() during the hops that follow cannot
-    /// pull a session out from under the caller that selected it. Empty `ids`
-    /// selects the whole table; unknown ids are skipped. Callers must already
-    /// be on the store's strand, and must not hold the result across a
-    /// suspension point that could re-enter the table (they may hold it across
-    /// a session-strand hop, which is exactly what both readers do).
-    [[nodiscard]] std::vector<SessionPtr> select_on_strand(
+    /// Copy selected sessions under the mutex, then sort by id after unlocking.
+    /// Empty ids select all sessions; unknown ids are skipped. The returned
+    /// shared_ptrs remain valid across awaits and concurrent release calls.
+    [[nodiscard]] std::vector<SessionPtr> select_sessions(
         const std::vector<SessionId>& ids) const;
 
-    mutable boost::asio::strand<boost::asio::any_io_executor> _strand;
+    mutable std::mutex _sessions_mutex;
     boost::asio::any_io_executor _executor;
     std::size_t _max_sessions;
 
-    // The table: store's strand only. _next_id only climbs.
+    // Protected by _sessions_mutex. Reservations count toward the capacity.
     std::unordered_map<SessionId, SessionPtr> _sessions;
     std::uint64_t _next_id = 1;
+    std::size_t _pending_spawns = 0;
 };
 
 } // namespace tools::intrinsic
