@@ -3,6 +3,7 @@
 
 #include "tools/intrinsic/process/session_store.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -959,4 +960,140 @@ BOOST_AUTO_TEST_CASE(concurrent_spawns_reserve_capacity_and_failed_launches_retu
     auto next = spec_for("true");
     next.initial_wait_timeout_milliseconds = 5000;
     BOOST_TEST(f.run(f.store->spawn(std::move(next))).finished);
+}
+
+BOOST_AUTO_TEST_CASE(live_output_reads_and_snapshots_are_serialized_across_contexts)
+{
+    MultiWorkerFixture f;
+    asio::io_context caller;
+    const auto id = f.spawn_id(spec_for(
+        "sh", {"-c", "while IFS= read -r line; do "
+                     "printf '%s\\n' \"$line\"; "
+                     "printf '%s\\n' \"$line\" >&2; done"}
+    ));
+
+    struct Chunk {
+        std::size_t end;
+        std::string text;
+    };
+    struct Capture {
+        std::vector<Chunk> out;
+        std::vector<Chunk> err;
+        std::size_t live_reads = 0;
+    };
+
+    constexpr int rounds = 32;
+    std::vector<std::string> messages;
+    std::string expected;
+    for (int i = 0; i < rounds; ++i) {
+        messages.push_back(std::format("{}:{}\n", i, std::string(512, 'a' + i % 26)));
+        expected += messages.back();
+    }
+
+    // Only caller.run() accesses these counters, on this test's thread.
+    // The store's three workers concurrently drain the child's output pipes.
+    std::size_t consumed_out = 0;
+    std::size_t consumed_err = 0;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds{10};
+    std::vector<std::future<Capture>> readers;
+    for (int reader = 0; reader < 2; ++reader) {
+        readers.push_back(asio::co_spawn(
+            caller,
+            [&]() -> asio::awaitable<Capture> {
+                Capture captured;
+                asio::steady_timer timer{co_await asio::this_coro::executor};
+                for (;;) {
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        throw std::runtime_error("live output reader timed out");
+                    }
+                    const auto snapshot = co_await f.store->snapshot(id);
+                    BOOST_TEST_REQUIRE(snapshot.has_value());
+                    const auto& output = snapshot->result;
+                    BOOST_TEST(expected.starts_with(output.stdout_text.value_or("")));
+                    BOOST_TEST(expected.starts_with(output.stderr_text.value_or("")));
+
+                    const auto delta = co_await f.store->read_output(
+                        id, OutputStream::Both, false
+                    );
+                    BOOST_TEST_REQUIRE(delta.has_value());
+                    if (!delta->standard_output.text.empty()) {
+                        captured.out.push_back({
+                            delta->stdout_cursor, delta->standard_output.text
+                        });
+                        consumed_out += delta->standard_output.text.size();
+                        if (!snapshot->exited) {
+                            ++captured.live_reads;
+                        }
+                    }
+                    if (!delta->standard_error.text.empty()) {
+                        captured.err.push_back({
+                            delta->stderr_cursor, delta->standard_error.text
+                        });
+                        consumed_err += delta->standard_error.text.size();
+                    }
+                    if (snapshot->exited && snapshot->output_drained) {
+                        co_return captured;
+                    }
+                    timer.expires_after(std::chrono::milliseconds{1});
+                    co_await timer.async_wait(asio::use_awaitable);
+                }
+            },
+            asio::use_future
+        ));
+    }
+    auto writer = asio::co_spawn(
+        caller,
+        [&]() -> asio::awaitable<void> {
+            asio::steady_timer timer{co_await asio::this_coro::executor};
+            std::size_t sent = 0;
+            for (const auto& message : messages) {
+                BOOST_TEST(co_await f.store->write_input(id, message, false));
+                sent += message.size();
+                // Do not let the child exit before readers observe live output.
+                // Each round waits for both streams, without assuming pipe read
+                // boundaries or which competing delta reader consumes a chunk.
+                while (consumed_out < sent || consumed_err < sent) {
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        throw std::runtime_error("live output writer timed out");
+                    }
+                    timer.expires_after(std::chrono::milliseconds{1});
+                    co_await timer.async_wait(asio::use_awaitable);
+                }
+            }
+            BOOST_TEST(co_await f.store->write_input(id, "", true));
+        },
+        asio::use_future
+    );
+    caller.run();
+    writer.get();
+
+    Capture combined;
+    for (auto& reader : readers) {
+        auto captured = reader.get();
+        combined.out.insert(
+            combined.out.end(), captured.out.begin(), captured.out.end()
+        );
+        combined.err.insert(
+            combined.err.end(), captured.err.begin(), captured.err.end()
+        );
+        combined.live_reads += captured.live_reads;
+    }
+    BOOST_TEST(combined.live_reads >= std::size_t{rounds});
+    auto verify = [&](std::vector<Chunk>& chunks) {
+        std::sort(chunks.begin(), chunks.end(), [](const Chunk& a, const Chunk& b) {
+            return a.end < b.end;
+        });
+        std::string actual;
+        for (const auto& chunk : chunks) {
+            actual += chunk.text;
+            // Contiguous cursor ranges prove that competing readers neither
+            // duplicate nor skip bytes, even when reads complete out of order.
+            BOOST_TEST(chunk.end == actual.size());
+        }
+        BOOST_TEST(actual == expected);
+    };
+    verify(combined.out);
+    verify(combined.err);
+    BOOST_TEST(f.run(f.store->release(id)));
 }
