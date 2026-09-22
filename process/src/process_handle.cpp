@@ -550,7 +550,17 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
 }
 
 boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks() {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
+    // The spawned coroutine retains the strand executor after every await.
+    co_return co_await boost::asio::co_spawn(
+        _strand,
+        [self = shared_from_this()]() -> boost::asio::awaitable<void> {
+            co_return co_await self->start_background_io_tasks_on_strand();
+        },
+        boost::asio::use_awaitable
+    );
+}
+
+boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks_on_strand() {
     // The lifecycle contract above: one start per handle. assert, not a
     // runtime state machine — this is an internal manager-side invariant.
     assert(!_io_tasks_started);
@@ -587,8 +597,18 @@ boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks() {
 }
 
 boost::asio::awaitable<bool> ProcessHandle::await_initial_execution() {
+    // The spawned coroutine retains the strand executor after every await.
+    co_return co_await boost::asio::co_spawn(
+        _strand,
+        [self = shared_from_this()]() -> boost::asio::awaitable<bool> {
+            co_return co_await self->await_initial_execution_on_strand();
+        },
+        boost::asio::use_awaitable
+    );
+}
+
+boost::asio::awaitable<bool> ProcessHandle::await_initial_execution_on_strand() {
     using namespace boost::asio::experimental::awaitable_operators;
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
     // Second half of the lifecycle contract: the io tasks must be running
     // before anyone waits on the child.
     assert(_io_tasks_started);
@@ -698,8 +718,17 @@ boost::asio::awaitable<bool> ProcessHandle::request_exit() {
 }
 
 boost::asio::awaitable<bool> ProcessHandle::signal_child(Signal signal) {
-    co_await boost::asio::dispatch(_strand, boost::asio::use_awaitable);
+    // The spawned coroutine retains the strand executor after every await.
+    co_return co_await boost::asio::co_spawn(
+        _strand,
+        [self = shared_from_this(), signal]() -> boost::asio::awaitable<bool> {
+            co_return co_await self->signal_child_on_strand(signal);
+        },
+        boost::asio::use_awaitable
+    );
+}
 
+boost::asio::awaitable<bool> ProcessHandle::signal_child_on_strand(Signal signal) {
     // Everything below is strand-side state, so the probe and the signal
     // cannot interleave with the await task's own probe.
     if (_process_ptr == nullptr) {

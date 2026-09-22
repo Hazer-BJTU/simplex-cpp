@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include <cerrno>
@@ -777,4 +778,61 @@ BOOST_AUTO_TEST_CASE(terminating_an_exited_child_reports_no_signal_sent)
     // Unchanged: a signal is not an observation, and there was no signal.
     BOOST_TEST(s.handle->exited());
     BOOST_TEST(s.handle->status().exit_code.value() == 0);
+}
+
+BOOST_AUTO_TEST_CASE(lifecycle_and_signals_can_be_awaited_from_another_context)
+{
+    namespace asio = boost::asio;
+    // Exercise natural completion, hard termination and graceful termination
+    // separately. The caller never runs on the handle's context or strand.
+    for (int mode = 0; mode < 3; ++mode) {
+        BOOST_TEST_CONTEXT("cross-context mode " << mode) {
+            asio::io_context owner;
+            asio::io_context caller;
+            auto guard = asio::make_work_guard(owner);
+            auto strand = asio::make_strand(owner);
+            auto handle = std::make_shared<process::ProcessHandle>(
+                process::LaunchSpec{
+                    .executable = mode == 0 ? "echo" : "sleep",
+                    .arguments = mode == 0
+                        ? std::vector<std::string>{"cross-context"}
+                        : std::vector<std::string>{"60"},
+                    .initial_wait_timeout_milliseconds =
+                        mode == 0 ? std::uint64_t{5000} : std::uint64_t{10},
+                    .detach_on_timeout = true,
+                },
+                strand
+            );
+            auto completion = asio::co_spawn(
+                caller,
+                [handle, mode]() -> asio::awaitable<void> {
+                    co_await handle->start_background_io_tasks();
+                    const bool finished = co_await handle->await_initial_execution();
+                    BOOST_TEST(finished == (mode == 0));
+                    if (mode == 1) {
+                        BOOST_TEST(co_await handle->terminate());
+                    } else if (mode == 2) {
+                        BOOST_TEST(co_await handle->request_exit());
+                    }
+                },
+                asio::use_future
+            );
+            std::thread worker([&owner] { owner.run(); });
+            caller.run();
+            guard.reset();
+            // Allow the terminal watcher and both output readers to finish.
+            // Synchronous observers below run only after executor quiescence.
+            worker.join();
+            completion.get();
+            BOOST_TEST(handle->exited());
+            BOOST_TEST(handle->output_drained());
+            if (mode == 0) {
+                BOOST_TEST(handle->standard_output() == "cross-context\n");
+                BOOST_TEST(handle->status().exit_code.value() == 0);
+            } else {
+                BOOST_TEST(handle->status().exit_code.value() ==
+                           (mode == 1 ? SIGKILL : SIGTERM));
+            }
+        }
+    }
 }

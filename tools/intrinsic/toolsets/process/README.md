@@ -164,8 +164,7 @@ may overlap the others. What that declaration describes is the effect a call has
 
 "Runs beside others" means what it says about safety, not about determinism:
 the session store is what makes an overlapping poll or read safe — the table is
-serialised on the store's strand and each child's handle and cursors on its own
-(strand per session), so no two calls can tear a snapshot or hand out the same
+protected by a mutex and each child's handle and cursors by its own strand, so no two calls can tear a snapshot or hand out the same
 bytes twice. What is *not* promised is that a batch's result is independent of
 its interleaving: a model that asks for the same session's new output twice in
 one batch gets it split between the two calls, in whichever order the schedule
@@ -866,13 +865,10 @@ to run it on. So a host awaits `terminate_all()` **while its context still
 runs**. The destructor is a last-resort tail: it signals the recorded pids
 synchronously and logs loudly.
 
-Drop the table **after** the context is quiesced — stopped, with its threads
-joined. The tail's signal is a plain `::kill` on a pid recorded at spawn, so it
-needs no executor and works either way; what it cannot survive is being freed
-while the context is still running, because the table's strand shares
-refcounted state with the operations queued on it. That is a race in the
-executor's refcount, and ThreadSanitizer reports it (the suites here quiesce
-first, for exactly that reason).
+Finish all store calls before destroying the store. Stop the context and join
+its workers before relying on the destructor's fallback `::kill` cleanup, so
+that cleanup does not race child reaping. Normal shutdown awaits
+`terminate_all()` while the context is still running.
 
 ### The headers
 
@@ -880,15 +876,15 @@ first, for exactly that reason).
   (`proc_1`, `proc_2`, … monotonically, never reusing one), gives each child its
   own strand, keeps the per-stream read cursors that make "what is new since I
   last looked" answerable, and reaps a session once its child is observed
-  terminal. Two levels of strand: the store's own serialises the table, a
-  session's serialises its handle and cursors — so nothing that leaves the class
-  is a reference into it, only values (a snapshot, a slice of output, a bool).
-  `release()` is the one method that hops twice, reading the child's terminal
-  state on the session's strand and removing the entry on the store's, because
-  a lifetime decision read off the wrong strand is a data race that passes every
-  single-runner test. It owns `ProcessHandle`'s lifecycle contract in full:
-  start the io tasks, then drive the handle to a terminal observation with a
-  detached await task, and never block a spawn on the child.
+  terminal. A mutex protects the table, id allocation and pending launch
+  reservations; it is never held across an await. Each session's strand
+  serialises handle operations and cursor reads through explicit `co_spawn`
+  tasks. Unlike an awaited `dispatch`, this assigns the whole coroutine its
+  strand executor, including continuations after suspension. Observations
+  return owned values. `release()` checks the atomic exit latch and removes
+  the entry in one table critical section. Concurrent launches reserve capacity
+  before startup, and failed launches return their reservation. The store starts
+  I/O tasks and drives each handle through its initial wait and terminal watch.
 - **`process/tools.hpp`** — the five `ToolInterface` implementations. Each
   checks its arguments in `ensure_arguments()` and writes the defaults into the
   query there (so the security check and the human confirmation see settled
@@ -896,7 +892,7 @@ first, for exactly that reason).
   output verbatim. `InvokeType`
   describes what a call changes OUTSIDE the host: the two observing tools are
   `ReadOnly` (the cursors and table entries they touch are internal, the wait
-  ends no child, and the store's strands make them safe to overlap), and the
+  ends no child, and the store's mutex and session strands make them safe to overlap), and the
   three that launch (a program, a command line), feed or end a process are
   `SerialWrite`. What each tool *is* — its name, its
   description and its argument schema — is not here: it is declared in
@@ -1046,7 +1042,7 @@ All of them landed with this toolset and are used by it:
   can kill somebody else's process, and the answer has to be right rather than
   lucky. Everything the terminal state is read *for* (the status, the captured
   output, whether the pipes are drained) is still strand-side, and the store
-  still hops for all of it.
+  spawns these observations on the session strand.
 
 Built SHARED per `docs/abi-context.md`, like the core it links: hosts and
 dlopened plugins may both subclass or catch these types, so their typeinfo must

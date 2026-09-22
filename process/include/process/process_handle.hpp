@@ -63,9 +63,9 @@
 //     on the way out (running() waitpid's).
 //
 // Strand discipline: every member except _write_channel belongs to the
-// handle's strand. Start the two lifecycle coroutines ON that strand (the
-// tests' make_strand + co_spawn pattern), and treat the observation
-// accessors as strand-side or at-rest (after io_context::run() returned).
+// handle's strand. The lifecycle and signal coroutines use co_spawn internally
+// and can be awaited from any executor. Treat observation accessors as
+// strand-side or at-rest (after io_context::run() returned).
 // The exceptions are the concurrent_channel frontends write_input() /
 // close_input(), and exited() — see below — which are safe from any thread
 // by design.
@@ -194,6 +194,12 @@ private:
     enum class Signal { Kill, Graceful };
     boost::asio::awaitable<bool> signal_child(Signal signal);
 
+    // Strand-only implementations. Entry wrappers retain shared ownership and
+    // co_spawn these operations on _strand; callers must not await them directly.
+    boost::asio::awaitable<void> start_background_io_tasks_on_strand();
+    boost::asio::awaitable<bool> await_initial_execution_on_strand();
+    boost::asio::awaitable<bool> signal_child_on_strand(Signal signal);
+
 public:
     ProcessHandle(LaunchSpec spec, boost::asio::any_io_executor executor);
     ~ProcessHandle();
@@ -202,7 +208,7 @@ public:
     ProcessHandle(ProcessHandle&&) = delete;
     ProcessHandle& operator = (ProcessHandle&&) = delete;
 
-    // -- lifecycle (co_spawn these on the handle's strand) ------------------
+    // -- lifecycle (internally spawned on the handle's strand) ------------------
 
     // Internal lifecycle contract:
     //
@@ -226,7 +232,7 @@ public:
     // tracking the child's aftermath.
     boost::asio::awaitable<bool> await_initial_execution();
 
-    // -- stdin control (thread-safe: the only off-strand entry points) ------
+    // -- stdin control (thread-safe channel operations) ------
 
     // Queues one message for the child's stdin. Delivered in order by the
     // background pump; a send onto a closed channel is logged and dropped.
@@ -242,7 +248,7 @@ public:
     // on close), then the pump closes the pipe and the child sees EOF.
     void close_input();
 
-    // -- termination (co_spawn on the handle's strand, like the lifecycle) --
+    // -- termination (internally spawned on the handle's strand) --
 
     // Signal the child to end, NOW, rather than at the deadline policy's
     // discretion: terminate() is the hard kill (SIGKILL, reported by
@@ -265,7 +271,7 @@ public:
     //
     // Both marshal onto the strand first, so they are safe to start from any
     // executor — but the strand's own context MUST still be running: the
-    // dispatch is what resumes the coroutine, so calling these on a context
+    // spawned task must be serviced, so calling these on a context
     // that has already returned from run() leaves them suspended forever
     // rather than failing. (Same for the lifecycle coroutines; it is worth
     // repeating here because termination is the one operation a caller is
