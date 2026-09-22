@@ -1,42 +1,17 @@
-# send_process — feed a live child, close its input, and/or signal it to stop.
-#
-# THIS FILE IS THE DECLARATION, and src/tools.cpp is the implementation: the
-# name, the description and the argument schema below are everything a model is
-# told about this tool, and SendProcessTool is what actually validates a call
-# and runs it. See tools/intrinsic/tool_declaration.hpp for the format.
-#
-# ONE TOOL FOR EVERYTHING A RUNNING CHILD IS TOLD. Writing to a process, ending
-# its input and ending the process are the same call at different strengths —
-# "here is more input", "here is the end of your input", "stop" — and they are
-# answered the same way (bytes queued, input closed, signal sent), refused for
-# the same reason (the session is gone) and confirmed by the same person. Two
-# tools meant a model had to know which of them a graceful shutdown belonged to,
-# and a call that both fed a child and asked it to stop had no spelling at all.
-#
-# The tests pin the declaration and the implementation together
-# (test_tools.cpp): every property here must be one the implementation
-# validates, every `default` must be the value it settles, every clause a
-# property states (its type, enum, default) must be the rule the implementation
-# applies, every `anyOf` branch must be a call it accepts, and the
-# type/security pair below must be the one it declares.
+# Model-facing declaration; implemented in src/tools.cpp.
+# type/security document C++ attributes; the loader does not configure them.
 
 name: send_process
 description: >-
-  Send input to a running process and/or a signal to end it. Text goes to its
-  standard input; close_input ends that input, which is what a program reading
-  until end-of-input waits for; signal asks the process to stop, "term" for a
-  shutdown it may handle or ignore and "kill" to end it outright. A call must
-  do at least one of the three - send nothing, close nothing and name no signal
-  is refused as a call that does nothing. The session stays readable
-  afterwards, so its output can still be collected.
+  Queue text for a session's standard input, close that input, and/or send a
+  termination signal to the direct child. At least one action is required:
+  nonempty input, close_input: true, or signal: term or kill. Input is queued
+  before closure and signalling, but the call does not wait for the child to
+  read it or exit. Check signalled when sending a signal, then use poll_process
+  to observe completion. The session remains available for output reads. An
+  unknown or released session_id is an error; an already exited child cannot
+  receive input or signals.
 
-# READ BY A HUMAN, NOT BY THE LOADER. The tool declares this pair in
-# write_attributes(); it is restated here so the whole of what a caller can
-# observe about this tool is in one place. SerialWrite because what this call
-# changes is outside the host — the bytes are the child's next input and a
-# signal ends it — so the order two calls arrive in is what the child gets (and
-# one carrying `close_input` can drop another outright). RequireConfirm: it is
-# input to, or the end of, a live process.
 type: serial_write
 security: require_confirm
 
@@ -48,45 +23,31 @@ argument_schema:
       type: string
       minLength: 1
       description: >-
-        The session to send to, as returned by spawn_process
+        Session ID returned by spawn_process or run_command.
     input:
       type: string
       default: ""
       description: >-
-        Text to send, verbatim. Include "\n" if the process reads lines. A call
-        must send something, close the input, or name a signal (see below)
+        Text to queue verbatim for standard input. Default: empty. Include a
+        newline ("\n" in JSON) when the program expects a line. Queuing does not
+        confirm delivery or consumption by the child.
     close_input:
       type: boolean
       default: false
       description: >-
-        Whether to close standard input after sending, so the process sees
-        end-of-input. A program that reads until EOF prints nothing until this
-        happens
+        Close standard input after queued input has drained, allowing the
+        child to observe EOF. Default: false. Programs that read until EOF may
+        need this to finish. Closing input does not itself terminate the child.
     signal:
       type: string
       enum: ["", "term", "kill"]
       default: ""
       description: >-
-        Signal to send: "" (the default) sends none, "term" asks the process to
-        shut down (a signal it may handle or ignore), "kill" ends it
-        immediately and cannot be refused. The session stays readable either
-        way, and the process is not waited for - call poll_process to wait for
-        it to end
-  # The tool's one cross-property rule, stated the way JSON Schema states one:
-  # a call must send something, OR close the input, OR name a signal. Every
-  # property has a default, so without this a call naming only session_id would
-  # read as valid while the implementation refuses it ("nothing to do"); with
-  # it, the declaration and the implementation agree about which calls exist,
-  # and test_tools.cpp asserts both halves — each alternative accepted, and the
-  # required-only call refused.
-  #
-  # The signal branch NARROWS the property rather than restating it: the
-  # empty string is the "write only" spelling, so a call that names a signal
-  # has to name one that does something.
-  #
-  # Note the shape this vocabulary asks for: a branch requires, and may narrow,
-  # properties the schema already declares (it cannot introduce one), and at
-  # least one of its requirements is one `required` does not already name.
+        Signal for the direct child only: "" sends none, "term" requests
+        termination (the child may handle or ignore it), and "kill" forces
+        termination. Default: "". Does not signal descendants or wait for exit;
+        use poll_process to confirm completion.
+  # Require at least one action; session_id alone is not a valid call.
   anyOf:
     - required: [input]
       properties:

@@ -1,37 +1,18 @@
-# poll_process — report the sessions, and wait for any one of them to finish.
-#
-# THIS FILE IS THE DECLARATION, and src/tools.cpp is the implementation. See
-# tools/intrinsic/tool_declaration.hpp for the format and spawn_process.yaml
-# for the full explanation of how the two are kept together.
-#
-# ONE CALL FOR "WHERE DOES THIS STAND" AND FOR "TELL ME WHEN ONE OF THEM IS
-# DONE", because those were never two questions: both are answered by the state
-# of a set of sessions, and the only thing that ever differed was how long the
-# caller would wait for one of them to change. So the wait is an argument
-# (`wait_timeout_milliseconds`, 0 = do not wait), the answer is always EVERY
-# session in the selection, and waiting for one named session is this call with
-# a one-element list.
+# Model-facing declaration; implemented in src/tools.cpp.
+# type/security document C++ attributes; the loader does not configure them.
 
 name: poll_process
 description: >-
-  Report the state of the process sessions: which are still running, which have
-  exited and with what code, and what each has printed since its output was last
-  read. Waits for one of them to finish: it returns as soon as ANY session in
-  the selection has finished - exited with its output capture complete - or
-  immediately if one already has, or when wait_timeout_milliseconds runs out.
-  Either way it reports EVERY session in the selection and changes none of them,
-  so a timeout is not an error. Pass session_ids to watch specific sessions, or
-  leave them out for all of them; set wait_timeout_milliseconds to 0 to look
-  without waiting at all. This is the call to make when checking on work started
-  earlier.
+  Report selected sessions, optionally waiting until any selected child has
+  exited AND its output capture is complete. Return immediately if one already
+  meets that condition; otherwise return when the wait expires. Report all
+  selected sessions, not only the one that completed. Omitted or empty
+  session_ids selects all sessions retained when the wait begins; unknown IDs
+  are ignored. No matching sessions returns immediately. Set
+  wait_timeout_milliseconds to 0 for an immediate status check. This call does
+  not stop processes. By default it reads and advances their output cursors;
+  release_exited can also remove exited sessions.
 
-# READ BY A HUMAN, NOT BY THE LOADER (the tool declares it in
-# write_attributes()). ReadOnly for every shape of this call, including the
-# three that move this layer's own bookkeeping or spend time — consuming each
-# session's new output, reaping the exited ones, and waiting: what InvokeType
-# describes is the effect a call has OUTSIDE the host, and a wait ends no
-# process. The store's strands make the internal state safe to overlap.
-# Trusted: looking at what is already running needs no confirmation.
 type: read_only
 security: trusted
 
@@ -45,27 +26,31 @@ argument_schema:
         type: string
       default: []
       description: >-
-        Sessions to report on and to wait for. Omit or leave empty for every
-        session
+        Session IDs to select. Omitted or empty means all currently retained
+        sessions. Unknown IDs are ignored; sessions started during the wait are
+        not added to the selection.
     wait_timeout_milliseconds:
       type: integer
       minimum: 0
       default: 30000
       description: >-
-        How long to wait for one of the sessions to finish. Returns sooner the
-        moment any one of them has; 0 does not wait at all and reports the
-        state as it is now. Running out of time is not an error - the result
-        says so, the sessions are unchanged, and they can be waited on again
+        Wait duration in milliseconds for any selected child to exit with
+        output capture complete. Default: 30000. Zero checks immediately.
+        timed_out is true when no selected session meets that condition,
+        including an empty selection or an immediate check; it is not a tool
+        error and does not terminate any process.
     include_output:
       type: boolean
       default: true
       description: >-
-        Whether to include each session's new output since the last read. It is
-        consumed by this call, exactly as a default read_process
-        consumes it
+        Include new stdout and stderr and advance both output cursors for each
+        selected session. Default: true. False leaves the cursors unchanged.
     release_exited:
       type: boolean
       default: false
       description: >-
-        Whether to forget sessions that have exited, after reporting them.
-        Their ids stop being valid
+        Remove selected sessions whose children have exited, after collecting
+        the requested output. Default: false. Does not require output capture
+        to be complete. Released IDs become invalid, and unread or later output
+        cannot be retrieved. With include_output: false, output is not read
+        before release.

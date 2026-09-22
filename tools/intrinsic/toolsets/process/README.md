@@ -26,8 +26,8 @@ Every tool's name, description and argument schema are **declared in YAML**,
 one file per tool under [`schemas/`](schemas/) — `spawn_process.yaml`,
 `send_process.yaml`, and so on — and loaded when the tool is built. What this
 section shows is therefore not a copy of something written in C++: it is the
-declaration, and the file is what a model is actually sent. The prose there is
-the same prose below; edit the file and rerun the tests.
+declaration, and the file is what a model is actually sent. The files define
+the model-facing contract; the explanations and examples below illustrate it. Keep them consistent when editing and rerun the tests.
 
 The directory carries one more document that is not a tool at all:
 [`schemas/skill.yaml`](schemas/skill.yaml), the set's **skill** — how the five
@@ -52,20 +52,18 @@ being run rather than about how long it takes. **`run_command`** takes a command
 `$VARS` and globs work; **`spawn_process`** takes a program and a list of
 arguments and passes them verbatim, with nothing in between to parse them. Both
 then wait a short while — 3000 ms for a command line, 5000 ms for a program —
-for the child to finish, and that wait is what lets one call serve two jobs: an
-ordinary command finishes inside it, so its exit code and its whole output come
-back in the **same call** that started it, and only a child that outlives the
-window becomes a session to come back to.
+for the child to finish. A child that exits inside that window returns its
+exit code and captured output in the
+**same call**. Check `output_complete` and truncation markers before treating
+that output as complete. Every successful launch retains a session, including
+one that exits within the initial wait.
 
-```
-run_command   ─┐
-               ├─► finished in time? ──► yes: exit code + whole output, done
-spawn_process ─┘                     │
-                                     └─► no: session_id ──┬──► poll_process   wait for one of them, or look
-                                                          │                   at where they all stand
-                                                          ├──► read_process   incremental output
-                                                          └──► send_process   feed its stdin, close it,
-                                                                              or signal it to stop
+```text
+run_command / spawn_process -> session_id + completion flags
+  finished && output_complete -> inspect output, then release when done
+  otherwise                   -> poll_process to wait or inspect status
+                              -> read_process to read output
+                              -> send_process to send input, EOF, or a signal
 ```
 
 **Looking and waiting are one call.** `poll_process` reports the state of every
@@ -108,7 +106,7 @@ quoting right; with `run_command` that is the call itself.
 ### The set's skill
 
 Everything above — the ordinary path through the five, what a session costs,
-what to wait for and how long, what a denied confirmation means — also ships as a
+how to read output, send input, stop work, and release sessions — also ships as a
 document the model itself is given: [`schemas/skill.yaml`](schemas/skill.yaml),
 the set's **skill**. A tool declaration answers "what does this call do"; the
 skill answers what none of them can between them, and it is prose rather than
@@ -674,15 +672,18 @@ spawn_process { "executable": "ls", "arguments": ["-la", "/tmp"], "description":
    stderr: (empty)
 ```
 
-The session is kept in case its output is wanted again; release it once done —
-the delta is empty because the spawn already handed the whole capture over:
+The session is kept in case its output is wanted again; release it once done.
+The launch used a full read without advancing the incremental cursors, so this
+first incremental read repeats the captured output:
 
 ```text
 read_process { "session_id": "proc_1", "release": true }
 
    session_id: proc_1
    …
-   stdout: (empty)
+   stdout (48 bytes):
+   total 48
+   …
 
    stderr: (empty)
 

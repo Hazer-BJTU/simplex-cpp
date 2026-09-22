@@ -1,58 +1,18 @@
-# run_command — one command line, run through the platform's shell.
-#
-# THIS FILE IS THE DECLARATION, and src/tools.cpp is the implementation: the
-# name, the description and the argument schema below are everything a model is
-# told about this tool, and RunCommandTool is what actually validates a call and
-# runs it. See tools/intrinsic/tool_declaration.hpp for the format and
-# spawn_process.yaml for the full explanation of how the two are kept together.
-#
-# WHY THIS EXISTS BESIDE spawn_process, which runs a program directly: a model
-# holding a command LINE — pipes, redirections, `&&`, globs, quoting — should
-# not have to spell out `sh -c '...'` and get the argument boundary right every
-# time, and should not have to know which shell the host has. This tool names
-# the platform's own interpreter as the executable and passes the command to it
-# as the one argument that means "here is what to run", so what arrives at the
-# child is the line the model wrote. spawn_process stays the tool for running a
-# PROGRAM: no shell, no parsing, the executable and every argument passed
-# verbatim.
-#
-# THERE IS NO `description` PROPERTY, unlike spawn_process's, and that is
-# deliberate: a call that already carries the command line has nothing to add by
-# labelling it, so the tool fills the spec's description in with the command
-# itself. Every report about the session (a poll, a read, a launch failure) then
-# shows the command it is about, which is what makes several live sessions
-# tellable apart — and it is why the hint a timed-out call answers with can name
-# the command without asking the model to remember which call made which
-# session.
-#
-# The tests pin the declaration and the implementation together
-# (test_tools.cpp): every property here must be one the implementation
-# validates, every `default` must be the value it settles, every clause a
-# property states (its type, minimum, minLength, items) must be the rule the
-# implementation applies, and the type/security pair below must be the one it
-# declares.
+# Model-facing declaration; implemented in src/tools.cpp.
+# type/security document C++ attributes; the loader does not configure them.
 
 name: run_command
 description: >-
-  Run a command line through the platform's shell. Pipes, redirections, &&,
-  globs and quoting all work, because the line is read by a shell rather than
-  passed to a program as arguments - use this when the command is written the
-  way a shell reads it, and spawn_process when there is one program and a list
-  of arguments. Waits a short while for the command to finish, so an ordinary
-  command returns its exit code and its whole output in this one call. A command
-  still running when that wait runs out keeps running in the background instead,
-  and the result carries a session id for it: use poll_process to wait for it or
-  to check on it, read_process to read what it has printed, and send_process to
-  feed it or to end it. Raise expected_runtime_milliseconds when a command needs
-  longer than the default to finish in-call, or set it to 0 to skip the wait and
-  get an id straight away.
+  Start a shell command using bash when available at /bin/bash or
+  /usr/bin/bash, otherwise /bin/sh, with -c. The shell interprets quoting,
+  pipelines, redirections, variable expansion and globs; supported syntax depends
+  on the selected shell. Use spawn_process for a program with literal arguments.
+  Wait up to expected_runtime_milliseconds for the child to exit; expiration
+  leaves it running. A successful launch returns a session_id, including when
+  the child has already exited. If finished is true, the result includes
+  captured output; check output_complete and truncation markers before treating
+  it as complete. Continue with poll_process, read_process or send_process.
 
-# READ BY A HUMAN, NOT BY THE LOADER. The tool declares this pair in
-# write_attributes(); it is restated here so the whole of what a caller can
-# observe about this tool is in one place. SerialWrite because running a command
-# changes the machine and two commands in one batch contend for the same files;
-# RequireConfirm because this is a call that runs arbitrary code — the same pair
-# spawn_process declares, and for the same reasons.
 type: serial_write
 security: require_confirm
 
@@ -64,44 +24,36 @@ argument_schema:
       type: string
       minLength: 1
       description: >-
-        The command line to run, written the way a shell reads it: 'ls -l |
-        wc -l', 'echo $HOME', 'make -j4 && ./run'. The platform's shell
-        interprets it, so no arguments list is needed
+        Nonempty command line interpreted by the selected shell, for example
+        "printf hello | wc -c". No separate arguments array is used. The command
+        line also becomes the session description.
     working_directory:
       type: string
-      # An empty string is refused rather than read as absent (a shell cannot be
-      # started in ""), which is what minLength states. No default on purpose:
-      # absent means "inherit the host's working directory", and there is no
-      # path that could stand for that.
       minLength: 1
       description: >-
-        Directory to run the command in. Defaults to the host's own working
-        directory
+        Directory in which to start the child. Omitted means the host's
+        working directory; an empty string is invalid.
     environment:
       type: array
       items:
         type: string
       default: []
-      # The one rule this file cannot state: an element must be "KEY=VALUE"
-      # with a non-empty key, which no keyword in the vocabulary expresses
-      # (`items` says only what an element's TYPE is). The implementation owns
-      # it (tools.cpp), the description below states it for the model, and
-      # test_tools.cpp pins it as an implementation rule the declaration
-      # deliberately does not claim.
       description: >-
-        Extra environment entries as "KEY=VALUE" strings, merged over the
-        inherited environment by key
+        Environment entries as "KEY=VALUE" strings with nonempty keys; values
+        may be empty. Default: []. Entries override inherited values by key,
+        or supply the environment when inherit_environment is false.
     inherit_environment:
       type: boolean
       default: true
       description: >-
-        Whether the command inherits the host's environment
+        Inherit the host's environment before applying environment entries.
+        Default: true. False starts with only the supplied entries.
     expected_runtime_milliseconds:
       type: integer
       minimum: 0
       default: 3000
       description: >-
-        How long to wait for the command to finish before letting it continue
-        in the background. Raise it for a command expected to take a while but
-        still worth waiting for; 0 returns a session id immediately without
-        waiting
+        Initial wait for child exit, in milliseconds. Default: 3000. Zero
+        skips this wait. Expiration leaves the child running; this is not an
+        execution time limit. After an observed exit, output capture may take
+        up to another window of this duration before the call returns.

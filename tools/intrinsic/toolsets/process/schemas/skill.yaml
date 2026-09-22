@@ -1,141 +1,123 @@
-# skill.yaml — how the process tools are used TOGETHER.
-#
-# The five declarations beside this file each answer "what does this call do".
-# This one answers the question none of them can between them: which call comes
-# first, what the ordinary path through the family looks like, what the wrong
-# path costs, and how long to wait for what. It is injected into the system
-# prompt as one section (ToolSet::inject_skill), appended after the host's own
-# instructions — so it is read by a model that has already been told who it is,
-# and before it starts calling anything.
-#
-# FORMAT: tools/intrinsic/skill_declaration.hpp. `name`, `title`, `description`
-# and `keywords` are metadata for a host (a catalogue, a `/skill` command, a log
-# line); `text` is the guidance itself, carried VERBATIM into the prompt, which
-# is why it is markdown and why it is the part to read before editing.
-#
-# The suite pins the two ends together (test_tools.cpp): the skill must load, it
-# must name every tool the set actually registered, and it must survive the trip
-# into a prompt template unchanged. A tool renamed in code and not in this file
-# fails the build's tests rather than quietly leaving a model instructions about
-# a call that no longer exists.
-
+# Project skill format: tools/intrinsic/skill_declaration.hpp.
+# Metadata describes the skill; text is injected verbatim into the prompt.
 name: process
-
-title: Driving processes with the process tools
-
+title: Running and managing processes
 description: >-
-  How the five process tools fit together: two ways to start a child — a command
-  line through a shell, or one program with its arguments — then observe, feed,
-  read, wait for any of them, and release what is done.
-
+  Choose a process launcher, wait for background work, read output, send input
+  or termination signals, and release completed sessions.
 keywords: [process, subprocess, command, shell, session, stdout, stdin, wait, poll]
 
 text: |
-  The five process tools are one workflow around one thing — a session — rather
-  than five alternative ways to run something. Two of them start a child and
-  decide whether it needs following; everything else is what you do with a child
-  that is still running.
+  Use these tools to run commands and manage their sessions across calls.
+  Session IDs belong to the current host's session store and remain valid until
+  released or the store shuts down. Use the IDs returned by the tools; IDs in
+  the examples below are placeholders.
 
-  ## The ordinary path
+  ## Choose a tool
 
-  1. Start it: `run_command` runs a command LINE through the platform's shell,
-     so pipes, redirections, `&&`, `$VARS` and globs all work; `spawn_process`
-     runs one program directly, with each argument passed verbatim and nothing
-     parsed. Either way the call waits a short while first — 3000 ms for a
-     command line, 5000 ms for a program, unless you raise
-     `expected_runtime_milliseconds`. A child that finishes inside that wait
-     comes back with its exit code and its WHOLE output in this one call, and
-     there is nothing left to do: do not poll a process that has already
-     exited.
-  2. A child still running when the wait runs out keeps running in the
-     background instead, and the result carries a `session_id` (`proc_1`,
-     `proc_2`, ...) plus a hint saying so. That id is the handle for every other
-     tool, and it survives across turns.
-  3. `poll_process` is both how you wait and how you look. With its default
-     `wait_timeout_milliseconds` (30000) it returns the moment ANY session it
-     was asked about has finished — exited with its output capture complete —
-     or immediately if one already had, and it reports EVERY session either way.
-     Waiting for one named process is that call with
-     `session_ids: ["proc_1"]`; `wait_timeout_milliseconds: 0` is a plain "where
-     does this stand" look. A timeout is not an error: the result says
-     `timed_out`, the processes are untouched, and you may wait again.
-  4. `read_process` returns what the child has printed. By default only
-     what is NEW since the last read of that session, which is what makes it
-     safe to call repeatedly while a program runs.
-  5. `send_process` is how a live child is told anything, at any of the three
-     strengths there are: text goes to its standard input, `close_input: true`
-     gives it end-of-input, and `signal` ends it — `"term"` asks it to shut down
-     (it may handle that or ignore it), `"kill"` ends it outright. A call must do
-     at least one of the three. A child that is ended this way stays readable, so
-     its output can still be collected.
-  6. Release sessions once they are done and their output has been collected
-     (`release: true` on a read, `release_exited: true` on a poll). The table is
-     bounded, and an exited session keeps its slot until it is released.
+  - `run_command`: run a command line through the selected shell (bash when
+    available at its standard paths, otherwise /bin/sh). Use it for pipelines,
+    redirections, variables and globs. Syntax must match that shell; the result
+    names it in `executable`.
+  - `spawn_process`: run a program with an array of literal arguments. Each
+    element is one argument; do not add shell quoting. Shell operators and
+    globs are not interpreted.
+  - `poll_process`: wait for any selected session to complete, or inspect
+    status immediately with `wait_timeout_milliseconds: 0`.
+  - `read_process`: read one session's stdout, stderr, or both without waiting.
+  - `send_process`: queue input, close standard input, or signal the direct child.
 
-  ## Principles
+  ## Start, wait, collect, release
 
-  - **Pick the launcher that matches what you have.** `run_command` when the
-    command needs a shell — pipes, redirections, `&&`, `$VARS`, globs, quoting —
-    or when it is a line you already know reads correctly. `spawn_process` when
-    it is one program plus arguments: nothing there is parsed, so a filename
-    containing a space, a `*` or a `;` is data rather than syntax. There is no
-    shell behind `spawn_process`, so `|`, `>` and `&&` reach the program as
-    literal arguments and no glob is expanded.
-  - **One call does the waiting.** `poll_process` returns the moment one of the
-    sessions it was given has finished, so there is no need to loop it yourself,
-    sleep, or read a process you are only waiting on. Ask it to wait when you
-    have nothing to do until something ends; ask with
-    `wait_timeout_milliseconds: 0` when you want the state right now.
-  - **Wait for the whole fan at once.** When several processes are running, one
-    `poll_process` naming all of them — or naming none, which means every
-    session — waits for whichever finishes first and reports all of them in the
-    same answer. The one that ended is what you were waiting for; its siblings
-    are the context. A call per session only costs turns.
-  - **New output is consumed by whoever reads it.** `poll_process` with
-    `include_output: true` (the default) reports each session's new output and
-    consumes it, exactly as a default `read_process` does. Use
-    `full: true` when you want everything captured so far without consuming it,
-    and do not expect the same lines twice.
-  - **Look once, when you have lost track.** A `poll_process` with
-    `wait_timeout_milliseconds: 0` and no `session_ids` is the overview of every
-    session — use it when you are unsure what is still running, not between
-    every other call.
-  - **Write what the program is waiting for.** A program that reads lines needs
-    the trailing newline inside `input`; a program that reads until end-of-input
-    prints nothing until you send `close_input: true`.
-  - **Ask for the strength you mean.** `"term"` is a request a program can
-    handle — the right one for anything that writes files or has state to save —
-    while `"kill"` cannot be caught and loses whatever the program was holding.
-    Prefer `"term"`, and prefer feeding a program its own quit command when it
-    has one. Either way the session stays readable, so nothing already printed is
-    lost.
-  - **Ask for what you need, once.** `spawn_process`, `run_command` and
-    `send_process` change the machine, so the person at the terminal is asked to
-    approve each one. A denial is an answer, not a failure: do not resend the
-    same call in a loop — say what you are trying to do and offer the smallest
-    command that would show it.
-  - **Prefer a command that finishes.** Break work into small programs that exit
-    rather than one long-lived process, unless the point really is a background
-    program — in which case start it with `expected_runtime_milliseconds: 0` to
-    get its id immediately.
+  1. Start the work. `run_command` initially waits 3000 ms; `spawn_process`
+     waits 5000 ms. Set `expected_runtime_milliseconds` to change that window,
+     or to 0 to return without waiting. This is a wait setting, not a runtime
+     limit: expiration leaves the child running. After an observed exit, the
+     call may spend up to another such window draining output.
+  2. Inspect the result. Successful launches retain a session even if the child
+     exits immediately. `finished: true` means exit was observed during the
+     initial wait; `output_complete: true` additionally means capture finished.
+     If both are true, no further wait is needed. If output capture is still
+     incomplete, keep the session and use `poll_process` to wait for it.
+     A nonzero exit code is the command's result, not a tool invocation error.
+  3. For unfinished work, call `poll_process` with its session ID. The default
+     wait is 30000 ms. It returns when any selected child has exited and its
+     output capture is complete, or the wait expires, and reports all selected
+     sessions. `timed_out: true` does not stop them; wait again if needed.
+     Use a positive wait when waiting for completion instead of repeatedly
+     checking with zero or inserting sleep commands.
+  4. Collect output. Poll includes new stdout and stderr by default. Use
+     `read_process` for output while work continues, for one stream, or with
+     `full: true` to review all retained output.
+  5. Once the needed output is collected, release the session with
+     `read_process` and `release: true`, or `poll_process` and
+     `release_exited: true`. Release requires child exit, but does NOT require
+     output capture to be complete. Check completion before releasing if later
+     output matters. Released IDs and their output cannot be read again.
+     Exited sessions still occupy slots in the bounded session table.
 
-  ## Worth knowing
+  ## Common calls
 
-  - A child that exits while a program IT started still holds its stdout open is
-    not finished as far as `poll_process` is concerned: it waits for the capture
-    to complete, and reports `output_complete: false` when a timeout got there
-    first. That is why a process that has already exited can still be waited on
-    (and why `release: true` is only honoured once the capture is complete).
-  - Output you have already been given is gone: a poll with `include_output`
-    and a default read both consume what they report, and only the session that
-    printed it can be read again.
-  - `run_command` chooses the shell, not you — the host's own interpreter, named
-    in the result's `executable` line — and the session's `description` is the
-    command line itself, so a poll of several sessions says which command each
-    one is.
-  - A session id from an earlier turn may be gone — released, or never this
-    process's. That failure comes back naming the id; `poll_process` reports the
-    sessions that do exist.
-  - A signal reaches the child, not its children: nothing guarantees
-    grandchildren die with it. End what you started, and prefer `"term"` over
-    `"kill"` for anything that writes files.
+  Short shell command:
+  ```json
+  {"command":"printf 'hello\n' | wc -l"}
+  ```
+  Pass this to `run_command`. Inspect the result, then release its session when
+  finished with the output.
+
+  Start a build with `spawn_process`, then wait with `poll_process`:
+  ```json
+  {"executable":"cmake","arguments":["--build","build"],"expected_runtime_milliseconds":0}
+  ```
+  ```json
+  {"session_ids":["proc_1"],"wait_timeout_milliseconds":30000}
+  ```
+  To wait for several tasks, pass all outstanding IDs in one poll. It waits for
+  ANY completion, not ALL. An already completed session makes the next poll
+  return immediately, so remove completed IDs from subsequent selections or
+  release those sessions after collecting their output. Stop once no tasks
+  remain: an empty ID list means all retained sessions, not an empty selection.
+
+  Feed a program that reads stdin: start it with `spawn_process`, then call
+  `send_process` with the returned ID:
+  ```json
+  {"executable":"cat","expected_runtime_milliseconds":0}
+  ```
+  ```json
+  {"session_id":"proc_2","input":"hello\n","close_input":true}
+  ```
+  Include a newline when the program expects a line. Close input when no more
+  data will be sent and the program needs EOF to finish. Queued bytes are not
+  an acknowledgment that the child read them; inspect its output or completion.
+
+  To stop a task, use its own quit command when appropriate, or `send_process`:
+  ```json
+  {"session_id":"proc_3","signal":"term"}
+  ```
+  Poll to confirm exit and collect output. If it remains running and forceful
+  termination is needed, send `signal: "kill"`, then poll again. Signals target
+  the direct child, not its descendants; stopping a shell does not guarantee
+  every program it started has stopped.
+
+  ## Output and session rules
+
+  - Incremental reads share a cursor per stream. Default `read_process` and
+    `poll_process` with `include_output: true` advance the selected cursors;
+    concurrent reads of the same session may split output between callers.
+    `include_output: false` checks status without reading output.
+  - `full: true` reads retained output without advancing cursors. Output included
+    in a launch result also leaves cursors unchanged, so the first incremental
+    read may repeat it. Reading does not delete captured output.
+  - Capture has a size limit. A truncation marker means some output was not
+    retained; `full: true` cannot recover it. `output_complete` describes whether
+    capture has ended, not whether every byte was retained.
+  - Descendants can keep output pipes open after the direct child exits.
+    Poll may therefore report an exited child with `output_complete: false`.
+    Releasing that session prevents retrieval of later output; it does not wait
+    for capture or terminate descendants.
+  - Unknown or released IDs fail in `read_process` and `send_process`.
+    `poll_process` ignores unknown IDs and returns immediately if none match.
+    Its `timed_out: true` also covers an empty selection or a zero-wait check
+    without a completed session; it does not necessarily mean time was spent.
+  - Launching and sending use the host's confirmation mechanism. Follow its
+    decision; do not retry a denied call unchanged to bypass it.
