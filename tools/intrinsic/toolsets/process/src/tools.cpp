@@ -788,7 +788,7 @@ boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
 
     const std::optional<SessionSnapshot> snapshot =
         co_await _store->snapshot(id);
-    if (!snapshot && !queued) {
+    if (!snapshot && !queued && !signalled) {
         // Nothing landed and there is no session to describe: the call named an
         // id this table does not know. A signal-only call that DID land is not
         // this case — it answered for a session that was there a moment ago —

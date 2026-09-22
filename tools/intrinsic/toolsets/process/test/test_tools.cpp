@@ -1586,10 +1586,8 @@ BOOST_AUTO_TEST_CASE(a_zero_window_run_command_starts_in_the_background_at_once)
 
 BOOST_AUTO_TEST_CASE(spawn_accepts_a_path_as_the_executable)
 {
-    // A path that exists is the executable (process/src/process_handle.cpp:
-    // resolution checks the path first and only then searches PATH by file
-    // name), so a caller that knows where its program is says so and gets THAT
-    // file. /bin/sh is the one shell path POSIX guarantees, which is what makes
+    // Explicit executable paths are used directly without searching PATH,
+    // so the caller gets the file it named. /bin/sh is the one shell path POSIX guarantees, which is what makes
     // this case portable across the hosts the suite runs on — and it is also
     // the shape run_command relies on when it names the interpreter.
     Fixture f;
@@ -2040,6 +2038,33 @@ BOOST_AUTO_TEST_CASE(send_ends_a_running_process_and_leaves_it_readable)
         nlohmann::json{{"session_id", id}, {"signal", "kill"}})));
     BOOST_TEST(again.field("signalled") == "false");
     BOOST_TEST(again.has("warning"));
+}
+
+BOOST_AUTO_TEST_CASE(successful_signal_is_not_an_error_during_concurrent_release)
+{
+    Fixture f;
+    // Release cannot succeed until this signal ends the long-running child.
+    // Race its exit observation/release against send_process's final snapshot.
+    // This exercises concurrent use; it does not force a particular interleaving.
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        const std::string id = spawn_through_tool(f, "sleep", {"30"});
+        auto release = asio::co_spawn(f.io,
+            [&f, id]() -> asio::awaitable<bool> {
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::seconds(5);
+                while (std::chrono::steady_clock::now() < deadline) {
+                    if (co_await f.store->release(id)) co_return true;
+                    co_await asio::post(f.io, asio::use_awaitable);
+                }
+                co_return false;
+            }, asio::use_future);
+        const auto record = f.call(call_for(std::string(tool_names::kSend),
+            nlohmann::json{{"session_id", id}, {"signal", "kill"}}));
+        BOOST_TEST(release.get());
+        const ResultText result = f.result_of(record);
+        BOOST_TEST(result.field("signalled") == "true");
+        BOOST_TEST(!f.run(f.store->snapshot(id)).has_value());
+    }
 }
 
 BOOST_AUTO_TEST_CASE(send_asks_the_process_to_stop_gracefully)

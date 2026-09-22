@@ -23,11 +23,10 @@ argument_schema:
       type: string
       minLength: 1
       description: >-
-        Program name or path. An existing path is used as given; otherwise the
-        file name is searched on PATH, even if the value contains a directory.
-        The existence check uses the host working directory; a relative path
-        can resolve differently after the child changes working_directory.
-        Use an absolute path when setting a different working_directory.
+        Bare program name searched through PATH, or an explicit path such as
+        ./tool or /usr/bin/grep. Explicit paths never fall back to PATH.
+        Relative paths are resolved against the host working directory before
+        applying working_directory, which only changes the child's directory.
     arguments:
       type: array
       items:

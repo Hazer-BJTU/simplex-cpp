@@ -21,7 +21,9 @@ text: |
     names it in `executable`.
   - `spawn_process`: run a program with an array of literal arguments. Each
     element is one argument; do not add shell quoting. Shell operators and
-    globs are not interpreted.
+    globs are not interpreted. Bare executable names use PATH; explicit paths
+    never fall back to PATH. Relative executable paths use the host working
+    directory, even when working_directory sets a different child directory.
   - `poll_process`: wait for any selected session to complete, or inspect
     status immediately with `wait_timeout_milliseconds: 0`.
   - `read_process`: read one session's stdout, stderr, or both without waiting.

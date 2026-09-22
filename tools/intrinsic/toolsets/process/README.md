@@ -248,14 +248,14 @@ is refused rather than read as "not given": a child cannot be started in the
 empty path, and silently inheriting the host's directory would run the command
 somewhere the model did not ask for.
 
-**`executable` is a name or a path, and the path is checked first.** A path that
-exists is run as written — `/usr/bin/grep` is that file, and a same-named
-program from PATH is not substituted for it — while one that does not exist is
-looked up again by its **file name**, so a path copied from another host's
-layout still finds the tool here. The search goes through the child's own PATH
-(the `environment` and `inherit_environment` arguments decide which), falling
-back to the host's when the child gets none. There is no shell in between: the
-program is exec'd directly, whatever the path looks like.
+**`executable` distinguishes bare names from explicit paths.** Bare names
+are searched only through PATH. Values with a directory component (`./tool`,
+`../bin/tool`, `/usr/bin/grep`) identify exactly that path; a missing path fails
+instead of running a same-named program elsewhere. Relative executable paths
+are anchored to the host working directory before the child changes to
+`working_directory`. PATH lookup uses the child's environment, or the host's
+PATH when the child environment has none. Relative PATH results are also made
+absolute before launch. There is no shell parsing.
 
 **A quick command finishes inside the window**, and the answer is the facts
 about the call with the child's own text under them. `stdout` and `stderr` are
@@ -1018,20 +1018,12 @@ All of them landed with this toolset and are used by it:
 - `LaunchSpec::working_directory` (dataclass; applied by Boost.Process v2 as a
   `chdir` in the child, checked before the launch so a bad path names itself at
   `Stage::Spawn`).
-- **`ProcessHandle`'s executable resolution checks the path before the PATH.**
-  A path that exists is used as written; one that does not is looked up again by
-  its file name. Before this only bare names resolved at all, because Boost's
-  `environment::find_executable()` is a PATH search that APPENDS the name to
-  each PATH entry (`operator/` concatenates rather than replacing), so
-  `/usr/bin/grep` was looked for as `<PATH entry>/usr/bin/grep` and never found.
-  `run_command` is what made it matter — it names its interpreter by absolute
-  path, so that nothing a call passes in `environment` decides which shell
-  parses the line — and `spawn_process` had been promising paths in its schema
-  all along. The two steps and what follows from them are stated in
+- **`ProcessHandle` distinguishes explicit executable paths from bare names.**
+  Explicit paths never fall back to PATH; bare names do not implicitly prefer
+  the current directory. Relative paths are anchored before the child changes
+  working directory. See
   [`process/README.md`](../../../../process/README.md#how-the-executable-is-resolved)
-  and pinned by the manager's own suite
-  (`a_path_that_exists_is_the_executable_path_is_not_consulted`,
-  `a_path_that_is_not_there_falls_back_to_its_file_name_on_path`).
+  and the manager's executable-identity regression tests.
 - `ProcessHandle::terminate()` / `request_exit()` — on-demand SIGKILL / SIGTERM
   that send the signal only, leaving the terminal observation to the await task
   that owns it.

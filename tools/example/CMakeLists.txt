@@ -36,7 +36,7 @@
 # weak copy and cross-boundary dynamic_pointer_cast only works through
 # libstdc++'s name-comparison fallback (name equality, not type identity).
 # =============================================================================
-add_executable(tools_deepseek_chat deepseek_chat.cpp)
+add_executable(tools_deepseek_chat deepseek_chat.cpp agent_loop.cpp)
 target_compile_options(tools_deepseek_chat PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
     $<$<CONFIG:Release>:-O3 -DNDEBUG>)
@@ -65,4 +65,13 @@ if(BUILD_TESTS)
     add_test(NAME tools_deepseek_chat_catalogue
              COMMAND tools_deepseek_chat --tools)
     set_tests_properties(tools_deepseek_chat_catalogue PROPERTIES TIMEOUT 60)
+
+    # Exercise provider failure and recovery through the actual example loop
+    # with a scripted model and real process tools, without a live API.
+    add_executable(test_tools_agent_loop test_agent_loop.cpp agent_loop.cpp)
+    target_link_libraries(test_tools_agent_loop PRIVATE
+        tools_intrinsic_process llm_iface Boost::unit_test_framework)
+    target_compile_options(test_tools_agent_loop PRIVATE -pthread)
+    add_test(NAME test_tools_agent_loop COMMAND test_tools_agent_loop)
+    set_tests_properties(test_tools_agent_loop PROPERTIES TIMEOUT 60)
 endif()

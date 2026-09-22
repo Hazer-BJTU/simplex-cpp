@@ -38,43 +38,27 @@ environment is disposable — in the build container, or anywhere with
 
 ## How the executable is resolved
 
-`LaunchSpec::executable` may be a bare name (`grep`) or a path
-(`/usr/bin/grep`), and it is resolved in **two steps, in this order**:
+`LaunchSpec::executable` distinguishes names from explicit paths:
 
-1. **A path that exists is the executable.** Whatever the spec names — an
-   absolute path, a relative one with a directory in it, or a bare name that
-   happens to be a file of the host's working directory — if it is there, that
-   is what runs. A caller that wrote a path meant *that* file, and substituting
-   a same-named program from PATH would run something nobody asked for.
-   Existence is what this step tests, not executability: a path that is there
-   but cannot be executed (a directory, a file without the execute bit) fails
-   at the launch with the OS's own error, which names the file the caller
-   pointed at, rather than quietly becoming a different program.
-2. **Otherwise its FILE NAME goes through PATH** — `path::filename()`, the last
-   component — so `/usr/bin/grep` on a host whose grep lives elsewhere still
-   finds that grep instead of failing on a layout that is not this machine's.
-   A bare name is the same rule with nothing to strip.
+- **Bare names** such as `grep` are searched only through PATH. A same-named
+  file in the host working directory has no special priority; it can be found
+  only if that directory is included in PATH.
+- **Explicit paths** such as `./tool`, `../bin/tool`, or `/usr/bin/grep` identify
+  that file only. A missing path fails at `Stage::ResolveExecutable`; it never
+  falls back to a same-named program on PATH. An existing file that cannot be
+  executed fails at `Stage::Spawn`.
 
-The PATH searched is the one in the **child's assembled environment** (a
-spec-supplied PATH is honoured, including under `inherit_environment=false`,
-where the spec's PATH is the only one); when that environment carries no PATH
-at all the search falls back to the **parent's** PATH — lookup only, the child's
-own environment is unaffected. Nothing is found by either step: the launch fails
-at `Stage::ResolveExecutable`, naming the executable and the spec's description.
+Relative executable paths are resolved against the **host's working directory**,
+not `LaunchSpec::working_directory`. The resolved executable is made absolute
+before the child changes directories. Relative results from PATH lookup are
+anchored the same way. `working_directory` controls the child's working directory
+and does not change which executable was selected.
 
-Step 1 is done here rather than handed to Boost.Process, because
-`environment::find_executable()` is a PATH search and nothing else: it appends
-the name to each PATH entry with Boost.Filesystem's `operator/`, which
-**concatenates rather than replacing**, so an absolute name is looked for as
-`<PATH entry>/usr/bin/grep` and never found. Step 2 *is* that function, handed
-the file name.
+The PATH searched is the one in the **child's assembled environment** (including
+an explicitly supplied PATH with `inherit_environment=false`). If that environment
+has no PATH, lookup uses the parent's PATH without adding it to the child's
+environment. An unsuccessful search fails at `Stage::ResolveExecutable`, with
+the requested executable and description in the error.
 
-Two consequences worth knowing:
-
-- a **relative** path is checked against the host's working directory, while the
-  child is `chdir`'d into `working_directory` before `exec` — so the file this
-  code finds and the file the child would resolve can differ. Name an absolute
-  path when that matters;
-- a bare name that matches a file in the host's working directory resolves to
-  **that** file rather than to the one on PATH. That is step 1 applied
-  uniformly, and it is the reason a bare name is not simply "a PATH lookup".
+Only bare names are passed to Boost.Process's `find_executable()`. Explicit paths
+are resolved directly, avoiding its PATH-entry concatenation for absolute paths.
