@@ -15,10 +15,12 @@
 //   ARGUMENT READING          the typed optional/required accessors below.
 //                             Every one of them REFUSES rather than coerces,
 //                             for the reason given on each.
-//   THE JSON RESULT           json_content(): a pretty-printed object in a
-//                             text part, which is how every intrinsic tool
-//                             answers (see the toolset_base.hpp header for
-//                             why that shape and not prose).
+//   THE RESULT SHAPE          ToolResult (tools/intrinsic/tool_result.hpp):
+//                             the fields a reader scans and the verbatim text
+//                             blocks they read, which is how every intrinsic
+//                             tool answers — a child's output arrives as the
+//                             bytes it printed rather than escaped inside a
+//                             JSON string.
 //   THE CONFIRMATION'S BUS    security_check() routes the module's default
 //                             policy at a bus the tool was given, so a
 //                             component (or a test) can keep its
@@ -97,8 +99,8 @@ namespace tools::intrinsic {
 
 /**
  * The base every intrinsic tool derives from: its Invocable's storage, the
- * argument accessors, the JSON result shape, and the bus its confirmation is
- * asked on.
+ * argument accessors, and the bus its confirmation is asked on. The result
+ * shape is ToolResult's (tools/intrinsic/tool_result.hpp).
  *
  * Domain-neutral on purpose — see the file header for what a toolset's own
  * base adds on top.
@@ -234,11 +236,11 @@ protected:
     [[noreturn]] static void invoke_failed(std::string message);
 
     // ---- results ------------------------------------------------------------
-
-    /// The result every intrinsic tool answers with: the JSON object as a
-    /// text part, indented (a model reads it, and so does a human reading the
-    /// transcript over its shoulder).
-    [[nodiscard]] static model_io::Content json_content(nlohmann::json payload);
+    //
+    // There is nothing to inherit here: a tool builds its answer with
+    // ToolResult (tools/intrinsic/tool_result.hpp) and returns render(), which
+    // is the text part a call answers with. That header says what the shape is
+    // and why it is not a JSON object.
 
     // ---- schema helpers -----------------------------------------------------
     //

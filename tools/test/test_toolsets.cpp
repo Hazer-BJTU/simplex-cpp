@@ -460,6 +460,48 @@ private:
     tools::ToolSet::ToolHandle tool_;
 };
 
+/// A set whose whole contribution is its skill: no tools at all, and the
+/// guidance a model would read before calling any. The two are independent
+/// (tools/tool_skill.hpp) — a set may carry either, both or neither — and this
+/// double is what lets the injection cases below be about the prompt rather
+/// than about routing.
+class SkillfulSet final : public tools::ToolSet {
+public:
+    SkillfulSet(std::string set_name, std::optional<tools::ToolSetSkill> skill)
+        : name_(std::move(set_name)), skill_(std::move(skill))
+    {}
+
+    std::string_view name() const noexcept override { return name_; }
+
+    std::vector<model_io::Invocable> get_tools() const override { return {}; }
+
+    ToolHandle dispatch(const model_io::InvokeQuery&) const override
+    {
+        return nullptr;
+    }
+
+    [[nodiscard]] std::optional<tools::ToolSetSkill> skill() const override
+    {
+        return skill_;
+    }
+
+private:
+    std::string name_;
+    std::optional<tools::ToolSetSkill> skill_;
+};
+
+/// One skill with everything filled in, for the cases below to vary.
+[[nodiscard]] tools::ToolSetSkill probe_skill()
+{
+    tools::ToolSetSkill skill;
+    skill.name = "probe";
+    skill.title = "Working with probes";
+    skill.description = "How the probe tools fit together.";
+    skill.keywords = {"probe", "diagnostics"};
+    skill.text = "Start with probe_once.\n\nThen read what it left behind.";
+    return skill;
+}
+
 // The shape of the split, pinned at compile time rather than only documented.
 // Phase 1 must be an ORDINARY function returning the resolved tool: being
 // non-suspending is the whole reason a host can settle a batch of calls before
@@ -1124,3 +1166,103 @@ BOOST_AUTO_TEST_CASE(supported_names_lists_what_the_set_offers)
     BOOST_TEST(empty_set.supported_names().empty());
     BOOST_TEST(empty_set.get_tools().empty());
 }
+
+// ===== the set's skill ======================================================
+
+BOOST_AUTO_TEST_CASE(a_set_without_a_skill_contributes_nothing_to_a_prompt)
+{
+    FakeToolSet set("local_tools", std::make_shared<ScriptedTool>());
+
+    // The default, and an ordinary state rather than a broken one: a set with
+    // nothing to say about using its tools together.
+    BOOST_TEST(!set.skill().has_value());
+
+    model_io::PromptTemplate prompt;
+    prompt.add_section("persona", "", "You are a helpful assistant.",
+                       model_io::SectionStability::Immutable);
+
+    BOOST_TEST(!set.inject_skill(prompt));
+    // Nothing added AND nothing rewritten: the section count is what it was,
+    // and the prompt still renders as the persona alone.
+    BOOST_TEST(prompt.size() == 1u);
+    BOOST_TEST(prompt.render().markdown == "You are a helpful assistant.\n");
+}
+
+BOOST_AUTO_TEST_CASE(a_sets_skill_is_appended_as_one_growing_section)
+{
+    SkillfulSet set("probe_tools", probe_skill());
+
+    model_io::PromptTemplate prompt;
+    prompt.add_section("persona", "", "You are a helpful assistant.",
+                       model_io::SectionStability::Immutable);
+
+    BOOST_TEST(set.inject_skill(prompt));
+    BOOST_TEST(prompt.size() == 2u);
+
+    // The section is named after the skill, so a host can find it again — or
+    // ask whether it is there — without knowing which set injected it.
+    const auto injected = prompt.find(tools::skill_section_name("probe"));
+    BOOST_REQUIRE(injected != prompt.end());
+    BOOST_TEST(injected->name == "skill.probe");
+    BOOST_TEST(injected->title == "Working with probes");
+    BOOST_TEST(injected->text == probe_skill().text);
+    // Growing, deliberately: a skill is fixed guidance that belongs with the
+    // accumulating context, so it may follow the persona and the tool listing
+    // (see the volatile-tail case below for the other half of that rule).
+    BOOST_CHECK(injected->stability == model_io::SectionStability::Growing);
+
+    // ... and it lands at the END of the prompt, which is what "inject" means
+    // here: after everything the host had already said.
+    BOOST_TEST(prompt.render().markdown
+               == "You are a helpful assistant.\n"
+                  "\n"
+                  "## Working with probes\n"
+                  "\n"
+                  "Start with probe_once.\n"
+                  "\n"
+                  "Then read what it left behind.\n");
+
+    // One set, one section: a second injection is PromptTemplate's own
+    // duplicate-name rule, not a second copy of the same guidance on every
+    // request.
+    BOOST_CHECK_THROW(set.inject_skill(prompt), std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(a_skill_with_no_text_contributes_nothing)
+{
+    tools::ToolSetSkill nameless_text;
+    nameless_text.name = "probe";
+    nameless_text.title = "A heading with nothing under it";
+    SkillfulSet set("probe_tools", nameless_text);
+
+    // The loader refuses a document like this (skill_declaration.hpp), so this
+    // is the hand-built case — and the answer is the same one an absent skill
+    // gets: a heading over an empty section is not guidance.
+    model_io::PromptTemplate prompt;
+    BOOST_TEST(!set.inject_skill(prompt));
+    BOOST_TEST(prompt.size() == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(a_skill_must_be_injected_before_the_volatile_tail)
+{
+    SkillfulSet set("probe_tools", probe_skill());
+
+    // Growing is admitted after an Immutable or Growing section...
+    model_io::PromptTemplate prompt;
+    prompt.add_section("persona", "", "You are a helpful assistant.",
+                       model_io::SectionStability::Immutable);
+    prompt.add_section("tools", "Tools", "- read_file\n- write_file",
+                       model_io::SectionStability::Growing);
+    BOOST_TEST(set.inject_skill(prompt));
+
+    // ... and refused after a Volatile one, which is the layout rule the tier
+    // exists for: the template will not lay a fixed section out in front of
+    // bytes that are meant to change, because that would invalidate the prefix
+    // a provider has already cached. A host injects skills with the rest of its
+    // fixed context, not after its current-date section.
+    model_io::PromptTemplate late;
+    late.add_section("now", "Now", "2026-09-15",
+                     model_io::SectionStability::Volatile);
+    BOOST_CHECK_THROW(set.inject_skill(late), std::logic_error);
+}
+

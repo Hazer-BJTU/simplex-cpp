@@ -3,7 +3,7 @@
 #
 # The tool-invocation layer: the model_io tool contract (Invocable /
 # InvokeQuery / InvokeReturn) turned into something that runs. `tools_iface`
-# is header-only and carries four headers:
+# is header-only and carries five headers:
 #
 #   - invoke_exception.hpp  the tool-side failure type and its bridge to the
 #                           InvokeReturn record a detached invocation reports
@@ -19,6 +19,11 @@
 #                           that settles a whole turn's calls, runs the serial
 #                           ones before the parallel ones, and answers with one
 #                           record per call in call order.
+#   - tool_skill.hpp        ToolSetSkill: what a set tells a model about USING
+#                           it — how its tools fit together, which no per-tool
+#                           description can — and the two calls that put it in
+#                           a system prompt (ToolSet::inject_skill, and
+#                           ToolRegistry::inject_skills over every set).
 #
 # It links `async_eventbus_iface` (utils/async_eventbus) for the confirmation
 # event: the policy publishes on eventbus::default_async_bus(), and that
@@ -45,6 +50,12 @@ target_link_libraries(tools_iface INTERFACE
 # ExtensionContext and no dlopen. SHARED rather than header-only for the
 # typeinfo reason its own CMakeLists states.
 add_subdirectory(intrinsic)
+
+# Manual demos of the whole stack (registry + an intrinsic toolset + the
+# provider plugins). Built always; only their offline --tools mode is
+# CTest-registered, since the conversation needs a live API key. See
+# example/CMakeLists.txt.
+add_subdirectory(example)
 
 if(BUILD_TESTS)
     add_subdirectory(test)

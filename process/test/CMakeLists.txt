@@ -8,10 +8,13 @@ add_test(NAME process_exceptions COMMAND test_exceptions)
 
 # Lifecycle tests for ProcessHandle against real but side-effect-free
 # children (echo / false / cat / env / sleep — coreutils any POSIX system
-# has). Each case drives one handle on a private io_context + strand and
-# runs the io to quiescence before asserting, so the tests observe exactly
-# the settled states the class comment documents. Richer fixtures with the
-# real toolchain belong to the container build later.
+# has), plus temp-dir fixtures for executable resolution (a path that
+# exists beating PATH, and a missing path falling back to its file name)
+# and for the spec-supplied PATH. Each case drives one handle on a private
+# io_context + strand and runs the io to quiescence before asserting, so
+# the tests observe exactly the settled states the class comment
+# documents. Richer fixtures with the real toolchain belong to the
+# container build later.
 add_executable(test_process_handle test_process_handle.cpp)
 target_link_libraries(test_process_handle PRIVATE
     process_lib

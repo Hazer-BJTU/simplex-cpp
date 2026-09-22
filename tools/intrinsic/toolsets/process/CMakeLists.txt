@@ -1,8 +1,9 @@
 # =============================================================================
 # process — intrinsic toolset (tools/intrinsic package)
 #
-# Process management as a tool family: the six calls a model makes to run a
-# child process, feed it, read its output incrementally, wait on it and kill it.
+# Process management as a tool family: the five calls a model makes to run a
+# program or a command line, feed the child, read its output incrementally, and
+# wait for one of them to finish.
 # It joins the invocation layer (tools/) to process/'s single-child manager
 # (ProcessHandle) with the piece neither owns — a table of live children a model
 # can name across turns.
@@ -12,7 +13,7 @@
 #                              cursors that make "what is new since I last
 #                              looked" answerable, reaping, and the
 #                              terminate_all() shutdown path;
-#   process/tools.hpp          the six ToolInterface implementations and the
+#   process/tools.hpp          the five ToolInterface implementations and the
 #                              ProcessToolBase that adds this family's session
 #                              id argument to the shared IntrinsicTool;
 #   process/toolset.hpp        the ToolSet a host registers with its
@@ -26,9 +27,11 @@
 # parent CMakeLists.
 #
 # THE DECLARATIONS THEMSELVES are schemas/*.yaml, one file per tool, loaded at
-# run time by the tool that names it. They are listed as target sources for the
-# sake of an IDE and of `make`'s dependency tracking only — nothing is compiled
-# from them, and editing one takes effect on the next run without a rebuild.
+# run time by the tool that names it — plus schemas/skill.yaml, the set's own
+# guidance for a model (how the five are used together), loaded by the set. They
+# are listed as target sources for the sake of an IDE and of `make`'s dependency
+# tracking only — nothing is compiled from them, and editing one takes effect on
+# the next run without a rebuild.
 #
 # The directory is handed to the library as the SIMPLEX_PROCESS_SCHEMA_DIR
 # macro, which is the development/test answer to "where are the declarations?":
@@ -48,12 +51,13 @@ add_library(tools_intrinsic_process SHARED
     src/tools.cpp
     src/toolset.cpp
     # Not compiled: the model-facing declarations, one file per tool.
-    schemas/kill_process.yaml
-    schemas/poll_processes.yaml
-    schemas/read_process_output.yaml
+    schemas/poll_process.yaml
+    schemas/read_process.yaml
+    schemas/run_command.yaml
+    schemas/send_process.yaml
     schemas/spawn_process.yaml
-    schemas/wait_process.yaml
-    schemas/write_process_input.yaml
+    # Not compiled either: the set's skill, which is about using all five.
+    schemas/skill.yaml
 )
 target_include_directories(tools_intrinsic_process PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -65,7 +69,8 @@ target_compile_definitions(tools_intrinsic_process PRIVATE
     SIMPLEX_PROCESS_SCHEMA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/schemas")
 
 # ---- Release layout ---------------------------------------------------------
-# A staged release carries the declarations BESIDE ITS EXECUTABLES
+# A staged release carries the declarations — and the set's skill.yaml with
+# them, since the whole directory is installed — BESIDE ITS EXECUTABLES
 # (<prefix>/bin/schemas/process), which is the second place
 # process/schemas.hpp looks — the same "relative to the executable"
 # convention the host already uses for its plugins, so the installed tree

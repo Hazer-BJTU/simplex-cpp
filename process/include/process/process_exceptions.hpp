@@ -31,7 +31,7 @@ namespace process {
 class ProcessException : public std::runtime_error {
 public:
     enum class Stage {
-        ResolveExecutable, // locating the executable (PATH lookup)
+        ResolveExecutable, // locating an explicit path or searching PATH
         Environment,       // assembling the child's environment (merge/validation)
         Spawn,             // launching the child process
         Terminate,         // terminating / reaping a running process

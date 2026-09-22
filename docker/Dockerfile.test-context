@@ -1,0 +1,98 @@
+# Dockerfile.test-context — the manual-test image for the tools stack.
+#
+# WHAT THIS IS. Dockerfile.build-context proves the tree builds and passes its
+# suite in the reference execution context; this image does the same and then
+# STAYS, so a human can drive the one thing a suite cannot: the live agent loop
+# against a real provider, with the intrinsic process toolset behind it. It is
+# the image for tools/example/deepseek_chat.cpp — the demo whose tool calls run
+# real programs on the host, which is exactly why it is not something CI can
+# assert its way through and exactly why it wants a disposable container.
+#
+# It builds FROM the portable toolchain base rather than build-base, because
+# that is the toolchain image this machine actually has: AlmaLinux 9, GCC
+# 14.3.0 from source, Boost 1.91.0, glibc 2.34. The distinction the two bases
+# draw (glibc floor) does not change what this image is for — a container to
+# test in — and building on the same base the release is cut from keeps the
+# in-container behaviour identical to the shipped binaries'.
+#
+# WHAT IT LEAVES BEHIND: the whole source tree at /src, a complete Debug build
+# at /src/build (bin/, lib/, and every test binary), and the staged release at
+# /src/stage, so
+#
+#   /src/build/bin/tools_deepseek_chat            the demo
+#   /src/build/bin/tools_deepseek_chat --tools    the catalogue, no key needed
+#   /src/build/bin/tools_deepseek_chat --skill    the model's guidance, same
+#   /src/stage/bin/tools_deepseek_chat            the same demo, installed
+#   ctest --test-dir /src/build                   the suite, runnable again
+#
+# all work with no configuration. The source tree is kept deliberately, not as
+# baggage: the process tools' declarations default to the directory the build
+# baked in (/src/tools/intrinsic/toolsets/process/schemas), which is the dev
+# tree's answer, while the staged tree carries them the way a release does
+# (<prefix>/bin/schemas/process). Having both in one image means both lookup
+# paths are exercisable side by side — and `cmake --install` is the packaging
+# step CI asserts on, so running it here keeps the image honest about it.
+#
+# BUILD (from the repository root — the root .dockerignore governs the context,
+# which is why the local build* directories never enter it):
+#
+#   docker build -f docker/Dockerfile.test-context -t simplex-cpp-tools-test .
+#
+# The image builds Debug on purpose: this is a test harness, and assertions,
+# unoptimised stack frames and -g symbols are what a manual session wants. The
+# suite runs during the build so the image is known-good before it is handed
+# over; pass --build-arg RUN_TESTS=0 to skip it. One case in that suite keys on
+# the environment rather than on the build: process_destructive engages
+# wherever /.dockerenv exists (process/test/CMakeLists.txt), so re-running the
+# suite inside the container runs it, and whether a build step sees it depends
+# on the builder.
+#
+# RUN (the demo needs an API key, and the confirmed calls want a TTY):
+#
+#   docker run -it --rm -e DEEPSEEK_API_KEY=sk-... simplex-cpp-tools-test
+#
+# Without -it the banner still prints and the shell exits at EOF, so the
+# offline checks are scriptable:
+#
+#   docker run --rm simplex-cpp-tools-test /src/build/bin/tools_deepseek_chat --tools
+#
+# The default CMD prints the same notes and drops to a shell; see
+# test-context-notes.sh.
+#
+# TOOLCHAIN IDENTITY, stated because it is the one thing this image must not
+# get wrong: artifacts built here carry AlmaLinux 9's glibc 2.34 floor and
+# GNU-14.3.0's identity. The host and every plugin in the image were built
+# together by one configure, so they are self-consistent — but they will not
+# load against a host built elsewhere, which is the admission gate working as
+# designed (docs/abi-context.md).
+
+ARG BASE_IMAGE=ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
+FROM ${BASE_IMAGE}
+
+# -j4 by default for the same reason Dockerfile.build-context uses it: the
+# container shares the host's CPUs, and this repository is developed on WSL,
+# where saturating them destabilises the WSL services. Raise it on a machine
+# with room to spare.
+ARG JOBS=4
+# 1 = run the full ctest during the build (the image is then known-good);
+# 0 = build only, leaving the suite to the container's user.
+ARG RUN_TESTS=1
+
+WORKDIR /src
+COPY . .
+
+# One configure, one build: host executables and every dlopened plugin come out
+# of the same execution context, which is the image's whole reason to exist.
+# The install is the packaging step — it is what puts the tool declarations at
+# <prefix>/bin/schemas/process, the location a real deployment loads them from.
+RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
+        -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+    && cmake --build /src/build -j"${JOBS}" \
+    && if [ "${RUN_TESTS}" = "1" ]; then \
+           ctest --test-dir /src/build --output-on-failure; \
+       fi \
+    && cmake --install /src/build --prefix /src/stage
+
+# Print the how-to and hand over a shell. `docker run --rm <image> <cmd>`
+# replaces this entirely, which is how the one-shot offline checks are run.
+CMD ["/bin/bash", "-lc", "bash /src/docker/test-context-notes.sh; exec /bin/bash"]

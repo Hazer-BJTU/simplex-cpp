@@ -1,0 +1,56 @@
+# Model-facing declaration; implemented in src/tools.cpp.
+# type/security document C++ attributes; the loader does not configure them.
+
+name: poll_process
+description: >-
+  Report selected sessions, optionally waiting until any selected child has
+  exited AND its output capture is complete. Return immediately if one already
+  meets that condition; otherwise return when the wait expires. Report all
+  selected sessions, not only the one that completed. Omitted or empty
+  session_ids selects all sessions retained when the wait begins; unknown IDs
+  are ignored. No matching sessions returns immediately. Set
+  wait_timeout_milliseconds to 0 for an immediate status check. This call does
+  not stop processes. By default it reads and advances their output cursors;
+  release_exited can also remove exited sessions.
+
+type: read_only
+security: trusted
+
+argument_schema:
+  type: object
+  required: []
+  properties:
+    session_ids:
+      type: array
+      items:
+        type: string
+      default: []
+      description: >-
+        Session IDs to select. Omitted or empty means all currently retained
+        sessions. Unknown IDs are ignored; sessions started during the wait are
+        not added to the selection.
+    wait_timeout_milliseconds:
+      type: integer
+      minimum: 0
+      default: 30000
+      description: >-
+        Wait duration in milliseconds for any selected child to exit with
+        output capture complete. Default: 30000. Zero checks immediately.
+        timed_out is true when no selected session meets that condition,
+        including an empty selection or an immediate check; it is not a tool
+        error and does not terminate any process.
+    include_output:
+      type: boolean
+      default: true
+      description: >-
+        Include new stdout and stderr and advance both output cursors for each
+        selected session. Default: true. False leaves the cursors unchanged.
+    release_exited:
+      type: boolean
+      default: false
+      description: >-
+        Remove selected sessions whose children have exited, after collecting
+        the requested output. Default: false. Does not require output capture
+        to be complete. Released IDs become invalid, and unread or later output
+        cannot be retrieved. With include_output: false, output is not read
+        before release.

@@ -1,0 +1,59 @@
+# Model-facing declaration; implemented in src/tools.cpp.
+# type/security document C++ attributes; the loader does not configure them.
+
+name: run_command
+description: >-
+  Start a shell command using bash when available at /bin/bash or
+  /usr/bin/bash, otherwise /bin/sh, with -c. The shell interprets quoting,
+  pipelines, redirections, variable expansion and globs; supported syntax depends
+  on the selected shell. Use spawn_process for a program with literal arguments.
+  Wait up to expected_runtime_milliseconds for the child to exit; expiration
+  leaves it running. A successful launch returns a session_id, including when
+  the child has already exited. If finished is true, the result includes
+  captured output; check output_complete and truncation markers before treating
+  it as complete. Continue with poll_process, read_process or send_process.
+
+type: serial_write
+security: require_confirm
+
+argument_schema:
+  type: object
+  required: [command]
+  properties:
+    command:
+      type: string
+      minLength: 1
+      description: >-
+        Nonempty command line interpreted by the selected shell, for example
+        "printf hello | wc -c". No separate arguments array is used. The command
+        line also becomes the session description.
+    working_directory:
+      type: string
+      minLength: 1
+      description: >-
+        Directory in which to start the child. Omitted means the host's
+        working directory; an empty string is invalid.
+    environment:
+      type: array
+      items:
+        type: string
+      default: []
+      description: >-
+        Environment entries as "KEY=VALUE" strings with nonempty keys; values
+        may be empty. Default: []. Entries override inherited values by key,
+        or supply the environment when inherit_environment is false.
+    inherit_environment:
+      type: boolean
+      default: true
+      description: >-
+        Inherit the host's environment before applying environment entries.
+        Default: true. False starts with only the supplied entries.
+    expected_runtime_milliseconds:
+      type: integer
+      minimum: 0
+      default: 3000
+      description: >-
+        Initial wait for child exit, in milliseconds. Default: 3000. Zero
+        skips this wait. Expiration leaves the child running; this is not an
+        execution time limit. After an observed exit, output capture may take
+        up to another window of this duration before the call returns.

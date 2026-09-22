@@ -1,0 +1,63 @@
+# Model-facing declaration; implemented in src/tools.cpp.
+# type/security document C++ attributes; the loader does not configure them.
+
+name: send_process
+description: >-
+  Queue text for a session's standard input, close that input, and/or send a
+  termination signal to the direct child. At least one action is required:
+  nonempty input, close_input: true, or signal: term or kill. Input is queued
+  before closure and signalling, but the call does not wait for the child to
+  read it or exit. Check signalled when sending a signal, then use poll_process
+  to observe completion. The session remains available for output reads. An
+  unknown or released session_id is an error; an already exited child cannot
+  receive input or signals.
+
+type: serial_write
+security: require_confirm
+
+argument_schema:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      minLength: 1
+      description: >-
+        Session ID returned by spawn_process or run_command.
+    input:
+      type: string
+      default: ""
+      description: >-
+        Text to queue verbatim for standard input. Default: empty. Include a
+        newline ("\n" in JSON) when the program expects a line. Queuing does not
+        confirm delivery or consumption by the child.
+    close_input:
+      type: boolean
+      default: false
+      description: >-
+        Close standard input after queued input has drained, allowing the
+        child to observe EOF. Default: false. Programs that read until EOF may
+        need this to finish. Closing input does not itself terminate the child.
+    signal:
+      type: string
+      enum: ["", "term", "kill"]
+      default: ""
+      description: >-
+        Signal for the direct child only: "" sends none, "term" requests
+        termination (the child may handle or ignore it), and "kill" forces
+        termination. Default: "". Does not signal descendants or wait for exit;
+        use poll_process to confirm completion.
+  # Require at least one action; session_id alone is not a valid call.
+  anyOf:
+    - required: [input]
+      properties:
+        input:
+          minLength: 1
+    - required: [close_input]
+      properties:
+        close_input:
+          enum: [true]
+    - required: [signal]
+      properties:
+        signal:
+          enum: ["term", "kill"]

@@ -17,13 +17,14 @@ does not need.
 tools/intrinsic/
   include/tools/intrinsic/     the shared core (tools_intrinsic)
     tool_base.hpp              IntrinsicTool / DeclaredTool
-    tool_declaration.hpp       the YAML declaration loader
+    tool_declaration.hpp       the YAML declaration loader (per tool)
+    skill_declaration.hpp      the YAML skill loader (per toolset)
     toolset_base.hpp
   src/  test/
   toolsets/
     process/                   process management (tools_intrinsic_process)
       include/tools/intrinsic/process/
-      schemas/                 one *.yaml declaration per tool
+      schemas/                 one *.yaml declaration per tool, plus skill.yaml
       src/  test/  README.md
 ```
 
@@ -35,9 +36,8 @@ a provider.
 
 **`tool_base.hpp` — `IntrinsicTool`.** The `Invocable`'s storage (`get_details()`
 returns a reference by contract, so the description has to live somewhere the
-tool owns); the argument accessors; the JSON result shape; the JSON-Schema
-builders; and the routing of a `RequireConfirm` confirmation at a chosen event
-bus, so a component — or a test — can keep its confirmations to itself rather
+tool owns); the argument accessors; the JSON-Schema builders; and the routing of
+a `RequireConfirm` confirmation at a chosen event bus, so a component — or a test — can keep its confirmations to itself rather
 than subscribing to the process-wide bus where a handler would answer for
 everyone.
 
@@ -58,6 +58,14 @@ and what the returned record carries — so a default the tool merely knew about
 would mean all four saw a different call from the one that ran. A call whose
 `arguments` is not a JSON object is refused rather than settled as "every
 property absent".
+
+**`tool_result.hpp` — `ToolResult`.** How a tool answers a call: the fields a
+reader scans (`name: value`, one per line) and the text blocks they read
+(`stdout (10 bytes):` and then the bytes, verbatim). It replaced a
+pretty-printed JSON object in a text part, and the header says why — the object
+had to carry the child's output inside a string, so the one thing a caller asked
+for arrived escaped between quotes. See **[toolsets/process/](toolsets/process/)**
+for a family whose results are all built this way.
 
 **`tool_declaration.hpp` — the declaration loader.** A tool's name, description
 and argument schema are the whole of what a model is told about it, and they are
@@ -92,9 +100,30 @@ else — validation, the type/security pair, the work — stays in C++. A file t
 cannot be loaded leaves the tool unnamed, which is how `register_tools()` skips
 it rather than advertising a schema nobody could find.
 
+**`skill_declaration.hpp` — the skill loader, one level up.** A tool's
+declaration says what one call does; nothing in the set of them says how they
+are
+used *together* — which call comes first, what the ordinary path looks like,
+which of two overlapping calls to prefer. That prose is a toolset's **skill**,
+one YAML document per set (a `name`, an optional `title` and `description`,
+`keywords`, and the `text` a model reads), and `load_skill_declaration()` reads
+and validates it just as the tool loader does its own — with `try_load_skill_declaration()`
+as the form a set uses. Unlike a tool declaration it is **advice, not
+capability**: a file that cannot be read is reported and the set carries no
+skill, while every tool stays routable, because a model that was never told how
+the tools fit together can still call all of them. `ToolSet::skill()` hands it
+back and `ToolSet::inject_skill()` appends it to a system prompt as one section
+(`ToolRegistry::inject_skills()` does that for every registered set); the type,
+the section-naming rule and the injection contract are
+`tools/include/tools/tool_skill.hpp`. A test should hold the file against the
+set that ships it — the process toolset's suite requires every registered tool to
+be named in the text — and the process README's skill section is the worked
+example of what belongs in one.
+
 **`toolset_base.hpp` — `IntrinsicToolSet`.** The ordered catalogue `get_tools()`
-hands out, the name→tool table `dispatch()` routes by, and the tools'
-`build()`/`release()` lifecycle. Two containers on purpose: order is what the
+hands out, the name→tool table `dispatch()` routes by, the tools'
+`build()`/`release()` lifecycle, and the set's skill (`load_skill()` reads the
+document, `skill()` answers it). Two containers on purpose: order is what the
 model reads, lookup is what routing needs — the same split `ToolRegistry` makes
 one level up. A tool whose `build()` refuses, or whose name is empty or already
 taken, is left out of both, so the catalogue never promises what routing cannot
@@ -114,14 +143,15 @@ only `InvokeException`, `execute()` never throws), and an in-process set has no
 reason to want a different sequence.
 
 A toolset package therefore supplies only its domain: its tools, their
-declarations, and whatever state they share.
+declarations, its skill, and whatever state they share.
 
 ## Toolsets
 
 - **[toolsets/process/](toolsets/process/)** — process management: `spawn_process`
-  / `poll_processes` / `read_process_output` / `write_process_input` /
-  `wait_process` / `kill_process`, over a session table that gives each child a
-  name a model can return to across turns. See its own README.
+  (one program, arguments verbatim) / `run_command` (one command line, through the
+  platform's shell) / `poll_process` / `read_process` / `send_process`, over a
+  session table that gives each child a name a model can return to across turns.
+  See its own README.
 
 ## Adding a toolset
 
@@ -134,8 +164,13 @@ declarations, and whatever state they share.
    file; the package resolves the directory once, in a `schemas.hpp` of its own,
    and hands the library the path through a CMake compile definition with an
    environment override for deployments (see `toolsets/process/schemas.hpp`).
-3. Put each tool's name, description and argument schema in its YAML file, and
-   declare its `InvokeType` and `InvokeSecurity` in `write_attributes()`; check
+3. Write the set's `schemas/skill.yaml` — how the tools are used together, which
+   is what the per-tool files cannot say — and call `load_skill()` from the
+   derived constructor after `register_tools()`; a set that genuinely has
+   nothing to say about that may skip it, and the model is then told only what
+   each tool does. Put each tool's name, description and argument schema in its
+   own YAML file, and declare its `InvokeType` and `InvokeSecurity` in
+   `write_attributes()`; check
    every argument in `ensure_arguments()` — never in `invoke()`, because the
    security check and the human confirmation must see settled arguments. Use the
    `settle_*` accessors there, so the defaults are part of the query both of
@@ -156,6 +191,10 @@ declarations, and whatever state they share.
    implementation restricts something here" is never mistaken for "the
    declaration and the implementation agree". That check is generic over a
    toolset, and `toolsets/process/test/test_tools.cpp` is the worked example.
+   Hold the skill against the set too: that it loads, that every tool the set
+   registered is named in its text, and that it arrives in a prompt unchanged —
+   a rename that misses the file would otherwise leave a model following
+   instructions about a call that no longer exists.
 5. If the tools are a capability family — offered together or not at all — say so
    with `declare_capability_group()` after `register_tools()`, so a package that
    lost one declaration is reported as a degraded family rather than as healthy

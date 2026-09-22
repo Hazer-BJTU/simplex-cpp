@@ -27,7 +27,7 @@
 //       executable:
 //         type: string
 //         description: >-
-//           Program to run: a name resolved through PATH ('grep') or a path
+//           Program to run: a name resolved through PATH ('grep'), or a path
 //           ('/usr/bin/grep')
 //
 // `argument_schema` is a JSON Schema and is carried VERBATIM: the converted

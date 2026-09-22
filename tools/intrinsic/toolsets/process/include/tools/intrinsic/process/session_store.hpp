@@ -21,7 +21,7 @@
 //                      Reuse would alias a stale handle in the one place
 //                      aliasing is unrecoverable — a model's context still
 //                      says "proc_1 is the build I started three turns ago",
-//                      and a reused proc_1 would make kill_process end a
+//                      and a reused proc_1 would make send_process end a
 //                      process that model never saw. Growth is the cheap
 //                      side of that trade: a uint64 counter does not run out.
 //   READ CURSORS       how much of each stream the model has already been
@@ -69,7 +69,7 @@
 // result is wanted now and a server that must simply start. A child that
 // outlives its window is detached and becomes an ordinary live session, so the
 // wait is a grace period and never a lifetime cap. Waiting for an exit that the
-// window did not cover is wait_for_exit()'s job, separately and with its own
+// window did not cover is wait_for_any()'s job, separately and with its own
 // deadline.
 //
 // SHUTDOWN IS terminate_all(), NOT THE DESTRUCTOR, and the reason is worth
@@ -194,6 +194,24 @@ struct SpawnResult {
     bool output_drained = false;
 };
 
+/// What a wait_for_any() answered with: every selected session as it stood
+/// when the wait ended, why the wait ended, and how long it took.
+///
+/// The two flags are a pair rather than one enum because the question a caller
+/// asks of them is binary — "did something finish, or did I run out of time" —
+/// and `timed_out` is defined as exactly `!finished`, so a reader can never see
+/// them disagree. What they do NOT say is which session finished: that is on
+/// the snapshots, per session, as `exited` and `output_drained`. There may be
+/// more than one finished session in the list (the ones that were already
+/// finished when the call arrived), which is why the count is taken from the
+/// snapshots and not from the flags.
+struct WaitOutcome {
+    std::vector<SessionSnapshot> snapshots;
+    bool finished = false;
+    bool timed_out = false;
+    std::uint64_t waited_milliseconds = 0;
+};
+
 /**
  * The table of live child processes, addressed by session id.
  *
@@ -254,7 +272,7 @@ public:
      *
      *   detach_on_timeout is forced ON. A session is a child a caller can come
      *   back to, so a store that killed a child at the end of the window would
-     *   hand out ids for processes it had just destroyed — and `kill_process`
+     *   hand out ids for processes it had just destroyed — and `send_process`
      *   already exists for a caller that wants the child dead.
      *
      *   A window of 0 means "wait indefinitely" to the handle, which would
@@ -316,29 +334,63 @@ public:
         SessionId id, std::string input, bool close_input);
 
     /**
-     * Wait for one session's child to be observed terminal AND for its output
-     * capture to complete — the handle's own "work runs out" pair, because
-     * the two are settled by different tasks and waiting on the first alone
-     * reports an exit code with empty output.
+     * Wait for ANY one of these sessions to FINISH, and answer with ALL of
+     * them either way.
      *
-     * Polls the handle's own observation on a short cadence rather than
-     * re-entering its one-shot initial wait: the await task the store
-     * spawned is already the one authority on the terminal state, and this
-     * only watches it. @p timeout_milliseconds of 0 waits indefinitely.
+     * This is the set-general form of "wait for the child", and the two
+     * properties that make it one are worth stating separately, because each
+     * answers a different question:
      *
-     * @return the snapshot at the moment the wait ended, with BOTH facts
-     *         readable on it: `exited` and `output_drained` say which of the
-     *         two conditions the wait reached, and a deadline that fired
-     *         between them leaves `exited` true and `output_drained` false —
-     *         the descendant-holding-the-pipes case, not a contradiction.
-     *         nullopt when no session has that id.
+     *   the WAIT ends on the first session observed finished (or on the
+     *   deadline, whichever comes first) — one child ending is what a caller
+     *   waiting on a fan of them is waiting for, and the call does not then
+     *   wait for the rest;
+     *
+     *   the ANSWER is every session in the selection, not just the one that
+     *   ended: the siblings are the context the ended one is read in, and
+     *   reporting only the finisher would cost a second call to learn what
+     *   the others did meanwhile. Nothing about them is touched — a wait
+     *   changes no child's state, and the sessions that were running when the
+     *   call arrived are running when it returns.
+     *
+     * FINISHED means the handle's own "work runs out" pair — exited AND
+     * output_drained — the same condition the single-session wait used, and
+     * the same reason: exited() is published the moment the child is observed,
+     * while the bytes it printed may still be in the pipes, so answering on
+     * exited() alone would report an exit code with half its output. A
+     * selection with a session that has already finished therefore answers
+     * immediately, in one pass and without waiting at all.
+     *
+     * POLLED, not signalled. Each pass reads the handles' observations on a
+     * short cadence (kExitPollInterval); nothing here registers a callback on
+     * a child or wakes a waiter, so the cost of watching is a timer that fires
+     * a few times a second while the call is outstanding. That is the trade
+     * this method deliberately makes: the handles' await tasks remain the one
+     * authority on terminal state (their initial wait is one-shot by
+     * contract), and a poll over a handful of sessions costs nothing worth
+     * building a notification path for.
+     *
+     * @param ids the sessions to watch. EMPTY means every session in the
+     *        table, exactly as snapshots() reads it; ids naming no session are
+     *        skipped, since the answer's list is what says which exist. A
+     *        selection that resolves to nothing returns at once rather than
+     *        waiting out a deadline over no children.
+     * @param timeout_milliseconds how long to watch before answering anyway.
+     *        0 does not wait at all: the first pass IS the answer, which is
+     *        how a caller asks "what is going on right now".
+     * @return the snapshots of every selected session, in the id order
+     *         snapshots() uses, plus whether the wait ended on a finished
+     *         session or on the deadline, and how long it actually waited.
+     *         `timed_out` is exactly the negation of `finished`: neither an
+     *         empty selection nor a timeout of 0 can end on a session that
+     *         never finished.
      */
-    boost::asio::awaitable<std::optional<SessionSnapshot>> wait_for_exit(
-        SessionId id, std::uint64_t timeout_milliseconds);
+    boost::asio::awaitable<WaitOutcome> wait_for_any(
+        std::vector<SessionId> ids, std::uint64_t timeout_milliseconds);
 
     /// Signal one session's child to end: SIGKILL, or SIGTERM when
     /// @p graceful. The terminal state is still recorded by the await task,
-    /// so a caller that needs it follows with wait_for_exit(). False = no
+    /// so a caller that needs it follows with wait_for_any(). False = no
     /// session with that id, or its child was already gone.
     boost::asio::awaitable<bool> terminate(SessionId id, bool graceful);
 
@@ -384,7 +436,7 @@ public:
      *
      * @param graceful SIGTERM rather than SIGKILL. A graceful sweep does not
      *        wait for the children to act on it: a caller that must see them
-     *        gone follows with wait_for_exit() per session.
+     *        gone follows with wait_for_any() over their ids.
      * @return how many children were signalled (an already-exited child is
      *         not one).
      */
@@ -422,6 +474,16 @@ private:
     /// The snapshot for `session`, read on its OWN strand.
     static boost::asio::awaitable<SessionSnapshot> snapshot_on_session(
         SessionPtr session);
+
+    /// The sessions `ids` names, in the id order the snapshots come back in —
+    /// shared_ptr copies, so a release() during the hops that follow cannot
+    /// pull a session out from under the caller that selected it. Empty `ids`
+    /// selects the whole table; unknown ids are skipped. Callers must already
+    /// be on the store's strand, and must not hold the result across a
+    /// suspension point that could re-enter the table (they may hold it across
+    /// a session-strand hop, which is exactly what both readers do).
+    [[nodiscard]] std::vector<SessionPtr> select_on_strand(
+        const std::vector<SessionId>& ids) const;
 
     mutable boost::asio::strand<boost::asio::any_io_executor> _strand;
     boost::asio::any_io_executor _executor;

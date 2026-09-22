@@ -238,6 +238,140 @@ BOOST_AUTO_TEST_CASE(resolves_the_executable_through_the_spec_supplied_path)
                    "path-is-set=yes\n") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(a_path_that_exists_is_the_executable_path_is_not_consulted)
+{
+    // An explicit path selects that file without consulting PATH.
+    // The two fixtures share a FILE NAME and print different words, so this can
+    // only pass if the one on PATH was NOT substituted for the one the spec
+    // named — which is the point of checking the path first. A caller that
+    // wrote a path meant that file, and a same-named program from PATH is a
+    // different program.
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() /
+        ("simplex-process-path-test-" + std::to_string(::getpid()));
+    const fs::path by_path = dir / "by-path";
+    const fs::path on_path = dir / "on-path";
+    fs::create_directories(by_path);
+    fs::create_directories(on_path);
+
+    const auto write_tool = [](const fs::path& file, const std::string& word) {
+        {
+            std::ofstream out{file};
+            out << "#!/bin/sh\necho " << word << "\n";
+        }
+        fs::permissions(file, fs::perms::owner_exec, fs::perm_options::add);
+    };
+    write_tool(by_path / "simplex-fixture-tool", "ran-the-named-path");
+    write_tool(on_path / "simplex-fixture-tool", "ran-the-path-lookup");
+
+    // The child's PATH holds ONLY the other directory, and inheritance is off,
+    // so a PATH search would find the other fixture — and nothing else in the
+    // environment can rescue the launch either way.
+    auto s = run_scenario(process::LaunchSpec{
+        .executable = (by_path / "simplex-fixture-tool").string(),
+        .arguments = {},
+        .description = "the named path wins",
+        .initial_wait_timeout_milliseconds = std::uint64_t{5000},
+        .environment = std::vector<std::string>{
+            std::format("PATH={}", on_path.string()),
+        },
+        .inherit_environment = false,
+    });
+    std::error_code cleanup_ec;
+    fs::remove_all(dir, cleanup_ec);
+
+    BOOST_TEST(s.finished_on_time);
+    BOOST_TEST(s.handle->status().exit_code.value() == 0);
+    BOOST_TEST(s.handle->standard_output() == "ran-the-named-path\n");
+}
+
+namespace {
+struct ExecutableFixture {
+    std::filesystem::path previous = std::filesystem::current_path();
+    std::filesystem::path root = std::filesystem::temp_directory_path() /
+        ("simplex-executable-identity-" + std::to_string(::getpid()));
+    ExecutableFixture() {
+        std::filesystem::create_directories(root / "host");
+        std::filesystem::create_directories(root / "child");
+        std::filesystem::create_directories(root / "bin");
+        std::filesystem::current_path(root / "host");
+    }
+    ~ExecutableFixture() {
+        std::error_code ignored;
+        std::filesystem::current_path(previous, ignored);
+        std::filesystem::remove_all(root, ignored);
+    }
+    void write(const std::filesystem::path& path, const std::string& marker) {
+        std::ofstream{path} << "#!/bin/sh\necho " << marker << "\n";
+        std::filesystem::permissions(path, std::filesystem::perms::owner_exec,
+                                    std::filesystem::perm_options::add);
+    }
+    process::LaunchSpec spec(std::string executable) const {
+        process::LaunchSpec result;
+        result.executable = std::move(executable);
+        result.initial_wait_timeout_milliseconds = 5000;
+        result.environment = std::vector<std::string>{"PATH=" + (root / "bin").string()};
+        result.inherit_environment = false;
+        result.working_directory = (root / "child").string();
+        return result;
+    }
+};
+}
+
+BOOST_AUTO_TEST_CASE(missing_explicit_paths_do_not_fall_back_to_path)
+{
+    ExecutableFixture fixture;
+    fixture.write(fixture.root / "bin/tool", "wrong-program");
+    for (const auto& name : { (fixture.root / "absent/tool").string(),
+                             std::string("./tool"), std::string("../absent/tool") }) {
+        BOOST_CHECK_EXCEPTION(run_scenario(fixture.spec(name)),
+            process::ProcessException, [](const process::ProcessException& error) {
+                return error.stage() == process::ProcessException::Stage::ResolveExecutable;
+            });
+    }
+}
+
+BOOST_AUTO_TEST_CASE(bare_names_use_path_even_when_a_host_cwd_file_exists)
+{
+    ExecutableFixture fixture;
+    fixture.write(fixture.root / "host/tool", "wrong-host-program");
+    fixture.write(fixture.root / "child/tool", "wrong-child-program");
+    fixture.write(fixture.root / "bin/tool", "path-program");
+    auto result = run_scenario(fixture.spec("tool"));
+    BOOST_TEST(result.handle->standard_output() == "path-program\n");
+}
+
+BOOST_AUTO_TEST_CASE(relative_executables_are_anchored_before_child_chdir)
+{
+    ExecutableFixture fixture;
+    fixture.write(fixture.root / "host/tool", "host-program");
+    fixture.write(fixture.root / "child/tool", "wrong-child-program");
+    auto result = run_scenario(fixture.spec("./tool"));
+    BOOST_TEST(result.handle->standard_output() == "host-program\n");
+}
+
+BOOST_AUTO_TEST_CASE(relative_path_entries_are_anchored_before_child_chdir)
+{
+    ExecutableFixture fixture;
+    fixture.write(fixture.root / "host/tool", "host-program");
+    fixture.write(fixture.root / "child/tool", "wrong-child-program");
+    auto spec = fixture.spec("tool");
+    spec.environment = std::vector<std::string>{"PATH=."};
+    auto result = run_scenario(std::move(spec));
+    BOOST_TEST(result.handle->standard_output() == "host-program\n");
+}
+
+BOOST_AUTO_TEST_CASE(nonexecutable_explicit_path_does_not_fall_back)
+{
+    ExecutableFixture fixture;
+    std::ofstream{fixture.root / "host/tool"} << "not executable";
+    fixture.write(fixture.root / "bin/tool", "wrong-program");
+    BOOST_CHECK_EXCEPTION(run_scenario(fixture.spec("./tool")),
+        process::ProcessException, [](const process::ProcessException& error) {
+            return error.stage() == process::ProcessException::Stage::Spawn;
+        });
+}
+
 BOOST_AUTO_TEST_CASE(resolves_bare_names_via_parent_path_when_child_env_has_none)
 {
     // The documented fallback: with inherit_environment=false and no PATH

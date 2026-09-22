@@ -10,6 +10,7 @@ one configure — inside one container.
 | `Dockerfile.build-base` | `…/build-base` | The toolchain base: everything the core tree needs to configure, build and test, **no sources**. Built rarely, published to ghcr, cached hard. |
 | `Dockerfile.build-context` | `simplex-cpp-build` | `FROM` the base; `COPY`s the tree and runs one configure + build + full ctest. Rebuilt per tree change. |
 | `Dockerfile.build-portable` | `…/build-portable` | Same role as `build-base`, different goal: artifacts that **run on other machines**. See [Which base to use](#which-base-to-use). |
+| `Dockerfile.test-context` | `simplex-cpp-tools-test` | `FROM` the portable base; one configure + Debug build, then it **stays** — the hand-over image for driving the live agent loop (`tools/example/deepseek_chat.cpp`) in a disposable container. See [The manual-test image](#the-manual-test-image). |
 | `portability_floor.cmake` | — | The ctest that keeps `build-portable` honest: asserts no artifact requires a newer glibc than the release targets. |
 | `../cmake/SimplexRelease.cmake` | — | The release install rules: what a staged tree contains and the `$ORIGIN` RPATHs that make it load its own bundled runtime. See [Building a release](#building-a-release). |
 
@@ -171,7 +172,10 @@ cmake --install build
 
 ```text
 stage/
-├── bin/                  deepseek_chat, llm_deepseek_chat, prompt_template_demo
+├── bin/                  deepseek_chat, llm_deepseek_chat,
+│   │                     tools_deepseek_chat, prompt_template_demo
+│   ├── schemas/process/  the process tools' YAML declarations plus the
+│   │                     set's skill.yaml (how the five fit together)
 │   └── plugins/llm/      libllm_openai.so, libllm_deepseek.so
 └── lib/                  the project's shared libraries
                           plus libstdc++.so.6, libgcc_s.so.1, libboost_*.so*
@@ -232,6 +236,45 @@ on it).
 
 Recorded versions are inspectable: `docker inspect <image>` → LABELs
 (`simplex.build.*`).
+
+## The manual-test image
+
+`Dockerfile.build-context` answers "does the tree build and pass its suite in
+the reference context". `Dockerfile.test-context` answers the next question —
+"and does the agent loop actually work against a live provider, with real
+tools behind it" — which no suite can assert its way through, because it needs
+an API key and a human answering confirmation prompts.
+
+It builds `FROM` the **portable** base (the toolchain image this machine has:
+AlmaLinux 9, GCC 14.3.0, Boost 1.91.0) and leaves the sources at `/src`, a
+complete Debug build at `/src/build`, and the staged release at `/src/stage`,
+so nothing needs configuring inside the container:
+
+```bash
+docker build -f docker/Dockerfile.test-context -t simplex-cpp-tools-test .
+
+# the demo: real providers, real tools, confirmed at the terminal
+docker run -it --rm -e DEEPSEEK_API_KEY=sk-... simplex-cpp-tools-test
+
+# the offline half — catalogue only, no key, no child process
+docker run --rm simplex-cpp-tools-test \
+    /src/build/bin/tools_deepseek_chat --tools
+```
+
+The default `CMD` prints a short how-to (from `test-context-notes.sh`) and
+drops to a shell. The suite runs during the build (`--build-arg RUN_TESTS=0`
+skips it); re-running it inside the container also runs `process_destructive`,
+which keys on `/.dockerenv` — the test's own rule, documented in
+`process/test/CMakeLists.txt`.
+
+The image is Debug on purpose — assertions and symbols are what a manual
+session wants — and it keeps the source tree on purpose too: the process
+tools' declarations AND the set's `skill.yaml` resolve to the path the build
+baked in (`tools/intrinsic/toolsets/process/schemas`), which is the dev tree's
+answer. The staged `/src/stage` tree carries them the way a release does
+(`bin/schemas/process`), so both lookup paths can be exercised side by side.
+`--tools` and `--skill` in the demo print both halves of what the model is
+given, without an API key and without starting a child.
 
 ## Using it
 

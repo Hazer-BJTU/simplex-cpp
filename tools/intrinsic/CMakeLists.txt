@@ -25,15 +25,25 @@
 #                     (load_tool_declaration) and the reporting form a tool uses
 #                     so that a broken file costs one tool rather than the host
 #                     (try_load_tool_declaration).
+#   tool_result.hpp   ToolResult: how an intrinsic tool answers a call — the
+#                     fields a reader scans and the verbatim text blocks they
+#                     read, so a child's output arrives as the bytes it printed
+#                     rather than escaped inside a JSON string.
+#   skill_declaration.hpp  the same idea one level up: a TOOLSET's skill — the
+#                     prose about how its tools are used together — as a YAML
+#                     document, with load_skill_declaration() and the reporting
+#                     form a set uses, so a broken file costs the guidance
+#                     rather than the capability.
 #   toolset_base.hpp  IntrinsicToolSet: the ordered catalogue get_tools() hands
-#                     out, the name->tool table dispatch() routes by, and the
-#                     tools' build()/release() lifecycle. It deliberately does
-#                     NOT override prepare()/execute() — those carry the
-#                     invocation layer's checkpoint sequence and failure
-#                     contracts, and an in-process set wants them unchanged.
+#                     out, the name->tool table dispatch() routes by, the
+#                     tools' build()/release() lifecycle, and the set's skill
+#                     (load_skill() / skill()). It deliberately does NOT
+#                     override prepare()/execute() — those carry the invocation
+#                     layer's checkpoint sequence and failure contracts, and an
+#                     in-process set wants them unchanged.
 #
 # A toolset package therefore supplies only its domain: its tools, their
-# declarations, and whatever state they share.
+# declarations, its skill, and whatever state they share.
 #
 # YAML DECLARATIONS, and why the YAML reader is a PRIVATE dependency here: a
 # declaration file is a document (comments, block scalars, anchors), and
@@ -52,8 +62,10 @@
 # and the async runtime shared.
 # =============================================================================
 add_library(tools_intrinsic SHARED
+    src/skill_declaration.cpp
     src/tool_base.cpp
     src/tool_declaration.cpp
+    src/tool_result.cpp
     src/toolset_base.cpp
 )
 target_include_directories(tools_intrinsic PUBLIC

@@ -324,6 +324,47 @@ private:
     std::vector<ToolHandle> tools_;
 };
 
+/// A set that brings nothing but a skill: no tools to route, and the guidance
+/// about using them together, which is the one part of a ToolSet that is not
+/// about a call (tools/tool_skill.hpp). The registry's own view of it is
+/// inject_skills(), and these doubles are what the cases below register.
+class SkillfulSet final : public tools::ToolSet {
+public:
+    SkillfulSet(std::string set_name, std::optional<tools::ToolSetSkill> skill)
+        : name_(std::move(set_name)), skill_(std::move(skill))
+    {}
+
+    std::string_view name() const noexcept override { return name_; }
+
+    std::vector<model_io::Invocable> get_tools() const override { return {}; }
+
+    ToolHandle dispatch(const model_io::InvokeQuery&) const override
+    {
+        return nullptr;
+    }
+
+    [[nodiscard]] std::optional<tools::ToolSetSkill> skill() const override
+    {
+        return skill_;
+    }
+
+private:
+    std::string name_;
+    std::optional<tools::ToolSetSkill> skill_;
+};
+
+/// One skill with everything filled in, for the cases below to vary.
+[[nodiscard]] tools::ToolSetSkill skill_named(std::string name)
+{
+    tools::ToolSetSkill skill;
+    skill.name = std::move(name);
+    skill.title = "Working with " + skill.name;
+    skill.description = "How the " + skill.name + " tools fit together.";
+    skill.keywords = {skill.name};
+    skill.text = "Call " + skill.name + "_once first.";
+    return skill;
+}
+
 /// What one batch produced, and whether it produced it at all.
 struct BatchRun {
     ToolRegistry::Results results;
@@ -643,6 +684,61 @@ BOOST_AUTO_TEST_CASE(clear_unregisters_everything)
     BOOST_TEST(registry.supported_names().empty());
     // The set itself is only released, not dismantled: the test still holds it.
     BOOST_CHECK_EQUAL(set->supported_names().size(), 1u);
+}
+
+// ===== the sets' skills =======================================================
+
+BOOST_AUTO_TEST_CASE(inject_skills_appends_one_section_per_set_that_has_one)
+{
+    ToolRegistry registry;
+    registry.add(std::make_shared<SkillfulSet>("alpha_tools",
+                                              skill_named("alpha")));
+    // A set with nothing to say is passed over rather than answered with an
+    // empty section...
+    registry.add(std::make_shared<SkillfulSet>("plain_tools", std::nullopt));
+    registry.add(std::make_shared<SkillfulSet>("beta_tools",
+                                              skill_named("beta")));
+
+    model_io::PromptTemplate prompt;
+    prompt.add_section("persona", "", "You are a helpful assistant.",
+                       model_io::SectionStability::Immutable);
+
+    // The count is the number of SECTIONS, not of sets.
+    BOOST_TEST(registry.inject_skills(prompt) == 2u);
+
+    // ... and the sections arrive in registration order, at the end of what the
+    // prompt already had.
+    std::vector<std::string> names;
+    for (const model_io::PromptSection& section : prompt) {
+        names.push_back(section.name);
+    }
+    BOOST_REQUIRE_EQUAL(names.size(), 3u);
+    BOOST_TEST(names[0] == "persona");
+    BOOST_TEST(names[1] == "skill.alpha");
+    BOOST_TEST(names[2] == "skill.beta");
+
+    const std::string markdown = prompt.render().markdown;
+    BOOST_TEST(markdown.find("You are a helpful assistant.") == 0u);
+    BOOST_CHECK(markdown.find("## Working with alpha") != std::string::npos);
+    BOOST_CHECK(markdown.find("Call alpha_once first.") != std::string::npos);
+    BOOST_CHECK(markdown.rfind("Call beta_once first.")
+                > markdown.find("Call alpha_once first."));
+
+    // A second pass over the same prompt is the template's duplicate-name rule
+    // rather than the same guidance twice on every request.
+    BOOST_CHECK_THROW(registry.inject_skills(prompt), std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(an_empty_registry_injects_nothing)
+{
+    ToolRegistry registry;
+    model_io::PromptTemplate prompt;
+    prompt.add_section("persona", "", "You are a helpful assistant.",
+                       model_io::SectionStability::Immutable);
+
+    BOOST_TEST(registry.inject_skills(prompt) == 0u);
+    BOOST_TEST(prompt.size() == 1u);
+    BOOST_TEST(prompt.render().markdown == "You are a helpful assistant.\n");
 }
 
 // ===== routing ===============================================================

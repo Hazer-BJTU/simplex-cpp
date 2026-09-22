@@ -1,36 +1,17 @@
-# spawn_process — run a program, and wait a while to see if it finishes.
-#
-# THIS FILE IS THE DECLARATION, and src/tools.cpp is the implementation: the
-# name, the description and the argument schema below are everything a model is
-# told about this tool, and SpawnProcessTool is what actually validates a call
-# and runs it. See tools/intrinsic/tool_declaration.hpp for the format.
-#
-# The tests pin the two together (test_tools.cpp): every property here must be
-# one the implementation validates, every `default` must be the value it
-# settles, every clause a property states (its type, enum, minimum, minLength,
-# items) must be the rule the implementation applies, every `anyOf` branch must
-# be a call it accepts, and the type/security pair below must be the one it
-# declares.
+# Model-facing declaration; implemented in src/tools.cpp.
+# type/security document C++ attributes; the loader does not configure them.
 
 name: spawn_process
 description: >-
-  Run a program. Waits a short while for it to finish, so an ordinary command
-  returns its exit code and its whole output in this one call. A program still
-  running when that wait runs out keeps running in the background instead, and
-  the result carries a session id for it: use poll_processes or
-  read_process_output to follow it, write_process_input to feed it,
-  wait_process to wait for its exit and kill_process to end it. Set
-  expected_runtime_milliseconds when a command needs longer than the default to
-  finish in-call, or 0 to skip the wait and get an id straight away. There is
-  no shell - the program is run directly, so pipes, redirections and globs
-  reach it as literal arguments; run them through 'sh' with '-c' explicitly if
-  that is what you want.
+  Start a program directly, without shell parsing. Each arguments element is
+  passed as one literal argument; use run_command for shell syntax. Wait up to
+  expected_runtime_milliseconds for the child to exit; expiration leaves it
+  running. A successful launch returns a session_id, including when the child
+  has already exited. If finished is true, the result includes captured output;
+  check output_complete and truncation markers before treating it as complete.
+  Use poll_process to wait, read_process to read output, and send_process to
+  send input or a signal.
 
-# READ BY A HUMAN, NOT BY THE LOADER. The tool declares this pair in
-# write_attributes(); it is restated here so the whole of what a caller can
-# observe about this tool is in one place. SerialWrite because launching a
-# program changes the machine and two launches in one batch contend for the
-# same files; RequireConfirm because this is the call that runs arbitrary code.
 type: serial_write
 security: require_confirm
 
@@ -42,62 +23,51 @@ argument_schema:
       type: string
       minLength: 1
       description: >-
-        Program to run: a name resolved through PATH ('grep') or a path
-        ('/usr/bin/grep')
+        Bare program name searched through PATH, or an explicit path such as
+        ./tool or /usr/bin/grep. Explicit paths never fall back to PATH.
+        Relative paths are resolved against the host working directory before
+        applying working_directory, which only changes the child's directory.
     arguments:
       type: array
       items:
         type: string
-      # Declared like environment's, because the implementation settles it the
-      # same way: a call naming no arguments runs with none, and
-      # settle_string_list() puts the empty list in the query the model is
-      # shown, so the declaration has to say so (test_tools.cpp holds that in
-      # both directions — a settled value the file does not mention is as much
-      # a mismatch as a missing one).
       default: []
       description: >-
-        Arguments after the program name. Each element is one argument, passed
-        verbatim - do not quote or escape them
+        Arguments excluding the program name. Each array element is passed
+        verbatim as one argument. Do not add shell quotes or shell escapes; use
+        normal JSON escaping when encoding the string.
     description:
       type: string
       default: ""
       description: >-
-        Short label for this process, echoed back in every report about it
+        Optional label included in session reports.
     working_directory:
       type: string
-      # An empty string is refused rather than read as absent (spawn cannot
-      # start a child in ""), which is what minLength states. No default on
-      # purpose: absent means "inherit the host's working directory", and there
-      # is no path that could stand for that.
       minLength: 1
       description: >-
-        Directory to start the process in. Defaults to the host's own working
-        directory
+        Directory in which to start the child. Omitted means the host's
+        working directory; an empty string is invalid.
     environment:
       type: array
       items:
         type: string
       default: []
-      # The one rule this file cannot state: an element must be "KEY=VALUE"
-      # with a non-empty key, which no keyword in the vocabulary expresses
-      # (`items` says only what an element's TYPE is). The implementation owns
-      # it (tools.cpp), the description below states it for the model, and
-      # test_tools.cpp pins it as an implementation rule the declaration
-      # deliberately does not claim.
       description: >-
-        Extra environment entries as "KEY=VALUE" strings, merged over the
-        inherited environment by key
+        Environment entries as "KEY=VALUE" strings with nonempty keys; values
+        may be empty. Default: []. Entries override inherited values by key,
+        or supply the environment when inherit_environment is false.
     inherit_environment:
       type: boolean
       default: true
       description: >-
-        Whether the process inherits the host's environment
+        Inherit the host's environment before applying environment entries.
+        Default: true. False starts with only the supplied entries.
     expected_runtime_milliseconds:
       type: integer
       minimum: 0
       default: 5000
       description: >-
-        How long to wait for the program to finish before letting it continue
-        in the background. Raise it for a command expected to take a while but
-        still worth waiting for; 0 returns a session id immediately without
-        waiting
+        Initial wait for child exit, in milliseconds. Default: 5000. Zero
+        skips this wait. Expiration leaves the child running; this is not an
+        execution time limit. After an observed exit, output capture may take
+        up to another window of this duration before the call returns.

@@ -93,18 +93,39 @@ ProcessHandle::ProcessHandle(
             return std::string_view{kv.data(), kv.size()}
                 .starts_with("PATH=");
         });
-    auto exec_path = child_env_has_path
-        ? boost::process::environment::find_executable(
-              _spec.executable, used_envs)
-        : boost::process::environment::find_executable(_spec.executable);
 
-    // find_executable reports "not found" as an empty path rather than an
-    // error, so the check has to happen before the spawn try-block.
-    if (exec_path.empty()) {
+    // The PATH half of the rule below, against whichever environment the
+    // comment above selected.
+    const auto search_path = [&](const std::filesystem::path& name) {
+        const boost::process::v2::filesystem::path lookup(name.string());
+        return child_env_has_path
+            ? boost::process::environment::find_executable(lookup, used_envs)
+            : boost::process::environment::find_executable(lookup);
+    };
+
+    // Paths identify exactly one program; only bare names use PATH. Anchor
+    // relative paths (including PATH search results) to the host cwd before
+    // the child changes working_directory, so launch cannot select a different
+    // executable after confirmation.
+    const std::filesystem::path requested{_spec.executable};
+    auto exec_path = requested.has_parent_path()
+        ? boost::process::v2::filesystem::path(requested.string())
+        : search_path(requested);
+    std::error_code resolve_ec;
+    if (!exec_path.empty()) {
+        const auto absolute = std::filesystem::absolute(
+            std::filesystem::path(exec_path.string()), resolve_ec);
+        if (!resolve_ec) {
+            exec_path = boost::process::v2::filesystem::path(absolute.string());
+        }
+    }
+    if (exec_path.empty() || resolve_ec ||
+        !std::filesystem::exists(std::filesystem::path(exec_path.string()),
+                                 resolve_ec)) {
         throw ProcessException(
             ProcessException::Stage::ResolveExecutable,
-            "executable not found",
-            {},
+            "executable not found or path could not be resolved",
+            resolve_ec,
             _spec.executable,
             _spec.description
         );

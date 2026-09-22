@@ -79,6 +79,15 @@
 // tool_call_id, and the provider is waiting for the result of the call IT issued
 // (invoke_exception.hpp).
 //
+// THE SET'S SKILL, which is the one thing here that is not about a single call.
+// A model is told what each tool does and nothing about how the set's tools fit
+// together; that prose is the set's skill (tools/tool_skill.hpp), and
+// skill()/inject_skill() are how it reaches the system prompt: ONE section,
+// appended at the end, in the Growing tier — after the host's identity and
+// persona, before whatever it rewrites per turn. A set carries none by default,
+// and inject_skill() then contributes nothing: a set with no guidance to give
+// is an ordinary set, not a broken one.
+//
 // What this layer deliberately does not do: schedule. It reports what a call
 // needs (`query.type`, `query.security`) and runs one call when asked; the host
 // owns the grouping, the ordering and the concurrency.
@@ -87,6 +96,7 @@
 #include <exception>
 #include <format>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -99,6 +109,7 @@
 #include "dataclass/model_io.hpp"
 #include "tools/invoke_exception.hpp"
 #include "tools/security_check.hpp"
+#include "tools/tool_skill.hpp"
 
 namespace tools {
 
@@ -371,6 +382,61 @@ public:
             results.push_back(tool.name);
         }
         return results;
+    }
+
+    // ===== the set's skill ===================================================
+
+    /**
+     * The guidance this set carries for a model that is about to use its tools
+     * — how they fit together, which call comes first, what the expensive
+     * mistake is — or nullopt when it carries none, which is the default and
+     * an ordinary state rather than a broken one.
+     *
+     * Not part of routing and not read by any call: a skill is advice, the tool
+     * declarations stay the contract, and a model that ignores the advice can
+     * still make every call. See tools/tool_skill.hpp for what a skill is and
+     * where a set's one comes from.
+     *
+     * The set owns the storage and hands out a copy: a caller may hold it while
+     * the set changes underneath, and every way of carrying a skill that this
+     * tree ships fills one struct from one file.
+     */
+    [[nodiscard]] virtual std::optional<ToolSetSkill> skill() const {
+        return std::nullopt;
+    }
+
+    /**
+     * Append this set's skill to `prompt` as ONE section at the end, and answer
+     * whether it contributed one: false for a set that carries no skill, or one
+     * whose skill has no text.
+     *
+     * The section is named skill_section_name(skill().name) — the skill's own
+     * name, prefixed, so a host can find it again with prompt.find(...) without
+     * knowing which set put it there. Its body is the skill's text and its
+     * heading is the skill's title (none when the title is empty). The template
+     * copies what it is given, so nothing here has to outlive the call.
+     *
+     * Growing, deliberately: a skill is neither the host's identity (Immutable)
+     * nor text rewritten per turn (Volatile), it is fixed guidance that belongs
+     * with the accumulating context — so it may be added after the persona and
+     * the tool listing, and must be added BEFORE the volatile tail, since the
+     * template refuses to lay a section out in front of bytes that are already
+     * meant to change (dataclass/prompt_template.hpp).
+     *
+     * Injecting the same set twice is a std::logic_error out of add_section(),
+     * which is PromptTemplate's own duplicate-name rule and the honest answer:
+     * one set's skill is one section, and a prompt carrying the same guidance
+     * twice would pay for it in tokens on every request. A host that wants to
+     * know first asks prompt.contains(skill_section_name(...)).
+     */
+    [[nodiscard]] bool inject_skill(model_io::PromptTemplate& prompt) const {
+        const std::optional<ToolSetSkill> carried = skill();
+        if (!carried.has_value() || carried->text.empty()) {
+            return false;
+        }
+        prompt.add_section(skill_section_name(carried->name), carried->title,
+                           carried->text, model_io::SectionStability::Growing);
+        return true;
     }
 
     /**

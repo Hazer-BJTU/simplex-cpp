@@ -114,6 +114,15 @@
 // turn whose tool_call_ids do not match the calls it issued
 // (invoke_exception.hpp, correlate()).
 //
+// THE SETS' SKILLS, for the host that wants them in ONE call. A toolset's skill
+// is the prose about how its tools are used together, as opposed to what each
+// one does (tools/tool_skill.hpp), and inject_skills() is the registry-level
+// shortcut over it: every registered set's skill becomes one section of the
+// host's system prompt, appended in registration order. Nothing about routing or
+// about a batch is involved — this table is simply the one place that knows
+// every set the host registered — and a set that carries no skill contributes
+// nothing rather than an empty section.
+//
 // OWNERSHIP AND REENTRANCY. A ToolRegistry is owned and driven by the agent
 // loop, and execute() is deliberately not a reentrant dispatcher: ONE active
 // execute() per registry instance, which the loop engine guarantees by
@@ -407,6 +416,39 @@ public:
                 std::make_move_iterator(offered.end()));
         }
         return names;
+    }
+
+    /**
+     * Append every registered set's skill to `prompt` — one section per set, in
+     * registration order — and answer how many contributed one.
+     *
+     * The shortcut for the host that wants the whole catalogue's guidance in
+     * one call, and the only thing here that is not about a call: a set's skill
+     * is the prose about using its tools together (tools/tool_skill.hpp), and
+     * this is ToolSet::inject_skill() over the table. Sets that carry no skill
+     * are passed over, so the count is the number of SECTIONS added rather than
+     * the number of sets registered.
+     *
+     * The sections are ordinary Growing sections with the names
+     * skill_section_name() builds, so they land at the end of the prompt and a
+     * host may find them again; a duplicate name — the same skill injected
+     * twice, or two sets carrying the same skill name — throws
+     * std::logic_error out of PromptTemplate, which is that class's own rule
+     * for a layout that would pay for the same guidance twice on every request.
+     * Add them before the prompt's volatile tail (ToolSet::inject_skill says
+     * why).
+     *
+     * @param prompt the system prompt to append to, mutated in place.
+     * @return the number of sets that contributed a section.
+     */
+    [[nodiscard]] std::size_t inject_skills(model_io::PromptTemplate& prompt) const {
+        std::size_t injected = 0;
+        for (const ToolSetPtr& tool_set : _toolset_list) {
+            if (tool_set->inject_skill(prompt)) {
+                ++injected;
+            }
+        }
+        return injected;
     }
 
     // ===== dispatch ==========================================================

@@ -1,6 +1,8 @@
 #define BOOST_TEST_MODULE ProcessToolsTests
 #include <boost/test/unit_test.hpp>
 
+#include "result_text.hpp"
+
 #include "tools/intrinsic/process/schemas.hpp"
 #include "tools/intrinsic/process/toolset.hpp"
 #include "tools/intrinsic/process/tools.hpp"
@@ -33,7 +35,7 @@
 
 #include <nlohmann/json.hpp>
 
-// Tests for the six process tools: what each one answers, what it refuses and
+// Tests for the five process tools: what each one answers, what it refuses and
 // at which checkpoint, and what it DECLARES — the type/security pair a batch
 // scheduler and the security policy read off a settled call.
 //
@@ -48,6 +50,7 @@
 // the process.
 
 namespace asio = boost::asio;
+using process_test::ResultText;
 using tools::ConfirmDecision;
 using tools::InvokeConfirmEvent;
 using tools::InvokeException;
@@ -166,14 +169,15 @@ struct Fixture {
         return record;
     }
 
-    /// The JSON a successful tool result carries. Fails the case when the
-    /// record is a failure record instead.
-    nlohmann::json payload_of(const model_io::InvokeReturn& record)
+    /// One successful tool result, read back into the fields and blocks the
+    /// model was given (result_text.hpp). Fails the case when the record is a
+    /// failure record instead.
+    process_test::ResultText result_of(const model_io::InvokeReturn& record)
     {
         BOOST_TEST_REQUIRE(!tools::is_error(record),
                            "expected a result, got a failure: "
                                << record.output.raw);
-        return nlohmann::json::parse(record.output.raw);
+        return process_test::ResultText(record.output.raw);
     }
 };
 
@@ -225,7 +229,11 @@ struct SchemaDirectoryOverride {
 };
 
 /// A package of declarations: `directory` holding a copy of exactly `tools`'s
-/// files, taken from the real package.
+/// files, taken from the real package — plus the set's skill.yaml, which is a
+/// document of the same package rather than a seventh tool (skill_declaration.hpp).
+/// Leaving it out would make every package built here one that also fails to
+/// describe how its tools are used, which is a second failure these cases are
+/// not about.
 ///
 /// Call it BEFORE pointing the override at the result: it reads the files from
 /// wherever schema_directory() answers at the time.
@@ -244,6 +252,9 @@ struct SchemaDirectoryOverride {
                                    std::filesystem::copy_options::overwrite_existing,
                                    ignored);
     }
+    std::filesystem::copy_file(source / "skill.yaml", directory / "skill.yaml",
+                               std::filesystem::copy_options::overwrite_existing,
+                               ignored);
     return directory;
 }
 
@@ -264,29 +275,48 @@ std::string spawn_through_tool(Fixture& f, std::string executable,
         nlohmann::json{{"executable", std::move(executable)},
                        {"arguments", std::move(arguments)},
                        {"expected_runtime_milliseconds", 0}}));
-    return f.payload_of(record).at("session_id").get<std::string>();
+    return f.result_of(record).field("session_id");
+}
+
+/// Wait for `id` through the tool and hand back the result — how most cases
+/// below get a child to its terminal state before asserting on it. One id in
+/// the list is the one-session form of the call (tools.hpp).
+///
+/// `include_output` is FALSE by default on purpose: this is a WAIT, not a read,
+/// and a poll with the default would consume the session's new bytes — which
+/// the cases using this helper are about to assert on, through
+/// read_process. The ones that want the output in this answer ask for it.
+process_test::ResultText wait_through_tool(Fixture& f, const std::string& id,
+                                           std::uint64_t wait_timeout = 5000,
+                                           bool include_output = false)
+{
+    return f.result_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"session_ids", nlohmann::json::array({id})},
+                       {"wait_timeout_milliseconds", wait_timeout},
+                       {"include_output", include_output}})));
 }
 
 } // namespace
 
 // ---- the set itself ---------------------------------------------------------
 
-BOOST_AUTO_TEST_CASE(the_set_offers_six_routable_tools)
+BOOST_AUTO_TEST_CASE(the_set_offers_five_routable_tools)
 {
     Fixture f;
     BOOST_TEST(f.set->name() == std::string_view("process"));
 
     const std::vector<model_io::Invocable> catalogue = f.set->get_tools();
-    BOOST_TEST_REQUIRE(catalogue.size() == std::size_t{6});
+    BOOST_TEST_REQUIRE(catalogue.size() == std::size_t{5});
 
-    // Presentation order follows the workflow — launch, observe, then act on a
-    // live child — because that order is what the model reads.
+    // Presentation order follows the workflow — the two launchers, then the
+    // observing calls, then the one that acts on a live child — because that
+    // order is what the model reads.
     BOOST_TEST(catalogue[0].name == std::string(tool_names::kSpawn));
-    BOOST_TEST(catalogue[1].name == std::string(tool_names::kPoll));
-    BOOST_TEST(catalogue[2].name == std::string(tool_names::kRead));
-    BOOST_TEST(catalogue[3].name == std::string(tool_names::kWait));
-    BOOST_TEST(catalogue[4].name == std::string(tool_names::kWrite));
-    BOOST_TEST(catalogue[5].name == std::string(tool_names::kKill));
+    BOOST_TEST(catalogue[1].name == std::string(tool_names::kRun));
+    BOOST_TEST(catalogue[2].name == std::string(tool_names::kPoll));
+    BOOST_TEST(catalogue[3].name == std::string(tool_names::kRead));
+    BOOST_TEST(catalogue[4].name == std::string(tool_names::kSend));
 
     // Every tool carries a description and an object schema: this is the whole
     // contract a model has to work from.
@@ -303,47 +333,100 @@ BOOST_AUTO_TEST_CASE(the_set_offers_six_routable_tools)
     BOOST_TEST_REQUIRE(groups.size() == 1u);
     BOOST_TEST(groups[0].name == "process");
     BOOST_TEST(groups[0].missing.empty());
-    BOOST_TEST(groups[0].registered.size() == std::size_t{6});
+    BOOST_TEST(groups[0].registered.size() == std::size_t{5});
+}
+
+BOOST_AUTO_TEST_CASE(the_set_carries_its_skill_and_hands_it_to_a_prompt)
+{
+    Fixture f;
+
+    // The one document in the package that is not a tool: how the five are used
+    // TOGETHER, which is the thing no per-tool description can say
+    // (tools/tool_skill.hpp).
+    const std::optional<tools::ToolSetSkill> skill = f.set->skill();
+    BOOST_TEST_REQUIRE(skill.has_value());
+    BOOST_TEST(skill->name == "process");
+    // Every field a host files a skill by, and the text a model reads.
+    BOOST_TEST(!skill->title.empty());
+    BOOST_TEST(!skill->description.empty());
+    BOOST_TEST(!skill->keywords.empty());
+    BOOST_TEST(!skill->text.empty());
+
+    // What the skill is FOR, held against the set it belongs to: it must name
+    // every tool the set actually registered. A tool renamed in code and not in
+    // this file would otherwise leave a model following instructions about a
+    // call that no longer exists — the same cross-check the declarations get
+    // (every_tool_is_declared_by_its_own_yaml_file), one level up.
+    for (const std::string& name : f.set->supported_names()) {
+        BOOST_TEST_CONTEXT("the skill mentions " << name) {
+            BOOST_TEST(skill->text.find(name) != std::string::npos);
+        }
+    }
+
+    // And it reaches a prompt whole: one section, named after the skill,
+    // carrying the file's text verbatim (which is the loader's promise about
+    // `text`, and the reason the whole document is written by hand).
+    model_io::PromptTemplate prompt;
+    prompt.add_section("persona", "", "You are a helpful assistant.",
+                       model_io::SectionStability::Immutable);
+    BOOST_TEST(f.set->inject_skill(prompt));
+
+    const auto injected = prompt.find(tools::skill_section_name(skill->name));
+    BOOST_REQUIRE(injected != prompt.end());
+    BOOST_TEST(injected->title == skill->title);
+    BOOST_TEST(injected->text == skill->text);
+
+    const std::string markdown = prompt.render().markdown;
+    BOOST_TEST(markdown.find("You are a helpful assistant.") == 0u);
+    BOOST_CHECK(markdown.find(skill->text) != std::string::npos);
+    // After what the host had already said, never before it.
+    BOOST_CHECK(markdown.find("You are a helpful assistant.")
+                < markdown.find(skill->text));
 }
 
 BOOST_AUTO_TEST_CASE(a_package_missing_a_declaration_reports_a_degraded_family)
 {
-    // The state the capability group exists for: five tools that can start,
-    // read and end a session and a sixth that never arrived. The set registers
-    // the five — a broken declaration costs its own tool, and no more
+    // The state the capability group exists for: three tools that can start,
+    // read and wait on a session, and two that never arrived. The set
+    // registers the three — a broken declaration costs its own tool, and no more
     // (tool_declaration.hpp) — and reports the family in one place, rather than
-    // leaving the operator to assemble it from five healthy tools and one odd
-    // line.
+    // leaving the operator to assemble it from three healthy tools and two odd
+    // lines.
     const std::filesystem::path scratch =
         std::filesystem::temp_directory_path()
         / ("simplex_partial_process_package_" + std::to_string(::getpid()));
     package_with(scratch, {tool_names::kSpawn, tool_names::kPoll,
-                           tool_names::kRead, tool_names::kWait,
-                           tool_names::kWrite});
+                           tool_names::kRead});
     {
         SchemaDirectoryOverride override(scratch);
         Fixture f;
 
-        BOOST_TEST(f.set->tool_count() == 5u);
-        BOOST_TEST(f.set->dispatch(call_for(std::string(tool_names::kKill)))
+        BOOST_TEST(f.set->tool_count() == 3u);
+        BOOST_TEST(f.set->dispatch(call_for(std::string(tool_names::kSend)))
                    == nullptr);
 
         const std::vector<tools::intrinsic::IntrinsicToolSet::CapabilityGroup>
             groups = f.set->capability_groups();
         BOOST_TEST_REQUIRE(groups.size() == 1u);
         BOOST_TEST(groups[0].name == "process");
-        BOOST_TEST(groups[0].registered.size() == 5u);
-        BOOST_TEST_REQUIRE(groups[0].missing.size() == 1u);
-        BOOST_TEST(groups[0].missing.front() == std::string(tool_names::kKill));
+        BOOST_TEST(groups[0].registered.size() == 3u);
+        BOOST_TEST_REQUIRE(groups[0].missing.size() == 2u);
+        // The pair that is gone is named in the family's own order: the
+        // command-line launcher, then the tool that ends a child. Note what is
+        // NOT missing — spawn_process is registered — which is exactly the
+        // degraded state the group exists to name: a model able to start work it
+        // cannot end.
+        BOOST_TEST(groups[0].missing.front() == std::string(tool_names::kRun));
+        BOOST_TEST(groups[0].missing.back() == std::string(tool_names::kSend));
         // The report is the WHOLE family, not only its bad half: a host can say
         // which family is degraded as well as what is gone from it.
         BOOST_TEST(groups[0].registered.size() + groups[0].missing.size()
-                   == std::size_t{6});
+                   == std::size_t{5});
     }
 
     // The other quiet answer: a package carrying none of the declarations is
     // not a degraded set, it is a set that does not offer this family at all —
-    // and the report says so rather than leaving six failures to be counted.
+    // and the report says so rather than leaving five failures to be counted.
     const std::filesystem::path empty = scratch / "empty";
     std::error_code ignored;
     std::filesystem::create_directories(empty, ignored);
@@ -356,7 +439,7 @@ BOOST_AUTO_TEST_CASE(a_package_missing_a_declaration_reports_a_degraded_family)
             groups = f.set->capability_groups();
         BOOST_TEST_REQUIRE(groups.size() == 1u);
         BOOST_TEST(groups[0].registered.empty());
-        BOOST_TEST(groups[0].missing.size() == std::size_t{6});
+        BOOST_TEST(groups[0].missing.size() == std::size_t{5});
     }
 
     std::filesystem::remove_all(scratch, ignored);
@@ -364,7 +447,7 @@ BOOST_AUTO_TEST_CASE(a_package_missing_a_declaration_reports_a_degraded_family)
 
 // ---- the declarations on disk -----------------------------------------------
 //
-// The six tools are DECLARED in schemas/*.yaml, one file per tool, next to this
+// The five tools are DECLARED in schemas/*.yaml, one file per tool, next to this
 // package's sources, and the case below is what keeps a declaration and the
 // implementation from drifting apart. Every check in it is generic over the
 // tools: the file states the properties, their types, their defaults, their
@@ -378,11 +461,11 @@ namespace {
 /// One tool and the call that names ONLY what its schema requires — the
 /// smallest call the document allows, which the checks below perturb.
 ///
-/// For one of the six it is not a call the implementation accepts at all:
-/// write_process_input states a cross-property rule in `anyOf`, so the
-/// required-only call is invalid by the document's own terms. The case asserts
-/// that refusal rather than padding the call until it passes, which is what it
-/// used to do.
+/// For one of the five it is not a call the implementation accepts at all:
+/// send_process states a cross-property rule in `anyOf` (send something, close
+/// the input, or name a signal), so the required-only call is invalid by the
+/// document's own terms. The case asserts that refusal rather than padding the
+/// call until it passes, which is what it used to do.
 struct DeclaredTool {
     std::string_view name;
     nlohmann::json minimal_arguments;
@@ -534,7 +617,8 @@ struct ElementProbe {
                                          std::string_view property,
                                          const nlohmann::json& items)
 {
-    if (tool == tool_names::kSpawn && property == "environment") {
+    if ((tool == tool_names::kSpawn || tool == tool_names::kRun)
+        && property == "environment") {
         return ElementProbe{nlohmann::json::array({"KEY=VALUE"}),
                             nlohmann::json::array({satisfying_value(items)})};
     }
@@ -641,28 +725,29 @@ BOOST_AUTO_TEST_CASE(every_tool_is_declared_by_its_own_yaml_file)
 {
     Fixture f;
 
-    // The smallest call each document allows. For write_process_input that is
-    // NOT a call the implementation accepts: its declaration states a
-    // cross-property rule in `anyOf`, and the case asserts the refusal (2)
-    // rather than padding the call until it passes — a padded call would hide
-    // exactly the disagreement it is here to catch.
+    // The smallest call each document allows. For send_process that is NOT a
+    // call the implementation accepts: its declaration states a cross-property
+    // rule in `anyOf`, and the case asserts the refusal (2) rather than padding
+    // the call until it passes — a padded call would hide exactly the
+    // disagreement it is here to catch.
     const std::vector<DeclaredTool> declared{
         {tool_names::kSpawn, {{"executable", "true"}}},
+        {tool_names::kRun, {{"command", "true"}}},
         {tool_names::kPoll, nlohmann::json::object()},
         {tool_names::kRead, {{"session_id", "proc_1"}}},
-        {tool_names::kWait, {{"session_id", "proc_1"}}},
-        {tool_names::kWrite, {{"session_id", "proc_1"}}},
-        {tool_names::kKill, {{"session_id", "proc_1"}}},
+        {tool_names::kSend, {{"session_id", "proc_1"}}},
     };
 
-    // The directory holds exactly one file per tool. A declaration nothing
-    // loads is a document nobody will notice going stale; a tool without one is
-    // a tool the loader reports and the set then skips.
+    // The directory holds exactly one declaration file per tool — and one
+    // document that is not a tool at all, the set's skill.yaml, which the next
+    // case loads (a declaration nothing loads is a document nobody will notice
+    // going stale; a tool without one is a tool the loader reports and the set
+    // then skips).
     for (const std::filesystem::directory_entry& entry :
          std::filesystem::directory_iterator(tools::intrinsic::schema_directory())) {
         if (entry.path().extension() != ".yaml") continue;
         const std::string stem = entry.path().stem().string();
-        bool known = false;
+        bool known = stem == "skill";
         for (const DeclaredTool& tool : declared) {
             known = known || stem == tool.name;
         }
@@ -990,7 +1075,22 @@ BOOST_AUTO_TEST_CASE(each_tool_declares_its_type_and_security)
         {tool_names::kSpawn, {{"executable", "true"}},
          model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
-        {tool_names::kKill, {{"session_id", "proc_1"}},
+        // run_command is the same act with a shell in front of it, so the same
+        // pair for the same reasons: the line runs arbitrary code (that is what
+        // is confirmed) and it changes the machine outside this process, where
+        // two commands in one batch contend for the same files. The interpreter
+        // does not move either answer — what the shell is asked to run is
+        // exactly what the confirmer was shown — so EVERY shape of the call
+        // declares it, the empty-arguments one included.
+        {tool_names::kRun, {{"command", "echo hi"}},
+         model_io::InvokeType::SerialWrite,
+         model_io::InvokeSecurity::RequireConfirm},
+        {tool_names::kRun,
+         {{"command", "make -j4"}, {"working_directory", "/tmp"},
+          {"expected_runtime_milliseconds", 0}},
+         model_io::InvokeType::SerialWrite,
+         model_io::InvokeSecurity::RequireConfirm},
+        {tool_names::kSend, {{"session_id", "proc_1"}, {"signal", "kill"}},
          model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
         // Stdin writes change the outside too — the bytes ARE the child's next
@@ -998,17 +1098,18 @@ BOOST_AUTO_TEST_CASE(each_tool_declares_its_type_and_security)
         // `close_input` can drop the other outright. SerialWrite. (What does
         // not decide it: the channel is thread-safe, so an overlap cannot
         // corrupt memory. That is the store doing its job.)
-        {tool_names::kWrite, {{"session_id", "proc_1"}, {"input", "x"}},
+        {tool_names::kSend, {{"session_id", "proc_1"}, {"input", "x"}},
          model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
-        {tool_names::kWrite, {{"session_id", "proc_1"}, {"close_input", true}},
+        {tool_names::kSend, {{"session_id", "proc_1"}, {"close_input", true}},
          model_io::InvokeType::SerialWrite,
          model_io::InvokeSecurity::RequireConfirm},
 
-        // poll: ReadOnly for EVERY shape, including the two that move internal
-        // state — consuming each session's new output and reaping the exited
-        // ones. Those are the rows that matter here: if the rule ever drifts
-        // back to "touches state, therefore a write", this is what fails.
+        // poll: ReadOnly for EVERY shape, including the three that move
+        // internal state or spend time — consuming each session's new output,
+        // reaping the exited ones, and WAITING. Those are the rows that matter
+        // here: if the rule ever drifts back to "touches state or takes time,
+        // therefore a write", this is what fails.
         {tool_names::kPoll, nlohmann::json::object(),
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
         {tool_names::kPoll, {{"include_output", true}, {"release_exited", false}},
@@ -1016,6 +1117,13 @@ BOOST_AUTO_TEST_CASE(each_tool_declares_its_type_and_security)
         {tool_names::kPoll, {{"include_output", false}, {"release_exited", true}},
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
         {tool_names::kPoll, {{"session_ids", {"proc_1"}}, {"include_output", false}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        // The two shapes of the WAIT: a look that does not wait at all, and a
+        // long wait that also reaps. Watching a child is not driving it.
+        {tool_names::kPoll, {{"wait_timeout_milliseconds", 0}},
+         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
+        {tool_names::kPoll, {{"wait_timeout_milliseconds", 60000},
+                             {"release_exited", true}},
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
 
         // read: ReadOnly for every shape too — the delta that consumes the
@@ -1029,15 +1137,6 @@ BOOST_AUTO_TEST_CASE(each_tool_declares_its_type_and_security)
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
         {tool_names::kRead,
          {{"session_id", "proc_1"}, {"full", true}, {"release", true}},
-         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
-
-        // wait: ReadOnly too. Waiting watches a child the host already started;
-        // `release` removes the session, which is the table's business.
-        {tool_names::kWait, {{"session_id", "proc_1"}},
-         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
-        {tool_names::kWait, {{"session_id", "proc_1"}, {"release", false}},
-         model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
-        {tool_names::kWait, {{"session_id", "proc_1"}, {"release", true}},
          model_io::InvokeType::ReadOnly, model_io::InvokeSecurity::Trusted},
     };
 
@@ -1070,7 +1169,7 @@ BOOST_AUTO_TEST_CASE(settling_materializes_the_defaults_into_the_query)
     // The settled query IS the call: it is what the security policy judges,
     // what a human confirmer is shown, what invoke() reads and what the record
     // carries back. A default the tool applied privately — validated but never
-    // written into arguments — would mean all four of those see a different
+    // written into arguments — would mean all five of those see a different
     // call from the one that runs, so this asserts the DEFAULTS ARE IN THERE.
     Fixture f;
     struct Expectation {
@@ -1088,9 +1187,18 @@ BOOST_AUTO_TEST_CASE(settling_materializes_the_defaults_into_the_query)
           {"inherit_environment", true},
           {"expected_runtime_milliseconds",
            tools::intrinsic::SpawnProcessTool::kDefaultExpectedRuntimeMilliseconds}}},
+        {tool_names::kRun,
+         {{"command", "ls /tmp"}},
+         {{"command", "ls /tmp"},
+          {"environment", nlohmann::json::array()},
+          {"inherit_environment", true},
+          {"expected_runtime_milliseconds",
+           tools::intrinsic::RunCommandTool::kDefaultExpectedRuntimeMilliseconds}}},
         {tool_names::kPoll,
          nlohmann::json::object(),
          {{"session_ids", nlohmann::json::array()},
+          {"wait_timeout_milliseconds",
+           tools::intrinsic::PollProcessTool::kDefaultWaitTimeoutMilliseconds},
           {"include_output", true},
           {"release_exited", false}}},
         {tool_names::kRead,
@@ -1099,19 +1207,18 @@ BOOST_AUTO_TEST_CASE(settling_materializes_the_defaults_into_the_query)
           {"stream", "both"},
           {"full", false},
           {"release", false}}},
-        {tool_names::kWrite,
+        {tool_names::kSend,
          {{"session_id", "proc_1"}, {"close_input", true}},
          {{"session_id", "proc_1"},
           {"input", ""},
-          {"close_input", true}}},
-        {tool_names::kWait,
-         {{"session_id", "proc_1"}},
+          {"close_input", true},
+          {"signal", ""}}},
+        {tool_names::kSend,
+         {{"session_id", "proc_1"}, {"signal", "term"}},
          {{"session_id", "proc_1"},
-          {"timeout_milliseconds", tools::intrinsic::WaitProcessTool::kDefaultTimeoutMilliseconds},
-          {"release", false}}},
-        {tool_names::kKill,
-         {{"session_id", "proc_1"}},
-         {{"session_id", "proc_1"}, {"graceful", false}}},
+          {"input", ""},
+          {"close_input", false},
+          {"signal", "term"}}},
     };
 
     for (const Expectation& expectation : expected) {
@@ -1155,6 +1262,16 @@ BOOST_AUTO_TEST_CASE(settling_materializes_the_defaults_into_the_query)
     (void)f.prepare(named_directory);
     BOOST_CHECK(named_directory.arguments.at("working_directory") ==
                 nlohmann::json("/tmp"));
+
+    // run_command settles by the same rule, and settles NOTHING ELSE: it has no
+    // `description` property at all — the command is the session's label, and
+    // the tool fills the spec in with it rather than asking the model for one —
+    // so a settled call carries only the properties its declaration names.
+    model_io::InvokeQuery command = call_for(
+        std::string(tool_names::kRun), nlohmann::json{{"command", "true"}});
+    (void)f.prepare(command);
+    BOOST_CHECK(!command.arguments.contains("description"));
+    BOOST_CHECK(!command.arguments.contains("working_directory"));
 }
 
 // ---- argument checking ------------------------------------------------------
@@ -1184,6 +1301,24 @@ BOOST_AUTO_TEST_CASE(malformed_arguments_fail_at_the_argument_parse_stage)
         {tool_names::kSpawn, {{"executable", "true"}, {"working_directory", ""}}},
         {tool_names::kSpawn, {{"executable", "true"},
                               {"inherit_environment", "yes"}}},
+        // run_command: the one required property, and the launch arguments it
+        // shares with spawn_process — the same rules, refused the same way,
+        // because they are the same code (ProcessToolBase's settle pair).
+        {tool_names::kRun, nlohmann::json::object()},
+        {tool_names::kRun, {{"command", ""}}},
+        {tool_names::kRun, {{"command", 42}}},
+        {tool_names::kRun, {{"command", "true"}, {"working_directory", 7}}},
+        {tool_names::kRun, {{"command", "true"}, {"working_directory", ""}}},
+        {tool_names::kRun, {{"command", "true"},
+                            {"environment", nlohmann::json::array({"NOEQUALS"})}}},
+        {tool_names::kRun, {{"command", "true"},
+                            {"environment", nlohmann::json::array({"=novalue"})}}},
+        {tool_names::kRun, {{"command", "true"}, {"environment", "PATH=/bin"}}},
+        {tool_names::kRun, {{"command", "true"}, {"inherit_environment", "yes"}}},
+        {tool_names::kRun, {{"command", "true"},
+                            {"expected_runtime_milliseconds", -1}}},
+        {tool_names::kRun, {{"command", "true"},
+                            {"expected_runtime_milliseconds", "soon"}}},
         // `arguments` that is not an object at all: every property would read
         // as absent and the call would run on defaults the model never chose,
         // so it is refused where the model can see why.
@@ -1195,14 +1330,16 @@ BOOST_AUTO_TEST_CASE(malformed_arguments_fail_at_the_argument_parse_stage)
         {tool_names::kRead, {{"session_id", ""}}},
         {tool_names::kRead, {{"session_id", "proc_1"}, {"stream", "stdlog"}}},
         {tool_names::kRead, {{"session_id", "proc_1"}, {"full", "yes"}}},
-        {tool_names::kWait, {{"session_id", "proc_1"},
-                             {"timeout_milliseconds", -5}}},
-        {tool_names::kWait, {{"session_id", "proc_1"},
-                             {"timeout_milliseconds", "soon"}}},
-        {tool_names::kKill, {{"session_id", "proc_1"}, {"graceful", 1}}},
-        // write: a call that would neither send nor close does nothing at all.
-        {tool_names::kWrite, {{"session_id", "proc_1"}}},
-        {tool_names::kWrite, {{"session_id", "proc_1"}, {"input", 5}}},
+        {tool_names::kPoll, {{"wait_timeout_milliseconds", -5}}},
+        {tool_names::kPoll, {{"wait_timeout_milliseconds", "soon"}}},
+        // send: a call that would neither send, close nor signal does nothing
+        // at all; a signal outside the declared words is refused by name.
+        {tool_names::kSend, {{"session_id", "proc_1"}}},
+        {tool_names::kSend, {{"session_id", "proc_1"}, {"input", 5}}},
+        {tool_names::kSend, {{"session_id", "proc_1"}, {"close_input", 1}}},
+        {tool_names::kSend,
+         {{"session_id", "proc_1"}, {"signal", "SIGKILL"}}},
+        {tool_names::kSend, {{"session_id", "proc_1"}, {"signal", "none"}}},
         // poll: the id list's shape.
         {tool_names::kPoll, {{"session_ids", "proc_1"}}},
         {tool_names::kPoll, {{"session_ids", nlohmann::json::array({7})}}},
@@ -1228,10 +1365,8 @@ BOOST_AUTO_TEST_CASE(an_unknown_session_fails_at_the_invoke_stage)
     // model fixes by polling, not by re-reading its own call.
     const std::pair<std::string_view, nlohmann::json> calls[] = {
         {tool_names::kRead, {{"session_id", "proc_404"}}},
-        {tool_names::kWait, {{"session_id", "proc_404"},
-                             {"timeout_milliseconds", 10}}},
-        {tool_names::kWrite, {{"session_id", "proc_404"}, {"input", "x"}}},
-        {tool_names::kKill, {{"session_id", "proc_404"}}},
+        {tool_names::kSend, {{"session_id", "proc_404"}, {"input", "x"}}},
+        {tool_names::kSend, {{"session_id", "proc_404"}, {"signal", "kill"}}},
     };
     for (const auto& [name, arguments] : calls) {
         BOOST_TEST_CONTEXT("tool " << name) {
@@ -1281,20 +1416,21 @@ BOOST_AUTO_TEST_CASE(spawn_returns_the_whole_result_for_a_quick_command)
                        {"arguments", nlohmann::json::array({"quick"})},
                        {"description", "a quick command"}}));
 
-    const nlohmann::json payload = f.payload_of(record);
-    BOOST_TEST(payload.at("session_id") == nlohmann::json("proc_1"));
-    BOOST_TEST(payload.at("executable") == nlohmann::json("echo"));
-    BOOST_TEST(payload.at("description") == nlohmann::json("a quick command"));
-    BOOST_TEST(payload.at("finished") == nlohmann::json(true));
-    BOOST_TEST(payload.at("state") == nlohmann::json("exited"));
-    BOOST_TEST(payload.at("exit_code") == nlohmann::json(0));
-    BOOST_TEST(payload.at("pid").get<int>() > 0);
-    // The output comes back with it — the whole point of having waited.
-    BOOST_TEST(payload.at("stdout_text") == nlohmann::json("quick\n"));
-    BOOST_TEST(payload.at("stderr_text") == nlohmann::json(""));
-    BOOST_TEST(payload.contains("hint"));
-    // The result is a text part carrying JSON — structure a model can read
-    // without parsing prose.
+    const ResultText result = f.result_of(record);
+    BOOST_TEST(result.field("session_id") == "proc_1");
+    BOOST_TEST(result.field("executable") == "echo");
+    BOOST_TEST(result.field("description") == "a quick command");
+    BOOST_TEST(result.field("finished") == "true");
+    BOOST_TEST(result.field("state") == "exited");
+    BOOST_TEST(result.field("exit_code") == "0");
+    BOOST_TEST(std::stoi(result.field("pid")) > 0);
+    // The output comes back with it — the whole point of having waited — and
+    // it arrives as the bytes the child printed, not as an escaped string
+    // inside one.
+    BOOST_TEST(result.block("stdout") == "quick\n");
+    BOOST_TEST(result.block("stderr").empty());
+    BOOST_TEST(result.has("hint"));
+    // The result is one text part, and the child's own output is what is in it.
     BOOST_CHECK(record.output.type == model_io::ContentType::Text);
 
     // A full read was used, so the delta cursor is untouched: a later read
@@ -1302,7 +1438,7 @@ BOOST_AUTO_TEST_CASE(spawn_returns_the_whole_result_for_a_quick_command)
     const auto read = f.call(call_for(
         std::string(tool_names::kRead),
         nlohmann::json{{"session_id", "proc_1"}, {"stream", "stdout"}}));
-    BOOST_TEST(f.payload_of(read).at("stdout_text") == nlohmann::json("quick\n"));
+    BOOST_TEST(f.result_of(read).block("stdout") == "quick\n");
 }
 
 BOOST_AUTO_TEST_CASE(spawn_hands_back_a_session_for_a_program_that_keeps_running)
@@ -1318,16 +1454,16 @@ BOOST_AUTO_TEST_CASE(spawn_hands_back_a_session_for_a_program_that_keeps_running
                        {"description", "a long nap"},
                        {"expected_runtime_milliseconds", 50}}));
 
-    const nlohmann::json payload = f.payload_of(record);
-    BOOST_TEST(payload.at("session_id") == nlohmann::json("proc_1"));
-    BOOST_TEST(payload.at("finished") == nlohmann::json(false));
-    BOOST_TEST(payload.at("state") == nlohmann::json("running"));
-    BOOST_TEST(payload.at("pid").get<int>() > 0);
+    const ResultText result = f.result_of(record);
+    BOOST_TEST(result.field("session_id") == "proc_1");
+    BOOST_TEST(result.field("finished") == "false");
+    BOOST_TEST(result.field("state") == "running");
+    BOOST_TEST(std::stoi(result.field("pid")) > 0);
     // Still running, so there is no exit code and no output slice the caller
     // did not ask for.
-    BOOST_TEST(!payload.contains("exit_code"));
-    BOOST_TEST(!payload.contains("stdout_text"));
-    BOOST_TEST(payload.contains("hint"));
+    BOOST_TEST(!result.has("exit_code"));
+    BOOST_TEST(!result.has("stdout"));
+    BOOST_TEST(result.has("hint"));
 }
 
 BOOST_AUTO_TEST_CASE(a_zero_window_returns_a_session_without_waiting)
@@ -1342,67 +1478,325 @@ BOOST_AUTO_TEST_CASE(a_zero_window_returns_a_session_without_waiting)
                        {"arguments", nlohmann::json::array({"30"})},
                        {"expected_runtime_milliseconds", 0}}));
 
-    const nlohmann::json payload = f.payload_of(record);
-    BOOST_TEST(payload.at("finished") == nlohmann::json(false));
-    BOOST_TEST(payload.at("state") == nlohmann::json("running"));
+    const ResultText result = f.result_of(record);
+    BOOST_TEST(result.field("finished") == "false");
+    BOOST_TEST(result.field("state") == "running");
 }
 
-BOOST_AUTO_TEST_CASE(wait_reports_the_exit_and_the_whole_output)
+// ---- run_command ------------------------------------------------------------
+//
+// The shortcut, from the model's side: one property in, and the shell, the
+// arguments list and the session's label filled in by the tool. What it shares
+// with spawn_process is asserted once, under the launch arguments both take.
+
+BOOST_AUTO_TEST_CASE(run_command_runs_a_line_through_the_platform_shell)
+{
+    // The whole point of the tool: a LINE — a pipe, an `&&` — is read by a shell
+    // rather than handed to a program as arguments, and the model never had to
+    // name the interpreter or place the quotes. Neither of the two commands
+    // here has a program-and-arguments spelling at all.
+    Fixture f;
+    const std::string line = "echo one && echo two | cat";
+    const auto record = f.call(call_for(
+        std::string(tool_names::kRun), nlohmann::json{{"command", line}}));
+
+    const ResultText result = f.result_of(record);
+    BOOST_TEST(result.field("finished") == "true");
+    BOOST_TEST(result.field("output_complete") == "true");
+    BOOST_TEST(result.field("state") == "exited");
+    BOOST_TEST(result.field("exit_code") == "0");
+    BOOST_TEST(result.block("stdout") == "one\ntwo\n");
+    BOOST_TEST(result.block("stderr").empty());
+
+    // What the tool built from that one property: the host's own interpreter as
+    // the executable, and the line as the single argument after the flag that
+    // says "this is the command". The model wrote neither. The interpreter is
+    // named by PATH — an absolute one, so the environment the call passes along
+    // cannot decide which shell reads the line — and the flag is the POSIX one.
+    const std::string shell = result.field("executable");
+    BOOST_TEST(shell.starts_with("/"));
+    BOOST_TEST(shell.find("sh") != std::string::npos);
+    const std::string arguments = result.field("arguments");
+    BOOST_TEST(arguments.starts_with("[\"-c\","));
+    BOOST_TEST(arguments.find(line) != std::string::npos);
+    // ...and the command is the session's label, so every later report about
+    // this session says what it was. There is no `description` argument to ask
+    // a model for one.
+    BOOST_TEST(result.field("description") == line);
+}
+
+BOOST_AUTO_TEST_CASE(run_command_hints_how_to_follow_a_command_that_outlives_its_wait)
+{
+    // The branch this tool's hint exists for: the window ran out, so the command
+    // is still running — it did NOT fail and it was NOT killed — and the model
+    // is told that plainly, with the window named (that is what expired) and the
+    // calls that check on a background session.
+    Fixture f;
+    const auto record = f.call(call_for(
+        std::string(tool_names::kRun),
+        nlohmann::json{{"command", "sleep 30"},
+                       {"expected_runtime_milliseconds", 150}}));
+
+    const ResultText result = f.result_of(record);
+    const std::string id = result.field("session_id");
+    BOOST_TEST(result.field("finished") == "false");
+    BOOST_TEST(result.field("state") == "running");
+    BOOST_TEST(result.field("description") == "sleep 30");
+    // No exit code line and no output slice: there is no result yet, and a
+    // partial capture is not what was asked for.
+    BOOST_TEST(!result.has("exit_code"));
+    BOOST_TEST(!result.has("stdout"));
+
+    const std::string hint = result.field("hint");
+    BOOST_TEST(hint.find("150 ms") != std::string::npos);
+    BOOST_TEST(hint.find("not killed") != std::string::npos);
+    for (const std::string_view name :
+         {tool_names::kPoll, tool_names::kRead, tool_names::kSend}) {
+        BOOST_TEST_CONTEXT("the hint points at " << name) {
+            BOOST_TEST(hint.find(std::string(name)) != std::string::npos);
+        }
+    }
+
+    // And it is honest about the session it names: the command is really there,
+    // really still running, so the call the hint points at answers.
+    const ResultText looked = wait_through_tool(f, id, 0);
+    BOOST_TEST(looked.field("session_id") == id);
+    BOOST_TEST(looked.field("state") == "running");
+}
+
+BOOST_AUTO_TEST_CASE(a_zero_window_run_command_starts_in_the_background_at_once)
+{
+    // `expected_runtime_milliseconds: 0` means here what it means to
+    // spawn_process — do not wait at all — and the hint has to say THAT rather
+    // than name a window that never elapsed, since "it had not finished after
+    // 0 ms" would read as a failure rather than as the request it was.
+    Fixture f;
+    const auto record = f.call(call_for(
+        std::string(tool_names::kRun),
+        nlohmann::json{{"command", "sleep 30"},
+                       {"expected_runtime_milliseconds", 0}}));
+
+    const ResultText result = f.result_of(record);
+    BOOST_TEST(result.field("finished") == "false");
+    BOOST_TEST(result.field("state") == "running");
+    const std::string hint = result.field("hint");
+    BOOST_TEST(hint.find("without waiting") != std::string::npos);
+    BOOST_TEST(hint.find(std::string(tool_names::kPoll)) != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(spawn_accepts_a_path_as_the_executable)
+{
+    // Explicit executable paths are used directly without searching PATH,
+    // so the caller gets the file it named. /bin/sh is the one shell path POSIX guarantees, which is what makes
+    // this case portable across the hosts the suite runs on — and it is also
+    // the shape run_command relies on when it names the interpreter.
+    Fixture f;
+    const auto record = f.call(call_for(
+        std::string(tool_names::kSpawn),
+        nlohmann::json{{"executable", "/bin/sh"},
+                       {"arguments", nlohmann::json::array(
+                                         {"-c", "printf %s ran-from-a-path"})}}));
+
+    const ResultText result = f.result_of(record);
+    BOOST_TEST(result.field("finished") == "true");
+    BOOST_TEST(result.field("exit_code") == "0");
+    BOOST_TEST(result.field("executable") == "/bin/sh");
+    BOOST_TEST(result.block("stdout") == "ran-from-a-path");
+}
+
+BOOST_AUTO_TEST_CASE(run_command_takes_the_same_launch_arguments_as_spawn_process)
+{
+    // working_directory, environment and a nonzero exit code, through the
+    // shortcut: the two launchers build these from the same pair of helpers
+    // (ProcessToolBase's settle/apply), and this is where that shows. The
+    // marker is read by the SHELL's expansion inside the command line rather
+    // than by a program's own getenv — which is the other half of what a shell
+    // buys, and why the launch arguments had to work here too.
+    Fixture f;
+    const std::string temp =
+        std::filesystem::canonical(std::filesystem::temp_directory_path())
+            .string();
+
+    const auto record = f.call(call_for(
+        std::string(tool_names::kRun),
+        nlohmann::json{
+            {"command", "pwd -P; printf %s \"$SIMPLEX_RUN_MARKER\"; exit 3"},
+            {"working_directory", temp},
+            {"environment",
+             nlohmann::json::array({"SIMPLEX_RUN_MARKER=sentinel-value"})}}));
+
+    const ResultText result = f.result_of(record);
+    BOOST_TEST(result.field("working_directory") == temp);
+    // A command that fails is still a RESULT: the exit code the shell left is
+    // what the caller asked for, and the output above it is intact.
+    BOOST_TEST(result.field("exit_code") == "3");
+    BOOST_TEST(result.block("stdout") == temp + "\nsentinel-value");
+}
+
+BOOST_AUTO_TEST_CASE(poll_waits_for_a_session_and_reports_the_whole_output)
 {
     Fixture f;
     const std::string id = spawn_through_tool(f, "echo", {"hello", "tools"});
 
-    const auto record = f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}}));
+    // The wait WITH the output, which is the whole point of waiting: the
+    // helper's default (`include_output: false`) is for cases that go on to
+    // read the session themselves.
+    const ResultText result = wait_through_tool(f, id, 5000, true);
 
-    const nlohmann::json payload = f.payload_of(record);
-    BOOST_TEST(payload.at("exited") == nlohmann::json(true));
-    BOOST_TEST(payload.at("timed_out") == nlohmann::json(false));
-    // The two facts behind that pair, spelled out: the child is gone AND its
-    // capture is complete, which is why the output below is the whole of it.
-    BOOST_TEST(payload.at("output_complete") == nlohmann::json(true));
-    BOOST_TEST(payload.at("state") == nlohmann::json("exited"));
-    BOOST_TEST(payload.at("exit_code") == nlohmann::json(0));
-    BOOST_TEST(payload.at("stdout_text") == nlohmann::json("hello tools\n"));
-    BOOST_TEST(payload.at("stderr_text") == nlohmann::json(""));
+    // The wait ended on the session, not on the deadline, and the answer says
+    // so before it says anything else.
+    BOOST_TEST(result.field("timed_out") == "false");
+    BOOST_TEST(result.field("finished_count") == "1");
+    BOOST_TEST(result.field("session_count") == "1");
+    // The two facts behind "finished", spelled out per session: the child is
+    // gone AND its capture is complete, which is why the output below is the
+    // whole of it. A running session has no `output_complete` at all — its
+    // capture is arriving, not incomplete.
+    BOOST_TEST(result.field("session_id") == id);
+    BOOST_TEST(result.field("output_complete") == "true");
+    BOOST_TEST(result.field("state") == "exited");
+    BOOST_TEST(result.field("exit_code") == "0");
+    BOOST_TEST(result.block("new_stdout") == "hello tools\n");
+    BOOST_TEST(result.block("new_stderr").empty());
 }
 
-BOOST_AUTO_TEST_CASE(wait_separates_a_finished_child_from_a_finished_capture)
+BOOST_AUTO_TEST_CASE(poll_returns_when_any_one_session_finishes)
 {
-    // The case the two fields exist for, and the one a single `exited` bool
+    // The property the whole call is built around: it is a wait over a SET, and
+    // what ends it is the FIRST session to finish — not all of them, and not
+    // the deadline. The answer is every session, so the siblings come back with
+    // it, still running and untouched.
+    Fixture f;
+    const std::string slow = spawn_through_tool(f, "sleep", {"30"});
+    const std::string quick = spawn_through_tool(f, "sh", {"-c", "sleep 0.3"});
+
+    const ResultText result = f.result_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"wait_timeout_milliseconds", 20000}})));
+
+    // Ended by the quick one: a deadline that had run out would have taken the
+    // whole 20 s, and this returned in well under one.
+    BOOST_TEST(result.field("timed_out") == "false");
+    BOOST_TEST(std::stoll(result.field("waited_milliseconds")) < 10000);
+    BOOST_TEST(result.field("finished_count") == "1");
+    BOOST_TEST_REQUIRE(result.records().size() == std::size_t{3});
+    // Both sessions, in id order — the one that ended first is not the only
+    // thing reported.
+    const process_test::ResultRecord& slow_entry = result.records()[1];
+    const process_test::ResultRecord& quick_entry = result.records()[2];
+    BOOST_TEST(slow_entry.field("session_id") == slow);
+    BOOST_TEST(slow_entry.field("state") == "running");
+    BOOST_TEST(!slow_entry.has("output_complete"));
+    BOOST_TEST(quick_entry.field("session_id") == quick);
+    BOOST_TEST(quick_entry.field("state") == "exited");
+    BOOST_TEST(quick_entry.field("output_complete") == "true");
+
+    // Untouched, as promised: the sibling is still there and still running, and
+    // nothing about the wait ended it.
+    BOOST_TEST(f.run(f.store->size()) == std::size_t{2});
+    const auto still_running = f.run(f.store->snapshot(slow));
+    BOOST_TEST_REQUIRE(still_running.has_value());
+    BOOST_TEST(!still_running->exited);
+}
+
+BOOST_AUTO_TEST_CASE(poll_reports_what_it_found_when_the_deadline_runs_out)
+{
+    Fixture f;
+    const std::string id = spawn_through_tool(f, "sleep", {"30"});
+
+    const ResultText result = wait_through_tool(f, id, 150);
+
+    // A timeout is a result, not a failure: the model is told the process is
+    // still running and can decide what to do, rather than being handed an
+    // error — and the session is unchanged and waitable again.
+    BOOST_TEST(result.field("timed_out") == "true");
+    BOOST_TEST(result.field("finished_count") == "0");
+    BOOST_TEST(result.field("session_count") == "1");
+    BOOST_TEST(result.field("state") == "running");
+    BOOST_TEST(!result.has("output_complete"));
+    BOOST_TEST(f.run(f.store->size()) == std::size_t{1});
+    BOOST_TEST(!f.run(f.store->snapshot(id))->exited);
+}
+
+BOOST_AUTO_TEST_CASE(a_zero_wait_looks_without_waiting)
+{
+    // 0 is the "tell me where things stand" spelling: the call does not watch
+    // anything, and what comes back is the state as it is now. That is also the
+    // listing call the discarded poll_processes used to be.
+    Fixture f;
+    const std::string first = spawn_through_tool(f, "echo", {"already done"});
+    const std::string second = spawn_through_tool(f, "sleep", {"30"});
+    // Let the quick one finish and drain, so the look has a settled session in
+    // it — but with 0 the call below must not wait for it either way.
+    wait_through_tool(f, first);
+
+    const auto before = std::chrono::steady_clock::now();
+    const ResultText result = f.result_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"wait_timeout_milliseconds", 0}})));
+    const auto elapsed = std::chrono::steady_clock::now() - before;
+
+    BOOST_TEST(elapsed < std::chrono::seconds{5});
+    // `timed_out` is about WHY the call came back, not about how long it took:
+    // one of the two sessions is already finished, so this pass ended on that
+    // rather than on a clock that never had a chance to run. A look that found
+    // nothing finished says the opposite (the empty-table check below).
+    BOOST_TEST(result.field("timed_out") == "false");
+    BOOST_TEST(result.field("finished_count") == "1");
+    BOOST_TEST_REQUIRE(result.records().size() == std::size_t{3});
+    BOOST_TEST(result.records()[1].field("session_id") == first);
+    BOOST_TEST(result.records()[1].field("state") == "exited");
+    BOOST_TEST(result.records()[2].field("session_id") == second);
+    BOOST_TEST(result.records()[2].field("state") == "running");
+
+    // A selection that resolves to nothing is not a wait either: there is no
+    // child whose ending could end it, so the answer comes back at once with
+    // nothing in it — rather than spending the timeout on an empty table.
+    const std::string empty = spawn_through_tool(f, "true");
+    wait_through_tool(f, empty);
+    f.call(call_for(std::string(tool_names::kRead),
+                    nlohmann::json{{"session_id", empty}, {"release", true}}));
+    BOOST_TEST(f.run(f.store->size()) == std::size_t{2});
+    const ResultText looking = f.result_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"session_ids", nlohmann::json::array({empty})},
+                       {"wait_timeout_milliseconds", 20000}})));
+    BOOST_TEST(looking.field("session_count") == "0");
+    BOOST_TEST(looking.field("timed_out") == "true");
+}
+
+BOOST_AUTO_TEST_CASE(poll_separates_a_finished_child_from_a_finished_capture)
+{
+    // The case the pair of facts exists for, and the one a single `exited` bool
     // gets wrong: the direct child exits at once, while a descendant it
     // started inherited stdout/stderr and keeps them open. The wait's deadline
     // then fires with the child GONE and its output still arriving.
     //
-    // Reported as `exited: true, output_complete: false, timed_out: true` —
-    // and `timed_out` is deliberately defined over the COMPLETE condition
-    // rather than over the exit, so the three fields cannot disagree about
-    // whether this result is the finished article.
+    // Reported as `state: exited, output_complete: false, timed_out: true` —
+    // "finished" is the COMPLETE condition, so a session in this state is not
+    // what ended the wait, and the three fields cannot disagree about whether
+    // this result is the finished article.
     Fixture f;
     const std::string id =
         spawn_through_tool(f, "sh", {"-c", "sleep 2 & exit 0"});
 
-    const nlohmann::json payload = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 500}})));
+    const ResultText result = wait_through_tool(f, id, 500);
 
-    BOOST_TEST(payload.at("exited") == nlohmann::json(true));
-    BOOST_TEST(payload.at("state") == nlohmann::json("exited"));
-    BOOST_TEST(payload.at("exit_code") == nlohmann::json(0));
-    BOOST_TEST(payload.at("output_complete") == nlohmann::json(false));
-    BOOST_TEST(payload.at("timed_out") == nlohmann::json(true));
+    BOOST_TEST(result.field("state") == "exited");
+    BOOST_TEST(result.field("exit_code") == "0");
+    BOOST_TEST(result.field("output_complete") == "false");
+    BOOST_TEST(result.field("timed_out") == "true");
+    BOOST_TEST(result.field("finished_count") == "0");
     // Prose as well as fields: the cause is not visible in the output itself.
-    BOOST_TEST(payload.contains("hint"));
+    BOOST_TEST(result.field("hint").find(id) != std::string::npos);
+    BOOST_TEST(result.field("hint").find("poll_process") != std::string::npos);
 
     // Waiting again collects the rest, once the descendant is gone: the flag is
     // a fact about the pipes, not a verdict on the session.
-    const nlohmann::json finished = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 10000}})));
-    BOOST_TEST(finished.at("exited") == nlohmann::json(true));
-    BOOST_TEST(finished.at("output_complete") == nlohmann::json(true));
-    BOOST_TEST(finished.at("timed_out") == nlohmann::json(false));
+    const ResultText finished = wait_through_tool(f, id, 10000);
+    BOOST_TEST(finished.field("output_complete") == "true");
+    BOOST_TEST(finished.field("timed_out") == "false");
+    BOOST_TEST(finished.field("finished_count") == "1");
 }
 
 BOOST_AUTO_TEST_CASE(a_spawn_that_finishes_with_an_incomplete_capture_says_so)
@@ -1421,96 +1815,76 @@ BOOST_AUTO_TEST_CASE(a_spawn_that_finishes_with_an_incomplete_capture_says_so)
                        // drain cannot finish inside it.
                        {"expected_runtime_milliseconds", 500}}));
 
-    const nlohmann::json payload = f.payload_of(record);
-    BOOST_TEST(payload.at("finished") == nlohmann::json(true));
-    BOOST_TEST(payload.at("output_complete") == nlohmann::json(false));
-    BOOST_TEST(payload.at("state") == nlohmann::json("exited"));
+    const ResultText result = f.result_of(record);
+    BOOST_TEST(result.field("finished") == "true");
+    BOOST_TEST(result.field("output_complete") == "false");
+    BOOST_TEST(result.field("state") == "exited");
     // The hint names the way to the rest of the output.
-    BOOST_TEST(payload.at("hint").get<std::string>().find("wait_process") !=
-               std::string::npos);
-}
-
-BOOST_AUTO_TEST_CASE(wait_reports_a_timeout_as_a_result_not_a_failure)
-{
-    Fixture f;
-    const std::string id = spawn_through_tool(f, "sleep", {"30"});
-
-    const auto record = f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 150}}));
-
-    // A timeout is a result: the model is told the process is still running
-    // and can decide what to do, rather than being handed an error.
-    const nlohmann::json payload = f.payload_of(record);
-    BOOST_TEST(payload.at("exited") == nlohmann::json(false));
-    BOOST_TEST(payload.at("timed_out") == nlohmann::json(true));
-    BOOST_TEST(payload.at("state") == nlohmann::json("running"));
+    BOOST_TEST(result.field("hint").find("poll_process") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(a_nonzero_exit_is_a_result_not_a_failure)
 {
     Fixture f;
     const std::string id = spawn_through_tool(f, "false");
-    const auto record = f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}}));
+    const ResultText result = wait_through_tool(f, id);
 
     // The tool ran and the process ran: a command that failed is something
-    // the model must reason about, not a failure of the invocation.
-    const nlohmann::json payload = f.payload_of(record);
-    BOOST_TEST(payload.at("exit_code") == nlohmann::json(1));
-    BOOST_TEST(payload.at("exited") == nlohmann::json(true));
+    // the model must reason about, not a failure of the invocation — and a
+    // failing process ends the wait exactly as a successful one does.
+    BOOST_TEST(result.field("exit_code") == "1");
+    BOOST_TEST(result.field("state") == "exited");
+    BOOST_TEST(result.field("timed_out") == "false");
 }
 
 BOOST_AUTO_TEST_CASE(read_returns_the_delta_then_nothing_and_full_repeats_it)
 {
     Fixture f;
     const std::string id = spawn_through_tool(f, "echo", {"once"});
-    f.call(call_for(std::string(tool_names::kWait),
-                    nlohmann::json{{"session_id", id},
-                                   {"timeout_milliseconds", 5000}}));
+    wait_through_tool(f, id);
 
-    const nlohmann::json first = f.payload_of(f.call(call_for(
+    const ResultText first = f.result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(first.at("stdout_text") == nlohmann::json("once\n"));
-    BOOST_TEST(first.at("stdout_bytes_read") == nlohmann::json(5));
+    BOOST_TEST(first.block("stdout") == "once\n");
+    BOOST_TEST(first.field("stdout_bytes_read") == "5");
 
-    // The property a poll loop relies on: a second delta read is empty.
-    const nlohmann::json second = f.payload_of(f.call(call_for(
+    // The property a poll loop relies on: a second delta read is empty — which
+    // is what the block says rather than what a missing line would.
+    const ResultText second = f.result_of(f.call(call_for(
         std::string(tool_names::kRead), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(second.at("stdout_text") == nlohmann::json(""));
+    BOOST_TEST(second.block("stdout").empty());
 
     // full re-reads everything and does NOT consume the delta.
-    const nlohmann::json full = f.payload_of(f.call(call_for(
+    const ResultText full = f.result_of(f.call(call_for(
         std::string(tool_names::kRead),
         nlohmann::json{{"session_id", id}, {"full", true}})));
-    BOOST_TEST(full.at("stdout_text") == nlohmann::json("once\n"));
-    BOOST_TEST(full.at("full") == nlohmann::json(true));
+    BOOST_TEST(full.block("stdout") == "once\n");
+    BOOST_TEST(full.field("full") == "true");
 }
 
 BOOST_AUTO_TEST_CASE(read_can_select_one_stream)
 {
     Fixture f;
     const std::string id = spawn_through_tool(f, "echo", {"out"});
-    f.call(call_for(std::string(tool_names::kWait),
-                    nlohmann::json{{"session_id", id},
-                                   {"timeout_milliseconds", 5000}}));
+    wait_through_tool(f, id);
 
-    const nlohmann::json only_err = f.payload_of(f.call(call_for(
+    const ResultText only_err = f.result_of(f.call(call_for(
         std::string(tool_names::kRead),
         nlohmann::json{{"session_id", id}, {"stream", "stderr"}})));
     // Only the stream that was asked for is in the result — a caller reading
     // stderr is not handed stdout it did not ask for (and whose delta cursor
-    // it would then have consumed).
-    BOOST_TEST(only_err.at("stream") == nlohmann::json("stderr"));
-    BOOST_TEST(only_err.at("stderr_text") == nlohmann::json(""));
-    BOOST_TEST(!only_err.contains("stdout_text"));
+    // it would then have consumed). Both are visible: stderr as a block that
+    // is empty, stdout as no line at all.
+    BOOST_TEST(only_err.field("stream") == "stderr");
+    BOOST_TEST(only_err.has("stderr"));
+    BOOST_TEST(only_err.block("stderr").empty());
+    BOOST_TEST(!only_err.has("stdout"));
 
-    const nlohmann::json only_out = f.payload_of(f.call(call_for(
+    const ResultText only_out = f.result_of(f.call(call_for(
         std::string(tool_names::kRead),
         nlohmann::json{{"session_id", id}, {"stream", "stdout"}})));
-    BOOST_TEST(only_out.at("stdout_text") == nlohmann::json("out\n"));
-    BOOST_TEST(!only_out.contains("stderr_text"));
+    BOOST_TEST(only_out.block("stdout") == "out\n");
+    BOOST_TEST(!only_out.has("stderr"));
 }
 
 BOOST_AUTO_TEST_CASE(poll_reports_every_session_and_only_new_output)
@@ -1518,39 +1892,52 @@ BOOST_AUTO_TEST_CASE(poll_reports_every_session_and_only_new_output)
     Fixture f;
     const std::string finished = spawn_through_tool(f, "echo", {"done"});
     const std::string running = spawn_through_tool(f, "sleep", {"30"});
-    f.call(call_for(std::string(tool_names::kWait),
-                    nlohmann::json{{"session_id", finished},
-                                   {"timeout_milliseconds", 5000}}));
+    wait_through_tool(f, finished);
 
-    const nlohmann::json first = f.payload_of(
-        f.call(call_for(std::string(tool_names::kPoll))));
-    BOOST_TEST_REQUIRE(first.at("sessions").size() == std::size_t{2});
+    // The look, not the wait: `wait_timeout_milliseconds: 0` is what says so,
+    // and with a running session in the table the default would sit here.
+    const ResultText first = f.result_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"wait_timeout_milliseconds", 0}})));
+    // One record per session, after the verdict and the counts: the `---` the
+    // renderer writes is what makes a poll readable when it answers about
+    // several at once.
+    BOOST_TEST_REQUIRE(first.records().size() == std::size_t{3});
+    BOOST_TEST(first.field("timed_out") == "false");
+    BOOST_TEST(first.field("session_count") == "2");
+    BOOST_TEST(first.field("finished_count") == "1");
     // RETAINED, and the name says so: one of these two has already exited and
     // is still in the table (and still counted) until it is released — which is
     // also what the session cap counts.
-    BOOST_TEST(first.at("retained_session_count") == nlohmann::json(2));
+    BOOST_TEST(first.field("retained_session_count") == "2");
 
     // Sorted by id, so a poll loop's output reads the same way every turn.
-    const nlohmann::json& done_entry = first.at("sessions")[0];
-    BOOST_TEST(done_entry.at("session_id") == nlohmann::json(finished));
-    BOOST_TEST(done_entry.at("state") == nlohmann::json("exited"));
-    BOOST_TEST(done_entry.at("new_stdout") == nlohmann::json("done\n"));
-    BOOST_TEST(first.at("sessions")[1].at("state") == nlohmann::json("running"));
+    const process_test::ResultRecord& done_entry = first.records()[1];
+    BOOST_TEST(done_entry.field("session_id") == finished);
+    BOOST_TEST(done_entry.field("state") == "exited");
+    // Finished, so the capture is a settled fact and the result states it; the
+    // running sibling has no such line at all.
+    BOOST_TEST(done_entry.field("output_complete") == "true");
+    BOOST_TEST(done_entry.block("new_stdout") == "done\n");
+    BOOST_TEST(first.records()[2].field("state") == "running");
+    BOOST_TEST(!first.records()[2].has("output_complete"));
 
-    // Polled again: the same sessions, but nothing NEW to report.
-    const nlohmann::json second = f.payload_of(
-        f.call(call_for(std::string(tool_names::kPoll))));
-    BOOST_TEST(second.at("sessions")[0].at("new_stdout") == nlohmann::json(""));
+    // Polled again: the same sessions, but nothing NEW to report — which the
+    // empty block says, rather than a line that is not there.
+    const ResultText second = f.result_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"wait_timeout_milliseconds", 0}})));
+    BOOST_TEST(second.records()[1].block("new_stdout").empty());
 
     // A named subset, without output.
-    const nlohmann::json subset = f.payload_of(f.call(call_for(
+    const ResultText subset = f.result_of(f.call(call_for(
         std::string(tool_names::kPoll),
         nlohmann::json{{"session_ids", nlohmann::json::array({running})},
+                       {"wait_timeout_milliseconds", 0},
                        {"include_output", false}})));
-    BOOST_TEST_REQUIRE(subset.at("sessions").size() == std::size_t{1});
-    BOOST_TEST(subset.at("sessions")[0].at("session_id") ==
-               nlohmann::json(running));
-    BOOST_TEST(!subset.at("sessions")[0].contains("new_stdout"));
+    BOOST_TEST_REQUIRE(subset.records().size() == std::size_t{2});
+    BOOST_TEST(subset.records()[1].field("session_id") == running);
+    BOOST_TEST(!subset.records()[1].has("new_stdout"));
 }
 
 BOOST_AUTO_TEST_CASE(poll_releases_exited_sessions_only_after_reporting_them)
@@ -1558,130 +1945,196 @@ BOOST_AUTO_TEST_CASE(poll_releases_exited_sessions_only_after_reporting_them)
     Fixture f;
     const std::string finished = spawn_through_tool(f, "echo", {"last words"});
     const std::string running = spawn_through_tool(f, "sleep", {"30"});
-    f.call(call_for(std::string(tool_names::kWait),
-                    nlohmann::json{{"session_id", finished},
-                                   {"timeout_milliseconds", 5000}}));
+    wait_through_tool(f, finished);
 
-    const nlohmann::json payload = f.payload_of(f.call(call_for(
+    const ResultText result = f.result_of(f.call(call_for(
         std::string(tool_names::kPoll),
-        nlohmann::json{{"release_exited", true}})));
+        nlohmann::json{{"wait_timeout_milliseconds", 0},
+                       {"release_exited", true}})));
 
     // The output is in THIS result — reaping before reading would have lost a
-    // dead child's last words for good.
-    BOOST_TEST_REQUIRE(payload.at("sessions").size() == std::size_t{2});
-    BOOST_TEST(payload.at("sessions")[0].at("new_stdout") ==
-               nlohmann::json("last words\n"));
-    BOOST_TEST_REQUIRE(payload.contains("released"));
-    BOOST_TEST(payload.at("released").size() == std::size_t{1});
-    BOOST_TEST(payload.at("released")[0] == nlohmann::json(finished));
+    // dead child's last words for good. Two session records, then the one
+    // naming what was let go.
+    BOOST_TEST_REQUIRE(result.records().size() == std::size_t{4});
+    BOOST_TEST(result.records()[1].block("new_stdout") == "last words\n");
+    BOOST_TEST(result.field("released") == "[" + std::string("\"") + finished +
+                                           "\"]");
 
     // Gone now; the running one is untouched, since release refuses a live
     // child.
-    const nlohmann::json after = f.payload_of(
-        f.call(call_for(std::string(tool_names::kPoll))));
-    BOOST_TEST_REQUIRE(after.at("sessions").size() == std::size_t{1});
-    BOOST_TEST(after.at("sessions")[0].at("session_id") ==
-               nlohmann::json(running));
+    const ResultText after = f.result_of(f.call(call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"wait_timeout_milliseconds", 0}})));
+    BOOST_TEST_REQUIRE(after.records().size() == std::size_t{2});
+    BOOST_TEST(after.records()[1].field("session_id") == running);
 }
 
 BOOST_AUTO_TEST_CASE(release_is_refused_while_the_process_runs)
 {
     Fixture f;
     const std::string id = spawn_through_tool(f, "sleep", {"30"});
-    const nlohmann::json payload = f.payload_of(f.call(call_for(
+    const ResultText result = f.result_of(f.call(call_for(
         std::string(tool_names::kRead),
         nlohmann::json{{"session_id", id}, {"release", true}})));
 
     // Honest about what happened rather than about what was asked: releasing
     // a live session would drop the last handle reference and kill the child.
-    BOOST_TEST(payload.at("released") == nlohmann::json(false));
+    BOOST_TEST(result.field("released") == "false");
     BOOST_TEST(f.run(f.store->size()) == std::size_t{1});
 }
 
-BOOST_AUTO_TEST_CASE(write_feeds_stdin_and_close_input_ends_it)
+BOOST_AUTO_TEST_CASE(send_feeds_stdin_and_close_input_ends_it)
 {
     Fixture f;
     const std::string id = spawn_through_tool(f, "cat");
 
-    const nlohmann::json first = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWrite),
+    const ResultText first = f.result_of(f.call(call_for(
+        std::string(tool_names::kSend),
         nlohmann::json{{"session_id", id}, {"input", "one\n"}})));
-    BOOST_TEST(first.at("bytes_queued") == nlohmann::json(4));
-    BOOST_TEST(first.at("input_closed") == nlohmann::json(false));
+    BOOST_TEST(first.field("bytes_queued") == "4");
+    BOOST_TEST(first.field("input_closed") == "false");
+    // What was not asked for is not reported: no signal, no signal lines.
+    BOOST_TEST(!first.has("signal"));
+    BOOST_TEST(!first.has("signalled"));
     // Queued, not delivered: the result must not claim the child has read it.
-    BOOST_TEST(first.contains("note"));
+    BOOST_TEST(first.has("note"));
 
-    const nlohmann::json closing = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWrite),
+    const ResultText closing = f.result_of(f.call(call_for(
+        std::string(tool_names::kSend),
         nlohmann::json{{"session_id", id},
                        {"input", "two\n"},
                        {"close_input", true}})));
-    BOOST_TEST(closing.at("input_closed") == nlohmann::json(true));
+    BOOST_TEST(closing.field("input_closed") == "true");
 
     // cat echoes both lines and exits on the EOF the close produced.
-    const nlohmann::json waited = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.at("exit_code") == nlohmann::json(0));
-    BOOST_TEST(waited.at("stdout_text") == nlohmann::json("one\ntwo\n"));
+    const ResultText waited = wait_through_tool(f, id, 5000, true);
+    BOOST_TEST(waited.field("exit_code") == "0");
+    BOOST_TEST(waited.block("new_stdout") == "one\ntwo\n");
 }
 
-BOOST_AUTO_TEST_CASE(writing_to_an_exited_process_warns_rather_than_fails)
+BOOST_AUTO_TEST_CASE(send_ends_a_running_process_and_leaves_it_readable)
+{
+    Fixture f;
+    const std::string id = spawn_through_tool(f, "sleep", {"30"});
+
+    const ResultText killed = f.result_of(f.call(call_for(
+        std::string(tool_names::kSend),
+        nlohmann::json{{"session_id", id}, {"signal", "kill"}})));
+    BOOST_TEST(killed.field("signal") == "kill");
+    BOOST_TEST(killed.field("signalled") == "true");
+    // A signal-only call says nothing about input it was not asked to send.
+    BOOST_TEST(!killed.has("bytes_queued"));
+    BOOST_TEST(!killed.has("input_closed"));
+
+    const ResultText waited = wait_through_tool(f, id);
+    BOOST_TEST(waited.field("state") == "exited");
+    // SIGKILL, as the signal number.
+    BOOST_TEST(waited.field("exit_code") == "9");
+
+    // Sending again says so instead of failing: the session is still there,
+    // its child simply is not.
+    const ResultText again = f.result_of(f.call(call_for(
+        std::string(tool_names::kSend),
+        nlohmann::json{{"session_id", id}, {"signal", "kill"}})));
+    BOOST_TEST(again.field("signalled") == "false");
+    BOOST_TEST(again.has("warning"));
+}
+
+BOOST_AUTO_TEST_CASE(successful_signal_is_not_an_error_during_concurrent_release)
+{
+    Fixture f;
+    // Release cannot succeed until this signal ends the long-running child.
+    // Race its exit observation/release against send_process's final snapshot.
+    // This exercises concurrent use; it does not force a particular interleaving.
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        const std::string id = spawn_through_tool(f, "sleep", {"30"});
+        auto release = asio::co_spawn(f.io,
+            [&f, id]() -> asio::awaitable<bool> {
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::seconds(5);
+                while (std::chrono::steady_clock::now() < deadline) {
+                    if (co_await f.store->release(id)) co_return true;
+                    co_await asio::post(f.io, asio::use_awaitable);
+                }
+                co_return false;
+            }, asio::use_future);
+        const auto record = f.call(call_for(std::string(tool_names::kSend),
+            nlohmann::json{{"session_id", id}, {"signal", "kill"}}));
+        BOOST_TEST(release.get());
+        const ResultText result = f.result_of(record);
+        BOOST_TEST(result.field("signalled") == "true");
+        BOOST_TEST(!f.run(f.store->snapshot(id)).has_value());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(send_asks_the_process_to_stop_gracefully)
+{
+    Fixture f;
+    const std::string id = spawn_through_tool(f, "sleep", {"30"});
+    const ResultText result = f.result_of(f.call(call_for(
+        std::string(tool_names::kSend),
+        nlohmann::json{{"session_id", id}, {"signal", "term"}})));
+    BOOST_TEST(result.field("signal") == "term");
+    BOOST_TEST(result.field("signalled") == "true");
+    // The signal is sent, but the death is noticed a moment later — the result
+    // says how to confirm it rather than implying the child is already gone.
+    BOOST_TEST(result.has("hint"));
+
+    const ResultText waited = wait_through_tool(f, id);
+    // sleep does not catch SIGTERM, so it dies of the signal (15) — which is
+    // the difference between "term" and "kill", reported where it can be seen.
+    BOOST_TEST(waited.field("exit_code") == "15");
+}
+
+BOOST_AUTO_TEST_CASE(send_carries_input_and_a_signal_in_one_call)
+{
+    Fixture f;
+    // A program that reads a line and then stays up: the one call feeds it and
+    // asks it to stop, which is the case two tools could not spell.
+    const std::string id = spawn_through_tool(f, "sh", {"-c", "read line; sleep 30"});
+
+    const ResultText sent = f.result_of(f.call(call_for(
+        std::string(tool_names::kSend),
+        nlohmann::json{{"session_id", id}, {"input", "stop\n"},
+                       {"signal", "term"}})));
+    BOOST_TEST(sent.field("bytes_queued") == "5");
+    BOOST_TEST(sent.field("signal") == "term");
+    BOOST_TEST(sent.field("signalled") == "true");
+
+    const ResultText waited = wait_through_tool(f, id);
+    BOOST_TEST(waited.field("state") == "exited");
+}
+
+BOOST_AUTO_TEST_CASE(sending_to_an_exited_process_warns_rather_than_fails)
 {
     Fixture f;
     const std::string id = spawn_through_tool(f, "true");
-    f.call(call_for(std::string(tool_names::kWait),
-                    nlohmann::json{{"session_id", id},
-                                   {"timeout_milliseconds", 5000}}));
+    wait_through_tool(f, id);
 
-    // The session exists, so this is not a failure — but the input goes
-    // nowhere, and nothing else in the result would reveal that.
-    const nlohmann::json payload = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWrite),
+    // The session exists, so neither half is a failure — but nothing sent had
+    // anywhere to go, and nothing else in the result would reveal that.
+    const ResultText wrote = f.result_of(f.call(call_for(
+        std::string(tool_names::kSend),
         nlohmann::json{{"session_id", id}, {"input", "ignored\n"}})));
-    BOOST_TEST(payload.at("state") == nlohmann::json("exited"));
-    BOOST_TEST_REQUIRE(payload.contains("warning"));
-}
+    BOOST_TEST(wrote.field("state") == "exited");
+    BOOST_TEST(wrote.field("warning")
+               == "the process has already exited, so the input was discarded");
 
-BOOST_AUTO_TEST_CASE(kill_ends_a_running_process_and_leaves_it_readable)
-{
-    Fixture f;
-    const std::string id = spawn_through_tool(f, "sleep", {"30"});
+    const ResultText signalled = f.result_of(f.call(call_for(
+        std::string(tool_names::kSend),
+        nlohmann::json{{"session_id", id}, {"signal", "term"}})));
+    BOOST_TEST(signalled.field("signalled") == "false");
+    BOOST_TEST(signalled.field("warning")
+               == "the process has already exited, so no signal was sent");
 
-    const nlohmann::json killed = f.payload_of(f.call(call_for(
-        std::string(tool_names::kKill), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(killed.at("signalled") == nlohmann::json(true));
-    BOOST_TEST(killed.at("graceful") == nlohmann::json(false));
-
-    const nlohmann::json waited = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.at("exited") == nlohmann::json(true));
-    // SIGKILL, as the signal number.
-    BOOST_TEST(waited.at("exit_code") == nlohmann::json(9));
-
-    // Killing again says so instead of failing: the session is still there,
-    // its child simply is not.
-    const nlohmann::json again = f.payload_of(f.call(call_for(
-        std::string(tool_names::kKill), nlohmann::json{{"session_id", id}})));
-    BOOST_TEST(again.at("signalled") == nlohmann::json(false));
-}
-
-BOOST_AUTO_TEST_CASE(a_graceful_kill_sends_the_softer_signal)
-{
-    Fixture f;
-    const std::string id = spawn_through_tool(f, "sleep", {"30"});
-    const nlohmann::json payload = f.payload_of(f.call(call_for(
-        std::string(tool_names::kKill),
-        nlohmann::json{{"session_id", id}, {"graceful", true}})));
-    BOOST_TEST(payload.at("graceful") == nlohmann::json(true));
-    BOOST_TEST(payload.at("signalled") == nlohmann::json(true));
-
-    const nlohmann::json waited = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    // sleep does not catch SIGTERM, so it dies of the signal (15).
-    BOOST_TEST(waited.at("exit_code") == nlohmann::json(15));
+    // Both halves in one call: the warning names what was lost, in one line.
+    const ResultText both = f.result_of(f.call(call_for(
+        std::string(tool_names::kSend),
+        nlohmann::json{{"session_id", id}, {"input", "ignored\n"},
+                       {"signal", "kill"}})));
+    BOOST_TEST(both.field("warning")
+               == "the process has already exited, so the input was discarded "
+                  "and no signal was sent");
 }
 
 BOOST_AUTO_TEST_CASE(spawn_honours_the_working_directory_and_environment)
@@ -1691,29 +2144,24 @@ BOOST_AUTO_TEST_CASE(spawn_honours_the_working_directory_and_environment)
         std::filesystem::canonical(std::filesystem::temp_directory_path())
             .string();
 
-    const std::string id = f.payload_of(f.call(call_for(
+    const std::string id = f.result_of(f.call(call_for(
         std::string(tool_names::kSpawn),
         nlohmann::json{{"executable", "pwd"},
                        {"arguments", nlohmann::json::array({"-P"})},
-                       {"working_directory", temp}}))).at("session_id");
-    const nlohmann::json waited = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", id}, {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(waited.at("stdout_text") == nlohmann::json(temp + "\n"));
-    BOOST_TEST(waited.at("working_directory") == nlohmann::json(temp));
+                       {"working_directory", temp}}))).field("session_id");
+    const ResultText waited = wait_through_tool(f, id, 5000, true);
+    BOOST_TEST(waited.block("new_stdout") == temp + "\n");
+    BOOST_TEST(waited.field("working_directory") == temp);
 
-    const std::string env_id = f.payload_of(f.call(call_for(
+    const std::string env_id = f.result_of(f.call(call_for(
         std::string(tool_names::kSpawn),
         nlohmann::json{
             {"executable", "sh"},
             {"arguments", nlohmann::json::array({"-c", "printf %s \"$MARKER\""})},
             {"environment",
-             nlohmann::json::array({"MARKER=sentinel-value"})}}))).at("session_id");
-    const nlohmann::json env_waited = f.payload_of(f.call(call_for(
-        std::string(tool_names::kWait),
-        nlohmann::json{{"session_id", env_id},
-                       {"timeout_milliseconds", 5000}})));
-    BOOST_TEST(env_waited.at("stdout_text") == nlohmann::json("sentinel-value"));
+             nlohmann::json::array({"MARKER=sentinel-value"})}}))).field("session_id");
+    const ResultText env_waited = wait_through_tool(f, env_id, 5000, true);
+    BOOST_TEST(env_waited.block("new_stdout") == "sentinel-value");
 }
 
 // ---- through the registry ---------------------------------------------------
@@ -1730,8 +2178,9 @@ BOOST_AUTO_TEST_CASE(a_whole_turn_runs_through_the_registry)
     registry.add(f.set);
 
     // The catalogue a request builder would hand the model.
-    BOOST_TEST(registry.get_tools().size() == std::size_t{6});
+    BOOST_TEST(registry.get_tools().size() == std::size_t{5});
     BOOST_TEST(registry.contains(std::string(tool_names::kSpawn)));
+    BOOST_TEST(registry.contains(std::string(tool_names::kSend)));
 
     auto approve = f.bus.subscribe<InvokeConfirmEvent>(
         [](InvokeConfirmEvent event) -> asio::awaitable<InvokeConfirmEvent> {
@@ -1739,12 +2188,15 @@ BOOST_AUTO_TEST_CASE(a_whole_turn_runs_through_the_registry)
             co_return event;
         });
 
-    // Turn 1: spawn cat, alongside a poll — a SerialWrite and a ReadOnly in
-    // one batch, which the registry runs serial-first and joins.
+    // Turn 1: spawn cat, alongside a look at the table — a SerialWrite and a
+    // ReadOnly in one batch, which the registry runs serial-first and joins.
+    // The poll's timeout is 0 because this batch has something else to do: a
+    // default one would sit here waiting for the cat that was just started.
     auto first_batch = f.run(registry.execute(std::vector<model_io::InvokeQuery>{
         call_for(std::string(tool_names::kSpawn),
                  nlohmann::json{{"executable", "cat"}}, "call_spawn"),
-        call_for(std::string(tool_names::kPoll), {}, "call_poll"),
+        call_for(std::string(tool_names::kPoll),
+                 nlohmann::json{{"wait_timeout_milliseconds", 0}}, "call_poll"),
     }));
     BOOST_TEST_REQUIRE(first_batch.size() == std::size_t{2});
     // Records come back in CALL order, never completion order, each
@@ -1753,34 +2205,35 @@ BOOST_AUTO_TEST_CASE(a_whole_turn_runs_through_the_registry)
     BOOST_TEST(first_batch[1].query.id == std::string("call_poll"));
     BOOST_TEST_REQUIRE(!tools::is_error(first_batch[0]));
     const std::string id =
-        nlohmann::json::parse(first_batch[0].output.raw).at("session_id");
+        ResultText(first_batch[0].output.raw).field("session_id");
 
     // Turn 2: feed it, end its input, wait, and read — the whole workflow.
     auto second_batch = f.run(registry.execute(std::vector<model_io::InvokeQuery>{
-        call_for(std::string(tool_names::kWrite),
+        call_for(std::string(tool_names::kSend),
                  nlohmann::json{{"session_id", id},
                                 {"input", "through the registry\n"},
-                                {"close_input", true}}, "call_write"),
+                                {"close_input", true}}, "call_send"),
     }));
     BOOST_TEST_REQUIRE(!tools::is_error(second_batch[0]));
 
     auto third_batch = f.run(registry.execute(std::vector<model_io::InvokeQuery>{
-        call_for(std::string(tool_names::kWait),
-                 nlohmann::json{{"session_id", id},
-                                {"timeout_milliseconds", 5000}}, "call_wait"),
+        call_for(std::string(tool_names::kPoll),
+                 nlohmann::json{{"session_ids", nlohmann::json::array({id})},
+                                {"wait_timeout_milliseconds", 5000}},
+                 "call_wait"),
     }));
     BOOST_TEST_REQUIRE(!tools::is_error(third_batch[0]));
-    const nlohmann::json waited =
-        nlohmann::json::parse(third_batch[0].output.raw);
-    BOOST_TEST(waited.at("exited") == nlohmann::json(true));
-    BOOST_TEST(waited.at("stdout_text") ==
-               nlohmann::json("through the registry\n"));
+    const ResultText waited(third_batch[0].output.raw);
+    BOOST_TEST(waited.field("state") == "exited");
+    BOOST_TEST(waited.block("new_stdout") == "through the registry\n");
 
     // An unknown tool in a batch is answered, not dropped: every call gets
     // exactly one record, which is a wire requirement.
     auto mixed = f.run(registry.execute(std::vector<model_io::InvokeQuery>{
         call_for("no_such_tool", {}, "call_bogus"),
-        call_for(std::string(tool_names::kPoll), {}, "call_poll_2"),
+        call_for(std::string(tool_names::kPoll),
+                 nlohmann::json{{"wait_timeout_milliseconds", 0}},
+                 "call_poll_2"),
     }));
     BOOST_TEST_REQUIRE(mixed.size() == std::size_t{2});
     BOOST_CHECK(stage_of(mixed[0]) == InvokeException::Stage::Dispatch);
@@ -1808,7 +2261,9 @@ BOOST_AUTO_TEST_CASE(an_unconfirmed_state_change_is_refused)
     BOOST_TEST(f.run(f.store->size()) == std::size_t{0});
 
     // A Trusted tool needs no confirmation and runs in the same conditions.
-    model_io::InvokeQuery poll = call_for(std::string(tool_names::kPoll));
+    model_io::InvokeQuery poll = call_for(
+        std::string(tool_names::kPoll),
+        nlohmann::json{{"wait_timeout_milliseconds", 0}});
     const auto poll_tool = f.prepare(poll);
     BOOST_CHECK(poll.security == model_io::InvokeSecurity::Trusted);
     BOOST_TEST(!tools::is_error(f.run(f.set->execute(poll_tool, poll))));
