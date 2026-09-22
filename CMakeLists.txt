@@ -198,6 +198,7 @@ add_subdirectory(process)
 # framework, endpoint transport and model_io data contract. Runtime providers
 # are emitted under <exe>/plugins/llm.
 add_subdirectory(llm)
+add_subdirectory(loop)
 
 # ---- Release install rules --------------------------------------------------
 # Included AFTER every add_subdirectory() above: it derives the release set by

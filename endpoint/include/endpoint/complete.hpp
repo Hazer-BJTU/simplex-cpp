@@ -7,7 +7,7 @@
 // The whole-exchange conveniences over the canonical wiring (see the
 // model_request.hpp header block). complete_once connects to the resolved
 // endpoint, runs ONE driver exchange as a spawned producer task, drains the
-// reader's consumer side inline, and hands back the reader's assembled
+// reader's consumer side concurrently, joins both, and returns the assembled
 // model_io::MessageItem. The complete functor wraps complete_once with a
 // plain retry loop: on a recoverable failure the WHOLE exchange is discarded
 // and re-read from scratch (fresh connect, the reader reset via clear()) —
@@ -36,6 +36,7 @@
 #include <utility>
 
 #include <boost/asio.hpp>
+#include <boost/asio/experimental/parallel_group.hpp>
 
 #include "endpoint/http_request_exception.hpp"
 #include "endpoint/model_request.hpp"
@@ -44,6 +45,27 @@
 #include "logging/logger.hpp"
 
 namespace endpoint {
+
+namespace detail {
+
+/**
+ * Finishing consumption (success or failure) ends network production. A normal
+ * producer exit must still let the consumer drain buffered data. An unexpected
+ * producer exception also cancels consumption so neither branch can be stranded.
+ * The parallel group always joins both branches after requesting cancellation.
+ */
+struct StopWhenConsumed {
+    boost::asio::cancellation_type operator()(std::exception_ptr failure) const {
+        return failure ? boost::asio::cancellation_type::terminal
+                       : boost::asio::cancellation_type::none;
+    }
+
+    boost::asio::cancellation_type operator()(
+        std::exception_ptr, const model_io::MessageItem&) const {
+        return boost::asio::cancellation_type::terminal;
+    }
+};
+
 
 /**
  * @brief Run one complete exchange against @p model_endpoint and return the
@@ -55,8 +77,8 @@ namespace endpoint {
  * freshly connected connection_stream — runs as a co_spawned task whose
  * exceptions are LOG-ONLY (pump has already torn the channel down for the
  * consumer by the time they are caught; see request.hpp's sse_request for the
- * exception contract), while this coroutine drains @p response_reader->consume()
- * inline and returns the assembled record. On a stream that ends without the
+ * exception contract), while a sibling coroutine drains the consumer. Both are
+ * joined before returning the assembled record. On a stream that ends without the
  * terminal event (a logged transport fault, a cooperative stop, a server that
  * closed early) the returned MessageItem is the reader's unassembled default —
  * the reader's end state, not this function, distinguishes those outcomes.
@@ -76,13 +98,14 @@ namespace endpoint {
  * @return The reader's assembled model_io::MessageItem.
  * @throws HttpRequestException{Stage::Connect} when the connection cannot be
  *         established; whatever consume() surfaces for consumer-side faults
- *         (a throwing reader hook).
+ *         (a throwing reader hook). External cancellation propagates
+ *         operation_aborted after the producer and consumer have both exited.
  */
 template<
     typename Delta,
     RequestDriver<typename ModelResponseReader<Delta>::Handler> Driver
 >
-boost::asio::awaitable<model_io::MessageItem> complete_once(
+boost::asio::awaitable<model_io::MessageItem> complete_once_impl(
     boost::asio::any_io_executor executor,
     ResolvedEndpoint model_endpoint,
     ModelRequestInterpreter::HttpRequest request,
@@ -101,11 +124,10 @@ boost::asio::awaitable<model_io::MessageItem> complete_once(
     // The canonical co_spawn wiring: pump() drives the driver over the stream
     // and finishes the handler on every exit path, so by the time an exception
     // reaches these catch blocks the consumer's get() below is already
-    // unblocked and the outcome is routed through the consumer side. Letting
-    // it escape a detached spawn would only terminate the process — so every
+    // unblocked and the outcome is routed through the consumer side. Every
     // failure is rendered (with request context, via wrap_request_failure for
     // the non-http strays) into the log and nothing else.
-    boost::asio::co_spawn(
+    auto producer = boost::asio::co_spawn(
         executor,
         [
             driver,
@@ -113,14 +135,21 @@ boost::asio::awaitable<model_io::MessageItem> complete_once(
             stream_ = std::move(stream),
             request_ = std::move(request)
         ] () mutable -> boost::asio::awaitable<void> {
+            const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
             try {
                 // request_ passes as an lvalue, so pump() takes its own copy
                 // and request_ stays readable in the fallback catches below.
                 co_await reader_->pump(driver, std::move(stream_), request_);
             } catch (const HttpRequestException& error) {
+                if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+                    co_return;
+                }
                 // Already stage- and context-rich: render as-is.
                 logging::Logger::error(error.to_string());
             } catch (const std::exception& error) {
+                if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+                    co_return;
+                }
                 // Defensive depth (the drivers wrap their own failures into
                 // HttpRequestException): fold the stray into the module's
                 // lifecycle exception so the log line keeps the request
@@ -133,6 +162,9 @@ boost::asio::awaitable<model_io::MessageItem> complete_once(
                 );
                 logging::Logger::error(http_exception.to_string());
             } catch (...) {
+                if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+                    co_return;
+                }
                 auto http_exception = wrap_request_failure(
                     HttpRequestException::Stage::Unknown,
                     "unknown error",
@@ -142,15 +174,66 @@ boost::asio::awaitable<model_io::MessageItem> complete_once(
                 logging::Logger::error(http_exception.to_string());
             }
         },
-        boost::asio::detached
+        boost::asio::deferred
     );
 
-    // ---- consumer: inline drain to the assembled item ------------------------
-    // The lambda's reader_ capture shares ownership, so the spawned producer
-    // cannot outlive the reader even if it is still tearing down when this
-    // coroutine finishes first.
-    auto model_response = co_await response_reader->consume();
+    // Consumer and producer are siblings in a structured join. Cancellation
+    // of this operation reaches both children, and async_wait completes only
+    // after both coroutine frames have finished using the reader and socket.
+    auto consumer = boost::asio::co_spawn(
+        executor, response_reader->consume(), boost::asio::deferred);
+    auto [order, producer_error, consumer_error, model_response] =
+        co_await boost::asio::experimental::make_parallel_group(
+            std::move(producer), std::move(consumer))
+            .async_wait(StopWhenConsumed{}, boost::asio::use_awaitable);
+
+    const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+    if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+        throw boost::system::system_error(boost::asio::error::operation_aborted);
+    }
+    if (consumer_error) {
+        std::rethrow_exception(consumer_error);
+    }
+    // Expected producer cancellation after a terminal consumer is not an error.
+    // Other producer faults were already captured by pump for reader inspection.
+    if (producer_error && order[0] == 0) {
+        std::rethrow_exception(producer_error);
+    }
     co_return model_response;
+}
+
+} // namespace detail
+
+/**
+ * Connects, consumes a response and joins its network producer before returning.
+ *
+ * A private strand serializes reader lifecycle changes and cancellation even
+ * with a multithreaded executor. Terminal cancellation interrupts connect/read
+ * waits; both producer and consumer finish before it propagates to the caller.
+ * Successful consumption also cancels any remaining producer read, so a server
+ * keeping the connection open after its terminal event cannot strand the task.
+ */
+template<
+    typename Delta,
+    RequestDriver<typename ModelResponseReader<Delta>::Handler> Driver
+>
+boost::asio::awaitable<model_io::MessageItem> complete_once(
+    boost::asio::any_io_executor executor,
+    ResolvedEndpoint model_endpoint,
+    ModelRequestInterpreter::HttpRequest request,
+    std::shared_ptr<ModelResponseReader<Delta>> response_reader,
+    Driver driver
+) {
+    auto exchange_executor = boost::asio::make_strand(executor);
+    co_return co_await boost::asio::co_spawn(
+        exchange_executor,
+        detail::complete_once_impl<Delta>(
+            exchange_executor,
+            std::move(model_endpoint),
+            std::move(request),
+            std::move(response_reader),
+            std::move(driver)),
+        boost::asio::use_awaitable);
 }
 
 /**
@@ -289,6 +372,7 @@ public:
             // it.
             reader->clear();
             bool self_aborted = false;
+            const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
             try {
                 auto item = co_await complete_once<Delta>(_executor, model_endpoint, request, reader, driver);
 
@@ -324,6 +408,9 @@ public:
                     {}, request
                 );
             } catch (const HttpRequestException& failure) {
+                if (cancellation.cancelled() != boost::asio::cancellation_type::none) {
+                    throw boost::system::system_error(boost::asio::error::operation_aborted);
+                }
                 if (self_aborted || !_recoverable(failure) || attempt == _max_retry_attempts) {
                     // The verdict is final and the failure — the report —
                     // propagates untouched; this line is the retry layer's
@@ -345,6 +432,12 @@ public:
                     + std::to_string(attempt + 1) + " of "
                     + std::to_string(_max_retry_attempts + 1)
                     + " failed, retrying: " + failure.to_string());
+            } catch (const boost::system::system_error& failure) {
+                if (failure.code() != boost::asio::error::operation_aborted) {
+                    logging::Logger::error(
+                        std::string("exchange failed with a system error: ") + failure.what());
+                }
+                throw;
             } catch (const std::exception& failure) {
                 // A non-HTTP exception out of complete_once is
                 // consumer-side (a hook or _accumulate fault out of

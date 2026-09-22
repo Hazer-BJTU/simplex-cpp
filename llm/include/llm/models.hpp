@@ -368,9 +368,14 @@ public:
      *        from aliasing one caller buffer. Pass std::move() when the
      *        caller is done with its state.
      *
-     * Cancellation: co_awaiting code may cancel the operation through the
-     * executor; the coroutine should then complete without side effects
-     * beyond what the provider already did.
+     * Cancellation: implementations must honor Asio terminal cancellation at
+     * asynchronous waits and finish with operation_aborted when interrupted.
+     * Join all per-exchange producer/consumer tasks before completing; never
+     * leave a detached network reader using model or request state. Cancellation
+     * is not retryable and must not return a partial response as a completed one.
+     * Remote effects already performed by the provider are not rolled back.
+     * This contract requires cooperative async operations, not forced thread
+     * termination; synchronous work must not block the executor indefinitely.
      *
      * @throws LLMUnsupportedOperation  on the default body — this model does
      *         not implement conversation exchange.

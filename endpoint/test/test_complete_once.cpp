@@ -844,3 +844,94 @@ BOOST_AUTO_TEST_CASE(clear_resets_the_reader_and_handler_for_reuse) {
     BOOST_CHECK_EQUAL(*hook_fires, 2);
     server.join();
 }
+
+/** Producer cancellation must be joined even after consumption succeeds. */
+BOOST_AUTO_TEST_CASE(terminal_consumer_cancels_and_joins_a_stalled_producer) {
+    AcceptAllServer server(1);
+    asio::io_context io;
+    bool exited = false;
+    struct StalledAfterTerminal {
+        bool& exited;
+
+        asio::awaitable<void> operator()(
+            std::shared_ptr<FakeHandlerBase> handler,
+            endpoint::connection_stream,
+            Request) const {
+            struct ExitMarker {
+                bool& exited;
+                ~ExitMarker() {
+                    exited = true;
+                }
+            } marker{exited};
+
+            co_await handler->put("data: done\n\n");
+            asio::steady_timer timer(co_await asio::this_coro::executor);
+            timer.expires_at(asio::steady_timer::time_point::max());
+            co_await timer.async_wait(asio::use_awaitable);
+        }
+    };
+
+    endpoint::ResolvedEndpoint where{
+        .host = "127.0.0.1",
+        .port = std::to_string(server.wait_listening()),
+        .target = "/v1/complete",
+        .tls = false};
+    auto reader = std::make_shared<FakeReader>(
+        std::make_shared<TerminalHandler>(io.get_executor()));
+    auto result = run_exchange(io, where, reader, StalledAfterTerminal{exited});
+    io.run_for(std::chrono::seconds(2));
+    server.join();
+    BOOST_REQUIRE(result.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    BOOST_CHECK_EQUAL(result.get().role, "assembled");
+    BOOST_CHECK(exited);
+    BOOST_CHECK(io.stopped());
+}
+
+/** Cancellation of retry backoff must propagate without starting another try. */
+BOOST_AUTO_TEST_CASE(cancelled_backoff_does_not_retry) {
+    AcceptAllServer server(1);
+    asio::io_context io;
+    asio::cancellation_signal cancellation;
+    struct StopDuringBackoff : endpoint::complete<FakeDelta> {
+        asio::cancellation_signal& cancellation;
+        int waits = 0;
+
+        StopDuringBackoff(asio::any_io_executor executor,
+                          asio::cancellation_signal& signal)
+            : endpoint::complete<FakeDelta>(executor,
+                  std::chrono::hours(1), std::chrono::hours(1), 3),
+              cancellation(signal) {
+        }
+
+        asio::awaitable<void> _sleep() override {
+            ++waits;
+            asio::post(_executor, [this] {
+                cancellation.emit(asio::cancellation_type::terminal);
+            });
+            co_await endpoint::retry_policy::_sleep();
+        }
+    } completer(io.get_executor(), cancellation);
+
+    endpoint::ResolvedEndpoint where{
+        .host = "127.0.0.1",
+        .port = std::to_string(server.wait_listening()),
+        .target = "/v1/complete",
+        .tls = false};
+    auto reader = std::make_shared<FakeReader>(
+        std::make_shared<TerminalHandler>(io.get_executor()));
+    Request request{http::verb::post, "/v1/complete", 11};
+    auto result = asio::co_spawn(io,
+        completer(where, std::move(request), reader, FailingDriver{}),
+        asio::bind_cancellation_slot(cancellation.slot(), asio::use_future));
+    io.run_for(std::chrono::seconds(2));
+    server.join();
+    BOOST_REQUIRE(result.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    try {
+        result.get();
+        BOOST_FAIL("cancelled backoff returned a response");
+    } catch (const boost::system::system_error& error) {
+        BOOST_CHECK(error.code() == asio::error::operation_aborted);
+    }
+    BOOST_CHECK_EQUAL(completer.waits, 1);
+    BOOST_CHECK(io.stopped());
+}
