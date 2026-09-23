@@ -1,0 +1,27 @@
+add_library(loop_extensions SHARED src/plugin.cpp)
+target_include_directories(loop_extensions PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(loop_extensions PUBLIC loop_intrinsic)
+target_link_libraries(loop_extensions PRIVATE logging_lib)
+set_target_properties(loop_extensions PROPERTIES OUTPUT_NAME extension_loop_hooks)
+
+function(simplex_install_loop_extension_config name source_file)
+    if(NOT IS_ABSOLUTE "${source_file}")
+        message(FATAL_ERROR "Extension schema paths must be absolute")
+    endif()
+    if(NOT name MATCHES "^[A-Za-z0-9_-]+$")
+        message(FATAL_ERROR "Invalid loop extension name: ${name}")
+    endif()
+    if(NOT EXISTS "${source_file}")
+        message(FATAL_ERROR "Missing loop extension config: ${source_file}")
+    endif()
+    file(MAKE_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/schemas/loop/extensions/${name}")
+    configure_file("${source_file}"
+        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/schemas/loop/extensions/${name}/config.yaml" COPYONLY)
+    install(FILES "${source_file}"
+        DESTINATION "bin/schemas/loop/extensions/${name}" RENAME config.yaml)
+endfunction()
+
+add_subdirectory(stubs/noop)
+if(BUILD_TESTS)
+    add_subdirectory(test)
+endif()

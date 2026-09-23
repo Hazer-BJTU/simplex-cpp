@@ -50,6 +50,9 @@ target_link_libraries(tools_iface INTERFACE
 # ExtensionContext and no dlopen. SHARED rather than header-only for the
 # typeinfo reason its own CMakeLists states.
 add_subdirectory(intrinsic)
+# Dynamically discovered toolsets share ToolSet and ToolRegistry with the
+# built-in sets. Their plugin contract, YAML layout and loader live here.
+add_subdirectory(extensions)
 
 # Manual demos of the whole stack (registry + an intrinsic toolset + the
 # provider plugins). Built always; only their offline --tools mode is

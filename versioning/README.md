@@ -11,6 +11,8 @@ Single source of truth for project version constants. This module owns
 |---|---|
 | `simplex::VERSION_MAJOR/MINOR/PATCH` | top-level `project(simplex_cpp VERSION …)` |
 | `simplex::VERSION_STRING` | `PROJECT_VERSION` |
+| `simplex::TOOLSET_PLUGIN_ABI_VERSION` | `SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
+| `simplex::LOOP_HOOK_PLUGIN_ABI_VERSION` | `SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
 | `simplex::LLM_PLUGIN_ABI_VERSION` | `SIMPLEX_LLM_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
 
 The LLM model-plugin ABI constant is defined here:

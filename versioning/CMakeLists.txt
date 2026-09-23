@@ -51,6 +51,10 @@
 #       Both layouts cross the same model plugin boundary.
 set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 6)
 
+# Independent contracts for dynamic toolsets and loop hooks.
+set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 1)
+set(SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION 1)
+
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
 # Rendered into version.hpp and hashed by extensions/plugin_magic.hpp
 # (consteval FNV-1a, together with _GLIBCXX_USE_CXX11_ABI, sizeof(void*) and the

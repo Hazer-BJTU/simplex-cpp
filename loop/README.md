@@ -4,6 +4,11 @@ A harness process may have only one active `loop::run()` call, including synchro
 
 The package implements the normal agent loop, synchronous writable hooks, result commits and recovery, and interruption of model waits through `std::stop_token`. The [interactive example](example/README.md) uses it with DeepSeek and the process toolset. The older example remains available.
 
+Hooks can be linked directly from [`intrinsic/`](intrinsic/) or loaded from
+[`extensions/`](extensions/). Both use `LoopHookInterface` and the same session
+registry; see the dynamic package's developer guide for factory signatures,
+YAML layout, and plugin discovery.
+
 ## Usage
 
 Link `loop_lib` and include `loop/loop.hpp` and, when subscribing to events, `loop/events.hpp`:

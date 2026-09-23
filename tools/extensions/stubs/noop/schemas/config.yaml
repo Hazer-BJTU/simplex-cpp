@@ -1,0 +1,3 @@
+name: noop_toolset
+description: Side-effect-free dynamic tool plugin for admission tests.
+config: {}

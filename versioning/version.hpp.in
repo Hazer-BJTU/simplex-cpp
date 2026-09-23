@@ -36,6 +36,12 @@ inline constexpr const char* VERSION_STRING = "@PROJECT_VERSION@";
 /// any plugin whose abi_version() differs. See llm/models.hpp for the contract.
 inline constexpr std::uint32_t LLM_PLUGIN_ABI_VERSION = @SIMPLEX_LLM_PLUGIN_ABI_VERSION@;
 
+/// Dynamic toolset contract, including ToolSet and ToolSetConfig layouts.
+inline constexpr std::uint32_t TOOLSET_PLUGIN_ABI_VERSION = @SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION@;
+
+/// Dynamic hook contract, including hook configuration and loop event layouts.
+inline constexpr std::uint32_t LOOP_HOOK_PLUGIN_ABI_VERSION = @SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION@;
+
 /// Toolchain identity strings baked into every plugin's admission magic block
 /// (extensions/plugin_magic.hpp): compiler id+version, language
 /// standard, and the Boost version (which pins the whole Boost tree, including
