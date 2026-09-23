@@ -46,6 +46,10 @@ A concrete package calls
 its `CMakeLists.txt`. That installs the editable YAML file to
 `<prefix>/bin/schemas/loop/<name>/config.yaml` with `cmake --install`.
 Listing a YAML file as a library source is useful for IDEs, but does not copy
-it to the build or install tree. No concrete hook is included yet, so there is
-currently no hook config file to export; the install rule is ready for each
-hook package when added.
+it to the build or install tree. Each hook package calls the install helper for
+its own config; `ContextStatisticHook` is the first example.
+
+## Built-in hooks
+
+- [`ContextStatisticHook`](hooks/context_statistic/README.md) tracks exchange
+  token usage and estimates fixed context cost in a flat `external_status` slot.

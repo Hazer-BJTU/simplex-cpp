@@ -1,0 +1,5 @@
+add_executable(test_loop_context_statistic test_context_statistic.cpp)
+target_link_libraries(test_loop_context_statistic PRIVATE
+    loop_intrinsic_context_statistic Boost::unit_test_framework)
+target_compile_options(test_loop_context_statistic PRIVATE -pthread)
+add_test(NAME test_loop_context_statistic COMMAND test_loop_context_statistic)
