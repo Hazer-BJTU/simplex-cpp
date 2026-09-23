@@ -87,7 +87,9 @@ hooks.add(std::make_shared<MyLoopHook>());
 
 插件实例可保存进程内状态；需要跨进程恢复的数据仍应写入
 `AgentInputState`。内建插件目录位于 [`intrinsic/`](intrinsic/)，
-不通过 `extensions` 声明。
+不通过 `extensions` 声明。内建插件的 YAML 配置在构造实例时读取，
+并随 `cmake --install` 安装到 `bin/schemas/loop/<插件名>/config.yaml`；
+配置格式、路径覆盖和错误处理见该目录的 README。
 
 bus 使用显式注入的同步 EventBus。回调按订阅顺序执行，回调返回后才继续循环。事件引用仅在回调期间有效，不得保存、从外部别名修改当前 state 或重入 run。
 

@@ -1,0 +1,5 @@
+add_executable(test_loop_intrinsic_hook_config test_hook_config.cpp)
+target_link_libraries(test_loop_intrinsic_hook_config PRIVATE
+    loop_intrinsic Boost::unit_test_framework)
+add_test(NAME test_loop_intrinsic_hook_config
+    COMMAND test_loop_intrinsic_hook_config)
