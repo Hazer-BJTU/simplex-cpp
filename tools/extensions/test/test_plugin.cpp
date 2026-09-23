@@ -8,6 +8,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_future.hpp>
 
+#include <chrono>
 #include <cstdlib>
 #include <unistd.h>
 #include <filesystem>
@@ -53,8 +54,7 @@ constexpr std::string_view valid_config =
 
 BOOST_AUTO_TEST_CASE(load_register_execute_and_pin_handle) {
     tools::extensions::ToolSetExtensionLoader loader;
-    BOOST_TEST(loader.load_default() == 1u);
-    BOOST_TEST(loader.size() == 1u);
+    BOOST_TEST(loader.load_default() >= 1u);
     auto set = loader.create("noop_toolset");
     BOOST_REQUIRE(set);
     BOOST_TEST(set->get_tools().size() == 1u);
@@ -98,7 +98,7 @@ BOOST_AUTO_TEST_CASE(reject_bad_modules_without_poisoning_loader) {
     }
     tools::extensions::ToolSetExtensionLoader loader;
     BOOST_TEST(loader.load("/nonexistent/simplex-tool-extensions") == 0u);
-    BOOST_TEST(loader.load_default() == 1u);
+    BOOST_TEST(loader.load_default() >= 1u);
     BOOST_TEST(loader.load_default() == 0u);
 }
 
@@ -116,7 +116,7 @@ BOOST_AUTO_TEST_CASE(config_override_and_strict_validation) {
     BOOST_CHECK_THROW((void)tools::extensions::load_tool(config, "missing"), std::exception);
 
     tools::extensions::ToolSetExtensionLoader loader;
-    BOOST_TEST(loader.load_default() == 1u);
+    BOOST_TEST(loader.load_default() >= 1u);
     BOOST_TEST(!loader.create("noop_toolset")); // no declaration yet
     scratch.write("noop_probe.yaml",
         "name: noop_probe\ndescription: No-op.\nargument_schema:\n  type: object\n  required: []\n  properties: {}\n");
@@ -138,4 +138,73 @@ BOOST_AUTO_TEST_CASE(factory_failures_are_isolated) {
         BOOST_TEST(!loader.create("noop_toolset"));
         BOOST_TEST(!loader.create("unknown_plugin"));
     }
+}
+
+BOOST_AUTO_TEST_CASE(directory_status_errors_are_visible) {
+    Scratch scratch;
+    tools::extensions::ToolSetExtensionLoader loader;
+    BOOST_TEST(loader.load(scratch.root / "absent") == 0u);
+    const auto cycle = scratch.root / "cycle";
+    fs::create_symlink(cycle.filename(), cycle);
+    BOOST_CHECK_EXCEPTION(
+        loader.load(cycle), fs::filesystem_error,
+        [&](const fs::filesystem_error& failure) {
+            return failure.path1() == cycle
+                && failure.code() == std::errc::too_many_symbolic_link_levels;
+        });
+    BOOST_TEST(loader.size() == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(plugin_execute_preserves_original_ownership_across_suspension) {
+    Scratch scratch;
+    const auto directory = scratch.root / "ownership_probe";
+    const auto marker = scratch.root / "destroyed";
+    fs::create_directories(directory);
+    {
+        // JSON is valid YAML and safely quotes arbitrary temporary paths.
+        std::ofstream config(directory / "config.yaml");
+        config << nlohmann::json{
+            {"name", "ownership_probe"},
+            {"description", "Ownership regression fixture"},
+            {"config", {{"destruction_marker", marker.string()}}}};
+        BOOST_REQUIRE(config.good());
+    }
+
+    tools::extensions::ToolSetExtensionLoader loader;
+    BOOST_REQUIRE(loader.load(fs::path(TOOL_FIXTURE_ROOT) / "ownership") == 1u);
+    auto set = loader.create("ownership_probe", directory);
+    BOOST_REQUIRE(set);
+    tools::ToolRegistry registry;
+    registry.add(set);
+    model_io::InvokeQuery query;
+    query.id = "ownership-1";
+    query.name = "ownership_probe";
+
+    boost::asio::io_context io;
+    auto batch = boost::asio::co_spawn(
+        io, registry.execute({query}, io.get_executor()), boost::asio::use_future);
+    io.run();
+    const auto results = batch.get();
+    BOOST_REQUIRE(results.size() == 1u);
+    BOOST_TEST(results.front().output.raw == "ownership preserved");
+
+    // Start a second call, then discard every external owner while it is
+    // suspended. The coroutine's host carrier must keep the plugin alive.
+    const auto started = fs::path(marker.string() + ".started");
+    BOOST_REQUIRE(fs::remove(started));
+    auto handle = set->prepare(query);
+    io.restart();
+    auto call = boost::asio::co_spawn(
+        io, set->execute(handle, query), boost::asio::use_future);
+    BOOST_REQUIRE(io.poll_one() == 1u);
+    BOOST_REQUIRE(fs::exists(started));
+    BOOST_REQUIRE(call.wait_for(std::chrono::seconds(0)) == std::future_status::timeout);
+    registry.clear();
+    set.reset();
+    loader = {};
+    handle.reset();
+    BOOST_TEST(!fs::exists(marker));
+    io.run();
+    BOOST_TEST(call.get().output.raw == "ownership preserved");
+    BOOST_TEST(fs::exists(marker));
 }

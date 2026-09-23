@@ -48,7 +48,11 @@ public:
 /** A session-independent loader; registration in ToolRegistry remains explicit. */
 class ToolSetExtensionLoader {
 public:
-    /** Scan one directory; malformed modules are logged and skipped. */
+    /**
+     * Scan one directory, logging and skipping malformed modules.
+     * Missing paths and non-directories add nothing; other filesystem status
+     * errors and enumeration failures propagate to the caller.
+     */
     std::size_t load(const std::filesystem::path& directory);
     /** Scan the executable-relative plugins directory for this domain. */
     std::size_t load_default();

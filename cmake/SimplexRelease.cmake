@@ -23,6 +23,9 @@
 #
 #   <prefix>/bin/                 executables
 #   <prefix>/bin/plugins/llm/     dlopen'd provider modules
+#   <prefix>/bin/plugins/tools/   dlopen'd toolset modules
+#   <prefix>/bin/plugins/loop/    dlopen'd loop-hook modules
+#   <prefix>/bin/schemas/         editable intrinsic and extension configuration
 #   <prefix>/lib/                 project shared libraries + bundled runtime
 #
 # Plugins keep their build-tree-relative position under bin/ because the host

@@ -37,6 +37,18 @@ std::filesystem::path executable_directory() {
 
 using Factory = std::unique_ptr<ToolSet>(const ToolSetConfig&);
 
+/** Host-only carrier; never pass this ownership block back into plugin state. */
+struct PinnedTool {
+    // Reverse member destruction also keeps the DSO alive on construction failure.
+    std::shared_ptr<ToolSet> owner;
+    ToolSet::ToolHandle original;
+
+    void operator()(ToolInterface*) noexcept {
+        original.reset();
+        owner.reset();
+    }
+};
+
 /** Keep both the product and each independently retained tool in its DSO. */
 class LoadedToolSet final : public ToolSet {
 public:
@@ -59,7 +71,16 @@ public:
     boost::asio::awaitable<model_io::InvokeReturn> execute(
         ToolHandle tool, model_io::InvokeQuery query) override {
         auto inner = inner_;
-        co_return co_await inner->execute(std::move(tool), std::move(query));
+        auto original = tool;
+        if (const auto* pin = std::get_deleter<PinnedTool>(tool);
+            pin && pin->owner == inner && pin->original.get() == tool.get()) {
+            original = pin->original;
+        }
+        // Keep the host carrier and set alive throughout suspension, but give
+        // the plugin exactly the ownership block returned by its prepare().
+        // A plugin may retain this original handle without creating a cycle
+        // through the host carrier back to the set itself.
+        co_return co_await inner->execute(std::move(original), std::move(query));
     }
 private:
     ToolHandle pin(ToolHandle tool) const {
@@ -69,12 +90,7 @@ private:
         // The tool may escape prepare()/dispatch() and outlive the registry.
         // Capture its set so neither implementation nor its DSO disappears.
         ToolInterface* raw = tool.get();
-        return ToolHandle(raw,
-            [tool = std::move(tool), owner = inner_](ToolInterface*) mutable {
-                // Destroy plugin-owned tools before releasing their owner and DSO.
-                tool.reset();
-                owner.reset();
-            });
+        return ToolHandle(raw, PinnedTool{inner_, std::move(tool)});
     }
     std::shared_ptr<ToolSet> inner_;
 };
@@ -142,7 +158,17 @@ std::optional<ToolSetSkill> load_skill(const ToolSetConfig& config) {
 
 std::size_t ToolSetExtensionLoader::load(const std::filesystem::path& directory) {
     std::error_code error;
-    if (!std::filesystem::is_directory(directory, error)) {
+    const auto status = std::filesystem::status(directory, error);
+    // Missing paths are an optional-plugin case, even when status() reports
+    // ENOENT. Other failures (including symlink loops) must remain visible.
+    if (status.type() == std::filesystem::file_type::not_found) {
+        return 0;
+    }
+    if (error) {
+        throw std::filesystem::filesystem_error(
+            "failed to inspect extension directory", directory, error);
+    }
+    if (!std::filesystem::is_directory(status)) {
         return 0;
     }
     std::size_t added = 0;

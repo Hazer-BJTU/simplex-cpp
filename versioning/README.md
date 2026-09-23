@@ -15,7 +15,9 @@ Single source of truth for project version constants. This module owns
 | `simplex::LOOP_HOOK_PLUGIN_ABI_VERSION` | `SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
 | `simplex::LLM_PLUGIN_ABI_VERSION` | `SIMPLEX_LLM_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
 
-The LLM model-plugin ABI constant is defined here:
+Each plugin domain has an independent ABI constant defined here. Toolsets and
+loop hooks expose their corresponding constant as `kAbiVersion` in their public
+extension header. For LLM models,
 `llm/include/llm/models.hpp` includes the generated header and aliases
 `simplex::LLM_PLUGIN_ABI_VERSION` as `llm::LLM_PLUGIN_ABI_VERSION`.
 

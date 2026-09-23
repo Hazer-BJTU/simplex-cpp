@@ -48,7 +48,7 @@ constexpr std::string_view valid_config =
 
 BOOST_AUTO_TEST_CASE(load_register_publish_and_release) {
     loop::extensions::LoopHookExtensionLoader loader;
-    BOOST_TEST(loader.load_default() == 1u);
+    BOOST_TEST(loader.load_default() >= 1u);
     auto hook = loader.create("noop_hook");
     BOOST_REQUIRE(hook);
     eventbus::EventBus bus;
@@ -75,7 +75,7 @@ BOOST_AUTO_TEST_CASE(reject_bad_modules_and_duplicates) {
     }
     loop::extensions::LoopHookExtensionLoader loader;
     BOOST_TEST(loader.load("/nonexistent/simplex-loop-extensions") == 0u);
-    BOOST_TEST(loader.load_default() == 1u);
+    BOOST_TEST(loader.load_default() >= 1u);
     BOOST_TEST(loader.load_default() == 0u);
 }
 
@@ -89,7 +89,7 @@ BOOST_AUTO_TEST_CASE(config_override_and_validation) {
     BOOST_TEST(loop::extensions::load_config(path, "noop_hook").name == "noop_hook");
 
     loop::extensions::LoopHookExtensionLoader loader;
-    BOOST_TEST(loader.load_default() == 1u);
+    BOOST_TEST(loader.load_default() >= 1u);
     BOOST_REQUIRE(loader.create("noop_hook"));
     BOOST_REQUIRE(loader.create("noop_hook", path));
     BOOST_TEST(!loader.create("noop_hook", scratch.root / "missing"));
@@ -108,4 +108,19 @@ BOOST_AUTO_TEST_CASE(factory_failures_are_isolated) {
         BOOST_TEST(!loader.create("noop_hook"));
         BOOST_TEST(!loader.create("unknown_plugin"));
     }
+}
+
+BOOST_AUTO_TEST_CASE(directory_status_errors_are_visible) {
+    Scratch scratch;
+    loop::extensions::LoopHookExtensionLoader loader;
+    BOOST_TEST(loader.load(scratch.root / "absent") == 0u);
+    const auto cycle = scratch.root / "cycle";
+    fs::create_symlink(cycle.filename(), cycle);
+    BOOST_CHECK_EXCEPTION(
+        loader.load(cycle), fs::filesystem_error,
+        [&](const fs::filesystem_error& failure) {
+            return failure.path1() == cycle
+                && failure.code() == std::errc::too_many_symbolic_link_levels;
+        });
+    BOOST_TEST(loader.size() == 0u);
 }

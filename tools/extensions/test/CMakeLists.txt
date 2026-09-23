@@ -31,3 +31,9 @@ target_compile_definitions(tool_fixture_nonstandard_product PRIVATE SIMPLEX_TEST
 add_dependencies(test_tool_extensions tool_fixture_nonstandard_product)
 
 add_dependencies(test_tool_extensions tool_fixture_wrong_product)
+
+add_library(tool_fixture_ownership MODULE ownership_fixture.cpp)
+target_link_libraries(tool_fixture_ownership PRIVATE tools_extensions boost_dll_iface)
+set_target_properties(tool_fixture_ownership PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixtures/ownership")
+add_dependencies(test_tool_extensions tool_fixture_ownership)

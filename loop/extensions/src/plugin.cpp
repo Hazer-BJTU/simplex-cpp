@@ -53,7 +53,17 @@ std::filesystem::path config_file(std::string_view name) {
 
 std::size_t LoopHookExtensionLoader::load(const std::filesystem::path& directory) {
     std::error_code error;
-    if (!std::filesystem::is_directory(directory, error)) {
+    const auto status = std::filesystem::status(directory, error);
+    // Missing paths are an optional-plugin case, even when status() reports
+    // ENOENT. Other failures (including symlink loops) must remain visible.
+    if (status.type() == std::filesystem::file_type::not_found) {
+        return 0;
+    }
+    if (error) {
+        throw std::filesystem::filesystem_error(
+            "failed to inspect extension directory", directory, error);
+    }
+    if (!std::filesystem::is_directory(status)) {
         return 0;
     }
     std::size_t added = 0;

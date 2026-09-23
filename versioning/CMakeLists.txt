@@ -11,7 +11,7 @@
 # all header paths through interface targets, not directory-scope variables).
 #
 # The project version comes from the top-level project(VERSION ...); this file
-# only adds module-owned constants (currently the plugin ABI version) and renders
+# adds independent LLM, toolset, and loop-hook ABI constants and renders
 # the header.
 # =============================================================================
 

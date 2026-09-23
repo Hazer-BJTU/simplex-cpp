@@ -135,7 +135,7 @@ option(BUILD_TESTS "Build unit tests" ON)
 # Module add order matters: each module may consume targets or GLOBAL properties
 # populated by an earlier one.
 #   - versioning first: its `simplex_versioning` INTERFACE target feeds every
-#     plugin contract in the tree (the LLM plugin ABI version today).
+#     plugin contract in the tree (independent LLM, toolset, and loop-hook ABIs).
 #   - utils early: the small shared utilities package. Its logging/ member
 #     exports `logging_lib` (endpoint's public headers use logging::Logger);
 #     its yamlconfig/ member is the YAML->JSON config bridge
