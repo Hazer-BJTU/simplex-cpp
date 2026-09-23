@@ -487,3 +487,88 @@ BOOST_AUTO_TEST_CASE(model_error_is_not_hidden_by_a_simultaneous_stop) {
     BOOST_CHECK(result.status == loop::RunStatus::Failed);
     BOOST_CHECK(result.error.find("independent model error") != std::string::npos);
 }
+
+/** An aborted operation is a failure unless the host actually requested stop. */
+BOOST_AUTO_TEST_CASE(operation_aborted_without_stop_is_failed_and_can_continue) {
+    Fixture f;
+    f.model.inspect = [](const State&) {
+        throw boost::system::system_error(asio::error::operation_aborted);
+    };
+    int finished = 0;
+    auto subscription = f.bus.subscribe<loop::RunFinished>([&](const auto& event) {
+        ++finished;
+        BOOST_CHECK(event.result.status == loop::RunStatus::Failed);
+        BOOST_CHECK(event.state.loop->status == model_io::LoopStatus::Failed);
+        BOOST_CHECK(event.state.loop->phase == model_io::LoopPhase::Ready);
+        BOOST_CHECK_EQUAL(event.state.loop->error, event.result.error);
+    });
+
+    const auto result = f.run();
+    BOOST_CHECK(result.status == loop::RunStatus::Failed);
+    BOOST_CHECK(!result.error.empty());
+    BOOST_CHECK_EQUAL(finished, 1);
+    BOOST_REQUIRE_EQUAL(f.state.turns.size(), 1u);
+    BOOST_CHECK(f.state.turns.front().agent_loop_step.empty());
+    BOOST_CHECK_EQUAL(f.set->tool->count, 0);
+
+    // Scope of the failure observer ends before the successful continuation.
+    subscription.disconnect();
+    f.model.inspect = {};
+    f.model.calls = false;
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::Completed);
+    BOOST_CHECK_EQUAL(f.state.turns.size(), 1u);
+    BOOST_CHECK_EQUAL(f.state.turns.front().agent_loop_step.size(), 1u);
+}
+
+/** Non-standard exceptions still produce a diagnostic and one finish event. */
+BOOST_AUTO_TEST_CASE(nonstandard_model_exception_is_recorded) {
+    Fixture f;
+    f.model.inspect = [](const State&) {
+        throw 42;
+    };
+    int finished = 0;
+    auto subscription = f.bus.subscribe<loop::RunFinished>([&](const auto&) {
+        ++finished;
+    });
+
+    const auto result = f.run();
+    BOOST_CHECK(result.status == loop::RunStatus::Failed);
+    BOOST_CHECK_EQUAL(result.error, "unknown exception");
+    BOOST_REQUIRE(f.state.loop);
+    BOOST_CHECK_EQUAL(f.state.loop->error, result.error);
+    BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Ready);
+    BOOST_CHECK_EQUAL(finished, 1);
+    BOOST_CHECK_EQUAL(f.set->tool->count, 0);
+}
+
+/** A failed recovery must retain every returned effect and admit no new run. */
+BOOST_AUTO_TEST_CASE(repeated_projection_failure_preserves_results_and_history) {
+    Fixture f;
+    f.model.fail_projection = true;
+    BOOST_REQUIRE(f.run().status == loop::RunStatus::Failed);
+    const auto saved = nlohmann::json(f.state);
+    int started = 0;
+    int finished = 0;
+    auto start = f.bus.subscribe<loop::RunStarted>([&](const auto&) {
+        ++started;
+    });
+    auto finish = f.bus.subscribe<loop::RunFinished>([&](const auto&) {
+        ++finished;
+    });
+
+    const auto result = f.run();
+    BOOST_CHECK(result.status == loop::RunStatus::Failed);
+    BOOST_CHECK(result.error.find("projection failure") != std::string::npos);
+    BOOST_CHECK(nlohmann::json(f.state) == saved);
+    BOOST_CHECK_EQUAL(started, 0);
+    BOOST_CHECK_EQUAL(finished, 0);
+    BOOST_CHECK_EQUAL(f.set->tool->count, 1);
+    BOOST_CHECK_EQUAL(f.model.exchanges, 1);
+
+    f.model.fail_projection = false;
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::Completed);
+    BOOST_CHECK_EQUAL(started, 1);
+    BOOST_CHECK_EQUAL(finished, 1);
+    BOOST_CHECK_EQUAL(f.set->tool->count, 1);
+    BOOST_CHECK(f.state.loop->pending_results.empty());
+}
