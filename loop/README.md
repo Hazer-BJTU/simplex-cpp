@@ -1,12 +1,12 @@
 # loop
 
-一个 harness 进程内只允许一个活跃 `loop::run()`，包括同步钩子执行和工具收尾时间。调用方保证此约束；本包没有 gate、队列、全局运行实例或独立 journal。registry 内部仍可按工具声明并行执行同一批次。
+A harness process may have only one active `loop::run()` call, including synchronous hook execution and tool cleanup. The caller enforces this rule. This package has no gate, queue, global run instance, or separate journal. Within a batch, the registry may still execute tools in parallel when their declarations allow it.
 
-当前已实现正常循环、同步可写钩子、结果提交与恢复，以及可中断模型等待的 stop_token 停止机制。新增 [交互示例](example/README.md) 使用本包驱动 DeepSeek 和 process 工具集，旧示例保留。
+The package implements the normal agent loop, synchronous writable hooks, result commits and recovery, and interruption of model waits through `std::stop_token`. The [interactive example](example/README.md) uses it with DeepSeek and the process toolset. The older example remains available.
 
-## 使用
+## Usage
 
-链接 `loop_lib`，包含 `loop/loop.hpp` 和需要订阅的 `loop/events.hpp`：
+Link `loop_lib` and include `loop/loop.hpp` and, when subscribing to events, `loop/events.hpp`:
 
 ```cpp
 model_io::AgentInputState state;
@@ -14,108 +14,94 @@ std::stop_source stop;
 model_io::MessageItem input;
 input.type = model_io::MessageItemType::UserInput;
 input.role = "user";
-// 填入 input.content；按宿主策略设置 state.system_prompt 和 state.tools。
+// Fill input.content; configure state.system_prompt and state.tools according to host policy.
 auto result = co_await loop::run(
     model, registry, bus, executor, state,
     true, std::move(input), {.max_exchanges = 32}, stop.get_token());
 ```
 
-所有依赖显式注入。loop 不自行加载模型、注册工具、注入 skill 或读取全局总线。依赖中的引用和 state 必须存活到返回；输入和选项按值进入惰性协程帧。模型、registry 和 bus 的生命周期由宿主负责。
+All dependencies are injected explicitly. The loop does not load a model, register tools, inject skills, or read a global bus. Referenced dependencies and `state` must remain alive until `run()` returns; the input and options enter the lazy coroutine frame by value. The host owns the model, registry, and bus lifetimes.
 
-`has_message = false` 时忽略 message（可以传 `{}`），继续最后一个 turn，不创建用户输入，不重跑已有工具调用。没有 turn 时返回 Failed。max_exchanges 必须大于零；每次模型响应计一次交换。最后一次响应带有工具调用时，仍完整处理该批次再报告 ExchangeLimit。
+With `has_message = false`, the message argument is ignored (you may pass `{}`). The loop continues the last turn without creating user input or rerunning existing tool calls. It returns `Failed` if there is no turn. `max_exchanges` must be greater than zero; each model response counts as one exchange. If the final allowed response contains tool calls, the loop fully settles that batch before reporting `ExchangeLimit`.
 
-## 状态与恢复
+## State and recovery
 
-`AgentInputState` 是唯一可持久化状态。可选 `loop` 字段记录当前状态、阶段、交换计数、错误，以及结果提交失败时的 `pending_results`。该字段是宿主元数据，不是 provider 请求参数。新增提交序号改变了 C++ 布局，模型插件 ABI 已升至 6；旧插件需要重编译。旧 JSON 不含此字段时仍可读取。`RunResult` 只是此次调用摘要，无须另行持久化。
+`AgentInputState` is the only persistable state. Its optional `loop` field records the current status, phase, exchange count, error, and `pending_results` when result projection fails. This field is host metadata, not a provider request parameter. Commit sequences changed the C++ layout, so the model plugin ABI is now version 6; older plugins must be rebuilt. Older JSON without these fields remains readable. `RunResult` only summarizes the current invocation and does not need separate persistence.
 
-每次模型响应提交还会在 `LoopProgress::committed_response_sequence` 上递增，并把序号写入该 `AgentLoopStep`。序号跨多次 `run()` 保留，即使旧步骤被裁剪也不会回退；旧 JSON 缺少序号时按零读取。需要累计统计的 hook 可把自己的已处理序号与累计值一起保存在 `external_status`，以便在编辑事件回滚后补账，并在未处理响应已被裁剪时识别缺口。
+Each committed model response increments `LoopProgress::committed_response_sequence` and writes the sequence to its `AgentLoopStep`. The sequence survives across `run()` calls and never decreases when old steps are pruned; older JSON without a sequence reads it as zero. A hook that maintains cumulative statistics can store both its last accounted sequence and its totals in `external_status`. It can then reconcile an edit rollback and detect gaps if unaccounted responses were pruned.
 
-正常流程是：输入提交 → 模型请求 → 响应提交 → registry 批次执行 → 结果提交 → 下一次请求。没有工具调用的模型响应表示完成。
+The normal flow is input commit → model request → response commit → registry batch → result commit → next request. A model response without tool calls completes the run.
 
-返回状态：Completed、Cancelled、ExchangeLimit、Failed。诊断使用 logging；工具输出及错误记录写入 dataclass，日志不作为恢复依据。常规结束会先保存 loop.status/error，运行可写的 EditOnRunFinished，再同步发布只读的 RunFinished。参数错误或前置取消发生在接纳运行前，不发布运行事件、不覆盖原有运行信息。
+Return statuses are `Completed`, `Cancelled`, `ExchangeLimit`, and `Failed`. Diagnostics use logging; tool output and error records go into the dataclass. Logs are not a recovery source. On a normal exit, the loop stores `loop.status` and `loop.error`, runs the writable `EditOnRunFinished` hook, and synchronously publishes the read-only `RunFinished` event. Invalid parameters or a stop requested before admission do not publish run events or overwrite previous run information.
 
-所有 `model.integrate()` 都在候选状态上执行，成功后以不抛异常的 move assignment 提交。工具返回的完整结果先移动到 `state.loop.pending_results`，再统一整合至候选对话；投影失败不会产生半份工具消息，下一次 run 先补写这些结果，再接收新输入或继续请求模型。此缓冲只存放尚未提交的结果，成功后清空，不保留第二份执行历史。
+Every `model.integrate()` operates on a candidate state and commits with nonthrowing move assignment only after success. Complete tool returns first move into `state.loop.pending_results`, then project together into a candidate conversation. A projection failure cannot leave half-written tool messages: the next `run()` projects those results before accepting new input or requesting a model response. This buffer contains only uncommitted results; it is cleared after a successful projection and is not a second copy of the execution history.
 
-`LoopProgress::status` 使用 `model_io::LoopStatus` 枚举（Idle、Running、Completed、Cancelled、ExchangeLimit、Failed），`phase` 使用 `model_io::LoopPhase` 枚举（Ready、Model、Tools、Projection、Blocked）。JSON 保持原有小写名称（如 `exchange_limit`、`projection`），未知名称或错误类型在反序列化时抛出异常。恢复时，Tools/Blocked 表示工具结果不确定，`run()` 抛出 `loop::RecoveryRequired`，不自动重放或解决，由宿主决定如何核查和修复。Projection 必须带有待提交结果；验证所有工具调用与结果的数量、顺序、id/name 匹配后才能继续。外部导入的未回答调用同样拒绝自动重放。调用方不得篡改历史或恢复标记。
+`LoopProgress::status` uses `model_io::LoopStatus` (`Idle`, `Running`, `Completed`, `Cancelled`, `ExchangeLimit`, `Failed`); `phase` uses `model_io::LoopPhase` (`Ready`, `Model`, `Tools`, `Projection`, `Blocked`). JSON retains the lowercase names, such as `exchange_limit` and `projection`. Deserialization rejects unknown names or incorrect types. On recovery, `Tools` or `Blocked` means tool results are uncertain: `run()` throws `loop::RecoveryRequired` and leaves investigation and repair to the host. It neither replays nor resolves the tools automatically. `Projection` must have pending results; continuation requires validating the count, order, IDs, and names of every tool call and result. Imported unanswered calls are also ineligible for automatic replay. Callers must not tamper with history or recovery markers.
 
-宿主可捕获 `RecoveryRequired` 并读取 `phase()` 区分 Tools 和 Blocked，再检查持久化状态与工具外部效果。不要直接把这一异常当成可自动重试的模型失败。当前 `LoopProgress` 与对话一同保存在唯一的 `AgentInputState` 中；后续可评估把宿主恢复元数据移到独立的可持久化 dataclass，并让模型边界只接收对话数据，以免每次调整恢复协议都影响模型插件 ABI。本次保持现有状态协议。
+The host can catch `RecoveryRequired`, inspect `phase()` to distinguish `Tools` from `Blocked`, and compare persisted state with external tool effects. It must not treat this exception as an automatically retryable model failure. Currently `LoopProgress` lives alongside the conversation in the sole `AgentInputState`. A future design could move host recovery metadata into another persistable dataclass and expose only conversation data at the model boundary, avoiding model plugin ABI changes whenever the recovery protocol changes. This implementation retains the current state contract.
 
-这是正常进程存续期间的恢复协议，不是写前日志：宿主负责何时保存 dataclass，不能承诺任意崩溃、断电或内存耗尽后都能恢复已发生的副作用。工具未报告的外部细节也无法由 loop 推断。
+This is a recovery protocol for a live process, not a write-ahead log. The host decides when to persist the dataclass. The loop cannot promise recovery of effects after arbitrary crashes, power loss, or memory exhaustion, nor infer external details that tools did not report.
 
-## 异常处理
+## Exception handling
 
-`run()` 把普通运行异常转换为 `RunResult`，调用方通常检查 `result.status` 和 `result.error`。前一轮的 `Tools`／`Blocked` 是例外：接纳被拒绝，抛出携带原始 phase 的 `RecoveryRequired`，状态不变，交给宿主处理。异常处理分为三层：
+`run()` converts ordinary runtime exceptions into `RunResult`; callers normally inspect `result.status` and `result.error`. A previous `Tools` or `Blocked` phase is different: admission is rejected with `RecoveryRequired` carrying the original phase, leaving state unchanged for the host to handle. Exception handling has three layers:
 
-1. `converse_interruptibly()` 等待模型协程退出，异常时关闭本次取消桥接并原样重抛，不在这里判断失败原因。
-2. 模型等待位置只识别取消：必须同时满足 `stop.stop_requested()` 和 `boost::system::system_error` 的错误码为 `operation_aborted`，才返回 `Cancelled`。单独出现任一条件都不足以认定取消。
-3. 运行主体先单独重抛 `RecoveryRequired`，再以 `catch (...)` 接收其余异常，包括参数校验、投影恢复、模型调用、历史整合、registry 分发以及同步钩子的失败，将结果设为 `Failed` 并记录日志。`std::exception` 使用 `what()` 作为诊断，其他异常使用 `unknown exception`。
+1. `converse_interruptibly()` waits for the model coroutine to exit. On an exception it closes this invocation's cancellation bridge and rethrows unchanged; it does not classify the failure.
+2. The model-wait boundary recognizes cancellation only when both `stop.stop_requested()` is true and a `boost::system::system_error` has error code `operation_aborted`. Neither condition alone proves cancellation.
+3. The run body rethrows `RecoveryRequired` separately, then catches all other exceptions with `catch (...)`, including failures in parameter validation, projection recovery, model calls, history integration, registry dispatch, and synchronous hooks. It records a log and returns `Failed`. Diagnostics use `what()` for `std::exception` and `unknown exception` otherwise.
 
-内置 Chat Completions 和 Responses 适配器调用 `endpoint::complete`。取消一旦传入传输层，遇到的 HTTP 错误也可能转为 `operation_aborted`；因此 HTTP 失败与停止竞争时，实际完成的异常决定最终结果。若独立错误先于取消生效而完成，则报告 `Failed`；若终止取消已传播到传输层，完成为 `operation_aborted`，则报告 `Cancelled`。不可重试的 HTTP 错误或重试耗尽若原样抛出 `HttpRequestException`，由第三层处理。loop 不自行重试模型请求。工具通过返回值报告的错误仍是工具结果，不自动导致整个 loop 失败；registry 向外抛出的异常才进入 loop 的失败路径。
+The built-in Chat Completions and Responses adapters call `endpoint::complete`. After cancellation reaches transport, an HTTP error in flight can also become `operation_aborted`. The exception that actually completes determines the outcome when an HTTP failure races with stop: an independent failure completed first yields `Failed`, while terminal cancellation propagated into transport and completed as `operation_aborted` yields `Cancelled`. A nonretryable HTTP error or exhausted retries that throw `HttpRequestException` unchanged reach the third layer. The loop does not retry model requests itself. Errors returned as tool values remain tool results and do not automatically fail the whole loop; exceptions escaping the registry do.
 
-失败后的状态取决于发生位置：
+Failure state depends on where the error occurs:
 
-| 位置 | 状态与后续行为 |
+| Boundary | State and next action |
 |---|---|
-| 接纳运行前的普通校验或投影恢复失败 | 返回 `Failed`，不创建新的进度记录，不发布 `RunFinished`；此前成功恢复的旧结果可能已经提交 |
-| 前一轮为 Tools／Blocked | 抛出 `RecoveryRequired`，提供原始 phase；不自动重放工具，不接纳本轮 |
-| 模型请求 | 不提交失败请求的部分响应，`phase` 从 `Model` 恢复为 `Ready` |
-| 工具阶段未能取得并保存完整结果 | `phase` 从 `Tools` 改为 `Blocked`，拒绝自动重放，已发生的外部副作用不回滚 |
-| 工具结果投影 | 保留 `Projection` 和完整 `pending_results`，后续只重试投影 |
-| 同步钩子 | 按下节所述保留已提交数据；需要时先补齐未执行工具结果，再结束运行 |
-| `EditOnRunFinished` | 撤销此次状态编辑，更新为 `Failed` 并追加诊断，继续发布 `RunFinished` |
-| `RunFinished` | 已完成终态记录；订阅者异常仅记录日志，不改变返回值或持久化状态，也不再次发布结束事件 |
+| Ordinary validation or projection recovery before admission | Return `Failed`; create no new progress record and publish no `RunFinished`. Previously recovered results may already be committed. |
+| Previous phase is `Tools` or `Blocked` | Throw `RecoveryRequired` with the original phase; do not replay tools or admit this run. |
+| Model request | Do not commit a partial response; change `Model` back to `Ready`. |
+| Tool phase fails before complete results are saved | Change `Tools` to `Blocked`; forbid automatic replay. External effects already made are not rolled back. |
+| Tool-result projection | Retain `Projection` and the complete `pending_results`; retry projection only. |
+| Synchronous hook | Preserve committed data as described below; when needed, first close declared calls with skipped-tool results, then finish the run. |
+| `EditOnRunFinished` | Roll back this state edit, set `Failed`, append a diagnostic, and still publish `RunFinished`. |
+| `RunFinished` | Terminal state is already recorded. A subscriber exception is logged only; it changes neither the return value nor persisted state, and does not republish the event. |
 
-运行已接纳时，loop 在发布 `RunFinished` 前保存终态和错误。`Failed` 表示本次运行失败，不表示整个输入、对话历史或外部工具副作用已回滚。
+Once a run is admitted, the loop saves the terminal status and error before publishing `RunFinished`. `Failed` means this invocation failed; it does not mean the whole input, conversation history, or external tool effects were rolled back.
 
-`run()` **不是 `noexcept` 边界**：参数或协程帧构造、协程初始化，以及生成诊断、写入终态或记录日志时的二次异常仍可能向调用方传播。宿主在等待 `run()` 时仍需保留最外层异常处理；不能把“未正常返回”当作可以自动重跑工具的依据。
+`run()` is **not a `noexcept` boundary**. Exceptions from argument or coroutine-frame construction, coroutine initialization, and secondary failures while creating diagnostics, saving terminal state, or logging can still reach the caller. The host should retain an outer exception handler while awaiting `run()` and must not treat an abnormal return as permission to replay tools.
 
-## 同步钩子
+## Synchronous hooks
 
-宿主如需把一组事件处理函数组织为有状态插件，可实现顶层公共接口
-[`LoopHookInterface`](include/loop/hook_interface.hpp)，并将实例交给会话级
-[`LoopHookRegistry`](include/loop/hook_registry.hpp)。registry 接收与 `run()`
-相同的同步 bus，以插件名称管理实例与订阅周期：`add()` 注册、`set()`
-新增或替换、`get()` 查询、`remove()` 和 `clear()` 解除订阅。插件的
-`subscribe()` 应返回全部订阅句柄。底层 `LoopHookBinding` 同时持有插件
-实例和订阅句柄，销毁时先断开监听。绑定、解绑需与 `run()` 串行化，
-bus 必须比 registry 长寿。
+To organize event handlers as stateful plugins, implement the public top-level [`LoopHookInterface`](include/loop/hook_interface.hpp) and hand instances to the session-level [`LoopHookRegistry`](include/loop/hook_registry.hpp). The registry uses the same synchronous bus passed to `run()` and manages instance and subscription lifetimes by plugin name: `add()` registers, `set()` adds or replaces, `get()` looks up, and `remove()` and `clear()` unsubscribe. A plugin's `subscribe()` must return all subscription handles. The underlying `LoopHookBinding` owns both the plugin and its handles and disconnects listeners before destroying the plugin. Bind and unbind serially with `run()`; the bus must outlive the registry.
 
-每次 `bus.subscribe()` 返回的连接应先交给局部 `ScopedSubscription`，再移入订阅容器；容器扩容也可能抛异常。直接把裸连接传给 `emplace_back()`，可能在扩容失败后留下指向已销毁插件的回调。`set()` 替换插件会把新回调排在现存回调之后；若回调之间有先后依赖，应在两次运行之间先移除后置插件，再替换并重新注册它们。
+Give each connection returned by `bus.subscribe()` to a local `ScopedSubscription` before moving it into the subscription container: growing that container can throw. Passing a raw connection directly to `emplace_back()` can leave a callback pointing to a destroyed plugin if allocation fails. Replacing a plugin with `set()` puts its new callbacks after existing callbacks. If ordering matters, remove dependent later plugins between runs, replace the first one, then register the dependents again.
 
 ```cpp
 eventbus::EventBus bus;
 loop::LoopHookRegistry hooks(bus);
 hooks.add(std::make_shared<MyLoopHook>());
-// 让 bus 和 hooks 在所有 loop::run() 调用期间保持存活。
+// Keep bus and hooks alive throughout every loop::run() call.
 ```
 
-插件实例可保存进程内状态；需要跨进程恢复的数据仍应写入
-`AgentInputState`。内建插件目录位于 [`intrinsic/`](intrinsic/)，
-不通过 `extensions` 声明。内建插件的 YAML 配置在构造实例时读取，
-并随 `cmake --install` 安装到 `bin/schemas/loop/<插件名>/config.yaml`；
-配置格式、路径覆盖和错误处理见该目录的 README。
-目前的内建 [`ContextStatisticHook`](intrinsic/hooks/context_statistic/README.md)
-按 exchange 将 token 统计写入 `external_status.context_statistic`，供其他 hook
-读取。
+Plugin instances may hold state within the process. Data needed across process restarts still belongs in `AgentInputState`. Built-in plugins live under [`intrinsic/`](intrinsic/) and are not declared through `extensions`. Their YAML configuration is read when constructing an instance and installed by `cmake --install` under `bin/schemas/loop/<plugin-name>/config.yaml`. See that directory's README for configuration format, path overrides, and error handling. The built-in [`ContextStatisticHook`](intrinsic/hooks/context_statistic/README.md) writes per-exchange token statistics to `external_status.context_statistic` for other hooks to read.
 
-bus 使用显式注入的同步 EventBus。回调按订阅顺序执行，回调返回后才继续循环。事件引用仅在回调期间有效，不得保存、从外部别名修改当前 state 或重入 run。
+The bus is an explicitly injected synchronous `EventBus`. Callbacks run in subscription order, and the loop resumes only after they return. Event references are valid only during the callback; do not retain them, mutate the current state through an external alias, or reenter `run()`.
 
-| 事件 | 权限与时机 |
+| Event | Access and timing |
 |---|---|
-| RunStarted | 只读；运行接纳后 |
-| BeforeInput | 可写待提交用户消息；仍须保持 UserInput 且不含工具调用/返回 |
-| InputCommitted | 只读；用户消息已提交 |
-| BeforeModel | 可写候选 system_prompt、tools、extras；历史与恢复信息只读 |
-| ModelCommitted | 只读；模型响应已提交 |
-| BeforeToolBatch | 只读调用列表；工具尚未启动，可通过宿主 stop_source 请求停止 |
-| ToolResultsCommitted | 只读；结果已全部写回对话，包括跳过的调用 |
-| EditOnStepFinished | 原地编辑完整 state；前一事件成功返回后，下一次模型请求前 |
-| EditOnRunFinished | 原地编辑完整 state；终态已保存，RunFinished 之前 |
-| RunFinished | 只读；终态已保存 |
+| `RunStarted` | Read-only; after admission. |
+| `BeforeInput` | Writable candidate user message; must remain `UserInput` without tool calls or returns. |
+| `InputCommitted` | Read-only; user message committed. |
+| `BeforeModel` | Writable candidate `system_prompt`, `tools`, and `extras`; history and recovery metadata are read-only. |
+| `ModelCommitted` | Read-only; model response committed. |
+| `BeforeToolBatch` | Read-only call list; tools have not started. The host may request stop through its `stop_source`. |
+| `ToolResultsCommitted` | Read-only; all results, including skipped calls, are written to the conversation. |
+| `EditOnStepFinished` | Edits the full state in place after the preceding event succeeds and before the next model request. |
+| `EditOnRunFinished` | Edits the full state in place after terminal state is saved and before `RunFinished`. |
+| `RunFinished` | Read-only; terminal state saved. |
 
-BeforeInput 和 BeforeModel 的多个订阅者依次修改同一候选数据；任何订阅者抛异常，该阶段修改不提交。模型上下文提交前会验证 prompt 可渲染。目录内容、provider 参数语义及与 registry 的一致性由宿主策略负责，loop 不擅自改写。
+Multiple `BeforeInput` or `BeforeModel` subscribers edit the same candidate in order; if any subscriber throws, that stage's changes are not committed. Before committing model context, the loop verifies that the prompt can be rendered. The host is responsible for catalog contents, provider parameter semantics, and consistency with the registry; the loop does not rewrite these by policy.
 
-示例：
+For example:
 
 ```cpp
 auto subscription = bus.subscribe<loop::BeforeModel>(
@@ -124,33 +110,33 @@ auto subscription = bus.subscribe<loop::BeforeModel>(
     });
 ```
 
-此同步约束针对 loop 钩子；既有 registry 的工具授权仍使用其原有异步机制，loop 会等待整个工具执行路径。
+The synchronous constraint applies to loop hooks. Existing tool authorization in the registry keeps its own asynchronous mechanism, and the loop waits for the entire tool execution path.
 
-事件本身为 const，其中声明为可写的对象引用允许同步修改。要更新插件状态，可在候选 extras 的既有 external_status/events 区域按 dataclass 协议处理；不得在回调中异步修改候选对象。
+Events themselves are const; object references declared writable in them permit synchronous mutation. To update plugin state, use the established `external_status` or `events` areas of candidate `extras` according to the dataclass contract. Do not modify candidate objects asynchronously from callbacks.
 
-钩子异常会结束本次运行。模型响应提交后、工具执行前的钩子失败，会为已声明的调用补上“未执行”结果，闭合调用关系。已执行工具的结果不会因后续钩子失败而回滚。
+A hook exception ends the current run. If a hook fails after a model response commits but before tool execution, the loop adds skipped results for declared calls, closing their call/result relationships. Results of tools already executed are not rolled back by a later hook failure.
 
-EventBus 的一个订阅者抛异常会阻止本次事件的后续订阅者执行。`EditOnRunFinished` 可改变终态并在失败时回滚其状态编辑；随后 `RunFinished` 只通知最终结果。它的订阅者若抛异常，后续订阅者不再执行，异常被记录，先前观察者和 `run()` 调用方看到相同的终态。
+If an `EventBus` subscriber throws, later subscribers for that event do not run. `EditOnRunFinished` can alter terminal state, with its state edit rolled back on failure; `RunFinished` then only announces the final outcome. If a `RunFinished` subscriber throws, later subscribers do not run, the exception is logged, and earlier observers and the `run()` caller see the same terminal state.
 
-## 完整状态编辑与裁剪
+## Full-state editing and pruning
 
-`EditOnStepFinished` 和 `EditOnRunFinished` 的 `state` 都是调用方传入的同一个 `AgentInputState&`。多个订阅者按顺序直接编辑它，后面的订阅者能看到前面的修改。引用只在回调期间有效，禁止保存引用、异步访问、从其他线程观察中间态或重入 `run()`。订阅变更应与 loop 执行串行化；在无订阅检查之后才添加的订阅者不保证参与当前边界。
+The `state` references in `EditOnStepFinished` and `EditOnRunFinished` both refer to the caller's original `AgentInputState&`. Subscribers edit it directly in order, so later subscribers see earlier edits. The reference is valid only during the callback: do not retain it, access it asynchronously, observe intermediate state from another thread, or reenter `run()`. Serialize subscription changes with loop execution; a subscriber added after the no-subscriber check may not participate at the current boundary.
 
-`EditOnStepFinished` 在 `ToolResultsCommitted` 的全部订阅者成功返回后运行，每个已结算工具批次一次，包括因停止而生成未执行结果的批次、耗尽预算的最后一批。无工具调用的响应、入口处恢复旧结果，以及前面的观察钩子抛异常时，不发布它。适合工具历史裁剪、旧 turn 摘要和下一轮模型上下文整理。修改后的状态供下一次模型请求使用。
+`EditOnStepFinished` runs once per settled tool batch after all `ToolResultsCommitted` subscribers return successfully. This includes batches with skipped results due to stop and the final batch at the exchange limit. It is not published for a response without calls, recovery of old results on entry, or failure of an earlier observation hook. Uses include pruning tool history, summarizing older turns, and preparing the next model context. The edited state is used by the next model request.
 
-`EditOnRunFinished` 在终态保存后运行，每次已接纳的 invocation 一次，覆盖 Completed、Cancelled、ExchangeLimit 和 Failed。它可整理最终历史、更新宿主摘要或持久化元数据；只读 `result` 表示进入该钩子时的结果。未接纳的参数错误、前置取消或入口恢复失败不发布它。若该钩子失败，loop 撤销本次编辑，追加带 `EditOnRunFinished:` 的诊断并更新为 Failed，仍发布一次 `RunFinished`。因此，最终保存状态通常放在只读 `RunFinished` 中，而不是在编辑事务尚未验证时保存。
+`EditOnRunFinished` runs once per admitted invocation after terminal state is saved, covering `Completed`, `Cancelled`, `ExchangeLimit`, and `Failed`. It can organize final history, update host summaries, or adjust persistence metadata. Its read-only `result` describes the outcome on entry to the hook. Rejected parameter errors, stop before admission, and failed entry recovery do not publish it. If this hook fails, the loop rolls back its edits, appends a diagnostic prefixed `EditOnRunFinished:`, changes the outcome to `Failed`, and still publishes one `RunFinished`. Final persistence therefore usually belongs in read-only `RunFinished`, after the edit transaction has been validated.
 
-两个事件共用以下完整性与事务规则：
+Both edit events follow these integrity and transaction rules:
 
-- `state.loop` 全部字段由 loop 保留，包括状态、阶段、计数、诊断及待投影结果；钩子删除或改动它会失败。裁剪不会减少 `completed_exchanges`，这个计数记录实际执行的模型交换数。
-- 在 `Ready` 阶段可以编辑历史。原历史非空时至少保留一个 turn；消息种类必须符合所在位置，工具调用和结果必须数量、顺序、id/name 对应，调用身份非空且同一响应内不重复。可以删除完整 step，也可以同时删除对应调用和结果，不能只删除一侧。
-- 在 `Projection` 或 `Blocked` 阶段，历史和恢复记录必须保持原值。此时仍可更新其他字段，但不能通过裁剪未结算调用、清空待投影结果或改阶段来宣称恢复成功。
-- system_prompt 必须可渲染。结构校验不证明摘要真实、provider 参数有效或工具目录与 registry 一致；这些由宿主负责。保留重要工具输出的归档策略也由宿主决定，裁剪不会撤销外部副作用。
-- 全部订阅者执行完后统一校验；任一订阅者抛异常或校验失败，撤销该事件所有订阅者的编辑。之前已提交的对话和工具结果保留。回调应只修改 state；自身发出的外部请求等副作用无法随状态一起回滚。
+- The loop reserves every `state.loop` field, including status, phase, counts, diagnostics, and pending projection results. A hook fails if it deletes or changes the progress record. Pruning does not decrease `completed_exchanges`, which counts model exchanges actually performed.
+- History may be edited in `Ready`. If the original history was nonempty, at least one turn must remain. Message kinds must match their positions; tool calls and results must agree in count, order, ID, and name. Call identities must be nonempty and unique within one response. A hook may delete a complete step, or delete matching calls and results together, but not one side alone.
+- In `Projection` or `Blocked`, history and recovery records must stay unchanged. Other fields may still be updated, but a hook cannot claim recovery by pruning unsettled calls, clearing pending results, or changing phase.
+- `system_prompt` must remain renderable. Structural validation does not prove a summary is accurate, provider parameters are valid, or the tool catalog matches the registry; these are host responsibilities. The host also chooses how to archive significant tool output. Pruning never undoes external effects.
+- Validation runs after all subscribers finish. If any subscriber throws or validation fails, all edits from that event are rolled back. Previously committed conversation and tool results remain. Callbacks should edit only `state`; external requests made by a callback cannot be rolled back with it.
 
-复制开销：无订阅者时只查询订阅数，不复制或扫描整个状态。有订阅者时，每个事件只深拷贝一次用于回滚，多个订阅者共用该备份；成功时修改留在原对象中，不再复制或 move 提交；失败时通过不抛异常的 move assignment 恢复。Ready 路径校验历史结构，不序列化整个状态；仅在异常恢复阶段对冻结历史和非空待投影结果构造 JSON 值比较，确保恢复证据没有被改写。两个编辑事件都订阅时，各自承担一次备份成本。任意原地修改需要可靠回滚，就不能只移动原对象来替代备份。
+Copy cost: with no subscribers, the loop only checks subscription count; it neither copies nor scans the whole state. With subscribers, each event takes one deep copy as a rollback backup shared by all its subscribers. On success, edits remain in the original object without another copy or move commit. On failure, a nonthrowing move assignment restores the backup. The `Ready` path validates history structure without serializing the whole state. Only in recovery phases does it construct JSON values for frozen history and nonempty pending results to check that recovery evidence was not changed. Subscribing to both edit events incurs one backup per event. Reliable rollback of arbitrary in-place edits cannot be achieved merely by moving the original object instead of backing it up.
 
-例如，在工具批次结算后仅保留当前 turn 最近的一步：
+For example, keep only the most recent step of the current turn after a tool batch settles:
 
 ```cpp
 auto pruning = bus.subscribe<loop::EditOnStepFinished>(
@@ -162,44 +148,44 @@ auto pruning = bus.subscribe<loop::EditOnStepFinished>(
     });
 ```
 
-这里按完整 step 裁剪，工具调用和结果一起删除。涉及业务审计或需要保留输出的场景，应先制定摘要和归档策略。也可以订阅 `EditOnRunFinished`，只在 `event.state.loop->phase == model_io::LoopPhase::Ready` 时执行相同裁剪。
+This removes complete steps, including both tool calls and results. For business auditing or important output retention, define a summary and archival policy first. The same pruning can run in `EditOnRunFinished` when `event.state.loop->phase == model_io::LoopPhase::Ready`.
 
-## 循环状态与可恢复性
+## Loop status and recoverability
 
-`status` 表示一次 invocation 的生命周期和结果，`phase` 表示恢复边界，两者不能相互替代。例如 `Failed + Ready` 允许继续，而 `Failed + Blocked` 需要人工核查。接纳运行时状态变为 Running；终态写入发生在 EditOnRunFinished 之前。恢复先于接纳，成功投影旧结果之后才开始新的 invocation。
+`status` describes the lifetime and outcome of one invocation; `phase` describes a recovery boundary. They are not interchangeable: `Failed + Ready` permits continuation, while `Failed + Blocked` requires manual investigation. Admission changes status to `Running`. Terminal status is written before `EditOnRunFinished`. Recovery precedes admission; a new invocation starts only after old results have been projected successfully.
 
-| phase | 含义及下次 run 的行为 |
+| Phase | Meaning and next `run()` behavior |
 |---|---|
-| Ready | 没有未结算工作；验证历史后可以继续或接纳新输入 |
-| Model | 模型交换中，响应尚未提交；恢复时验证历史，不把部分响应视作已完成 |
-| Tools | 工具可能已有副作用但未保存完整返回；下次 `run()` 抛出 `RecoveryRequired(Tools)`，宿主决定处理方式 |
-| Projection | 完整返回已保存在 pending_results；先在候选历史上重试投影，成功后清空缓冲，不能重跑工具 |
-| Blocked | 工具阶段异常退出，副作用不确定；下次 `run()` 抛出 `RecoveryRequired(Blocked)`，需宿主核查 |
+| `Ready` | No unsettled work. Validate history, then continue or accept new input. |
+| `Model` | Model exchange in progress; response not committed. Validate history on recovery and do not treat a partial response as complete. |
+| `Tools` | Tools may have effects, but complete returns were not saved. Next `run()` throws `RecoveryRequired(Tools)`; the host decides how to proceed. |
+| `Projection` | Complete returns are in `pending_results`. Retry projection into candidate history, then clear the buffer. Do not rerun tools. |
+| `Blocked` | Tool phase exited abnormally; effects are uncertain. Next `run()` throws `RecoveryRequired(Blocked)` for host investigation. |
 
-运行正常收尾时 Model 转回 Ready，未结算的 Tools 转为 Blocked，Projection 保持原样。完整状态编辑不能改变这些恢复判断；编辑失败只撤销当前事件，终态变为 Failed。恢复投影在候选状态上整体提交，失败保留旧历史及结果；恢复成功也不发布 EditOnStepFinished，避免把它当成新执行的批次。宿主如需对恢复后的历史做整理，可在后续正常边界处理。
+Normal cleanup changes `Model` to `Ready`, unsettled `Tools` to `Blocked`, and leaves `Projection` unchanged. Full-state edits cannot alter these recovery judgments; a failed edit rolls back only the current event and changes the terminal outcome to `Failed`. Projection recovery commits candidate state atomically; failure retains old history and results. Successful recovery does not publish `EditOnStepFinished`, because it is not a newly executed batch. A host that needs to reorganize recovered history can do so at a later normal boundary.
 
-停止请求不会打断同步编辑和校验：合法编辑完成后才处理停止。EditOnRunFinished 中新发出的停止请求不改写已确定的结果。持久化只应在事件事务完成后进行；这里没有写前日志，不能由状态标记推断进程崩溃前所有工具副作用都已被记录。
+Stop requests do not interrupt synchronous edits or validation: a valid edit finishes before stop is handled. A new stop request in `EditOnRunFinished` does not change an outcome already determined. Persist only after event transactions finish. There is no write-ahead log, so state markers cannot prove that all tool effects made before a process crash were recorded.
 
-## 停止边界
+## Stop boundaries
 
-使用显式 stop_token 请求停止：模型等待可中断，已经启动的工具批次不可中断。可以在同步钩子内调用宿主 stop_source.request_stop()，或从其他线程请求停止；其他线程不能读写 state。
+Use an explicit `stop_token`: model waits are interruptible, but a tool batch that has started is not. A synchronous hook may call the host's `stop_source.request_stop()`, or another thread may request stop. Other threads must not read or write `state`.
 
-- 开始前已停止：不修改 state。
-- 模型请求前停止：不发起请求。
-- 模型请求中停止：向当前 converse 的独立取消槽发送 terminal cancellation，中断异步等待，并等待模型协程及其网络任务完成退出。返回 Cancelled，不提交不完整响应，不执行其中尚未完成的工具调用。
-- 模型响应与取消同时完成：以协程实际完成结果为准。若 converse 成功返回完整响应，仍提交它；最终回答可返回 Completed，带调用的响应则在观察到停止后补齐未执行结果。独立错误在取消传入传输层之前完成时返回 Failed；取消已传入传输层后，竞争中的 HTTP 错误可能转为 `operation_aborted` 并返回 Cancelled。
-- 批次开始前停止：不执行任何工具，生成带 loop_skipped 标记的非执行结果。
-- 批次执行中停止：整个批次完成并写回结果后，返回 Cancelled，包括尚未启动的串行调用。
-- 结果提交期间不挂起、不调用外部钩子、不响应取消。
+- Stop before entry: leave `state` unchanged.
+- Stop before a model request: do not start that request.
+- Stop during a model request: send terminal cancellation through this `converse()` call's independent cancellation slot, interrupt the asynchronous wait, and wait for the model coroutine and its network tasks to exit. Return `Cancelled` without committing an incomplete response or executing its unfinished tool calls.
+- Model response completes concurrently with stop: use the coroutine's actual outcome. If `converse()` returns a complete response, commit it; a final answer can still yield `Completed`, while a response with calls gets skipped results when stop is observed. An independent error completed before cancellation reaches transport yields `Failed`; a racing HTTP error can become `operation_aborted` and yield `Cancelled` after cancellation reaches transport.
+- Stop before a batch starts: execute no tools and produce non-execution results marked `loop_skipped`.
+- Stop during a batch: wait for the whole batch, including serial calls not yet started, and write back all results before returning `Cancelled`.
+- During result commit: do not suspend, call external hooks, or react to cancellation.
 
-外层循环屏蔽继承的 Asio 取消，以保护 registry 的 join；调用方使用传入的 stop_token。模型调用运行在私有 strand 上，跨线程停止会投递到该 strand，再触发本次调用的取消信号。停止回调在子协程建立取消槽之后注册，避免请求丢失；迟到通知不影响后续调用。
+The outer loop masks inherited Asio cancellation to protect the registry join; callers use the supplied `stop_token`. Model calls run on a private strand. A stop from another thread is posted to that strand before it fires this call's cancellation signal. The stop callback is registered after the child coroutine establishes its cancellation slot, preventing a lost request; late notifications cannot affect later calls.
 
-内置 Chat Completions 和 Responses 的流式传输同时取消并等待生产、消费两条路径退出。完成响应消费后也会结束残留读取，避免服务端保持连接导致后台协程悬挂；取消不会触发重试，退避等待也可以中断。
+The built-in Chat Completions and Responses streaming transports cancel and join both producer and consumer paths. They also stop residual reads after response consumption, preventing a server-held connection from leaving a background coroutine suspended. Cancellation does not trigger retries, and backoff waits can be interrupted.
 
-第三方模型必须遵守 converse 的 Asio terminal cancellation 契约，并在返回前等待自身派生任务退出。同步阻塞代码或主动屏蔽取消的 provider 无法由 loop 安全强杀。工具批次仍可能等待外部操作完成。不得用停止 io_context、销毁依赖或卸载插件替代取消。
+Third-party models must honor `converse()`'s Asio terminal-cancellation contract and wait for their own spawned tasks before returning. The loop cannot safely kill synchronous blocking code or a provider that suppresses cancellation. A tool batch may still wait for external operations to finish. Do not simulate cancellation by stopping `io_context`, destroying dependencies, or unloading plugins.
 
-已返回 session 信息的子进程可以继续运行，loop 不自动终止它。执行进程的后续状态仍由 process 工具集管理。
+Child processes that have returned session information may keep running; the loop does not terminate them automatically. The process toolset remains responsible for their subsequent state.
 
-## 验证
+## Verification
 
-`test_loop` 使用离线脚本模型、实际 ToolRegistry 和可控工具执行正常循环，验证事件顺序、可写钩子提交/回滚、工具副作用结果保留、JSON 往返后的投影恢复、停止边界、预算耗尽、结束钩子错误和禁止重放未回答调用。另外覆盖多线程 executor 上中断长期挂起的模型、取消后继续同一会话，以及取消与独立模型错误同时发生的情况。异常路径另覆盖未请求停止时的 `operation_aborted`、非标准异常，以及连续投影失败后保留原状态并恢复，确保不重复执行工具。`test_loop_model_cancellation` 使用本地 HTTP 服务验证两种内置适配器在请求无响应和已发出流式响应头时可被取消，且服务端观察到连接关闭。另外用 HTTP 503 验证两种适配器各自重试耗尽后返回 `Failed`，保留 HTTP 诊断、不提交部分响应，并只发布一次结束事件；请求计数验证 loop 没有增加额外重试。完整状态钩子的测试覆盖事件顺序、原对象身份、裁剪后继续、异常回滚、恢复记录保护以及停止和预算边界。交互实验使用独立的 `loop/example`，旧示例保留。
+`test_loop` uses an offline scripted model, the real `ToolRegistry`, and controllable tools to check the normal cycle, event order, writable-hook commit and rollback, preservation of tool-effect results, projection recovery after a JSON round trip, stop boundaries, exchange limits, finish-hook errors, and rejection of unanswered-call replay. It also covers interruption of a long-suspended model on a multithreaded executor, continuation of the same session after cancellation, and cancellation racing an independent model error. Exception cases include `operation_aborted` without a stop request, nonstandard exceptions, and recovery after repeated projection failures without changing old state or rerunning tools. `test_loop_model_cancellation` uses a local HTTP server to verify that both built-in adapters can cancel before a response and after streaming headers, and that the server observes connection closure. HTTP 503 cases verify that exhausted retries return `Failed` with HTTP diagnostics, do not commit partial responses, and publish exactly one finish event; request counts confirm the loop adds no retries. Full-state-hook tests cover event order, original-object identity, continuation after pruning, exception rollback, recovery-record protection, stop, and budget boundaries. The interactive experiment lives in `loop/example`; the older example remains.
