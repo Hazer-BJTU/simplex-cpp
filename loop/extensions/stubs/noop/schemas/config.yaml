@@ -1,0 +1,3 @@
+name: noop_hook
+description: Side-effect-free dynamic loop hook for admission tests.
+config: {}

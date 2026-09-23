@@ -11,7 +11,7 @@
 # all header paths through interface targets, not directory-scope variables).
 #
 # The project version comes from the top-level project(VERSION ...); this file
-# only adds module-owned constants (currently the plugin ABI version) and renders
+# adds independent LLM, toolset, and loop-hook ABI constants and renders
 # the header.
 # =============================================================================
 
@@ -50,6 +50,10 @@
 #   v6: LoopProgress and AgentLoopStep gained durable response commit sequences.
 #       Both layouts cross the same model plugin boundary.
 set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 6)
+
+# Independent contracts for dynamic toolsets and loop hooks.
+set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 1)
+set(SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION 1)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
 # Rendered into version.hpp and hashed by extensions/plugin_magic.hpp

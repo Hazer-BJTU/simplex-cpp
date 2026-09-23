@@ -22,3 +22,4 @@ endif()
 
 add_subdirectory(example)
 add_subdirectory(intrinsic)
+add_subdirectory(extensions)

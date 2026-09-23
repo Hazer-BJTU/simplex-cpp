@@ -1,0 +1,4 @@
+name: noop_toolset
+title: No-op tool probe
+text: |
+  The noop_probe tool is a diagnostic only. It has no external effects.

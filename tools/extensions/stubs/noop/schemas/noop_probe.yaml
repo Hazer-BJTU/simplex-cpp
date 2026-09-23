@@ -1,0 +1,6 @@
+name: noop_probe
+description: Return a fixed acknowledgement without changing external state.
+argument_schema:
+  type: object
+  required: []
+  properties: {}

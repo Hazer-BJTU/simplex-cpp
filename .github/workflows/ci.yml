@@ -314,10 +314,10 @@ jobs:
           fail=0
           n_exe=0
           n_plugin=0
-          for f in "$stage"/bin/* "$stage"/bin/plugins/llm/*.so; do
+          for f in "$stage"/bin/* "$stage"/bin/plugins/*/*.so; do
             [ -f "$f" ] || continue
             case "$f" in
-              */plugins/llm/*) n_plugin=$((n_plugin + 1)) ;;
+              */plugins/*/*) n_plugin=$((n_plugin + 1)) ;;
               *)               n_exe=$((n_exe + 1)) ;;
             esac
             echo "--- ${f#$stage/}"
@@ -381,3 +381,11 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_tools --log_level=error \
             --run_test=the_set_offers_five_routable_tools,every_tool_is_declared_by_its_own_yaml_file,the_set_carries_its_skill_and_hands_it_to_a_prompt
+
+      - name: Verify installed dynamic toolsets and loop hooks
+        run: |
+          set -euo pipefail
+          cp build/bin/test_tool_extensions build/bin/test_loop_extensions stage/bin/
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          stage/bin/test_tool_extensions --run_test=load_register_execute_and_pin_handle
+          stage/bin/test_loop_extensions --run_test=load_register_publish_and_release
