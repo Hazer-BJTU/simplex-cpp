@@ -956,3 +956,62 @@ BOOST_AUTO_TEST_CASE(both_regions_ride_the_session_round_trip_in_order) {
     BOOST_CHECK(hook_events(copy).empty());
     BOOST_CHECK(!latest_hook_event(copy, "k1").has_value());
 }
+
+BOOST_AUTO_TEST_CASE(loop_progress_enum_roundtrip) {
+    const std::vector<LoopStatus> statuses = {
+        LoopStatus::Idle,
+        LoopStatus::Running,
+        LoopStatus::Completed,
+        LoopStatus::Cancelled,
+        LoopStatus::ExchangeLimit,
+        LoopStatus::Failed
+    };
+    const std::vector<LoopPhase> phases = {
+        LoopPhase::Ready,
+        LoopPhase::Model,
+        LoopPhase::Tools,
+        LoopPhase::Projection,
+        LoopPhase::Blocked
+    };
+
+    LoopProgress progress;
+    BOOST_CHECK(progress.status == LoopStatus::Idle);
+    BOOST_CHECK(progress.phase == LoopPhase::Ready);
+    const nlohmann::json defaults = progress;
+    BOOST_CHECK_EQUAL(defaults.at("status"), "idle");
+    BOOST_CHECK_EQUAL(defaults.at("phase"), "ready");
+
+    for (const auto status : statuses) {
+        for (const auto phase : phases) {
+            progress.status = status;
+            progress.phase = phase;
+            const auto copy = roundtrip(progress);
+            BOOST_CHECK(copy.status == status);
+            BOOST_CHECK(copy.phase == phase);
+        }
+    }
+
+    auto saved = defaults;
+    saved["status"] = "exchange_limit";
+    saved["phase"] = "projection";
+    const auto restored = saved.get<LoopProgress>();
+    BOOST_CHECK(restored.status == LoopStatus::ExchangeLimit);
+    BOOST_CHECK(restored.phase == LoopPhase::Projection);
+}
+
+BOOST_AUTO_TEST_CASE(loop_progress_rejects_invalid_enum_names_and_types) {
+    const nlohmann::json valid = LoopProgress{};
+    for (const auto* field : {"status", "phase"}) {
+        auto saved = valid;
+        saved[field] = "unknown";
+        BOOST_CHECK_THROW(saved.get<LoopProgress>(), std::invalid_argument);
+
+        for (const auto& invalid : {
+                 nlohmann::json(nullptr),
+                 nlohmann::json(0),
+                 nlohmann::json(true)}) {
+            saved[field] = invalid;
+            BOOST_CHECK_THROW(saved.get<LoopProgress>(), nlohmann::json::type_error);
+        }
+    }
+}

@@ -66,7 +66,9 @@ set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 #       generation() now returns by value (a reference would race a concurrent
 #       set_generation()). A stale plugin would mis-call the virtual and
 #       mis-locate every member past _config, so rebuilt plugins must report v4.
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 4)
+#   v5: AgentInputState gained optional loop recovery data. Its layout crosses
+#       converse()/integrate() and must agree between host and model plugins.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 5)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
 # Rendered into version.hpp and hashed by extensions/plugin_magic.hpp

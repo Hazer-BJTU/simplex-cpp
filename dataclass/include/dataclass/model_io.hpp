@@ -777,7 +777,199 @@ inline void from_json(const nlohmann::json& j, MetaInfo& m) {
 //   stream, max_tokens, ... — comes from the interpreter's provider/endpoint
 //   configuration, NOT from this struct (see Scope above).
 // The mapping lives in the interpreter, never here: this struct is pure data.
+/** Invocation lifecycle; independent of the session lifecycle in MetaInfo. */
+enum class LoopStatus {
+    /// No invocation has been admitted.
+    Idle,
+    /// An admitted invocation is executing.
+    Running,
+    /// A final model response was committed without tool calls.
+    Completed,
+    /// Cancellation was observed and required results were settled.
+    Cancelled,
+    /// The exchange budget ended after settling the last batch.
+    ExchangeLimit,
+    /// The invocation failed; inspect the diagnostic and recovery phase.
+    Failed,
+};
+
+/** Writes the stable JSON name; invalid enum values throw instead of becoming defaults. */
+inline void to_json(nlohmann::json& j, LoopStatus value) {
+    switch (value) {
+        case LoopStatus::Idle:
+            j = "idle";
+            return;
+        case LoopStatus::Running:
+            j = "running";
+            return;
+        case LoopStatus::Completed:
+            j = "completed";
+            return;
+        case LoopStatus::Cancelled:
+            j = "cancelled";
+            return;
+        case LoopStatus::ExchangeLimit:
+            j = "exchange_limit";
+            return;
+        case LoopStatus::Failed:
+            j = "failed";
+            return;
+    }
+    throw std::invalid_argument("invalid LoopStatus value");
+}
+
+/** Reads a known JSON name; wrong types and unknown names cannot become recovery defaults. */
+inline void from_json(const nlohmann::json& j, LoopStatus& value) {
+    const auto& name = j.get_ref<const std::string&>();
+    if (name == "idle") {
+        value = LoopStatus::Idle;
+        return;
+    }
+    if (name == "running") {
+        value = LoopStatus::Running;
+        return;
+    }
+    if (name == "completed") {
+        value = LoopStatus::Completed;
+        return;
+    }
+    if (name == "cancelled") {
+        value = LoopStatus::Cancelled;
+        return;
+    }
+    if (name == "exchange_limit") {
+        value = LoopStatus::ExchangeLimit;
+        return;
+    }
+    if (name == "failed") {
+        value = LoopStatus::Failed;
+        return;
+    }
+    throw std::invalid_argument("unknown LoopStatus name: " + name);
+}
+
+/** Recovery boundary for the single active loop; determines whether continuation is safe. */
+enum class LoopPhase {
+    /// No model exchange or tool batch is in progress.
+    Ready,
+    /// A model exchange is in progress; no response has been committed.
+    Model,
+    /// Tool dispatch may have produced effects without returned results; do not replay.
+    Tools,
+    /// Returned results await conversation projection; retry projection only.
+    Projection,
+    /// Tool execution failed with uncertain effects; manual inspection is required.
+    Blocked,
+};
+
+/** Writes the stable JSON name; invalid enum values throw instead of becoming defaults. */
+inline void to_json(nlohmann::json& j, LoopPhase value) {
+    switch (value) {
+        case LoopPhase::Ready:
+            j = "ready";
+            return;
+        case LoopPhase::Model:
+            j = "model";
+            return;
+        case LoopPhase::Tools:
+            j = "tools";
+            return;
+        case LoopPhase::Projection:
+            j = "projection";
+            return;
+        case LoopPhase::Blocked:
+            j = "blocked";
+            return;
+    }
+    throw std::invalid_argument("invalid LoopPhase value");
+}
+
+/** Reads a known JSON name; wrong types and unknown names cannot become recovery defaults. */
+inline void from_json(const nlohmann::json& j, LoopPhase& value) {
+    const auto& name = j.get_ref<const std::string&>();
+    if (name == "ready") {
+        value = LoopPhase::Ready;
+        return;
+    }
+    if (name == "model") {
+        value = LoopPhase::Model;
+        return;
+    }
+    if (name == "tools") {
+        value = LoopPhase::Tools;
+        return;
+    }
+    if (name == "projection") {
+        value = LoopPhase::Projection;
+        return;
+    }
+    if (name == "blocked") {
+        value = LoopPhase::Blocked;
+        return;
+    }
+    throw std::invalid_argument("unknown LoopPhase name: " + name);
+}
+
+/**
+ * Host-owned progress and recovery data for the single active agent loop.
+ *
+ * Stored inside AgentInputState so conversation and recovery information travel
+ * together through serialization. Interpreters do not send this object to the
+ * provider. Only the loop writes it while running; it is not a separate log.
+ *
+ * pending_results holds only the latest batch awaiting conversation projection.
+ * It must remain available after projection failure, and is cleared only after
+ * all results have been committed. Recovery must not re-execute those calls.
+ */
+struct LoopProgress {
+    /// Invocation outcome; does not replace the session lifecycle in MetaInfo.
+    LoopStatus status = LoopStatus::Idle;
+
+    /// Recovery boundary. Tools/Blocked require inspection before continuation;
+    /// Projection requires pending_results and must not re-execute tool calls.
+    LoopPhase phase = LoopPhase::Ready;
+
+    /// Model responses committed during the current or most recent invocation.
+    std::size_t completed_exchanges = 0;
+
+    /// Loop-level failure diagnostic; tool-level errors remain in tool results.
+    std::string error;
+
+    /// Complete returned batch retained until atomic conversation projection.
+    std::vector<InvokeReturn> pending_results;
+};
+
+/**
+ * Serializes all progress fields, including unprojected tool results.
+ * Performs no I/O; the host decides when the enclosing state is persisted.
+ */
+inline void to_json(nlohmann::json& j, const LoopProgress& p) {
+    j = {
+        {"status", p.status},
+        {"phase", p.phase},
+        {"completed_exchanges", p.completed_exchanges},
+        {"error", p.error},
+        {"pending_results", p.pending_results}
+    };
+}
+
+/**
+ * Reads a complete progress record; missing keys, wrong types and unknown enum names throw.
+ * Runtime recovery validates the phase and call/result correspondence later.
+ * This follows the dataclass in-place decoding convention: callers needing
+ * rollback on decoding failure should deserialize into a temporary object.
+ */
+inline void from_json(const nlohmann::json& j, LoopProgress& p) {
+    j.at("status").get_to(p.status);
+    j.at("phase").get_to(p.phase);
+    j.at("completed_exchanges").get_to(p.completed_exchanges);
+    j.at("error").get_to(p.error);
+    j.at("pending_results").get_to(p.pending_results);
+}
+
 struct AgentInputState {
+    /// Optional host recovery data; absent in sessions created without loop.
+    std::optional<LoopProgress> loop;
     // Host-written session bookkeeping: identity, timestamps, format
     // version, lifecycle status, terminal error — never part of what the
     // model sees.
@@ -804,9 +996,13 @@ inline void to_json(nlohmann::json& j, const AgentInputState& s) {
         {"turns", s.turns},
     };
     if (s.extras) j["extras"] = *s.extras;
+    if (s.loop) {
+        j["loop"] = *s.loop;
+    }
 }
 
 inline void from_json(const nlohmann::json& j, AgentInputState& s) {
+    detail::read_optional(j, "loop", s.loop);
     if (auto it = j.find("meta"); it != j.end()) it->get_to(s.meta);
     if (auto it = j.find("system_prompt"); it != j.end())
         it->get_to(s.system_prompt);

@@ -48,13 +48,12 @@ protected:
      * Called between attempts only — the budget's last failure throws
      * instead of sleeping, so the advance is never used past the last wait.
      * Override to inject jitter or to honour a provider's Retry-After
-     * semantics; the timer wait swallows its error_code (a cancelled wait
-     * proceeds to the retry immediately).
+     * semantics. A cancelled wait propagates operation_aborted and never
+     * starts another request.
      */
     virtual boost::asio::awaitable<void> _sleep() {
-        boost::system::error_code ec;
         _timer.expires_after(_backoff);
-        co_await _timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+        co_await _timer.async_wait(boost::asio::use_awaitable);
 
         if (_backoff <= (_max_backoff / 2u)) {
             _backoff *= 2u;
