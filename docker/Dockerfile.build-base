@@ -61,9 +61,7 @@ RUN wget -q -O /tmp/boost.tar.gz \
     && rm -rf /tmp/boost.tar.gz /tmp/boost_1_91_0
 
 # Vendored third parties -> /opt/simplex-thirdparty, mirroring the tree's
-# third_party/{include,libs} layout. tree-sitter is deliberately absent: its
-# only consumer was the legacy languages/ domain, no longer part of this
-# build.
+# third_party/{include,libs} layout.
 #
 # nlohmann/json 3.12.0 — header-only, the release single-header asset.
 RUN mkdir -p /opt/simplex-thirdparty/include/nlohmann \

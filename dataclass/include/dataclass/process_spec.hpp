@@ -11,13 +11,6 @@
 // being written against these types) consumes and produces them; anything
 // async, pipes or platform behaviour lives there, not here.
 //
-// Relationship to the legacy indextools shapes: the wire words reuse the old
-// execution_status() vocabulary ("running" | "exited" | "unknown"), but the
-// display-side shapes (schema.hpp's meta tables, its null-as-absent stream
-// fields, the report builder) are deliberately NOT reproduced — those are
-// presentation contracts of a consumer that no longer builds. This header is
-// the typed data contract that replaces them.
-//
 // Same contract rules as model_io.hpp / endpoint_config.hpp: plain aggregates
 // serialised through nlohmann ADL (a to_json/from_json pair next to each
 // struct), snake_case keys, optionals omitted when empty and never null,

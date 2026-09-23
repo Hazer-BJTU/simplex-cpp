@@ -2,7 +2,7 @@
 # logging — module (utils package)
 #
 # A standalone global module: a thread-safe console logger used across the whole
-# project, not just indextools. Lives under the utils/ package; the target and
+# project. Lives under the utils/ package; the target and
 # include paths are unchanged from the standalone-module era, so consumers keep
 # linking `logging_lib` and including "logging/logger.hpp".
 #

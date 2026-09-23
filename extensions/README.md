@@ -12,11 +12,6 @@ It depends on Boost.DLL (loading), nlohmann/json (`extras()`), and the project
 logger (`verify_after_loaded` diagnostics). Consumers link the
 `extensions_iface` INTERFACE target.
 
-> This framework supersedes the old `plugin::` framework. The `indextools`
-> language layer is a full real-world example of it — see
-> [`indextools/include/indextools/lang_plugin.hpp`](../indextools/include/indextools/lang_plugin.hpp)
-> and [`LangDispatcher`](../indextools/include/indextools/cache_system.hpp).
-
 ---
 
 ## Concepts
@@ -259,8 +254,7 @@ for (/* each request */) {
 ### Where to build it
 
 Resolve it **once, at load time**, and store it on the descriptor — then every
-`create()` is a pure read. The language domain does exactly this in
-`LangPlugin::warm()`:
+`create()` is a pure read. For example:
 
 ```cpp
 class MyPlugin : public extension::ExtensionContext {
@@ -327,6 +321,5 @@ All in `namespace extension`, in [`extensions.hpp`](include/extensions/extension
   (predicate, verify sort, dispatcher, error paths).
 - [`test/test_extensions_dynamic.cpp`](test/test_extensions_dynamic.cpp) — drives
   the full pipeline over a real toy `.so`.
-- The `indextools` language layer (`LangPlugin`, `LangDispatcher`, the
-  `python`/`fallback` plugins) — the production instance of every pattern above,
-  including ABI gating and `product_factory` caching.
+- The LLM provider plugins in [`../llm/`](../llm/) exercise the extension
+  loader and ABI checks in a production module.

@@ -16,30 +16,9 @@
 # =============================================================================
 
 # ---- Module-owned version constants -----------------------------------------
-# Plugin ABI contract version. Bump on binary-incompatible LangPlugin/LangAnalyze
-# changes. The lang_plugin.hpp header aliases simplex::LANG_PLUGIN_ABI_VERSION so
-# existing indextools references are unchanged.
-#
-# History:
-#   v2: replaced extensions() (extension table) with file_pattern() (regex on the
-#       file name) and added priority() for match ordering.
-#   v3: LangPlugin now derives from the generic plugin::Plugin<LangAnalyze> base.
-#       Adding that primary base reorders LangPlugin's vtable (the base virtuals
-#       ~Plugin/abi_version/name/priority/create come first, before file_pattern),
-#       which is binary-incompatible, so rebuilt plugins must report v3. Host and
-#       plugins are always rebuilt together from the same headers, so both sides
-#       agree; a stale v2 .so is deliberately rejected at load.
-#   v4: LangPlugin now derives from extension::ExtensionContext (not
-#       plugin::Plugin<LangAnalyze>); analyzer creation moved from the virtual
-#       Plugin::create() to the exported `create_lang_analyze` alias (cached in a
-#       product_factory), and the descriptor factory returns unique_ptr<ExtensionContext>.
-#       New base + new members (warmed regex + product_factory) reorders the
-#       layout/vtable, so rebuilt plugins must report v4.
-set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
-
 # LLM model-plugin ABI contract version. Bump on binary-incompatible
 # llm::LLMModel / llm::LLMModelExtensionContext changes (llm/include/llm/models.hpp
-# aliases it as llm::LLM_PLUGIN_ABI_VERSION, mirroring the lang-plugin pattern).
+# aliases it as llm::LLM_PLUGIN_ABI_VERSION).
 #
 # History:
 #   v1: first llm plugin contract. LLMModel (executor + config ctor, build/release

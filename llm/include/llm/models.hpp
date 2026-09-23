@@ -9,8 +9,7 @@
  * interface (one class per stage of one model invocation), the plugin
  * descriptor, and the host-side dispatcher. It deliberately contains NO
  * concrete provider: an implementation (interpreter + SSE handler + reader +
- * endpoint wiring) is a plugin library of its own, following the
- * indextools/lang_plugin.hpp pattern this file mirrors.
+ * endpoint wiring) is a plugin library of its own.
  *
  * ## The three responsibilities of a model (and nothing else)
  *
@@ -668,9 +667,9 @@ private:
 /**
  * @brief Abstract descriptor + model factory for one provider.
  *
- * Specialises extension::ExtensionContext for the llm domain, mirroring
- * indextools::LangPlugin: the descriptor is long-lived and stateless beyond
- * the warm() factory cache; instances are produced by the plugin's exported
+ * Specialises extension::ExtensionContext for the llm domain. The descriptor
+ * is long-lived and stateless beyond the warm() factory cache; instances are
+ * produced by the plugin's exported
  * create_llm_plugin alias and owned by the host's LLMDispatcher.
  *
  * The routing key is name() — the provider name ("deepseek", "openai", ...).
@@ -811,11 +810,10 @@ private:
 /**
  * @brief Host-side loader + router for model plugins.
  *
- * Mirrors indextools::LangDispatcher on the generic ExtensionDispatcher:
- * load_models() imports a directory of plugin .so files (ABI-gated, warmed,
- * left inert on failure), and create_model() routes a provider name to its
- * descriptor and mints a configured model. The default plugin location is
- * layered one level below the language plugins: <exe_dir>/plugins/llm.
+ * Uses the generic ExtensionDispatcher: load_models() imports a directory of
+ * plugin .so files (ABI-gated, warmed, left inert on failure), and
+ * create_model() routes a provider name to its descriptor and mints a
+ * configured model. The default plugin location is <exe_dir>/plugins/llm.
  *
  * After loading, the registry is immutable — create_model() is a pure
  * concurrent read (find + verify + mint).

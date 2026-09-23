@@ -20,9 +20,8 @@
 #   docker build -f docker/Dockerfile.build-context \
 #       --build-arg BASE_IMAGE=simplex-build-base:local -t simplex-cpp-build .
 #
-# This builds the CORE tree only: the legacy language-index domain
-# (languages/, indextools/) is no longer wired into the top-level build, so
-# neither tree-sitter nor Boost process/program_options is needed.
+# This builds and tests the current project modules. Their dependencies are
+# supplied by the build-base image.
 #
 # Build (from the repository root):
 #   docker build -f docker/Dockerfile.build-context -t simplex-cpp-build .

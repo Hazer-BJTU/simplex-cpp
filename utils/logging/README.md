@@ -1,9 +1,7 @@
 # logging
 
 A module of the `utils` package: a thread-safe, `std::format`-based console
-logger (`logging::Logger`) shared across the whole `simplex-cpp` project. It
-was split out of `indextools/` so any module can log without linking the
-indextools host library.
+logger (`logging::Logger`) shared across the whole `simplex-cpp` project.
 
 ## Layout
 
@@ -35,12 +33,9 @@ logging::Logger::info("Listening on port {}", 8080);
 logging::Logger::error("Failed to open '{}': {}", path, ec.message());
 ```
 
-`indextools_lib` links `logging_lib` PUBLIC, so anything linking `indextools_lib`
-already gets the logger.
-
 ## Dependencies
 
 Standard library only (`<chrono>`, `<format>`, `<mutex>`, `<ostream>`, …). The
 default minimum level is `LogLevel::info` in release builds and `LogLevel::debug`
 in debug builds (guarded by `DEBUG_BUILD`, defined on `logging_lib` in Debug
-config, mirroring `indextools_lib`).
+config).
