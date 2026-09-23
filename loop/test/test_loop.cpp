@@ -572,3 +572,248 @@ BOOST_AUTO_TEST_CASE(repeated_projection_failure_preserves_results_and_history) 
     BOOST_CHECK_EQUAL(f.set->tool->count, 1);
     BOOST_CHECK(f.state.loop->pending_results.empty());
 }
+
+/** Pruning edits the live object once per batch and is visible to the next model. */
+BOOST_AUTO_TEST_CASE(state_hooks_prune_in_place_and_preserve_event_order) {
+    Fixture f;
+    std::vector<std::string> order;
+    auto observed = f.bus.subscribe<loop::ToolResultsCommitted>([&](const auto& event) {
+        BOOST_REQUIRE(event.state.turns.back().agent_loop_step.back().invoke_returns);
+        order.push_back("results");
+    });
+    auto prune = f.bus.subscribe<loop::EditOnStepFinished>([&](const auto& event) {
+        BOOST_CHECK(&event.state == &f.state);
+        event.state.turns.back().agent_loop_step.clear();
+        order.push_back("prune");
+    });
+    auto later = f.bus.subscribe<loop::EditOnStepFinished>([&](const auto& event) {
+        BOOST_CHECK(event.state.turns.back().agent_loop_step.empty());
+        order.push_back("edited");
+    });
+    f.model.inspect = [&](const State& state) {
+        if (f.model.exchanges == 1) {
+            BOOST_CHECK(state.turns.back().agent_loop_step.empty());
+        }
+    };
+    auto finish_edit = f.bus.subscribe<loop::EditOnRunFinished>([&](const auto& event) {
+        BOOST_CHECK(&event.state == &f.state);
+        BOOST_CHECK(event.result.status == loop::RunStatus::Completed);
+        event.state.extras = nlohmann::json{{"summary", "compacted"}};
+        order.push_back("finish_edit");
+    });
+    auto finished = f.bus.subscribe<loop::RunFinished>([&](const auto& event) {
+        BOOST_CHECK_EQUAL(event.state.extras->at("summary"), "compacted");
+        order.push_back("finished");
+    });
+
+    const auto result = f.run();
+    BOOST_CHECK(result.status == loop::RunStatus::Completed);
+    BOOST_CHECK_EQUAL(result.completed_exchanges, 2u);
+    BOOST_CHECK_EQUAL(f.state.loop->completed_exchanges, 2u);
+    BOOST_CHECK_EQUAL(f.set->tool->count, 1);
+    const std::vector<std::string> expected{
+        "results", "prune", "edited", "finish_edit", "finished"};
+    BOOST_CHECK(order == expected);
+    BOOST_REQUIRE_EQUAL(f.state.turns.back().agent_loop_step.size(), 1u);
+    // Persisted edited history can continue without replaying the pruned tool.
+    f.state = nlohmann::json(f.state).get<State>();
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::Completed);
+    BOOST_CHECK_EQUAL(f.set->tool->count, 1);
+}
+
+/** Invalid edits and exceptions restore all subscribers' edits as one unit. */
+BOOST_AUTO_TEST_CASE(state_edit_rejection_preserves_committed_tool_results) {
+    for (int failure = 0; failure < 8; ++failure) {
+        Fixture f;
+        nlohmann::json committed;
+        auto observer = f.bus.subscribe<loop::ToolResultsCommitted>([&](const auto& event) {
+            committed = event.state;
+        });
+        auto first = f.bus.subscribe<loop::EditOnStepFinished>([](const auto& event) {
+            event.state.extras = nlohmann::json{{"must_rollback", true}};
+        });
+        auto second = f.bus.subscribe<loop::EditOnStepFinished>([&](const auto& event) {
+            switch (failure) {
+                case 0:
+                    throw std::runtime_error("edit failed");
+                case 1:
+                    event.state.turns.back().agent_loop_step.back().invoke_returns.reset();
+                    break;
+                case 2:
+                    event.state.loop.reset();
+                    break;
+                case 3:
+                    event.state.turns.clear();
+                    break;
+                case 4:
+                    event.state.turns.back().user_input.type = Kind::ModelResponse;
+                    break;
+                case 5:
+                    event.state.loop->completed_exchanges = 0;
+                    break;
+                case 6:
+                    event.state.turns.back().agent_loop_step.back()
+                        .invoke_returns->front().invoke_return->query.id = "wrong-id";
+                    break;
+                case 7:
+                    event.state.loop->phase = model_io::LoopPhase::Blocked;
+                    break;
+            }
+        });
+        const auto result = f.run();
+        BOOST_CHECK(result.status == loop::RunStatus::Failed);
+        BOOST_REQUIRE(f.state.loop);
+        BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Ready);
+        BOOST_CHECK_EQUAL(f.set->tool->count, 1);
+        committed["loop"]["status"] = "failed";
+        committed["loop"]["error"] = result.error;
+        BOOST_CHECK(nlohmann::json(f.state) == committed);
+        first.disconnect();
+        second.disconnect();
+        BOOST_CHECK(f.run(false).status == loop::RunStatus::Completed);
+        BOOST_CHECK_EQUAL(f.set->tool->count, 1);
+    }
+}
+
+/** Stop and budget exhaustion still allow settled results to be compacted. */
+BOOST_AUTO_TEST_CASE(state_hooks_run_at_stop_and_step_limit_boundaries) {
+    for (bool cancel : {false, true}) {
+        Fixture f;
+        std::stop_source source;
+        int edits = 0;
+        auto prune = f.bus.subscribe<loop::EditOnStepFinished>([&](const auto& event) {
+            ++edits;
+            event.state.turns.back().agent_loop_step.clear();
+            if (cancel) {
+                source.request_stop();
+            }
+        });
+        int finishes = 0;
+        const auto expected = cancel ? loop::RunStatus::Cancelled : loop::RunStatus::StepLimit;
+        auto finish = f.bus.subscribe<loop::EditOnRunFinished>([&](const auto& event) {
+            ++finishes;
+            BOOST_CHECK(event.result.status == expected);
+            BOOST_CHECK(event.state.turns.back().agent_loop_step.empty());
+        });
+        BOOST_CHECK(f.run(true, input(), 1, source.get_token()).status == expected);
+        BOOST_CHECK_EQUAL(edits, 1);
+        BOOST_CHECK_EQUAL(finishes, 1);
+        BOOST_CHECK_EQUAL(f.set->tool->count, 1);
+    }
+}
+
+/** Finish editing failures retain recovery evidence and still notify observers. */
+BOOST_AUTO_TEST_CASE(finish_edit_cannot_discard_pending_recovery) {
+    for (bool change_history : {false, true}) {
+        Fixture f;
+        f.model.fail_projection = true;
+        int edits = 0;
+        auto edit = f.bus.subscribe<loop::EditOnRunFinished>([&](const auto& event) {
+            ++edits;
+            BOOST_CHECK(event.state.loop->phase == model_io::LoopPhase::Projection);
+            event.state.extras = nlohmann::json{{"must_rollback", true}};
+            if (change_history) {
+                event.state.turns.clear();
+            } else {
+                event.state.loop->pending_results.front().output.raw = "forged result";
+            }
+        });
+        int finishes = 0;
+        auto finish = f.bus.subscribe<loop::RunFinished>([&](const auto& event) {
+            ++finishes;
+            BOOST_CHECK(event.result.status == loop::RunStatus::Failed);
+            BOOST_CHECK(event.result.error.find("EditOnRunFinished:") != std::string::npos);
+        });
+        const auto result = f.run();
+        BOOST_CHECK(result.status == loop::RunStatus::Failed);
+        BOOST_CHECK(result.error.find("projection failure") != std::string::npos);
+        BOOST_CHECK_EQUAL(edits, 1);
+        BOOST_CHECK_EQUAL(finishes, 1);
+        BOOST_CHECK(!f.state.extras);
+        BOOST_REQUIRE_EQUAL(f.state.loop->pending_results.size(), 1u);
+        BOOST_CHECK_EQUAL(f.state.loop->pending_results.front().output.raw, "effect completed");
+        edit.disconnect();
+        finish.disconnect();
+        f.model.fail_projection = false;
+        BOOST_CHECK(f.run(false).status == loop::RunStatus::Completed);
+        BOOST_CHECK_EQUAL(f.set->tool->count, 1);
+    }
+}
+
+/** A finishing editor can annotate a failed run without interfering with recovery. */
+BOOST_AUTO_TEST_CASE(finish_edit_can_annotate_failure_but_is_skipped_before_admission) {
+    Fixture f;
+    int edits = 0;
+    auto edit = f.bus.subscribe<loop::EditOnRunFinished>([&](const auto& event) {
+        ++edits;
+        event.state.meta.session_id = "host-session";
+    });
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::Failed);
+    BOOST_CHECK_EQUAL(edits, 0);
+    f.model.fail_projection = true;
+    BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
+    BOOST_CHECK_EQUAL(edits, 1);
+    BOOST_CHECK_EQUAL(f.state.meta.session_id, "host-session");
+    BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Projection);
+}
+
+/** A finish editor throw rolls back edits without losing the completed answer. */
+BOOST_AUTO_TEST_CASE(throwing_finish_editor_rolls_back_and_notifies_once) {
+    Fixture f;
+    f.model.calls = false;
+    nlohmann::json before;
+    int edits = 0;
+    auto edit = f.bus.subscribe<loop::EditOnRunFinished>([&](const auto& event) {
+        ++edits;
+        BOOST_CHECK(event.result.status == loop::RunStatus::Completed);
+        before = event.state;
+        event.state.turns.clear();
+        event.state.loop.reset();
+        throw std::runtime_error("final compaction failed");
+    });
+    int finishes = 0;
+    auto observer = f.bus.subscribe<loop::RunFinished>([&](const auto& event) {
+        ++finishes;
+        BOOST_CHECK(event.result.status == loop::RunStatus::Failed);
+        BOOST_REQUIRE_EQUAL(event.state.turns.back().agent_loop_step.size(), 1u);
+    });
+    const auto result = f.run();
+    BOOST_CHECK(result.status == loop::RunStatus::Failed);
+    BOOST_CHECK(result.error.find("EditOnRunFinished: final compaction failed") != std::string::npos);
+    before["loop"]["status"] = "failed";
+    before["loop"]["error"] = result.error;
+    BOOST_CHECK(nlohmann::json(f.state) == before);
+    BOOST_CHECK_EQUAL(edits, 1);
+    BOOST_CHECK_EQUAL(finishes, 1);
+}
+
+/** Editing a skipped batch never makes its calls executable on continuation. */
+BOOST_AUTO_TEST_CASE(skipped_batch_is_editable_and_readonly_observer_failure_skips_edit) {
+    for (bool fail_observer : {false, true}) {
+        Fixture f;
+        std::stop_source stop;
+        auto before = f.bus.subscribe<loop::BeforeToolBatch>([&](const auto&) {
+            stop.request_stop();
+        });
+        auto observed = f.bus.subscribe<loop::ToolResultsCommitted>([&](const auto&) {
+            if (fail_observer) {
+                throw std::runtime_error("result observer failed");
+            }
+        });
+        int edits = 0;
+        auto edit = f.bus.subscribe<loop::EditOnStepFinished>([&](const auto& event) {
+            ++edits;
+            const auto& returned = event.state.turns.back().agent_loop_step.back()
+                .invoke_returns->front().invoke_return;
+            BOOST_CHECK(returned->extras->at("loop_skipped").template get<bool>());
+            event.state.turns.back().agent_loop_step.clear();
+        });
+        const auto result = f.run(true, input(), 5, stop.get_token());
+        BOOST_CHECK(result.status == (fail_observer ? loop::RunStatus::Failed : loop::RunStatus::Cancelled));
+        BOOST_CHECK_EQUAL(edits, fail_observer ? 0 : 1);
+        BOOST_CHECK_EQUAL(f.set->tool->count, 0);
+        BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Ready);
+        BOOST_CHECK(f.run(false).status == loop::RunStatus::Completed);
+        BOOST_CHECK_EQUAL(f.set->tool->count, 0);
+    }
+}

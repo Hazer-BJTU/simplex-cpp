@@ -15,8 +15,10 @@ namespace loop {
  *        cancellation and join its own work before completing cancellation.
  * @param registry Routes tools and joins each batch. Configuration must remain
  *        fixed during a run; dispatched batches are not interrupted by stop.
- * @param events Explicit synchronous event bus. Callbacks may edit candidates
- *        at writable hooks, but must not reenter run() or retain event references.
+ * @param events Explicit synchronous event bus. Writable hooks edit candidates
+ *        or the live state as documented in events.hpp. Callbacks must not
+ *        reenter run() or retain event references. Serialize subscription
+ *        changes with loop execution for predictable editing boundaries.
  * @param executor Executor for model exchanges and parallel tool branches.
  *        Its execution context must keep running until run() completes.
  * @param state Sole persistent conversation and recovery object. The host must
@@ -54,6 +56,13 @@ namespace loop {
  * - After admission, failures preserve committed history. Model becomes Ready;
  *   unsettled Tools becomes Blocked; Projection retains pending_results for
  *   recovery. The terminal status/error are saved before RunFinished is sent.
+ * - EditOnStepFinished and EditOnRunFinished edit the live state synchronously.
+ *   Each subscribed event takes one rollback copy and validates the final edit;
+ *   without subscribers it makes no copy. Invalid edits or throws restore that
+ *   event's backup. loop progress is protected; history awaiting recovery is
+ *   frozen. See events.hpp for pruning and retention responsibilities.
+ * - EditOnRunFinished runs after terminal bookkeeping, including on failure.
+ *   Its failure appends a diagnostic and still proceeds to RunFinished.
  * - RunFinished exceptions change the outcome to Failed and append a diagnostic.
  *   The event is not sent again, and committed data is not rolled back.
  *

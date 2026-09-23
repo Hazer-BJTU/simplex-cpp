@@ -30,7 +30,7 @@ auto result = co_await loop::run(
 
 正常流程是：输入提交 → 模型请求 → 响应提交 → registry 批次执行 → 结果提交 → 下一次请求。没有工具调用的模型响应表示完成。
 
-返回状态：Completed、Cancelled、StepLimit、Failed。诊断使用 logging；工具输出及错误记录写入 dataclass，日志不作为恢复依据。常规结束会先保存 loop.status/error，再同步发布 RunFinished。参数错误或前置取消发生在接纳运行前，不发布运行事件、不覆盖原有运行信息。
+返回状态：Completed、Cancelled、StepLimit、Failed。诊断使用 logging；工具输出及错误记录写入 dataclass，日志不作为恢复依据。常规结束会先保存 loop.status/error，运行可写的 EditOnRunFinished，再同步发布只读的 RunFinished。参数错误或前置取消发生在接纳运行前，不发布运行事件、不覆盖原有运行信息。
 
 所有 `model.integrate()` 都在候选状态上执行，成功后以不抛异常的 move assignment 提交。工具返回的完整结果先移动到 `state.loop.pending_results`，再统一整合至候选对话；投影失败不会产生半份工具消息，下一次 run 先补写这些结果，再接收新输入或继续请求模型。此缓冲只存放尚未提交的结果，成功后清空，不保留第二份执行历史。
 
@@ -57,6 +57,7 @@ auto result = co_await loop::run(
 | 工具阶段未能取得并保存完整结果 | `phase` 从 `Tools` 改为 `Blocked`，拒绝自动重放，已发生的外部副作用不回滚 |
 | 工具结果投影 | 保留 `Projection` 和完整 `pending_results`，后续只重试投影 |
 | 同步钩子 | 按下节所述保留已提交数据；需要时先补齐未执行工具结果，再结束运行 |
+| `EditOnRunFinished` | 撤销此次状态编辑，更新为 `Failed` 并追加诊断，继续发布 `RunFinished` |
 | `RunFinished` | 更新返回值及持久化状态为 `Failed`，追加诊断，不再次发布结束事件 |
 
 运行已接纳时，loop 在发布 `RunFinished` 前保存终态和错误。`Failed` 表示本次运行失败，不表示整个输入、对话历史或外部工具副作用已回滚。
@@ -76,6 +77,8 @@ bus 使用显式注入的同步 EventBus。回调按订阅顺序执行，回调�
 | ModelCommitted | 只读；模型响应已提交 |
 | BeforeToolBatch | 只读调用列表；工具尚未启动，可通过宿主 stop_source 请求停止 |
 | ToolResultsCommitted | 只读；结果已全部写回对话，包括跳过的调用 |
+| EditOnStepFinished | 原地编辑完整 state；前一事件成功返回后，下一次模型请求前 |
+| EditOnRunFinished | 原地编辑完整 state；终态已保存，RunFinished 之前 |
 | RunFinished | 只读；终态已保存 |
 
 BeforeInput 和 BeforeModel 的多个订阅者依次修改同一候选数据；任何订阅者抛异常，该阶段修改不提交。模型上下文提交前会验证 prompt 可渲染。目录内容、provider 参数语义及与 registry 的一致性由宿主策略负责，loop 不擅自改写。
@@ -91,11 +94,59 @@ auto subscription = bus.subscribe<loop::BeforeModel>(
 
 此同步约束针对 loop 钩子；既有 registry 的工具授权仍使用其原有异步机制，loop 会等待整个工具执行路径。
 
-事件本身为 const，受控的候选对象引用可写。要更新插件状态，可在候选 extras 的既有 external_status/events 区域按 dataclass 协议处理；不得在回调中异步修改候选对象。
+事件本身为 const，其中声明为可写的对象引用允许同步修改。要更新插件状态，可在候选 extras 的既有 external_status/events 区域按 dataclass 协议处理；不得在回调中异步修改候选对象。
 
 钩子异常会结束本次运行。模型响应提交后、工具执行前的钩子失败，会为已声明的调用补上“未执行”结果，闭合调用关系。已执行工具的结果不会因后续钩子失败而回滚。
 
 EventBus 的一个订阅者抛异常会阻止本次事件的后续订阅者执行。RunFinished 失败时更新 state 和返回值为 Failed，记录日志，不再次广播结束事件；先前已通知的订阅者应以最终 state/返回值为准。
+
+## 完整状态编辑与裁剪
+
+`EditOnStepFinished` 和 `EditOnRunFinished` 的 `state` 都是调用方传入的同一个 `AgentInputState&`。多个订阅者按顺序直接编辑它，后面的订阅者能看到前面的修改。引用只在回调期间有效，禁止保存引用、异步访问、从其他线程观察中间态或重入 `run()`。订阅变更应与 loop 执行串行化；在无订阅检查之后才添加的订阅者不保证参与当前边界。
+
+`EditOnStepFinished` 在 `ToolResultsCommitted` 的全部订阅者成功返回后运行，每个已结算工具批次一次，包括因停止而生成未执行结果的批次、耗尽预算的最后一批。无工具调用的响应、入口处恢复旧结果，以及前面的观察钩子抛异常时，不发布它。适合工具历史裁剪、旧 turn 摘要和下一轮模型上下文整理。修改后的状态供下一次模型请求使用。
+
+`EditOnRunFinished` 在终态保存后运行，每次已接纳的 invocation 一次，覆盖 Completed、Cancelled、StepLimit 和 Failed。它可整理最终历史、更新宿主摘要或持久化元数据；只读 `result` 表示进入该钩子时的结果。未接纳的参数错误、前置取消或入口恢复失败不发布它。若该钩子失败，loop 撤销本次编辑，追加带 `EditOnRunFinished:` 的诊断并更新为 Failed，仍发布一次 `RunFinished`。因此，最终保存状态通常放在只读 `RunFinished` 中，而不是在编辑事务尚未验证时保存。
+
+两个事件共用以下完整性与事务规则：
+
+- `state.loop` 全部字段由 loop 保留，包括状态、阶段、计数、诊断及待投影结果；钩子删除或改动它会失败。裁剪不会减少 `completed_exchanges`，这个计数记录实际执行的模型交换数。
+- 在 `Ready` 阶段可以编辑历史。原历史非空时至少保留一个 turn；消息种类必须符合所在位置，工具调用和结果必须数量、顺序、id/name 对应，调用身份非空且同一响应内不重复。可以删除完整 step，也可以同时删除对应调用和结果，不能只删除一侧。
+- 在 `Projection` 或 `Blocked` 阶段，历史和恢复记录必须保持原值。此时仍可更新其他字段，但不能通过裁剪未结算调用、清空待投影结果或改阶段来宣称恢复成功。
+- system_prompt 必须可渲染。结构校验不证明摘要真实、provider 参数有效或工具目录与 registry 一致；这些由宿主负责。保留重要工具输出的归档策略也由宿主决定，裁剪不会撤销外部副作用。
+- 全部订阅者执行完后统一校验；任一订阅者抛异常或校验失败，撤销该事件所有订阅者的编辑。之前已提交的对话和工具结果保留。回调应只修改 state；自身发出的外部请求等副作用无法随状态一起回滚。
+
+复制开销：无订阅者时只查询订阅数，不复制或扫描整个状态。有订阅者时，每个事件只深拷贝一次用于回滚，多个订阅者共用该备份；成功时修改留在原对象中，不再复制或 move 提交；失败时通过不抛异常的 move assignment 恢复。Ready 路径校验历史结构，不序列化整个状态；仅在异常恢复阶段对冻结历史和非空待投影结果构造 JSON 值比较，确保恢复证据没有被改写。两个编辑事件都订阅时，各自承担一次备份成本。任意原地修改需要可靠回滚，就不能只移动原对象来替代备份。
+
+例如，在工具批次结算后仅保留当前 turn 最近的一步：
+
+```cpp
+auto pruning = bus.subscribe<loop::EditOnStepFinished>(
+    [](const loop::EditOnStepFinished& event) {
+        auto& steps = event.state.turns.back().agent_loop_step;
+        if (steps.size() > 1) {
+            steps.erase(steps.begin(), steps.end() - 1);
+        }
+    });
+```
+
+这里按完整 step 裁剪，工具调用和结果一起删除。涉及业务审计或需要保留输出的场景，应先制定摘要和归档策略。也可以订阅 `EditOnRunFinished`，只在 `event.state.loop->phase == model_io::LoopPhase::Ready` 时执行相同裁剪。
+
+## 循环状态与可恢复性
+
+`status` 表示一次 invocation 的生命周期和结果，`phase` 表示恢复边界，两者不能相互替代。例如 `Failed + Ready` 允许继续，而 `Failed + Blocked` 需要人工核查。接纳运行时状态变为 Running；终态写入发生在 EditOnRunFinished 之前。恢复先于接纳，成功投影旧结果之后才开始新的 invocation。
+
+| phase | 含义及下次 run 的行为 |
+|---|---|
+| Ready | 没有未结算工作；验证历史后可以继续或接纳新输入 |
+| Model | 模型交换中，响应尚未提交；恢复时验证历史，不把部分响应视作已完成 |
+| Tools | 工具可能已有副作用但未保存完整返回；禁止自动重放 |
+| Projection | 完整返回已保存在 pending_results；先在候选历史上重试投影，成功后清空缓冲，不能重跑工具 |
+| Blocked | 工具阶段异常退出，副作用不确定；禁止自动继续，需宿主核查 |
+
+运行正常收尾时 Model 转回 Ready，未结算的 Tools 转为 Blocked，Projection 保持原样。完整状态编辑不能改变这些恢复判断；编辑失败只撤销当前事件，终态变为 Failed。恢复投影在候选状态上整体提交，失败保留旧历史及结果；恢复成功也不发布 EditOnStepFinished，避免把它当成新执行的批次。宿主如需对恢复后的历史做整理，可在后续正常边界处理。
+
+停止请求不会打断同步编辑和校验：合法编辑完成后才处理停止。EditOnRunFinished 中新发出的停止请求不改写已确定的结果。持久化只应在事件事务完成后进行；这里没有写前日志，不能由状态标记推断进程崩溃前所有工具副作用都已被记录。
 
 ## 停止边界
 
@@ -119,4 +170,4 @@ EventBus 的一个订阅者抛异常会阻止本次事件的后续订阅者执�
 
 ## 验证
 
-`test_loop` 使用离线脚本模型、实际 ToolRegistry 和可控工具执行正常循环，验证事件顺序、可写钩子提交/回滚、工具副作用结果保留、JSON 往返后的投影恢复、停止边界、预算耗尽、结束钩子错误和禁止重放未回答调用。另外覆盖多线程 executor 上中断长期挂起的模型、取消后继续同一会话，以及取消与独立模型错误同时发生的情况。异常路径另覆盖未请求停止时的 `operation_aborted`、非标准异常，以及连续投影失败后保留原状态并恢复，确保不重复执行工具。`test_loop_model_cancellation` 使用本地 HTTP 服务验证两种内置适配器在请求无响应和已发出流式响应头时可被取消，且服务端观察到连接关闭。另外用 HTTP 503 验证两种适配器各自重试耗尽后返回 `Failed`，保留 HTTP 诊断、不提交部分响应，并只发布一次结束事件；请求计数验证 loop 没有增加额外重试。现有示例不迁移。
+`test_loop` 使用离线脚本模型、实际 ToolRegistry 和可控工具执行正常循环，验证事件顺序、可写钩子提交/回滚、工具副作用结果保留、JSON 往返后的投影恢复、停止边界、预算耗尽、结束钩子错误和禁止重放未回答调用。另外覆盖多线程 executor 上中断长期挂起的模型、取消后继续同一会话，以及取消与独立模型错误同时发生的情况。异常路径另覆盖未请求停止时的 `operation_aborted`、非标准异常，以及连续投影失败后保留原状态并恢复，确保不重复执行工具。`test_loop_model_cancellation` 使用本地 HTTP 服务验证两种内置适配器在请求无响应和已发出流式响应头时可被取消，且服务端观察到连接关闭。另外用 HTTP 503 验证两种适配器各自重试耗尽后返回 `Failed`，保留 HTTP 诊断、不提交部分响应，并只发布一次结束事件；请求计数验证 loop 没有增加额外重试。完整状态钩子的测试覆盖事件顺序、原对象身份、裁剪后继续、异常回滚、恢复记录保护以及停止和预算边界。现有示例不迁移。
