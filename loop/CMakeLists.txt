@@ -1,5 +1,8 @@
 # Single active loop per harness process.
-add_library(loop_lib SHARED src/loop.cpp)
+add_library(loop_lib SHARED
+    src/hook_interface.cpp
+    src/hook_registry.cpp
+    src/loop.cpp)
 target_include_directories(loop_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(loop_lib PUBLIC
     dataclass_iface
@@ -18,3 +21,4 @@ if(BUILD_TESTS)
 endif()
 
 add_subdirectory(example)
+add_subdirectory(intrinsic)

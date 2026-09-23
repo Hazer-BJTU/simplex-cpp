@@ -69,6 +69,26 @@ auto result = co_await loop::run(
 
 ## 同步钩子
 
+宿主如需把一组事件处理函数组织为有状态插件，可实现顶层公共接口
+[`LoopHookInterface`](include/loop/hook_interface.hpp)，并将实例交给会话级
+[`LoopHookRegistry`](include/loop/hook_registry.hpp)。registry 接收与 `run()`
+相同的同步 bus，以插件名称管理实例与订阅周期：`add()` 注册、`set()`
+新增或替换、`get()` 查询、`remove()` 和 `clear()` 解除订阅。插件的
+`subscribe()` 应返回全部订阅句柄。底层 `LoopHookBinding` 同时持有插件
+实例和订阅句柄，销毁时先断开监听。绑定、解绑需与 `run()` 串行化，
+bus 必须比 registry 长寿。
+
+```cpp
+eventbus::EventBus bus;
+loop::LoopHookRegistry hooks(bus);
+hooks.add(std::make_shared<MyLoopHook>());
+// 让 bus 和 hooks 在所有 loop::run() 调用期间保持存活。
+```
+
+插件实例可保存进程内状态；需要跨进程恢复的数据仍应写入
+`AgentInputState`。内建插件目录位于 [`intrinsic/`](intrinsic/)，
+不通过 `extensions` 声明。
+
 bus 使用显式注入的同步 EventBus。回调按订阅顺序执行，回调返回后才继续循环。事件引用仅在回调期间有效，不得保存、从外部别名修改当前 state 或重入 run。
 
 | 事件 | 权限与时机 |
