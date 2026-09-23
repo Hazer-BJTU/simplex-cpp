@@ -14,13 +14,22 @@
 
 cat <<'EOF'
 ================================================================================
-tools stack — manual test image
+loop + tools — manual test image
 ================================================================================
 Built from the portable toolchain base: AlmaLinux 9, GCC 14.3.0, Boost 1.91.0.
 Sources:   /src
 Build:     /src/build   (Debug; bin/, lib/, every test binary)
 
-THE DEMO (tools/example/deepseek_chat.cpp)
+NEW LOOP DEMO (loop/example/deepseek_chat.cpp)
+  /src/build/bin/loop_deepseek_chat
+  /src/stage/bin/loop_deepseek_chat
+
+  Uses loop::run, asynchronous terminal input, safe Ctrl-C and /continue.
+  Output is grouped on stdout; framework errors go to /tmp/loop-deepseek-chat.log.
+  Add --reasoning to show complete reasoning blocks; no interleaved deltas.
+  See /src/loop/example/README.md for flags and interactive test suggestions.
+
+LEGACY DEMO (tools/example/deepseek_chat.cpp)
   /src/build/bin/tools_deepseek_chat
 
   A DeepSeek chat whose tools are the five intrinsic process tools, reached

@@ -16,3 +16,5 @@ target_compile_options(loop_lib PRIVATE
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
+
+add_subdirectory(example)

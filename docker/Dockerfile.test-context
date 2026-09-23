@@ -19,7 +19,9 @@
 # at /src/build (bin/, lib/, and every test binary), and the staged release at
 # /src/stage, so
 #
-#   /src/build/bin/tools_deepseek_chat            the demo
+#   /src/build/bin/loop_deepseek_chat             the loop::run demo
+#   /src/stage/bin/loop_deepseek_chat             its installed form
+#   /src/build/bin/tools_deepseek_chat            the legacy demo
 #   /src/build/bin/tools_deepseek_chat --tools    the catalogue, no key needed
 #   /src/build/bin/tools_deepseek_chat --skill    the model's guidance, same
 #   /src/stage/bin/tools_deepseek_chat            the same demo, installed
