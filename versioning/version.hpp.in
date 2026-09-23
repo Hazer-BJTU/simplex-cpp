@@ -30,12 +30,6 @@ inline constexpr unsigned VERSION_PATCH = @PROJECT_VERSION_PATCH@;
 /// Full project version string ("MAJOR.MINOR.PATCH").
 inline constexpr const char* VERSION_STRING = "@PROJECT_VERSION@";
 
-/// Plugin ABI contract version. Bump whenever LangPlugin or LangAnalyze
-/// changes in a binary-incompatible way; the indextools host refuses to load
-/// any language plugin whose abi_version() differs. See
-/// indextools/include/lang_plugin.hpp for the full contract.
-inline constexpr std::uint32_t LANG_PLUGIN_ABI_VERSION = @SIMPLEX_LANG_PLUGIN_ABI_VERSION@;
-
 /// LLM model-plugin ABI contract version. Bump whenever llm::LLMModel or
 /// llm::LLMModelExtensionContext (llm/include/llm/models.hpp) changes in a
 /// binary-incompatible way; the llm dispatcher refuses to mint models from

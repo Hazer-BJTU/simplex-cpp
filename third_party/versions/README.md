@@ -11,8 +11,6 @@ and copy the listed files into place.
 | Library           | Release   | Record                              |
 | ----------------- | --------- | ----------------------------------- |
 | nlohmann/json     | 3.12.0    | [nlohmann_json.md](nlohmann_json.md) |
-| tree-sitter       | <fill in> | [tree-sitter.md](tree-sitter.md)    |
-| tree-sitter-python| <fill in> | [tree-sitter-python.md](tree-sitter-python.md) |
 | yaml-cpp          | 0.9.0     | [yaml-cpp.md](yaml-cpp.md)          |
 | Boost (system)    | 1.91.0    | [boost.md](boost.md)                |
 

@@ -14,8 +14,8 @@
 #
 # What stays inside a module:
 #   - the module's own targets, sources, and unit tests
-#   - module-private third-party deps (e.g. python's tree-sitter, declared in
-#     the module's own CMakeLists so the dependency travels with the module)
+#   - module-private third-party deps, declared in the module's own
+#     CMakeLists so the dependency travels with the module
 #
 # Per-module dependencies are documented in `dependency.md`.
 # =============================================================================
@@ -52,9 +52,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ---- Build output directories ----------------------------------------------
 # All module artifacts land under the build tree (bin/ + lib/), not in the
-# source tree. The `indextools` host locates its plugins relative to its own
-# executable directory (<exe_dir>/plugins), so plugins emitted into bin/plugins
-# are found at runtime with no path configuration.
+# source tree.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
@@ -90,9 +88,7 @@ target_link_libraries(openssl_iface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 # Compiled components used by the core tree: unit_test_framework (the test
 # layer), filesystem (the Boost.DLL support target below) and process (the
 # boost_process_iface target below — Boost.Process v2 grew a compiled piece,
-# libboost_process, so it needs the component, not just headers). Of the
-# legacy language-index domain's extras only program_options is still gone;
-# it stays with the extraction into a standalone module.
+# libboost_process, so it needs the component, not just headers).
 #
 # Linked SHARED deliberately: the whole tree now standardizes on shared
 # libraries (the plugin-boundary strategy in docs/abi-context.md — one copy of
@@ -147,12 +143,6 @@ option(BUILD_TESTS "Build unit tests" ON)
 #     consumers such as the llm model plugins' config JSON and the tools'
 #     declaration files.
 #
-# The legacy language-index domain — languages/ (per-language analyzer
-# plugins) and indextools/ (their host library) — is NOT wired in anymore:
-# nothing in the core tree links or loads it, and it is pending extraction
-# into a standalone module/plugin. The directories stay in the repository
-# untouched; when extracted, they carry their own dependencies (notably Boost
-# process and the vendored tree-sitter libs).
 add_subdirectory(versioning)
 add_subdirectory(utils)
 # extensions after utils' logging + the top-level interface targets:

@@ -229,10 +229,8 @@ layout, so the tree consumes it unchanged via
 `third_party/versions/*.md` — that directory stays the single source of
 truth; when a version moves, both this image and the records move with it.
 
-Deliberately **absent**: any source code; tree-sitter and Boost
-`program_options` (their only consumer was the legacy languages/indextools
-domain; `process` is back — the new core `process` module's manager builds
-on it).
+Deliberately **absent**: source code and dependencies unused by the current
+modules. The `process` module uses Boost.Process.
 
 Recorded versions are inspectable: `docker inspect <image>` → LABELs
 (`simplex.build.*`).

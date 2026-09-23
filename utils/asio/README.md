@@ -50,7 +50,7 @@ per module; the fix is the same medicine `eventbus_lib` applies.
 includes asio headers.** A module that compiles asio without the switch
 silently falls back to header-only semantics and re-splits the runtime in
 that process. Currently wired through `endpoint_lib`, `llm_iface`, and
-`indextools_lib` (all PUBLIC), which covers every asio consumer in the tree.
+  `process_lib` (all PUBLIC), which covers the asio consumers in the tree.
 
 ## Where this sits in the boundary strategy
 

@@ -1,7 +1,7 @@
 # versioning
 
-Single source of truth for project version constants. A parallel sibling of
-`indextools/` that owns **no compiled code** — it only renders a header template
+Single source of truth for project version constants. This module owns
+**no compiled code** — it only renders a header template
 (`version.hpp.in`) into a build-time, header-only
 `versioning/version.hpp` via CMake's `configure_file()`.
 
@@ -11,13 +11,9 @@ Single source of truth for project version constants. A parallel sibling of
 |---|---|
 | `simplex::VERSION_MAJOR/MINOR/PATCH` | top-level `project(simplex_cpp VERSION …)` |
 | `simplex::VERSION_STRING` | `PROJECT_VERSION` |
-| `simplex::LANG_PLUGIN_ABI_VERSION` | `SIMPLEX_LANG_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
 | `simplex::LLM_PLUGIN_ABI_VERSION` | `SIMPLEX_LLM_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
 
-The plugin ABI version was migrated here from
-`indextools/include/lang_plugin.hpp`; that header now `#include`s the generated
-header and keeps an `indextools::` namespace alias, so existing references are
-unchanged. The LLM model-plugin ABI constant follows the same pattern:
+The LLM model-plugin ABI constant is defined here:
 `llm/include/llm/models.hpp` includes the generated header and aliases
 `simplex::LLM_PLUGIN_ABI_VERSION` as `llm::LLM_PLUGIN_ABI_VERSION`.
 
@@ -32,9 +28,6 @@ target_link_libraries(my_target PRIVATE simplex_versioning)
 
 This is the single supported way: the project manages all header paths through
 interface targets, not directory-scope `include_directories(...)` variables.
-`indextools_iface` links `simplex_versioning` directly, so indextools' host,
-plugins, and tests all see the header by linking `indextools_iface` (or
-`indextools_lib`, which carries it transitively).
 
 Then in code:
 
@@ -42,7 +35,7 @@ Then in code:
 #include "versioning/version.hpp"
 
 std::cout << simplex::VERSION_STRING;             // "0.0.1"
-if (plugin->abi_version() != simplex::LANG_PLUGIN_ABI_VERSION) { /* … */ }
+if (plugin->abi_version() != simplex::LLM_PLUGIN_ABI_VERSION) { /* … */ }
 ```
 
 ## Adding a new version constant
