@@ -18,6 +18,12 @@
 
 namespace loop {
 
+RecoveryRequired::RecoveryRequired(model_io::LoopPhase phase, std::string message)
+    : std::runtime_error(std::move(message)), phase_(phase) {
+}
+
+RecoveryRequired::~RecoveryRequired() = default;
+
 namespace {
 
 using model_io::LoopPhase;
@@ -76,25 +82,64 @@ void validate_calls(const Item& item) {
 }
 
 /**
- * Validates that every historical call has exactly one corresponding result.
- * Results must appear in original call order with the same ID and tool name.
- * Throws on incomplete or mismatched history: an unanswered imported call is
- * not sufficient evidence that its effects never happened, so replay is unsafe.
+ * Checks the structure of both ordinary and recoverable conversation states.
+ * Only the final step may be unanswered, and only while tool work is explicitly
+ * marked as Tools, Blocked or Projection. Projection must also retain exactly
+ * one matching result for every outstanding call. The same validation runs on
+ * admitted history, projected candidates and full-state edits.
  */
-void validate_history(const State& state) {
-    for (const auto& turn : state.turns) {
-        for (const auto& step : turn.agent_loop_step) {
+void validate_state_structure(const State& state) {
+    (void)state.system_prompt.render();
+    for (std::size_t turn_index = 0; turn_index < state.turns.size(); ++turn_index) {
+        const auto& turn = state.turns[turn_index];
+        if (turn.user_input.type != Kind::UserInput ||
+            turn.user_input.invokes || turn.user_input.invoke_return) {
+            throw std::logic_error("invalid user message in loop history");
+        }
+        for (std::size_t step_index = 0;
+             step_index < turn.agent_loop_step.size(); ++step_index) {
+            const auto& step = turn.agent_loop_step[step_index];
+            if (step.model_response.type != Kind::ModelResponse ||
+                step.model_response.invoke_return) {
+                throw std::logic_error("invalid model response in loop history");
+            }
             validate_calls(step.model_response);
             const auto& calls = step.model_response.invokes;
             const auto& returns = step.invoke_returns;
             const auto count = calls ? calls->size() : 0;
-            if ((returns ? returns->size() : 0) != count) {
-                throw std::logic_error("unresolved tool history requires inspection");
+            const auto returned = returns ? returns->size() : 0;
+            if (returned != count) {
+                const bool last_step = turn_index + 1 == state.turns.size() &&
+                    step_index + 1 == turn.agent_loop_step.size();
+                const auto phase = state.loop
+                    ? state.loop->phase : LoopPhase::Ready;
+                const bool recovering = phase == LoopPhase::Tools ||
+                    phase == LoopPhase::Blocked || phase == LoopPhase::Projection;
+                if (!last_step || !recovering || returned != 0 || count == 0) {
+                    throw std::logic_error("unresolved tool history requires inspection");
+                }
+                if (phase == LoopPhase::Projection) {
+                    const auto& pending = state.loop->pending_results;
+                    if (pending.size() != count) {
+                        throw std::logic_error("projection results do not match calls");
+                    }
+                    for (std::size_t index = 0; index < count; ++index) {
+                        if (pending[index].query.id != (*calls)[index].id ||
+                            pending[index].query.name != (*calls)[index].name) {
+                            throw std::logic_error("projection result identity mismatch");
+                        }
+                    }
+                }
+                continue;
             }
-            for (std::size_t i = 0; i < count; ++i) {
-                const auto& result = (*returns)[i].invoke_return;
-                if (!result || result->query.id != (*calls)[i].id ||
-                    result->query.name != (*calls)[i].name) {
+            for (std::size_t index = 0; index < returned; ++index) {
+                const auto& item = (*returns)[index];
+                if (item.type != Kind::InvokeReturn || item.invokes) {
+                    throw std::logic_error("invalid tool result in loop history");
+                }
+                const auto& result = item.invoke_return;
+                if (!result || result->query.id != (*calls)[index].id ||
+                    result->query.name != (*calls)[index].name) {
                     throw std::logic_error("tool history identity mismatch");
                 }
             }
@@ -128,7 +173,7 @@ void validate_state_edit(const State& state, const State& before) {
         throw std::logic_error("state hook changed pending tool results");
     }
 
-    (void)state.system_prompt.render();
+    validate_state_structure(state);
     if (previous.phase != LoopPhase::Ready) {
         if (nlohmann::json(state.turns) != nlohmann::json(before.turns)) {
             throw std::logic_error("state hook changed history requiring recovery");
@@ -138,26 +183,6 @@ void validate_state_edit(const State& state, const State& before) {
     if (!before.turns.empty() && state.turns.empty()) {
         throw std::logic_error("state hook removed every conversation turn");
     }
-    for (const auto& turn : state.turns) {
-        if (turn.user_input.type != Kind::UserInput ||
-            turn.user_input.invokes || turn.user_input.invoke_return) {
-            throw std::logic_error("state hook produced an invalid user message");
-        }
-        for (const auto& step : turn.agent_loop_step) {
-            if (step.model_response.type != Kind::ModelResponse ||
-                step.model_response.invoke_return) {
-                throw std::logic_error("state hook produced an invalid model response");
-            }
-            if (step.invoke_returns) {
-                for (const auto& item : *step.invoke_returns) {
-                    if (item.type != Kind::InvokeReturn || item.invokes) {
-                        throw std::logic_error("state hook produced an invalid tool result");
-                    }
-                }
-            }
-        }
-    }
-    validate_history(state);
 }
 
 /**
@@ -200,7 +225,7 @@ void project(llm::LLMModel& model, State& state) {
         item.invoke_return = record;
         model.integrate(draft, item);
     }
-    validate_history(draft);
+    validate_state_structure(draft);
     draft.loop->pending_results.clear();
     draft.loop->phase = LoopPhase::Ready;
     state = std::move(draft);
@@ -294,8 +319,8 @@ LoopStatus progress_status(RunStatus status) {
             return LoopStatus::Completed;
         case RunStatus::Cancelled:
             return LoopStatus::Cancelled;
-        case RunStatus::StepLimit:
-            return LoopStatus::StepLimit;
+        case RunStatus::ExchangeLimit:
+            return LoopStatus::ExchangeLimit;
         case RunStatus::Failed:
             return LoopStatus::Failed;
     }
@@ -342,14 +367,16 @@ boost::asio::awaitable<RunResult> run(
             throw std::invalid_argument("no turn to continue");
         }
 
-        if (stop.stop_requested()) {
-            result.status = RunStatus::Cancelled;
-            co_return result;
-        }
         if (state.loop &&
             (state.loop->phase == LoopPhase::Tools ||
              state.loop->phase == LoopPhase::Blocked)) {
-            throw std::logic_error("previous execution requires inspection");
+            throw RecoveryRequired(
+                state.loop->phase,
+                "previous tool execution requires host inspection");
+        }
+        if (stop.stop_requested()) {
+            result.status = RunStatus::Cancelled;
+            co_return result;
         }
         if (state.loop) {
             const auto& phase = state.loop->phase;
@@ -365,10 +392,11 @@ boost::asio::awaitable<RunResult> run(
                 if (state.loop->pending_results.empty()) {
                     throw std::logic_error("projection phase has no results");
                 }
+                validate_state_structure(state);
                 project(model, state);
             }
         }
-        validate_history(state);
+        validate_state_structure(state);
         if (stop.stop_requested()) {
             result.status = RunStatus::Cancelled;
             // Recovery may have committed old results, but no new input was accepted.
@@ -394,7 +422,7 @@ boost::asio::awaitable<RunResult> run(
         }
 
         // Each exchange is followed by a complete tool batch, if requested.
-        result.status = RunStatus::StepLimit;
+        result.status = RunStatus::ExchangeLimit;
         for (std::size_t step = 0; step < options.max_exchanges; ++step) {
             if (stop.stop_requested()) {
                 result.status = RunStatus::Cancelled;
@@ -425,7 +453,9 @@ boost::asio::awaitable<RunResult> run(
                 // Cancellation classification only, not the general error boundary.
                 // Built-in adapters normalize Asio cancellation to operation_aborted;
                 // exhausted HTTP retries and provider errors reach the outer catch.
-                // A stop request alone must not hide an independent model failure.
+                // An error completed before cancellation remains a failure.
+                // Once cancellation reaches transport, a racing HTTP error may
+                // itself be reported as operation_aborted by the adapter.
                 if (stop.stop_requested() &&
                     error.code() == boost::asio::error::operation_aborted) {
                     state.loop->phase = LoopPhase::Ready;
@@ -489,6 +519,16 @@ boost::asio::awaitable<RunResult> run(
                 break;
             }
         }
+    } catch (const RecoveryRequired&) {
+        // Only the admission check can signal uncertain work to the host.
+        // A hook or dependency throwing this type after admission is an
+        // ordinary run failure, so committed work still receives settlement.
+        if (!admitted) {
+            throw;
+        }
+        result.status = RunStatus::Failed;
+        result.error = error_text();
+        logging::Logger::error("loop failed: {}", result.error);
     } catch (...) {
         // General run-body boundary, including exceptions not handled by the
         // model-wait catch (HTTP failures, provider errors and hook failures).
@@ -524,13 +564,9 @@ boost::asio::awaitable<RunResult> run(
         try {
             events.publish(RunFinished{state, result});
         } catch (...) {
-            result.status = RunStatus::Failed;
-            const auto error = error_text();
-            result.error += (result.error.empty() ? "" : "; ") +
-                std::string("RunFinished: ") + error;
-            state.loop->status = LoopStatus::Failed;
-            state.loop->error = result.error;
-            logging::Logger::error("loop finish hook failed: {}", error);
+            // This event is post-finalization. Earlier observers have already
+            // seen the terminal state, so a later exception may only be logged.
+            logging::Logger::error("loop finish observer failed: {}", error_text());
         }
     }
     co_return result;

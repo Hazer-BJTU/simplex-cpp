@@ -788,7 +788,7 @@ enum class LoopStatus {
     /// Cancellation was observed and required results were settled.
     Cancelled,
     /// The exchange budget ended after settling the last batch.
-    StepLimit,
+    ExchangeLimit,
     /// The invocation failed; inspect the diagnostic and recovery phase.
     Failed,
 };
@@ -808,8 +808,8 @@ inline void to_json(nlohmann::json& j, LoopStatus value) {
         case LoopStatus::Cancelled:
             j = "cancelled";
             return;
-        case LoopStatus::StepLimit:
-            j = "step_limit";
+        case LoopStatus::ExchangeLimit:
+            j = "exchange_limit";
             return;
         case LoopStatus::Failed:
             j = "failed";
@@ -837,8 +837,8 @@ inline void from_json(const nlohmann::json& j, LoopStatus& value) {
         value = LoopStatus::Cancelled;
         return;
     }
-    if (name == "step_limit") {
-        value = LoopStatus::StepLimit;
+    if (name == "exchange_limit") {
+        value = LoopStatus::ExchangeLimit;
         return;
     }
     if (name == "failed") {

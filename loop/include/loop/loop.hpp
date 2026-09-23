@@ -41,30 +41,13 @@ namespace loop {
  * can be recovered without repeating tools. Partial model responses are not
  * integrated when converse() ends with cancellation.
  *
- * Exception handling:
- * - The model-wait catch recognizes cancellation only when stop is requested
- *   AND converse() throws boost::system::system_error(operation_aborted).
- *   HTTP retry exhaustion, provider errors and other exceptions instead reach
- *   the outer run-body catch, even if a stop request arrives at the same time.
- * - The outer catch converts validation, recovery, model, integration, registry
- *   and hook exceptions into Failed. std::exception::what() supplies the
- *   diagnostic; other exception types use "unknown exception". The loop does
- *   not retry converse() itself; transport retry belongs to the model adapter.
- * - Before admission, failure is reported in RunResult and logging without a
- *   new progress record or RunFinished event. Recovery may already have
- *   committed previously buffered results before admission is reached.
- * - After admission, failures preserve committed history. Model becomes Ready;
- *   unsettled Tools becomes Blocked; Projection retains pending_results for
- *   recovery. The terminal status/error are saved before RunFinished is sent.
- * - EditOnStepFinished and EditOnRunFinished edit the live state synchronously.
- *   Each subscribed event takes one rollback copy and validates the final edit;
- *   without subscribers it makes no copy. Invalid edits or throws restore that
- *   event's backup. loop progress is protected; history awaiting recovery is
- *   frozen. See events.hpp for pruning and retention responsibilities.
- * - EditOnRunFinished runs after terminal bookkeeping, including on failure.
- *   Its failure appends a diagnostic and still proceeds to RunFinished.
- * - RunFinished exceptions change the outcome to Failed and append a diagnostic.
- *   The event is not sent again, and committed data is not rolled back.
+ * Admission rejects Tools/Blocked with RecoveryRequired without changing the
+ * state; the host decides how to inspect uncertain tool effects. Other ordinary
+ * failures return Failed with a diagnostic. A run admitted before failure
+ * preserves completed work and publishes its finalized outcome once.
+ * EditOnRunFinished may change that outcome; RunFinished is read-only and its
+ * subscribers cannot change the final status or error. See events.hpp for the
+ * editing contract and README.md for the recovery and cancellation details.
  *
  * This is not a noexcept boundary. Argument/frame construction, coroutine setup,
  * and secondary failures while allocating diagnostics, saving the terminal

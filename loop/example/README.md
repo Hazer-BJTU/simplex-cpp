@@ -21,7 +21,7 @@ docker run --rm -it -e DEEPSEEK_API_KEY simplex-cpp-loop-test \
 - `--tools` / `--skill`：检查并显示工具目录或 skill，不需要密钥，不启动子进程。
 - `--list-models`：显示在线模型目录及余额信息。
 - `--yes`：自动批准工具调用；默认逐次确认，支持批准本工具、批准全部或拒绝后续请求。
-- `--max-steps N`：每次 run 的模型交换预算，默认 12。
+- `--max-exchanges N`：每次 run 的模型交换预算，默认 12。
 - `--effort high`：推理强度，默认 high；none/minimal 关闭 thinking。
 - `--reasoning`：显示已完成响应中的完整推理区块，默认隐藏。
 - `--log PATH`：框架错误日志，默认 `/tmp/loop-deepseek-chat.log`，追加写入。
@@ -43,7 +43,7 @@ REPL：`/tools`、`/skill`、`/sessions`、`/state`、`/continue`、`/help`、`/
 1. 请求“运行命令，stdout 输出 hello，stderr 输出 warning”：检查两种输出的标签、缩进和区块边界。
 2. 请求“启动 cat，发送一行，再关闭 stdin”：检查跨轮会话和 `/sessions`。
 3. 对工具确认回答 `n`：拒绝应成为工具结果，模型仍可继续回答。
-4. 用 `--max-steps 1` 请求执行命令，再输入 `/continue`：工具不应重复执行。
+4. 用 `--max-exchanges 1` 请求执行命令，再输入 `/continue`：工具不应重复执行。
 5. 在模型等待期间 Ctrl-C，再 `/state` 和 `/continue`：应显示 cancelled/ready 并安全继续。
 6. 请求输出带 ANSI 颜色和 CR 的内容：终端显示转义文本，不能覆盖提示。
 

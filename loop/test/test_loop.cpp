@@ -306,16 +306,16 @@ BOOST_AUTO_TEST_CASE(hook_failure_after_response_closes_calls) {
     BOOST_REQUIRE(f.state.turns[0].agent_loop_step[0].invoke_returns);
 }
 
-BOOST_AUTO_TEST_CASE(step_limit_settles_last_batch_and_continue_adds_no_input) {
+BOOST_AUTO_TEST_CASE(exchange_limit_settles_last_batch_and_continue_adds_no_input) {
     Fixture f;
-    BOOST_CHECK(f.run(true, input(), 1).status == loop::RunStatus::StepLimit);
+    BOOST_CHECK(f.run(true, input(), 1).status == loop::RunStatus::ExchangeLimit);
     BOOST_REQUIRE(f.state.turns[0].agent_loop_step[0].invoke_returns);
     BOOST_CHECK(f.run(false).status == loop::RunStatus::Completed);
     BOOST_CHECK_EQUAL(f.state.turns.size(), 1u);
     BOOST_CHECK_EQUAL(f.set->tool->count, 1);
 }
 
-BOOST_AUTO_TEST_CASE(model_failure_and_finish_failure_are_visible) {
+BOOST_AUTO_TEST_CASE(model_failure_remains_final_when_a_finish_observer_throws) {
     Fixture f;
     f.model.fail_model = true;
     auto sub = f.bus.subscribe<loop::RunFinished>([](const auto&) {
@@ -324,9 +324,36 @@ BOOST_AUTO_TEST_CASE(model_failure_and_finish_failure_are_visible) {
     const auto result = f.run();
     BOOST_CHECK(result.status == loop::RunStatus::Failed);
     BOOST_CHECK(result.error.find("model failure") != std::string::npos);
-    BOOST_CHECK(result.error.find("finish failed") != std::string::npos);
+    BOOST_CHECK(result.error.find("finish failed") == std::string::npos);
     BOOST_CHECK_EQUAL(f.state.loop->error, result.error);
     BOOST_CHECK_EQUAL(f.state.turns.size(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(finish_observers_see_the_same_final_outcome_as_the_caller) {
+    Fixture f;
+    f.model.calls = false;
+    loop::RunStatus observed = loop::RunStatus::Failed;
+    int first_calls = 0;
+    int last_calls = 0;
+    auto first = f.bus.subscribe<loop::RunFinished>([&](const auto& event) {
+        ++first_calls;
+        observed = event.result.status;
+        BOOST_CHECK(event.state.loop->status == model_io::LoopStatus::Completed);
+    });
+    auto throwing = f.bus.subscribe<loop::RunFinished>([](const auto&) {
+        throw std::runtime_error("observer failure after finalization");
+    });
+    auto last = f.bus.subscribe<loop::RunFinished>([&](const auto&) {
+        ++last_calls;
+    });
+
+    const auto result = f.run();
+    BOOST_CHECK(result.status == loop::RunStatus::Completed);
+    BOOST_CHECK(observed == result.status);
+    BOOST_CHECK(f.state.loop->status == model_io::LoopStatus::Completed);
+    BOOST_CHECK(result.error.empty());
+    BOOST_CHECK_EQUAL(first_calls, 1);
+    BOOST_CHECK_EQUAL(last_calls, 0);
 }
 
 BOOST_AUTO_TEST_CASE(invalid_request_and_precancel_preserve_state) {
@@ -352,6 +379,77 @@ BOOST_AUTO_TEST_CASE(imported_unanswered_calls_are_not_replayed) {
     f.model.integrate(f.state, input());
     f.model.integrate(f.state, response);
     BOOST_CHECK(f.run(false).status == loop::RunStatus::Failed);
+    BOOST_CHECK_EQUAL(f.set->tool->count, 0);
+}
+
+/** Imported history receives the same checks even when no edit hook exists. */
+BOOST_AUTO_TEST_CASE(imported_malformed_history_fails_before_admission) {
+    for (int fault = 0; fault < 7; ++fault) {
+        Fixture f;
+        f.model.calls = false;
+        f.model.integrate(f.state, input());
+
+        Item response;
+        response.type = Kind::ModelResponse;
+        model_io::InvokeQuery call;
+        call.id = "existing-call";
+        call.name = "effect";
+        response.invokes = std::vector{call};
+        f.model.integrate(f.state, response);
+
+        Item returned;
+        returned.type = Kind::InvokeReturn;
+        model_io::InvokeReturn record;
+        record.query = call;
+        returned.invoke_return = record;
+        f.model.integrate(f.state, returned);
+
+        auto& turn = f.state.turns.back();
+        auto& step = turn.agent_loop_step.back();
+        switch (fault) {
+            case 0: turn.user_input.type = Kind::ModelResponse; break;
+            case 1: step.model_response.type = Kind::UserInput; break;
+            case 2: step.invoke_returns->front().type = Kind::UserInput; break;
+            case 3:
+                step.invoke_returns->front().invoke_return->query.id = "different";
+                break;
+            case 4: step.invoke_returns.reset(); break;
+            case 5: step.model_response.invokes->push_back(call); break;
+            case 6: step.model_response.invokes->front().name.clear(); break;
+        }
+        const auto original = nlohmann::json(f.state);
+        const auto result = f.run(false);
+        BOOST_CHECK(result.status == loop::RunStatus::Failed);
+        BOOST_CHECK(!result.error.empty());
+        BOOST_CHECK(nlohmann::json(f.state) == original);
+        BOOST_CHECK_EQUAL(f.set->tool->count, 0);
+        BOOST_CHECK_EQUAL(f.model.exchanges, 0);
+    }
+}
+
+/** Projection metadata must correspond to the unanswered final call. */
+BOOST_AUTO_TEST_CASE(imported_projection_identity_mismatch_keeps_results) {
+    Fixture f;
+    f.model.integrate(f.state, input());
+    Item response;
+    response.type = Kind::ModelResponse;
+    model_io::InvokeQuery call;
+    call.id = "existing-call";
+    call.name = "effect";
+    response.invokes = std::vector{call};
+    f.model.integrate(f.state, response);
+    f.state.loop = model_io::LoopProgress{};
+    f.state.loop->phase = model_io::LoopPhase::Projection;
+    model_io::InvokeReturn pending;
+    pending.query = call;
+    pending.query.id = "wrong-call";
+    f.state.loop->pending_results.push_back(pending);
+    const auto original = nlohmann::json(f.state);
+
+    const auto result = f.run(false);
+    BOOST_CHECK(result.status == loop::RunStatus::Failed);
+    BOOST_CHECK(result.error.find("identity mismatch") != std::string::npos);
+    BOOST_CHECK(nlohmann::json(f.state) == original);
     BOOST_CHECK_EQUAL(f.set->tool->count, 0);
 }
 
@@ -396,11 +494,21 @@ BOOST_AUTO_TEST_CASE(old_json_and_blocked_recovery) {
     BOOST_CHECK(!json.contains("loop"));
     f.state = json.get<State>();
     f.state.loop = model_io::LoopProgress{};
-    f.state.loop->phase = model_io::LoopPhase::Tools;
-    const auto original = nlohmann::json(f.state);
-    BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
-    BOOST_CHECK(nlohmann::json(f.state) == original);
-    BOOST_CHECK_EQUAL(f.set->tool->count, 0);
+    for (const auto phase : {model_io::LoopPhase::Tools,
+                             model_io::LoopPhase::Blocked}) {
+        f.state.loop->phase = phase;
+        const auto original = nlohmann::json(f.state);
+        try {
+            (void)f.run();
+            BOOST_FAIL("uncertain tool effects must require host intervention");
+        } catch (const loop::RecoveryRequired& error) {
+            BOOST_CHECK(error.phase() == phase);
+            BOOST_CHECK(std::string(error.what()).find("inspection") !=
+                        std::string::npos);
+        }
+        BOOST_CHECK(nlohmann::json(f.state) == original);
+        BOOST_CHECK_EQUAL(f.set->tool->count, 0);
+    }
 }
 
 /**
@@ -676,7 +784,7 @@ BOOST_AUTO_TEST_CASE(state_edit_rejection_preserves_committed_tool_results) {
 }
 
 /** Stop and budget exhaustion still allow settled results to be compacted. */
-BOOST_AUTO_TEST_CASE(state_hooks_run_at_stop_and_step_limit_boundaries) {
+BOOST_AUTO_TEST_CASE(state_hooks_run_at_stop_and_exchange_limit_boundaries) {
     for (bool cancel : {false, true}) {
         Fixture f;
         std::stop_source source;
@@ -689,7 +797,7 @@ BOOST_AUTO_TEST_CASE(state_hooks_run_at_stop_and_step_limit_boundaries) {
             }
         });
         int finishes = 0;
-        const auto expected = cancel ? loop::RunStatus::Cancelled : loop::RunStatus::StepLimit;
+        const auto expected = cancel ? loop::RunStatus::Cancelled : loop::RunStatus::ExchangeLimit;
         auto finish = f.bus.subscribe<loop::EditOnRunFinished>([&](const auto& event) {
             ++finishes;
             BOOST_CHECK(event.result.status == expected);

@@ -41,7 +41,7 @@ struct Options {
     bool yes = false;
     bool reasoning = false;
     bool help = false;
-    std::size_t max_steps = 12;
+    std::size_t max_exchanges = 12;
     std::string effort = "high";
     std::string log = "/tmp/loop-deepseek-chat.log";
 };
@@ -50,7 +50,7 @@ struct Options {
 void usage() {
     std::cout <<
         "loop_deepseek_chat [--tools] [--skill] [--list-models] [--yes]\n"
-        "  [--max-steps N] [--reasoning] [--effort high] [--log PATH]\n"
+        "  [--max-exchanges N] [--reasoning] [--effort high] [--log PATH]\n"
         "Environment: DEEPSEEK_API_KEY, DEEPSEEK_MODEL (default deepseek-v4-flash),\n"
         "  DEEPSEEK_BASE_URL (optional compatible endpoint).\n"
         "Commands: /tools /skill /sessions /state /continue /help /quit\n"
@@ -78,12 +78,14 @@ Options parse(int argc, char** argv) {
         else if (flag == "--help" || flag == "-h") options.help = true;
         else if (flag == "--effort") options.effort = value();
         else if (flag == "--log") options.log = value();
-        else if (flag == "--max-steps" || flag.starts_with("--max-steps=")) {
-            const auto text = flag == "--max-steps" ? value() : flag.substr(12);
+        else if (flag == "--max-exchanges" || flag.starts_with("--max-exchanges=")) {
+            const auto text = flag == "--max-exchanges"
+                ? value()
+                : flag.substr(std::string_view("--max-exchanges=").size());
             const auto [end, error] = std::from_chars(
-                text.data(), text.data() + text.size(), options.max_steps);
-            if (error != std::errc{} || end != text.data() + text.size() || options.max_steps == 0) {
-                throw std::invalid_argument("--max-steps requires a positive integer");
+                text.data(), text.data() + text.size(), options.max_exchanges);
+            if (error != std::errc{} || end != text.data() + text.size() || options.max_exchanges == 0) {
+                throw std::invalid_argument("--max-exchanges requires a positive integer");
             }
         } else {
             throw std::invalid_argument("unknown option: " + flag);
@@ -266,7 +268,7 @@ const char* status_name(loop::RunStatus status) {
     switch (status) {
         case loop::RunStatus::Completed: return "completed";
         case loop::RunStatus::Cancelled: return "cancelled";
-        case loop::RunStatus::StepLimit: return "step limit";
+        case loop::RunStatus::ExchangeLimit: return "exchange limit";
         case loop::RunStatus::Failed: return "failed";
     }
     return "unknown";
@@ -385,14 +387,19 @@ asio::awaitable<void> chat(
             try {
                 const auto result = co_await loop::run(
                     *model, registry, events, io.get_executor(), state, has_message,
-                    std::move(message), {options.max_steps}, control->active->get_token());
+                    std::move(message), {options.max_exchanges}, control->active->get_token());
                 if (!result.error.empty()) {
                     block(std::cout, "Continuation", "History retained. Inspect /state and /sessions; "
                           "use /continue to retry only when recovery permits.\n" + result.error);
                 }
-                if (result.status == loop::RunStatus::StepLimit) {
+                if (result.status == loop::RunStatus::ExchangeLimit) {
                     std::cout << "Budget exhausted; /continue resumes without adding user input.\n";
                 }
+            } catch (const loop::RecoveryRequired& error) {
+                const auto phase = nlohmann::json(error.phase()).get<std::string>();
+                block(std::cout, "Recovery required",
+                      "phase=" + phase + "; inspect /state and /sessions before "
+                      "deciding how to resume. " + error.what());
             } catch (const std::exception& error) {
                 block(std::cout, "Host exception", error.what());
             }

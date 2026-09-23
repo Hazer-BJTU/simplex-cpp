@@ -119,7 +119,7 @@ struct EditOnStepFinished {
  * Edits the live state after terminal bookkeeping and before RunFinished.
  *
  * Runs once for every admitted invocation, including Failed, Cancelled and
- * StepLimit. Rejected inputs and entry-time recovery failures do not publish it.
+ * ExchangeLimit. Rejected inputs and entry-time recovery failures do not publish it.
  * Uses the EditOnStepFinished edit/rollback contract. Applications include final
  * history compaction and updating host summaries or persistence metadata.
  * result is read-only and describes the outcome before this hook; editing state
@@ -135,10 +135,10 @@ struct EditOnRunFinished {
 };
 
 /**
- * Observes the saved terminal state and its corresponding return summary.
- * A throwing subscriber changes the final state/result to Failed. The event is
- * not broadcast again, so earlier subscribers must consult the final state or
- * return value when they need the outcome of finish notification itself.
+ * Observes the final, immutable outcome after EditOnRunFinished has completed.
+ * A throwing subscriber stops this event's remaining subscribers and is logged;
+ * it cannot change the already-final RunResult or state.loop. Persistence hooks
+ * can therefore rely on the status they observe during their callback.
  */
 struct RunFinished {
     const model_io::AgentInputState& state;

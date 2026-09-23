@@ -4,6 +4,8 @@
 
 #include <boost/asio/any_io_executor.hpp>
 
+#include <stdexcept>
+#include <string>
 
 namespace llm {
 class LLMModel;
@@ -23,17 +25,36 @@ namespace loop {
 enum class RunStatus {
     Completed, // A final model response was committed without tool calls.
     Cancelled, // A stop request was observed and required results were committed.
-    StepLimit, // The exchange budget ended after settling the last tool batch.
+    ExchangeLimit, // The exchange budget ended after settling the last tool batch.
     Failed     // Inspect error and state.loop before deciding how to continue.
 };
 
 /**
- * Summary returned to the caller after a run, including failures in finish hooks.
+ * Admission is refused because earlier tool effects cannot be replayed safely.
+ *
+ * The caller receives the original Tools or Blocked phase and decides how to
+ * inspect or repair the persistent state. run() does not change that state or
+ * convert this condition into an ordinary Failed result.
+ */
+class RecoveryRequired : public std::runtime_error {
+public:
+    RecoveryRequired(model_io::LoopPhase phase, std::string message);
+    ~RecoveryRequired() override;
+
+    [[nodiscard]] model_io::LoopPhase phase() const noexcept { return phase_; }
+
+private:
+    model_io::LoopPhase phase_;
+};
+
+/**
+ * Summary returned to the caller after a run, including edit-hook failures.
  *
  * This is not a second persistence object. Accepted runs write their status and
  * error into AgentInputState::loop before returning. Failures before admission
  * do not create a new progress record; their diagnostic is available only here
- * and in logging. Recovery may already have committed previously buffered results.
+ * and in logging. RecoveryRequired is a distinct exception, not a RunResult.
+ * Recovery may already have committed previously buffered results.
  */
 struct RunResult {
     RunStatus status = RunStatus::Failed;

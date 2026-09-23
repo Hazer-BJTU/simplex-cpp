@@ -84,7 +84,7 @@ def scenario(mode):
                        DEEPSEEK_BASE_URL=f'http://127.0.0.1:{server.server_port}')
             args = [binary, '--log', str(Path(directory) / 'errors.log'), '--reasoning']
             if mode == 'continue':
-                args += ['--yes', '--max-steps', '1']
+                args += ['--yes', '--max-exchanges', '1']
             process = subprocess.Popen(args, env=env, stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if mode == 'cancel':
@@ -101,7 +101,7 @@ def scenario(mode):
                 assert 'fixture-final-answer' in output, output
                 assert len(requests) == 2, len(requests)
                 if mode == 'continue':
-                    assert 'Run step limit' in output and 'Run completed' in output, output
+                    assert 'Run exchange limit' in output and 'Run completed' in output, output
                     assert 'stdout (' in output and 'stderr (' in output, output
                     assert '\\x1b[31mstderr-marker' in output and '\x1b' not in output, output
                 else:

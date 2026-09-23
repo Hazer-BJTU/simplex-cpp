@@ -963,7 +963,7 @@ BOOST_AUTO_TEST_CASE(loop_progress_enum_roundtrip) {
         LoopStatus::Running,
         LoopStatus::Completed,
         LoopStatus::Cancelled,
-        LoopStatus::StepLimit,
+        LoopStatus::ExchangeLimit,
         LoopStatus::Failed
     };
     const std::vector<LoopPhase> phases = {
@@ -992,10 +992,10 @@ BOOST_AUTO_TEST_CASE(loop_progress_enum_roundtrip) {
     }
 
     auto saved = defaults;
-    saved["status"] = "step_limit";
+    saved["status"] = "exchange_limit";
     saved["phase"] = "projection";
     const auto restored = saved.get<LoopProgress>();
-    BOOST_CHECK(restored.status == LoopStatus::StepLimit);
+    BOOST_CHECK(restored.status == LoopStatus::ExchangeLimit);
     BOOST_CHECK(restored.phase == LoopPhase::Projection);
 }
 
