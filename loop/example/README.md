@@ -47,4 +47,4 @@ REPL：`/tools`、`/skill`、`/sessions`、`/state`、`/continue`、`/help`、`/
 5. 在模型等待期间 Ctrl-C，再 `/state` 和 `/continue`：应显示 cancelled/ready 并安全继续。
 6. 请求输出带 ANSI 颜色和 CR 的内容：终端显示转义文本，不能覆盖提示。
 
-镜像构建运行离线测试。`loop_example_container_smoke` 用本地 HTTP/SSE 服务和虚拟密钥验证真实插件、process 调用、预算后继续、拒绝及 Ctrl-C；不访问外部 provider。该测试在 Docker 之外自动跳过。真实 DeepSeek 交互由操作者在容器里完成。
+镜像构建运行离线测试。`loop_example_container_smoke` 用本地 HTTP/SSE 服务和虚拟密钥验证真实插件、process 调用、预算后继续、拒绝及 Ctrl-C；不访问外部 provider。CTest 在运行时查找 Python 3；不在 Docker 内或没有 Python 3 时自动跳过，因此跨发行版运行已打包的测试树不会依赖构建镜像的解释器路径。真实 DeepSeek 交互由操作者在容器里完成。

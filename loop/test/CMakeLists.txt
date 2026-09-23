@@ -18,11 +18,12 @@ target_link_libraries(test_loop_example_terminal PRIVATE Boost::unit_test_framew
 add_test(NAME test_loop_example_terminal COMMAND test_loop_example_terminal)
 
 # The fake provider launches real process tools: execute only in a container.
-find_package(Python3 COMPONENTS Interpreter QUIET)
-if(Python3_Interpreter_FOUND)
-    add_test(NAME loop_example_container_smoke
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_example_container.py
-                $<TARGET_FILE:loop_deepseek_chat>)
-    set_tests_properties(loop_example_container_smoke PROPERTIES
-        TIMEOUT 45 SKIP_RETURN_CODE 77)
-endif()
+# Resolve Python when CTest runs, not when CMake configures: the portable build
+# tree is also tested on older distros where the build image's /usr/bin/python3.9
+# does not exist. The launcher returns 77 when Python or Docker is absent.
+add_test(NAME loop_example_container_smoke
+    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/run_example_container_smoke.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_example_container.py
+            $<TARGET_FILE:loop_deepseek_chat>)
+set_tests_properties(loop_example_container_smoke PROPERTIES
+    TIMEOUT 45 SKIP_RETURN_CODE 77)
