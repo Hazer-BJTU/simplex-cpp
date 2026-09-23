@@ -205,7 +205,7 @@ BOOST_AUTO_TEST_CASE(normal_cycle_and_event_order) {
         events.push_back("results");
     });
     auto h = f.bus.subscribe<loop::RunFinished>([&](const auto& event) {
-        BOOST_CHECK_EQUAL(event.state.loop->status, "completed");
+        BOOST_CHECK(event.state.loop->status == model_io::LoopStatus::Completed);
         events.push_back("end");
     });
     auto result = f.run();
@@ -258,7 +258,7 @@ BOOST_AUTO_TEST_CASE(projection_failure_roundtrips_and_recovers_without_reexecut
     Fixture f;
     f.model.fail_projection = true;
     BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
-    BOOST_CHECK_EQUAL(f.state.loop->phase, "projection");
+    BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Projection);
     BOOST_REQUIRE_EQUAL(f.state.loop->pending_results.size(), 1u);
     BOOST_CHECK(!f.state.turns[0].agent_loop_step[0].invoke_returns);
     f.state = nlohmann::json(f.state).get<State>();
@@ -278,7 +278,7 @@ BOOST_AUTO_TEST_CASE(stop_during_tool_drains_and_commits) {
     BOOST_CHECK(f.run(true, input(), 5, source.get_token()).status == loop::RunStatus::Cancelled);
     BOOST_CHECK_EQUAL(f.model.exchanges, 1);
     BOOST_CHECK_EQUAL(f.set->tool->count, 1);
-    BOOST_CHECK_EQUAL(f.state.loop->phase, "ready");
+    BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Ready);
     BOOST_REQUIRE(f.state.turns[0].agent_loop_step[0].invoke_returns);
 }
 
@@ -396,7 +396,7 @@ BOOST_AUTO_TEST_CASE(old_json_and_blocked_recovery) {
     BOOST_CHECK(!json.contains("loop"));
     f.state = json.get<State>();
     f.state.loop = model_io::LoopProgress{};
-    f.state.loop->phase = "tools";
+    f.state.loop->phase = model_io::LoopPhase::Tools;
     const auto original = nlohmann::json(f.state);
     BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
     BOOST_CHECK(nlohmann::json(f.state) == original);
@@ -465,7 +465,7 @@ BOOST_AUTO_TEST_CASE(stop_interrupts_suspended_model_and_allows_continuation) {
     BOOST_CHECK(model.unwound);
     BOOST_CHECK_EQUAL(state.turns.size(), 1u);
     BOOST_CHECK(state.turns[0].agent_loop_step.empty());
-    BOOST_CHECK_EQUAL(state.loop->phase, "ready");
+    BOOST_CHECK(state.loop->phase == model_io::LoopPhase::Ready);
 
     model.suspend = false;
     io.restart();

@@ -34,9 +34,34 @@ auto result = co_await loop::run(
 
 所有 `model.integrate()` 都在候选状态上执行，成功后以不抛异常的 move assignment 提交。工具返回的完整结果先移动到 `state.loop.pending_results`，再统一整合至候选对话；投影失败不会产生半份工具消息，下一次 run 先补写这些结果，再接收新输入或继续请求模型。此缓冲只存放尚未提交的结果，成功后清空，不保留第二份执行历史。
 
-phase 取值为 ready、model、tools、projection、blocked。恢复时，tools/blocked 表示工具结果不确定，拒绝自动执行。projection 必须带有待提交结果；验证所有工具调用与结果的数量、顺序、id/name 匹配后才能继续。外部导入的未回答调用同样拒绝自动重放。调用方不得篡改历史或恢复标记。
+`LoopProgress::status` 使用 `model_io::LoopStatus` 枚举（Idle、Running、Completed、Cancelled、StepLimit、Failed），`phase` 使用 `model_io::LoopPhase` 枚举（Ready、Model、Tools、Projection、Blocked）。JSON 保持原有小写名称（如 `step_limit`、`projection`），未知名称或错误类型在反序列化时抛出异常。恢复时，tools/blocked 表示工具结果不确定，拒绝自动执行。projection 必须带有待提交结果；验证所有工具调用与结果的数量、顺序、id/name 匹配后才能继续。外部导入的未回答调用同样拒绝自动重放。调用方不得篡改历史或恢复标记。
 
 这是正常进程存续期间的恢复协议，不是写前日志：宿主负责何时保存 dataclass，不能承诺任意崩溃、断电或内存耗尽后都能恢复已发生的副作用。工具未报告的外部细节也无法由 loop 推断。
+
+## 异常处理
+
+`run()` 把运行主体中的异常转换为 `RunResult`，调用方通常检查 `result.status` 和 `result.error`。异常处理分为三层：
+
+1. `converse_interruptibly()` 等待模型协程退出，异常时关闭本次取消桥接并原样重抛，不在这里判断失败原因。
+2. 模型等待位置只识别取消：必须同时满足 `stop.stop_requested()` 和 `boost::system::system_error` 的错误码为 `operation_aborted`，才返回 `Cancelled`。单独出现任一条件都不足以认定取消。
+3. 运行主体的外层 `catch (...)` 接收其余异常，包括参数校验、恢复、模型调用、历史整合、registry 分发以及同步钩子的失败，将结果设为 `Failed` 并记录日志。`std::exception` 使用 `what()` 作为诊断，其他异常使用 `unknown exception`。
+
+内置 Chat Completions 和 Responses 适配器调用 `endpoint::complete`。传输取消会转换为 `operation_aborted`；不可重试的 HTTP 错误或重试耗尽则原样抛出 `HttpRequestException`，由第三层处理。协议层 API 异常也走第三层。loop 不自行重试模型请求，也不会仅因为同时收到停止请求就把独立错误改报为取消。工具通过返回值报告的错误仍是工具结果，不自动导致整个 loop 失败；registry 向外抛出的异常才进入 loop 的失败路径。
+
+失败后的状态取决于发生位置：
+
+| 位置 | 状态与后续行为 |
+|---|---|
+| 接纳运行前的校验或恢复 | 返回 `Failed`，不创建新的进度记录，不发布 `RunFinished`；此前成功恢复的旧结果可能已经提交 |
+| 模型请求 | 不提交失败请求的部分响应，`phase` 从 `Model` 恢复为 `Ready` |
+| 工具阶段未能取得并保存完整结果 | `phase` 从 `Tools` 改为 `Blocked`，拒绝自动重放，已发生的外部副作用不回滚 |
+| 工具结果投影 | 保留 `Projection` 和完整 `pending_results`，后续只重试投影 |
+| 同步钩子 | 按下节所述保留已提交数据；需要时先补齐未执行工具结果，再结束运行 |
+| `RunFinished` | 更新返回值及持久化状态为 `Failed`，追加诊断，不再次发布结束事件 |
+
+运行已接纳时，loop 在发布 `RunFinished` 前保存终态和错误。`Failed` 表示本次运行失败，不表示整个输入、对话历史或外部工具副作用已回滚。
+
+`run()` **不是 `noexcept` 边界**：参数或协程帧构造、协程初始化，以及生成诊断、写入终态或记录日志时的二次异常仍可能向调用方传播。宿主在等待 `run()` 时仍需保留最外层异常处理；不能把“未正常返回”当作可以自动重跑工具的依据。
 
 ## 同步钩子
 

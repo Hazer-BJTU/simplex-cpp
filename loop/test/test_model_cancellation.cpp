@@ -85,7 +85,7 @@ void interrupt_http_exchange(bool send_headers) {
     server.get();
     BOOST_CHECK(result.get().status == loop::RunStatus::Cancelled);
     BOOST_CHECK(disconnected);
-    BOOST_CHECK_EQUAL(state.loop->status, "cancelled");
+    BOOST_CHECK(state.loop->status == model_io::LoopStatus::Cancelled);
     BOOST_CHECK(state.turns.back().agent_loop_step.empty());
     // A retry would leave another client waiting for this unaccepted connection.
     BOOST_CHECK(io.stopped());

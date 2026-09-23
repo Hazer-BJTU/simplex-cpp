@@ -39,9 +39,31 @@ namespace loop {
  * can be recovered without repeating tools. Partial model responses are not
  * integrated when converse() ends with cancellation.
  *
- * Expected model cancellation returns Cancelled; unrelated failures stay Failed.
- * Ordinary errors are logged and recorded. Inherited cancellation of the outer
- * coroutine is shielded to protect tool batches: use the explicit stop token.
+ * Exception handling:
+ * - The model-wait catch recognizes cancellation only when stop is requested
+ *   AND converse() throws boost::system::system_error(operation_aborted).
+ *   HTTP retry exhaustion, provider errors and other exceptions instead reach
+ *   the outer run-body catch, even if a stop request arrives at the same time.
+ * - The outer catch converts validation, recovery, model, integration, registry
+ *   and hook exceptions into Failed. std::exception::what() supplies the
+ *   diagnostic; other exception types use "unknown exception". The loop does
+ *   not retry converse() itself; transport retry belongs to the model adapter.
+ * - Before admission, failure is reported in RunResult and logging without a
+ *   new progress record or RunFinished event. Recovery may already have
+ *   committed previously buffered results before admission is reached.
+ * - After admission, failures preserve committed history. Model becomes Ready;
+ *   unsettled Tools becomes Blocked; Projection retains pending_results for
+ *   recovery. The terminal status/error are saved before RunFinished is sent.
+ * - RunFinished exceptions change the outcome to Failed and append a diagnostic.
+ *   The event is not sent again, and committed data is not rolled back.
+ *
+ * This is not a noexcept boundary. Argument/frame construction, coroutine setup,
+ * and secondary failures while allocating diagnostics, saving the terminal
+ * state or logging may still propagate to the caller. A returned Failed result
+ * does not imply that prior commits or external tool effects were undone.
+ *
+ * Inherited cancellation of the outer coroutine is shielded to protect tool
+ * batches: use the explicit stop token.
  * Stopping the executor or destroying dependencies is not safe cancellation.
  * A provider that ignores cancellation cannot be forcibly interrupted safely.
  */

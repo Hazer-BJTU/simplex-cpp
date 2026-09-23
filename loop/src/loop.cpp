@@ -20,6 +20,9 @@ namespace loop {
 
 namespace {
 
+using model_io::LoopPhase;
+using model_io::LoopStatus;
+
 using State = model_io::AgentInputState;
 using Item = model_io::MessageItem;
 using Kind = model_io::MessageItemType;
@@ -118,7 +121,7 @@ void project(llm::LLMModel& model, State& state) {
     }
     validate_history(draft);
     draft.loop->pending_results.clear();
-    draft.loop->phase = "ready";
+    draft.loop->phase = LoopPhase::Ready;
     state = std::move(draft);
 }
 
@@ -159,6 +162,10 @@ struct ExchangeCancellation {
  * model's initiation code or a stop requested from inside a model callback.
  * The strand serializes notification with every exchange continuation, including
  * when the host runs its io_context on several threads.
+ *
+ * This helper does not classify model failures: its catch-all disables delayed
+ * stop notifications and rethrows the original exception. run() distinguishes
+ * cooperative cancellation from failures after joining the exchange.
  */
 boost::asio::awaitable<Item> converse_interruptibly(
     llm::LLMModel& model,
@@ -199,20 +206,20 @@ boost::asio::awaitable<Item> converse_interruptibly(
             cancellation->signal.slot(), boost::asio::use_awaitable));
 }
 
-/** Maps the return status to the stable text stored in LoopProgress::status. */
-const char* status_text(RunStatus status) {
+/** Maps a terminal return status to the persisted invocation lifecycle. */
+LoopStatus progress_status(RunStatus status) {
     switch (status) {
         case RunStatus::Completed:
-            return "completed";
+            return LoopStatus::Completed;
         case RunStatus::Cancelled:
-            return "cancelled";
+            return LoopStatus::Cancelled;
         case RunStatus::StepLimit:
-            return "step_limit";
+            return LoopStatus::StepLimit;
         case RunStatus::Failed:
-            return "failed";
+            return LoopStatus::Failed;
     }
 
-    return "failed";
+    return LoopStatus::Failed;
 }
 } // namespace
 
@@ -259,18 +266,21 @@ boost::asio::awaitable<RunResult> run(
             co_return result;
         }
         if (state.loop &&
-            (state.loop->phase == "tools" || state.loop->phase == "blocked")) {
+            (state.loop->phase == LoopPhase::Tools ||
+             state.loop->phase == LoopPhase::Blocked)) {
             throw std::logic_error("previous execution requires inspection");
         }
         if (state.loop) {
             const auto& phase = state.loop->phase;
-            if (phase != "ready" && phase != "model" && phase != "projection") {
+            if (phase != LoopPhase::Ready &&
+                phase != LoopPhase::Model &&
+                phase != LoopPhase::Projection) {
                 throw std::logic_error("unknown loop recovery phase");
             }
-            if (phase != "projection" && !state.loop->pending_results.empty()) {
+            if (phase != LoopPhase::Projection && !state.loop->pending_results.empty()) {
                 throw std::logic_error("pending results outside projection phase");
             }
-            if (phase == "projection") {
+            if (phase == LoopPhase::Projection) {
                 if (state.loop->pending_results.empty()) {
                     throw std::logic_error("projection phase has no results");
                 }
@@ -286,7 +296,7 @@ boost::asio::awaitable<RunResult> run(
 
         // Admission establishes the lifecycle observed by synchronous hooks.
         state.loop = model_io::LoopProgress{};
-        state.loop->status = "running";
+        state.loop->status = LoopStatus::Running;
         admitted = true;
         events.publish(RunStarted{state});
         if (has_message) {
@@ -326,14 +336,18 @@ boost::asio::awaitable<RunResult> run(
             state = std::move(draft);
 
             // Commit a complete model response before considering its calls.
-            state.loop->phase = "model";
+            state.loop->phase = LoopPhase::Model;
             Item response;
             try {
                 response = co_await converse_interruptibly(model, state, executor, stop);
             } catch (const boost::system::system_error& error) {
+                // Cancellation classification only, not the general error boundary.
+                // Built-in adapters normalize Asio cancellation to operation_aborted;
+                // exhausted HTTP retries and provider errors reach the outer catch.
+                // A stop request alone must not hide an independent model failure.
                 if (stop.stop_requested() &&
                     error.code() == boost::asio::error::operation_aborted) {
-                    state.loop->phase = "ready";
+                    state.loop->phase = LoopPhase::Ready;
                     result.status = RunStatus::Cancelled;
                     break;
                 }
@@ -344,7 +358,7 @@ boost::asio::awaitable<RunResult> run(
             }
             validate_calls(response);
             integrate(model, state, response);
-            state.loop->phase = "ready";
+            state.loop->phase = LoopPhase::Ready;
             state.loop->completed_exchanges = ++result.completed_exchanges;
             const bool has_calls = response.invokes && !response.invokes->empty();
             std::string hook_error;
@@ -360,7 +374,7 @@ boost::asio::awaitable<RunResult> run(
             if (has_calls) {
                 // Mark before dispatch: an exceptional return is uncertain,
                 // never grounds for replay. Preserve results BEFORE projection.
-                state.loop->phase = "tools";
+                state.loop->phase = LoopPhase::Tools;
                 std::vector<model_io::InvokeReturn> records;
                 if (stop.stop_requested() || !hook_error.empty()) {
                     records = skipped(*response.invokes);
@@ -371,7 +385,7 @@ boost::asio::awaitable<RunResult> run(
                 }
 
                 state.loop->pending_results = std::move(records);
-                state.loop->phase = "projection";
+                state.loop->phase = LoopPhase::Projection;
                 project(model, state);
                 // A primary hook error survives closure of its unanswered calls.
                 if (!hook_error.empty()) {
@@ -394,6 +408,10 @@ boost::asio::awaitable<RunResult> run(
             }
         }
     } catch (...) {
+        // General run-body boundary, including exceptions not handled by the
+        // model-wait catch (HTTP failures, provider errors and hook failures).
+        // Preserve committed data; recovery markers are settled below. Diagnostic
+        // allocation and logging here may themselves throw: run is not noexcept.
         result.status = RunStatus::Failed;
         result.error = error_text();
         logging::Logger::error("loop failed: {}", result.error);
@@ -401,14 +419,14 @@ boost::asio::awaitable<RunResult> run(
 
     // Preserve the terminal state before notification, even on hook failure.
     if (admitted) {
-        if (state.loop->phase == "tools") {
-            state.loop->phase = "blocked";
+        if (state.loop->phase == LoopPhase::Tools) {
+            state.loop->phase = LoopPhase::Blocked;
         }
-        if (state.loop->phase == "model") {
-            state.loop->phase = "ready";
+        if (state.loop->phase == LoopPhase::Model) {
+            state.loop->phase = LoopPhase::Ready;
         }
 
-        state.loop->status = status_text(result.status);
+        state.loop->status = progress_status(result.status);
         state.loop->error = result.error;
         try {
             events.publish(RunFinished{state, result});
@@ -417,7 +435,7 @@ boost::asio::awaitable<RunResult> run(
             const auto error = error_text();
             result.error += (result.error.empty() ? "" : "; ") +
                 std::string("RunFinished: ") + error;
-            state.loop->status = "failed";
+            state.loop->status = LoopStatus::Failed;
             state.loop->error = result.error;
             logging::Logger::error("loop finish hook failed: {}", error);
         }

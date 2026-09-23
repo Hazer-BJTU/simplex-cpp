@@ -31,8 +31,9 @@ enum class RunStatus {
  * Summary returned to the caller after a run, including failures in finish hooks.
  *
  * This is not a second persistence object. Accepted runs write their status and
- * error into AgentInputState::loop before returning. Rejected requests leave
- * that state unchanged, so their failure is available only here and in logging.
+ * error into AgentInputState::loop before returning. Failures before admission
+ * do not create a new progress record; their diagnostic is available only here
+ * and in logging. Recovery may already have committed previously buffered results.
  */
 struct RunResult {
     RunStatus status = RunStatus::Failed;
