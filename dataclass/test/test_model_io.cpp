@@ -461,6 +461,9 @@ BOOST_AUTO_TEST_CASE(json_null_under_optional_keys_reads_as_absent) {
         {"extras", nullptr},
     };
     AgentLoopStep s = step.get<AgentLoopStep>();
+    BOOST_CHECK_EQUAL(s.commit_sequence, 0u);
+    s.commit_sequence = 9;
+    BOOST_CHECK_EQUAL(roundtrip(s).commit_sequence, 9u);
     BOOST_CHECK(!s.invoke_returns.has_value());
     BOOST_CHECK(!s.extras.has_value());
     BOOST_CHECK(!s.model_response.reasoning.has_value());
@@ -980,6 +983,9 @@ BOOST_AUTO_TEST_CASE(loop_progress_enum_roundtrip) {
     const nlohmann::json defaults = progress;
     BOOST_CHECK_EQUAL(defaults.at("status"), "idle");
     BOOST_CHECK_EQUAL(defaults.at("phase"), "ready");
+    BOOST_CHECK_EQUAL(defaults.at("committed_response_sequence"), 0u);
+    progress.committed_response_sequence = 42;
+    BOOST_CHECK_EQUAL(roundtrip(progress).committed_response_sequence, 42u);
 
     for (const auto status : statuses) {
         for (const auto phase : phases) {
@@ -997,6 +1003,8 @@ BOOST_AUTO_TEST_CASE(loop_progress_enum_roundtrip) {
     const auto restored = saved.get<LoopProgress>();
     BOOST_CHECK(restored.status == LoopStatus::ExchangeLimit);
     BOOST_CHECK(restored.phase == LoopPhase::Projection);
+    saved.erase("committed_response_sequence");
+    BOOST_CHECK_EQUAL(saved.get<LoopProgress>().committed_response_sequence, 0u);
 }
 
 BOOST_AUTO_TEST_CASE(loop_progress_rejects_invalid_enum_names_and_types) {

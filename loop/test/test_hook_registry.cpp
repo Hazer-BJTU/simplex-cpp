@@ -28,10 +28,12 @@ public:
 protected:
     Subscriptions subscribe(eventbus::EventBus& bus) override {
         Subscriptions subscriptions;
-        subscriptions.emplace_back(bus.subscribe<loop::BeforeInput>(
-            [this](const loop::BeforeInput&) {
-                calls_.push_back(name_);
-            }));
+        eventbus::EventBus::ScopedSubscription owned{
+            bus.subscribe<loop::BeforeInput>(
+                [this](const loop::BeforeInput&) {
+                    calls_.push_back(name_);
+                })};
+        subscriptions.push_back(std::move(owned));
         if (fail_) {
             throw std::runtime_error("hook binding failed");
         }

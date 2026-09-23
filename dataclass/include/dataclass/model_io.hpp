@@ -455,6 +455,9 @@ struct AgentLoopStep {
     MessageItem model_response;
     std::optional<std::vector<MessageItem>> invoke_returns;
     std::optional<nlohmann::json> extras;
+    // Monotonic loop-owned commit identity. Zero denotes history written before
+    // the loop began assigning identities (or by a caller outside loop::run).
+    std::uint64_t commit_sequence = 0;
     // Trim preference — order in which this step is dropped to fit the budget.
     RetainPriority retain_priority = RetainPriority::Normal;
 };
@@ -464,6 +467,7 @@ inline void to_json(nlohmann::json& j, const AgentLoopStep& s) {
         {"model_response", s.model_response},
         {"retain_priority", s.retain_priority},
     };
+    if (s.commit_sequence != 0) j["commit_sequence"] = s.commit_sequence;
     if (s.invoke_returns) j["invoke_returns"] = *s.invoke_returns;
     if (s.extras) j["extras"] = *s.extras;
 }
@@ -473,6 +477,8 @@ inline void from_json(const nlohmann::json& j, AgentLoopStep& s) {
         it->get_to(s.model_response);
     detail::read_optional(j, "invoke_returns", s.invoke_returns);
     detail::read_optional(j, "extras", s.extras);
+    if (auto it = j.find("commit_sequence"); it != j.end())
+        it->get_to(s.commit_sequence);
     if (auto it = j.find("retain_priority"); it != j.end())
         it->get_to(s.retain_priority);
 }
@@ -637,6 +643,9 @@ inline void from_json(const nlohmann::json& j, MetaInfo& m) {
 //
 //   AgentInputState
 //   |
+//   +-- loop? : optional<LoopProgress>  host recovery state, including a
+//   |      persistent committed_response_sequence across run() invocations
+//   |
 //   +-- meta : MetaInfo
 //   |      Host-written session bookkeeping: identity (session_id),
 //   |      REQUIRED timestamps (created_at / updated_at), the record's
@@ -695,6 +704,8 @@ inline void from_json(const nlohmann::json& j, MetaInfo& m) {
 //   |                                  response produced (payload in content)
 //   |                            retain_priority : RetainPriority  trim
 //   |                                  preference under the token budget
+//   |                            commit_sequence : uint64_t  loop-assigned
+//   |                                  response identity; zero for legacy data
 //   |                            extras?         : optional<json>
 //   |        retain_priority : RetainPriority  Normal/Discardable/Pinned;
 //   |                          biases turn compaction (see file header)
@@ -932,6 +943,10 @@ struct LoopProgress {
     /// Model responses committed during the current or most recent invocation.
     std::size_t completed_exchanges = 0;
 
+    /// Monotonic committed response count across invocations, including
+    /// responses subsequently removed from conversation history.
+    std::uint64_t committed_response_sequence = 0;
+
     /// Loop-level failure diagnostic; tool-level errors remain in tool results.
     std::string error;
 
@@ -948,6 +963,7 @@ inline void to_json(nlohmann::json& j, const LoopProgress& p) {
         {"status", p.status},
         {"phase", p.phase},
         {"completed_exchanges", p.completed_exchanges},
+        {"committed_response_sequence", p.committed_response_sequence},
         {"error", p.error},
         {"pending_results", p.pending_results}
     };
@@ -963,6 +979,8 @@ inline void from_json(const nlohmann::json& j, LoopProgress& p) {
     j.at("status").get_to(p.status);
     j.at("phase").get_to(p.phase);
     j.at("completed_exchanges").get_to(p.completed_exchanges);
+    if (auto it = j.find("committed_response_sequence"); it != j.end())
+        it->get_to(p.committed_response_sequence);
     j.at("error").get_to(p.error);
     j.at("pending_results").get_to(p.pending_results);
 }

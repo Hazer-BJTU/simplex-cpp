@@ -92,12 +92,14 @@ public:
 protected:
     Subscriptions subscribe(eventbus::EventBus& bus) override {
         Subscriptions subscriptions;
-        subscriptions.emplace_back(bus.subscribe<loop::BeforeInput>(
-            [this](const loop::BeforeInput&) {
-                if (calls_ < limit_) {
-                    ++calls_;
-                }
-            }));
+        eventbus::EventBus::ScopedSubscription owned{
+            bus.subscribe<loop::BeforeInput>(
+                [this](const loop::BeforeInput&) {
+                    if (calls_ < limit_) {
+                        ++calls_;
+                    }
+                })};
+        subscriptions.push_back(std::move(owned));
         return subscriptions;
     }
 

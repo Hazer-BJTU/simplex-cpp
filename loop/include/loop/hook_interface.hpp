@@ -95,8 +95,17 @@ protected:
     /**
      * Register this hook's event callbacks and return all scoped connections.
      *
-     * Build the collection locally so a throw during registration disconnects
-     * subscriptions already made. Callbacks may capture this; the returned
+     * Adopt every new bus connection into a local ScopedSubscription before
+     * inserting it into the collection. A vector allocation can throw after
+     * subscribe() connects the callback; a raw Connection temporary would
+     * leave that callback attached to a potentially destroyed instance.
+     * For example:
+     *
+     *   eventbus::EventBus::ScopedSubscription owned{
+     *       bus.subscribe<MyEvent>([this](const MyEvent& event) { handle(event); })};
+     *   subscriptions.push_back(std::move(owned));
+     *
+     * Callbacks may capture this; the returned
      * LoopHookBinding keeps the instance alive until they are disconnected.
      * Do not retain the bus or the event payload in the hook.
      */

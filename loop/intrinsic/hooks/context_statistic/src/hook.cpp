@@ -13,7 +13,6 @@ namespace loop::intrinsic {
 namespace {
 
 using model_io::AgentInputState;
-using model_io::MessageItem;
 using model_io::TokenCost;
 using nlohmann::json;
 
@@ -76,6 +75,7 @@ json empty_status(std::uint64_t window) {
         {"average_cache_hit_probability", nullptr},
         {"sampled_exchange_count", 0},
         {"accounted_exchanges_in_run", 0},
+        {"accounted_commit_sequence", 0},
     };
     clear_last(status);
     return status;
@@ -120,14 +120,78 @@ void account(json& status, const std::optional<TokenCost>& cost,
         : json(static_cast<double>(hits) / static_cast<double>(prompt));
 }
 
+/** Initialize from retained history only when no prior statistics exist. */
 json bootstrap(const AgentInputState& state, std::uint64_t window) {
     json status = empty_status(window);
+    std::uint64_t checkpoint = 0;
     for (const auto& turn : state.turns) {
         for (const auto& step : turn.agent_loop_step) {
+            if (step.commit_sequence != 0) {
+                if (step.commit_sequence != add_checked(checkpoint, 1)) {
+                    throw std::logic_error("context statistic cannot bootstrap pruned response usage");
+                }
+                checkpoint = step.commit_sequence;
+            }
             account(status, step.model_response.cost, window);
         }
     }
+    const auto committed = state.loop
+        ? state.loop->committed_response_sequence : 0;
+    if (checkpoint != committed) {
+        throw std::logic_error("context statistic cannot bootstrap missing response usage");
+    }
+    status["accounted_commit_sequence"] = checkpoint;
     return status;
+}
+
+/** Advance the persisted checkpoint in commit order, with totals in one draft. */
+void reconcile(json& status, const AgentInputState& state, std::uint64_t window) {
+    std::uint64_t checkpoint = count(status, "accounted_commit_sequence");
+    const auto committed = state.loop
+        ? state.loop->committed_response_sequence : 0;
+    if (checkpoint > committed) {
+        throw std::logic_error("context statistic checkpoint exceeds committed responses");
+    }
+    for (const auto& turn : state.turns) {
+        for (const auto& step : turn.agent_loop_step) {
+            const auto sequence = step.commit_sequence;
+            if (sequence == 0 || sequence <= checkpoint) {
+                continue;
+            }
+            if (sequence != add_checked(checkpoint, 1)) {
+                throw std::logic_error("context statistic committed response accounting gap");
+            }
+            if (step.model_response.type != model_io::MessageItemType::ModelResponse) {
+                throw std::logic_error("context statistic expected a model response");
+            }
+            account(status, step.model_response.cost, window);
+            checkpoint = sequence;
+        }
+    }
+    if (checkpoint != committed) {
+        throw std::logic_error("context statistic response was pruned before accounting");
+    }
+    status["accounted_commit_sequence"] = checkpoint;
+}
+
+/** Prepare one candidate; callers refresh derived fields and publish it once. */
+json read_statistics(const AgentInputState& state,
+                     std::optional<json> existing,
+                     std::uint64_t window) {
+    if (!existing) {
+        return bootstrap(state, window);
+    }
+    json candidate = std::move(*existing);
+    const auto prompt = count(candidate, "cumulative_exchange_prompt_tokens");
+    const auto generated = count(candidate, "cumulative_exchange_generated_tokens");
+    const auto hits = count(candidate, "cumulative_exchange_cache_hit_tokens");
+    const auto total = count(candidate, "cumulative_exchange_total_tokens");
+    if (hits > prompt || add_checked(prompt, generated) != total) {
+        throw std::logic_error("context statistic has inconsistent cumulative usage");
+    }
+    (void)count(candidate, "sampled_exchange_count");
+    reconcile(candidate, state, window);
+    return candidate;
 }
 
 std::uint64_t estimated_zero_request_tokens(
@@ -163,6 +227,10 @@ void refresh_fixed_fields(json& status, const AgentInputState& state,
 ContextStatisticHook::ContextStatisticHook(HookConfig config)
     : IntrinsicLoopHook(std::move(config)),
       context_window_tokens_(0) {
+    if (this->config().name != kName) {
+        throw std::invalid_argument(
+            "ContextStatisticHook requires name 'context_statistic'");
+    }
     const json& options = this->config().config;
     if (options.size() != 1 || !options.contains("context_window_tokens")) {
         throw std::invalid_argument(
@@ -188,29 +256,34 @@ std::shared_ptr<ContextStatisticHook> ContextStatisticHook::from_config() {
 LoopHookInterface::Subscriptions ContextStatisticHook::subscribe(
     eventbus::EventBus& bus) {
     Subscriptions subscriptions;
-    subscriptions.emplace_back(bus.subscribe<BeforeModel>(
-        [this](const BeforeModel& event) { before_model(event); }));
-    subscriptions.emplace_back(bus.subscribe<EditOnStepFinished>(
-        [this](const EditOnStepFinished& event) { on_step_finished(event); }));
-    subscriptions.emplace_back(bus.subscribe<EditOnRunFinished>(
-        [this](const EditOnRunFinished& event) { on_run_finished(event); }));
+    eventbus::EventBus::ScopedSubscription before{
+        bus.subscribe<BeforeModel>(
+            [this](const BeforeModel& event) { before_model(event); })};
+    subscriptions.push_back(std::move(before));
+    eventbus::EventBus::ScopedSubscription step{
+        bus.subscribe<EditOnStepFinished>(
+            [this](const EditOnStepFinished& event) { on_step_finished(event); })};
+    subscriptions.push_back(std::move(step));
+    eventbus::EventBus::ScopedSubscription finish{
+        bus.subscribe<EditOnRunFinished>(
+            [this](const EditOnRunFinished& event) { on_run_finished(event); })};
+    subscriptions.push_back(std::move(finish));
     return subscriptions;
 }
 
 void ContextStatisticHook::before_model(const BeforeModel& event) const {
     AgentInputState candidate;
     candidate.extras = std::move(event.context.extras);
-    std::optional<json> existing = model_io::external_status(candidate, kSource);
-    json status = existing
-        ? std::move(*existing)
-        : bootstrap(event.state, context_window_tokens_);
+    json status = read_statistics(
+        event.state,
+        model_io::external_status(candidate, kSource),
+        context_window_tokens_);
     if (event.state.loop && event.state.loop->completed_exchanges == 0) {
         status["accounted_exchanges_in_run"] = 0;
     }
     status["context_window_tokens"] = context_window_tokens_;
-    status["estimated_zero_request_tokens"] =
-        estimated_zero_request_tokens(event.context.system_prompt,
-                                      event.context.tools);
+    status["estimated_zero_request_tokens"] = estimated_zero_request_tokens(
+        event.context.system_prompt, event.context.tools);
     refresh_last_ratio(status, context_window_tokens_);
     model_io::sync_external_status(candidate, kSource, std::move(status));
     event.context.extras = std::move(candidate.extras);
@@ -227,38 +300,12 @@ void ContextStatisticHook::on_run_finished(
 }
 
 void ContextStatisticHook::update(AgentInputState& state) const {
-    const std::uint64_t completed = state.loop
+    json status = read_statistics(
+        state,
+        model_io::external_status(state, kSource),
+        context_window_tokens_);
+    status["accounted_exchanges_in_run"] = state.loop
         ? state.loop->completed_exchanges : 0;
-    std::optional<json> existing = model_io::external_status(state, kSource);
-    if (!existing && completed != 0) {
-        throw std::logic_error("context statistic status missing after model request");
-    }
-    json status = existing
-        ? std::move(*existing)
-        : bootstrap(state, context_window_tokens_);
-    if (completed == 0) {
-        status["accounted_exchanges_in_run"] = 0;
-        refresh_fixed_fields(status, state, context_window_tokens_);
-        model_io::sync_external_status(state, kSource, std::move(status));
-        return;
-    }
-    const std::uint64_t accounted = count(status, "accounted_exchanges_in_run");
-    if (completed < accounted || completed - accounted > 1) {
-        throw std::logic_error("context statistic exchange boundary was missed");
-    }
-
-    if (completed == accounted + 1) {
-        if (state.turns.empty() || state.turns.back().agent_loop_step.empty()) {
-            throw std::logic_error("context statistic response was pruned before accounting");
-        }
-        const MessageItem& response =
-            state.turns.back().agent_loop_step.back().model_response;
-        if (response.type != model_io::MessageItemType::ModelResponse) {
-            throw std::logic_error("context statistic expected a model response");
-        }
-        account(status, response.cost, context_window_tokens_);
-        status["accounted_exchanges_in_run"] = completed;
-    }
     refresh_fixed_fields(status, state, context_window_tokens_);
     model_io::sync_external_status(state, kSource, std::move(status));
 }

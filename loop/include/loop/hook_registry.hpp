@@ -54,6 +54,12 @@ public:
      * The replacement binds before the old hook is disconnected, but no event
      * may be published concurrently with this operation. If binding throws,
      * the old hook remains subscribed and registered.
+     * Its callbacks append after every still-connected callback of the same
+     * event type. If another hook must run after this one (for example, a
+     * history-pruning hook after usage accounting), remove the dependent hooks
+     * at a serialized boundary, replace this one, then re-add the dependents.
+     * Keep owning pointers to them and restore the prior ordered set if a
+     * replacement or re-registration fails.
      */
     bool set(HookPtr hook);
 
@@ -75,7 +81,11 @@ public:
     /** Whether the registry has no hooks. */
     [[nodiscard]] bool empty() const noexcept;
 
-    /** Return all hooks in registration order as owning pointers. */
+    /**
+     * Return hooks in registry entry insertion order as owning pointers.
+     * set() retains an entry's position but appends its new callbacks to the
+     * bus; this enumeration does not describe current callback order.
+     */
     [[nodiscard]] std::vector<HookPtr> get_registered() const;
 
 private:

@@ -13,9 +13,11 @@ namespace loop::intrinsic {
  * Stateless context-usage hook over the persistent AgentInputState.
  *
  * The instance holds only the configured context-window length. Its statistics
- * and within-run accounting marker live in the flat external_status slot named
- * context_statistic, so JSON round-trips and history pruning do not reset
- * cumulative usage. See README.md for every field and its precise formula.
+ * and last-accounted commit checkpoint live in the flat external_status slot
+ * named context_statistic. The loop's durable response sequence lets this hook
+ * reconcile an edit-event rollback on a later run without counting a response
+ * twice. JSON round-trips and pruning of already-accounted history preserve
+ * cumulative usage. See README.md for field definitions.
  *
  * Register before hooks that prune steps in EditOnStepFinished or
  * EditOnRunFinished; the response being accounted must still be present at

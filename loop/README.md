@@ -26,7 +26,9 @@ auto result = co_await loop::run(
 
 ## 状态与恢复
 
-`AgentInputState` 是唯一可持久化状态。新增可选 `loop` 字段记录当前状态、阶段、交换计数、错误，以及结果提交失败时的 `pending_results`。该字段是宿主元数据，不是 provider 请求参数。新增字段改变 C++ 布局，模型插件 ABI 已升至 5；旧插件需要重编译。旧 JSON 不含此字段时仍可读取。`RunResult` 只是此次调用摘要，无须另行持久化。
+`AgentInputState` 是唯一可持久化状态。可选 `loop` 字段记录当前状态、阶段、交换计数、错误，以及结果提交失败时的 `pending_results`。该字段是宿主元数据，不是 provider 请求参数。新增提交序号改变了 C++ 布局，模型插件 ABI 已升至 6；旧插件需要重编译。旧 JSON 不含此字段时仍可读取。`RunResult` 只是此次调用摘要，无须另行持久化。
+
+每次模型响应提交还会在 `LoopProgress::committed_response_sequence` 上递增，并把序号写入该 `AgentLoopStep`。序号跨多次 `run()` 保留，即使旧步骤被裁剪也不会回退；旧 JSON 缺少序号时按零读取。需要累计统计的 hook 可把自己的已处理序号与累计值一起保存在 `external_status`，以便在编辑事件回滚后补账，并在未处理响应已被裁剪时识别缺口。
 
 正常流程是：输入提交 → 模型请求 → 响应提交 → registry 批次执行 → 结果提交 → 下一次请求。没有工具调用的模型响应表示完成。
 
@@ -77,6 +79,8 @@ auto result = co_await loop::run(
 `subscribe()` 应返回全部订阅句柄。底层 `LoopHookBinding` 同时持有插件
 实例和订阅句柄，销毁时先断开监听。绑定、解绑需与 `run()` 串行化，
 bus 必须比 registry 长寿。
+
+每次 `bus.subscribe()` 返回的连接应先交给局部 `ScopedSubscription`，再移入订阅容器；容器扩容也可能抛异常。直接把裸连接传给 `emplace_back()`，可能在扩容失败后留下指向已销毁插件的回调。`set()` 替换插件会把新回调排在现存回调之后；若回调之间有先后依赖，应在两次运行之间先移除后置插件，再替换并重新注册它们。
 
 ```cpp
 eventbus::EventBus bus;

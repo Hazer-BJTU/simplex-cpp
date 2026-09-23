@@ -2,13 +2,39 @@
 
 #include "loop/events.hpp"
 #include "loop/hook_interface.hpp"
+#include "loop/hook_registry.hpp"
 
 #include <boost/test/unit_test.hpp>
 
 #include <memory>
+#include <cstdlib>
+#include <new>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+
+namespace {
+thread_local bool fail_next_allocation = false;
+}
+
+void* operator new(std::size_t size) {
+    if (fail_next_allocation) {
+        fail_next_allocation = false;
+        throw std::bad_alloc();
+    }
+    if (void* pointer = std::malloc(size)) {
+        return pointer;
+    }
+    throw std::bad_alloc();
+}
+
+void operator delete(void* pointer) noexcept {
+    std::free(pointer);
+}
+
+void operator delete(void* pointer, std::size_t) noexcept {
+    std::free(pointer);
+}
 
 namespace {
 
@@ -25,11 +51,13 @@ public:
 protected:
     Subscriptions subscribe(eventbus::EventBus& bus) override {
         Subscriptions subscriptions;
-        subscriptions.emplace_back(bus.subscribe<loop::BeforeInput>(
-            [this](const loop::BeforeInput& event) {
-                ++calls_;
-                event.input.role = "user";
-            }));
+        eventbus::EventBus::ScopedSubscription owned{
+            bus.subscribe<loop::BeforeInput>(
+                [this](const loop::BeforeInput& event) {
+                    ++calls_;
+                    event.input.role = "user";
+                })};
+        subscriptions.push_back(std::move(owned));
         return subscriptions;
     }
 
@@ -47,9 +75,29 @@ public:
 protected:
     Subscriptions subscribe(eventbus::EventBus& bus) override {
         Subscriptions subscriptions;
-        subscriptions.emplace_back(bus.subscribe<loop::BeforeInput>(
-            [](const loop::BeforeInput&) {}));
+        eventbus::EventBus::ScopedSubscription owned{
+            bus.subscribe<loop::BeforeInput>(
+                [](const loop::BeforeInput&) {})};
+        subscriptions.push_back(std::move(owned));
         throw std::runtime_error("bind failed");
+    }
+};
+
+/** Fails the actual vector allocation after subscribe has connected a slot. */
+class InsertionFailureHook final : public loop::LoopHookInterface {
+public:
+    std::string_view name() const noexcept override {
+        return "insertion_failure";
+    }
+
+protected:
+    Subscriptions subscribe(eventbus::EventBus& bus) override {
+        Subscriptions subscriptions;
+        eventbus::EventBus::ScopedSubscription owned{
+            bus.subscribe<loop::BeforeInput>([](const loop::BeforeInput&) {})};
+        fail_next_allocation = true;
+        subscriptions.push_back(std::move(owned));
+        return subscriptions;
     }
 };
 
@@ -108,4 +156,20 @@ BOOST_AUTO_TEST_CASE(null_and_partial_bind_are_rejected_cleanly) {
             std::make_shared<FailingHook>(), bus);
     }()), std::runtime_error);
     BOOST_TEST(bus.subscriber_count<loop::BeforeInput>() == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(insertion_failure_disconnects_new_slot_and_keeps_existing) {
+    eventbus::EventBus bus;
+    loop::LoopHookRegistry registry(bus);
+    int calls = 0;
+    registry.add(std::make_shared<CountingHook>(calls));
+    BOOST_CHECK_THROW(([&] {
+        registry.add(std::make_shared<InsertionFailureHook>());
+    }()), std::bad_alloc);
+    BOOST_TEST(!fail_next_allocation);
+    BOOST_TEST(registry.size() == 1U);
+    BOOST_TEST(bus.subscriber_count<loop::BeforeInput>() == 1U);
+    model_io::MessageItem input;
+    bus.publish(loop::BeforeInput{input});
+    BOOST_TEST(calls == 1);
 }

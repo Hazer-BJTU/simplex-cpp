@@ -1,5 +1,5 @@
-# Shared YAML configuration core for built-in loop hooks. No hook is compiled
-# here yet; concrete packages link this library and install their own YAML.
+# Shared YAML configuration support; concrete hooks are separate targets
+# under hooks/ and install their own YAML files.
 add_library(loop_intrinsic SHARED src/hook_config.cpp)
 target_include_directories(loop_intrinsic PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")

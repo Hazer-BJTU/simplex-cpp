@@ -12,8 +12,10 @@
 #include <boost/asio/use_future.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -50,6 +52,7 @@ void append_response(AgentInputState& state, std::optional<TokenCost> cost) {
     step.model_response.type = model_io::MessageItemType::ModelResponse;
     step.model_response.role = "assistant";
     step.model_response.cost = cost;
+    step.commit_sequence = ++state.loop->committed_response_sequence;
     state.turns.back().agent_loop_step.push_back(std::move(step));
     ++state.loop->completed_exchanges;
 }
@@ -83,6 +86,93 @@ public:
         co_return response;
     }
 };
+
+class PruneHook final : public loop::LoopHookInterface {
+public:
+    std::string_view name() const noexcept override {
+        return "pruner";
+    }
+
+protected:
+    Subscriptions subscribe(eventbus::EventBus& bus) override {
+        Subscriptions subscriptions;
+        eventbus::EventBus::ScopedSubscription owned{
+            bus.subscribe<loop::EditOnRunFinished>([](const auto& event) {
+                if (!event.state.turns.empty()) {
+                    event.state.turns.back().agent_loop_step.clear();
+                }
+            })};
+        subscriptions.push_back(std::move(owned));
+        return subscriptions;
+    }
+};
+
+class ProjectionFailureModel final : public llm::LLMModel {
+public:
+    explicit ProjectionFailureModel(boost::asio::any_io_executor executor)
+        : LLMModel(executor, {}) {
+    }
+
+    llm::LLMModelType model_type() const noexcept override {
+        return llm::LLMModelType::Conversation;
+    }
+
+    bool fail_projection = true;
+    int exchanges = 0;
+
+    boost::asio::awaitable<model_io::MessageItem> converse(
+        AgentInputState) override {
+        model_io::MessageItem response;
+        response.type = model_io::MessageItemType::ModelResponse;
+        response.role = "assistant";
+        if (exchanges++ == 0) {
+            response.cost = TokenCost{.prompt = 10, .generated = 2};
+            model_io::InvokeQuery call;
+            call.id = "call-1";
+            call.name = "missing_tool";
+            response.invokes = std::vector<model_io::InvokeQuery>{call};
+        } else {
+            response.cost = TokenCost{.prompt = 20, .generated = 3};
+        }
+        co_return response;
+    }
+
+    void integrate(AgentInputState& state,
+                   const model_io::MessageItem& item) override {
+        LLMModel::integrate(state, item);
+        if (fail_projection &&
+            item.type == model_io::MessageItemType::InvokeReturn) {
+            throw std::runtime_error("projection failed");
+        }
+    }
+};
+
+loop::RunResult run_once(boost::asio::io_context& io, llm::LLMModel& model,
+                         tools::ToolRegistry& tools, eventbus::EventBus& bus,
+                         AgentInputState& state) {
+    model_io::MessageItem input;
+    input.role = "user";
+    auto future = boost::asio::co_spawn(
+        io,
+        loop::run(model, tools, bus, io.get_executor(), state, true,
+                  std::move(input)),
+        boost::asio::use_future);
+    io.restart();
+    io.run();
+    return future.get();
+}
+
+loop::RunResult resume_once(boost::asio::io_context& io, llm::LLMModel& model,
+                            tools::ToolRegistry& tools, eventbus::EventBus& bus,
+                            AgentInputState& state) {
+    auto future = boost::asio::co_spawn(
+        io,
+        loop::run(model, tools, bus, io.get_executor(), state, false, {}),
+        boost::asio::use_future);
+    io.restart();
+    io.run();
+    return future.get();
+}
 
 } // namespace
 
@@ -137,6 +227,7 @@ BOOST_AUTO_TEST_CASE(step_and_final_response_update_flat_persistent_metrics) {
                == 140.0 / 300.0);
     BOOST_TEST(second.at("last_window_remaining_ratio") == -82.0 / 128.0);
     BOOST_TEST(second.at("accounted_exchanges_in_run") == 2);
+    BOOST_TEST(second.at("accounted_commit_sequence") == 2);
 
     // The final hook sees the same tool-bearing last step but must not count it
     // twice. A new run and JSON round-trip then retain the lifetime totals even
@@ -202,6 +293,18 @@ BOOST_AUTO_TEST_CASE(missing_usage_and_zero_exchange_do_not_invent_costs) {
 BOOST_AUTO_TEST_CASE(config_is_strict_and_yaml_is_loadable) {
     BOOST_CHECK_THROW(loop::intrinsic::ContextStatisticHook(config(0)),
                       std::invalid_argument);
+    auto wrong_name = config(100);
+    wrong_name.name = "other_hook";
+    BOOST_CHECK_THROW(loop::intrinsic::ContextStatisticHook(std::move(wrong_name)),
+                      std::invalid_argument);
+    BOOST_CHECK_NO_THROW(loop::intrinsic::ContextStatisticHook(config(100)));
+    for (const auto& invalid : {
+             json("100"), json(-1), json(1.5), json(true)}) {
+        auto noninteger = config(100);
+        noninteger.config["context_window_tokens"] = invalid;
+        BOOST_CHECK_THROW(loop::intrinsic::ContextStatisticHook(
+                              std::move(noninteger)), std::invalid_argument);
+    }
     auto malformed = config(100);
     malformed.config["unknown"] = 1;
     BOOST_CHECK_THROW(loop::intrinsic::ContextStatisticHook(std::move(malformed)),
@@ -244,4 +347,148 @@ BOOST_AUTO_TEST_CASE(real_loop_accounts_final_response_once_per_run) {
     BOOST_TEST(recorded.at("cumulative_exchange_total_tokens") == 35);
     BOOST_TEST(recorded.at("sampled_exchange_count") == 2);
     BOOST_TEST(recorded.at("accounted_exchanges_in_run") == 1);
+    BOOST_TEST(recorded.at("accounted_commit_sequence") == 2);
+}
+
+BOOST_AUTO_TEST_CASE(finish_edit_rollback_is_reconciled_across_runs) {
+    for (const bool round_trip : {false, true}) {
+        boost::asio::io_context io;
+        FinalModel model(io.get_executor());
+        model.costs = {
+            TokenCost{.prompt = 10, .generated = 2},
+            TokenCost{.prompt = 20, .generated = 3},
+        };
+        tools::ToolRegistry tools;
+        eventbus::EventBus bus;
+        loop::LoopHookRegistry hooks(bus);
+        hooks.add(std::make_shared<loop::intrinsic::ContextStatisticHook>(config(100)));
+        bool fail_once = true;
+        eventbus::EventBus::ScopedSubscription failing{
+            bus.subscribe<loop::EditOnRunFinished>([&](const auto&) {
+                if (fail_once) {
+                    fail_once = false;
+                    throw std::runtime_error("later finish edit failed");
+                }
+            })};
+        AgentInputState state;
+
+        BOOST_CHECK(run_once(io, model, tools, bus, state).status
+                   == loop::RunStatus::Failed);
+        BOOST_TEST(state.loop->committed_response_sequence == 1);
+        BOOST_TEST(status(state).at("cumulative_exchange_total_tokens") == 0);
+        if (round_trip) {
+            state = json(state).get<AgentInputState>();
+        }
+        BOOST_CHECK(run_once(io, model, tools, bus, state).status
+                   == loop::RunStatus::Completed);
+        BOOST_TEST(status(state).at("cumulative_exchange_total_tokens") == 35);
+        BOOST_TEST(status(state).at("sampled_exchange_count") == 2);
+        BOOST_TEST(status(state).at("accounted_commit_sequence") == 2);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(invalid_usage_and_overflow_do_not_partially_update_status) {
+    for (const bool overflow : {false, true}) {
+        eventbus::EventBus bus;
+        loop::LoopHookRegistry hooks(bus);
+        hooks.add(std::make_shared<loop::intrinsic::ContextStatisticHook>(config(100)));
+        AgentInputState state;
+        state.loop = model_io::LoopProgress{};
+        before_model(bus, state);
+        if (overflow) {
+            json previous = status(state);
+            previous["cumulative_exchange_prompt_tokens"] =
+                std::numeric_limits<std::uint64_t>::max();
+            previous["cumulative_exchange_total_tokens"] =
+                std::numeric_limits<std::uint64_t>::max();
+            model_io::sync_external_status(state, "context_statistic", previous);
+        }
+        const json unchanged = status(state);
+        append_response(state, overflow
+            ? TokenCost{.prompt = 1}
+            : TokenCost{.prompt = 1, .cache_hit = 2});
+        BOOST_CHECK_THROW(bus.publish(loop::EditOnRunFinished{
+                              state, loop::RunResult{}}), std::exception);
+        BOOST_TEST(status(state) == unchanged);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(corrupt_persisted_cache_totals_are_rejected) {
+    eventbus::EventBus bus;
+    loop::LoopHookRegistry hooks(bus);
+    hooks.add(std::make_shared<loop::intrinsic::ContextStatisticHook>(config(100)));
+    AgentInputState state;
+    state.loop = model_io::LoopProgress{};
+    before_model(bus, state);
+    json corrupt = status(state);
+    corrupt["cumulative_exchange_cache_hit_tokens"] = 1;
+    model_io::sync_external_status(state, "context_statistic", corrupt);
+    BOOST_CHECK_THROW(bus.publish(loop::EditOnRunFinished{
+                          state, loop::RunResult{}}), std::logic_error);
+    BOOST_TEST(status(state) == corrupt);
+}
+
+BOOST_AUTO_TEST_CASE(pruned_unaccounted_response_reports_a_gap) {
+    eventbus::EventBus bus;
+    loop::LoopHookRegistry hooks(bus);
+    hooks.add(std::make_shared<loop::intrinsic::ContextStatisticHook>(config(100)));
+    AgentInputState state;
+    state.loop = model_io::LoopProgress{};
+    before_model(bus, state);
+    append_response(state, TokenCost{.prompt = 12});
+    state.turns.back().agent_loop_step.clear();
+    BOOST_CHECK_THROW(before_model(bus, state), std::logic_error);
+    BOOST_TEST(status(state).at("cumulative_exchange_total_tokens") == 0);
+}
+
+BOOST_AUTO_TEST_CASE(replacement_keeps_statistic_before_pruning) {
+    boost::asio::io_context io;
+    FinalModel model(io.get_executor());
+    model.costs = {
+        TokenCost{.prompt = 10, .generated = 2},
+        TokenCost{.prompt = 20, .generated = 3},
+    };
+    tools::ToolRegistry tools;
+    eventbus::EventBus bus;
+    loop::LoopHookRegistry hooks(bus);
+    hooks.add(std::make_shared<loop::intrinsic::ContextStatisticHook>(config(100)));
+    auto pruner = std::make_shared<PruneHook>();
+    hooks.add(pruner);
+    AgentInputState state;
+
+    BOOST_CHECK(run_once(io, model, tools, bus, state).status
+               == loop::RunStatus::Completed);
+    BOOST_TEST(state.turns.back().agent_loop_step.empty());
+
+    // set() appends callbacks, so remove dependent pruning before replacing.
+    BOOST_TEST(hooks.remove(pruner->name()));
+    BOOST_TEST(hooks.set(
+        std::make_shared<loop::intrinsic::ContextStatisticHook>(config(200))));
+    hooks.add(pruner);
+    BOOST_CHECK(run_once(io, model, tools, bus, state).status
+               == loop::RunStatus::Completed);
+    BOOST_TEST(status(state).at("cumulative_exchange_total_tokens") == 35);
+    BOOST_TEST(status(state).at("context_window_tokens") == 200);
+    BOOST_TEST(state.turns.back().agent_loop_step.empty());
+}
+
+BOOST_AUTO_TEST_CASE(projection_failure_usage_is_not_double_counted_on_recovery) {
+    boost::asio::io_context io;
+    ProjectionFailureModel model(io.get_executor());
+    tools::ToolRegistry tools;
+    eventbus::EventBus bus;
+    loop::LoopHookRegistry hooks(bus);
+    hooks.add(std::make_shared<loop::intrinsic::ContextStatisticHook>(config(100)));
+    AgentInputState state;
+
+    BOOST_CHECK(run_once(io, model, tools, bus, state).status
+               == loop::RunStatus::Failed);
+    BOOST_CHECK(state.loop->phase == model_io::LoopPhase::Projection);
+    BOOST_TEST(status(state).at("cumulative_exchange_total_tokens") == 12);
+    state = json(state).get<AgentInputState>();
+    model.fail_projection = false;
+    BOOST_CHECK(resume_once(io, model, tools, bus, state).status
+               == loop::RunStatus::Completed);
+    BOOST_TEST(status(state).at("cumulative_exchange_total_tokens") == 35);
+    BOOST_TEST(status(state).at("sampled_exchange_count") == 2);
 }
