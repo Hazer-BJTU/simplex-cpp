@@ -1,0 +1,6 @@
+name: context_statistic
+description: >-
+  Track provider-reported exchange token usage and estimate the fixed prompt
+  and tool-definition cost, publishing flat session statistics for other hooks.
+config:
+  context_window_tokens: 128000

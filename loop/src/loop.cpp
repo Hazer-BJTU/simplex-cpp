@@ -13,6 +13,7 @@
 #include <boost/asio/this_coro.hpp>
 
 #include <set>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 
@@ -60,6 +61,22 @@ void integrate(
     const Item& item) {
     auto draft = state;
     model.integrate(draft, item);
+    state = std::move(draft);
+}
+
+/** Atomically assigns a durable identity to a newly committed model step. */
+void integrate_response(llm::LLMModel& model, State& state, const Item& item) {
+    auto draft = state;
+    if (draft.loop->committed_response_sequence ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("model response commit sequence overflow");
+    }
+    model.integrate(draft, item);
+    if (draft.turns.empty() || draft.turns.back().agent_loop_step.empty()) {
+        throw std::logic_error("model did not append a response step");
+    }
+    const auto sequence = ++draft.loop->committed_response_sequence;
+    draft.turns.back().agent_loop_step.back().commit_sequence = sequence;
     state = std::move(draft);
 }
 
@@ -164,6 +181,7 @@ void validate_state_edit(const State& state, const State& before) {
     if (current.status != previous.status ||
         current.phase != previous.phase ||
         current.completed_exchanges != previous.completed_exchanges ||
+        current.committed_response_sequence != previous.committed_response_sequence ||
         current.error != previous.error ||
         current.pending_results.size() != previous.pending_results.size()) {
         throw std::logic_error("state hook changed loop progress");
@@ -404,7 +422,10 @@ boost::asio::awaitable<RunResult> run(
         }
 
         // Admission establishes the lifecycle observed by synchronous hooks.
+        const std::uint64_t prior_commits = state.loop
+            ? state.loop->committed_response_sequence : 0;
         state.loop = model_io::LoopProgress{};
+        state.loop->committed_response_sequence = prior_commits;
         state.loop->status = LoopStatus::Running;
         admitted = true;
         events.publish(RunStarted{state});
@@ -468,7 +489,7 @@ boost::asio::awaitable<RunResult> run(
                 throw std::logic_error("model returned an invalid response type");
             }
             validate_calls(response);
-            integrate(model, state, response);
+            integrate_response(model, state, response);
             state.loop->phase = LoopPhase::Ready;
             state.loop->completed_exchanges = ++result.completed_exchanges;
             const bool has_calls = response.invokes && !response.invokes->empty();

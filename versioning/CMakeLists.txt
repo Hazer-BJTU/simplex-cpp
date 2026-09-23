@@ -68,7 +68,9 @@ set(SIMPLEX_LANG_PLUGIN_ABI_VERSION 4)
 #       mis-locate every member past _config, so rebuilt plugins must report v4.
 #   v5: AgentInputState gained optional loop recovery data. Its layout crosses
 #       converse()/integrate() and must agree between host and model plugins.
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 5)
+#   v6: LoopProgress and AgentLoopStep gained durable response commit sequences.
+#       Both layouts cross the same model plugin boundary.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 6)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
 # Rendered into version.hpp and hashed by extensions/plugin_magic.hpp
