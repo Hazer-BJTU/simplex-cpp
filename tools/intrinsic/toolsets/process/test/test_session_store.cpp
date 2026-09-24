@@ -261,7 +261,7 @@ BOOST_AUTO_TEST_CASE(spawn_registers_a_session_and_reports_it)
     Fixture f;
     const auto id = f.spawn_id(spec_for("echo", {"hello"}));
 
-    // Ids are minted as readable names, starting at 1.
+    // Session IDs are opaque and unique across store incarnations.
     BOOST_TEST(!id.empty());
 
     const auto snapshot = f.run(f.store->snapshot(id));
@@ -811,7 +811,7 @@ BOOST_AUTO_TEST_CASE(output_truncation_is_reported)
 
 BOOST_AUTO_TEST_CASE(destroying_the_store_does_not_leak_running_children)
 {
-    // The last-resort tail: a host that forgot terminate_all() must still not
+    // The last-resort tail: a host that forgot shutdown() must still not
     // leak children. Dropping the table is not enough on its own — each
     // handle's await task holds its handle alive, so the destructor signals
     // the recorded pids itself.
@@ -851,8 +851,8 @@ BOOST_AUTO_TEST_CASE(destroying_the_store_under_several_workers_still_reaps_chil
 
 BOOST_AUTO_TEST_CASE(terminate_all_ends_every_live_child)
 {
-    // The shutdown path a host is meant to use: it signals every live child
-    // and reports how many, while their sessions stay readable.
+    // Signal every live child and report how many, retaining readable
+    // sessions. This operation does not provide the shutdown() lifetime fence.
     Fixture f;
     const auto first = f.spawn_id(spec_for("sleep", {"30"}));
     const auto second = f.spawn_id(spec_for("sleep", {"30"}));

@@ -115,7 +115,11 @@ inherited descriptors. Captured bytes are retained, unfinished streams are
 marked truncated, and undelivered stdin is discarded. Normal completion still
 drains output naturally. This does not implement descendant-tree termination. Final outbound admission
 is attempted for at most 500 ms; delivery is not required for cleanup.
-The first fatal error propagates after cleanup.
+The first fatal error propagates after cleanup. Process cleanup retains watcher
+and signal failures, stops and joins owned tasks, attempts recovery reaping,
+and visits every session before reporting the first error. If the OS refuses
+termination/reaping, cleanup still closes owned pipes and joins the watcher;
+it reports failure without claiming that the child exited.
 
 
 The deadline is an authorization cutoff, not a hard wall-clock bound on return.

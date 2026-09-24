@@ -1099,3 +1099,12 @@ output drainage after reaping, then closes remaining inherited pipes, marking
 unfinished streams truncated. Already captured output is retained and pending
 stdin is discarded. Normal process completion still drains output naturally.
 This does not terminate descendants, and does not stop the executor.
+
+Shutdown preserves the first lifecycle failure while continuing pipe cleanup,
+watcher joins, and recovery reaping. The store visits every session, clears its
+entries, and then rethrows the first failure. `exited()` reports successful
+terminal observation, not watcher completion: a failed watcher is joined even
+while that latch is false. If the OS continues to refuse termination/reaping,
+shutdown reports that error after joining owned tasks; it cannot promise that
+an unkillable child is gone. Repeated handle shutdown calls retain the original
+error and may retry recovery after the external failure is repaired.

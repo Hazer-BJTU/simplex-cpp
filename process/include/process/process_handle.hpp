@@ -75,7 +75,7 @@
 // question it must answer is "is this child already observed and reaped?" —
 // answering it wrongly means signalling a pid the kernel may have handed to
 // somebody else. So terminality is a LATCH (std::atomic<bool>, written once
-// by whichever await task observes the child, never unwritten) rather than
+// by the watcher or shutdown recovery after reaping, never unwritten) rather than
 // only the strand-owned _final_status; status()/snapshot()/output still
 // belong to the strand exactly as before.
 //
@@ -84,7 +84,7 @@
 // exit. The window opens when the call begins, NOT at spawn — it is an
 // initial-wait grace period, not a process lifetime budget (though under
 // kill semantics it becomes one: see detach_on_timeout). 0 disables the
-// deadline entirely (wait indefinitely, the answer is always true). Exit
+// deadline entirely (wait for exit or watcher failure). Exit
 // first => true, done. Deadline first => false, and detach_on_timeout
 // decides the aftermath — true leaves the child running under a fresh
 // await task that records its eventual exit; false terminates it (v2's
@@ -173,9 +173,12 @@ private:
     // a runtime state machine by design).
     bool _io_tasks_started = false;
     bool _initial_wait_active = false;
+    bool _initial_wait_started = false;
+    bool _stop_watcher = false;
+    std::exception_ptr _lifecycle_failure;
 
-    // Engaged exactly once, by whichever await task observes the child's
-    // terminal state. Disengaged => status() reports the live view.
+    // Engaged after the watcher or shutdown recovery reaps the child.
+    // Disengaged => status() reports the live view.
     // Strand-owned; exited() reports the same fact through _terminal_observed.
     std::optional<ExecutionStatus> _final_status;
 
@@ -184,7 +187,10 @@ private:
     // not a shared flag — nothing ever clears it, so there is no mutual
     // exclusion to get wrong.
     mutable std::atomic<bool> _terminal_observed{false};
-    std::vector<std::future<void>> _background_tasks;
+    std::vector<std::shared_future<void>> _background_tasks;
+
+    // Strand-only: publish terminal status only after a successful reap.
+    void record_terminal_state();
 
     boost::asio::awaitable<void> background_write_task(boost::asio::writable_pipe& pipe, MsgChannel& channel);
     boost::asio::awaitable<void> background_read_task(boost::asio::readable_pipe& pipe, std::string& output, bool& truncated);
@@ -230,7 +236,9 @@ public:
     // true if the child exited within the window (final status already
     // recorded), false if the deadline fired — in which case
     // detach_on_timeout has been applied and a fresh await task is
-    // tracking the child's aftermath.
+    // tracking the child's aftermath. Watcher failure or explicit shutdown can
+    // also return false without a terminal observation; shutdown() joins
+    // remaining work and reports any retained watcher failure.
     boost::asio::awaitable<bool> await_initial_execution();
 
     // -- stdin control (thread-safe channel operations) ------
@@ -258,8 +266,8 @@ public:
     //
     // Both are WITHIN-LIFETIME operations, and they only send the signal:
     // the terminal state is still observed — and _final_status still
-    // written — by the await task alone, which is the invariant exited()
-    // reports. So a caller that needs the final status awaits the handle's
+    // written — by the watcher or shutdown recovery after reaping, which
+    // is the invariant exited() reports. A caller needing final status awaits
     // quiescence after this, exactly as it would for a natural exit; a
     // child killed here is reaped by the running await task, which then
     // closes the stdin channel like any other exit.
@@ -291,6 +299,10 @@ public:
      * streams truncated. Captured bytes remain available; queued/pending stdin
      * is discarded. Descendants are not killed. Completion joins pipe operations
      * and the child watcher, even when descendants keep their descriptors open.
+     * Watcher/signal failures are retained while cleanup continues. Completion
+     * joins owned work even if the OS refuses termination/reaping; such failures
+     * are reported rather than interpreted as successful child exit. The first
+     * failure is rethrown only after cleanup, including on repeated calls.
      * Cancellation is shielded so a caller cannot abandon this cleanup.
      */
     boost::asio::awaitable<void> shutdown();
@@ -301,7 +313,7 @@ public:
     [[nodiscard]] pid_t pid() const noexcept;
     [[nodiscard]] std::chrono::system_clock::time_point started_at() const noexcept;
 
-    // True once some await task has observed the child's terminal state.
+    // True after the watcher or shutdown recovery observes and reaps the child.
     //
     // SAFE FROM ANY THREAD, unlike the observers around it: it reads the
     // latch described in the class comment. That is what makes it usable from

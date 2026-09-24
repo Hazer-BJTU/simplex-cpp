@@ -40,7 +40,7 @@ ProcessSessionStore::ProcessSessionStore(
 
 ProcessSessionStore::~ProcessSessionStore()
 {
-    // The last-resort tail, not the shutdown mechanism — terminate_all() is
+    // The last-resort tail, not the shutdown mechanism — shutdown() is
     // (see the header). Dropping the table is NOT enough on its own: each
     // handle's await task holds a reference to its own handle until the
     // child's terminal state is observed, so this destructor's release is
@@ -76,7 +76,7 @@ ProcessSessionStore::~ProcessSessionStore()
         const pid_t pid = session->pid;
         logging::Logger::warning(std::format(
             "process session store destroyed while session {} (pid {}) is "
-            "still running; killing it. A host should await terminate_all() "
+            "still running; killing it. A host should await shutdown() "
             "before dropping the store",
             id, static_cast<int>(pid)));
         if (::kill(pid, SIGKILL) != 0 && errno != ESRCH) {
@@ -203,10 +203,9 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
         boost::asio::co_spawn(
             session_strand,
             [handle]() -> boost::asio::awaitable<void> {
-                // With the deadline disabled the bool is always true and says
-                // nothing; the side effect is what matters — the handle
-                // observes and records its child's terminal state, which is
-                // what exited() and status() report from here on.
+                // With the deadline disabled, wait for terminal observation
+                // or watcher shutdown. Any watcher failure is retained by
+                // the handle for the explicit shutdown lifetime fence.
                 co_await handle->await_initial_execution();
             },
             boost::asio::detached);
@@ -283,8 +282,8 @@ std::vector<ProcessSessionStore::SessionPtr> ProcessSessionStore::select_session
     }
 
     // Sorted by id so a listing reads stably across turns instead of in hash
-    // order. Lexicographic on "proc_<n>" is not numeric order (proc_10 before
-    // proc_2), which is fine: stability is what a reader needs here, and the
+    // order. Lexicographic on "proc_<uuid>_<n>" is not counter order,
+    // which is fine: stability is what a reader needs here, and the
     // ids are names rather than magnitudes.
     std::sort(selected.begin(), selected.end(),
               [](const SessionPtr& left, const SessionPtr& right) {
@@ -522,11 +521,21 @@ boost::asio::awaitable<std::size_t> ProcessSessionStore::terminate_all(
 boost::asio::awaitable<void> ProcessSessionStore::shutdown()
 {
     const auto selected = select_sessions({});
+    co_await boost::asio::this_coro::reset_cancellation_state(
+        boost::asio::disable_cancellation());
+    std::exception_ptr failure;
     for (const auto& session : selected) {
-        co_await session->handle->shutdown();
+        try {
+            co_await session->handle->shutdown();
+        } catch (...) {
+            if (!failure) failure = std::current_exception();
+        }
     }
-    const std::lock_guard lock{_sessions_mutex};
-    _sessions.clear();
+    {
+        const std::lock_guard lock{_sessions_mutex};
+        _sessions.clear();
+    }
+    if (failure) std::rethrow_exception(failure);
 }
 
 boost::asio::awaitable<bool> ProcessSessionStore::release(SessionId id)

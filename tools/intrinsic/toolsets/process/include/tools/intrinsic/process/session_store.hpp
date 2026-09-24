@@ -426,7 +426,10 @@ public:
 
     /// After admission and tool dispatch stop, kill and join every owned child
     /// and pipe task, then release sessions. Unlike terminate_all(), completion
-    /// is a resource lifetime fence. No concurrent spawn/release is permitted.
+    /// is a resource lifetime fence. Continue after individual failures, clear
+    /// every session, then rethrow the first error. OS failures can prevent child
+    /// termination/reaping, but do not leave owned asynchronous tasks running.
+    /// No concurrent spawn/release is permitted.
     boost::asio::awaitable<void> shutdown();
 
 private:
