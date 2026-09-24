@@ -4,6 +4,7 @@
 #include "fileio/atomic_write.hpp"
 
 #include <filesystem>
+#include <fcntl.h>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -126,4 +127,27 @@ BOOST_AUTO_TEST_CASE(empty_callback_is_rejected_before_creating_directories) {
     Scratch scratch;
     BOOST_CHECK_THROW(fileio::atomic_write(scratch.root / "missing/output", {}), std::invalid_argument);
     BOOST_TEST(!fs::exists(scratch.root / "missing"));
+}
+
+
+BOOST_AUTO_TEST_CASE(temporary_descriptor_is_close_on_exec_during_callback) {
+    Scratch scratch;
+    fileio::atomic_write(scratch.root / "output", [&](std::ostream& output) {
+        bool found = false;
+        for (const auto& entry : fs::directory_iterator("/proc/self/fd")) {
+            std::error_code ignored;
+            const auto target = fs::read_symlink(entry.path(), ignored);
+            if (ignored || target.parent_path() != scratch.root
+                || !target.filename().string().starts_with(".simplex-write-")) {
+                continue;
+            }
+            found = true;
+            const int descriptor = std::stoi(entry.path().filename().string());
+            const int flags = ::fcntl(descriptor, F_GETFD);
+            BOOST_REQUIRE(flags >= 0);
+            BOOST_TEST((flags & FD_CLOEXEC) != 0);
+        }
+        BOOST_REQUIRE(found);
+        output << "complete";
+    });
 }

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <stdexcept>
+#include <string>
 
 #include "dataclass/model_io.hpp"
 
@@ -29,8 +30,16 @@ struct ReadableOptions {
 /** File, serialization, or snapshot decoding failure, including the file path. */
 class PersistenceError : public std::runtime_error {
 public:
-    using std::runtime_error::runtime_error;
+    explicit PersistenceError(const std::string& message, bool published = false);
     ~PersistenceError() override;
+
+    /// True only when saving replaced the file but directory sync failed.
+    /// The new snapshot is visible, but its crash durability is uncertain.
+    /// Load failures and save failures before replacement return false.
+    bool published() const noexcept { return published_; }
+
+private:
+    bool published_;
 };
 
 /**
@@ -55,12 +64,13 @@ public:
  * Failure before rename preserves any previous destination and removes the
  * temporary file. Replacement does not follow a destination symlink. The parent
  * directory is synced after rename; if that sync fails, the error explicitly
- * states that replacement has already occurred. Newly created ancestor
- * directories are not individually synced. Concurrent writers require host
+ * reports published() == true because replacement has already occurred. Newly
+ * created ancestor directories are not individually synced. Concurrent writers require host
  * coordination; atomic replacement does not merge their states.
  *
  * JSON serialization builds one JSON representation, but never copies the
  * AgentInputState. Markdown streams sections and bounds each JSON preview.
+ * The total Markdown output size is not bounded; ordinary text remains complete.
  * Neither format resumes a loop, invokes tools, or subscribes to events.
  */
 void save_state(

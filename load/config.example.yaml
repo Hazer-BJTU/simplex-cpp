@@ -1,4 +1,5 @@
-# Startup configuration contract. See README.md for implemented loading stages.
+# Startup configuration contract: currently only plugins is consumed by load.
+# Other sections describe future startup stages and are not validated yet.
 # See README.md for defaults, compatibility rules, and lifecycle semantics.
 # Copy this example to config.yaml before editing it for a deployment.
 # Explicit relative paths are relative to that configuration file's directory.
@@ -11,14 +12,15 @@ plugins:
     # A nonempty list replaces the default; directories are scanned in order.
     directories: []
 
-  # All compiled-in intrinsic components are loaded automatically.
+  # The future host will load all compiled-in intrinsic components automatically.
+  # The current loader does not initialize intrinsics or session registries.
   # Their enablement and configuration are not exposed by this contract.
   extensions:
     tools:
       # Empty or omitted: <executable_dir>/plugins/tools.
       directories: []
-      # Only listed toolsets are constructed and added to the tool registry.
-      # Empty or omitted: no dynamic toolsets are registered.
+      # Only listed toolsets are constructed; the caller registers them.
+      # Empty or omitted: no dynamic toolsets are constructed.
       enable: []
       # - name: noop_toolset
       #   schema_directory: ./schemas/tools/extensions/noop_toolset
@@ -27,14 +29,16 @@ plugins:
     loop_hooks:
       # Empty or omitted: <executable_dir>/plugins/loop.
       directories: []
-      # Hooks are registered in list order, after the intrinsic hooks.
-      # Empty or omitted: no dynamic loop hooks are registered.
+      # Hooks are constructed in list order; the caller registers them.
+      # The future host will register them after intrinsic hooks.
+      # Empty or omitted: no dynamic loop hooks are constructed.
       enable: []
       # - name: noop_hook
       #   config_file: ./schemas/loop/extensions/noop_hook/config.yaml
       # Omit config_file to use the existing extension lookup rules.
 
-# Named endpoint/model configurations, independent of plugin discovery.
+# Planned: named endpoint/model configurations; currently ignored.
+# Environment expansion and model construction are not implemented by load.
 # Multiple entries may use the same plugin with different endpoints or models.
 providers:
   deepseek:
@@ -74,10 +78,12 @@ providers:
       initial_backoff_ms: 500
       max_backoff_ms: 120000
 
-# Required reference to a providers entry. No implicit first-provider fallback.
+# Planned: required reference to a providers entry; currently ignored.
+# No implicit first-provider fallback.
 # The driver model is currently the only model role exposed by this contract.
 driver_model: deepseek
 
+# Planned client startup settings; currently ignored.
 client:
   # Required complete ws:// or wss:// URL, including the upgrade target.
   # Replace this placeholder with the actual server endpoint.
@@ -94,7 +100,8 @@ client:
     # Zero disables idle timeout. Positive values enable idle ping/deadline.
     idle_timeout_seconds: 0
 
-# Startup persistence policy; automatic scheduling is not connected to IO yet.
+# Planned startup persistence policy; currently ignored.
+# Explicit save_state/load_state APIs do not interpret these fields.
 persistence:
   enabled: true
   # Session identity comes from session state, not this startup configuration.

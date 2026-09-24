@@ -8,6 +8,15 @@ export are also implemented. Intrinsic initialization, session registry
 construction, model configuration/creation, connection startup, and automatic
 persistence scheduling remain planned work.
 
+| Surface | Current implementation |
+| --- | --- |
+| `plugins` | Parse YAML, discover all provider descriptors, construct selected extensions. |
+| Intrinsic components and registries | Not initialized by this loader; host wiring is future work. |
+| `providers`, `driver_model` | Ignored; model creation and credential expansion are future work. |
+| `client` | Ignored; connection startup is future work. |
+| `persistence` | Ignored; restore/save policy and scheduling are future work. |
+| `save_state()`, `load_state()` | Explicit file operations, independent of startup YAML. |
+
 The intended host runs one agent loop at a time. Startup configuration selects
 deployment resources; conversation and recovery state remain in
 `model_io::AgentInputState`. Configuration changes take effect on the next
@@ -116,13 +125,14 @@ Repeated tool output stored both as message content and as its result record is
 shown once when identical. Binary content is summarized by encoded size;
 external references remain visible without fetching them.
 
-Ordinary prose is retained in full. Each JSON preview separately limits string
-and key bytes, entries per container, nesting depth, and total rendered bytes.
-Complete JSON objects/arrays encoded inside text content (common for tool
-results) receive the same treatment. Such text is parsed one content part at a
-time; parsing still needs memory proportional to that part. JSON fields already
-stored as JSON are traversed by reference, and rendering stops at the block
-budget. The exporter does not first serialize the whole session.
+Ordinary prose is retained in full. The total Markdown export size is not
+bounded. Each JSON preview separately limits string and key bytes, entries per
+container, nesting depth, and total rendered bytes. Complete JSON objects/arrays
+encoded inside text content (common for tool results) receive the same
+treatment. Such text is parsed one content part at a time; parsing still needs
+memory proportional to that part. JSON fields already stored as JSON are
+traversed by reference, and rendering stops at the block budget. The exporter
+does not first serialize the whole session.
 
 Truncation is marked explicitly, with omission counts where practical. Clipped
 previews may no longer be valid JSON; they are for reading, not parsing or state
@@ -142,12 +152,13 @@ missing parent directories and use an exclusively opened mode-0600 temporary
 file in the destination directory. The file is flushed, synced, and closed
 before atomic rename, followed by a parent-directory sync. A failure before
 rename leaves the old destination intact and cleans up the temporary file. If
-directory sync fails after rename, the error says replacement has already
-occurred. A destination symlink is replaced, not followed. Newly created ancestor
-directories are not individually synced, so this is not an unconditional
-power-loss durability guarantee for a newly created directory tree. Forced
-termination before publication can leave a temporary file; automatic cleanup of
-such abandoned files is not implemented.
+directory sync fails after rename, `PersistenceError::published()` returns true:
+the new file is visible, but crash durability is uncertain. All pre-publication
+save failures and all load failures report false. A destination symlink is
+replaced, not followed. Newly created ancestor directories are not individually
+synced, so this is not an unconditional power-loss durability guarantee for a
+newly created directory tree. Forced termination before publication can leave a
+temporary file; automatic cleanup of such abandoned files is not implemented.
 
 JSON and Markdown destinations are independent operations, with no transaction
 across the two. Neither API interprets startup YAML, derives filenames from
@@ -185,28 +196,31 @@ the corresponding default. There is no implicit shell expansion of paths.
 
 ## Parsing and compatibility
 
-There is no version field. The future loader will use the existing
-`yamlconfig` YAML-to-JSON boundary and accept a single mapping document.
+There is no version field. The implemented plugin loader uses the existing
+`yamlconfig` YAML-to-JSON boundary and accepts a single mapping document.
+The following parsing rules currently apply to `plugins`; other sections remain
+unvalidated until their startup stages are implemented.
 Unknown host fields are ignored and omitted optional fields use documented
 defaults. Missing mappings behave as empty mappings. Explicit null is not a
 substitute for a mapping, sequence, or required scalar. Known fields with wrong
 types or unusable values report the configuration path and field path.
 
-Compatibility does not mean substituting a different driver model when an
-explicit reference cannot be resolved. `driver_model`, its selected provider's
-`model`, and `client.endpoint` must be supplied. Plugin-defined generation
-options and endpoint `extras` remain opaque to the host; their interpretation
-belongs to the model plugin. Existing component YAML parsers retain their own
-validation rules.
+For the future model and client startup stages, compatibility does not mean
+substituting a different driver model when an explicit reference cannot be
+resolved. `driver_model`, its selected provider's `model`, and `client.endpoint`
+must be supplied. Plugin-defined generation options and endpoint `extras` remain
+opaque to the host; their interpretation belongs to the model plugin. Existing
+component YAML parsers retain their own validation rules.
 
-Environment substitution is limited to provider `endpoint.auth.api_key` and
-values in `endpoint.extra_headers`. `${NAME}` substitutes a nonempty environment
-variable; `$$` escapes a literal dollar sign. Expansion is one pass, with no
-shell evaluation or recursive expansion. An unset or empty referenced variable
-is an error when that provider is instantiated. An unused provider does not
-require its credentials. Literal credential strings are also accepted; an empty
-API key has the existing endpoint meaning of sending no credential header.
-Diagnostics must not include expanded credentials or header values.
+Planned environment substitution (not implemented by the plugin loader) is
+limited to provider `endpoint.auth.api_key` and values in
+`endpoint.extra_headers`. `${NAME}` substitutes a nonempty environment variable;
+`$$` escapes a literal dollar sign. Expansion is one pass, with no shell
+evaluation or recursive expansion. An unset or empty referenced variable is an
+error when that provider is instantiated. An unused provider does not require
+its credentials. Literal credential strings are also accepted; an empty API key
+has the existing endpoint meaning of sending no credential header. Diagnostics
+must not include expanded credentials or header values.
 
 ## Plugin discovery and registration
 
@@ -214,19 +228,20 @@ Diagnostics must not include expanded credentials or header values.
 | --- | --- | --- |
 | `plugins.providers.directories` | executable-relative `plugins/llm` | Discover all compatible model-provider modules. |
 | `plugins.extensions.tools.directories` | executable-relative `plugins/tools` | Discover dynamic toolset modules. |
-| `plugins.extensions.tools.enable` | `[]` | Construct and register the listed toolsets. |
+| `plugins.extensions.tools.enable` | `[]` | Construct the listed toolsets; registration is caller-owned. |
 | `plugins.extensions.loop_hooks.directories` | executable-relative `plugins/loop` | Discover dynamic hook modules. |
-| `plugins.extensions.loop_hooks.enable` | `[]` | Construct and register hooks in list order. |
+| `plugins.extensions.loop_hooks.enable` | `[]` | Construct hooks in list order; registration is caller-owned. |
 
 Directories are scanned nonrecursively in configured order using the existing
 domain loaders and their compatibility checks. Discovery loads native modules;
 it is distinct from constructing configured instances. A provider configuration
 does not act as a plugin allowlist: all compatible provider descriptors are
-loaded even when only one is used by the driver model. Model instances are
-constructed when needed.
+loaded even when only one is used by the driver model. Model instance
+construction is not implemented by this loader.
 
-Every compiled-in intrinsic component is loaded with its existing configuration
-mechanism. This public startup contract has no intrinsic enable/disable list,
+The future host will load every compiled-in intrinsic component with its
+existing configuration mechanism. The current plugin loader does not initialize
+intrinsics. This public startup contract has no intrinsic enable/disable list,
 configuration override, or schema-location override.
 
 Each enabled dynamic entry requires `name`, matching the module's exported
@@ -238,15 +253,16 @@ configuration does not duplicate or merge them inline. See the
 [tool extension guide](../tools/extensions/README.md) and
 [hook extension guide](../loop/extensions/README.md).
 
-Repeated names in one enable list, registry name collisions, or failure to
-construct an explicitly enabled component are startup errors. The domain
-loaders retain their existing handling of rejected modules during discovery;
-the host must then verify that the requested components are available. Tools
-are registered before hooks. Intrinsic hook order is fixed by the host, followed
-by the configured dynamic hook order; directory enumeration never determines
-subscription order. Registries remain session-level objects.
+Repeated names in one enable list or failure to construct an explicitly enabled
+component are loader errors. Registry collision detection belongs to the host.
+The domain loaders retain their existing handling of rejected modules during
+discovery; the host must then verify that the requested components are
+available. Tools will be registered before hooks by the future host. Intrinsic
+hook order is fixed by the host, followed by the configured dynamic hook order;
+directory enumeration never determines subscription order. Registries remain
+session-level objects.
 
-## Providers and the driver model
+## Providers and the driver model (planned)
 
 `providers` maps configuration names to endpoint/model definitions. Each name
 is a host reference, not necessarily a plugin name. For example, two entries
@@ -292,7 +308,7 @@ retries, 500 ms initial delay, and 120000 ms maximum delay. Retry eligibility
 remains the model transport's recoverability policy; it is not the WebSocket
 reconnection policy.
 
-## Client connection
+## Client connection (planned)
 
 `client.endpoint` is a complete `ws://` or `wss://` URL with a nonempty host,
 optional port, and the upgrade target including any query string. Omitted
@@ -327,7 +343,7 @@ single-use `run()`; shutdown closes admission and requires awaiting `run()`
 before releasing its dependencies. See [IO](../io/README.md) and
 [intercom](../intercom/README.md) for the full lifecycle contract.
 
-## Disk persistence policy
+## Disk persistence policy (planned)
 
 | Field | Default | Meaning |
 | --- | --- | --- |

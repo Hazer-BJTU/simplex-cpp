@@ -411,6 +411,9 @@ void check_snapshot(const Json& document) {
 
 } // namespace
 
+PersistenceError::PersistenceError(const std::string& message, bool published)
+    : std::runtime_error(message), published_(published) {}
+
 PersistenceError::~PersistenceError() = default;
 
 void save_state(
@@ -435,6 +438,8 @@ void save_state(
                 MarkdownWriter(output, options).write(state);
             }
         });
+    } catch (const fileio::AtomicWriteError& error) {
+        throw PersistenceError(file.string() + ": " + error.what(), error.published());
     } catch (const std::exception& error) {
         throw PersistenceError(file.string() + ": " + error.what());
     }

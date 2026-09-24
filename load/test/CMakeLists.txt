@@ -30,3 +30,10 @@ add_test(NAME test_load_plugins COMMAND test_load_plugins)
 add_executable(test_state_persistence test_persistence.cpp)
 target_link_libraries(test_state_persistence PRIVATE load_lib Boost::unit_test_framework)
 add_test(NAME test_state_persistence COMMAND test_state_persistence)
+
+# Export the test-only fsync interposer to exercise failures in the shared utility.
+add_executable(test_persistence_publication test_persistence_publication.cpp)
+target_link_libraries(test_persistence_publication PRIVATE
+    load_lib fileio_lib Boost::unit_test_framework)
+set_target_properties(test_persistence_publication PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME test_persistence_publication COMMAND test_persistence_publication)

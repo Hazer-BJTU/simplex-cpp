@@ -1,6 +1,7 @@
 #include "fileio/atomic_write.hpp"
 
 #include <cerrno>
+#include <cstdlib>
 #include <ostream>
 #include <stdexcept>
 #include <streambuf>
@@ -17,8 +18,8 @@ namespace fs = std::filesystem;
 namespace {
 
 /** Preserve the failing POSIX operation's errno in a normal exception. */
-[[noreturn]] void system_failure(const char* operation) {
-    throw std::system_error(errno, std::generic_category(), operation);
+[[noreturn]] void system_failure(const char* operation, bool published = false) {
+    throw AtomicWriteError({errno, std::generic_category()}, operation, published);
 }
 
 /** Own a descriptor, including unwinding paths; close is never retried. */
@@ -100,6 +101,12 @@ private:
 
 } // namespace
 
+AtomicWriteError::AtomicWriteError(
+    std::error_code code, const std::string& message, bool published)
+    : std::system_error(code, message), published_(published) {}
+
+AtomicWriteError::~AtomicWriteError() = default;
+
 /** Publish only a completely rendered and flushed file on the same filesystem. */
 void atomic_write(const fs::path& file, const std::function<void(std::ostream&)>& write) {
     if (!write) {
@@ -116,7 +123,7 @@ void atomic_write(const fs::path& file, const std::function<void(std::ostream&)>
     auto name = (parent / ".simplex-write-XXXXXX").string();
     std::vector<char> pattern(name.begin(), name.end());
     pattern.push_back('\0');
-    Descriptor descriptor(::mkstemp(pattern.data()));
+    Descriptor descriptor(::mkostemp(pattern.data(), O_CLOEXEC));
     if (descriptor.get() < 0) {
         system_failure("create temporary file");
     }
@@ -138,7 +145,7 @@ void atomic_write(const fs::path& file, const std::function<void(std::ostream&)>
     fs::rename(temporary.path, destination);
     temporary.published = true;
     if (::fsync(directory.get()) != 0) {
-        system_failure("file replaced, but directory sync failed");
+        system_failure("file replaced, but directory sync failed", true);
     }
 }
 
