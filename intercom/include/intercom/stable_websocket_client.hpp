@@ -46,8 +46,14 @@ struct StableWebSocketOptions {
  * Messages waiting in the bounded channel survive reconnects. A message
  * removed by the writer is never automatically replayed: if its write fails,
  * the server may already have received it. send() acknowledges queue admission,
- * not delivery. stop() closes outbound admission before it returns. Stopping
- * discards undelivered messages. A binary frame is a fatal protocol error.
+ * not delivery. stop() and the run stop_token close outbound admission before
+ * their stop requests return. Stopping discards undelivered messages.
+ *
+ * All connection-establishment failures are retried indefinitely with capped
+ * backoff, including invalid DNS, TLS verification, and rejected WebSocket
+ * upgrades. This intentionally differs from fetch()'s finite, recoverability-
+ * based policy: an operator may repair the endpoint while this client runs.
+ * Handler failures and binary frames instead terminate run().
  */
 class StableWebSocketClient {
 public:
@@ -86,7 +92,9 @@ public:
     /**
      * Keep connecting until stopped. On a session fault, join both I/O tasks
      * before beginning another connection. An exception from on_text() ends
-     * this operation after cleanup and is propagated to the caller.
+     * this operation after cleanup and is propagated to the caller. Once a
+     * request_stop() on the supplied token returns during this run, later
+     * send() operations fail rather than entering the outbound queue.
      */
     boost::asio::awaitable<void> run(std::stop_token stop = {}) {
         co_await boost::asio::co_spawn(
@@ -99,8 +107,7 @@ public:
         // Close admission before returning, even if the strand is busy. The
         // concurrent channel permits close() from another thread; socket and
         // cancellation work remains executor-affine below.
-        control->admission_closed.store(true, std::memory_order_release);
-        control->outgoing.close();
+        close_admission(*control);
         boost::asio::post(_strand, [control] { request_stop(*control); });
     }
 
@@ -160,11 +167,18 @@ private:
             boost::asio::use_awaitable);
     }
 
+    /** Thread-safe admission closure; transport state remains strand-owned. */
+    static void close_admission(Control& control) noexcept {
+        if (!control.admission_closed.exchange(
+                true, std::memory_order_acq_rel)) {
+            control.outgoing.close();
+        }
+    }
+
     static void request_stop(Control& control) noexcept {
         if (control.stopping) return;
         control.stopping = true;
-        control.admission_closed.store(true, std::memory_order_release);
-        control.outgoing.close();
+        close_admission(control);
         control.connect_cancel.emit(boost::asio::cancellation_type::terminal);
         if (control.backoff_timer) control.backoff_timer->cancel();
         if (control.session) {
@@ -188,7 +202,8 @@ private:
                         TaskKind::ProtocolFault,
                         "received a binary WebSocket message",
                         std::make_exception_ptr(WsProtocolException(
-                            "received a binary WebSocket message"))};
+                            "received a binary WebSocket message",
+                            _endpoint.host, _endpoint.target))};
                 }
                 try {
                     on_text(boost::beast::buffers_to_string(buffer.data()));
@@ -289,6 +304,7 @@ private:
         if (_control->stopping) co_return;
         auto control = _control;
         std::stop_callback on_stop(stop, [control, executor = _strand] {
+            close_admission(*control);
             asio::post(executor, [control] { request_stop(*control); });
         });
 

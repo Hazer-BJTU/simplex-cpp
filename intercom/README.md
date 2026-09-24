@@ -3,8 +3,14 @@
 `StableWebSocketClient` maintains one WebSocket session to a fixed
 `endpoint::ResolvedEndpoint`. It uses the existing `connect_websocket` path for
 plain `ws://` and verified `wss://` connections. A supervisor reconnects after
-transport failures with capped exponential backoff. Each connected session has
-one reader and one writer coroutine; both finish before the next session starts.
+transport failures with capped exponential backoff. It also retries every
+connection-establishment failure indefinitely, including permanent DNS errors,
+TLS certificate verification failures, and rejected WebSocket upgrades (even
+authentication failures). This is intentional: endpoint configuration or the
+peer may be repaired without restarting the process. Unlike the finite,
+recoverability-based `intercom::fetch` policy, a bad stable-client configuration
+can leave `run()` alive until stopped. Each connected session has one reader
+and one writer coroutine; both finish before the next session starts.
 
 Derive from the client and implement `on_text(std::string)`. The callback runs
 on the client's strand for each complete text message. It should finish
@@ -36,9 +42,9 @@ full. Admission does not confirm delivery. Queued messages survive reconnects;
 a message already taken by the writer is never replayed after a failed write,
 because the peer may have received it. Stopping closes the channel and ends
 pending operations. Once `stop()` returns, a new `send()` fails immediately.
-Call `stop()` from any thread, then await `run()` before
-destroying the client or its TLS context. A `std::stop_token` can also be
-passed to `run()`.
+The same guarantee holds after `request_stop()` returns on the token passed to
+an active `run()`. Call either shutdown method, then await `run()` before
+destroying the client or its TLS context.
 
 The default queue capacity and retry delays are configured through
 `StableWebSocketOptions`. The inactivity timeout defaults to zero, leaving a

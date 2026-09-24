@@ -170,12 +170,7 @@ boost::asio::awaitable<void> Client::process_signals() {
             std::lock_guard lock(_handler_mutex);
             handler = _signal_handler;
         }
-        try {
-            handler(signal);
-        } catch (...) {
-            StableWebSocketClient::stop();
-            throw;
-        }
+        handler(signal);
     }
 }
 

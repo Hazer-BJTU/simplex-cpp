@@ -350,8 +350,15 @@ BOOST_AUTO_TEST_CASE(binary_message_ends_run_as_protocol_failure) {
     server.join();
 
     BOOST_REQUIRE(failure);
-    BOOST_CHECK_THROW(std::rethrow_exception(failure),
-                      intercom::WsProtocolException);
+    try {
+        std::rethrow_exception(failure);
+        BOOST_FAIL("expected a fatal protocol failure");
+    } catch (const intercom::WsProtocolException& error) {
+        BOOST_TEST(error.host() == "127.0.0.1");
+        BOOST_TEST(error.target() == "/client");
+        BOOST_TEST(std::string(error.what()).find("while reading a message")
+                   != std::string::npos);
+    }
     BOOST_CHECK(client.received.empty());
 }
 
@@ -398,6 +405,72 @@ BOOST_AUTO_TEST_CASE(stop_token_interrupts_websocket_handshake) {
 
     BOOST_CHECK(!error);
     BOOST_CHECK(elapsed < 150ms);
+}
+
+BOOST_AUTO_TEST_CASE(send_after_stop_token_request_is_rejected) {
+    loopback_ws::OneShotServer server([](tcp::socket& socket) {
+        websocket::stream<tcp::socket> ws(std::move(socket));
+        ws.accept();
+        ws.text(true);
+        ws.write(asio::buffer("hold", 4));
+        beast::flat_buffer buffer;
+        boost::system::error_code ignored;
+        ws.read(buffer, ignored);
+    });
+
+    asio::io_context network_io;
+    Client client(network_io.get_executor(),
+                  where(server.wait_listening()), fast_options());
+    std::stop_source source;
+    std::promise<void> entered;
+    auto entered_future = entered.get_future();
+    std::promise<void> release;
+    auto release_future = release.get_future();
+    client.on_receive = [&](const std::string&) {
+        entered.set_value();
+        release_future.wait(); // Keep the strand busy during request_stop().
+    };
+
+    std::promise<std::exception_ptr> run_done;
+    auto run_future = run_done.get_future();
+    asio::co_spawn(network_io, client.run(source.get_token()),
+        [&](std::exception_ptr failure) { run_done.set_value(failure); });
+    std::thread network_thread([&] { network_io.run(); });
+
+    const bool handler_entered = entered_future.wait_for(2s) ==
+        std::future_status::ready;
+    std::exception_ptr send_failure;
+    bool send_completed_before_strand_resumed = false;
+    if (handler_entered) {
+        source.request_stop();
+        asio::io_context sender_io;
+        std::promise<std::exception_ptr> send_done;
+        auto send_future = send_done.get_future();
+        asio::co_spawn(sender_io, client.send("too late"),
+            [&](std::exception_ptr failure) { send_done.set_value(failure); });
+        std::thread sender_thread([&] { sender_io.run(); });
+        send_completed_before_strand_resumed =
+            send_future.wait_for(500ms) == std::future_status::ready;
+        release.set_value();
+        sender_thread.join();
+        send_failure = send_future.get();
+    } else {
+        client.stop();
+        release.set_value();
+    }
+
+    const bool run_completed = run_future.wait_for(2s) ==
+        std::future_status::ready;
+    if (!run_completed) network_io.stop();
+    network_thread.join();
+    server.join();
+
+    BOOST_REQUIRE(handler_entered);
+    BOOST_CHECK(send_completed_before_strand_resumed);
+    BOOST_REQUIRE(send_failure);
+    BOOST_CHECK_THROW(std::rethrow_exception(send_failure), std::logic_error);
+    BOOST_REQUIRE(run_completed);
+    BOOST_CHECK(!run_future.get());
 }
 
 BOOST_AUTO_TEST_CASE(stop_from_another_thread_joins_active_session) {
