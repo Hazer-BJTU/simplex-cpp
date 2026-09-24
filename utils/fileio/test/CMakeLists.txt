@@ -1,0 +1,3 @@
+add_executable(test_atomic_write test_atomic_write.cpp)
+target_link_libraries(test_atomic_write PRIVATE fileio_lib Boost::unit_test_framework)
+add_test(NAME test_atomic_write COMMAND test_atomic_write)

@@ -316,6 +316,19 @@ jobs:
           n_plugin=0
           for f in "$stage"/bin/* "$stage"/bin/plugins/*/*.so; do
             [ -f "$f" ] || continue
+            # bin/ also contains editable startup configuration. Inspect ELF
+            # magic before running ldd; file(1) is not installed everywhere.
+            magic=$(od -An -tx1 -N4 "$f" | tr -d '[:space:]')
+            if [ "$magic" != "7f454c46" ]; then
+              case "$f" in
+                */plugins/*/*)
+                  echo "FAIL: plugin is not an ELF file: ${f#$stage/}"
+                  fail=1
+                  ;;
+                *) echo "skip non-ELF resource: ${f#$stage/}" ;;
+              esac
+              continue
+            fi
             case "$f" in
               */plugins/*/*) n_plugin=$((n_plugin + 1)) ;;
               *)               n_exe=$((n_exe + 1)) ;;
