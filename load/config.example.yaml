@@ -94,7 +94,7 @@ client:
     # Zero disables idle timeout. Positive values enable idle ping/deadline.
     idle_timeout_seconds: 0
 
-# Future disk persistence policy; no storage operations are implemented yet.
+# Startup persistence policy; automatic scheduling is not connected to IO yet.
 persistence:
   enabled: true
   # Session identity comes from session state, not this startup configuration.

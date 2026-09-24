@@ -26,3 +26,7 @@ endforeach()
 target_compile_definitions(load_hook_fixture_unselected PRIVATE LOAD_FAIL_FACTORY)
 
 add_test(NAME test_load_plugins COMMAND test_load_plugins)
+
+add_executable(test_state_persistence test_persistence.cpp)
+target_link_libraries(test_state_persistence PRIVATE load_lib Boost::unit_test_framework)
+add_test(NAME test_state_persistence COMMAND test_state_persistence)

@@ -5,6 +5,8 @@
 #
 #   - logging/    `logging_lib` (STATIC): thread-safe console logger
 #                 (logging::Logger), standard-library only.
+#   - fileio/     `fileio_lib` (SHARED): atomic file replacement through a
+#                 stream callback, with private POSIX resource ownership.
 #   - yamlconfig/ `yamlconfig_lib` (SHARED, the one copy of yaml-cpp per
 #                 process and of the conversion itself) + `yamlconfig_iface`
 #                 (INTERFACE wrapper): one-way YAML -> nlohmann JSON config
@@ -42,6 +44,7 @@
 # then async_eventbus (depends on asio_iface).
 # =============================================================================
 add_subdirectory(logging)
+add_subdirectory(fileio)
 add_subdirectory(yamlconfig)
 add_subdirectory(eventbus)
 add_subdirectory(asio)

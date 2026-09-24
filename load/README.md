@@ -3,9 +3,10 @@
 `load` defines the process startup configuration in
 [`config.example.yaml`](config.example.yaml). The plugin loading stage is
 implemented: it reads YAML, discovers provider modules, and constructs selected
-dynamic toolsets and loop hooks. Intrinsic initialization, session registry
-construction, model configuration/creation, connection startup, and disk
-persistence remain planned work.
+dynamic toolsets and loop hooks. Explicit JSON snapshot IO and Markdown session
+export are also implemented. Intrinsic initialization, session registry
+construction, model configuration/creation, connection startup, and automatic
+persistence scheduling remain planned work.
 
 The intended host runs one agent loop at a time. Startup configuration selects
 deployment resources; conversation and recovery state remain in
@@ -65,7 +66,94 @@ multiple directories, relative paths, default paths, selective construction and
 ordering, instance lifetime through registry use, configuration/factory failures,
 and compatible parsing. All of these tests run without network access or API
 credentials. The remaining sections specify the complete startup contract;
-model, connection, and storage settings describe later implementation stages.
+model, connection, and automatic storage settings describe later implementation
+stages. The explicit persistence API below is usable independently of startup
+policy loading.
+
+## Session snapshots and readable exports
+
+Link `load_lib` and include
+[`load/persistence.hpp`](include/load/persistence.hpp). Both save modes take an
+explicit filename and a const reference to the session:
+
+```cpp
+load::save_state("./sessions/current.json", state);
+auto restored = load::load_state("./sessions/current.json");
+
+load::ReadableOptions preview;
+preview.max_json_string_bytes = 1024;
+preview.max_json_items = 32;
+preview.max_json_depth = 6;
+preview.max_json_block_bytes = 8192;
+load::save_state("./memory/current.md", state, load::StateFormat::Readable, preview);
+```
+
+`StateFormat::Json` writes the existing `AgentInputState` JSON representation,
+including structured prompt sections, all conversation content, tool arguments
+and results, loop progress, pending results, and extras. It never clips data or
+updates session IDs/timestamps. The host owns those values. One JSON tree is
+built for serialization; the `AgentInputState` itself is not copied. Non-finite
+numbers and nlohmann binary/discarded values are rejected because JSON text
+cannot preserve them. `ContentType::Binary` remains supported through its normal
+base64 string representation.
+
+`load_state()` accepts JSON only and returns a new state, with no mutation of an
+existing session. It requires the four top-level dataclass fields `meta`,
+`system_prompt`, `tools`, and `turns`, checks typed record containers, and then
+uses the existing dataclass decoder. Unknown fields, omitted optional fields,
+and legacy single-object message content retain their compatibility behavior.
+A missing, unreadable, truncated, or malformed file throws `PersistenceError`
+with its path; it never becomes a fresh empty session implicitly. Loading does
+not decide whether the loop may resume, execute tools, or replay pending results.
+That remains the host's recovery responsibility.
+
+`StateFormat::Readable` is a write-only Markdown export for people and model
+memory lookup. It contains session metadata, loop progress and pending tool
+results, system prompt sections, tool definitions, and chronological turns and
+agent steps. Message roles, reasoning, call IDs, tool results, token costs,
+retention preferences, commit sequences, and extras remain distinguishable.
+Repeated tool output stored both as message content and as its result record is
+shown once when identical. Binary content is summarized by encoded size;
+external references remain visible without fetching them.
+
+Ordinary prose is retained in full. Each JSON preview separately limits string
+and key bytes, entries per container, nesting depth, and total rendered bytes.
+Complete JSON objects/arrays encoded inside text content (common for tool
+results) receive the same treatment. Such text is parsed one content part at a
+time; parsing still needs memory proportional to that part. JSON fields already
+stored as JSON are traversed by reference, and rendering stops at the block
+budget. The exporter does not first serialize the whole session.
+
+Truncation is marked explicitly, with omission counts where practical. Clipped
+previews may no longer be valid JSON; they are for reading, not parsing or state
+restoration. Limits never drop a later turn or an entire later Markdown section,
+and UTF-8 prefixes are not cut inside a code point. Message text and previews use
+fences longer than embedded backtick runs so their content cannot introduce
+false document headings. The source state remains unchanged. This export does
+not perform redaction or automatically index the document into a memory store.
+
+File publication delegates to [`fileio::atomic_write`](../utils/fileio/README.md),
+including descriptor ownership, temporary-file cleanup, and buffered output.
+`load` owns only snapshot serialization and readable rendering.
+
+These are synchronous operations. The caller must serialize saving with state
+mutation and coordinate writers to the same destination. Snapshot writes create
+missing parent directories and use an exclusively opened mode-0600 temporary
+file in the destination directory. The file is flushed, synced, and closed
+before atomic rename, followed by a parent-directory sync. A failure before
+rename leaves the old destination intact and cleans up the temporary file. If
+directory sync fails after rename, the error says replacement has already
+occurred. A destination symlink is replaced, not followed. Newly created ancestor
+directories are not individually synced, so this is not an unconditional
+power-loss durability guarantee for a newly created directory tree. Forced
+termination before publication can leave a temporary file; automatic cleanup of
+such abandoned files is not implemented.
+
+JSON and Markdown destinations are independent operations, with no transaction
+across the two. Neither API interprets startup YAML, derives filenames from
+session IDs, subscribes to loop events, or performs asynchronous/background IO.
+The template's `persistence.format: json` continues to describe restorable
+snapshots; Markdown export is selected explicitly through this API.
 
 ## Template and installation
 
@@ -269,5 +357,6 @@ still decide whether the restored phase can continue. Saving uses a consistent
 state at a serialized boundary, after the applicable edit hooks complete; a
 failed edit or uncertain tool state must not be presented as a completed step.
 Shutdown saving applies only while the host can stop mutation and finish a write,
-not after forced termination. Atomic replacement, durability guarantees, and
-handling of storage failures will be specified and tested with the disk writer.
+not after forced termination. The explicit writer's atomic replacement and
+durability boundaries are described above. Automatic event-boundary scheduling
+and the host's response to storage failures remain future policy integration work.
