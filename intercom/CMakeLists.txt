@@ -1,6 +1,6 @@
 # intercom: internal service-to-service WebSocket communication. Transport
 # only — opaque byte strings (JSON in practice) moved over WebSocket — with
-# its own request-lifecycle exception (WsException) and retry engine. It
+# a one-shot request API and a reconnecting client. It
 # deliberately does NOT live in endpoint: endpoint's semantic is "application
 # requests to model backends" (HTTP/SSE), while intercom is "internal
 # communication between services". It does reuse endpoint's connection

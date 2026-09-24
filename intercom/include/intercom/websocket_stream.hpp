@@ -227,6 +227,22 @@ public:
         co_return;
     }
 
+    /// Whether the last complete message read was a WebSocket text message.
+    /// @throws WsException{Stage::Unknown} when empty.
+    [[nodiscard]] bool got_text() const {
+        _check("got_text");
+        return std::visit(
+            [](const auto& alternative) -> bool {
+                using Flavour = std::decay_t<decltype(alternative)>;
+                if constexpr (std::is_same_v<Flavour, std::monostate>) {
+                    return false;
+                } else {
+                    return alternative->got_text();
+                }
+            },
+            _alternative);
+    }
+
     /**
      * @brief Best-effort close handshake (close_code::normal).
      *
@@ -251,6 +267,27 @@ public:
             },
             _alternative);
         co_return;
+    }
+
+    /**
+     * @brief Immediately tear down the transport to wake pending read/write.
+     *
+     * Call on the session executor. Unlike close(), this does not perform a
+     * WebSocket close handshake; it is intended for a failed session or a
+     * client that is stopping. The stream must remain alive until its pending
+     * operations have completed.
+     */
+    void abort() noexcept {
+        std::visit(
+            [](auto& alternative) {
+                using Flavour = std::decay_t<decltype(alternative)>;
+                if constexpr (!std::is_same_v<Flavour, std::monostate>) {
+                    boost::system::error_code ignored;
+                    boost::beast::get_lowest_layer(*alternative)
+                        .socket().close(ignored);
+                }
+            },
+            _alternative);
     }
 
 private:
