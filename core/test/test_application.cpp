@@ -183,3 +183,31 @@ BOOST_AUTO_TEST_CASE(required_snapshot_failure_stops_admission) { scenario(Mode:
 BOOST_AUTO_TEST_CASE(blocked_restore_never_executes_model) { scenario(Mode::Blocked); }
 
 BOOST_AUTO_TEST_CASE(protocol_failure_survives_payload_queue_shutdown) { scenario(Mode::ProtocolFailure); }
+
+BOOST_AUTO_TEST_CASE(startup_failure_releases_ownership_while_application_survives) {
+    Scratch scratch;
+    asio::io_context io;
+    load::Configuration config;
+    config.directory = scratch.root;
+    config.document = Json::object();
+    config.client = load::websocket_endpoint("ws://127.0.0.1:1/events");
+    config.storage = scratch.root / "sessions";
+    const auto snapshot = config.storage / "test/state.json";
+    std::filesystem::create_directories(snapshot.parent_path());
+    std::ofstream(snapshot) << "invalid json";
+    auto model = std::make_shared<Model>(io.get_executor());
+    core::Application broken(io.get_executor(), config, "test", model);
+    auto failed = asio::co_spawn(io, broken.run(), asio::use_future);
+    io.run();
+    BOOST_CHECK_THROW(failed.get(), std::exception);
+
+    // Keep broken alive: release must be scoped to run(), not Impl destruction.
+    std::filesystem::remove(snapshot);
+    io.restart();
+    core::Application repaired(io.get_executor(), config, "test", model);
+    std::stop_source stop;
+    stop.request_stop();
+    auto result = asio::co_spawn(io, repaired.run(stop.get_token()), asio::use_future);
+    io.run();
+    BOOST_CHECK_NO_THROW(result.get());
+}

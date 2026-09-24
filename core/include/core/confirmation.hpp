@@ -10,7 +10,8 @@ namespace core {
 /**
  * One run's confirmation admission and cancellation boundary.
  * A short mutex arbitrates approval against stop. No lock spans network work.
- * Once approved, a call belongs to the draining batch; stop cannot revoke it.
+ * Stop cannot revoke an approval that won this boundary. The loop may still
+ * cancel before dispatch; approval alone is not a promise of tool execution.
  */
 class ConfirmationScope {
 public:
@@ -26,6 +27,8 @@ private:
 /** One attempt per event. Always fail closed; all exchange tasks are joined.
  * The host keeps exactly one authoritative async-bus listener alive through
  * batch completion. Missing endpoint, bad correlation and transport errors deny.
+ * Timeout invalidates approval but completion can wait for an already-running
+ * system DNS backend. See intercom::cancellable_exchange for the lifetime contract.
  */
 boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     tools::InvokeConfirmEvent event,

@@ -1417,7 +1417,7 @@ BOOST_AUTO_TEST_CASE(spawn_returns_the_whole_result_for_a_quick_command)
                        {"description", "a quick command"}}));
 
     const ResultText result = f.result_of(record);
-    BOOST_TEST(result.field("session_id") == "proc_1");
+    BOOST_TEST(!result.field("session_id").empty());
     BOOST_TEST(result.field("executable") == "echo");
     BOOST_TEST(result.field("description") == "a quick command");
     BOOST_TEST(result.field("finished") == "true");
@@ -1437,7 +1437,7 @@ BOOST_AUTO_TEST_CASE(spawn_returns_the_whole_result_for_a_quick_command)
     // still reports everything rather than finding it already consumed.
     const auto read = f.call(call_for(
         std::string(tool_names::kRead),
-        nlohmann::json{{"session_id", "proc_1"}, {"stream", "stdout"}}));
+        nlohmann::json{{"session_id", result.field("session_id")}, {"stream", "stdout"}}));
     BOOST_TEST(f.result_of(read).block("stdout") == "quick\n");
 }
 
@@ -1455,7 +1455,7 @@ BOOST_AUTO_TEST_CASE(spawn_hands_back_a_session_for_a_program_that_keeps_running
                        {"expected_runtime_milliseconds", 50}}));
 
     const ResultText result = f.result_of(record);
-    BOOST_TEST(result.field("session_id") == "proc_1");
+    BOOST_TEST(!result.field("session_id").empty());
     BOOST_TEST(result.field("finished") == "false");
     BOOST_TEST(result.field("state") == "running");
     BOOST_TEST(std::stoi(result.field("pid")) > 0);

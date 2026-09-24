@@ -8,6 +8,9 @@ namespace core {
 /**
  * One process worker, one session and at most one active loop.
  *
+ * Persistent sessions acquire exclusive local POSIX file ownership before
+ * restoration; duplicate starts fail. Completion also joins process pipe I/O.
+ * A running system DNS backend may delay cancellation completion (see intercom).
  * run() is single-use and is the lifetime fence for every owned task. Keep the
  * Application and executor alive until it completes. stop() is thread-safe and
  * requests controlled shutdown; it never stops the io_context. No live session

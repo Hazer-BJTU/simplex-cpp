@@ -172,6 +172,7 @@ private:
     // One-shot guard for the lifecycle contract below (assert-checked, not
     // a runtime state machine by design).
     bool _io_tasks_started = false;
+    bool _initial_wait_active = false;
 
     // Engaged exactly once, by whichever await task observes the child's
     // terminal state. Disengaged => status() reports the live view.
@@ -281,6 +282,19 @@ public:
     boost::asio::awaitable<bool> terminate();
     boost::asio::awaitable<bool> request_exit();
 
+    /**
+     * Kill the direct child and join owned background tasks on the handle strand.
+     * The manager must have scheduled await_initial_execution(), and must stop
+     * admitting input. Shutdown also joins an initial watcher still in progress.
+     * Natural completion is unchanged. Explicit shutdown allows 100 ms for output
+     * drainage after reaping, then closes inherited pipes and marks unfinished
+     * streams truncated. Captured bytes remain available; queued/pending stdin
+     * is discarded. Descendants are not killed. Completion joins pipe operations
+     * and the child watcher, even when descendants keep their descriptors open.
+     * Cancellation is shielded so a caller cannot abandon this cleanup.
+     */
+    boost::asio::awaitable<void> shutdown();
+
     // -- observation (strand-owned state: call on the strand or at rest) ----
 
     [[nodiscard]] const LaunchSpec& spec() const noexcept;
@@ -307,13 +321,14 @@ public:
 
     // True when the matching stream produced more than the spec's
     // max_output_bytes and the captured text stops at the cap (the excess
-    // was drained and discarded — see the class comment).
+    // was drained and discarded — see the class comment). Also true when
+    // explicit shutdown closes an unfinished output stream.
     [[nodiscard]] bool stdout_truncated() const noexcept;
     [[nodiscard]] bool stderr_truncated() const noexcept;
 
-    // True once BOTH output pipes have hit EOF and their read tasks have
-    // finished — i.e. the captured text is everything the child will ever
-    // produce.
+    // True once BOTH output pipes are closed. During natural completion this
+    // means EOF; explicit shutdown may force closure and sets truncation flags.
+    // Only shutdown() completion guarantees all pending handlers have joined.
     //
     // This is NOT implied by exited(), and the difference is a race a caller
     // has to care about: the await task records the terminal status as soon

@@ -73,3 +73,11 @@ A binary reply throws WsProtocolException with endpoint context.
 This API is used by the core confirmation adapter. It differs from fetch_once's
 inactivity timeout and from fetch's optional retry behavior: a human approval
 request must not be repeated implicitly.
+
+The deadline is an authorization cutoff, not a hard wall-clock bound on return.
+A system DNS backend already inside `getaddrinfo` may not be interruptible.
+Expiration or cancellation still invalidates the reply, but completion (and
+worker shutdown waiting for it) can be delayed until that backend returns.
+The operation retains and joins this work; it never detaches resolution or
+allows a late result to revive approval. Numeric endpoint addresses avoid DNS
+lookup when bounded resolver latency is required.

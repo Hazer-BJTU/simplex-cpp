@@ -1,4 +1,5 @@
 #include "core/application.hpp"
+#include "fileio/session_lock.hpp"
 #include "core/confirmation.hpp"
 #include "core/protocol.hpp"
 #include "load/plugins.hpp"
@@ -44,6 +45,28 @@ bool channel_shutdown(std::exception_ptr failure) {
     } catch (...) {
         return false;
     }
+}
+
+/** Internal bookkeeping stays typed; wire labels remain protocol-compatible. */
+enum class SaveBoundary {
+    BeforeTools,
+    ResultsReady,
+    StepFinished,
+    RunFinished,
+    Cancelled,
+    Shutdown
+};
+
+const char* boundary_name(SaveBoundary boundary) {
+    switch (boundary) {
+        case SaveBoundary::BeforeTools: return "before_tools";
+        case SaveBoundary::ResultsReady: return "results_ready";
+        case SaveBoundary::StepFinished: return "step_finished";
+        case SaveBoundary::RunFinished: return "run_finished";
+        case SaveBoundary::Cancelled: return "cancelled";
+        case SaveBoundary::Shutdown: return "shutdown";
+    }
+    throw std::logic_error("invalid persistence boundary");
 }
 
 std::string run_status(loop::RunStatus status) {
@@ -161,7 +184,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     }
 
     /** Required JSON saves latch failure even if RunFinished swallows observers. */
-    void save(const char* boundary) {
+    void save(SaveBoundary boundary) {
         if (!config.persistence || storage_failed) return;
         const auto directory = config.storage / session_id;
         try {
@@ -174,9 +197,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             cancel();
             throw;
         }
-        if (std::string_view(boundary) == "run_finished"
-            || std::string_view(boundary) == "cancelled") run_saved = true;
-        emit("persisted", {{"boundary", boundary}, {"format", "json"}});
+        if (boundary == SaveBoundary::RunFinished
+            || boundary == SaveBoundary::Cancelled) run_saved = true;
+        emit("persisted", {{"boundary", boundary_name(boundary)}, {"format", "json"}});
         if (config.readable) {
             try {
                 load::save_state(directory / "readable.md", state, load::StateFormat::Readable);
@@ -188,6 +211,14 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
 
     /** Initialize resources before admission; restored history is never replayed. */
     void initialize() {
+        construct_runtime();
+        restore_state();
+        install_confirmation();
+        install_observers();
+    }
+
+    /** Construct registries before rebuilding their prompt representation. */
+    void construct_runtime() {
         auto plugins = load::load_plugins(config.document, config.directory);
         auto& extensions = plugins.extensions;
         if (!model) model = plugins.providers.create_model(config.provider, strand, config.model);
@@ -197,6 +228,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         for (auto& tool : extensions.tools) registry.add(std::move(tool));
         hooks.add(loop::intrinsic::ContextStatisticHook::from_config());
         for (auto& hook : extensions.loop_hooks) hooks.add(std::move(hook));
+    }
+
+    /** Restore history unchanged, reconciling only host-owned capabilities. */
+    void restore_state() {
         const auto snapshot = config.storage / session_id / "state.json";
         const bool restored = config.persistence && config.restore && std::filesystem::exists(snapshot);
         if (restored) {
@@ -228,6 +263,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 prompt.add_section(section.name, section.title, section.text, section.stability);
         }
         state.system_prompt = std::move(prompt);
+    }
+
+    /** Install the process-wide authoritative approval listener. */
+    void install_confirmation() {
         auto& bus = eventbus::default_async_bus();
         if (bus.subscriber_count<tools::InvokeConfirmEvent>() != 0)
             throw std::runtime_error("worker requires one authoritative confirmation listener");
@@ -251,6 +290,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     self->config.confirmation, self->config.confirmation_timeout,
                     self->session_id, std::move(run));
             });
+    }
+
+    /** Install persistence, event forwarding, and strand-routed controls. */
+    void install_observers() {
         subscriptions.emplace_back(events.subscribe<loop::RunStarted>([this](const auto&) {
             emit("run_started");
         }));
@@ -264,10 +307,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             emit("tool_calls", event.calls);
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolDispatchCheckpoint>([this](const auto&) {
-            save("before_tools");
+            save(SaveBoundary::BeforeTools);
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolResultsCheckpoint>([this](const auto&) {
-            save("results_ready");
+            save(SaveBoundary::ResultsReady);
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolResultsCommitted>([this](const auto& event) {
             emit("tool_results", *event.state.turns.back().agent_loop_step.back().invoke_returns);
@@ -282,10 +325,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             event.state.meta.updated_at = timestamp();
         }));
         subscriptions.emplace_back(events.subscribe<loop::StepFinished>([this](const auto&) {
-            if (config.save_step) save("step_finished");
+            if (config.save_step) save(SaveBoundary::StepFinished);
         }));
         subscriptions.emplace_back(events.subscribe<loop::RunFinished>([this](const auto&) {
-            if (config.save_run) save("run_finished");
+            if (config.save_run) save(SaveBoundary::RunFinished);
         }));
         subscriptions.emplace_back(events.subscribe<io::SignalEvent>(
             [weak = weak_from_this()](const io::SignalEvent& event) {
@@ -389,7 +432,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             // required save here before reporting durability or admitting input.
             if (!storage_failed && !run_saved
                 && (config.save_run || result.status == loop::RunStatus::Cancelled)) {
-                save(config.save_run ? "run_finished" : "cancelled");
+                save(config.save_run ? SaveBoundary::RunFinished : SaveBoundary::Cancelled);
             }
             active = false;
             {
@@ -412,6 +455,14 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     /** Supervise IO and output tasks, then drain resources on every exit path. */
     asio::awaitable<void> run_owned() {
         co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
+        // Ownership spans initialization, all saves, and final cleanup. A local
+        // guard releases it even when startup throws while Application survives.
+        std::unique_ptr<fileio::SessionLock> ownership;
+        if (config.persistence) {
+            const auto directory = config.storage / session_id;
+            std::filesystem::create_directories(directory);
+            ownership = std::make_unique<fileio::SessionLock>(directory / "session.lock");
+        }
         initialize();
         asio::co_spawn(strand, client.run(), [self = shared_from_this()](std::exception_ptr error) {
             if (error) {
@@ -447,21 +498,13 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         try {
             if (config.save_shutdown && !storage_failed) {
                 state.meta.updated_at = timestamp();
-                save("shutdown");
+                save(SaveBoundary::Shutdown);
             }
         } catch (...) {
             if (!failure) failure = std::current_exception();
         }
         try {
-            co_await store->terminate_all(false);
-            // Release only reaped children; retain the executor for their await tasks.
-            auto snapshots = co_await store->snapshots();
-            for (const auto& snapshot : snapshots) {
-                while (!(co_await store->release(snapshot.id))) {
-                    asio::steady_timer pause(strand, std::chrono::milliseconds(10));
-                    co_await pause.async_wait(asio::use_awaitable);
-                }
-            }
+            co_await store->shutdown();
         } catch (...) {
             if (!failure) failure = std::current_exception();
         }

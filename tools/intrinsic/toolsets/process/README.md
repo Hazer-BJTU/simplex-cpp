@@ -89,7 +89,8 @@ sessions may be retained at once — an exited-but-unreleased session still coun
 — and spawn refuses past that, which is a failure the model reads and can act on
 by releasing finished sessions.
 
-**Session ids are never reused.** `proc_3` names one process for the life of the
+**Session ids are never reused.** IDs below such as `proc_3` are illustrative
+opaque placeholders; always pass the exact returned value without parsing it. `proc_3` names one process for the life of the
 host, and after that session is released the number is spent: the next spawn
 gets a fresh one. A model's older context still says "proc_3 is the build I
 started three turns ago", and an id that came back around would make
@@ -856,24 +857,24 @@ will run and exactly the one the record carries back. `ProcessSessionStore`'s
 constructor also takes a `max_sessions` cap, default `kDefaultMaxSessions`
 (32), which counts retained sessions rather than live processes.
 
-### Shutdown is `terminate_all()`, not the destructor
+### Shutdown is `shutdown()`, not the destructor
 
 Each handle's await task keeps its own handle alive until the child's terminal
 state is observed, so dropping the table is not the last reference and does not
 stop the children. Killing one is a coroutine, and a destructor has no executor
-to run it on. So a host awaits `terminate_all()` **while its context still
+to run it on. So a host awaits `shutdown()` **while its context still
 runs**. The destructor is a last-resort tail: it signals the recorded pids
 synchronously and logs loudly.
 
 Finish all store calls before destroying the store. Stop the context and join
 its workers before relying on the destructor's fallback `::kill` cleanup, so
 that cleanup does not race child reaping. Normal shutdown awaits
-`terminate_all()` while the context is still running.
+`shutdown()` while the context is still running.
 
 ### The headers
 
 - **`process/session_store.hpp`** — the session table. Mints readable ids
-  (`proc_1`, `proc_2`, … monotonically, never reusing one), gives each child its
+  (a fresh store UUID plus a monotonic counter, never reusing one), gives each child its
   own strand, keeps the per-stream read cursors that make "what is new since I
   last looked" answerable, and reaps a session once its child is observed
   terminal. A mutex protects the table, id allocation and pending launch
@@ -881,8 +882,8 @@ that cleanup does not race child reaping. Normal shutdown awaits
   serialises handle operations and cursor reads through explicit `co_spawn`
   tasks. Unlike an awaited `dispatch`, this assigns the whole coroutine its
   strand executor, including continuations after suspension. Observations
-  return owned values. `release()` checks the atomic exit latch and removes
-  the entry in one table critical section. Concurrent launches reserve capacity
+  return owned values. `release()` checks the atomic exit latch, joins owned I/O outside the
+  table mutex, then removes the entry in one table critical section. Concurrent launches reserve capacity
   before startup, and failed launches return their reservation. The store starts
   I/O tasks and drives each handle through its initial wait and terminal watch.
 - **`process/tools.hpp`** — the five `ToolInterface` implementations. Each
@@ -1082,3 +1083,19 @@ against the record, the scheduling rules measured with a recording probe tool
 
 All three drive real children — the same harmless coreutils `process/`'s own
 suite uses — on a context that runs continuously, the way a host does.
+
+### Resource identities and final shutdown
+
+Session IDs are opaque and contain a fresh store-incarnation UUID. Historical
+IDs remain unchanged in saved conversation records but cannot resolve to a
+new process in another store or restarted worker. Persisting conversation
+history does not persist process resources.
+
+`terminate_all()` only sends signals. Hosts needing a lifetime fence must stop
+spawn/input admission and await `shutdown()`: it terminates/reaps direct
+children, joins their pipe tasks, and clears the table. `release()` also joins
+an exited child's I/O before removing it. Explicit cleanup allows 100 ms of
+output drainage after reaping, then closes remaining inherited pipes, marking
+unfinished streams truncated. Already captured output is retained and pending
+stdin is discarded. Normal process completion still drains output naturally.
+This does not terminate descendants, and does not stop the executor.

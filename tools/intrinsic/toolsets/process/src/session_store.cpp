@@ -1,5 +1,7 @@
 #include "tools/intrinsic/process/session_store.hpp"
 
+#include <boost/uuid/random_generator.hpp>
+#include <boost/uuid/uuid_io.hpp>
 #include <algorithm>
 #include <chrono>
 #include <format>
@@ -32,7 +34,8 @@ ProcessSessionStore::ProcessSessionStore(
     boost::asio::any_io_executor executor,
     std::size_t max_sessions
 ): _executor(std::move(executor)),
-   _max_sessions(max_sessions)
+   _max_sessions(max_sessions),
+   _incarnation(boost::uuids::to_string(boost::uuids::random_generator()()))
 {}
 
 ProcessSessionStore::~ProcessSessionStore()
@@ -93,7 +96,7 @@ ProcessSessionStore::SessionId ProcessSessionStore::mint_id_locked()
     // around would alias a process the model remembers from an earlier turn
     // (the header's identity note). The cost of never reusing is a number
     // that grows; the cost of reuse is killing the wrong process.
-    return std::format("proc_{}", _next_id++);
+    return std::format("proc_{}_{}", _incarnation, _next_id++);
 }
 
 ProcessSessionStore::SessionPtr ProcessSessionStore::find_session(
@@ -516,8 +519,25 @@ boost::asio::awaitable<std::size_t> ProcessSessionStore::terminate_all(
     co_return signalled;
 }
 
+boost::asio::awaitable<void> ProcessSessionStore::shutdown()
+{
+    const auto selected = select_sessions({});
+    for (const auto& session : selected) {
+        co_await session->handle->shutdown();
+    }
+    const std::lock_guard lock{_sessions_mutex};
+    _sessions.clear();
+}
+
 boost::asio::awaitable<bool> ProcessSessionStore::release(SessionId id)
 {
+    // A released handle must not outlive the store through self-owning pipe
+    // tasks. Capture ownership before suspending; never hold the table mutex.
+    auto session = find_session(id);
+    if (!session || !session->handle->exited()) {
+        co_return false;
+    }
+    co_await session->handle->shutdown();
     SessionPtr removed;
     {
         const std::lock_guard lock{_sessions_mutex};

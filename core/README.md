@@ -108,9 +108,23 @@ Application::run() is single-use and is the lifetime fence. Keep the object
 and executor alive until completion. stop() and the stop token request
 controlled shutdown; neither stops the executor. Shutdown cancels pending
 approvals/model work, drains the batch, saves state, terminates and reaps owned
-process children, then joins the sender and IO client. Final outbound admission
+process children, and joins all owned process pipe tasks before joining the
+sender and IO client. After reaping, explicit process shutdown allows 100 ms
+for output drainage, then closes remaining pipes even if descendants hold
+inherited descriptors. Captured bytes are retained, unfinished streams are
+marked truncated, and undelivered stdin is discarded. Normal completion still
+drains output naturally. This does not implement descendant-tree termination. Final outbound admission
 is attempted for at most 500 ms; delivery is not required for cleanup.
 The first fatal error propagates after cleanup.
+
+
+The deadline is an authorization cutoff, not a hard wall-clock bound on return.
+A system DNS backend already inside `getaddrinfo` may not be interruptible.
+Expiration or cancellation still invalidates the reply, but completion (and
+worker shutdown waiting for it) can be delayed until that backend returns.
+The operation retains and joins this work; it never detaches resolution or
+allows a late result to revive approval. Numeric endpoint addresses avoid DNS
+lookup when bounded resolver latency is required.
 
 ## Persistence and recovery
 
@@ -134,7 +148,18 @@ Tools/Blocked snapshots require operator inspection and never replay calls.
 Projection recovery uses buffered results without redispatch. Startup
 reconciles current tool definitions and skills but retains historical calls.
 Runtime process handles and old approvals are not restored. A persisted
-process ID must not be assumed to identify a live child after restart.
+process ID remains auditable in conversation history but never aliases a new
+process: each process store has a fresh UUID namespace. IDs are opaque.
+
+Before inspecting or restoring a snapshot, a persistent worker acquires an
+exclusive nonblocking advisory lock on `session.lock` in the session directory.
+A duplicate start fails before admission or snapshot changes. Ownership lasts
+through final save and cleanup; startup exceptions and process death release
+it. The descriptor is close-on-exec, so executed tools cannot retain the lock.
+The lock file must never be removed/replaced while workers may use it. All
+writers must cooperate, using the same local POSIX filesystem with `flock`
+support. Network/distributed filesystems are outside this ownership contract.
+Different session directories are independent.
 
 ## Validation
 
@@ -147,7 +172,12 @@ Loop tests verify checkpoint failure, projection recovery and validated edits.
 core_worker_container runs the actual shell, worker, provider adapter and
 process tools against an offline SSE fixture. It exercises approval with
 separate stdout/stderr and cancellation while waiting for confirmation.
-Outside Docker it is explicitly skipped. A manual real-provider session
+core_lifecycle_container uses actual workers to verify session ownership,
+crash recovery with executed children, historical process-ID rejection, and
+shutdown with descendant-held pipes. Both tests are skipped outside Docker.
+The Linux test_core_dns fixture blocks an already-running resolver backend
+until explicitly released, covering both timeout and external cancellation.
+ A manual real-provider session
 requires deployment credentials and remains a separate operator check.
 
 ## Build dependencies

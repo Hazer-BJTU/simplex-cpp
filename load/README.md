@@ -385,7 +385,9 @@ session dataclass. Model credentials are expanded only for driver_model.
 The optional security.confirmation mapping selects a complete ws:// or wss://
 endpoint and a positive timeout_ms (default 120000). Missing configuration
 means confirmation-required calls are denied. The endpoint is independent from
-client.endpoint; the timeout bounds the entire one-shot exchange.
+client.endpoint; the timeout invalidates approval across the whole exchange.
+It is not a hard bound on return latency: an already-running system DNS backend
+may delay completion and shutdown until it returns. Late results remain denied.
 
 worker.max_exchanges defaults to 12, event_capacity to 256, and system_prompt
 to a general assistant prompt. The prompt applies only to new sessions.

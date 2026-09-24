@@ -1,5 +1,6 @@
 #include "process/process_handle.hpp"
 
+#include <boost/scope/scope_exit.hpp>
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -612,6 +613,8 @@ boost::asio::awaitable<bool> ProcessHandle::await_initial_execution_on_strand() 
     // Second half of the lifecycle contract: the io tasks must be running
     // before anyone waits on the child.
     assert(_io_tasks_started);
+    _initial_wait_active = true;
+    boost::scope::scope_exit finished([this] { _initial_wait_active = false; });
 
     if (_spec.initial_wait_timeout_milliseconds == 0) {
         // 0 disables the deadline: no timer to race against, just wait for
@@ -708,6 +711,49 @@ void ProcessHandle::close_input() {
 // observation. The child's death arrives at the watcher like any other exit,
 // which is what makes these composable with the ordinary lifecycle instead of
 // a second, competing teardown path.
+
+boost::asio::awaitable<void> ProcessHandle::shutdown() {
+    co_await boost::asio::this_coro::reset_cancellation_state(
+        boost::asio::disable_cancellation());
+    co_await boost::asio::co_spawn(
+        _strand,
+        [self = shared_from_this()]() -> boost::asio::awaitable<void> {
+            // Stop writes before killing the reader: a queued pipe write after
+            // child exit could otherwise raise SIGPIPE in the owning process.
+            self->_write_channel.close();
+            self->_write_channel.cancel();
+            boost::system::error_code ignored;
+            self->_pipe0.close(ignored);
+            co_await self->signal_child_on_strand(Signal::Kill);
+            boost::asio::steady_timer pause(self->_strand);
+            // The normal watcher is the sole owner of terminal observation.
+            while (!self->exited() || self->_initial_wait_active) {
+                pause.expires_after(std::chrono::milliseconds(5));
+                co_await pause.async_wait(boost::asio::use_awaitable);
+            }
+            const auto deadline = std::chrono::steady_clock::now()
+                + std::chrono::milliseconds(100);
+            while (!self->output_drained()
+                   && std::chrono::steady_clock::now() < deadline) {
+                pause.expires_after(std::chrono::milliseconds(5));
+                co_await pause.async_wait(boost::asio::use_awaitable);
+            }
+            self->_stdout_truncated |= self->_pipe1.is_open();
+            self->_stderr_truncated |= self->_pipe2.is_open();
+            self->_pipe1.close(ignored);
+            self->_pipe2.close(ignored);
+            // Futures become ready only after the co_spawn completion handlers
+            // run. Never block this executor with future::wait()/get().
+            for (auto& task : self->_background_tasks) {
+                while (task.valid()
+                       && task.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                    pause.expires_after(std::chrono::milliseconds(5));
+                    co_await pause.async_wait(boost::asio::use_awaitable);
+                }
+            }
+        },
+        boost::asio::use_awaitable);
+}
 
 boost::asio::awaitable<bool> ProcessHandle::terminate() {
     co_return co_await signal_child(Signal::Kill);

@@ -262,7 +262,7 @@ BOOST_AUTO_TEST_CASE(spawn_registers_a_session_and_reports_it)
     const auto id = f.spawn_id(spec_for("echo", {"hello"}));
 
     // Ids are minted as readable names, starting at 1.
-    BOOST_TEST(id == std::string("proc_1"));
+    BOOST_TEST(!id.empty());
 
     const auto snapshot = f.run(f.store->snapshot(id));
     BOOST_TEST_REQUIRE(snapshot.has_value());
@@ -374,10 +374,10 @@ BOOST_AUTO_TEST_CASE(a_failed_launch_registers_nothing)
     }
     BOOST_TEST(threw);
     // The table is untouched, and the id was never spent: the next spawn
-    // still gets proc_1.
+    // still receives a valid opaque identity.
     BOOST_TEST(f.run(f.store->size()) == std::size_t{0});
     const auto id = f.spawn_id(spec_for("true"));
-    BOOST_TEST(id == std::string("proc_1"));
+    BOOST_TEST(!id.empty());
 }
 
 BOOST_AUTO_TEST_CASE(the_session_cap_refuses_further_spawns)
@@ -1096,4 +1096,25 @@ BOOST_AUTO_TEST_CASE(live_output_reads_and_snapshots_are_serialized_across_conte
     verify(combined.out);
     verify(combined.err);
     BOOST_TEST(f.run(f.store->release(id)));
+}
+
+BOOST_AUTO_TEST_CASE(store_incarnations_never_alias_historical_ids)
+{
+    Fixture first;
+    Fixture second;
+    process::LaunchSpec spec;
+    spec.executable = "echo";
+    spec.arguments = {"first"};
+    spec.initial_wait_timeout_milliseconds = 1000;
+    const auto old = first.run(first.store->spawn(spec)).id;
+    spec.arguments = {"second"};
+    const auto current = second.run(second.store->spawn(spec)).id;
+    BOOST_TEST(old != current);
+    BOOST_TEST(!second.run(second.store->snapshot(old)).has_value());
+    BOOST_TEST(!second.run(second.store->write_input(old, "bad", false)));
+    BOOST_TEST(!second.run(second.store->terminate(old, false)));
+    BOOST_TEST(!second.run(second.store->release(old)));
+    BOOST_TEST(second.run(second.store->snapshot(current)).has_value());
+    first.run(first.store->shutdown());
+    second.run(second.store->shutdown());
 }

@@ -10,6 +10,10 @@ namespace intercom {
  * One text request/reply with an overall deadline and explicit cancellation.
  *
  * No retries. The deadline covers DNS, TCP/TLS, upgrade, write, read and close.
+ * This is a reply-validity deadline, not a hard bound on completion latency:
+ * an already-running system DNS backend may finish only after getaddrinfo
+ * returns. Timeout/stop invalidates any late result, but cleanup joins that
+ * backend before returning (and can therefore delay worker shutdown).
  * Stop/deadline notifications are posted to the operation's private strand;
  * transport abortion and cancellation-slot emission never race socket access.
  * Completion joins the exchange and its timer before returning. Cancellation

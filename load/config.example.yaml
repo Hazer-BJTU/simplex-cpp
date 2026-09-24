@@ -104,7 +104,8 @@ client:
 security:
   confirmation:
     endpoint: ws://127.0.0.1:8765/agent/confirm
-    # Positive overall deadline through connection, reply and close; no retry.
+    # Positive approval deadline through connection, reply and close; no retry.
+    # Expiry denies approval; an active system DNS lookup can delay cleanup.
     timeout_ms: 120000
 
 worker:
