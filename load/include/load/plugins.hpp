@@ -82,6 +82,16 @@ struct LoadedPlugins {
     const std::filesystem::path& configuration_directory);
 
 /**
+ * Load from an already parsed document without reading startup YAML again.
+ * Validates all plugin sections before opening native modules. The absolute
+ * base directory and ownership rules match the individual domain loaders.
+ * File/discovery exceptions propagate without a synthetic source filename.
+ */
+[[nodiscard]] LoadedPlugins load_plugins(
+    const nlohmann::json& configuration,
+    const std::filesystem::path& configuration_directory);
+
+/**
  * Read one startup YAML file, validate its plugin sections, and load plugins.
  *
  * @param configuration_file File to read. Relative file arguments are resolved

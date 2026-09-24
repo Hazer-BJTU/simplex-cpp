@@ -13,7 +13,7 @@
 //
 // Three things live here and nowhere else:
 //
-//   SESSION IDENTITY   a SessionId per child, minted "proc_<n>". Text, not an
+//   SESSION IDENTITY   a SessionId per child, minted "proc_<store-uuid>_<n>". Text, not an
 //                      integer, because it travels through JSON tool
 //                      arguments and back as prose the model may repeat. The
 //                      numbers only ever go UP: an id is handed out once and
@@ -23,7 +23,7 @@
 //                      says "proc_1 is the build I started three turns ago",
 //                      and a reused proc_1 would make send_process end a
 //                      process that model never saw. Growth is the cheap
-//                      side of that trade: a uint64 counter does not run out.
+//                      side of that trade. A fresh UUID namespaces each store.
 //   READ CURSORS       how much of each stream the model has already been
 //                      given. ProcessHandle keeps the whole captured buffer
 //                      and never forgets, so "the new output" is a cursor
@@ -46,8 +46,8 @@
 // change a coroutine's executor and is not a lock.
 //
 // Public coroutines may be awaited from another executor. Observations return
-// owned values, never references to mutable session state. release() only needs
-// the table mutex and the handle's atomic exited() latch.
+// owned values, never references to mutable session state. release() joins
+// exited handles outside the table mutex before removing their entries.
 //
 // THE STORE OWNS THE LIFECYCLE CONTRACT. ProcessHandle's contract
 // (process_handle.hpp) says: start the io tasks, then keep driving the handle
@@ -64,14 +64,14 @@
 // window did not cover is wait_for_any()'s job, separately and with its own
 // deadline.
 //
-// SHUTDOWN IS terminate_all(), NOT THE DESTRUCTOR, and the reason is worth
+// SHUTDOWN IS shutdown(), NOT THE DESTRUCTOR, and the reason is worth
 // knowing before owning one. Each handle's await task holds a reference to its
 // own handle until the child's terminal state is observed (ProcessHandle's
 // documented lifetime model), so dropping this table does NOT destroy the
 // handles and does NOT stop their children — the store's last reference is
 // simply not the last one. Killing a child is a coroutine, and a destructor
 // has no executor left to run one on. So a host ends its children by awaiting
-// terminate_all() while its context still runs; the destructor is a
+// shutdown() while its context still runs; the destructor is a
 // last-resort tail that signals whatever is left synchronously (::kill on the
 // pid recorded at spawn) and says so loudly, because a leaked child outlives
 // the process that made it.
@@ -86,7 +86,7 @@
 //
 // Finish all store calls before destroying it. For the fallback destructor's
 // raw-pid cleanup, stop the context and join its workers first, so cleanup does
-// not race the handle's child reaping. Normal shutdown uses terminate_all()
+// not race the handle's child reaping. Normal shutdown uses shutdown()
 // while the executor is still running.
 //
 
@@ -390,9 +390,10 @@ public:
      * would kill it — a silent kill from what reads like a bookkeeping call.
      * A caller that means to end a child calls terminate() and says so.
      *
-     * Reads the atomic exited() latch and removes the entry in one table
-     * critical section. Exactly one caller can release a given session.
-     * Session ownership is retained until after the mutex is unlocked.
+     * Checks the atomic exited() latch, then joins process I/O outside the
+     * table mutex (see ProcessHandle::shutdown() for the bounded drain policy).
+     * Removal is one table transaction; exactly one caller can release the
+     * session. Concurrent observers retain shared ownership across this wait.
      *
      * @return whether the session was dropped (false: unknown id, the child
      *         is still running, or another caller released it first).
@@ -422,6 +423,14 @@ public:
      *         not one).
      */
     boost::asio::awaitable<std::size_t> terminate_all(bool graceful = false);
+
+    /// After admission and tool dispatch stop, kill and join every owned child
+    /// and pipe task, then release sessions. Unlike terminate_all(), completion
+    /// is a resource lifetime fence. Continue after individual failures, clear
+    /// every session, then rethrow the first error. OS failures can prevent child
+    /// termination/reaping, but do not leave owned asynchronous tasks running.
+    /// No concurrent spawn/release is permitted.
+    boost::asio::awaitable<void> shutdown();
 
 private:
     /// One managed child plus this layer's own bookkeeping. Held by
@@ -464,6 +473,7 @@ private:
 
     // Protected by _sessions_mutex. Reservations count toward the capacity.
     std::unordered_map<SessionId, SessionPtr> _sessions;
+    const std::string _incarnation;
     std::uint64_t _next_id = 1;
     std::size_t _pending_spawns = 0;
 };

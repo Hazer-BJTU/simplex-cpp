@@ -836,3 +836,57 @@ BOOST_AUTO_TEST_CASE(lifecycle_and_signals_can_be_awaited_from_another_context)
         }
     }
 }
+
+BOOST_AUTO_TEST_CASE(shutdown_joins_pipes_held_by_a_descendant)
+{
+    boost::asio::io_context io;
+    process::LaunchSpec spec;
+    spec.executable = "sh";
+    spec.arguments = {"-c", "printf preserved; sleep 10 & echo $! >&2"};
+    spec.initial_wait_timeout_milliseconds = 1000;
+    auto handle = std::make_shared<process::ProcessHandle>(spec, io.get_executor());
+    auto operation = boost::asio::co_spawn(io, [handle]() -> boost::asio::awaitable<void> {
+        co_await handle->start_background_io_tasks();
+        co_await handle->await_initial_execution();
+        co_await handle->shutdown();
+    }, boost::asio::use_future);
+    const auto start = std::chrono::steady_clock::now();
+    io.run(); // Must exhaust all owned work, without io.stop().
+    operation.get();
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    const auto descendant = std::stoi(handle->standard_error());
+    const bool descendant_alive = ::kill(descendant, 0) == 0;
+    ::kill(descendant, SIGKILL);
+    BOOST_TEST(descendant_alive);
+    BOOST_CHECK(elapsed < std::chrono::seconds(3));
+    BOOST_TEST(handle->exited());
+    BOOST_TEST(handle->output_drained());
+    BOOST_TEST(handle->standard_output() == "preserved");
+    BOOST_TEST(handle->stdout_truncated());
+}
+
+BOOST_AUTO_TEST_CASE(shutdown_settles_a_backpressured_stdin_pump)
+{
+    boost::asio::io_context io;
+    process::LaunchSpec spec;
+    spec.executable = "sh";
+    spec.executable = "sleep";
+    spec.arguments = {"10"};
+    spec.initial_wait_timeout_milliseconds = 1;
+    spec.detach_on_timeout = true;
+    auto handle = std::make_shared<process::ProcessHandle>(spec, io.get_executor());
+    auto operation = boost::asio::co_spawn(io, [handle]() -> boost::asio::awaitable<void> {
+        co_await handle->start_background_io_tasks();
+        co_await handle->await_initial_execution();
+        handle->write_input(std::string(4 * 1024 * 1024, 'x'));
+        // Post once so the writer can submit its pipe operation before closure.
+        co_await boost::asio::post(boost::asio::use_awaitable);
+        co_await handle->shutdown();
+    }, boost::asio::use_future);
+    const auto start = std::chrono::steady_clock::now();
+    io.run();
+    operation.get();
+    BOOST_CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(3));
+    BOOST_TEST(handle->exited());
+    BOOST_TEST(handle->output_drained());
+}

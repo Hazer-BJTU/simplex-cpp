@@ -1,0 +1,14 @@
+# Disposable worker/shell integration image. An existing test image built with
+# the same portable toolchain may be passed as BASE_IMAGE. Inherited build
+# artifacts are cleaned: copied source timestamps may predate old object files.
+ARG BASE_IMAGE=ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
+FROM ${BASE_IMAGE}
+ARG JOBS=2
+WORKDIR /src
+COPY . .
+RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
+        -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+    && cmake --build /src/build --target clean \
+    && cmake --build /src/build --target simplex_worker simplex_shell \
+        test_core_configuration test_core_confirmation test_core_application test_core_dns test_loop test_process_handle test_session_store test_shutdown_failures test_tools -j"${JOBS}"
+CMD ["ctest", "--test-dir", "/src/build", "-R", "^(test_core_.*|test_loop|core_shell_protocol|core_worker_container|core_lifecycle_container|process_handle|test_session_store|test_shutdown_failures|test_tools)$", "--output-on-failure"]

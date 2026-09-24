@@ -12,7 +12,7 @@
 #                              reused, a strand per child, the per-stream read
 #                              cursors that make "what is new since I last
 #                              looked" answerable, reaping, and the
-#                              terminate_all() shutdown path;
+#                              shutdown() lifetime fence;
 #   process/tools.hpp          the five ToolInterface implementations and the
 #                              ProcessToolBase that adds this family's session
 #                              id argument to the shared IntrinsicTool;

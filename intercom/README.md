@@ -54,3 +54,30 @@ the peer does not answer. TCP connect, TLS handshake and WebSocket upgrade
 retain their separate 30-second deadlines; the shared DNS resolver has no
 independent hard deadline. The client is single use: create another instance
 for a new lifetime after stopping.
+
+## Cancellable one-shot exchange
+
+Link intercom_exchange and include intercom/cancellable_exchange.hpp for
+cancellable_exchange(executor, endpoint, text, timeout, stop_token). This sends
+one text request and accepts one text reply without retries. A positive overall
+deadline includes DNS, TCP/TLS, upgrade, write, read and graceful close.
+
+The operation owns a strand, cancellation slot and deadline. Stop callbacks
+only post to that strand; established sockets are explicitly aborted there.
+Completion joins the child exchange and deadline, so callers may safely release
+their dependencies afterward. Keep the TLS context alive through completion.
+Inherited Asio cancellation is shielded; the explicit stop token controls
+shutdown. Cancellation reports operation_aborted; expiry reports timed_out.
+A binary reply throws WsProtocolException with endpoint context.
+
+This API is used by the core confirmation adapter. It differs from fetch_once's
+inactivity timeout and from fetch's optional retry behavior: a human approval
+request must not be repeated implicitly.
+
+The deadline is an authorization cutoff, not a hard wall-clock bound on return.
+A system DNS backend already inside `getaddrinfo` may not be interruptible.
+Expiration or cancellation still invalidates the reply, but completion (and
+worker shutdown waiting for it) can be delayed until that backend returns.
+The operation retains and joins this work; it never detaches resolution or
+allows a late result to revive approval. Numeric endpoint addresses avoid DNS
+lookup when bounded resolver latency is required.

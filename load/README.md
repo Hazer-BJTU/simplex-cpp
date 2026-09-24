@@ -4,17 +4,19 @@
 [`config.example.yaml`](config.example.yaml). The plugin loading stage is
 implemented: it reads YAML, discovers provider modules, and constructs selected
 dynamic toolsets and loop hooks. Explicit JSON snapshot IO and Markdown session
-export are also implemented. Intrinsic initialization, session registry
-construction, model configuration/creation, connection startup, and automatic
-persistence scheduling remain planned work.
+export are also implemented. The core worker now consumes the full startup
+configuration, initializes intrinsics and registries, constructs the driver model,
+starts IO and applies persistence policy. Plugin-only entry points remain usable
+independently. See [core](../core/README.md) for the runtime contract.
 
 | Surface | Current implementation |
 | --- | --- |
 | `plugins` | Parse YAML, discover all provider descriptors, construct selected extensions. |
-| Intrinsic components and registries | Not initialized by this loader; host wiring is future work. |
-| `providers`, `driver_model` | Ignored; model creation and credential expansion are future work. |
-| `client` | Ignored; connection startup is future work. |
-| `persistence` | Ignored; restore/save policy and scheduling are future work. |
+| Intrinsic components and registries | Initialized by core, not plugin-only loading. |
+| `providers`, `driver_model` | Selected provider validated/expanded by read_configuration; constructed by core. |
+| `client` | Parsed by read_configuration; started by core. |
+| `persistence` | Parsed by read_configuration; applied by core. |
+| `security.confirmation`, `worker` | Approval endpoint/deadline, event capacity, exchange budget and initial prompt. |
 | `save_state()`, `load_state()` | Explicit file operations, independent of startup YAML. |
 
 The intended host runs one agent loop at a time. Startup configuration selects
@@ -47,7 +49,7 @@ native modules. `load_providers(configuration, configuration_directory)` and
 JSON document that a host has already parsed. Their base directory must be
 absolute, and each validates only its own section. Unknown fields are ignored.
 The unrelated `providers`, `driver_model`, `client`, and `persistence` sections
-are not yet consumed or validated. In particular, this stage neither substitutes
+are not consumed or validated by these plugin-only functions. In particular, this stage neither substitutes
 environment variables nor needs model credentials or a running IO executor.
 
 All functions are synchronous startup operations. They return fresh ownership
@@ -75,8 +77,7 @@ multiple directories, relative paths, default paths, selective construction and
 ordering, instance lifetime through registry use, configuration/factory failures,
 and compatible parsing. All of these tests run without network access or API
 credentials. The remaining sections specify the complete startup contract;
-model, connection, and automatic storage settings describe later implementation
-stages. The explicit persistence API below is usable independently of startup
+model, connection, and automatic storage settings are consumed by the core worker. The explicit persistence API below is usable independently of startup
 policy loading.
 
 ## Session snapshots and readable exports
@@ -198,22 +199,21 @@ the corresponding default. There is no implicit shell expansion of paths.
 
 There is no version field. The implemented plugin loader uses the existing
 `yamlconfig` YAML-to-JSON boundary and accepts a single mapping document.
-The following parsing rules currently apply to `plugins`; other sections remain
-unvalidated until their startup stages are implemented.
+Plugin-only entry points validate `plugins`. `read_configuration()` validates
+the selected provider and the host IO, security, worker and persistence settings.
 Unknown host fields are ignored and omitted optional fields use documented
 defaults. Missing mappings behave as empty mappings. Explicit null is not a
 substitute for a mapping, sequence, or required scalar. Known fields with wrong
 types or unusable values report the configuration path and field path.
 
-For the future model and client startup stages, compatibility does not mean
+For model and client startup, compatibility does not mean
 substituting a different driver model when an explicit reference cannot be
 resolved. `driver_model`, its selected provider's `model`, and `client.endpoint`
 must be supplied. Plugin-defined generation options and endpoint `extras` remain
 opaque to the host; their interpretation belongs to the model plugin. Existing
 component YAML parsers retain their own validation rules.
 
-Planned environment substitution (not implemented by the plugin loader) is
-limited to provider `endpoint.auth.api_key` and values in
+Environment substitution in `read_configuration()` is limited to provider `endpoint.auth.api_key` and values in
 `endpoint.extra_headers`. `${NAME}` substitutes a nonempty environment variable;
 `$$` escapes a literal dollar sign. Expansion is one pass, with no shell
 evaluation or recursive expansion. An unset or empty referenced variable is an
@@ -236,12 +236,10 @@ Directories are scanned nonrecursively in configured order using the existing
 domain loaders and their compatibility checks. Discovery loads native modules;
 it is distinct from constructing configured instances. A provider configuration
 does not act as a plugin allowlist: all compatible provider descriptors are
-loaded even when only one is used by the driver model. Model instance
-construction is not implemented by this loader.
+loaded even when only one is used by the driver model. Core constructs the selected model after parsing host configuration.
 
-The future host will load every compiled-in intrinsic component with its
-existing configuration mechanism. The current plugin loader does not initialize
-intrinsics. This public startup contract has no intrinsic enable/disable list,
+Core loads every compiled-in intrinsic component with its existing configuration
+mechanism. Plugin-only loading does not initialize intrinsics. This public startup contract has no intrinsic enable/disable list,
 configuration override, or schema-location override.
 
 Each enabled dynamic entry requires `name`, matching the module's exported
@@ -257,12 +255,12 @@ Repeated names in one enable list or failure to construct an explicitly enabled
 component are loader errors. Registry collision detection belongs to the host.
 The domain loaders retain their existing handling of rejected modules during
 discovery; the host must then verify that the requested components are
-available. Tools will be registered before hooks by the future host. Intrinsic
+available. Core registers tools before hooks. Intrinsic
 hook order is fixed by the host, followed by the configured dynamic hook order;
 directory enumeration never determines subscription order. Registries remain
 session-level objects.
 
-## Providers and the driver model (planned)
+## Providers and the driver model
 
 `providers` maps configuration names to endpoint/model definitions. Each name
 is a host reference, not necessarily a plugin name. For example, two entries
@@ -308,7 +306,7 @@ retries, 500 ms initial delay, and 120000 ms maximum delay. Retry eligibility
 remains the model transport's recoverability policy; it is not the WebSocket
 reconnection policy.
 
-## Client connection (planned)
+## Client connection
 
 `client.endpoint` is a complete `ws://` or `wss://` URL with a nonempty host,
 optional port, and the upgrade target including any query string. Omitted
@@ -343,7 +341,7 @@ single-use `run()`; shutdown closes admission and requires awaiting `run()`
 before releasing its dependencies. See [IO](../io/README.md) and
 [intercom](../intercom/README.md) for the full lifecycle contract.
 
-## Disk persistence policy (planned)
+## Disk persistence policy
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -355,9 +353,8 @@ before releasing its dependencies. See [IO](../io/README.md) and
 | `save.on_run_finished` | `true` | Save after run completion and its state-edit hooks. |
 | `save.on_shutdown` | `true` | Save during orderly shutdown after mutation stops. |
 
-Only `json` and `if_present` are currently defined values. A future loader must
-diagnose an unsupported selected format or restore policy rather than silently
-choosing another. Setting `enabled: false` skips all storage operations.
+The format is `json`; restoration accepts `if_present` or `never`. Unsupported
+values are startup errors. `never` starts fresh and may replace an existing file. Setting `enabled: false` skips all storage operations.
 Restoration and automatic saving can be controlled independently through the
 save booleans; they do not change loop execution semantics.
 
@@ -365,7 +362,7 @@ Persistence stores the complete `AgentInputState`, including `LoopProgress`,
 pending results, and hook state in `extras`. It does not serialize registries,
 plugin instances, connections, coroutine frames, queued IO messages, or the
 resolved startup configuration. Session identity comes from session state; the
-storage filename mapping will be defined with the persistence implementation.
+worker stores JSON at <directory>/<session-id>/state.json.
 
 Restoration alone never starts the loop or replays tools. A corrupt or unreadable
 existing state is an error, not an absent session. Loop recovery validation must
@@ -374,5 +371,26 @@ state at a serialized boundary, after the applicable edit hooks complete; a
 failed edit or uncertain tool state must not be presented as a completed step.
 Shutdown saving applies only while the host can stop mutation and finish a write,
 not after forced termination. The explicit writer's atomic replacement and
-durability boundaries are described above. Automatic event-boundary scheduling
-and the host's response to storage failures remain future policy integration work.
+durability boundaries are described above. Core schedules the stable checkpoints and stops new admission after a required
+JSON failure. See its recovery contract for details.
+
+## Full worker configuration
+
+Include load/configuration.hpp and call read_configuration(file) to validate
+host settings before native loading. parse_configuration(document, directory)
+supports an already parsed document and requires an absolute base directory.
+Both return Configuration, a runtime settings bundle rather than a persisted
+session dataclass. Model credentials are expanded only for driver_model.
+
+The optional security.confirmation mapping selects a complete ws:// or wss://
+endpoint and a positive timeout_ms (default 120000). Missing configuration
+means confirmation-required calls are denied. The endpoint is independent from
+client.endpoint; the timeout invalidates approval across the whole exchange.
+It is not a hard bound on return latency: an already-running system DNS backend
+may delay completion and shutdown until it returns. Late results remain denied.
+
+worker.max_exchanges defaults to 12, event_capacity to 256, and system_prompt
+to a general assistant prompt. The prompt applies only to new sessions.
+persistence.readable defaults to false and enables an additional Markdown
+export. JSON remains authoritative. See core for safety checkpoints, cancellation
+saving and failure policy; the explicit persistence APIs do not interpret YAML.

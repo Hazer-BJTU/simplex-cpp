@@ -36,7 +36,7 @@ Reasoning increments are not printed directly while streaming. A status is shown
 
 Input and tool confirmation share one asynchronous input channel, so `io_context` can still collect child-process output while waiting for the user. Ctrl-C during a run requests stop: model waits can be interrupted, while a started tool batch must settle. At a confirmation prompt, Ctrl-C rejects the current and remaining confirmations for that round. At an input prompt, Ctrl-C exits. SIGTERM requests exit and stops the current run. Stop does not forcibly kill dispatched tools, so a long-running tool may delay return; another Ctrl-C does not bypass that rule.
 
-On exit, the example calls `terminate_all(false)` and keeps the executor running until child-process work finishes. Signal callbacks use a separately owned lifetime object; late callbacks after cancellation do not refer to a destroyed chat coroutine. Do not stop the executor to imitate cancellation.
+On exit, this example sends termination requests with `terminate_all(false)` and keeps the executor running until child-process work finishes naturally. That signal-only API is not a lifetime fence and may wait for inherited pipe descriptors to close; hosts needing explicit cleanup should await `shutdown()`, as the core worker does. Signal callbacks use a separately owned lifetime object; late callbacks after cancellation do not refer to a destroyed chat coroutine. Do not stop the executor to imitate cancellation.
 
 ## Suggested interactive experiments
 

@@ -1,5 +1,5 @@
-# Startup configuration contract: currently only plugins is consumed by load.
-# Other sections describe future startup stages and are not validated yet.
+# Startup configuration for simplex_worker.
+# load::read_configuration validates host settings; load_plugins handles discovery.
 # See README.md for defaults, compatibility rules, and lifecycle semantics.
 # Copy this example to config.yaml before editing it for a deployment.
 # Explicit relative paths are relative to that configuration file's directory.
@@ -12,8 +12,8 @@ plugins:
     # A nonempty list replaces the default; directories are scanned in order.
     directories: []
 
-  # The future host will load all compiled-in intrinsic components automatically.
-  # The current loader does not initialize intrinsics or session registries.
+  # The core worker loads all compiled-in intrinsic components automatically.
+  # Plugin discovery alone does not initialize intrinsics or session registries.
   # Their enablement and configuration are not exposed by this contract.
   extensions:
     tools:
@@ -30,15 +30,15 @@ plugins:
       # Empty or omitted: <executable_dir>/plugins/loop.
       directories: []
       # Hooks are constructed in list order; the caller registers them.
-      # The future host will register them after intrinsic hooks.
+      # The core worker registers them after intrinsic hooks.
       # Empty or omitted: no dynamic loop hooks are constructed.
       enable: []
       # - name: noop_hook
       #   config_file: ./schemas/loop/extensions/noop_hook/config.yaml
       # Omit config_file to use the existing extension lookup rules.
 
-# Planned: named endpoint/model configurations; currently ignored.
-# Environment expansion and model construction are not implemented by load.
+# Named endpoint/model configurations. Only the selected provider is instantiated.
+# Credential expansion is limited to its API key and extra-header values.
 # Multiple entries may use the same plugin with different endpoints or models.
 providers:
   deepseek:
@@ -78,16 +78,16 @@ providers:
       initial_backoff_ms: 500
       max_backoff_ms: 120000
 
-# Planned: required reference to a providers entry; currently ignored.
+# Required reference to a providers entry.
 # No implicit first-provider fallback.
 # The driver model is currently the only model role exposed by this contract.
 driver_model: deepseek
 
-# Planned client startup settings; currently ignored.
+# Persistent event connection; independent of the confirmation endpoint.
 client:
   # Required complete ws:// or wss:// URL, including the upgrade target.
   # Replace this placeholder with the actual server endpoint.
-  endpoint: wss://example.com/agent
+  endpoint: ws://127.0.0.1:8765/agent/events
   # Positive incoming queue capacities, measured in complete JSON messages.
   payload_capacity: 64
   signal_capacity: 64
@@ -100,14 +100,31 @@ client:
     # Zero disables idle timeout. Positive values enable idle ping/deadline.
     idle_timeout_seconds: 0
 
-# Planned startup persistence policy; currently ignored.
-# Explicit save_state/load_state APIs do not interpret these fields.
+# Optional independent approval service. Omit this mapping to deny confirmations.
+security:
+  confirmation:
+    endpoint: ws://127.0.0.1:8765/agent/confirm
+    # Positive approval deadline through connection, reply and close; no retry.
+    # Expiry denies approval; an active system DNS lookup can delay cleanup.
+    timeout_ms: 120000
+
+worker:
+  max_exchanges: 12
+  # Bounded host event queue. Overflow safely stops the worker.
+  event_capacity: 256
+  # Used only for a new session; restored prompts are retained.
+  system_prompt: You are a helpful assistant. Follow the available tool guidance.
+
+# Interpreted by core. Explicit save_state/load_state APIs remain policy-free.
+# Pre-dispatch/results checkpoints remain enabled independently of save flags.
 persistence:
   enabled: true
   # Session identity comes from session state, not this startup configuration.
   directory: ./data/sessions
   # AgentInputState uses its existing dataclass JSON serialization.
   format: json
+  # Optional write-only Markdown alongside the authoritative JSON snapshot.
+  readable: false
   # if_present: restore existing state, or start fresh when no file exists.
   # This does not automatically resume loop execution or replay tool calls.
   restore: if_present

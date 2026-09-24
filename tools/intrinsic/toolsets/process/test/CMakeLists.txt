@@ -8,9 +8,9 @@
 #                       child and a finished capture, the deadline override,
 #                       the session cap, waiting for any of a set with and
 #                       without a deadline,
-#                       the refusal to release a live child, and both shutdown
-#                       paths (terminate_all and the destructor's last-resort
-#                       tail, on one worker thread and on three).
+#                       the refusal to release a live child, bulk signalling,
+#                       shutdown, and the destructor's last-resort tail
+#                       (on one worker thread and on three).
 #   test_tools          the five tools through the ToolSet and through a
 #                       ToolRegistry batch: each tool's happy path, the
 #                       ArgumentParse failure for every malformed argument, the
@@ -101,3 +101,12 @@ intrinsic_process_add_test(test_tools)
 intrinsic_process_add_test(test_registry_e2e)
 
 target_link_libraries(test_tools PRIVATE yamlconfig_iface)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    intrinsic_process_add_test(test_shutdown_failures)
+    target_link_libraries(test_shutdown_failures PRIVATE ${CMAKE_DL_LIBS})
+    target_link_options(test_shutdown_failures PRIVATE
+        "LINKER:--export-dynamic-symbol=waitpid"
+        "LINKER:--export-dynamic-symbol=kill")
+    set_tests_properties(test_shutdown_failures PROPERTIES TIMEOUT 15)
+endif()

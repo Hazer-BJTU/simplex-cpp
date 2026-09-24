@@ -1,5 +1,6 @@
 #include "process/process_handle.hpp"
 
+#include <boost/scope/scope_exit.hpp>
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -415,31 +416,20 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
     boost::system::error_code ec;
     boost::asio::steady_timer probe{_strand};
 
-    // The unexpected-failure path. The watcher died WITHOUT observing a
-    // terminal state, so _final_status must stay disengaged — an engaged
-    // optional means "observed terminal state" and exited() must not lie.
-    // But the handle still has to quiesce: its background tasks hold
-    // shared_from_this() references, and with the watcher gone nobody else
-    // would ever close the stdin channel or end the read tasks — the
-    // handle would outlive its owner AND leak the child. So: close the
-    // faucet (the write task drains and ends), kill the child (both pipes
-    // hit EOF, the read tasks end). The destructor's running() probe then
-    // reaps whatever is left; exited() stays false, honestly.
+    // Failed observation is not a terminal child status. Retain the exception
+    // separately so shutdown can join this task and retry reaping without
+    // waiting forever for exited(). Close stdin before the defensive signal.
     auto watcher_failed = [&](std::string_view what) {
+        if (!_lifecycle_failure) _lifecycle_failure = std::current_exception();
+        _write_channel.close();
+        _write_channel.cancel();
+        boost::system::error_code error;
+        if (_pipe0.is_open()) _pipe0.close(error);
+        error.clear();
+        const bool running = _process_ptr->running(error);
+        if (!error && running) _process_ptr->terminate(error);
         logging::Logger::error(std::format(
             "process background await task failed: {}", what));
-        boost::system::error_code term_ec;
-        if (_process_ptr->running(term_ec)) {
-            _process_ptr->terminate(term_ec);
-        }
-        if (term_ec) {
-            logging::Logger::warning(std::format(
-                "defensive teardown of child {} (pid {}) after watcher "
-                "failure: {}",
-                _spec.executable, static_cast<int>(_spec.pid),
-                term_ec.message()));
-        }
-        _write_channel.close();
     };
 
     try {
@@ -467,6 +457,9 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
         }
 
         while (!terminal) {
+            // Shutdown owns recovery once this watcher has joined. The probe
+            // timer bounds the wait even if a failed signal leaves a live child.
+            if (_stop_watcher) co_return;
             probe.expires_after(probe_interval);
             ec.clear();
             auto which = co_await (
@@ -511,22 +504,9 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
             }
         }
 
-        // Only the successful terminal path may engage _final_status —
-        // this is the class invariant exited() reports, and a watcher
-        // failure must leave it disengaged (see watcher_failed).
-        ExecutionStatus state;
-        state.state = ProcessState::Exited;
-        state.exit_code = _process_ptr->exit_code();
-        state.cumulative_execution_milliseconds =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - _started_steady
-        ).count();
-        _final_status = std::move(state);
-        // The latch AFTER the optional, and that order is the contract: any
-        // thread that sees exited() == true is guaranteed — by the release
-        // below — to see everything the terminal observation wrote, including
-        // the _final_status a strand-side status() reads.
-        _terminal_observed.store(true, std::memory_order_release);
+        // A failed watcher cannot publish a terminal status. Shutdown may
+        // later do so only after its independent recovery probe/reap succeeds.
+        record_terminal_state();
         // A dead child cannot read: close the stdin faucet so the write task
         // drains and finishes too. This is what lets a handle quiesce without
         // the owner remembering to close_input() first.
@@ -547,6 +527,22 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
         watcher_failed("unknown error");
         co_return;
     }
+}
+
+void ProcessHandle::record_terminal_state() {
+    ExecutionStatus state;
+    state.state = ProcessState::Exited;
+    state.exit_code = _process_ptr->exit_code();
+    state.cumulative_execution_milliseconds =
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - _started_steady
+    ).count();
+    _final_status = std::move(state);
+    // The latch AFTER the optional, and that order is the contract: any
+    // thread that sees exited() == true is guaranteed — by the release
+    // below — to see everything the terminal observation wrote, including
+    // the _final_status a strand-side status() reads.
+    _terminal_observed.store(true, std::memory_order_release);
 }
 
 boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks() {
@@ -590,9 +586,9 @@ boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks_on_strand(
         boost::asio::use_future
     );
 
-    _background_tasks.push_back(std::move(stdin_write_task));
-    _background_tasks.push_back(std::move(stdout_read_task));
-    _background_tasks.push_back(std::move(stderr_read_task));
+    _background_tasks.push_back(stdin_write_task.share());
+    _background_tasks.push_back(stdout_read_task.share());
+    _background_tasks.push_back(stderr_read_task.share());
     co_return;
 }
 
@@ -612,13 +608,16 @@ boost::asio::awaitable<bool> ProcessHandle::await_initial_execution_on_strand() 
     // Second half of the lifecycle contract: the io tasks must be running
     // before anyone waits on the child.
     assert(_io_tasks_started);
+    _initial_wait_started = true;
+    _initial_wait_active = true;
+    boost::scope::scope_exit finished([this] { _initial_wait_active = false; });
 
     if (_spec.initial_wait_timeout_milliseconds == 0) {
         // 0 disables the deadline: no timer to race against, just wait for
-        // the terminal observation. "Finished on initial await" is then
-        // always true — the wait itself is unbounded.
+        // the terminal observation. A failed watcher or explicit shutdown
+        // can end the wait without observing an exit.
         co_await background_await_task();
-        co_return true;
+        co_return exited();
     }
 
     boost::asio::steady_timer timer{_strand};
@@ -640,7 +639,7 @@ boost::asio::awaitable<bool> ProcessHandle::await_initial_execution_on_strand() 
             },
             boost::asio::use_future
         );
-        _background_tasks.push_back(std::move(await_task));
+        _background_tasks.push_back(await_task.share());
 
         if (!_spec.detach_on_timeout) {
             // terminate() is v2's hard kill (SIGKILL; request_exit() would
@@ -664,7 +663,7 @@ boost::asio::awaitable<bool> ProcessHandle::await_initial_execution_on_strand() 
         // detach_on_timeout: leave the child running; the restarted await
         // task still records its eventual natural exit.
     } else if (await_result.index() == 1) {
-        finished_on_initial_await = true;
+        finished_on_initial_await = exited();
         // The await task that just won closed the stdin channel already —
         // nothing left for this handle to do but be observed.
     }
@@ -703,11 +702,98 @@ void ProcessHandle::close_input() {
 //
 // Both entry points are the same shape and differ only in the signal, so the
 // body is shared: marshal onto the strand, probe, signal, report. What they
-// deliberately do NOT do is engage _final_status — the await task owns that
-// (see its comment on the class invariant), and a signal is not an
+// deliberately do NOT do is engage _final_status — the watcher or shutdown
+// recovery owns that (see the class invariant), and a signal is not an
 // observation. The child's death arrives at the watcher like any other exit,
 // which is what makes these composable with the ordinary lifecycle instead of
 // a second, competing teardown path.
+
+boost::asio::awaitable<void> ProcessHandle::shutdown() {
+    co_await boost::asio::this_coro::reset_cancellation_state(
+        boost::asio::disable_cancellation());
+    co_await boost::asio::co_spawn(
+        _strand,
+        [self = shared_from_this()]() -> boost::asio::awaitable<void> {
+            auto remember = [&] {
+                if (!self->_lifecycle_failure)
+                    self->_lifecycle_failure = std::current_exception();
+            };
+            auto close_pipe = [&](auto& pipe, ProcessException::Stage stage) {
+                if (!pipe.is_open()) return;
+                boost::system::error_code error;
+                pipe.close(error);
+                if (error && !self->_lifecycle_failure) {
+                    self->_lifecycle_failure = std::make_exception_ptr(ProcessException(
+                        stage, "closing process pipe during shutdown failed", error,
+                        self->_spec.executable, self->_spec.description));
+                }
+            };
+            // Stop input before signalling the reader, including failed signals.
+            self->_write_channel.close();
+            self->_write_channel.cancel();
+            close_pipe(self->_pipe0, ProcessException::Stage::Write);
+            self->_stop_watcher = true;
+            try {
+                co_await self->signal_child_on_strand(Signal::Kill);
+            } catch (...) {
+                remember();
+            }
+
+            boost::asio::steady_timer pause(self->_strand);
+            try {
+                const auto deadline = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds(100);
+                while (!self->output_drained()
+                       && std::chrono::steady_clock::now() < deadline) {
+                    pause.expires_after(std::chrono::milliseconds(5));
+                    co_await pause.async_wait(boost::asio::use_awaitable);
+                }
+            } catch (...) {
+                remember();
+            }
+            self->_stdout_truncated |= self->_pipe1.is_open();
+            self->_stderr_truncated |= self->_pipe2.is_open();
+            close_pipe(self->_pipe1, ProcessException::Stage::Read);
+            close_pipe(self->_pipe2, ProcessException::Stage::Read);
+
+            // Join lifecycle completion, never the success-only exited() latch.
+            // The initial wait may append a replacement watcher future; let it
+            // finish before walking the stable future list.
+            while (!self->_initial_wait_started || self->_initial_wait_active) {
+                pause.expires_after(std::chrono::milliseconds(5));
+                co_await pause.async_wait(boost::asio::use_awaitable);
+            }
+            for (const auto& task : self->_background_tasks) {
+                while (task.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                    pause.expires_after(std::chrono::milliseconds(5));
+                    co_await pause.async_wait(boost::asio::use_awaitable);
+                }
+                try {
+                    task.get(); // Ready shared_future: nonblocking and repeatable.
+                } catch (...) {
+                    remember();
+                }
+            }
+
+            // No watcher can race this recovery probe. Retry termination once
+            // if needed, but never wait indefinitely on an unkillable child.
+            try {
+                boost::system::error_code error;
+                const bool running = self->_process_ptr->running(error);
+                if (!error && running) self->_process_ptr->terminate(error);
+                if (error) {
+                    throw ProcessException(ProcessException::Stage::Terminate,
+                        "recovering child termination during shutdown failed", error,
+                        self->_spec.executable, self->_spec.description);
+                }
+                if (!self->exited()) self->record_terminal_state();
+            } catch (...) {
+                remember();
+            }
+            if (self->_lifecycle_failure) std::rethrow_exception(self->_lifecycle_failure);
+        },
+        boost::asio::use_awaitable);
+}
 
 boost::asio::awaitable<bool> ProcessHandle::terminate() {
     co_return co_await signal_child(Signal::Kill);
@@ -741,11 +827,7 @@ boost::asio::awaitable<bool> ProcessHandle::signal_child_on_strand(Signal signal
     }
 
     boost::system::error_code probe_ec;
-    if (!_process_ptr->running(probe_ec)) {
-        // Gone but not yet observed by the watcher (running() just reaped
-        // it). Not an error, and not our terminal state to record.
-        co_return false;
-    }
+    const bool running = _process_ptr->running(probe_ec);
     if (probe_ec) {
         throw ProcessException(
             ProcessException::Stage::Terminate,
@@ -755,6 +837,8 @@ boost::asio::awaitable<bool> ProcessHandle::signal_child_on_strand(Signal signal
             _spec.description
         );
     }
+
+    if (!running) co_return false;
 
     // The non-throwing overloads on purpose: the throwing ones raise
     // boost::system::system_error, and this class's boundary is

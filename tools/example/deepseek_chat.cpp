@@ -23,7 +23,7 @@
 //   ProcessSessionStore   the session table behind them — readable ids
 //                         (proc_1, ...) that survive across turns, a strand
 //                         per child, per-stream read cursors, and the
-//                         terminate_all() shutdown path.
+//                         terminate_all() signal-only request.
 //   ToolSetSkill          the set's guidance for the model — how the five are
 //                         used TOGETHER, which is what a per-tool description
 //                         cannot say. It is loaded from the toolset's own
@@ -874,7 +874,9 @@ int main(int argc, char* argv[]) {
 
     // ---- shutdown ------------------------------------------------------------
     //
-    // Children first, and while the context still runs: terminate_all() is a
+    // This legacy example sends termination signals, then drains io.run().
+    // terminate_all() itself does not join pipe work; shutdown() is the explicit
+    // lifetime fence used by the core worker. terminate_all() is a
     // coroutine (a destructor has no executor to run one on), and dropping the
     // table does not stop a child — each handle's await task holds a reference
     // until the terminal state is observed (process/session_store.hpp). The

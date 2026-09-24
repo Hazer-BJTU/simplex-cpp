@@ -507,6 +507,7 @@ boost::asio::awaitable<RunResult> run(
                 // Mark before dispatch: an exceptional return is uncertain,
                 // never grounds for replay. Preserve results BEFORE projection.
                 state.loop->phase = LoopPhase::Tools;
+                events.publish(ToolDispatchCheckpoint{state});
                 std::vector<model_io::InvokeReturn> records;
                 if (stop.stop_requested() || !hook_error.empty()) {
                     records = skipped(*response.invokes);
@@ -518,6 +519,7 @@ boost::asio::awaitable<RunResult> run(
 
                 state.loop->pending_results = std::move(records);
                 state.loop->phase = LoopPhase::Projection;
+                events.publish(ToolResultsCheckpoint{state});
                 project(model, state);
                 // A primary hook error survives closure of its unanswered calls.
                 if (!hook_error.empty()) {
@@ -526,6 +528,7 @@ boost::asio::awaitable<RunResult> run(
 
                 events.publish(ToolResultsCommitted{state});
                 edit_state<EditOnStepFinished>(events, state);
+                events.publish(StepFinished{state});
             } else if (!hook_error.empty()) {
                 throw std::runtime_error(hook_error);
             }

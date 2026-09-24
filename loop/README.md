@@ -99,8 +99,11 @@ The bus is an explicitly injected synchronous `EventBus`. Callbacks run in subsc
 | `BeforeModel` | Writable candidate `system_prompt`, `tools`, and `extras`; history and recovery metadata are read-only. |
 | `ModelCommitted` | Read-only; model response committed. |
 | `BeforeToolBatch` | Read-only call list; tools have not started. The host may request stop through its `stop_source`. |
+| `ToolDispatchCheckpoint` | Read-only state after phase becomes Tools, before dispatch. A throw prevents dispatch and leaves Blocked for conservative inspection. |
+| `ToolResultsCheckpoint` | Read-only state with the complete batch buffered in Projection. A throw preserves the buffer for recovery without replay. |
 | `ToolResultsCommitted` | Read-only; all results, including skipped calls, are written to the conversation. |
 | `EditOnStepFinished` | Edits the full state in place after the preceding event succeeds and before the next model request. |
+| `StepFinished` | Read-only state after the step edit transaction passes validation. A throw fails the run without rolling back validated edits. |
 | `EditOnRunFinished` | Edits the full state in place after terminal state is saved and before `RunFinished`. |
 | `RunFinished` | Read-only; terminal state saved. |
 
@@ -194,3 +197,19 @@ Child processes that have returned session information may keep running; the loo
 ## Verification
 
 `test_loop` uses an offline scripted model, the real `ToolRegistry`, and controllable tools to check the normal cycle, event order, writable-hook commit and rollback, preservation of tool-effect results, projection recovery after a JSON round trip, stop boundaries, exchange limits, finish-hook errors, and rejection of unanswered-call replay. It also covers interruption of a long-suspended model on a multithreaded executor, continuation of the same session after cancellation, and cancellation racing an independent model error. Exception cases include `operation_aborted` without a stop request, nonstandard exceptions, and recovery after repeated projection failures without changing old state or rerunning tools. `test_loop_model_cancellation` uses a local HTTP server to verify that both built-in adapters can cancel before a response and after streaming headers, and that the server observes connection closure. HTTP 503 cases verify that exhausted retries return `Failed` with HTTP diagnostics, do not commit partial responses, and publish exactly one finish event; request counts confirm the loop adds no retries. Full-state-hook tests cover event order, original-object identity, continuation after pruning, exception rollback, recovery-record protection, stop, and budget boundaries. The interactive experiment lives in `loop/example`; the older example remains.
+
+### Host persistence checkpoints
+
+ToolDispatchCheckpoint and ToolResultsCheckpoint are synchronous, read-only
+boundaries. They expose the same borrowed-state restrictions as other observers.
+The first runs even for a skipped batch and is conservative: a failed observer
+leaves the run Blocked although dispatch has not begun. The second preserves a
+complete pending-results buffer if saving fails before projection. A resumed
+Projection state projects that buffer without redispatching tools.
+
+StepFinished runs only after EditOnStepFinished returns and its final validation
+succeeds. It does not run when the edit rolls back, during entry-time recovery,
+or for a response with no calls. RunFinished remains the final read-only event;
+because it logs observer errors, a host must separately latch required storage
+failures. These notifications do not themselves perform IO or guarantee crash
+durability. The core worker supplies that policy.

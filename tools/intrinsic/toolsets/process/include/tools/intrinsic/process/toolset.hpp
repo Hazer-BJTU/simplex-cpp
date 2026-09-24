@@ -17,7 +17,7 @@
 //
 // THE STORE IS SHARED, AND OUTLIVES THE SET IF IT HAS TO. It is taken as a
 // shared_ptr because a host may well hold the same store elsewhere — to
-// terminate everything at shutdown (see the store's terminate_all(), which is
+// terminate everything at shutdown (see the store's shutdown(), which is
 // the shutdown path), or to show a live process list in a UI — and because the
 // store's own coroutines outlast any single call. Handing the set a store
 // rather than an executor is also what makes the set testable: a test builds a
