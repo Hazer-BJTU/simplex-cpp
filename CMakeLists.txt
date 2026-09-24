@@ -156,6 +156,9 @@ add_subdirectory(endpoint)
 # which reuses endpoint's connection primitives (connect_flavour, the stream
 # flavours, ResolvedEndpoint, retry_policy backoff).
 add_subdirectory(intercom)
+# io routes intercom text messages as JSON payloads and signals, using the
+# synchronous eventbus from utils for its default signal handler.
+add_subdirectory(io)
 # dataclass after the shared third-party interface: a header-only module
 # (dataclass_iface) defining the model_io data contract. Every record is a
 # plain aggregate serialised through nlohmann ADL to_json/from_json free

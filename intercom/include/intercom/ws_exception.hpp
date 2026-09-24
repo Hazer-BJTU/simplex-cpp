@@ -46,7 +46,7 @@ public:
         Connect,
         /// Sending the request message.
         Write,
-        /// Reading the reply message.
+        /// Reading a message.
         Read,
         /// An operation on an empty (unconnected) stream, or anything
         /// unclassifiable.
@@ -90,7 +90,7 @@ public:
         switch (stage) {
             case Stage::Connect: return "while establishing the connection";
             case Stage::Write:   return "while sending the message";
-            case Stage::Read:    return "while reading the reply";
+            case Stage::Read:    return "while reading a message";
             case Stage::Unknown: return "at an unknown stage";
         }
         return "at an unknown stage";   // unreachable; quiets -Wreturn-type
@@ -99,7 +99,7 @@ public:
     /**
      * @brief The one-line, log-friendly rendering — identical to what().
      *
-     * e.g. `Failed while reading the reply: websocket exchange failed: ...
+     * e.g. `Failed while reading a message: websocket exchange failed: ...
      * (connection reset; /v1/ws to ws.internal)` — absent fields are omitted.
      */
     [[nodiscard]] std::string to_string() const { return what(); }
@@ -164,6 +164,18 @@ public:
               std::move(ec),
               std::move(host),
               std::move(target))
+    {}
+};
+
+/** A peer message that violates the WebSocket client's text-only contract. */
+class WsProtocolException : public WsException {
+public:
+    explicit WsProtocolException(
+        std::string message,
+        std::string host = {},
+        std::string target = {})
+        : WsException(Stage::Read, std::move(message), {},
+                      std::move(host), std::move(target))
     {}
 };
 
