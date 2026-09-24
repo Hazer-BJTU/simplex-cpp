@@ -9,6 +9,8 @@ one reader and one writer coroutine; both finish before the next session starts.
 Derive from the client and implement `on_text(std::string)`. The callback runs
 on the client's strand for each complete text message. It should finish
 quickly; throwing ends `run()` after the session has been cleaned up.
+Receiving a binary WebSocket message ends `run()` with `WsProtocolException`;
+it is not retried as a transient connection fault.
 
 ```cpp
 class MyClient : public intercom::StableWebSocketClient {
@@ -33,7 +35,8 @@ auto running = boost::asio::co_spawn(executor, client.run(),
 full. Admission does not confirm delivery. Queued messages survive reconnects;
 a message already taken by the writer is never replayed after a failed write,
 because the peer may have received it. Stopping closes the channel and ends
-pending operations. Call `stop()` from any thread, then await `run()` before
+pending operations. Once `stop()` returns, a new `send()` fails immediately.
+Call `stop()` from any thread, then await `run()` before
 destroying the client or its TLS context. A `std::stop_token` can also be
 passed to `run()`.
 

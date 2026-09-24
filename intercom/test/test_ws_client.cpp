@@ -322,6 +322,39 @@ BOOST_AUTO_TEST_CASE(stop_before_run_starts_returns_cleanly) {
     BOOST_CHECK(!drive(io, client));
 }
 
+BOOST_AUTO_TEST_CASE(send_after_stop_returns_is_rejected) {
+    asio::io_context io;
+    Client client(io.get_executor(), where(1), fast_options());
+    client.stop();
+
+    std::exception_ptr send_failure;
+    asio::co_spawn(io, client.send("too late"),
+        [&](std::exception_ptr error) { send_failure = error; });
+    io.run();
+
+    BOOST_REQUIRE(send_failure);
+    BOOST_CHECK_THROW(std::rethrow_exception(send_failure), std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(binary_message_ends_run_as_protocol_failure) {
+    loopback_ws::OneShotServer server([](tcp::socket& socket) {
+        websocket::stream<tcp::socket> ws(std::move(socket));
+        ws.accept();
+        ws.binary(true);
+        ws.write(asio::buffer("binary", 6));
+    });
+
+    asio::io_context io;
+    Client client(io.get_executor(), where(server.wait_listening()), fast_options());
+    auto failure = drive(io, client);
+    server.join();
+
+    BOOST_REQUIRE(failure);
+    BOOST_CHECK_THROW(std::rethrow_exception(failure),
+                      intercom::WsProtocolException);
+    BOOST_CHECK(client.received.empty());
+}
+
 BOOST_AUTO_TEST_CASE(handler_exception_ends_run_after_joining_tasks) {
     loopback_ws::OneShotServer server([](tcp::socket& socket) {
         websocket::stream<tcp::socket> ws(std::move(socket));

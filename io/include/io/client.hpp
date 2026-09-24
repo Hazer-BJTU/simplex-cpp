@@ -51,7 +51,7 @@ private:
     using JsonChannel = boost::asio::experimental::concurrent_channel<
         void(boost::system::error_code, nlohmann::json)>;
     using DoneChannel = boost::asio::experimental::concurrent_channel<
-        void(boost::system::error_code)>;
+        void(boost::system::error_code, std::exception_ptr)>;
 
     struct State {
         State(boost::asio::any_io_executor payload_executor,
@@ -63,6 +63,7 @@ private:
         JsonChannel payloads;
         JsonChannel signals;
         std::atomic<bool> subscribed{false};
+        std::atomic<bool> receiving{false};
         std::atomic<bool> stopping{false};
         std::atomic<std::size_t> rejected_payloads{0};
     };
@@ -76,7 +77,10 @@ public:
         PayloadSubscription(const PayloadSubscription&) = delete;
         PayloadSubscription& operator=(const PayloadSubscription&) = delete;
 
-        /** Wait for and remove the next user request; a closed queue throws. */
+        /**
+         * Wait for and remove the next user request; a closed queue throws.
+         * Only one next() call may be outstanding on this subscription.
+         */
         boost::asio::awaitable<nlohmann::json> next();
 
     private:
@@ -131,7 +135,6 @@ private:
     std::jthread _signal_thread;
     std::mutex _handler_mutex;
     SignalHandler _signal_handler;
-    std::exception_ptr _signal_failure;
     std::atomic<bool> _started{false};
 };
 

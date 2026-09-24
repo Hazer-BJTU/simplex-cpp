@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -24,7 +25,9 @@ namespace intercom {
 struct StableWebSocketOptions {
     /// Maximum number of messages accepted while the writer is busy or offline.
     std::size_t write_capacity = 64;
+    /// Delay before the first reconnect attempt after a failed session.
     std::chrono::milliseconds initial_backoff{250};
+    /// Upper bound for exponential reconnect delays.
     std::chrono::milliseconds max_backoff{10000};
     /// Disabled by default so an otherwise healthy silent session stays open.
     /// A positive value enables Beast's idle ping and peer-response deadline.
@@ -43,7 +46,8 @@ struct StableWebSocketOptions {
  * Messages waiting in the bounded channel survive reconnects. A message
  * removed by the writer is never automatically replayed: if its write fails,
  * the server may already have received it. send() acknowledges queue admission,
- * not delivery. Stopping closes the queue and discards undelivered messages.
+ * not delivery. stop() closes outbound admission before it returns. Stopping
+ * discards undelivered messages. A binary frame is a fatal protocol error.
  */
 class StableWebSocketClient {
 public:
@@ -92,6 +96,11 @@ public:
     /** Request a prompt stop from any thread; run() is the completion fence. */
     void stop() {
         auto control = _control;
+        // Close admission before returning, even if the strand is busy. The
+        // concurrent channel permits close() from another thread; socket and
+        // cancellation work remains executor-affine below.
+        control->admission_closed.store(true, std::memory_order_release);
+        control->outgoing.close();
         boost::asio::post(_strand, [control] { request_stop(*control); });
     }
 
@@ -124,11 +133,12 @@ private:
         boost::asio::cancellation_signal connect_cancel;
         std::shared_ptr<Session> session;
         std::shared_ptr<boost::asio::steady_timer> backoff_timer;
+        std::atomic<bool> admission_closed{false};
         bool started = false;
         bool stopping = false;
     };
 
-    enum class TaskKind { TransportFault, HandlerFault };
+    enum class TaskKind { TransportFault, ProtocolFault, HandlerFault };
 
     struct TaskResult {
         TaskKind kind = TaskKind::TransportFault;
@@ -142,6 +152,9 @@ private:
     static boost::asio::awaitable<void> enqueue(
         std::shared_ptr<Control> control, std::string message)
     {
+        if (control->admission_closed.load(std::memory_order_acquire)) {
+            throw std::logic_error("stable WebSocket client has stopped");
+        }
         co_await control->outgoing.async_send(
             boost::system::error_code{}, std::move(message),
             boost::asio::use_awaitable);
@@ -150,6 +163,7 @@ private:
     static void request_stop(Control& control) noexcept {
         if (control.stopping) return;
         control.stopping = true;
+        control.admission_closed.store(true, std::memory_order_release);
         control.outgoing.close();
         control.connect_cancel.emit(boost::asio::cancellation_type::terminal);
         if (control.backoff_timer) control.backoff_timer->cancel();
@@ -170,8 +184,11 @@ private:
                 boost::beast::flat_buffer buffer;
                 co_await session->stream.read(buffer);
                 if (!session->stream.got_text()) {
-                    co_return TaskResult{TaskKind::TransportFault,
-                        "received a binary WebSocket message", {}};
+                    co_return TaskResult{
+                        TaskKind::ProtocolFault,
+                        "received a binary WebSocket message",
+                        std::make_exception_ptr(WsProtocolException(
+                            "received a binary WebSocket message"))};
                 }
                 try {
                     on_text(boost::beast::buffers_to_string(buffer.data()));
@@ -249,10 +266,12 @@ private:
         _control->session.reset();
 
         if (!_control->stopping) {
-            if (first.kind == TaskKind::HandlerFault) {
+            if (first.kind == TaskKind::ProtocolFault ||
+                first.kind == TaskKind::HandlerFault) {
                 std::rethrow_exception(first.exception);
             }
-            if (second.kind == TaskKind::HandlerFault) {
+            if (second.kind == TaskKind::ProtocolFault ||
+                second.kind == TaskKind::HandlerFault) {
                 std::rethrow_exception(second.exception);
             }
             logging::Logger::warning("intercom client: session ended: {}",
@@ -264,7 +283,7 @@ private:
         namespace asio = boost::asio;
 
         if (_control->started) {
-            throw std::logic_error("stable WebSocket client can run only once");
+            throw std::logic_error("stable WebSocket client run() may only be called once");
         }
         _control->started = true;
         if (_control->stopping) co_return;
@@ -293,6 +312,8 @@ private:
                         std::chrono::seconds(30)) {
                         delay = _options.initial_backoff;
                     }
+                } catch (const WsProtocolException&) {
+                    throw;
                 } catch (const WsException& error) {
                     if (!_control->stopping) {
                         logging::Logger::warning(

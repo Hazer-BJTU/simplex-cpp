@@ -167,4 +167,11 @@ public:
     {}
 };
 
+/** A peer message that violates the WebSocket client's text-only contract. */
+class WsProtocolException : public WsException {
+public:
+    explicit WsProtocolException(std::string message)
+        : WsException(Stage::Read, std::move(message)) {}
+};
+
 } // namespace intercom

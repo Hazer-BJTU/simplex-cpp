@@ -7,6 +7,17 @@
 
 namespace io {
 
+namespace {
+
+ClientOptions validate_options(ClientOptions options) {
+    if (options.payload_capacity == 0 || options.signal_capacity == 0) {
+        throw std::invalid_argument("IO channel capacities must be positive");
+    }
+    return options;
+}
+
+} // namespace
+
 Client::Client(boost::asio::any_io_executor executor,
                endpoint::ResolvedEndpoint endpoint,
                eventbus::EventBus& events,
@@ -16,18 +27,16 @@ Client::Client(boost::asio::any_io_executor executor,
     : StableWebSocketClient(executor, std::move(endpoint), transport_options,
                             tls_context),
       _state(std::make_shared<State>(executor, _signal_io.get_executor(),
-                                     options)),
+                                     validate_options(options))),
       _signal_done(executor, 1),
       _signal_handler([&events](const nlohmann::json& signal) {
           events.publish(SignalEvent{signal});
       })
-{
-    if (options.payload_capacity == 0 || options.signal_capacity == 0) {
-        throw std::invalid_argument("IO channel capacities must be positive");
-    }
-}
+{}
 
 Client::~Client() {
+    // Best-effort signal-worker cleanup only. Destruction while run() is
+    // active is invalid: run() is the transport completion fence.
     stop();
     if (_signal_thread.joinable()) {
         _signal_thread.join();
@@ -40,7 +49,7 @@ boost::asio::awaitable<void> Client::send(nlohmann::json message) {
 
 boost::asio::awaitable<void> Client::run(std::stop_token stop) {
     if (_started.exchange(true)) {
-        throw std::logic_error("io::Client::run may only be called once");
+        throw std::logic_error("io::Client run() may only be called once");
     }
 
     std::exception_ptr transport_failure;
@@ -49,10 +58,9 @@ boost::asio::awaitable<void> Client::run(std::stop_token stop) {
         boost::asio::co_spawn(_signal_io, process_signals(),
             [this](std::exception_ptr error) {
                 if (error) {
-                    _signal_failure = error;
                     StableWebSocketClient::stop();
                 }
-                _signal_done.try_send(boost::system::error_code{});
+                _signal_done.try_send(boost::system::error_code{}, error);
             });
         _signal_thread = std::jthread([this] { _signal_io.run(); });
     }
@@ -64,15 +72,17 @@ boost::asio::awaitable<void> Client::run(std::stop_token stop) {
     }
 
     close_queues();
+    std::exception_ptr signal_failure;
     if (start_worker) {
         // The signal handler may still be running synchronously. Suspending
         // here leaves the network executor free to run timers and payload work
         // that the handler itself may be waiting for.
-        co_await _signal_done.async_receive(boost::asio::use_awaitable);
+        signal_failure = co_await _signal_done.async_receive(
+            boost::asio::use_awaitable);
         _signal_thread.join();
     }
 
-    if (_signal_failure) std::rethrow_exception(_signal_failure);
+    if (signal_failure) std::rethrow_exception(signal_failure);
     if (transport_failure) std::rethrow_exception(transport_failure);
 }
 
@@ -94,6 +104,16 @@ Client::PayloadSubscription Client::subscribe_payload() {
 boost::asio::awaitable<nlohmann::json>
 Client::PayloadSubscription::next() {
     auto state = _state;
+    if (!state) {
+        throw std::logic_error("payload subscription has been moved from");
+    }
+    if (state->receiving.exchange(true)) {
+        throw std::logic_error("payload subscription already has a pending next()");
+    }
+    struct ResetPending {
+        std::shared_ptr<State> state;
+        ~ResetPending() { state->receiving.store(false); }
+    } reset{state};
     co_return co_await state->payloads.async_receive(boost::asio::use_awaitable);
 }
 
@@ -153,9 +173,8 @@ boost::asio::awaitable<void> Client::process_signals() {
         try {
             handler(signal);
         } catch (...) {
-            _signal_failure = std::current_exception();
             StableWebSocketClient::stop();
-            co_return;
+            throw;
         }
     }
 }

@@ -22,7 +22,9 @@ the base intercom client still accepts plain text for other applications.
 
 Call `subscribe_payload()` once, then repeatedly `co_await subscription.next()`
 to remove requests in arrival order. The subscription is exclusive: the queue
-distributes work to one consumer and does not broadcast copies. This package
+distributes work to one consumer and does not broadcast copies. Only one
+`next()` call may be outstanding on that subscription; a second concurrent
+call fails. This package
 does not invoke AgentLoop; the consumer decides when and how to do that.
 
 Both incoming queues have configurable positive capacities. Routing uses a

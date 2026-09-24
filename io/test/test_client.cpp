@@ -237,6 +237,34 @@ BOOST_AUTO_TEST_CASE(malformed_envelope_ends_run) {
     BOOST_CHECK_THROW(std::rethrow_exception(failure), nlohmann::json::parse_error);
 }
 
+BOOST_AUTO_TEST_CASE(payload_subscription_rejects_overlapping_next_calls) {
+    asio::io_context context;
+    eventbus::EventBus bus;
+    io::Client client(context.get_executor(), where(1), bus);
+    auto subscription = client.subscribe_payload();
+    std::exception_ptr first_failure;
+    std::exception_ptr second_failure;
+
+    asio::co_spawn(context, subscription.next(),
+        [&](std::exception_ptr error, nlohmann::json) {
+            first_failure = error;
+        });
+    asio::steady_timer gate(context, 1ms);
+    gate.async_wait([&](boost::system::error_code ec) {
+        if (ec) return;
+        asio::co_spawn(context, subscription.next(),
+            [&](std::exception_ptr error, nlohmann::json) {
+                second_failure = error;
+                client.stop();
+            });
+    });
+
+    context.run();
+    BOOST_REQUIRE(first_failure);
+    BOOST_REQUIRE(second_failure);
+    BOOST_CHECK_THROW(std::rethrow_exception(second_failure), std::logic_error);
+}
+
 BOOST_AUTO_TEST_CASE(throwing_signal_handler_ends_run) {
     loopback_ws::OneShotServer server([](tcp::socket& socket) {
         websocket::stream<tcp::socket> ws(std::move(socket));
