@@ -1,0 +1,112 @@
+# Startup configuration contract. Runtime loading is not implemented yet.
+# See README.md for defaults, compatibility rules, and lifecycle semantics.
+# Copy this example to config.yaml before editing it for a deployment.
+# Explicit relative paths are relative to that configuration file's directory.
+# No version field is required. Unknown host fields are ignored.
+
+plugins:
+  # Discover all compatible provider plugins; there is no provider allowlist.
+  providers:
+    # Empty or omitted: <executable_dir>/plugins/llm.
+    # A nonempty list replaces the default; directories are scanned in order.
+    directories: []
+
+  # All compiled-in intrinsic components are loaded automatically.
+  # Their enablement and configuration are not exposed by this contract.
+  extensions:
+    tools:
+      # Empty or omitted: <executable_dir>/plugins/tools.
+      directories: []
+      # Only listed toolsets are constructed and added to the tool registry.
+      # Empty or omitted: no dynamic toolsets are registered.
+      enable: []
+      # - name: noop_toolset
+      #   schema_directory: ./schemas/tools/extensions/noop_toolset
+      # Omit schema_directory to use the existing extension lookup rules.
+
+    loop_hooks:
+      # Empty or omitted: <executable_dir>/plugins/loop.
+      directories: []
+      # Hooks are registered in list order, after the intrinsic hooks.
+      # Empty or omitted: no dynamic loop hooks are registered.
+      enable: []
+      # - name: noop_hook
+      #   config_file: ./schemas/loop/extensions/noop_hook/config.yaml
+      # Omit config_file to use the existing extension lookup rules.
+
+# Named endpoint/model configurations, independent of plugin discovery.
+# Multiple entries may use the same plugin with different endpoints or models.
+providers:
+  deepseek:
+    # Defaults to this entry's key. This selects a factory, not plugin admission.
+    plugin: deepseek
+
+    # Omitted endpoint fields inherit the provider plugin's defaults.
+    endpoint:
+      base_url: https://api.deepseek.com
+      # Appended to any path prefix in base_url.
+      request_path: /chat/completions
+      auth:
+        # Supported schemes: none, bearer, custom_header.
+        scheme: bearer
+        # ${NAME} is expanded only when this provider is instantiated.
+        # A referenced environment variable must be set and nonempty.
+        api_key: ${DEEPSEEK_API_KEY}
+        # Used only with custom_header; omitted default: x-api-key.
+        header_name: x-api-key
+      user_agent: simplex-cpp
+      # Applied after standard headers; matching names override defaults.
+      extra_headers: {}
+      # Optional provider endpoint metadata; omitted by default.
+      extras: {}
+
+    # Required nonempty provider model name for an instantiated configuration.
+    model: deepseek-v4-flash
+    # Provider-specific generation options, passed through to the model plugin.
+    # Do not repeat endpoint, provider, model, or retry inside this mapping.
+    config:
+      reasoning:
+        effort: medium
+
+    retry:
+      # Maximum retries AFTER the first attempt; zero means no retries.
+      max_attempts: 3
+      initial_backoff_ms: 500
+      max_backoff_ms: 120000
+
+# Required reference to a providers entry. No implicit first-provider fallback.
+# The driver model is currently the only model role exposed by this contract.
+driver_model: deepseek
+
+client:
+  # Required complete ws:// or wss:// URL, including the upgrade target.
+  # Replace this placeholder with the actual server endpoint.
+  endpoint: wss://example.com/agent
+  # Positive incoming queue capacities, measured in complete JSON messages.
+  payload_capacity: 64
+  signal_capacity: 64
+  transport:
+    # Positive outgoing queue capacity, measured in complete messages.
+    # Queue admission does not acknowledge delivery to the peer.
+    write_capacity: 64
+    initial_backoff_ms: 250
+    max_backoff_ms: 10000
+    # Zero disables idle timeout. Positive values enable idle ping/deadline.
+    idle_timeout_seconds: 0
+
+# Future disk persistence policy; no storage operations are implemented yet.
+persistence:
+  enabled: true
+  # Session identity comes from session state, not this startup configuration.
+  directory: ./data/sessions
+  # AgentInputState uses its existing dataclass JSON serialization.
+  format: json
+  # if_present: restore existing state, or start fresh when no file exists.
+  # This does not automatically resume loop execution or replay tool calls.
+  restore: if_present
+  save:
+    # Save complete state after the respective state-edit hooks finish.
+    on_step_finished: true
+    on_run_finished: true
+    # Applies to orderly shutdown after state mutation has stopped.
+    on_shutdown: true

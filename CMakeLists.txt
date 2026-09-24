@@ -192,6 +192,8 @@ add_subdirectory(process)
 # are emitted under <exe>/plugins/llm.
 add_subdirectory(llm)
 add_subdirectory(loop)
+# Startup configuration template; runtime loading is planned separately.
+add_subdirectory(load)
 
 # ---- Release install rules --------------------------------------------------
 # Included AFTER every add_subdirectory() above: it derives the release set by
