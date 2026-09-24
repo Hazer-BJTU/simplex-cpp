@@ -1,0 +1,2 @@
+add_executable(simplex_shell shell_server.cpp)
+target_link_libraries(simplex_shell PRIVATE core_protocol intercom_iface)

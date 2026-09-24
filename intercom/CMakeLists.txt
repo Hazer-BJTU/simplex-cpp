@@ -22,3 +22,7 @@ target_link_libraries(intercom_iface INTERFACE
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
+
+add_library(intercom_exchange SHARED src/cancellable_exchange.cpp)
+target_link_libraries(intercom_exchange PUBLIC intercom_iface)
+set_target_properties(intercom_exchange PROPERTIES OUTPUT_NAME simplex_intercom_exchange)

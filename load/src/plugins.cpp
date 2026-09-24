@@ -227,20 +227,23 @@ LoadedExtensions load_extensions(
     return construct_extensions(tools, hooks);
 }
 
+LoadedPlugins load_plugins(const Json& configuration, const fs::path& directory) {
+    const auto& root = plugins(configuration, directory);
+    const auto& providers = mapping(root, "providers", "/plugins/providers");
+    const auto paths = directories(providers, directory, "/plugins/providers");
+    const auto [tools, hooks] = extension_plans(root, directory);
+
+    LoadedPlugins result;
+    result.providers = discover_providers(paths);
+    result.extensions = construct_extensions(tools, hooks);
+    return result;
+}
+
 LoadedPlugins load_plugins(const fs::path& configuration_file) {
     const auto file = fs::absolute(configuration_file);
     try {
         const auto configuration = yamlconfig::load_file(file);
-        const auto directory = file.parent_path();
-        const auto& root = plugins(configuration, directory);
-        const auto& providers = mapping(root, "providers", "/plugins/providers");
-        const auto paths = directories(providers, directory, "/plugins/providers");
-        const auto [tools, hooks] = extension_plans(root, directory);
-
-        LoadedPlugins result;
-        result.providers = discover_providers(paths);
-        result.extensions = construct_extensions(tools, hooks);
-        return result;
+        return load_plugins(configuration, file.parent_path());
     } catch (const std::exception& error) {
         throw PluginLoadError(file.string() + ": " + error.what());
     }

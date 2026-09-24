@@ -925,3 +925,53 @@ BOOST_AUTO_TEST_CASE(skipped_batch_is_editable_and_readonly_observer_failure_ski
         BOOST_CHECK_EQUAL(f.set->tool->count, 0);
     }
 }
+
+BOOST_AUTO_TEST_CASE(checkpoint_failure_prevents_tool_dispatch) {
+    Fixture f;
+    auto checkpoint = f.bus.subscribe<loop::ToolDispatchCheckpoint>([&](const auto& event) {
+        BOOST_CHECK(event.state.loop->phase == model_io::LoopPhase::Tools);
+        BOOST_TEST(f.set->tool->count == 0);
+        throw std::runtime_error("disk unavailable");
+    });
+    const auto result = f.run();
+    BOOST_CHECK(result.status == loop::RunStatus::Failed);
+    BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Blocked);
+    BOOST_TEST(f.set->tool->count == 0);
+    BOOST_CHECK_THROW(f.run(false), loop::RecoveryRequired);
+}
+
+BOOST_AUTO_TEST_CASE(results_checkpoint_preserves_recoverable_buffer_without_replay) {
+    Fixture f;
+    auto checkpoint = f.bus.subscribe<loop::ToolResultsCheckpoint>([&](const auto& event) {
+        BOOST_CHECK(event.state.loop->phase == model_io::LoopPhase::Projection);
+        BOOST_TEST(event.state.loop->pending_results.size() == 1u);
+        throw std::runtime_error("disk full");
+    });
+    BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
+    BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Projection);
+    BOOST_TEST(f.set->tool->count == 1);
+    checkpoint.disconnect();
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::Completed);
+    BOOST_TEST(f.set->tool->count == 1);
+}
+
+BOOST_AUTO_TEST_CASE(step_checkpoint_sees_only_validated_edits) {
+    Fixture f;
+    bool saved = false;
+    auto edit = f.bus.subscribe<loop::EditOnStepFinished>([](const auto& event) {
+        event.state.meta.session_id = "edited";
+    });
+    auto checkpoint = f.bus.subscribe<loop::StepFinished>([&](const auto& event) {
+        saved = true;
+        BOOST_TEST(event.state.meta.session_id == "edited");
+    });
+    BOOST_CHECK(f.run().status == loop::RunStatus::Completed);
+    BOOST_TEST(saved);
+    saved = false;
+    f.model.exchanges = 0;
+    auto invalid = f.bus.subscribe<loop::EditOnStepFinished>([](const auto& event) {
+        event.state.loop.reset();
+    });
+    BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
+    BOOST_TEST(!saved);
+}

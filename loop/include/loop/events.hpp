@@ -81,6 +81,26 @@ struct ToolResultsCommitted {
 };
 
 /**
+ * Read-only recovery checkpoint after Tools is committed, before dispatch.
+ * A throw prevents dispatch and leaves a conservative Blocked recovery marker.
+ */
+struct ToolDispatchCheckpoint {
+    const model_io::AgentInputState& state;
+};
+
+/** Read-only checkpoint after complete results enter Projection. A throw keeps
+ * the buffer intact for recovery; no tool is replayed on a later invocation. */
+struct ToolResultsCheckpoint {
+    const model_io::AgentInputState& state;
+};
+
+/** Read-only step boundary after all step edits pass validation. A throw fails
+ * the run without undoing the validated edits or any tool side effects. */
+struct StepFinished {
+    const model_io::AgentInputState& state;
+};
+
+/**
  * Edits the live state after ToolResultsCommitted subscribers have returned.
  *
  * Useful for pruning complete tool call/result pairs, summarizing old turns or
