@@ -1,4 +1,4 @@
-# Startup configuration contract. Runtime loading is not implemented yet.
+# Startup configuration contract. See README.md for implemented loading stages.
 # See README.md for defaults, compatibility rules, and lifecycle semantics.
 # Copy this example to config.yaml before editing it for a deployment.
 # Explicit relative paths are relative to that configuration file's directory.

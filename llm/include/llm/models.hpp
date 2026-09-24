@@ -878,8 +878,12 @@ public:
         } catch (const std::exception&) {
             return _usable;
         }
+        // Recount the routable name index after each directory import. Earlier
+        // contexts must not be counted again, and duplicate names route to the
+        // first context retained by ExtensionDispatcher::find().
+        _usable = 0;
         for (const auto& ctx : contexts()) {
-            if (verify_llm_context(ctx)) {
+            if (find(ctx->name()) == ctx && verify_llm_context(ctx)) {
                 ++_usable;
             }
         }

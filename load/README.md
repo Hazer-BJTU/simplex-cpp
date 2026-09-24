@@ -1,15 +1,71 @@
 # Startup configuration
 
 `load` defines the process startup configuration in
-[`config.example.yaml`](config.example.yaml). This package currently ships only
-the template and its contract. Configuration parsing, plugin orchestration,
-registry construction, connection startup, and disk persistence are planned
-work; installing this file does not enable those operations.
+[`config.example.yaml`](config.example.yaml). The plugin loading stage is
+implemented: it reads YAML, discovers provider modules, and constructs selected
+dynamic toolsets and loop hooks. Intrinsic initialization, session registry
+construction, model configuration/creation, connection startup, and disk
+persistence remain planned work.
 
 The intended host runs one agent loop at a time. Startup configuration selects
 deployment resources; conversation and recovery state remain in
 `model_io::AgentInputState`. Configuration changes take effect on the next
 startup. Hot reload is outside this contract.
+
+## Implemented loading functions
+
+Link `load_lib` and include [`load/plugins.hpp`](include/load/plugins.hpp):
+
+```cpp
+auto plugins = load::load_plugins("/etc/simplex/config.yaml");
+
+// Provider descriptors are ready for later create_model() calls.
+auto& providers = plugins.providers;
+
+// The host owns session registries and decides when registration takes place.
+for (auto& toolset : plugins.extensions.tools) {
+    tool_registry.add(std::move(toolset));
+}
+for (auto& hook : plugins.extensions.loop_hooks) {
+    hook_registry.add(std::move(hook));
+}
+```
+
+`load_plugins(file)` validates all plugin configuration sections before opening
+native modules. `load_providers(configuration, configuration_directory)` and
+`load_extensions(configuration, configuration_directory)` also accept a complete
+JSON document that a host has already parsed. Their base directory must be
+absolute, and each validates only its own section. Unknown fields are ignored.
+The unrelated `providers`, `driver_model`, `client`, and `persistence` sections
+are not yet consumed or validated. In particular, this stage neither substitutes
+environment variables nor needs model credentials or a running IO executor.
+
+All functions are synchronous startup operations. They return fresh ownership
+bundles and do not modify caller-owned registries or subscribe hooks. Product
+construction follows enable-list order; unselected products do not read YAML or
+invoke product factories. An empty enable list skips discovery for that domain.
+For nonempty lists, discovery still opens candidate native modules and invokes
+descriptor factories to learn their exported names. Selection is not a promise
+that unselected library initializers cannot run. Native libraries remain subject
+to the existing process-resident loading policy.
+
+Malformed known configuration fields and unavailable/failed selected products
+throw `PluginLoadError`, with the relevant field path. The file entry point adds
+the source filename and wraps YAML or discovery errors in the same exception.
+The JSON extension entry point propagates filesystem enumeration errors. Domain
+loaders retain their existing missing-directory and module rejection policies;
+selected names must still resolve to successfully constructed instances.
+Failures release already-created products without returning a partial bundle;
+native initialization side effects cannot be undone. Returned products retain
+their modules even after the temporary loaders are destroyed. Configure and
+register everything at a serialized startup boundary before beginning loop work.
+
+`test_load_plugins` covers the shipped template, provider discovery across
+multiple directories, relative paths, default paths, selective construction and
+ordering, instance lifetime through registry use, configuration/factory failures,
+and compatible parsing. All of these tests run without network access or API
+credentials. The remaining sections specify the complete startup contract;
+model, connection, and storage settings describe later implementation stages.
 
 ## Template and installation
 
