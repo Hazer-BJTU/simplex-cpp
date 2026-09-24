@@ -17,12 +17,13 @@ add_test(NAME core_shell_protocol
 set_tests_properties(core_shell_protocol PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_library(core_slow_resolver SHARED slow_resolver.cpp)
-    target_link_libraries(core_slow_resolver PRIVATE ${CMAKE_DL_LIBS})
-    add_executable(test_core_dns test_dns.cpp)
-    target_link_libraries(test_core_dns PRIVATE core_lib core_slow_resolver Boost::unit_test_framework)
-    add_test(NAME test_core_dns COMMAND ${CMAKE_COMMAND} -E env
-        "LD_PRELOAD=$<TARGET_FILE:core_slow_resolver>" $<TARGET_FILE:test_core_dns>)
+    # Export the test executable's resolver override for interposition in Asio.
+    # Keeping the fixture in this executable avoids a test-only DT_NEEDED
+    # dependency and removes any need for LD_PRELOAD in staged runtime tests.
+    add_executable(test_core_dns test_dns.cpp slow_resolver.cpp)
+    target_link_options(test_core_dns PRIVATE "LINKER:--export-dynamic-symbol=getaddrinfo")
+    target_link_libraries(test_core_dns PRIVATE core_lib ${CMAKE_DL_LIBS} Boost::unit_test_framework)
+    add_test(NAME test_core_dns COMMAND test_core_dns)
     set_tests_properties(test_core_dns PROPERTIES TIMEOUT 15)
 endif()
 
