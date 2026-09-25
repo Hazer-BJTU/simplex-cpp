@@ -41,7 +41,11 @@ export const CLOSE_SUPERSEDED = 4001;
 /** Longest reason string a WebSocket close frame can carry. */
 const MAX_CLOSE_REASON_BYTES = 123;
 
-function truncateReason(reason) {
+/**
+ * Shorten a reason to what a WebSocket close frame can carry.
+ * @param {string} reason
+ */
+export function truncateReason(reason) {
     const bytes = Buffer.from(reason, 'utf8');
     return bytes.length <= MAX_CLOSE_REASON_BYTES
         ? reason

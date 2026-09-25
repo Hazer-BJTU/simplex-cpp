@@ -7,13 +7,14 @@
  */
 import { createHttpServer, sendJson } from './http/server.js';
 import { SessionRegistry } from './state/registry.js';
+import { createWorkerConfirmationRoute } from './worker/confirmation.js';
 import { createWorkerEventRoute } from './worker/connection.js';
 
 /** Protocol name/version announced by `/api/meta`. */
 export const PANEL_PROTOCOL = { name: 'simplex-hub-panel', version: 1 };
 
 /** Capabilities reported by `/api/meta`; extended as roles are implemented. */
-export const CAPABILITIES = ['worker-events'];
+export const CAPABILITIES = ['worker-events', 'confirmations'];
 
 /**
  * Build a hub instance. Nothing listens until `start()` is called.
@@ -23,8 +24,13 @@ export const CAPABILITIES = ['worker-events'];
  * @param {object} options.log logger created by src/log.js.
  * @param {string} options.hubRoot absolute `hub/` directory.
  * @param {string} [options.version] hub package version.
+ * @param {object} [options.hooks] optional observers used by the panel API.
+ * @param {(envelope: object, connection: object) => void} [options.hooks.onEvent]
+ * @param {(prompt: object) => void} [options.hooks.onPrompt]
+ * @param {(prompt: object, outcome: object) => void} [options.hooks.onPromptSettled]
+ * @param {(session: object, connection: object|null) => void} [options.hooks.onConnectionChange]
  */
-export function createHub({ config, log, hubRoot, version = '0.0.0' }) {
+export function createHub({ config, log, hubRoot, version = '0.0.0', hooks = {} }) {
     const http = createHttpServer({ config, log, hubRoot });
     const registry = new SessionRegistry({ config, log });
 
@@ -45,9 +51,20 @@ export function createHub({ config, log, hubRoot, version = '0.0.0' }) {
         log,
         onEvent: (envelope, connection) => {
             connection.log.debug(`event ${envelope.event} (seq ${envelope.sequence})`);
+            hooks.onEvent?.(envelope, connection);
         },
+        onConnectionChange: hooks.onConnectionChange,
     });
     http.useUpgrade(workerEvents);
+
+    const confirmations = createWorkerConfirmationRoute({
+        registry,
+        config,
+        log,
+        onPrompt: hooks.onPrompt,
+        onSettled: hooks.onPromptSettled,
+    });
+    http.useUpgrade(confirmations);
 
     return {
         http,
@@ -58,6 +75,7 @@ export function createHub({ config, log, hubRoot, version = '0.0.0' }) {
         start: () => http.listen(),
         /** Release listeners and owned resources. */
         stop: async () => {
+            confirmations.close();
             workerEvents.close();
             await http.close();
         },

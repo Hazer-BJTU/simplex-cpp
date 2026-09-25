@@ -28,15 +28,18 @@ export function testConfig(overrides = {}) {
 /**
  * Start a hub for one test file.
  *
+ * @param {object} [overrides] hub configuration overrides.
+ * @param {object} [hooks] hub observer hooks (onEvent, onPrompt, ...).
  * @returns {Promise<{hub: object, base: string, wsBase: string, port: number}>}
  */
-export async function startTestHub(overrides = {}) {
+export async function startTestHub(overrides = {}, hooks = {}) {
     const config = testConfig(overrides);
     const hub = createHub({
         config,
         log: createLogger({ level: testLogLevel() }),
         hubRoot,
         version: 'test',
+        hooks,
     });
     const address = await hub.start();
     return {

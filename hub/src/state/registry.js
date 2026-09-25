@@ -68,6 +68,10 @@ export class Session {
         this.lastEvent = null;
         /** Run identifier the hub most recently observed, for cancel targeting. */
         this.lastRunId = '';
+        /** Open tool-confirmation prompts, keyed by confirmation ID. */
+        this.prompts = new Map();
+        /** Identity observers, used by the confirmation adapter's hold. */
+        this.identityListeners = new Set();
     }
 
     /** True while an event connection is open. */
@@ -108,6 +112,7 @@ export class Session {
             since: incarnation || previous === null ? at : this.identity.since,
             lastWorkerId: workerId,
         };
+        this.notifyIdentity();
         return { incarnation };
     }
 
@@ -120,6 +125,47 @@ export class Session {
             since: null,
             lastWorkerId: this.identity.workerId,
         };
+        this.notifyIdentity();
+    }
+
+    /**
+     * Observe identity transitions.
+     *
+     * The confirmation adapter uses this to wait for a worker to identify
+     * itself instead of polling; listeners are synchronous and must not throw.
+     *
+     * @param {(identity: object) => void} listener
+     * @returns {() => void} unsubscribe
+     */
+    onIdentityChange(listener) {
+        this.identityListeners.add(listener);
+        return () => this.identityListeners.delete(listener);
+    }
+
+    /** Notify identity observers, containing their failures to this call. */
+    notifyIdentity() {
+        for (const listener of [...this.identityListeners]) {
+            try {
+                listener(this.identity);
+            } catch (error) {
+                this.log?.warn(`identity listener failed: ${error.message}`);
+            }
+        }
+    }
+
+    /** Register an open confirmation prompt. */
+    addPrompt(prompt) {
+        this.prompts.set(prompt.id, prompt);
+    }
+
+    /** Remove a confirmation prompt if it is still registered. */
+    removePrompt(prompt) {
+        if (this.prompts.get(prompt.id) === prompt) this.prompts.delete(prompt.id);
+    }
+
+    /** Serializable descriptions of open prompts, oldest first. */
+    describePrompts() {
+        return [...this.prompts.values()].map((prompt) => prompt.describe());
     }
 
     /** Record an inbound envelope and update the cheap panel snapshots. */
@@ -148,6 +194,7 @@ export class Session {
             last_run_id: this.lastRunId,
             last_event_at: this.lastEvent?.received_at ?? null,
             last_event: this.lastEvent?.event ?? null,
+            confirmations: this.describePrompts(),
         };
     }
 }
