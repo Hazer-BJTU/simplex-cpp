@@ -7,11 +7,15 @@ description: >-
   /usr/bin/bash, otherwise /bin/sh, with -c. The shell interprets quoting,
   pipelines, redirections, variable expansion and globs; supported syntax depends
   on the selected shell. Use spawn_process for a program with literal arguments.
-  Wait up to expected_runtime_milliseconds for the child to exit; expiration
-  leaves it running. A successful launch returns a session_id, including when
-  the child has already exited. If finished is true, the result includes
-  captured output; check output_complete and truncation markers before treating
-  it as complete. Continue with poll_process, read_process or send_process.
+  The shell inherits the host environment with no additional entries; use
+  VAR=value command, export, or env -i inside the command to customize it.
+  Wait up to expected_runtime_milliseconds for exit; expiration leaves the
+  process running. Initial completion with complete capture automatically
+  releases the session after copying output into the result, including nonzero
+  exits. Check released before reusing the session_id. Skipped/expired waits
+  or incomplete capture retain a session for poll_process/read_process/send_process
+  and later manual release. Check output_complete and truncation markers.
+  Use spawn_process for explicit environment or auto-release controls.
 
 type: serial_write
 security: require_confirm
@@ -33,21 +37,6 @@ argument_schema:
       description: >-
         Directory in which to start the child. Omitted means the host's
         working directory; an empty string is invalid.
-    environment:
-      type: array
-      items:
-        type: string
-      default: []
-      description: >-
-        Environment entries as "KEY=VALUE" strings with nonempty keys; values
-        may be empty. Default: []. Entries override inherited values by key,
-        or supply the environment when inherit_environment is false.
-    inherit_environment:
-      type: boolean
-      default: true
-      description: >-
-        Inherit the host's environment before applying environment entries.
-        Default: true. False starts with only the supplied entries.
     expected_runtime_milliseconds:
       type: integer
       minimum: 0

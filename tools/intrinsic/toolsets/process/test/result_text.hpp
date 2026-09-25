@@ -11,29 +11,9 @@
 // hint survive", "what did THIS session print" — and asking them by searching
 // the text would make every case a substring hunt.
 //
-// So this is the renderer's own grammar, read back:
-//
-//   name: value        a field, one line
-//   name (N bytes):    a block header, and the N bytes under it are its body —
-//   <N bytes>          verbatim, exact, because the header counts them
-//   ---                one record's end (ToolResult::separate())
-//
-// The count in the header is what makes this exact rather than approximate: a
-// blank line separates a block from whatever follows it, so the bytes between
-// them could be read as the body plus a newline the tool did not produce. The
-// header says how many there really are, and the reader takes that many.
-//
-// and the reader answers with the values, grouped by record. It is deliberately
-// strict: a case that asks for "the" value of a name that appears twice fails
-// rather than silently taking the first, because a result with two session ids
-// is a result a test should be reading record by record.
-//
-// The known limit, and it is the format's: a block's TEXT is whatever a tool
-// produced, so a line inside it may look like a field. The cases here drive
-// children whose output they chose (`echo`, `seq`, `printf`), so nothing they
-// print looks like `session_id: …`, and the format is documented as being for
-// readers rather than for parsers.
-//
+// Metadata uses bracketed keys. Nonempty output blocks declare byte counts;
+// consume exactly that many bytes so metadata-looking text stays in the body.
+// This parser is only a test convenience, not a supported wire protocol.
 
 #include <boost/test/unit_test.hpp>
 
@@ -224,11 +204,20 @@ inline ResultText::ResultText(std::string_view raw) : _text(raw)
             position = std::min(raw.size(), position + length);
             continue;
         }
+        if (line.starts_with("[[")) {
+            const auto marker = line.find("]]: ");
+            BOOST_REQUIRE(marker != std::string_view::npos);
+            constexpr auto prefix = std::string_view("[[").size();
+            _records.back().fields.push_back(Field{
+                std::string(line.substr(prefix, marker - prefix)),
+                std::string(line.substr(marker + std::string_view("]]: ").size()))});
+            continue;
+        }
         if (detail::is_field_line(line)) {
             const std::string_view name = detail::name_of(line);
             const std::string value = std::string(line.substr(name.size() + 2));
             // The renderer's spelling of a block with no text under it.
-            if (value == "(empty)") {
+            if (value == "(empty)" || value == "(empty, truncated)") {
                 _records.back().blocks.push_back(
                     Block{std::string(name), {}});
                 continue;

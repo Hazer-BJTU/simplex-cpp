@@ -83,8 +83,8 @@ std::string_view signal_word(Signal signal)
 /// the launch as a path: the manager uses a path that exists exactly as written
 /// (process/src/process_handle.cpp, resolution step 1), so nothing the model
 /// puts in `environment` — PATH included — can change which interpreter reads
-/// the line. The result's `executable` line names the file that was chosen, so
-/// the caller can see what its command was parsed by.
+/// the line. The chosen interpreter remains in the session snapshot; reports omit
+/// the executable and arguments to avoid repeating the invocation.
 ///
 /// One branch only, because this whole toolset is POSIX: the session store
 /// signals pids and includes <sys/types.h>, so there is no build of this layer
@@ -150,8 +150,6 @@ void ProcessToolBase::write_session(ToolResult& result,
     if (execution.exit_code) {
         result.field("exit_code", *execution.exit_code);
     }
-    result.field("executable", snapshot.result.spec.executable);
-    result.field("arguments", snapshot.result.spec.arguments);
     result.field("description", snapshot.result.spec.description);
     if (snapshot.result.spec.working_directory) {
         result.field("working_directory",
@@ -187,6 +185,7 @@ void ProcessToolBase::settle_launch_arguments(model_io::InvokeQuery& query,
     }
 
     (void)settle_bool(query, "inherit_environment", true);
+    (void)settle_bool(query, "auto_release", true);
     (void)settle_uint(query, "expected_runtime_milliseconds", default_window);
 
     // working_directory is validated here and left as it came: see the header
@@ -227,7 +226,7 @@ void ProcessToolBase::apply_launch_arguments(const model_io::InvokeQuery& query,
 }
 
 boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
-    process::LaunchSpec spec, std::string still_running_hint)
+    process::LaunchSpec spec, std::string still_running_hint, bool auto_release)
 {
     try {
         const SpawnResult spawned = co_await _store->spawn(std::move(spec));
@@ -239,6 +238,7 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
             // with the id alone is still a usable result.
             ToolResult lone;
             lone.field("session_id", spawned.id);
+            lone.field("released", false);
             co_return lone.render();
         }
 
@@ -257,6 +257,7 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
             // output would be a partial slice the caller did not ask for, and
             // what to do about it is the caller's own sentence (the hint its
             // tool passed in).
+            result.field("released", false);
             result.field("hint", std::move(still_running_hint));
             co_return result.render();
         }
@@ -266,8 +267,8 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
         // The FULL capture, and read with full=true so the delta cursor is left
         // alone — a later read still reports everything, and nothing is
         // silently consumed here.
-        if (const std::optional<OutputRead> read = co_await _store->read_output(
-                spawned.id, OutputStream::Both, true)) {
+        const auto read = co_await _store->read_output(spawned.id, OutputStream::Both, true);
+        if (read) {
             // Verbatim, both streams, even when a stream printed nothing: the
             // caller asked for the output, and "stderr: (empty)" is part of
             // the answer.
@@ -276,9 +277,15 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
             result.block("stderr", read->standard_error.text,
                          read->standard_error.truncated);
         }
-        // The session is kept, not reaped: its output stays readable, and the
-        // caller decides when to let it go. Saying so beats a caller assuming
-        // either way.
+        // Retain sessions whose descendants may still produce output. Automatic
+        // release is scoped to this initial call; background completion never
+        // schedules a later release. Copy the captured output before removal.
+        const bool released = auto_release && spawned.output_drained && read
+            && co_await _store->release(spawned.id);
+        result.field("released", released);
+        if (released) {
+            co_return result.render();
+        }
         if (!spawned.output_drained) {
             // The one case where "finished" alone would mislead: the text
             // above is what has arrived SO FAR. The usual cause is a child
@@ -286,15 +293,12 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
             // itself, leaving the pipes open in the descendant's hands. The
             // session is still the way to the rest of it.
             result.field("hint", std::format(
-                "the process finished, but its output capture is not complete "
-                "yet: the text above is what has arrived so far. Something "
-                "may still hold its output open; call {} to collect the rest",
+                "Output capture incomplete; use {} to collect the rest.",
                 tool_names::kPoll));
             co_return result.render();
         }
         result.field("hint", std::format(
-            "the process finished; its output is above. Call {} with release "
-            "to forget the session when done with it", tool_names::kRead));
+            "Use {} with release=true when done.", tool_names::kRead));
         co_return result.render();
     } catch (const process::ProcessException& failure) {
         // The launch failed: translated at this boundary into the tool
@@ -354,10 +358,9 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
     co_return co_await launch_and_report(
         std::move(spec),
         std::format(
-            "the process is still running; call {} with a "
-            "wait_timeout_milliseconds to wait for it to finish, or {} to "
-            "read what it has printed so far",
-            tool_names::kPoll, tool_names::kRead));
+            "Still running; use {} to wait or {} for output.",
+            tool_names::kPoll, tool_names::kRead),
+        optional_bool(query, "auto_release", true));
 }
 
 // ---- run_command ------------------------------------------------------------
@@ -369,10 +372,19 @@ RunCommandTool::RunCommandTool(StorePtr store, eventbus::AsyncEventBus* bus)
 
 void RunCommandTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
-    // The whole call: one line, and the launch arguments it shares with
-    // spawn_process. No `description` — the command is the label (invoke()).
     (void)require_string(query, "command", "the command line to run");
-    settle_launch_arguments(query, kDefaultExpectedRuntimeMilliseconds);
+    for (const char* name : {"environment", "inherit_environment", "auto_release"}) {
+        if (query.arguments.contains(name)) {
+            bad_argument(std::format(
+                "property \"{}\" is not supported by run_command; use shell syntax "
+                "for environment changes or spawn_process for explicit launch options", name));
+        }
+    }
+    (void)settle_uint(query, "expected_runtime_milliseconds", kDefaultExpectedRuntimeMilliseconds);
+    if (const auto directory = optional_string(query, "working_directory");
+        find_argument(query, "working_directory") != nullptr && directory.empty()) {
+        bad_argument("property \"working_directory\" must not be empty; omit it to inherit the host directory");
+    }
 }
 
 void RunCommandTool::write_attributes(model_io::InvokeQuery& query) const
@@ -409,7 +421,15 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
     // a launch failure — then says which command it is about, so a model
     // holding several sessions can tell them apart from a poll alone.
     spec.description = command;
-    apply_launch_arguments(query, spec, kDefaultExpectedRuntimeMilliseconds);
+    // Shell commands inherit the host environment with no extra entries.
+    // Environment customization belongs in the command, not hidden arguments.
+    spec.inherit_environment = true;
+    spec.environment = std::vector<std::string>{};
+    if (const auto directory = optional_string(query, "working_directory"); !directory.empty()) {
+        spec.working_directory = directory;
+    }
+    spec.initial_wait_timeout_milliseconds = optional_uint(
+        query, "expected_runtime_milliseconds", kDefaultExpectedRuntimeMilliseconds);
 
     // What the caller is told when the window runs out. It is the one part of
     // the answer that differs from spawn_process's, and it says what a model
@@ -419,23 +439,18 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
     // quick command learns its expectation was wrong, and one that asked for 0
     // is told plainly that nothing was waited for at all.
     const std::string tail = std::format(
-        " Call {} with a wait_timeout_milliseconds to wait for it to finish, "
-        "{} to read what it has printed so far, and {} to signal it",
+        " {}: wait; {}: output; {}: signal.",
         tool_names::kPoll, tool_names::kRead, tool_names::kSend);
     const std::uint64_t window = optional_uint(
         query, "expected_runtime_milliseconds",
         kDefaultExpectedRuntimeMilliseconds);
     std::string hint =
         window == ProcessSessionStore::kNoInitialWait
-            ? std::format("the command was started without waiting, so it is "
-                          "running in the background as the session above; "
-                          "nothing has been read from it yet.{}", tail)
-            : std::format("the command had not finished after {} ms, so it is "
-                          "still running in the background as the session "
-                          "above; it was not killed and its work is not "
-                          "lost.{}", window, tail);
+            ? std::format("Started without waiting.{}", tail)
+            : std::format("Still running after {} ms; not killed.{}", window, tail);
 
-    co_return co_await launch_and_report(std::move(spec), std::move(hint));
+    co_return co_await launch_and_report(
+        std::move(spec), std::move(hint), true);
 }
 
 // ---- poll_process -----------------------------------------------------------
@@ -568,6 +583,26 @@ boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
     // was meant to be.
     result.field("retained_session_count", co_await _store->size());
 
+    if (!released.empty()) {
+        result.field("released", released);
+    }
+    if (!unfinished_output.empty()) {
+        // Said in prose as well as in the per-session `output_complete`,
+        // because the cause is not something the reader can see in the output
+        // itself: the child is gone, and the pipe is still open in somebody
+        // else's hands.
+        std::string names;
+        for (const ProcessSessionStore::SessionId& id : unfinished_output) {
+            if (!names.empty()) {
+                names += ", ";
+            }
+            names += id;
+        }
+        result.field("hint", std::format(
+            "Output capture incomplete for {}; use {} again.",
+            names, tool_names::kPoll));
+    }
+
     for (std::size_t index = 0; index < snapshots.size(); ++index) {
         // One record per session, set apart from the neighbours: a poll is
         // about several things at once, and a reader has to be able to tell
@@ -591,28 +626,6 @@ boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
         }
     }
 
-    if (!released.empty()) {
-        result.separate();
-        result.field("released", released);
-    }
-    if (!unfinished_output.empty()) {
-        // Said in prose as well as in the per-session `output_complete`,
-        // because the cause is not something the reader can see in the output
-        // itself: the child is gone, and the pipe is still open in somebody
-        // else's hands.
-        std::string names;
-        for (const ProcessSessionStore::SessionId& id : unfinished_output) {
-            if (!names.empty()) {
-                names += ", ";
-            }
-            names += id;
-        }
-        result.field("hint", std::format(
-            "{} exited, but the output capture is not complete yet: something "
-            "it started may still hold its stdout/stderr open. Call {} again to "
-            "collect the rest",
-            names, tool_names::kPoll));
-    }
     co_return result.render();
 }
 
@@ -700,7 +713,6 @@ boost::asio::awaitable<model_io::Content> ReadProcessTool::invoke(
     if (release) {
         // release() refuses a running child, so this is honest either way:
         // "released" says what actually happened, not what was asked for.
-        result.separate();
         result.field("released", co_await _store->release(id));
     }
     co_return result.render();
@@ -820,16 +832,14 @@ boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
     // A model that needs to know reads the output back.
     if (byte_count != 0) {
         result.field("note",
-                     "the text is queued for the process's standard input; the "
-                     "process may not have read it yet");
+                     "Input queued; delivery not confirmed.");
     }
     if (signalled) {
         // The signal is sent, but the death is observed by the handle's own
         // watcher a moment later, so this result may still say "running".
         // Saying so beats a caller concluding the signal failed.
         result.field("hint", std::format(
-            "signal sent; call {} with a wait_timeout_milliseconds to confirm "
-            "the process has ended",
+            "Signal sent; use {} to confirm exit.",
             tool_names::kPoll));
     }
     if (snapshot && snapshot->exited) {

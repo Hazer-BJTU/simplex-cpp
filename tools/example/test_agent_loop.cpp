@@ -46,7 +46,13 @@ struct FailingProvider : llm::LLMModel {
             model_io::InvokeQuery query;
             query.id = "launch_once";
             query.name = "spawn_process";
-            query.arguments = {{"executable", "echo"}, {"arguments", {"already-executed"}}};
+            // Retain the session so its count can detect duplicate execution
+            // when the conversation resumes after the provider failure.
+            query.arguments = {
+                {"executable", "echo"},
+                {"arguments", {"already-executed"}},
+                {"auto_release", false}
+            };
             response.invokes = std::vector<model_io::InvokeQuery>{query};
         } else {
             saw_previous_result = state.turns.size() == 2 &&

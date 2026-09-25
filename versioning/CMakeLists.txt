@@ -56,7 +56,9 @@
 set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 9)
 
 # Independent contracts for dynamic toolsets and loop hooks.
-set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 1)
+# v2: shared intrinsic ToolResult changed layout to buffer metadata/output
+#     separately. Tool plugins using that helper must be rebuilt with the host.
+set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 2)
 set(SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION 1)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------

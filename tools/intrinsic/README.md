@@ -59,13 +59,13 @@ would mean all four saw a different call from the one that ran. A call whose
 `arguments` is not a JSON object is refused rather than settled as "every
 property absent".
 
-**`tool_result.hpp` — `ToolResult`.** How a tool answers a call: the fields a
-reader scans (`name: value`, one per line) and the text blocks they read
-(`stdout (10 bytes):` and then the bytes, verbatim). It replaced a
-pretty-printed JSON object in a text part, and the header says why — the object
-had to carry the child's output inside a string, so the one thing a caller asked
-for arrived escaped between quotes. See **[toolsets/process/](toolsets/process/)**
-for a family whose results are all built this way.
+**`tool_result.hpp` — `ToolResult`.** Each record starts with plain metadata
+lines (`[[name]]: value`), followed by a blank line and named literal output blocks.
+Fields and concise hints always precede output, even if added later by the tool.
+Shared field formatting lives in [`utils/textformat`](../../utils/textformat).
+There are no Markdown headings or fences; output is not escaped. `separate()`
+starts a new record. The buffered layout uses dynamic toolset ABI v2; rebuild
+tool plugins together with the host. See [process result examples](toolsets/process/#the-result-shape).
 
 **`tool_declaration.hpp` — the declaration loader.** A tool's name, description
 and argument schema are the whole of what a model is told about it, and they are
