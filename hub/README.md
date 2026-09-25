@@ -156,14 +156,46 @@ read it; nothing can replace, edit, or reset it.
 ## Tests
 
 ```sh
-npm test          # 150 unit and integration tests, no build required
+npm test          # unit and integration tests, no build required
 npm run test:e2e  # end-to-end against build/bin/simplex_worker (skipped if absent)
 ```
 
 The end-to-end tests drive the real binary through the hub and the offline mock:
-a full loop with a real tool call and confirmation, and a crashed hub whose
-worker is adopted by the next hub. Set `SIMPLEX_WORKER_BIN` to test a different
-build.
+a full loop with a real tool call and confirmation, a crashed hub whose worker is
+adopted by the next hub, and the panel itself in headless Chrome (the browser
+check skips when none is installed; set `PANEL_REQUIRE_BROWSER=1` to make that a
+failure, and `CHROME_BIN` to choose one). Set `SIMPLEX_WORKER_BIN` to test a
+different build.
+
+### Continuous integration
+
+Two jobs in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) cover this
+package. Neither uses the C++ build images: those pin a compiler and Boost, carry
+no Node, and are digest-pinned, so a Node install there would enter the plugin
+ABI fingerprint the C++ jobs depend on.
+
+| Job | Subject | Notes |
+| --- | --- | --- |
+| `hub-test` | the suite on the declared Node floor (20.11) and the current release (24) | no C++ tree needed; drives stand-in workers over real WebSockets |
+| `hub-e2e` | the hub against the *staged release* worker from `portable-release`, plus the panel in the runner's Chrome | the first workload that runs a release binary rather than a ctest executable |
+
+Between them they also assert things a reader might otherwise assume:
+
+- **Protocol drift.** `test/protocol-drift.test.js` parses
+  `core/docs/worker-protocol.md` and fails when core adds an event, a signal, an
+  input operation, or an option category the hub does not know about. A hub that
+  silently rendered a new event as "unknown" would otherwise stay green.
+- **Panel integrity.** The panel has no build step, so nothing compiles it.
+  `test/panel-assets.test.js` checks that every referenced asset exists, every
+  module parses, every import resolves, both theme token sets exist, and nothing
+  writes markup as HTML.
+- **The panel in a browser.** `test/e2e/panel.test.js` loads it in headless
+  Chrome, follows a real run, clicks Approve in the confirmation modal, and
+  switches the theme. It is a smoke test, not a UI suite.
+
+Not covered by CI: a real provider (the offline mock stands in), `wss` and
+reverse-proxy behaviour, long-running sessions, and operating systems other than
+the runner's Ubuntu.
 
 ## Documentation
 
