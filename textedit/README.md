@@ -1,8 +1,64 @@
 # textedit
 
 Text-file operations independent of model-facing toolsets. The package currently
-provides advisory UTF-8 inspection and a byte-based line index; editing and
-reading tools will be separate consumers of the package.
+provides advisory UTF-8 inspection, a byte-based line index and text reading;
+editing and reading tools will be separate consumers of the package.
+
+## Reading selections
+
+Include `textedit/read.hpp`. `read_lines(text, start_line, line_count, format)`
+and `read_bytes(text, start_byte, byte_count, format)` operate on borrowed string
+views and return owned output. Their `read_file_lines` / `read_file_bytes`
+counterparts accept a filesystem path. All offsets and line numbers are zero-based.
+
+Line formats:
+
+- `Plain`: exact selected bytes, with original newline sequences and no labels.
+- `LineIndex`: decimal line number, right-aligned within the selection, then
+  ` | ` and the line's content.
+- `ByteRange`: `[start:end] | ` and content. Both decimal fields have the same
+  width, chosen from the largest endpoint in the selection. The range is
+  half-open and includes the original line terminator.
+
+For example, reading `"abc\r\ndefgh\nZ"` as byte-range-indexed lines returns:
+
+```text
+[ 0: 5] | abc
+[ 5:11] | defgh
+[11:12] | Z
+```
+
+Indexed formats replace logical terminators with LF display separators, with
+no additional final LF. Original offsets remain unchanged. Other content is
+literal: tabs, NUL and terminal controls are not escaped or sanitized. An empty
+logical line still has a label; in plain format it contributes zero bytes.
+Line indexing follows `LineIndex`, including its trailing zero-byte line.
+
+Byte formats are `Plain` (exact bytes) and `HexEscaped` (every byte becomes
+`\xHH`, with uppercase hex digits and no separators). For example, the three
+bytes `A`, NUL and LF become `\x41\x00\x0A`. Byte selection can split a UTF-8
+character; neither mode enforces UTF-8 validity.
+
+Results include `text`, original `start_byte` / exclusive `end_byte`, and
+`reached_end`. Line results also include `start_line` and `lines_read`.
+`reached_end` indicates that there are no more entries in the selected mode:
+after reading the bytes of a final newline, a zero-byte logical line can still
+remain in line mode. Counts clamp to available entries without arithmetic
+overflow. A zero count returns empty output at the requested position. Starting
+exactly at the total line count or byte count returns an empty EOF selection;
+starting beyond it throws `std::out_of_range`. Invalid format enums throw
+`std::invalid_argument`.
+
+File functions currently load the whole file before selection, bounded by an
+optional `max_file_bytes` parameter (default 16 MiB). One lookahead byte detects
+oversize input, which throws `std::length_error`; content is never silently
+truncated to satisfy this bound. Zero allows an empty file, while `SIZE_MAX` is
+invalid. This is an input-size bound, not a combined memory/output bound: the
+line index, prefixes, and especially fourfold hex expansion need extra memory.
+For repeated selections, load once and use the string-view functions. Reads are
+synchronous and use `fileio`'s regular-file checks and symlink handling. Filesystem
+errors throw `std::system_error`; concurrent modifications are not a snapshot.
+No files are modified, and UTF-8 probing remains a separate advisory operation.
 
 ## Line and byte-column indexing
 

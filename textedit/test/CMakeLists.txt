@@ -7,3 +7,8 @@ add_executable(test_line_index test_line_index.cpp)
 target_link_libraries(test_line_index PRIVATE textedit_lib Boost::unit_test_framework)
 add_test(NAME test_line_index COMMAND test_line_index)
 set_tests_properties(test_line_index PROPERTIES TIMEOUT 30)
+
+add_executable(test_text_read test_read.cpp)
+target_link_libraries(test_text_read PRIVATE textedit_lib Boost::unit_test_framework)
+add_test(NAME test_text_read COMMAND test_text_read)
+set_tests_properties(test_text_read PROPERTIES TIMEOUT 30)
