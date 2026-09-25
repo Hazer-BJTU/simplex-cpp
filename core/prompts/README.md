@@ -1,7 +1,8 @@
-# Default worker prompt
+# Role-based worker prompts
 
-`system_prompt.yaml` is the editable default for new worker sessions. CMake copies
-it to `bin/prompts/system_prompt.yaml` and installs it in the same location
+Each YAML filename identifies a role. `coding_agent.yaml` provides the concise,
+general-purpose coding agent and is the default for new worker sessions. CMake copies
+it to `bin/prompts/coding_agent.yaml` and installs it in the same location
 relative to the installation prefix. No prompt text is embedded in the worker.
 
 Select a custom file through `worker.system_prompt_file` in the startup YAML.
@@ -10,7 +11,7 @@ to load the default beside the executable. All files are validated at startup.
 
 The format is an ordered `model_io::PromptTemplate`: an optional `heading_level`
 and a required `sections` list. See [the format and lifecycle contract](../../load/README.md#system-prompt-files).
-Use this file for base instructions; the worker separately injects the active
+Use these files for base instructions; the worker separately injects the active
 tool registry's skills. Names beginning with `skill.` are reserved.
 
 Editing the file affects new sessions. Existing session snapshots keep their

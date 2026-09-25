@@ -23,14 +23,14 @@ security:
 worker:
   max_exchanges: 512
   event_capacity: 1024
-  system_prompt_file: ./prompts/system_prompt.yaml
+  system_prompt_file: ./prompts/coding_agent.yaml
 persistence:
   directory: ./data/sessions
   readable: false
 ~~~
 
-The default structured prompt lives in [core/prompts/system_prompt.yaml](prompts/system_prompt.yaml)
-and is copied/installed as `bin/prompts/system_prompt.yaml`. The loader resolves
+The default structured prompt lives in [core/prompts/coding_agent.yaml](prompts/coding_agent.yaml)
+and is copied/installed as `bin/prompts/coding_agent.yaml`. The loader resolves
 an explicit relative path against the startup configuration file's directory.
 It validates the file at startup, even when restoring a session. New sessions
 use its sections; restored sessions retain the prompt in their snapshot. Tool

@@ -1,8 +1,0 @@
-# Default prompt for new worker sessions. Tool skills are injected separately.
-heading_level: 2
-sections:
-  - name: persona
-    title: ""
-    stability: immutable
-    text: |
-      You are a helpful assistant. Follow the available tool guidance.

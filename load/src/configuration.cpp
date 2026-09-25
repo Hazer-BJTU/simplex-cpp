@@ -167,7 +167,7 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
         prompt_file = (directory / path).lexically_normal();
     } else {
         prompt_file = boost::dll::program_location().parent_path()
-            / "prompts" / "system_prompt.yaml";
+            / "prompts" / "coding_agent.yaml";
     }
     result.system_prompt = read_system_prompt(prompt_file);
     const auto& storage = object(document, "persistence");

@@ -183,7 +183,7 @@ guarantee.
   config.example.yaml
   config.yaml                  # operator-owned copy
   prompts/
-    system_prompt.yaml         # default prompt for new sessions
+    coding_agent.yaml         # default prompt for new sessions
   plugins/
     llm/
     tools/
@@ -401,18 +401,18 @@ saving and failure policy; the explicit persistence APIs do not interpret YAML.
 
 ## System prompt files
 
-The default file is maintained in `core/prompts/system_prompt.yaml` and exported
-as `<build>/bin/prompts/system_prompt.yaml` and
-`<prefix>/bin/prompts/system_prompt.yaml`. The startup template selects it using:
+The default file is maintained in `core/prompts/coding_agent.yaml` and exported
+as `<build>/bin/prompts/coding_agent.yaml` and
+`<prefix>/bin/prompts/coding_agent.yaml`. The startup template selects it using:
 
 ```yaml
 worker:
-  system_prompt_file: ./prompts/system_prompt.yaml
+  system_prompt_file: ./prompts/coding_agent.yaml
 ```
 
 An explicit path is resolved relative to the main configuration file, regardless
 of the working directory. Absolute paths are accepted. If the field is omitted,
-the loader reads `<executable_dir>/prompts/system_prompt.yaml`. Empty paths and
+the loader reads `<executable_dir>/prompts/coding_agent.yaml`. Empty paths and
 missing files fail startup; there is no embedded text fallback. If an operator
 copies the example configuration to another directory, copy the prompt beside it
 or change this path. The old inline `worker.system_prompt` field is rejected with

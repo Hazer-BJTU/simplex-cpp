@@ -59,7 +59,7 @@ security:
 worker:
   event_capacity: 1024
   max_exchanges: 512
-  system_prompt_file: ./prompts/system_prompt.yaml
+  system_prompt_file: ./prompts/coding_agent.yaml
 persistence:
   enabled: true
   directory: ./data/sessions
@@ -81,7 +81,7 @@ nonnegative; zero disables it.
 
 `worker.system_prompt_file` selects an independent YAML prompt file for new
 sessions. Explicit relative paths resolve against the main configuration file.
-Omitting it reads `prompts/system_prompt.yaml` beside the executable. The file is
+Omitting it reads `prompts/coding_agent.yaml` beside the executable. The file is
 validated at startup, including when restoring a session; missing or malformed
 files fail startup. Restored sessions retain their stored prompt. Current tool
 skills are injected in both cases. See the [prompt file format](../../load/README.md#system-prompt-files).

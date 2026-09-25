@@ -1,8 +1,8 @@
 configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/system_prompt.yaml"
-    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/system_prompt.yaml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/coding_agent.yaml"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/coding_agent.yaml"
     COPYONLY)
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/system_prompt.yaml"
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/coding_agent.yaml"
     DESTINATION bin/prompts)
 
 add_library(core_protocol SHARED src/protocol.cpp)
