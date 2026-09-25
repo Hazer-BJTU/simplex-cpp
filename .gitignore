@@ -79,6 +79,8 @@ Testing/
 
 # Local external API reference documents (large vendor docs, kept untracked)
 docs/
+# Formal core documentation is maintained and published with the project.
+!/core/docs/
 
 # Local agent/dev settings (absolute paths and per-machine permissions; not
 # part of the build or the runtime)

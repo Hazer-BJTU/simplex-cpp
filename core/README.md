@@ -51,43 +51,13 @@ uses readable.md in the same directory. New sessions use the configured system
 prompt; restoration retains the stored prompt and history. Startup and reconnect
 never start a run automatically.
 
-## Input and output protocol
+## Communication protocol
 
-Incoming envelopes preserve the IO package's payload/signal routing:
-
-~~~json
-{"type":"payload","data":{"operation":"message","request_id":"input-1","text":"Hello"}}
-{"type":"payload","data":{"operation":"continue","request_id":"input-2"}}
-{"type":"signal","data":{"operation":"cancel","run_id":"<run UUID>"}}
-{"type":"signal","data":{"operation":"status"}}
-{"type":"signal","data":{"operation":"shutdown"}}
-~~~
-
-Payloads cannot provide roles, tool results or call metadata. One consumer
-executes payloads serially. Signals are independent and post onto the
-state-owning strand. A stale run ID never cancels a later run.
-
-Outgoing objects have type=event, event, session_id, worker_id, request_id,
-run_id, sequence, and data. Worker/run UUIDs distinguish process restarts;
-sequence increases within a worker lifetime. Events include ready, status,
-input_admitted, input_committed, input_rejected, run_started, model_response,
-tool_calls, tool_results, persisted, export_error, error and run_finished.
-Responses are complete messages, not token deltas. Correlation fields describe
-the active or last run; input_rejected also names the rejected request in data.
-
-Queue admission is not peer receipt, application admission or durable
-completion. A bounded cache rejects duplicate IDs among the most recent 4096 admitted
-requests in this worker lifetime. Older entries are evicted. This cache is not
-persisted and does not promise exactly-once execution outside that window or
-across restarts.
-Clients must inspect status/state instead of automatically replaying inputs
-with unknown outcomes. The shell discards inputs submitted while disconnected.
-
-The bounded application-event queue fails the worker on exhaustion. It requests
-safe cancellation and preserves local state instead of silently dropping
-results. Transport admission is separately bounded. status.rejected_payloads
-reports inbound IO queue rejection. Connection failures follow the existing
-stable-client policy, including indefinite connect-stage retries.
+See the [formal worker client protocol](docs/worker-protocol.md) for all message
+formats, event data, connection roles, confirmation decisions, delivery limits,
+and recovery behavior. It is the reference for independently implemented hubs
+and clients. The [documentation index](docs/index.md) lists the package's formal
+documents and their publishing conventions.
 
 ## Confirmation and cancellation
 
