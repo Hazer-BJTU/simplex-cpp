@@ -558,8 +558,13 @@ The DeepSeek plugin returns exactly:
 `name` is a provider-defined generation key; `options` contains its advertised
 string choices in display order. This list is not the current selection or a
 live catalogue, and does not restrict the existing `set_generation()` API.
-Use `generation()` for current settings and `provider_info()` for remote
-provider information. Apply these DeepSeek choices through `handle_options()` with
+Use `get_current_options() const` for the effective remotely configurable
+selections; it returns an object keyed by advertised option names. The default
+is `{}`, and DeepSeek derives the effective `reasoning_effort` from either the
+explicit generation key or the startup `reasoning.effort` envelope. A value
+from trusted startup configuration may fall outside the advertised choices.
+Use `generation()` for the full in-process generation snapshot and
+`provider_info()` for remote provider information. Apply these DeepSeek choices through `handle_options()` with
 `{"model":"deepseek-v4-pro","reasoning_effort":"max"}`. The typed
 `ReasoningEffort` enum is unchanged; `max` is available through the JSON API.
 
@@ -578,5 +583,5 @@ guarantee, and synchronize state used by concurrent const queries. The worker
 applies `payload.data.options.model` before admitting each run, never through a
 signal; runtime selections are not persisted with conversation state.
 
-These virtual interface additions raise the LLM plugin ABI to 8. Rebuild model
+These virtual interface additions raise the LLM plugin ABI to 9. Rebuild model
 plugins and hosts together; older plugins are rejected by the admission check.

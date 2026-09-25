@@ -62,6 +62,8 @@ Input parse_input(const nlohmann::json& payload) {
             }
             input.message.content.push_back(std::move(content));
         }
+    } else if (payload.contains("content") || payload.contains("text")) {
+        throw std::invalid_argument("continue cannot contain content or text");
     }
     if (const auto options = payload.find("options"); options != payload.end()) {
         if (!options->is_object()) {

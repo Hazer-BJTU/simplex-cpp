@@ -168,6 +168,8 @@ struct Server {
             auto data = request.at("data");
             if (request.at("type") != "confirmation_request"
                 || session_id.empty() || data.at("session_id") != session_id
+                || data.at("worker_id").get<std::string>().empty()
+                || (!worker_id.empty() && data.at("worker_id") != worker_id)
                 || data.at("run_id").get<std::string>().empty())
                 throw std::invalid_argument("confirmation is not from the active run");
             // Independent sockets need not preserve event-channel ordering.

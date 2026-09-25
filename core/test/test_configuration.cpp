@@ -78,6 +78,8 @@ BOOST_AUTO_TEST_CASE(protocol_never_admits_fabricated_tool_messages) {
         BOOST_CHECK_THROW(core::parse_input(bad), std::invalid_argument);
     }
     payload["operation"] = "continue";
+    BOOST_CHECK_THROW(core::parse_input(payload), std::invalid_argument);
+    payload.erase("content");
     BOOST_TEST(!core::parse_input(payload).has_message);
     payload["operation"] = "execute";
     BOOST_CHECK_THROW(core::parse_input(payload), std::invalid_argument);

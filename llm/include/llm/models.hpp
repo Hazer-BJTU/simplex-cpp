@@ -16,8 +16,8 @@
  * A model instance is a *client bound to one provider configuration* — not an
  * agent, not a loop, not storage. Its interface covers the three stages of
  * one model invocation, plus runtime services: the provider's live catalogue (provider_info),
- * locally advertised choices (get_options), and generation-knob adjustment
- * (set_generation):
+ * locally advertised and selected choices (get_options/get_current_options),
+ * and generation-knob adjustment (set_generation):
  *
  *   1. **Input translation** — model_io::AgentInputState (plus its stored
  *      config) into a provider request, via the plugin's own
@@ -571,6 +571,19 @@ public:
      */
     virtual nlohmann::json get_options() const {
         return nlohmann::json::array();
+    }
+
+    /**
+     * Return the effective values of remotely configurable provider options.
+     * Keys use the same names as get_options() descriptors. An absent key has
+     * no selected value; a present value may fall outside the advertised
+     * choices when it came from trusted startup or in-process configuration.
+     * Providers with supported options override this const, synchronous query
+     * and derive values from a coherent generation() snapshot. The default
+     * empty object exposes no unrelated generation or endpoint configuration.
+     */
+    virtual nlohmann::json get_current_options() const {
+        return nlohmann::json::object();
     }
 
     /**

@@ -100,6 +100,16 @@ BOOST_AUTO_TEST_CASE(continuation_has_no_new_content) {
     const auto input = core::parse_input({{"operation", "continue"}, {"request_id", "next"}});
     BOOST_TEST(!input.has_message);
     BOOST_TEST(input.message.content.empty());
+    for (const char* field : {"content", "text"}) {
+        auto request = Json{{"operation", "continue"}, {"request_id", "next"}};
+        for (const auto& value : {Json(nullptr), Json("ignored"),
+                                  Json::array({text_part()})}) {
+            request[field] = value;
+            const auto original = request;
+            BOOST_CHECK_THROW(core::parse_input(request), std::invalid_argument);
+            BOOST_TEST(request == original);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_CASE(worker_text_and_image_reach_chat_completions_in_order) {
@@ -137,6 +147,7 @@ BOOST_AUTO_TEST_CASE(payload_options_validate_all_categories_without_mutation) {
     message["options"] = options;
     BOOST_TEST(core::parse_input(message).options == options);
     message["operation"] = "continue";
+    message.erase("content");
     BOOST_TEST(core::parse_input(message).options == options);
     for (const auto& bad : std::vector<Json>{
         nullptr, Json::array(), {{"model", "name"}},

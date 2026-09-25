@@ -20,6 +20,8 @@ class ConfirmationOptions {
 public:
     /** Owned descriptors, not current selections; no IO or state mutation. */
     nlohmann::json get_options() const;
+    /** The currently selected mode as a JSON object, independent of discovery. */
+    nlohmann::json get_current_options() const;
     /**
      * Accept an object with optional mode: ask/approve/deny. Empty means no change.
      * Unknown keys, null, and unsupported values throw std::invalid_argument and
@@ -62,6 +64,8 @@ private:
  * errors deny.
  * Timeout invalidates approval but completion can wait for an already-running
  * system DNS backend. See intercom::cancellable_exchange for the lifetime contract.
+ * In Ask mode, worker_id, session_id, run_id and the generated confirmation ID
+ * must all be echoed by the peer. They are correlation labels, not credentials.
  */
 boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     tools::InvokeConfirmEvent event,
@@ -69,6 +73,7 @@ boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     boost::asio::any_io_executor executor,
     std::optional<endpoint::ResolvedEndpoint> endpoint,
     std::chrono::milliseconds timeout,
+    std::string worker_id,
     std::string session_id,
     std::string run_id);
 } // namespace core

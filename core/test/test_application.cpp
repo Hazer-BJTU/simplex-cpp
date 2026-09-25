@@ -288,9 +288,13 @@ void options_scenario(Json choices, bool fail = false) {
                 BOOST_TEST(!fail);
                 BOOST_TEST(event.at("worker_id") == identity);
                 BOOST_TEST(event.at("data") == Json({
-                    {"model", choices}, {"tools", Json::array()},
-                    {"confirmation", Json::array({{{"name", "mode"},
-                        {"options", {"ask", "approve", "deny"}}}})}
+                    {"model", {{"available", choices}, {"current", Json::object()}}},
+                    {"tools", {{"available", Json::array()}, {"current", Json::object()}}},
+                    {"confirmation", {
+                        {"available", Json::array({{{"name", "mode"},
+                            {"options", {"ask", "approve", "deny"}}}})},
+                        {"current", {{"mode", "ask"}}}
+                    }}
                 }));
                 ++replies;
                 if (replies == 1) {
@@ -364,6 +368,14 @@ struct MutableOptionsModel : Model {
     std::vector<bool> approvals;
     int updates = 0;
 
+    Json get_options() const override {
+        return Json::array({{{"name", "model"}, {"options", {"first", "second"}}}});
+    }
+
+    Json get_current_options() const override {
+        return {{"model", selected}};
+    }
+
     void handle_options(const Json& options) override {
         BOOST_TEST(active.load() == 0);
         const auto choice = options.at("model").get<std::string>();
@@ -408,9 +420,11 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
     config.client = load::websocket_endpoint(
         "ws://127.0.0.1:" + std::to_string(acceptor.local_endpoint().port()) + "/events");
     auto model = std::make_shared<MutableOptionsModel>(io.get_executor());
+    model->delay = std::chrono::milliseconds(300);
     core::Application app(io.get_executor(), config, "test", model);
     int completed = 0;
     int rejected = 0;
+    int option_replies = 0;
     auto peer = [&]() -> asio::awaitable<void> {
         beast::websocket::stream<asio::ip::tcp::socket> socket(
             co_await acceptor.async_accept(asio::use_awaitable));
@@ -433,6 +447,9 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
                         {"confirmation", {{"mode", "deny"}}}}}});
             } else if (name == "run_started" && event.at("request_id") == "first") {
                 // These arrive during the first run but are applied after it.
+                const auto wire = Json({{"type", "signal"},
+                    {"data", {{"operation", "options"}}}}).dump();
+                co_await socket.async_write(asio::buffer(wire), asio::use_awaitable);
                 co_await send({{"operation", "continue"}, {"request_id", "second"},
                     {"options", {{"model", {{"model", "second"}}},
                         {"confirmation", {{"mode", "invalid"}}}}}});
@@ -446,6 +463,29 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
                 co_await send({{"operation", "continue"}, {"request_id", "third"}});
                 co_await send({{"operation", "continue"}, {"request_id", "ask-again"},
                     {"options", {{"confirmation", {{"mode", "ask"}}}}}});
+            } else if (name == "run_started" && event.at("request_id") == "third") {
+                const auto wire = Json({{"type", "signal"},
+                    {"data", {{"operation", "options"}}}}).dump();
+                co_await socket.async_write(asio::buffer(wire), asio::use_awaitable);
+            } else if (name == "options") {
+                const auto& data = event.at("data");
+                BOOST_TEST(data.at("model").at("available") == model->get_options());
+                BOOST_TEST(data.at("confirmation").at("available") ==
+                    core::ConfirmationOptions{}.get_options());
+                BOOST_TEST(data.at("tools") == Json({
+                    {"available", Json::array()}, {"current", Json::object()}
+                }));
+                ++option_replies;
+                if (event.at("request_id") == "first") {
+                    BOOST_TEST(data.at("model").at("current") == Json({{"model", "first"}}));
+                    BOOST_TEST(data.at("confirmation").at("current") ==
+                        Json({{"mode", "deny"}}));
+                } else {
+                    BOOST_TEST(event.at("request_id") == "third");
+                    BOOST_TEST(data.at("model").at("current") == Json({{"model", "second"}}));
+                    BOOST_TEST(data.at("confirmation").at("current") ==
+                        Json({{"mode", "approve"}}));
+                }
             } else if (name == "input_rejected") {
                 ++rejected;
                 BOOST_TEST(event.at("data").at("message") == (rejected == 1
@@ -470,6 +510,7 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
     worker.get();
     BOOST_TEST(rejected == 2);
     BOOST_TEST(completed == 5);
+    BOOST_TEST(option_replies == 2);
     BOOST_TEST(model->updates == 2);
     BOOST_TEST(model->observed == std::vector<std::string>({"first", "first", "second", "second", "second"}),
                boost::test_tools::per_element());

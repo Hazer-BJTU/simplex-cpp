@@ -27,7 +27,8 @@ struct Input {
  * categories are rejected. Parsing never applies options or calls a provider.
  *
  * Reject invalid shapes and attempts to supply roles or tool-call metadata.
- * A continue request carries no new content. Parsing never mutates payload.
+ * A continue request must not carry content or legacy text. Parsing never
+ * mutates payload.
  */
 Input parse_input(const nlohmann::json& payload);
 /** Generate a process-independent correlation identity; never reuse tool IDs. */

@@ -52,7 +52,8 @@
 #   v7: LLMModel gained the const virtual get_options() metadata query.
 #       Host and providers must be rebuilt together for the new vtable slot.
 #   v8: LLMModel gained the synchronous virtual handle_options() mutation hook.
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 8)
+#   v9: LLMModel gained the const virtual get_current_options() query.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 9)
 
 # Independent contracts for dynamic toolsets and loop hooks.
 set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 1)

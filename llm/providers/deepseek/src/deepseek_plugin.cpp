@@ -49,6 +49,28 @@ public:
         });
     }
 
+    /** Report effective provider choices, including startup generation values. */
+    nlohmann::json get_current_options() const override {
+        const auto snapshot = generation();
+        nlohmann::json current = nlohmann::json::object();
+        if (const auto model = snapshot.find("model"); model != snapshot.end()) {
+            current["model"] = *model;
+        }
+        // The chat adapter prefers an explicit top-level effort to the
+        // shared reasoning envelope; use that same precedence here.
+        if (const auto effort = snapshot.find("reasoning_effort");
+            effort != snapshot.end()) {
+            current["reasoning_effort"] = *effort;
+        } else if (const auto reasoning = snapshot.find("reasoning");
+                   reasoning != snapshot.end() && reasoning->is_object()) {
+            if (const auto nested = reasoning->find("effort");
+                nested != reasoning->end()) {
+                current["reasoning_effort"] = *nested;
+            }
+        }
+        return current;
+    }
+
     /** Validate all advertised choices before atomically merging generation knobs. */
     void handle_options(const nlohmann::json& options) override {
         if (!options.is_object()) {

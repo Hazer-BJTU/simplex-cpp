@@ -367,6 +367,7 @@ BOOST_AUTO_TEST_CASE(dlopened_provider_advertises_const_generation_options) {
     auto options = interface.get_options();
     BOOST_TEST(options == expected);
     BOOST_TEST(model->generation() == original);
+    BOOST_TEST(interface.get_current_options().at("model") == "deepseek-flash");
     options[0]["options"][0] = "local edit";
     BOOST_TEST(interface.get_options() == expected);
     model->set_generation(nlohmann::json{
@@ -374,6 +375,9 @@ BOOST_AUTO_TEST_CASE(dlopened_provider_advertises_const_generation_options) {
     });
     BOOST_TEST(interface.get_options() == expected);
     BOOST_TEST(model->generation()["reasoning_effort"] == "max");
+    BOOST_TEST(interface.get_current_options() == nlohmann::json({
+        {"model", "deepseek-v4-pro"}, {"reasoning_effort", "max"}
+    }));
 }
 
 BOOST_AUTO_TEST_CASE(dlopened_provider_applies_options_atomically) {
@@ -385,6 +389,9 @@ BOOST_AUTO_TEST_CASE(dlopened_provider_applies_options_atomically) {
         "deepseek", io.get_executor(), {{"model", "deepseek-flash"}});
     model->handle_options({{"model", "deepseek-v4-pro"}, {"reasoning_effort", "max"}});
     const auto selected = model->generation();
+    BOOST_TEST(model->get_current_options() == nlohmann::json({
+        {"model", "deepseek-v4-pro"}, {"reasoning_effort", "max"}
+    }));
     BOOST_TEST(selected.at("model") == "deepseek-v4-pro");
     BOOST_TEST(selected.at("reasoning_effort") == "max");
     for (const auto& bad : std::vector<nlohmann::json>{
@@ -405,4 +412,22 @@ BOOST_AUTO_TEST_CASE(dlopened_provider_applies_options_atomically) {
     }
     model->handle_options({{"model", "deepseek-flash"}});
     BOOST_TEST(model->generation().at("model") == "deepseek-flash");
+}
+
+BOOST_AUTO_TEST_CASE(current_options_follow_effective_reasoning_precedence) {
+    llm::LLMDispatcher dispatcher;
+    BOOST_REQUIRE_EQUAL(
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+    boost::asio::io_context io;
+    auto model = dispatcher.create_model("deepseek", io.get_executor(), {
+        {"model", "deepseek-flash"},
+        {"reasoning", {{"effort", "medium"}}}
+    });
+    BOOST_TEST(model->get_current_options() == nlohmann::json({
+        {"model", "deepseek-flash"}, {"reasoning_effort", "medium"}
+    }));
+    model->handle_options({{"reasoning_effort", "high"}});
+    BOOST_TEST(model->get_current_options().at("reasoning_effort") == "high");
+    model->set_generation(nlohmann::json{{"reasoning_effort", nullptr}});
+    BOOST_TEST(model->get_current_options().at("reasoning_effort") == "medium");
 }

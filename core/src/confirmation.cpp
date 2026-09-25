@@ -9,6 +9,18 @@ nlohmann::json ConfirmationOptions::get_options() const {
     }});
 }
 
+nlohmann::json ConfirmationOptions::get_current_options() const {
+    switch (mode_) {
+        case ConfirmationMode::Ask:
+            return {{"mode", "ask"}};
+        case ConfirmationMode::Approve:
+            return {{"mode", "approve"}};
+        case ConfirmationMode::Deny:
+            return {{"mode", "deny"}};
+    }
+    throw std::logic_error("unknown confirmation mode");
+}
+
 void ConfirmationOptions::handle_options(const nlohmann::json& options) {
     if (!options.is_object()) {
         throw std::invalid_argument("confirmation options must be an object");
@@ -46,7 +58,8 @@ bool ConfirmationScope::settle_approval(bool approved) {
 boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     tools::InvokeConfirmEvent event, std::shared_ptr<ConfirmationScope> scope,
     boost::asio::any_io_executor executor, std::optional<endpoint::ResolvedEndpoint> endpoint,
-    std::chrono::milliseconds timeout, std::string session_id, std::string run_id) {
+    std::chrono::milliseconds timeout, std::string worker_id,
+    std::string session_id, std::string run_id) {
     event.decision = tools::ConfirmDecision::Denied;
     event.reason = "confirmation endpoint is not configured";
     if (!scope || scope->token().stop_requested()) {
@@ -69,7 +82,8 @@ boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     if (!endpoint) co_return event;
     const auto id = new_identity();
     nlohmann::json request = {{"type", "confirmation_request"}, {"data", {
-        {"session_id", session_id}, {"run_id", run_id}, {"confirmation_id", id},
+        {"worker_id", worker_id}, {"session_id", session_id},
+        {"run_id", run_id}, {"confirmation_id", id},
         {"call", event.query}}}};
     try {
         const auto wire = co_await intercom::cancellable_exchange(
@@ -77,6 +91,7 @@ boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
         const auto reply = nlohmann::json::parse(wire);
         const auto& data = reply.at("data");
         if (reply.at("type") != "confirmation_response"
+            || data.at("worker_id") != worker_id
             || data.at("session_id") != session_id || data.at("run_id") != run_id
             || data.at("confirmation_id") != id)
             throw std::invalid_argument("confirmation correlation mismatch");

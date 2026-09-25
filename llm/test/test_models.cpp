@@ -522,4 +522,5 @@ BOOST_AUTO_TEST_CASE(default_option_handler_rejects_unsupported_mutation) {
     BOOST_CHECK_NO_THROW(model.handle_options(nlohmann::json::object()));
     BOOST_CHECK_THROW(model.handle_options({{"model", "other"}}), std::invalid_argument);
     BOOST_CHECK_THROW(model.handle_options(nullptr), std::invalid_argument);
+    BOOST_TEST(model.get_current_options() == nlohmann::json::object());
 }

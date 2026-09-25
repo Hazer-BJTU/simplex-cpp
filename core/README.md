@@ -61,8 +61,9 @@ preserves additional metadata for future richer modalities.
 It is the reference for independently implemented hubs
 and clients. The [documentation index](docs/index.md) lists the package's formal
 documents and their publishing conventions. The `options` signal returns
-provider model choices, confirmation modes, and a reserved tools category in
-the normal event metadata envelope; it does not change settings.
+available choices and current selections for model and confirmation, plus a
+reserved tools category, in the normal event metadata envelope. Hubs can query
+it after reconnecting; the query does not change settings.
 
 ## Confirmation and cancellation
 
@@ -75,13 +76,18 @@ with a diagnostic. A payload may set `options.confirmation.mode` to `ask`,
 performs no network IO; approval still respects run cancellation. `Trusted` and
 `DefaultDeny` retain their tool-layer meaning. Model and confirmation options are
 validated together at admission, cannot change an active run, and are not
-persisted. The `options` signal advertises choices without modifying them.
+persisted. The `options` signal reports choices and selections without
+modifying them.
+Any party allowed to submit payloads can select automatic approval. Production
+Hubs must authorize that payload channel as an approval authority; correlation
+IDs are not credentials. See the formal protocol for deployment requirements.
 
 In `ask` mode, confirmation uses one independent text WebSocket exchange without retries.
-The request has type=confirmation_request and data containing session_id,
-run_id, a fresh confirmation_id, and the settled call (including security,
-type and normalized arguments). The response has type=confirmation_response
-and echoes all three IDs with decision=approved|denied and optional reason.
+The request has type=confirmation_request and data containing worker_id,
+session_id, run_id, a fresh confirmation_id, and the settled call (including
+security, type and normalized arguments). The response has
+type=confirmation_response and echoes all four IDs with
+decision=approved|denied and optional reason.
 Malformed, mismatched, binary, disconnected or expired replies deny execution.
 
 The overall deadline spans DNS, TCP/TLS, upgrade, write, read and graceful

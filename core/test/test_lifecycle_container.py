@@ -116,6 +116,7 @@ class Router:
             if b'/confirm ' in header.split(b'\r\n')[0]:
                 _, raw = receive(sock)
                 data = json.loads(raw)['data']
+                assert data['worker_id']
                 data['decision'] = 'approved'
                 send(sock, {'type': 'confirmation_response', 'data': data})
             else:

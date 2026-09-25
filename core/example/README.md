@@ -20,7 +20,7 @@ has no authentication and supports plain local WebSockets only. See the
 [worker guide](../README.md) for configuration, protocol and container testing.
 A production authenticated hub is a separate application.
 
-`/options` queries advertised model choices and confirmation modes
+`/options` queries available model choices, current selections, and confirmation modes
 (`ask`, `approve`, `deny`). The tools list is reserved and currently empty.
 This command does not change configuration; hubs apply choices through the
 next payload's `data.options` object.

@@ -185,16 +185,21 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     }
 
     /**
-     * Read-only option discovery. Each category contains a list of advertised
-     * choices, not active configuration. Empty reserved categories do not imply
-     * that tools are disabled; their options are not exposed yet.
+     * Read-only capability and current-selection snapshot. Empty reserved
+     * categories do not imply that tools are disabled.
      */
     Json options() const {
         const llm::LLMModel& provider = *model;
         return {
-            {"model", provider.get_options()},
-            {"tools", Json::array()},
-            {"confirmation", confirmation_options.get_options()}
+            {"model", {
+                {"available", provider.get_options()},
+                {"current", provider.get_current_options()}
+            }},
+            {"tools", {{"available", Json::array()}, {"current", Json::object()}}},
+            {"confirmation", {
+                {"available", confirmation_options.get_options()},
+                {"current", confirmation_options.get_current_options()}
+            }}
         };
     }
 
@@ -303,7 +308,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 }
                 co_return co_await confirm(std::move(event), std::move(current), self->strand,
                     self->config.confirmation, self->config.confirmation_timeout,
-                    self->session_id, std::move(run));
+                    self->worker_id, self->session_id, std::move(run));
             });
     }
 

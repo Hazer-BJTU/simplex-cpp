@@ -87,9 +87,24 @@ For `wss://`, the worker uses TLS peer and hostname verification with the system
 trust paths. For `ws://`, traffic is plaintext. The current worker configuration
 does not expose custom WebSocket authentication headers, cookies, client
 certificates, or subprotocol negotiation. Provider API credentials configure
-model requests only; they are not sent as hub credentials. Session/run IDs are
-correlation labels, not proof of identity. Deployment authentication and routing
-must account for these limits rather than assume an authentication exchange.
+model requests only; they are not sent as hub credentials. `session_id`,
+`worker_id`, and `run_id` are correlation identifiers, not authentication
+credentials. Deployment authentication and routing must account for these limits
+rather than assume an authentication exchange.
+
+**Payload access grants confirmation-policy authority.** Any party permitted to
+submit a payload can select `confirmation.mode: approve`; that party can then
+authorize every `RequireConfirm` tool call in that run and later runs without
+an interactive prompt. Treat this as granting approval authority, not merely
+permission to send a user message. Production deployments **must authenticate
+and authorize access to the worker-facing event/payload channel** before
+exposing automatic approval. The Hub must enforce that boundary, including for
+browser and other downstream clients. Do not connect an untrusted browser or
+client directly to that endpoint. Use plain `ws://` with automatic approval
+only within a trusted environment; use `wss://` when transport protection is
+needed. TLS encrypts the connection but does not by itself authorize who may
+send payloads. This worker does not implement its own client authentication
+handshake; the deployment must provide the required trust boundary.
 
 The transport applies 30-second TCP-connect, TLS-handshake, and WebSocket-upgrade
 deadlines to their respective stages, not one combined 30-second deadline.
@@ -207,9 +222,10 @@ The worker first validates the whole payload, duplicate request ID, and session
 recovery prerequisites. It then validates confirmation options on a temporary
 copy, applies model options synchronously, and commits the confirmation selection
 before `input_admitted` and before starting the loop. If either category is
-invalid, neither selection changes. Invalid options produce `input_rejected`, preserve the prior settings, and do not
-consume the request ID or add a user message. A corrected request may reuse that
-ID. A queued payload cannot change the settings of the active run; its options
+invalid, neither selection changes. Invalid options produce `input_rejected`,
+preserve the prior settings, and do not consume the request ID or add a user
+message. A corrected request may reuse that ID. A queued payload cannot change
+the settings of the active run; its options
 are processed only after that run settles. All exchanges within the new run use
 the selected settings. Signals never apply options: `options` remains a read-only
 query, including while a run is active.
@@ -312,8 +328,9 @@ metadata remain worker-owned; a content array is not an arbitrary MessageItem.
 a user message. It requires at least one existing turn. It is useful after
 cancellation or an exchange limit when the recovery phase permits continuation;
 it is not restricted to those outcomes. Each invocation receives a fresh model
-exchange budget. Content fields supplied with `continue` are ignored; omit them to avoid
-suggesting that a new attachment or user message will be committed.
+exchange budget. A `continue` request carrying `content` or the legacy `text`
+field is rejected, even if its value is null or an empty array. It never
+accepts a new user message.
 
 For both operations, `role`, `invokes`, `invoke_return`, and `type` inside `data`
 are rejected even if their values are null. Other unknown fields are ignored.
@@ -356,7 +373,7 @@ processing do not have a combined cross-queue execution order.
 | `data.operation` | Required additional fields | Effect and response |
 | --- | --- | --- |
 | `status` | None | Emits a `status` event containing current state information. |
-| `options` | None | Emits an `options` event with advertised choices grouped by category; does not change configuration. |
+| `options` | None | Emits an `options` event with available choices and current selections grouped by category; does not change configuration. |
 | `cancel` | Nonempty string `run_id` | Requests cancellation only if the ID matches the current/last run ID, then emits `status`. A stale ID changes nothing. |
 | `shutdown` | None | Requests process-worker shutdown. No dedicated acknowledgement or final shutdown event exists. |
 
@@ -392,7 +409,7 @@ may occur in nested dataclass records.
 | --- | --- | --- |
 | `ready` | Status object | Startup initialization finished and payload consumption is starting. Emitted once per worker lifetime, not once per WebSocket connection. |
 | `status` | Status object | Snapshot produced by `status` or `cancel`. |
-| `options` | Options object | Advertised choices returned in response to the `options` signal. |
+| `options` | Options object | Available choices and current selections returned in response to the `options` signal. |
 | `input_admitted` | `{}` | Host admitted an input and assigned its run ID. |
 | `input_rejected` | `{ "request_id": any JSON value or null, "message": string }` | Dequeued input failed host validation; no run was started for that input. |
 | `run_started` | `{}` | Loop admitted the invocation. |
@@ -421,7 +438,8 @@ The hub can discover available choices without starting a run:
 ```
 
 The worker replies on the same event connection using its ordinary metadata
-envelope. For a DeepSeek worker before the first request, an example is:
+envelope. For a DeepSeek worker configured with `deepseek-flash` and `low`, an
+example before the first request is:
 
 ```json
 {
@@ -433,35 +451,48 @@ envelope. For a DeepSeek worker before the first request, an example is:
   "run_id": "",
   "sequence": 2,
   "data": {
-    "model": [
-      {"name": "model", "options": ["deepseek-flash", "deepseek-v4-pro"]},
-      {"name": "reasoning_effort", "options": ["low", "high", "max"]}
-    ],
-    "tools": [],
-    "confirmation": [
-      {"name": "mode", "options": ["ask", "approve", "deny"]}
-    ]
+    "model": {
+      "available": [
+        {"name": "model", "options": ["deepseek-flash", "deepseek-v4-pro"]},
+        {"name": "reasoning_effort", "options": ["low", "high", "max"]}
+      ],
+      "current": {"model": "deepseek-flash", "reasoning_effort": "low"}
+    },
+    "tools": {"available": [], "current": {}},
+    "confirmation": {
+      "available": [
+        {"name": "mode", "options": ["ask", "approve", "deny"]}
+      ],
+      "current": {"mode": "ask"}
+    }
   }
 }
 ```
 
-| Category | Current contents | Meaning |
+| Category | `available` | `current` |
 | --- | --- | --- |
-| `model` | Selected provider's `get_options() const` result | Array of `{ "name": string, "options": [string, ...] }` descriptors, in provider display order. Providers without advertised choices return `[]`. |
-| `tools` | `[]` | Reserved for future tool configuration choices; not a list of registered tools. |
-| `confirmation` | `[{"name":"mode","options":["ask","approve","deny"]}]` | Supported confirmation modes; not the current selection or pending approvals. |
+| `model` | Provider's `get_options() const` descriptors | Provider's effective runtime values, using the same option names. Providers without advertised choices return `[]` and `{}`. |
+| `tools` | `[]` | `{}`; tool configuration is reserved. |
+| `confirmation` | One `mode` descriptor with `ask`, `approve`, `deny` | `{"mode":"ask"}` initially; reflects the selected runtime policy. |
 
-These lists describe choices, not current values. Empty reserved categories do
-not mean tools are disabled. Hubs should tolerate new categories
-and preserve provider-defined option names and values. This query exposes no
-credentials or endpoint configuration and does not fetch a remote model catalogue.
+Each `available` array contains `{ "name": string, "options": [string, ...] }`
+descriptors in display order. `current` contains effective values, not a patch
+to apply. A key absent from `current` has no selected value. Startup or trusted
+in-process configuration may produce a current value outside the advertised
+remote choices. DeepSeek reports its effective `reasoning_effort`, including a
+value derived from the startup `reasoning.effort` envelope when no explicit
+top-level effort overrides it. Empty tool metadata does not mean tools are
+disabled. Hubs should tolerate new categories and provider-defined names and
+values. This query exposes no credentials or endpoint configuration and does
+not fetch a remote model catalogue.
 
 The query can be handled while idle or while a run is suspended on asynchronous
 work. It uses the worker's existing signal path and does not admit an input,
 change generation parameters, or create a new run. Metadata identifies the
 current or most recently admitted run, exactly as for `status`; the signal has
 no separate request ID or echoed correlation ID. Every response gets a new event
-sequence number. No options event is sent automatically at startup or reconnect.
+sequence number. The Hub can query after reconnecting to reconstruct current
+runtime selections. No options event is sent automatically at startup or reconnect.
 
 If provider option discovery throws a standard exception, the worker reports
 an `error` event through the normal signal error path and can continue serving
@@ -659,6 +690,8 @@ approval still arbitrates against run cancellation using the same synchronized
 boundary as endpoint approval; a missing or cancelled scope never approves.
 `Trusted` calls still pass and `DefaultDeny` calls still fail without consulting
 this policy. Individual tools may also implement their own security checks.
+The deployment trust requirement for `approve` is specified under
+[Connections and configuration](#connections-and-configuration).
 
 Only `mode` is remotely configurable. Unknown keys, unsupported modes, and
 non-string modes are rejected without changing either model or confirmation
@@ -675,6 +708,7 @@ WebSocket, sends one text message, and awaits one response:
 {
   "type": "confirmation_request",
   "data": {
+    "worker_id": "204d23ea-0f10-4dbb-b2ef-613bc3f7852d",
     "session_id": "demo",
     "run_id": "fd473c9f-f424-4c5a-bcc7-eb39698674de",
     "confirmation_id": "573e354f-7c5d-4ca6-bf34-72b4a68597b2",
@@ -692,10 +726,12 @@ WebSocket, sends one text message, and awaits one response:
 The call shape is complete; arguments in this illustrative example are
 abbreviated relative to tool-specific normalization. Show the actual settled
 arguments received, rather than an earlier model proposal. The worker's
-confirmation request has **no** `worker_id`, `request_id`, or event `sequence`.
-Correlate by `(session_id, run_id, confirmation_id)` plus the server's authenticated
-connection/deployment association. A confirmation can arrive before `tool_calls`
-or `run_started` is delivered over the independent event connection.
+confirmation request has no `request_id` or event `sequence`.
+Correlate by `(worker_id, session_id, run_id, confirmation_id)` plus the server's
+authenticated connection/deployment association. `worker_id` matches the event
+connection for this worker instance but is not an authentication token. A
+confirmation can arrive before `tool_calls` or `run_started` is delivered over
+the independent event connection.
 
 `trusted` calls need no hub approval. `default_deny` is not made trusted by a
 hub-supplied decision. Do not expect a confirmation for every proposed call.
@@ -708,6 +744,7 @@ The hub sends exactly one text response on the same confirmation connection:
 {
   "type": "confirmation_response",
   "data": {
+    "worker_id": "204d23ea-0f10-4dbb-b2ef-613bc3f7852d",
     "session_id": "demo",
     "run_id": "fd473c9f-f424-4c5a-bcc7-eb39698674de",
     "confirmation_id": "573e354f-7c5d-4ca6-bf34-72b4a68597b2",
@@ -717,7 +754,8 @@ The hub sends exactly one text response on the same confirmation connection:
 }
 ```
 
-All three IDs must exactly match. `decision` must be `approved` or `denied`.
+All four IDs must exactly match. A missing or mismatched `worker_id` denies the
+call. `decision` must be `approved` or `denied`.
 `reason` is optional, must be a string if present, and defaults to
 `operator decision`. Unknown additional fields are ignored. Do not wrap this
 response as an event-connection signal, and do not send it on the event socket.
@@ -916,7 +954,9 @@ A conforming hub integration should:
    standard ping/pong and close handling. Do not require an unimplemented auth,
    registration, subprotocol, or application-heartbeat message.
 2. Associate connections with a deployment-authorized worker/session, retaining
-   worker IDs across reconnects and distinguishing process restarts.
+   worker IDs across reconnects and distinguishing process restarts. Authorize
+   payload senders as approval authorities when `confirmation.mode: approve`
+   is available; do not expose the worker-facing socket to untrusted clients.
 3. Generate valid request IDs, wait for admission/outcome events, and preserve
    unknown outcomes instead of retrying side-effecting work automatically.
 4. Decode every event shape above, including empty objects and array payloads;
