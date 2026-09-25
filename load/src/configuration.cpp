@@ -170,6 +170,30 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
             / "prompts" / "coding_agent.yaml";
     }
     result.system_prompt = read_system_prompt(prompt_file);
+    const auto& environment = object(worker, "environment");
+    const auto workspace = text(environment, "workspace");
+    if (workspace.find('\0') != std::string::npos) {
+        throw std::invalid_argument("worker.environment.workspace must not contain NUL");
+    }
+    if (!workspace.empty()) {
+        result.environment.workspace = (directory / workspace).lexically_normal();
+    }
+    result.environment.platform = text(environment, "platform");
+    if (const auto software = environment.find("software"); software != environment.end()) {
+        if (!software->is_array()) {
+            throw std::invalid_argument("worker.environment.software must be a list of strings");
+        }
+        for (const auto& entry : *software) {
+            if (!entry.is_string()) {
+                throw std::invalid_argument("worker.environment.software entries must be strings");
+            }
+            const auto value = entry.get<std::string>();
+            if (!value.empty()) {
+                result.environment.software.push_back(value);
+            }
+        }
+    }
+
     const auto& storage = object(document, "persistence");
     result.persistence = flag(storage, "enabled", true);
     auto location = text(storage, "directory", "./data/sessions");

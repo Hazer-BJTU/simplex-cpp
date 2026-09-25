@@ -443,7 +443,8 @@ a unique, nonempty string `name` and string `text`. `title` defaults to an empty
 string (no heading), and `stability` defaults to `immutable`. Sections must be
 ordered by stability: `immutable`, then `growing`, then `volatile`. Duplicate
 names, unknown stability values, wrong field types, and names beginning with
-`skill.` are rejected. That namespace is reserved for registry-injected skills.
+`skill.` or equal to `environment.runtime` are rejected. These names are reserved
+for host-injected skills and runtime environment hints.
 Unknown additional fields are tolerated. The existing PromptTemplate text
 normalization and Markdown rendering rules apply; prompt text does not undergo
 environment-variable substitution.
@@ -462,3 +463,30 @@ therefore affects newly created sessions, not restored ones. The file is still
 validated on every startup, including restoration; removing it can prevent
 startup even when a snapshot exists. There is no hot reload or remote prompt
 replacement operation.
+
+## Runtime environment hints
+
+Optional `worker.environment` settings describe the worker to the model:
+
+```yaml
+worker:
+  environment:
+    workspace: ./project
+    platform: Linux x86_64
+    software:
+      - Python 3.12
+      - Docker CLI
+```
+
+`workspace` and `platform` are strings; `software` is a list of strings. Missing
+or empty values are omitted. Unknown fields are tolerated; malformed known
+fields are rejected. Relative workspace paths resolve against the configuration
+file's directory without requiring the path to exist. These settings do not
+change the process working directory, restrict tool access, or detect/verify
+platform and software availability. They are operator-supplied prompt hints.
+
+At startup, core replaces the host-owned `environment.runtime` section with
+current configuration, including when restoring a session. It is Volatile and
+appears after tool skills, before user-defined Volatile sections. Empty settings
+remove any old section without adding a new one. The section is saved with the
+session, is not hot-reloaded, and remains editable through existing loop hooks.

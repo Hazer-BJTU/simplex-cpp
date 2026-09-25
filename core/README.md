@@ -196,3 +196,11 @@ The shell links core_protocol and intercom_iface, without worker or provider
 implementation dependencies. intercom_exchange supplies a cancellable one-shot
 transport with an overall deadline. load now parses full worker settings in
 addition to its independent plugin-discovery and explicit persistence APIs.
+
+Runtime environment hints can be supplied through `worker.environment`:
+`workspace` and `platform` strings and a `software` string list. These describe
+expected conditions without changing the working directory or enforcing access
+restrictions. At startup, including restore, current hints replace the
+`environment.runtime` Volatile section after tool skills and before other
+Volatile sections. Empty configuration removes old hints. See
+[configuration and lifecycle details](../load/README.md#runtime-environment-hints).

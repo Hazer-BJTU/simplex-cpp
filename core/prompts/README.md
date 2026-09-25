@@ -12,7 +12,9 @@ to load the default beside the executable. All files are validated at startup.
 The format is an ordered `model_io::PromptTemplate`: an optional `heading_level`
 and a required `sections` list. See [the format and lifecycle contract](../../load/README.md#system-prompt-files).
 Use these files for base instructions; the worker separately injects the active
-tool registry's skills. Names beginning with `skill.` are reserved.
+tool registry's skills. Names beginning with `skill.` and the name `environment.runtime` are reserved.
+The worker refreshes configured environment hints after tool skills at startup,
+including on restore; see [environment configuration](../../load/README.md#runtime-environment-hints).
 
 Editing the file affects new sessions. Existing session snapshots keep their
 stored prompt when restored; the worker does not hot-reload prompt files.

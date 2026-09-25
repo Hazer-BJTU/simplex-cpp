@@ -21,6 +21,43 @@ namespace asio = boost::asio;
 using Json = nlohmann::json;
 
 namespace {
+/**
+ * Append configured environment hints after tool skills and before user Volatile
+ * sections. These statements describe the environment; they do not change the
+ * working directory, restrict access, or verify installed software. Empty
+ * settings contribute no section. The caller removes any old host-owned copy.
+ */
+void inject_environment(
+    model_io::PromptTemplate& prompt,
+    const load::RuntimeEnvironment& environment
+) {
+    std::string text;
+    if (!environment.workspace.empty()) {
+        text = "Workspace: " + environment.workspace.string()
+            + "\nThis is a working location hint, not an access restriction.";
+    }
+    if (!environment.platform.empty()) {
+        if (!text.empty()) text += "\n\n";
+        text += "Platform (configured): " + environment.platform;
+    }
+    std::string software;
+    for (const auto& entry : environment.software) {
+        if (!entry.empty()) software += "\n- " + entry;
+    }
+    if (!software.empty()) {
+        if (!text.empty()) text += "\n\n";
+        text += "Software (configured; availability not verified):" + software;
+    }
+    if (!text.empty()) {
+        prompt.add_section(
+            "environment.runtime",
+            "Runtime Environment",
+            text,
+            model_io::SectionStability::Volatile
+        );
+    }
+}
+
 /** Wall-clock metadata only; deadlines and ordering use other mechanisms. */
 std::string timestamp() {
     const auto now = std::time(nullptr);
@@ -265,19 +302,22 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             state.system_prompt = std::move(config.system_prompt);
         }
         state.tools = registry.get_tools();
-        // Skills are host-owned sections. Rebuild only the prompt at startup:
-        // remove obsolete skill sections and place current Growing skills before
+        // Skills and environment.runtime are host-owned. Rebuild at startup:
+        // replace old host sections and place skills and runtime hints before
         // Volatile sections without modifying any historical conversation record.
         model_io::PromptTemplate prompt;
         prompt.heading_level = state.system_prompt.heading_level;
         for (const auto& section : state.system_prompt) {
             if (!section.name.starts_with("skill.")
+                && section.name != "environment.runtime"
                 && section.stability != model_io::SectionStability::Volatile)
                 prompt.add_section(section.name, section.title, section.text, section.stability);
         }
         (void)registry.inject_skills(prompt);
+        inject_environment(prompt, config.environment);
         for (const auto& section : state.system_prompt) {
             if (!section.name.starts_with("skill.")
+                && section.name != "environment.runtime"
                 && section.stability == model_io::SectionStability::Volatile)
                 prompt.add_section(section.name, section.title, section.text, section.stability);
         }

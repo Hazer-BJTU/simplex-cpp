@@ -71,6 +71,10 @@ sections:
     text: Initial status.
 )";
     config.system_prompt = load::read_system_prompt(prompt_file);
+    config.environment.workspace = scratch.root / "workspace";
+    config.environment.platform = "Test platform";
+    config.environment.software = {"Test compiler"};
+    const auto original_cwd = std::filesystem::current_path();
     config.event_capacity = mode == Mode::Overflow ? 1 : 256;
     if (mode == Mode::StorageFailure) {
         std::filesystem::create_directories(config.storage / "test/state.json");
@@ -172,6 +176,19 @@ sections:
             BOOST_REQUIRE(state.system_prompt.contains("persona"));
             BOOST_TEST(state.system_prompt.find("persona")->text == "Initial instructions.");
             BOOST_TEST(state.system_prompt.contains("status"));
+            const auto environment = state.system_prompt.find("environment.runtime");
+            BOOST_REQUIRE(environment != state.system_prompt.end());
+            BOOST_CHECK(environment->stability == model_io::SectionStability::Volatile);
+            BOOST_TEST(environment->text.find(config.environment.workspace.string()) != std::string::npos);
+            BOOST_TEST(environment->text.find("Test platform") != std::string::npos);
+            BOOST_TEST(environment->text.find("Test compiler") != std::string::npos);
+            bool saw_environment = false;
+            for (const auto& section : state.system_prompt) {
+                if (section.name.starts_with("skill.")) BOOST_TEST(!saw_environment);
+                if (section.name == "environment.runtime") saw_environment = true;
+                if (section.name == "status") BOOST_TEST(saw_environment);
+            }
+            BOOST_CHECK(std::filesystem::current_path() == original_cwd);
             BOOST_TEST(std::any_of(state.system_prompt.begin(), state.system_prompt.end(),
                 [](const auto& section) { return section.name.starts_with("skill."); }));
             BOOST_TEST(!state.meta.created_at.empty());
@@ -189,15 +206,29 @@ sections:
         io.restart();
         std::ofstream(prompt_file) << "sections: [{name: persona, text: Changed instructions.}]\n";
         config.system_prompt = load::read_system_prompt(prompt_file);
-        core::Application restored(io.get_executor(), config, "test", model);
-        std::stop_source stop;
-        stop.request_stop();
-        auto restart = asio::co_spawn(io, restored.run(stop.get_token()), asio::use_future);
-        io.run();
-        restart.get();
-        const auto snapshot = load::load_state(config.storage / "test/state.json");
-        BOOST_TEST(snapshot.turns.size() == 2u);
-        BOOST_TEST(snapshot.system_prompt.find("persona")->text == "Initial instructions.");
+        // Both replacement and removal must discard the snapshot's old hints.
+        for (const bool clear : {false, true}) {
+            io.restart();
+            config.environment = {};
+            if (!clear) config.environment.platform = "Replacement platform";
+            core::Application restored(io.get_executor(), config, "test", model);
+            std::stop_source stop;
+            stop.request_stop();
+            auto restart = asio::co_spawn(io, restored.run(stop.get_token()), asio::use_future);
+            io.run();
+            restart.get();
+            const auto snapshot = load::load_state(config.storage / "test/state.json");
+            BOOST_TEST(snapshot.turns.size() == 2u);
+            BOOST_TEST(snapshot.system_prompt.find("persona")->text == "Initial instructions.");
+            const auto environment = snapshot.system_prompt.find("environment.runtime");
+            if (clear) {
+                BOOST_CHECK(environment == snapshot.system_prompt.end());
+            } else {
+                BOOST_REQUIRE(environment != snapshot.system_prompt.end());
+                BOOST_TEST(environment->text == "Platform (configured): Replacement platform");
+            }
+            BOOST_CHECK(std::filesystem::current_path() == original_cwd);
+        }
     }
     io.restart();
     auto twice = asio::co_spawn(io, app.run(), asio::use_future);

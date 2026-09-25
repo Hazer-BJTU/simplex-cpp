@@ -78,7 +78,7 @@ BOOST_AUTO_TEST_CASE(malformed_or_missing_prompt_files_fail_with_filename_contex
         invalid.push_back(document);
     }
     for (const auto& patch : std::vector<Json>{
-        {{"name", ""}}, {{"name", "skill.process"}}, {{"name", nullptr}},
+        {{"name", "environment.runtime"}}, {{"name", ""}}, {{"name", "skill.process"}}, {{"name", nullptr}},
         {{"text", 1}}, {{"text", nullptr}}, {{"stability", "typo"}},
         {{"stability", nullptr}}, {{"title", false}}
     }) {
@@ -107,4 +107,36 @@ BOOST_AUTO_TEST_CASE(malformed_or_missing_prompt_files_fail_with_filename_contex
     }
     document["worker"] = {{"system_prompt", "legacy inline prompt"}};
     BOOST_CHECK_THROW(load::parse_configuration(document, scratch.root), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(environment_hints_resolve_paths_without_changing_the_process) {
+    Scratch scratch;
+    const auto cwd = fs::current_path();
+    auto document = configuration();
+    document["worker"]["environment"] = {
+        {"workspace", "missing/../project"},
+        {"platform", "Linux x86_64"},
+        {"software", Json::array({"Python 3.12", "", "Docker CLI"})},
+        {"future_field", true}
+    };
+    const auto parsed = load::parse_configuration(document, scratch.root);
+    BOOST_CHECK(parsed.environment.workspace == scratch.root / "project");
+    BOOST_TEST(parsed.environment.platform == "Linux x86_64");
+    BOOST_TEST(parsed.environment.software.size() == 2u);
+    BOOST_CHECK(fs::current_path() == cwd);
+    BOOST_TEST(!fs::exists(parsed.environment.workspace));
+    document["worker"]["environment"]["workspace"] = scratch.root.string();
+    BOOST_CHECK(load::parse_configuration(document, scratch.root).environment.workspace == scratch.root);
+    const auto empty = load::parse_configuration(configuration(), scratch.root);
+    BOOST_TEST(empty.environment.workspace.empty());
+    BOOST_TEST(empty.environment.platform.empty());
+    BOOST_TEST(empty.environment.software.empty());
+    for (const auto& invalid : std::vector<Json>{
+        nullptr, Json::array(), {{"workspace", 7}}, {{"platform", false}},
+        {{"workspace", std::string("bad\0path", 8)}},
+        {{"software", "Python"}}, {{"software", Json::array({7})}}
+    }) {
+        document["worker"]["environment"] = invalid;
+        BOOST_CHECK_THROW(load::parse_configuration(document, scratch.root), std::invalid_argument);
+    }
 }

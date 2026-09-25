@@ -84,7 +84,10 @@ sessions. Explicit relative paths resolve against the main configuration file.
 Omitting it reads `prompts/coding_agent.yaml` beside the executable. The file is
 validated at startup, including when restoring a session; missing or malformed
 files fail startup. Restored sessions retain their stored prompt. Current tool
-skills are injected in both cases. See the [prompt file format](../../load/README.md#system-prompt-files).
+skills and configured `worker.environment` hints are refreshed in both cases.
+Environment hints describe the workspace, platform, and expected software without
+changing the working directory or restricting access. See
+[environment configuration](../../load/README.md#runtime-environment-hints) and the [prompt file format](../../load/README.md#system-prompt-files).
 The previous inline `worker.system_prompt` field is rejected.
 
 Paths such as `/agent/events` and `/agent/confirm` are examples, not reserved

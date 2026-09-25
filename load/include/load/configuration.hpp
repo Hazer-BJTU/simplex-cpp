@@ -3,11 +3,20 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 #include <nlohmann/json.hpp>
 #include "io/client.hpp"
 #include "dataclass/prompt_template.hpp"
 
 namespace load {
+
+/** Configured prompt hints only: no chdir, sandbox, or capability detection. */
+struct RuntimeEnvironment {
+    /** Empty means omitted; parsed relative paths use the config directory. */
+    std::filesystem::path workspace;
+    std::string platform;
+    std::vector<std::string> software;
+};
 
 /** Parsed startup settings. Runtime configuration, never a session snapshot. */
 struct Configuration {
@@ -24,6 +33,8 @@ struct Configuration {
     std::size_t max_exchanges = 512;
     /** Parsed prompt for a new session; restored snapshots retain their prompt. */
     model_io::PromptTemplate system_prompt;
+    /** Refreshed from startup configuration even for restored sessions. */
+    RuntimeEnvironment environment;
     bool persistence = true;
     std::filesystem::path storage;
     bool restore = true;
@@ -44,7 +55,7 @@ Configuration read_configuration(const std::filesystem::path& file);
 /**
  * Read and validate a standalone PromptTemplate YAML document synchronously.
  * Required sections are ordered immutable, growing, then volatile; names must
- * be unique and nonempty. The skill.* namespace belongs to registry injection.
+ * be unique and nonempty. The skill.* namespace and environment.runtime name are host-owned.
  * Unknown fields are tolerated, but malformed known fields are rejected. Empty
  * sections are permitted. Errors include the filename; no fallback is applied.
  */

@@ -115,6 +115,14 @@ worker:
   # Used only for a new session; restored prompts are retained.
   # Relative to this config file. Omit to use <executable_dir>/prompts/coding_agent.yaml.
   system_prompt_file: ./prompts/coding_agent.yaml
+  # Optional prompt hints, refreshed on startup even when restoring a session.
+  # No chdir, sandbox, or automatic platform/software detection is performed.
+  environment:
+    # Relative workspace paths resolve against this configuration file.
+    workspace: ""
+    platform: ""
+    # Describe expected software, e.g. ["Python 3.12", "Docker CLI"].
+    software: []
 
 # Interpreted by core. Explicit save_state/load_state APIs remain policy-free.
 # Pre-dispatch/results checkpoints remain enabled independently of save flags.
