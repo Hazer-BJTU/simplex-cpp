@@ -47,6 +47,20 @@ export function defaultConfig() {
             maxExchanges: 512,
             eventCapacity: 1024,
             confirmationTimeoutMs: 120000,
+            // Transport settings copied into every generated worker config;
+            // the defaults are the worker's own (core/docs/worker-protocol.md).
+            payloadCapacity: 256,
+            signalCapacity: 256,
+            writeCapacity: 256,
+            initialBackoffMs: 250,
+            maxBackoffMs: 10000,
+            idleTimeoutSeconds: 0,
+            // How long a graceful stop may take before the hub escalates.
+            stopTimeoutMs: 15000,
+            // Grace periods for the escalating stop: SIGTERM first, then
+            // SIGKILL (optionally to the process group).
+            sigtermGraceMs: 5000,
+            sigkillGraceMs: 2000,
             persistence: { enabled: true, readable: false },
             environment: { workspace: '', platform: '', software: [] },
         },
@@ -83,6 +97,12 @@ export function defaultConfig() {
             // "hub": the hub renders config.yaml; "launcher": the launcher owns
             // configuration and only receives session/data-dir endpoints.
             config: 'hub',
+            // Working directory for the spawned command; empty means the
+            // per-session directory.
+            cwd: '',
+            // Set when the launcher daemonizes: the supervisor then signals the
+            // pid in this file instead of the process it spawned.
+            pidFile: '',
         },
         mock: {
             enabled: false,
@@ -253,6 +273,17 @@ export function validateConfig(config) {
         'worker.eventCapacity must be a positive integer');
     check(Number.isInteger(worker.confirmationTimeoutMs) && worker.confirmationTimeoutMs > 0,
         'worker.confirmationTimeoutMs must be a positive integer');
+    for (const key of ['payloadCapacity', 'signalCapacity', 'writeCapacity',
+        'initialBackoffMs', 'maxBackoffMs', 'idleTimeoutSeconds', 'stopTimeoutMs',
+        'sigtermGraceMs', 'sigkillGraceMs']) {
+        check(Number.isInteger(worker[key]) && worker[key] >= 0,
+            `worker.${key} must be a nonnegative integer`);
+    }
+    check(worker.maxBackoffMs >= worker.initialBackoffMs,
+        'worker.maxBackoffMs must be at least worker.initialBackoffMs');
+    check(worker.stopTimeoutMs > 0, 'worker.stopTimeoutMs must be positive');
+    check(worker.sigtermGraceMs > 0 && worker.sigkillGraceMs > 0,
+        'worker.sigtermGraceMs and worker.sigkillGraceMs must be positive');
     check(typeof worker.persistence?.enabled === 'boolean',
         'worker.persistence.enabled must be a boolean');
 
@@ -274,6 +305,10 @@ export function validateConfig(config) {
     'launcher.command must be a nonempty template array for the command launcher');
     check(['hub', 'launcher'].includes(config.launcher.config),
         'launcher.config must be "hub" or "launcher"');
+    check(typeof config.launcher.cwd === 'string', 'launcher.cwd must be a string');
+    check(typeof config.launcher.pidFile === 'string', 'launcher.pidFile must be a string');
+    check(config.launcher.pidFile === '' || config.launcher.pidFile.startsWith('/'),
+        'launcher.pidFile must be an absolute path');
 
     check(typeof config.mock?.enabled === 'boolean', 'mock.enabled must be a boolean');
     if (config.mock.enabled) {

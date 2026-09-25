@@ -72,6 +72,8 @@ export class Session {
         this.prompts = new Map();
         /** Identity observers, used by the confirmation adapter's hold. */
         this.identityListeners = new Set();
+        /** Supervised worker process record, or null. */
+        this.process = null;
     }
 
     /** True while an event connection is open. */
@@ -195,6 +197,7 @@ export class Session {
             last_event_at: this.lastEvent?.received_at ?? null,
             last_event: this.lastEvent?.event ?? null,
             confirmations: this.describePrompts(),
+            process: this.process?.describe() ?? null,
         };
     }
 }

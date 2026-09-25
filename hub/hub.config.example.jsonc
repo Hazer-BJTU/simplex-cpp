@@ -20,6 +20,19 @@
         "maxExchanges": 512,
         "eventCapacity": 1024,
         "confirmationTimeoutMs": 120000,
+        // Copied into every generated worker config; these are the worker's own
+        // defaults from core/docs/worker-protocol.md.
+        "payloadCapacity": 256,
+        "signalCapacity": 256,
+        "writeCapacity": 256,
+        "initialBackoffMs": 250,
+        "maxBackoffMs": 10000,
+        "idleTimeoutSeconds": 0,
+        // How long a graceful stop may take before the hub escalates.
+        "stopTimeoutMs": 15000,
+        // Grace periods for the escalating stop: SIGTERM first, then SIGKILL.
+        "sigtermGraceMs": 5000,
+        "sigkillGraceMs": 2000,
         "persistence": { "enabled": true, "readable": false },
         "environment": { "workspace": "", "platform": "", "software": [] }
     },
@@ -58,7 +71,13 @@
         // "hub": the hub renders the worker configuration file.
         // "launcher": the launcher owns configuration; the hub only supplies
         // the session, data directory, and endpoints.
-        "config": "hub"
+        "config": "hub",
+        // Working directory for the spawned command; empty means the
+        // per-session hub directory.
+        "cwd": "",
+        // Only for a launcher that daemonizes: absolute path of the pid file
+        // the supervisor should signal instead of the spawned process.
+        "pidFile": ""
     },
 
     "mock": {
