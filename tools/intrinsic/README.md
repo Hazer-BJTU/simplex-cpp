@@ -147,6 +147,10 @@ declarations, its skill, and whatever state they share.
 
 ## Toolsets
 
+- **[toolsets/reading/](toolsets/reading/)** — file reading, currently `read_text`
+  with line and byte selection. Future multimodal readers belong here; editing
+  remains separate. The worker registers this set and injects its skill by default.
+
 - **[toolsets/process/](toolsets/process/)** — process management: `spawn_process`
   (one program, arguments verbatim) / `run_command` (one command line, through the
   platform's shell) / `poll_process` / `read_process` / `send_process`, over a

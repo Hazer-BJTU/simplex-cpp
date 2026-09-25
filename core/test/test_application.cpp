@@ -174,6 +174,13 @@ sections:
             BOOST_TEST(model->calls.load() == 2);
             const auto state = load::load_state(config.storage / "test/state.json");
             BOOST_TEST(state.turns.size() == 2u);
+            BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
+                [](const auto& tool) { return tool.name == "read_text"; }));
+            BOOST_TEST(std::any_of(state.system_prompt.begin(), state.system_prompt.end(),
+                [](const auto& section) {
+                    return section.name.starts_with("skill.") &&
+                           section.text.find("Use `read_text`") != std::string::npos;
+                }));
             BOOST_TEST(state.system_prompt.heading_level == 3);
             BOOST_REQUIRE(state.system_prompt.contains("persona"));
             BOOST_TEST(state.system_prompt.find("persona")->text == "Initial instructions.");

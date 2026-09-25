@@ -1,0 +1,49 @@
+name: read_text
+description: >-
+  Read an existing regular file without changing it. Select zero-based lines or
+  bytes. Line endings belong to their preceding line; CRLF is one ending. A final
+  newline adds an empty logical line. Plain format preserves selected content;
+  indexed line formats align labels and normalize display separators to LF.
+  Byte ranges [start:end] are half-open original-file offsets, including endings.
+  Counts clamp at EOF; a start at the total entry count returns an empty result,
+  while a greater start fails. Reads follow symlinks and are not a workspace
+  sandbox. Files larger than 16 MiB fail. Display is limited to 65536 bytes;
+  check output_truncated and reduce count if needed. Metadata reports total_lines
+  and total_bytes for the whole loaded file; an empty file has one logical line.
+  Encoding hints appear in metadata before content. Malformed UTF-8 is replaced for
+  model transport and marked display_replaced; hex_escaped preserves exact bytes.
+type: read_only
+security: trusted
+argument_schema:
+  type: object
+  required: [path]
+  properties:
+    path:
+      type: string
+      minLength: 1
+      description: Existing regular file; relative paths use the host working directory. NUL is invalid.
+    mode:
+      type: string
+      enum: [lines, bytes]
+      default: lines
+      description: Unit for start and count. Lines use logical newlines; bytes may split UTF-8 characters.
+    start:
+      type: integer
+      minimum: 0
+      default: 0
+      description: Zero-based starting line or byte offset, according to mode.
+    count:
+      type: integer
+      minimum: 0
+      default: 200
+      description: Maximum lines or bytes to select. Zero returns no content; default is 200 in either mode.
+    format:
+      type: string
+      enum: [plain, line_index, byte_range, hex_escaped]
+      default: plain
+      description: >-
+        lines supports plain, line_index and byte_range. bytes supports plain and
+        hex_escaped only. Plain adds no labels; line_index adds aligned zero-based
+        line numbers; byte_range adds aligned [start:end] labels to each line.
+        hex_escaped emits every selected byte as backslash-x and two uppercase
+        hex digits, with no separators. Incompatible combinations fail validation.
