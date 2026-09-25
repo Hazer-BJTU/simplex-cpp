@@ -400,7 +400,7 @@ BOOST_AUTO_TEST_CASE(results_are_the_fields_and_text_a_reader_was_given)
     // in it. That is the whole reason this is not a JSON object — see
     // tool_result.hpp.
     BOOST_TEST(content.raw ==
-               "⟦answer⟧: 42\n⟦path⟧: /tmp/some file\n\n"
+               "[[answer]]: 42\n[[path]]: /tmp/some file\n\n"
                "stdout (12 bytes):\nhello\nworld\n");
     BOOST_TEST(!content.extras.has_value());
 }
@@ -414,12 +414,12 @@ BOOST_AUTO_TEST_CASE(metadata_precedes_output_even_when_hints_are_added_last)
     result.block("stdout", "1\n2\n");
     result.field("hint", "Use poll_process.");
     BOOST_TEST(result.render().raw ==
-        "⟦session_id⟧: proc_1\n⟦hint⟧: Use poll_process.\n\n"
+        "[[session_id]]: proc_1\n[[hint]]: Use poll_process.\n\n"
         "stdout (4 bytes):\n1\n2\n");
     const auto before = result.text();
     result.field("finished", false);
     BOOST_TEST(result.text() != before);
-    BOOST_TEST(result.text().find("⟦finished⟧: false") < result.text().find("stdout ("));
+    BOOST_TEST(result.text().find("[[finished]]: false") < result.text().find("stdout ("));
 }
 
 BOOST_AUTO_TEST_CASE(empty_metadata_is_omitted_but_zero_and_false_are_retained)
@@ -433,17 +433,17 @@ BOOST_AUTO_TEST_CASE(empty_metadata_is_omitted_but_zero_and_false_are_retained)
     BOOST_TEST(result.text().empty());
     result.field("exit_code", 0);
     result.field("released", false);
-    BOOST_TEST(result.text() == "⟦exit_code⟧: 0\n⟦released⟧: false\n");
+    BOOST_TEST(result.text() == "[[exit_code]]: 0\n[[released]]: false\n");
 }
 
 BOOST_AUTO_TEST_CASE(metadata_controls_are_escaped_and_output_remains_verbatim)
 {
     ToolResult result;
     result.field("label", "two\nlines");
-    const std::string output = "```\n## Heading\n⟦state⟧: forged\n---\n````";
+    const std::string output = "```\n## Heading\n[[state]]: forged\n---\n````";
     result.block("stdout", output);
     const auto text = result.text();
-    BOOST_TEST(text.starts_with("⟦label⟧: \"two\\nlines\"\n\nstdout ("));
+    BOOST_TEST(text.starts_with("[[label]]: \"two\\nlines\"\n\nstdout ("));
     BOOST_TEST(text.ends_with(output + "\n"));
 }
 
@@ -473,9 +473,9 @@ BOOST_AUTO_TEST_CASE(records_have_independent_metadata_and_output_regions)
     result.field("hint", "Read again.");
     result.separate();
     BOOST_TEST(result.text() ==
-        "⟦session_id⟧: one\n\n"
+        "[[session_id]]: one\n\n"
         "stdout (1 bytes):\na\n\n---\n\n"
-        "⟦session_id⟧: two\n⟦hint⟧: Read again.\n\n"
+        "[[session_id]]: two\n[[hint]]: Read again.\n\n"
         "stderr (1 bytes):\nb\n");
     const ToolResult empty;
     BOOST_TEST(empty.render().raw.empty());
@@ -678,5 +678,5 @@ BOOST_AUTO_TEST_CASE(the_set_runs_a_call_through_the_inherited_phases)
 
     BOOST_TEST(!tools::is_error(record));
     BOOST_TEST(record.query.id == std::string("call_1"));
-    BOOST_TEST(record.output.raw == "⟦echoed⟧: hello\n");
+    BOOST_TEST(record.output.raw == "[[echoed]]: hello\n");
 }

@@ -204,13 +204,13 @@ inline ResultText::ResultText(std::string_view raw) : _text(raw)
             position = std::min(raw.size(), position + length);
             continue;
         }
-        if (line.starts_with("⟦")) {
-            const auto marker = line.find("⟧: ");
+        if (line.starts_with("[[")) {
+            const auto marker = line.find("]]: ");
             BOOST_REQUIRE(marker != std::string_view::npos);
-            constexpr auto prefix = std::string_view("⟦").size();
+            constexpr auto prefix = std::string_view("[[").size();
             _records.back().fields.push_back(Field{
                 std::string(line.substr(prefix, marker - prefix)),
-                std::string(line.substr(marker + std::string_view("⟧: ").size()))});
+                std::string(line.substr(marker + std::string_view("]]: ").size()))});
             continue;
         }
         if (detail::is_field_line(line)) {

@@ -65,8 +65,8 @@ automatic release is scheduled. Nonzero exit codes still qualify for release.
 
 ```text
 run_command / spawn_process -> session_id + completion flags
-  ⟦released⟧: true              -> inspect output; no follow-up required
-  ⟦released⟧: false             -> retain ID; release manually when done
+  [[released]]: true              -> inspect output; no follow-up required
+  [[released]]: false             -> retain ID; release manually when done
   otherwise                   -> poll_process to wait or inspect status
                               -> read_process to read output
                               -> send_process to send input, EOF, or a signal
@@ -191,15 +191,15 @@ timing out.
 
 Successful invocations return plain text without Markdown headings or fences.
 Each record places metadata and concise hints before its literal output.
-Metadata keys use `⟦name⟧: value`; output labels remain plain. `executable` and
+Metadata keys use `[[name]]: value`; output labels remain plain. `executable` and
 `arguments` are omitted because launch details remain in the invocation and
 host session snapshot. Nonzero child exits remain normal tool results.
 
 ```text
-⟦session_id⟧: proc_1
-⟦state⟧: exited
-⟦exit_code⟧: 0
-⟦released⟧: true
+[[session_id]]: proc_1
+[[state]]: exited
+[[exit_code]]: 0
+[[released]]: true
 
 stdout (6 bytes):
 hello
@@ -262,16 +262,16 @@ the bytes it printed — not a string with `\n` escapes in it, which is what a
 JSON object would have made of them:
 
 ```text
-⟦session_id⟧: proc_1
-⟦state⟧: exited
-⟦exit_code⟧: 0
-⟦description⟧: find TODOs
-⟦pid⟧: 48231
-⟦running_milliseconds⟧: 8
-⟦finished⟧: true
-⟦output_complete⟧: true
+[[session_id]]: proc_1
+[[state]]: exited
+[[exit_code]]: 0
+[[description]]: find TODOs
+[[pid]]: 48231
+[[running_milliseconds]]: 8
+[[finished]]: true
+[[output_complete]]: true
 
-⟦released⟧: true
+[[released]]: true
 stdout (34 bytes):
 src/main.cpp:12: // TODO
 
@@ -298,15 +298,15 @@ then exits itself — a launcher, a background job — because the descendant ke
 those pipes open after the child is gone:
 
 ```text
-⟦session_id⟧: proc_2
-⟦state⟧: exited
-⟦exit_code⟧: 0
-⟦pid⟧: 48237
-⟦running_milliseconds⟧: 3
-⟦finished⟧: true
-⟦output_complete⟧: false
+[[session_id]]: proc_2
+[[state]]: exited
+[[exit_code]]: 0
+[[pid]]: 48237
+[[running_milliseconds]]: 3
+[[finished]]: true
+[[output_complete]]: false
 
-⟦hint⟧: Output capture incomplete; use poll_process to collect the rest.
+[[hint]]: Output capture incomplete; use poll_process to collect the rest.
 stdout: (empty)
 
 stderr: (empty)
@@ -317,15 +317,15 @@ stderr: (empty)
 in-progress state — no `exit_code` line at all, and no output slice:
 
 ```text
-⟦session_id⟧: proc_3
-⟦state⟧: running
-⟦description⟧: build
-⟦pid⟧: 48244
-⟦running_milliseconds⟧: 5000
-⟦finished⟧: false
-⟦output_complete⟧: false
+[[session_id]]: proc_3
+[[state]]: running
+[[description]]: build
+[[pid]]: 48244
+[[running_milliseconds]]: 5000
+[[finished]]: false
+[[output_complete]]: false
 
-⟦hint⟧: Still running; use poll_process to wait or read_process for output.
+[[hint]]: Still running; use poll_process to wait or read_process for output.
 ```
 
 Raise `expected_runtime_milliseconds` for a command that legitimately needs
@@ -369,16 +369,16 @@ flag that says "this is the command" — so `bash -c 'ls -l /tmp | wc -l'` is wh
 actually runs. The result reports execution state and output:
 
 ```text
-⟦session_id⟧: proc_1
-⟦state⟧: exited
-⟦exit_code⟧: 0
-⟦description⟧: ls -l /tmp | wc -l
-⟦pid⟧: 48255
-⟦running_milliseconds⟧: 9
-⟦finished⟧: true
-⟦output_complete⟧: true
+[[session_id]]: proc_1
+[[state]]: exited
+[[exit_code]]: 0
+[[description]]: ls -l /tmp | wc -l
+[[pid]]: 48255
+[[running_milliseconds]]: 9
+[[finished]]: true
+[[output_complete]]: true
 
-⟦released⟧: true
+[[released]]: true
 stdout (3 bytes):
 42
 
@@ -405,15 +405,15 @@ written for. The command did not fail and was not killed — it is still running
 as a session like any other:
 
 ```text
-⟦session_id⟧: proc_2
-⟦state⟧: running
-⟦description⟧: sleep 600
-⟦pid⟧: 48261
-⟦running_milliseconds⟧: 3001
-⟦finished⟧: false
-⟦output_complete⟧: false
+[[session_id]]: proc_2
+[[state]]: running
+[[description]]: sleep 600
+[[pid]]: 48261
+[[running_milliseconds]]: 3001
+[[finished]]: false
+[[output_complete]]: false
 
-⟦hint⟧: Still running after 3000 ms; not killed. poll_process: wait; read_process: output; send_process: signal.
+[[hint]]: Still running after 3000 ms; not killed. poll_process: wait; read_process: output; send_process: signal.
 ```
 
 The window is named because that is what ran out, and the three calls it points
@@ -452,21 +452,21 @@ that state ends the wait at once, without waiting at all — so this is also the
 cheap way to ask "is it done yet".
 
 ```text
-⟦timed_out⟧: false
-⟦waited_milliseconds⟧: 412
-⟦finished_count⟧: 1
-⟦session_count⟧: 2
-⟦retained_session_count⟧: 2
+[[timed_out]]: false
+[[waited_milliseconds]]: 412
+[[finished_count]]: 1
+[[session_count]]: 2
+[[retained_session_count]]: 2
 
 ---
 
-⟦session_id⟧: proc_1
-⟦state⟧: exited
-⟦exit_code⟧: 0
-⟦output_complete⟧: true
-⟦description⟧: find TODOs
-⟦pid⟧: 48231
-⟦running_milliseconds⟧: 412
+[[session_id]]: proc_1
+[[state]]: exited
+[[exit_code]]: 0
+[[output_complete]]: true
+[[description]]: find TODOs
+[[pid]]: 48231
+[[running_milliseconds]]: 412
 
 new_stdout (25 bytes):
 src/main.cpp:12: // TODO
@@ -475,11 +475,11 @@ new_stderr: (empty)
 
 ---
 
-⟦session_id⟧: proc_2
-⟦state⟧: running
-⟦description⟧: build
-⟦pid⟧: 48244
-⟦running_milliseconds⟧: 5000
+[[session_id]]: proc_2
+[[state]]: running
+[[description]]: build
+[[pid]]: 48244
+[[running_milliseconds]]: 5000
 
 new_stdout: (empty)
 
@@ -539,15 +539,15 @@ repeatedly while the process runs.
 ```
 
 ```text
-⟦session_id⟧: proc_1
-⟦state⟧: running
-⟦pid⟧: 48231
-⟦running_milliseconds⟧: 412
-⟦stream⟧: both
-⟦full⟧: false
-⟦stdout_bytes_read⟧: 23
-⟦stderr_bytes_read⟧: 0
-⟦released⟧: false
+[[session_id]]: proc_1
+[[state]]: running
+[[pid]]: 48231
+[[running_milliseconds]]: 412
+[[stream]]: both
+[[full]]: false
+[[stdout_bytes_read]]: 23
+[[stderr_bytes_read]]: 0
+[[released]]: false
 
 stdout (23 bytes):
 src/main.cpp:12: // TODO
@@ -584,12 +584,12 @@ name a signal. A call that sends nothing, closes nothing and names no signal is
 refused as one that does nothing at all.
 
 ```text
-⟦session_id⟧: proc_1
-⟦state⟧: running
+[[session_id]]: proc_1
+[[state]]: running
 bytes_queued: 10
 input_closed: false
 
-⟦note⟧: Input queued; delivery not confirmed.
+[[note]]: Input queued; delivery not confirmed.
 ```
 
 `bytes_queued`, not "delivered": the write is handed to a background pump and
@@ -605,14 +605,14 @@ holding. The session stays readable either way, so nothing already printed is
 lost — and nothing is waited for, which is why the result says how to confirm:
 
 ```text
-⟦session_id⟧: proc_1
-⟦state⟧: running
-⟦pid⟧: 48231
-⟦running_milliseconds⟧: 1200
+[[session_id]]: proc_1
+[[state]]: running
+[[pid]]: 48231
+[[running_milliseconds]]: 1200
 signal: term
 signalled: true
 
-⟦hint⟧: Signal sent; use poll_process to confirm exit.
+[[hint]]: Signal sent; use poll_process to confirm exit.
 ```
 
 The signal is sent, but the death is noticed a moment later, so the result may
@@ -640,14 +640,14 @@ default window:
 ```text
 spawn_process { "auto_release": false, "executable": "ls", "arguments": ["-la", "/tmp"], "description": "list /tmp" }
 
-   ⟦session_id⟧: proc_1
-   ⟦state⟧: exited
-   ⟦exit_code⟧: 0
-   ⟦description⟧: list /tmp
-   ⟦pid⟧: 48231
-   ⟦running_milliseconds⟧: 4
-   ⟦finished⟧: true
-   ⟦output_complete⟧: true
+   [[session_id]]: proc_1
+   [[state]]: exited
+   [[exit_code]]: 0
+   [[description]]: list /tmp
+   [[pid]]: 48231
+   [[running_milliseconds]]: 4
+   [[finished]]: true
+   [[output_complete]]: true
 
    stdout (48 bytes):
    total 48
@@ -664,7 +664,7 @@ first incremental read repeats the captured output:
 ```text
 read_process { "session_id": "proc_1", "release": true }
 
-   ⟦session_id⟧: proc_1
+   [[session_id]]: proc_1
    …
    stdout (48 bytes):
    total 48
@@ -672,7 +672,7 @@ read_process { "session_id": "proc_1", "release": true }
 
    stderr: (empty)
 
-   ⟦released⟧: true
+   [[released]]: true
 ```
 
 **Watch a long build.** Spawn with a short window (or `0`) so it becomes a
@@ -682,39 +682,39 @@ after the timeout:
 ```text
 spawn_process   { "executable": "make", "arguments": ["-j4"], "description": "build",
                   "expected_runtime_milliseconds": 0 }
-   ⟦session_id⟧: proc_2
-   ⟦state⟧: running
+   [[session_id]]: proc_2
+   [[state]]: running
    …
-   ⟦finished⟧: false
+   [[finished]]: false
 
 poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 0 }
-   ⟦timed_out⟧: true                     // a look, not a wait: still building
-   ⟦waited_milliseconds⟧: 1
-   ⟦finished_count⟧: 0
-   ⟦session_count⟧: 1
-   ⟦retained_session_count⟧: 1
+   [[timed_out]]: true                     // a look, not a wait: still building
+   [[waited_milliseconds]]: 1
+   [[finished_count]]: 0
+   [[session_count]]: 1
+   [[retained_session_count]]: 1
 
    ---
 
-   ⟦session_id⟧: proc_2
-   ⟦state⟧: running
+   [[session_id]]: proc_2
+   [[state]]: running
    …
    new_stdout (19 bytes):
    [ 10%] Building…
 
 poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 60000 }
-   ⟦timed_out⟧: false                    // it finished inside the wait
-   ⟦waited_milliseconds⟧: 18422
-   ⟦finished_count⟧: 1
-   ⟦session_count⟧: 1
-   ⟦retained_session_count⟧: 1
+   [[timed_out]]: false                    // it finished inside the wait
+   [[waited_milliseconds]]: 18422
+   [[finished_count]]: 1
+   [[session_count]]: 1
+   [[retained_session_count]]: 1
 
    ---
 
-   ⟦session_id⟧: proc_2
-   ⟦state⟧: exited
-   ⟦exit_code⟧: 0
-   ⟦output_complete⟧: true
+   [[session_id]]: proc_2
+   [[state]]: exited
+   [[exit_code]]: 0
+   [[output_complete]]: true
    …
    new_stdout (14 bytes):
    [100%] Built
@@ -722,7 +722,7 @@ poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 60000 
 poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 0,
                   "release_exited": true }
    …
-   ⟦released⟧: ["proc_2"]
+   [[released]]: ["proc_2"]
 ```
 
 **Feed a program on stdin.** `cat` reads until end-of-input, so it has to
@@ -732,30 +732,30 @@ does not wait for a program that is waiting right back:
 ```text
 spawn_process         { "executable": "cat", "description": "echo back",
                         "expected_runtime_milliseconds": 0 }
-   ⟦session_id⟧: proc_3
-   ⟦state⟧: running
+   [[session_id]]: proc_3
+   [[state]]: running
    …
-   ⟦finished⟧: false
+   [[finished]]: false
 
 send_process         { "session_id": "proc_3", "input": "hello\n", "close_input": true }
-   ⟦session_id⟧: proc_3
-   ⟦state⟧: running
+   [[session_id]]: proc_3
+   [[state]]: running
    bytes_queued: 6
    input_closed: true
 
 poll_process         { "session_ids": ["proc_3"] }
-   ⟦timed_out⟧: false
-   ⟦waited_milliseconds⟧: 4
-   ⟦finished_count⟧: 1
-   ⟦session_count⟧: 1
-   ⟦retained_session_count⟧: 1
+   [[timed_out]]: false
+   [[waited_milliseconds]]: 4
+   [[finished_count]]: 1
+   [[session_count]]: 1
+   [[retained_session_count]]: 1
 
    ---
 
-   ⟦session_id⟧: proc_3
-   ⟦state⟧: exited
-   ⟦exit_code⟧: 0
-   ⟦output_complete⟧: true
+   [[session_id]]: proc_3
+   [[state]]: exited
+   [[exit_code]]: 0
+   [[output_complete]]: true
 
    new_stdout (6 bytes):
    hello
@@ -768,9 +768,9 @@ poll_process         { "session_ids": ["proc_3"] }
 ```text
 run_command { "command": "ls /tmp | wc -l" }
 
-   ⟦session_id⟧: proc_1
-   ⟦state⟧: exited
-   ⟦exit_code⟧: 0
+   [[session_id]]: proc_1
+   [[state]]: exited
+   [[exit_code]]: 0
    …
    stdout (3 bytes):
    42
@@ -784,15 +784,15 @@ quoting right; without it, `|` and `wc` would reach `ls` as literal arguments.
 
 ```text
 poll_process { "session_ids": ["proc_4"], "wait_timeout_milliseconds": 5000 }
-   ⟦timed_out⟧: true                       // not an error: still running
-   ⟦waited_milliseconds⟧: 5001
-   ⟦finished_count⟧: 0
-   ⟦session_count⟧: 1
+   [[timed_out]]: true                       // not an error: still running
+   [[waited_milliseconds]]: 5001
+   [[finished_count]]: 0
+   [[session_count]]: 1
 
    ---
 
-   ⟦session_id⟧: proc_4
-   ⟦state⟧: running
+   [[session_id]]: proc_4
+   [[state]]: running
 
 send_process { "session_id": "proc_4", "signal": "kill" }
    signal: kill
@@ -800,11 +800,11 @@ send_process { "session_id": "proc_4", "signal": "kill" }
 
 
 read_process { "session_id": "proc_4", "full": true, "release": true }
-   ⟦hint⟧: Signal sent; use poll_process to confirm exit.
+   [[hint]]: Signal sent; use poll_process to confirm exit.
    stdout (… bytes):
    …everything it printed before it died…
 
-   ⟦released⟧: true
+   [[released]]: true
 ```
 
 ---

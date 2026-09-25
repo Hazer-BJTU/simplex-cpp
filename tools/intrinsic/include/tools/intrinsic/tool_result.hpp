@@ -10,7 +10,7 @@ namespace tools::intrinsic {
 
 /**
  * Model-facing plain text shared by intrinsic tools. Each record renders all
- * metadata first using "⟦name⟧: value" lines, followed by an optional blank line
+ * metadata first using "[[name]]: value" lines, followed by an optional blank line
  * and named literal output blocks. Fields added after output (including hints)
  * still precede that output. Records are divided by a plain "---" separator.
  * No Markdown headings or fences are added. Output is not escaped, so its text

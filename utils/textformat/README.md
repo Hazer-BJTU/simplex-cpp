@@ -2,7 +2,7 @@
 
 Link `textformat_iface` and include `textformat/document.hpp`.
 
-`textformat::metadata_field(name, value)` produces one `⟦name⟧: value` line,
+`textformat::metadata_field(name, value)` produces one `[[name]]: value` line,
 including a final newline. It adds no Markdown heading or code fence.
 
 Callers supply trusted labels and serialize values to one line, escaping control

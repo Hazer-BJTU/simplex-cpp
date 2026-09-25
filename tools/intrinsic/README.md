@@ -60,7 +60,7 @@ would mean all four saw a different call from the one that ran. A call whose
 property absent".
 
 **`tool_result.hpp` — `ToolResult`.** Each record starts with plain metadata
-lines (`⟦name⟧: value`), followed by a blank line and named literal output blocks.
+lines (`[[name]]: value`), followed by a blank line and named literal output blocks.
 Fields and concise hints always precede output, even if added later by the tool.
 Shared field formatting lives in [`utils/textformat`](../../utils/textformat).
 There are no Markdown headings or fences; output is not escaped. `separate()`
