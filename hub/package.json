@@ -1,0 +1,23 @@
+{
+  "name": "simplex-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Worker hub and web panel for simplex_worker sessions",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "bin": {
+    "simplex-hub": "./bin/simplex-hub.js"
+  },
+  "scripts": {
+    "start": "node bin/simplex-hub.js",
+    "dev": "node --watch bin/simplex-hub.js",
+    "test": "node --test test/*.test.js",
+    "test:e2e": "node --test test/e2e/*.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

@@ -1,0 +1,83 @@
+{
+    // Copy to hub.config.jsonc (or pass --config) and edit.
+    // Comments are allowed; the reader strips them before parsing, and the
+    // file stays valid JSON without them. Relative paths resolve against this
+    // file's directory. See hub/README.md for every field.
+    "listen": { "host": "127.0.0.1", "port": 8800 },
+    "dataDir": "./data",
+
+    // Empty token disables panel authentication. A non-loopback listen address
+    // requires one: a payload channel is an approval authority
+    // (core/docs/worker-protocol.md).
+    "panel": { "token": "" },
+
+    "worker": {
+        // Relative to this file; the default assumes an in-tree build tree.
+        "bin": "../build/bin/simplex_worker",
+        "promptsDir": "../build/bin/prompts",
+        "systemPromptFile": "coding_agent.yaml",
+        "threads": 1,
+        "maxExchanges": 512,
+        "eventCapacity": 1024,
+        "confirmationTimeoutMs": 120000,
+        "persistence": { "enabled": true, "readable": false },
+        "environment": { "workspace": "", "platform": "", "software": [] }
+    },
+
+    // Provider entries are copied verbatim into the worker configuration the
+    // hub generates; the session picks one by name as its driver_model.
+    // ${NAME} is expanded by the worker at startup, so no secret reaches disk.
+    "providerProfiles": {
+        "deepseek": {
+            "plugin": "deepseek",
+            "model": "deepseek-flash",
+            "config": { "reasoning": { "effort": "high" } },
+            "endpoint": {
+                "base_url": "https://api.deepseek.com",
+                "auth": { "scheme": "bearer", "api_key": "${DEEPSEEK_API_KEY}" }
+            },
+            "retry": { "max_attempts": 3, "initial_backoff_ms": 500, "max_backoff_ms": 120000 }
+        },
+        "mock": {
+            "plugin": "deepseek",
+            "model": "mock-flash",
+            "endpoint": { "base_url": "http://127.0.0.1:0", "auth": { "scheme": "none" } },
+            "retry": { "max_attempts": 0 }
+        }
+    },
+
+    "launcher": {
+        // "simplex-worker": run worker.bin with --config/--session/--threads.
+        // "command": run launcher.command as a template with the placeholders
+        // {session}, {config}, {data_dir}, {session_dir}, {endpoint},
+        // {confirm_endpoint}. Use it for a wrapper script or a future
+        // `simplex run ...` front end.
+        "kind": "simplex-worker",
+        "command": [],
+        "args": [],
+        // "hub": the hub renders the worker configuration file.
+        // "launcher": the launcher owns configuration; the hub only supplies
+        // the session, data directory, and endpoints.
+        "config": "hub"
+    },
+
+    "mock": {
+        "enabled": false,
+        "listen": "127.0.0.1:0",
+        "profile": "mock",
+        "scenario": "auto"
+    },
+
+    "limits": {
+        "transcriptEvents": 5000,
+        "logLines": 500,
+        "logBytes": 8388608,
+        "logFiles": 2,
+        "maxMessageBytes": 33554432,
+        "confirmIdentityHoldMs": 15000
+    },
+
+    // Off by default. See hub/README.md ("stopping a worker") for what a
+    // process-group kill does and does not cover.
+    "forceKillProcessGroup": false
+}

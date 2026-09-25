@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>simplex hub</title>
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+    <main class="boot">
+        <h1>simplex hub</h1>
+        <p>The panel is being wired up. The API is already available at <code>/api/meta</code>.</p>
+        <pre id="meta">loading…</pre>
+    </main>
+    <script type="module">
+        const target = document.getElementById('meta');
+        try {
+            const response = await fetch('/api/meta');
+            target.textContent = JSON.stringify(await response.json(), null, 2);
+        } catch (error) {
+            target.textContent = String(error);
+        }
+    </script>
+</body>
+</html>
