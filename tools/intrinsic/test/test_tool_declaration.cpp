@@ -605,6 +605,58 @@ argument_schema:
 )"), "minLength must not be negative"));
 }
 
+BOOST_AUTO_TEST_CASE(integer_maximum_is_checked_against_other_clauses)
+{
+    Scratch scratch;
+    const auto accepted = load_tool_declaration(scratch.write("bounded.yaml", R"(
+name: bounded
+description: integer bounds
+argument_schema:
+  type: object
+  properties:
+    count:
+      type: integer
+      description: how many
+      minimum: 0
+      maximum: 20
+      default: 20
+)"));
+    BOOST_TEST(accepted.argument_schema.at("properties").at("count").at("maximum") == 20);
+
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: bounded
+description: integer bounds
+argument_schema:
+  type: object
+  properties:
+    count: {type: integer, description: count, maximum: 20, default: 21}
+)"), "is above the maximum"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: bounded
+description: integer bounds
+argument_schema:
+  type: object
+  properties:
+    count: {type: integer, description: count, maximum: 20, enum: [21]}
+)"), "is above the maximum"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: bounded
+description: integer bounds
+argument_schema:
+  type: object
+  properties:
+    count: {type: integer, description: count, minimum: 21, maximum: 20}
+)"), "maximum must not be below minimum"));
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: bounded
+description: integer bounds
+argument_schema:
+  type: object
+  properties:
+    count: {type: string, description: count, maximum: 20}
+)"), "maximum applies to an integer property"));
+}
+
 BOOST_AUTO_TEST_CASE(an_array_must_declare_string_elements)
 {
     Scratch scratch;

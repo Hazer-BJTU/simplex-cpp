@@ -79,7 +79,7 @@ so the tool is left unnamed and its set skips it.
 The schema's vocabulary is **closed**, because that subtree goes to a provider
 verbatim: `type` (`string` / `boolean` / `integer` / `array`, the kinds the
 argument accessors read), a `description` on every property, `default`, `enum`,
-`minimum`, `minLength`, `items`, and a top-level `anyOf` for a rule that spans
+`minimum`, `maximum`, `minLength`, `items`, and a top-level `anyOf` for a rule that spans
 properties. Each is checked against the kind it applies to and against the
 others — an enum member below the declared minimum, a default outside its own
 enum, an array without `items` are all refusals — and so is any keyword the
@@ -147,6 +147,10 @@ declarations, its skill, and whatever state they share.
 
 ## Toolsets
 
+- **[toolsets/editing/](toolsets/editing/)** — confirmed, byte-exact replacement
+  of one unique text span in an existing file. Its before/after previews use
+  aligned line numbers and change markers. The worker registers it by default.
+
 - **[toolsets/reading/](toolsets/reading/)** — file reading, currently `read_text`
   with line and byte selection. Future multimodal readers belong here; editing
   remains separate. The worker registers this set and injects its skill by default.
@@ -190,7 +194,7 @@ declarations, its skill, and whatever state they share.
 4. Test the pair: load each declaration and ask the implementation the same
    questions the document answers (the declared kinds, defaults — in both
    directions, so a default the file drops is caught as well as one it states
-   wrongly — enum members, minimums, minLengths, element types, `anyOf`
+   wrongly — enum members, minimums, maximums, minLengths, element types, `anyOf`
    alternatives and `required`), each clause from BOTH sides, so "the
    implementation restricts something here" is never mistaken for "the
    declaration and the implementation agree". That check is generic over a

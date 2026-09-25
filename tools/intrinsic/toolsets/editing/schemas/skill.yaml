@@ -1,0 +1,16 @@
+name: editing
+title: Editing existing files
+description: Replace one exact text span with confirmed file publication.
+keywords: [edit, replace, file, text]
+text: |
+  Use `str_replace_edit` with `path`, a nonempty `old_text`, and `new_text`.
+  Copy enough surrounding text into old_text to make it unique. The match is
+  byte-exact, including spaces and line endings; overlapping matches count.
+  Empty new_text deletes. No match or multiple matches leaves the file unchanged;
+  reread with `read_text` and narrow the span. The call needs confirmation.
+  `context_lines` defaults to 3 and accepts 0 through 20. Results show separate
+  before/after excerpts with aligned line numbers: '-' marks original changed
+  lines and '+' marks replacement lines. '=' marks an unchanged match. Long
+  lines or spans show clipping/omission explicitly; inspect the file for more.
+  `published_sync_failed` means new content is already visible; inspect before
+  retrying. Conflicts leave the destination unchanged by this call.

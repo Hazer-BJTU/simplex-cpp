@@ -47,10 +47,10 @@
 //
 //   argument_schema  type: object, properties, required, anyOf
 //   a property       type (string | boolean | integer | array), description,
-//                    default, enum, minimum, minLength, items
+//                    default, enum, minimum, maximum, minLength, items
 //   items            type: string — the only array accessor here reads strings
 //   an anyOf branch  required, properties (whose entries may narrow a property
-//                    with enum, minimum or minLength)
+//                    with enum, minimum, maximum or minLength)
 //
 // and everything else is refused BY NAME, with a message that says what the
 // vocabulary is. Adding a keyword is then a deliberate act: the accessor or the
