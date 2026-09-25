@@ -76,7 +76,8 @@ target_link_libraries(tools_intrinsic PUBLIC
     asio_iface
     logging_lib
 )
-# The YAML reader behind the declaration loader; PRIVATE on purpose, see above.
+# Both are implementation-only: yamlconfig loads declarations and textformat
+# formats result fields. Neither dependency appears in intrinsic public headers.
 target_link_libraries(tools_intrinsic PRIVATE yamlconfig_iface textformat_iface)
 target_compile_options(tools_intrinsic PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>

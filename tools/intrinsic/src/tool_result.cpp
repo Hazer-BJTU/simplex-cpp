@@ -20,7 +20,12 @@ ToolResult& ToolResult::field(std::string_view name, nlohmann::json value) {
         const bool controls = std::any_of(raw.begin(), raw.end(), [](unsigned char c) {
             return c < 0x20 || c == 0x7f;
         });
-        rendered = controls ? value.dump() : raw;
+        // JSON's default UTF-8 output leaves Unicode separators literal.
+        // Detect NEL/LS/PS and use ASCII JSON escapes to keep one metadata line.
+        const bool unicode_separator = raw.find("\xc2\x85") != std::string::npos
+            || raw.find("\xe2\x80\xa8") != std::string::npos
+            || raw.find("\xe2\x80\xa9") != std::string::npos;
+        rendered = controls || unicode_separator ? value.dump(-1, ' ', true) : raw;
     } else {
         rendered = value.dump();
     }

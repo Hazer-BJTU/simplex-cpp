@@ -447,6 +447,30 @@ BOOST_AUTO_TEST_CASE(metadata_controls_are_escaped_and_output_remains_verbatim)
     BOOST_TEST(text.ends_with(output + "\n"));
 }
 
+BOOST_AUTO_TEST_CASE(unicode_line_separators_are_escaped_only_in_metadata)
+{
+    const std::pair<std::string, std::string> separators[] = {
+        {"\xc2\x85", "\\u0085"},
+        {"\xe2\x80\xa8", "\\u2028"},
+        {"\xe2\x80\xa9", "\\u2029"},
+    };
+    for (const auto& [separator, escaped] : separators) {
+        ToolResult result;
+        const auto value = "before" + separator + "after";
+        result.field("description", value);
+        result.field("state", "exited");
+        result.block("stdout", value);
+        const std::string expected = "[[description]]: \"before" + escaped
+            + "after\"\n[[state]]: exited\n\nstdout ("
+            + std::to_string(value.size()) + " bytes):\n" + value + "\n";
+        BOOST_TEST(result.text() == expected);
+    }
+    // Ordinary UTF-8 remains readable when it introduces no controls or separators.
+    ToolResult ordinary;
+    ordinary.field("description", "caf\xc3\xa9");
+    BOOST_TEST(ordinary.text() == "[[description]]: caf\xc3\xa9\n");
+}
+
 BOOST_AUTO_TEST_CASE(empty_and_truncated_outputs_are_explicit)
 {
     ToolResult result;

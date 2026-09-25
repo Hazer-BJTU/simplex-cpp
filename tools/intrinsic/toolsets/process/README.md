@@ -65,11 +65,10 @@ automatic release is scheduled. Nonzero exit codes still qualify for release.
 
 ```text
 run_command / spawn_process -> session_id + completion flags
-  [[released]]: true              -> inspect output; no follow-up required
-  [[released]]: false             -> retain ID; release manually when done
-  otherwise                   -> poll_process to wait or inspect status
-                              -> read_process to read output
-                              -> send_process to send input, EOF, or a signal
+  released=true  -> inspect the self-contained result; the session is gone
+  released=false -> if running/incomplete, poll/read/send as needed
+                 -> if complete but explicitly retained, read again if needed
+                 -> release the retained session when no longer needed
 ```
 
 **Looking and waiting are one call.** `poll_process` reports the state of every
@@ -207,8 +206,10 @@ hello
 stderr: (empty)
 ```
 
-- Field formatting is shared through `utils/textformat`. Control-bearing strings
-  and non-string values use compact JSON. Empty strings/containers and null are
+- Field formatting is shared through `utils/textformat`. Strings containing ASCII
+  controls or Unicode NEL/LINE SEPARATOR/PARAGRAPH SEPARATOR use ASCII-escaped
+  JSON, keeping each field on one line. Other strings remain readable UTF-8;
+  non-string values use compact JSON. Empty strings/containers and null are
   omitted; zero and false remain visible.
 - Output is not escaped or reformatted. Byte counts exclude any final newline
   added for separation. Empty and truncated output remain explicitly labeled.
@@ -270,17 +271,16 @@ JSON object would have made of them:
 [[running_milliseconds]]: 8
 [[finished]]: true
 [[output_complete]]: true
-
 [[released]]: true
-stdout (34 bytes):
+
+stdout (25 bytes):
 src/main.cpp:12: // TODO
 
 stderr: (empty)
-
 ```
 
 Values a caller would otherwise have to un-escape arrive as themselves
-(`executable: grep`, a path, a label); a block is introduced by a header that
+(`[[description]]: find TODOs`, a path, a label); a block is introduced by a header that
 names it and counts its bytes, and a stream that printed nothing says
 `(empty)`. See [The result shape](#the-result-shape) for the rules, and
 `tools/intrinsic/tool_result.hpp` for why it is this and not JSON.
@@ -305,12 +305,12 @@ those pipes open after the child is gone:
 [[running_milliseconds]]: 3
 [[finished]]: true
 [[output_complete]]: false
-
+[[released]]: false
 [[hint]]: Output capture incomplete; use poll_process to collect the rest.
+
 stdout: (empty)
 
 stderr: (empty)
-
 ```
 
 **A program that outlives the window** comes back as just the id and the
@@ -324,7 +324,7 @@ in-progress state — no `exit_code` line at all, and no output slice:
 [[running_milliseconds]]: 5000
 [[finished]]: false
 [[output_complete]]: false
-
+[[released]]: false
 [[hint]]: Still running; use poll_process to wait or read_process for output.
 ```
 
@@ -377,13 +377,12 @@ actually runs. The result reports execution state and output:
 [[running_milliseconds]]: 9
 [[finished]]: true
 [[output_complete]]: true
-
 [[released]]: true
+
 stdout (3 bytes):
 42
 
 stderr: (empty)
-
 ```
 
 There is **no `description` argument**: the command is the session's label, so
@@ -397,8 +396,8 @@ snapshot rather than the result text. The choice is not the model's — a comman
 line written the ordinary way then behaves the same either way, and nothing has
 to know the host's shell in advance. What the launch receives is the **absolute
 path** the shell was found at (`/bin/bash`, `/usr/bin/bash`, `/bin/sh`), and a
-path that exists is used as written — so nothing the call puts in `environment`,
-PATH included, can change which interpreter parses the line.
+path that exists is used as written. Inherited PATH and environment assignments
+inside the command do not change which interpreter was selected.
 
 **A command that outlives its window** is the case the shortcut's hint is
 written for. The command did not fail and was not killed — it is still running,
@@ -412,7 +411,7 @@ as a session like any other:
 [[running_milliseconds]]: 3001
 [[finished]]: false
 [[output_complete]]: false
-
+[[released]]: false
 [[hint]]: Still running after 3000 ms; not killed. poll_process: wait; read_process: output; send_process: signal.
 ```
 
@@ -463,10 +462,10 @@ cheap way to ask "is it done yet".
 [[session_id]]: proc_1
 [[state]]: exited
 [[exit_code]]: 0
-[[output_complete]]: true
 [[description]]: find TODOs
 [[pid]]: 48231
 [[running_milliseconds]]: 412
+[[output_complete]]: true
 
 new_stdout (25 bytes):
 src/main.cpp:12: // TODO
@@ -500,8 +499,8 @@ session printed since it was last read, and is `(empty)` when there is nothing
 new — while a poll that did not ask for output has no such block at all.
 `exit_code` and `output_complete` have **no line** while a process runs: an
 absent exit code is not a zero one, and a running capture is arriving rather
-than incomplete. The `released` record appears only when `release_exited`
-actually freed something, and output is reported *before* the session is freed,
+than incomplete. The `released` field in the summary metadata appears only when `release_exited`
+actually freed something. Output is collected before the session is freed,
 so nothing is lost — with one honest exception: a session whose child has exited
 but whose capture is still open is freed like any other exited session, and what
 has not arrived yet goes with it. Do not ask for a reap and the rest of an
@@ -520,9 +519,9 @@ ending could end the wait.
 loop: a model watching five builds makes one call that returns when the first of
 them finishes and tells it about all five, rather than one call per process per
 turn. And a session that has exited but whose capture is not complete yet keeps
-the wait going, so `output_complete: false` in the answer always comes with
-`timed_out: true` — the descendant-holding-the-pipes case, reported rather than
-hidden, with a hint naming the session and the way to collect the rest.
+the wait going unless another selected session completes. When none completes,
+the deadline returns `timed_out: true`; a hint identifies exited sessions whose
+output is still incomplete.
 
 ### `read_process`
 
@@ -534,7 +533,7 @@ repeatedly while the process runs.
   "session_id": "proc_1",  // required
   "stream": "both",        // "stdout" | "stderr" | "both" (default)
   "full": false,           // default false: only what is new
-  "release": false         // default false; only applies once exited
+  "release": true          // request release; refused while the child runs
 }
 ```
 
@@ -545,11 +544,11 @@ repeatedly while the process runs.
 [[running_milliseconds]]: 412
 [[stream]]: both
 [[full]]: false
-[[stdout_bytes_read]]: 23
+[[stdout_bytes_read]]: 25
 [[stderr_bytes_read]]: 0
 [[released]]: false
 
-stdout (23 bytes):
+stdout (25 bytes):
 src/main.cpp:12: // TODO
 
 stderr: (empty)
@@ -586,9 +585,8 @@ refused as one that does nothing at all.
 ```text
 [[session_id]]: proc_1
 [[state]]: running
-bytes_queued: 10
-input_closed: false
-
+[[bytes_queued]]: 10
+[[input_closed]]: false
 [[note]]: Input queued; delivery not confirmed.
 ```
 
@@ -607,11 +605,8 @@ lost — and nothing is waited for, which is why the result says how to confirm:
 ```text
 [[session_id]]: proc_1
 [[state]]: running
-[[pid]]: 48231
-[[running_milliseconds]]: 1200
-signal: term
-signalled: true
-
+[[signal]]: term
+[[signalled]]: true
 [[hint]]: Signal sent; use poll_process to confirm exit.
 ```
 
@@ -648,6 +643,8 @@ spawn_process { "auto_release": false, "executable": "ls", "arguments": ["-la", 
    [[running_milliseconds]]: 4
    [[finished]]: true
    [[output_complete]]: true
+   [[released]]: false
+   [[hint]]: Use read_process with release=true when done.
 
    stdout (48 bytes):
    total 48
@@ -665,14 +662,14 @@ first incremental read repeats the captured output:
 read_process { "session_id": "proc_1", "release": true }
 
    [[session_id]]: proc_1
+   [[released]]: true
    …
+
    stdout (48 bytes):
    total 48
    …
 
    stderr: (empty)
-
-   [[released]]: true
 ```
 
 **Watch a long build.** Spawn with a short window (or `0`) so it becomes a
@@ -699,6 +696,7 @@ poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 0 }
    [[session_id]]: proc_2
    [[state]]: running
    …
+
    new_stdout (19 bytes):
    [ 10%] Building…
 
@@ -716,7 +714,8 @@ poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 60000 
    [[exit_code]]: 0
    [[output_complete]]: true
    …
-   new_stdout (14 bytes):
+
+   new_stdout (13 bytes):
    [100%] Built
 
 poll_process    { "session_ids": ["proc_2"], "wait_timeout_milliseconds": 0,
@@ -740,8 +739,9 @@ spawn_process         { "executable": "cat", "description": "echo back",
 send_process         { "session_id": "proc_3", "input": "hello\n", "close_input": true }
    [[session_id]]: proc_3
    [[state]]: running
-   bytes_queued: 6
-   input_closed: true
+   [[bytes_queued]]: 6
+   [[input_closed]]: true
+   [[note]]: Input queued; delivery not confirmed.
 
 poll_process         { "session_ids": ["proc_3"] }
    [[timed_out]]: false
@@ -772,6 +772,7 @@ run_command { "command": "ls /tmp | wc -l" }
    [[state]]: exited
    [[exit_code]]: 0
    …
+
    stdout (3 bytes):
    42
 ```
@@ -795,16 +796,24 @@ poll_process { "session_ids": ["proc_4"], "wait_timeout_milliseconds": 5000 }
    [[state]]: running
 
 send_process { "session_id": "proc_4", "signal": "kill" }
-   signal: kill
-   signalled: true
+   [[session_id]]: proc_4
+   [[state]]: running
+   [[signal]]: kill
+   [[signalled]]: true
+   [[hint]]: Signal sent; use poll_process to confirm exit.
 
+poll_process { "session_ids": ["proc_4"], "include_output": false }
+   [[timed_out]]: false
+   [[finished_count]]: 1
+   …
 
 read_process { "session_id": "proc_4", "full": true, "release": true }
-   [[hint]]: Signal sent; use poll_process to confirm exit.
+   [[session_id]]: proc_4
+   [[state]]: exited
+   [[released]]: true
+
    stdout (… bytes):
    …everything it printed before it died…
-
-   [[released]]: true
 ```
 
 ---
