@@ -96,6 +96,10 @@ export function defaultConfig() {
             logBytes: 8 * 1024 * 1024,
             logFiles: 2,
             maxMessageBytes: 32 * 1024 * 1024,
+            // Server-side WebSocket ping interval for worker connections, in
+            // milliseconds; zero disables it. A half-open socket must not keep
+            // looking like a live worker.
+            pingIntervalMs: 30000,
             // How long a confirmation with an unverified worker identity is
             // held before it is denied. Always clamped to the confirmation
             // deadline; see src/worker/confirmation.js.
@@ -284,6 +288,8 @@ export function validateConfig(config) {
     }
     check(Number.isInteger(limits.confirmIdentityHoldMs) && limits.confirmIdentityHoldMs >= 0,
         'limits.confirmIdentityHoldMs must be a nonnegative integer');
+    check(Number.isInteger(limits.pingIntervalMs) && limits.pingIntervalMs >= 0,
+        'limits.pingIntervalMs must be a nonnegative integer');
     check(limits.confirmIdentityHoldMs < config.worker.confirmationTimeoutMs,
         'limits.confirmIdentityHoldMs must be shorter than worker.confirmationTimeoutMs');
     check(typeof config.forceKillProcessGroup === 'boolean',

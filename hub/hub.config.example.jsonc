@@ -74,6 +74,8 @@
         "logBytes": 8388608,
         "logFiles": 2,
         "maxMessageBytes": 33554432,
+        // Server-side ping interval for worker connections; zero disables it.
+        "pingIntervalMs": 30000,
         "confirmIdentityHoldMs": 15000
     },
 
