@@ -146,6 +146,7 @@ option(BUILD_TESTS "Build unit tests" ON)
 #
 add_subdirectory(versioning)
 add_subdirectory(utils)
+add_subdirectory(textedit)
 # extensions after utils' logging + the top-level interface targets:
 # it is a header-only module (extensions_iface) that links
 # boost_dll_iface, logging_lib, and simplex_thirdparty_iface.

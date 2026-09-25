@@ -1,0 +1,4 @@
+add_executable(test_utf8_probe test_utf8_probe.cpp)
+target_link_libraries(test_utf8_probe PRIVATE textedit_lib Boost::unit_test_framework)
+add_test(NAME test_utf8_probe COMMAND test_utf8_probe)
+set_tests_properties(test_utf8_probe PROPERTIES TIMEOUT 30)
