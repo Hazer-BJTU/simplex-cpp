@@ -377,6 +377,12 @@ describe('panel trust boundary', () => {
     it('requires the configured token for REST and the panel socket', async () => {
         const ctx = await startTestHub({ panel: { token: 'sekret' } });
         try {
+            // Metadata stays readable without a token: the panel needs it to
+            // render a token prompt, and it exposes no paths or credentials.
+            const meta = await fetch(`${ctx.base}/api/meta`);
+            assert.equal(meta.status, 200);
+            assert.equal((await meta.json()).name, 'simplex-hub');
+
             const denied = await fetch(`${ctx.base}/api/sessions`);
             assert.equal(denied.status, 401);
             const allowed = await fetch(`${ctx.base}/api/sessions?token=sekret`);

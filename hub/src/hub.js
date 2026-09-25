@@ -82,7 +82,11 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extr
             protocol: PANEL_PROTOCOL,
             worker_protocol: 'core/docs/worker-protocol.md',
             capabilities: CAPABILITIES,
-            listen: { host: config.listen.host, port: config.listen.port },
+            // The bound address once listening, so a client is not told the
+            // configured port when the configuration asked for 0.
+            listen: bound
+                ? { host: bound.host, port: bound.port }
+                : { host: config.listen.host, port: config.listen.port },
             launcher: {
                 kind: config.launcher.kind,
                 owns_config: config.launcher.config === 'launcher',
