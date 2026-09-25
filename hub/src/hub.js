@@ -3,12 +3,18 @@
  *
  * One HTTP server carries all three audiences: the browser panel, the JSON API,
  * and the worker-facing WebSocket routes. Each role registers itself here, so
- * this file is the map of what the hub currently implements.
+ * this file is the map of what the hub currently implements — and the only
+ * place that knows the whole object graph.
  */
-import { createHttpServer, sendJson } from './http/server.js';
+import { authorizePanel } from './http/auth.js';
+import { createHttpServer, sendError, sendJson } from './http/server.js';
 import { createLauncher } from './launch/launcher.js';
 import { WorkerSupervisor } from './launch/supervisor.js';
+import { createPanelApi } from './panel/api.js';
+import { HubState } from './state/persist.js';
 import { SessionRegistry } from './state/registry.js';
+import { isValidSessionId } from './state/session-id.js';
+import { TranscriptStore } from './state/transcript.js';
 import { createWorkerConfirmationRoute } from './worker/confirmation.js';
 import { createWorkerEventRoute } from './worker/connection.js';
 
@@ -16,7 +22,13 @@ import { createWorkerEventRoute } from './worker/connection.js';
 export const PANEL_PROTOCOL = { name: 'simplex-hub-panel', version: 1 };
 
 /** Capabilities reported by `/api/meta`; extended as roles are implemented. */
-export const CAPABILITIES = ['worker-events', 'confirmations', 'supervisor'];
+export const CAPABILITIES = [
+    'worker-events',
+    'confirmations',
+    'supervisor',
+    'transcript-replay',
+    'snapshot-view',
+];
 
 /**
  * Host a worker should connect back to.
@@ -38,17 +50,14 @@ export function connectHostFor(host) {
  * @param {object} options.log logger created by src/log.js.
  * @param {string} options.hubRoot absolute `hub/` directory.
  * @param {string} [options.version] hub package version.
- * @param {object} [options.hooks] optional observers used by the panel API.
- * @param {(envelope: object, connection: object) => void} [options.hooks.onEvent]
- * @param {(prompt: object) => void} [options.hooks.onPrompt]
- * @param {(prompt: object, outcome: object) => void} [options.hooks.onPromptSettled]
- * @param {(session: object, connection: object|null) => void} [options.hooks.onConnectionChange]
- * @param {(session: object, record: object|null) => void} [options.hooks.onProcessChange]
+ * @param {object} [options.hooks] extra observers (used by tests and the mock).
  * @param {() => ({baseUrl: string}|null)} [options.hooks.mockProvider]
  */
-export function createHub({ config, log, hubRoot, version = '0.0.0', hooks = {} }) {
+export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extraHooks = {} }) {
     const http = createHttpServer({ config, log, hubRoot });
     const registry = new SessionRegistry({ config, log });
+    const transcripts = new TranscriptStore({ config, log });
+    const state = new HubState({ config, log });
     /** Bound address, known only after `start()`. */
     let bound = null;
 
@@ -64,29 +73,40 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks = {} 
         };
     }
 
-    http.route('GET', '/api/meta', ({ res }) => {
-        sendJson(res, 200, {
+    /** Metadata shared by `/api/meta` and the panel's `welcome` message. */
+    function meta() {
+        return {
             name: 'simplex-hub',
             version,
             protocol: PANEL_PROTOCOL,
             worker_protocol: 'core/docs/worker-protocol.md',
             capabilities: CAPABILITIES,
             listen: { host: config.listen.host, port: config.listen.port },
-            launcher: { kind: config.launcher.kind, owns_config: config.launcher.config === 'launcher' },
+            launcher: {
+                kind: config.launcher.kind,
+                owns_config: config.launcher.config === 'launcher',
+            },
             provider_profiles: Object.keys(config.providerProfiles),
             force_kill_process_group: config.forceKillProcessGroup,
-        });
-    });
+            mock: { enabled: config.mock.enabled },
+        };
+    }
 
+    /** Panel API first: the worker routes report through its hooks. */
+    let panel = null;
     const workerEvents = createWorkerEventRoute({
         registry,
         config,
         log,
         onEvent: (envelope, connection) => {
             connection.log.debug(`event ${envelope.event} (seq ${envelope.sequence})`);
-            hooks.onEvent?.(envelope, connection);
+            panel?.hooks.onEvent(envelope, connection);
+            extraHooks.onEvent?.(envelope, connection);
         },
-        onConnectionChange: hooks.onConnectionChange,
+        onConnectionChange: (session, connection) => {
+            panel?.hooks.onConnectionChange(session, connection);
+            extraHooks.onConnectionChange?.(session, connection);
+        },
     });
     http.useUpgrade(workerEvents);
 
@@ -94,8 +114,14 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks = {} 
         registry,
         config,
         log,
-        onPrompt: hooks.onPrompt,
-        onSettled: hooks.onPromptSettled,
+        onPrompt: (prompt) => {
+            panel?.hooks.onPrompt(prompt);
+            extraHooks.onPrompt?.(prompt);
+        },
+        onSettled: (prompt, outcome) => {
+            panel?.hooks.onPromptSettled(prompt, outcome);
+            extraHooks.onPromptSettled?.(prompt, outcome);
+        },
     });
     http.useUpgrade(confirmations);
 
@@ -105,28 +131,79 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks = {} 
         registry,
         launcher: createLauncher({ config, log }),
         endpointsFor,
-        mockProvider: hooks.mockProvider,
-        onProcessChange: hooks.onProcessChange,
+        mockProvider: extraHooks.mockProvider,
+        onProcessChange: (session, record) => {
+            panel?.hooks.onProcessChange(session, record);
+            extraHooks.onProcessChange?.(session, record);
+        },
     });
+
+    panel = createPanelApi({
+        config,
+        log,
+        registry,
+        supervisor,
+        transcripts,
+        state,
+        meta,
+        onSessionsChanged: (sessions) => state.schedule(sessions),
+    });
+    http.useUpgrade(panel.upgrade);
+
+    /** Register the REST API behind panel authentication. */
+    for (const [route, handler] of Object.entries(panel.routes)) {
+        const [method, pattern] = route.split(' ');
+        http.route(method, pattern, async (context) => {
+            if (!authorizePanel(config, context.req, context.url).ok) {
+                sendError(context.res, 401, 'unauthorized', 'a panel token is required');
+                return;
+            }
+            await handler(context);
+        });
+    }
+
+    http.route('GET', '/api/meta', ({ res }) => sendJson(res, 200, meta()));
 
     return {
         http,
         registry,
         supervisor,
+        transcripts,
+        panel,
         config,
         log,
-        /** Bind the listener. */
+        /** Bind the listener and restore sessions recorded by a previous run. */
         start: async () => {
             const address = await http.listen();
             bound = { host: address.host, port: address.port };
+            const stored = state.load();
+            let restored = 0;
+            for (const entry of stored.sessions ?? []) {
+                if (!isValidSessionId(entry?.id) || registry.get(entry.id)) continue;
+                const session = registry.create(entry.id, entry.spec ?? {});
+                // Tokens must survive a restart, or a worker that is still
+                // running would be locked out by its own hub.
+                if (typeof entry.token === 'string' && entry.token.length > 0) {
+                    session.token = entry.token;
+                }
+                if (typeof entry.created_at === 'string') session.createdAt = entry.created_at;
+                session.spec = entry.spec ?? {};
+                if (entry.process) supervisor.adopt(session, entry.process);
+                restored += 1;
+            }
+            if (restored > 0) log.info(`restored ${restored} session(s) from ${state.path}`);
+            state.schedule(registry.list());
             return address;
         },
         /** Release listeners and owned resources, stopping workers first. */
         stop: async () => {
             const stopped = await supervisor.stopAll();
+            state.flush(registry.list());
+            panel.close();
             confirmations.close();
             workerEvents.close();
             await http.close();
+            transcripts.close();
             return stopped;
         },
     };

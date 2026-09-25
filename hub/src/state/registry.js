@@ -74,6 +74,15 @@ export class Session {
         this.identityListeners = new Set();
         /** Supervised worker process record, or null. */
         this.process = null;
+        /**
+         * Outcomes of payloads this hub sent, keyed by request_id.
+         *
+         * The worker protocol has no delivery acknowledgement: a successful
+         * send only means the message reached the socket. Until admission or
+         * rejection is observed, the outcome is genuinely unknown, and the hub
+         * must preserve that instead of retrying side-effecting work.
+         */
+        this.requests = new Map();
     }
 
     /** True while an event connection is open. */
@@ -97,7 +106,72 @@ export class Session {
         if (this.connection !== connection) return false;
         this.connection = null;
         this.markStale();
+        this.markRequestsUnknown();
         return true;
+    }
+
+    /** Record a payload the hub just sent. */
+    trackRequest(requestId, operation) {
+        this.requests.set(requestId, {
+            request_id: requestId,
+            operation,
+            state: 'sent',
+            sent_at: new Date().toISOString(),
+            settled_at: null,
+            detail: '',
+        });
+        this.pruneRequests();
+        return this.requests.get(requestId);
+    }
+
+    /** Mark a tracked request admitted. */
+    noteRequestAdmitted(requestId) {
+        const entry = this.requests.get(requestId);
+        if (!entry || entry.state !== 'sent') return false;
+        entry.state = 'admitted';
+        entry.settled_at = new Date().toISOString();
+        return true;
+    }
+
+    /** Mark a tracked request rejected, with the worker's diagnostic. */
+    noteRequestRejected(requestId, detail) {
+        const entry = this.requests.get(requestId);
+        if (!entry || entry.state !== 'sent') return false;
+        entry.state = 'rejected';
+        entry.detail = detail ?? '';
+        entry.settled_at = new Date().toISOString();
+        return true;
+    }
+
+    /**
+     * Mark every in-flight request unknown.
+     *
+     * Called when the event connection drops: the payload may or may not have
+     * been admitted, and only the operator can decide what to do next.
+     */
+    markRequestsUnknown() {
+        const now = new Date().toISOString();
+        for (const entry of this.requests.values()) {
+            if (entry.state !== 'sent') continue;
+            entry.state = 'unknown';
+            entry.settled_at = now;
+            entry.detail = 'the event connection closed before admission was observed';
+        }
+    }
+
+    /** Keep the request map bounded, preferring to forget settled entries. */
+    pruneRequests(limit = 200) {
+        if (this.requests.size <= limit) return;
+        for (const [key, entry] of this.requests) {
+            if (this.requests.size <= limit) break;
+            if (entry.state === 'sent') continue;
+            this.requests.delete(key);
+        }
+    }
+
+    /** Tracked requests, most recent last. */
+    describeRequests() {
+        return [...this.requests.values()];
     }
 
     /**
@@ -198,6 +272,7 @@ export class Session {
             last_event: this.lastEvent?.event ?? null,
             confirmations: this.describePrompts(),
             process: this.process?.describe() ?? null,
+            requests: this.describeRequests(),
         };
     }
 }

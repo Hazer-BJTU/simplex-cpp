@@ -68,6 +68,9 @@ describe('worker supervisor', () => {
         // the session must end up with a live identity.
         await until(() => session.identity.state === 'live', { label: 'live worker identity', timeout: 5000 });
         assert.match(session.identity.workerId, /^fixture-/);
+        // The fixture answers the hub's status request; wait for that reply
+        // instead of assuming it landed with the identity.
+        await until(() => session.latest.status !== null, { label: 'status event', timeout: 5000 });
         assert.equal(session.latest.status.data.active, false);
     });
 

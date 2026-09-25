@@ -58,12 +58,18 @@ export function readProcessStartTime(pid) {
     }
 }
 
-/** True when `pid` is the same process incarnation that was recorded. */
+/**
+ * True when `pid` is the same process incarnation that was recorded.
+ *
+ * Without a recorded start time this fails closed: a pid alone cannot
+ * distinguish the worker from an unrelated process that later reused it, and
+ * the cost of being wrong is signalling a stranger.
+ */
 export function isSameProcess(pid, startTime) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
+    if (typeof startTime !== 'string' || startTime.length === 0) return false;
     const current = readProcessStartTime(pid);
-    if (current === null) return false;
-    return startTime === null || startTime === undefined || current === startTime;
+    return current !== null && current === startTime;
 }
 
 /** Sleep helper. */
@@ -435,18 +441,23 @@ export class WorkerSupervisor {
         return typeof limit === 'number' && limit > 0 ? lines.slice(-limit) : lines;
     }
 
-    /** Adopt a process recorded by a previous hub run, when it is still alive. */
+    /**
+     * Adopt a process recorded by a previous hub run, when it is still alive.
+     *
+     * `stored` is the persisted record (snake_case), not a live ProcessRecord:
+     * this is the one place the hub reconstructs supervision from disk.
+     */
     adopt(session, stored) {
-        if (!stored || !isSameProcess(stored.pid, stored.pidStartTime)) return false;
+        if (!stored || !isSameProcess(stored.pid, stored.pid_start_time)) return false;
         const record = new ProcessRecord({
             sessionId: session.id,
             invocation: {
                 command: stored.command ?? '',
                 args: stored.args ?? [],
                 cwd: stored.cwd ?? '',
-                pidFile: stored.pidFile ?? null,
+                pidFile: stored.pid_file ?? null,
             },
-            logPath: stored.logPath ?? null,
+            logPath: stored.log_path ?? null,
             logStream: { write() {}, end() {} },
             logs: new RingBuffer({
                 limit: this.config.limits.logLines,
@@ -454,21 +465,23 @@ export class WorkerSupervisor {
             }),
         });
         record.pid = stored.pid;
-        record.pidStartTime = stored.pidStartTime;
-        record.startedAt = stored.startedAt ?? record.startedAt;
+        record.pidStartTime = stored.pid_start_time;
+        record.startedAt = stored.started_at ?? record.startedAt;
         record.state = PROCESS_STATE.running;
         record.adopted = true;
         record.stopRequested = false;
         // The exit of a process this hub did not spawn can only be observed by
         // polling; it is rare and cheap enough to justify keeping the panel
         // honest about a worker that dies while the hub is running.
-        record.monitor = setInterval(() => {
-            if (!isSameProcess(record.pid, record.pidStartTime)) {
-                clearInterval(record.monitor);
-                record.monitor = null;
-                this.finish(record, { exitCode: null, signal: null });
-            }
-        }, 2000);
+        if (typeof record.pidStartTime === 'string' && record.pidStartTime.length > 0) {
+            record.monitor = setInterval(() => {
+                if (!isSameProcess(record.pid, record.pidStartTime)) {
+                    clearInterval(record.monitor);
+                    record.monitor = null;
+                    this.finish(record, { exitCode: null, signal: null });
+                }
+            }, 2000);
+        }
         record.monitor.unref?.();
         session.process = record;
         this.log.info(`session ${session.id}: adopted worker pid ${record.pid} from a previous hub run`);

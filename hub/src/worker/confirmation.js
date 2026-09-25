@@ -262,21 +262,30 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
         });
     }
 
-    /** Send one decision and participate in the close handshake. */
-    async function answer(ws, request, decision, reason, slog) {
-        if (ws.readyState !== ws.OPEN) return;
+    /** Write exactly one decision to the connection. */
+    function sendDecision(ws, request, decision, reason, slog) {
+        if (ws.readyState !== ws.OPEN) return false;
         const response = buildConfirmationResponse(request, decision, truncateReason(reason));
-        const closed = new Promise((resolve) => ws.once('close', resolve));
         try {
             ws.send(JSON.stringify(response));
         } catch (error) {
             slog.warn(`could not send a decision: ${error.message}`);
             ws.terminate();
-            return;
+            return false;
         }
         slog.info(`confirmation ${request.confirmation_id}: ${decision}`);
-        // The worker initiates the close handshake after reading the response;
-        // the exchange is only complete once that handshake finishes.
+        return true;
+    }
+
+    /**
+     * Wait for the close handshake the worker starts after reading a decision.
+     *
+     * The observer is notified *before* this runs: whether the transport
+     * finishes closing must not delay what the panel is told.
+     */
+    async function completeClose(ws) {
+        if (ws.readyState === ws.CLOSED) return;
+        const closed = new Promise((resolve) => ws.once('close', resolve));
         const timer = setTimeout(() => {
             if (ws.readyState !== ws.CLOSED) ws.terminate();
         }, CLOSE_HANDSHAKE_MS);
@@ -379,7 +388,8 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
             const verdict = await awaitWorkerIdentity(session, request.worker_id, holdMs);
             if (!verdict.ok) {
                 slog.warn(`denying ${request.confirmation_id}: ${verdict.reason}`);
-                await answer(ws, request, 'denied', verdict.reason, slog);
+                sendDecision(ws, request, 'denied', verdict.reason, slog);
+                await completeClose(ws);
                 return;
             }
 
@@ -412,8 +422,9 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
             }
             prompt.onSettled = null;
             settled = true;
-            await answer(ws, request, outcome.decision, outcome.reason, slog);
+            sendDecision(ws, request, outcome.decision, outcome.reason, slog);
             onSettled?.(prompt, { phase: 'decided', detail: outcome.decision });
+            await completeClose(ws);
         } catch (error) {
             slog.warn(`confirmation exchange failed: ${error.message}`);
             try {
