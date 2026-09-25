@@ -13,12 +13,15 @@ text: |
   released or the store shuts down. Use the IDs returned by the tools; IDs in
   the examples below are placeholders.
 
+  Results group status and concise hints in `Metadata`, before literal `Output`.
+  Each session in a poll has its own record. Executable and argument details
+  remain in the invocation rather than being repeated in the result.
+
   ## Choose a tool
 
   - `run_command`: run a command line through the selected shell (bash when
     available at its standard paths, otherwise /bin/sh). Use it for pipelines,
-    redirections, variables and globs. Syntax must match that shell; the result
-    names it in `executable`.
+    redirections, variables and globs. Syntax must match that shell.
   - `spawn_process`: run a program with an array of literal arguments. Each
     element is one argument; do not add shell quoting. Shell operators and
     globs are not interpreted. Bare executable names use PATH; explicit paths

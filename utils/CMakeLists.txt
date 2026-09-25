@@ -3,6 +3,8 @@
 #
 # Umbrella for the small shared utility modules every other package leans on:
 #
+#   - textformat/ `textformat_iface` (INTERFACE): dependency-free Markdown
+#                 framing for metadata and literal output.
 #   - logging/    `logging_lib` (STATIC): thread-safe console logger
 #                 (logging::Logger), standard-library only.
 #   - fileio/     `fileio_lib` (SHARED): atomic file replacement through a
@@ -43,6 +45,7 @@
 # then eventbus (independent), then asio (depends only on top-level targets),
 # then async_eventbus (depends on asio_iface).
 # =============================================================================
+add_subdirectory(textformat)
 add_subdirectory(logging)
 add_subdirectory(fileio)
 add_subdirectory(yamlconfig)

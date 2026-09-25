@@ -1418,7 +1418,8 @@ BOOST_AUTO_TEST_CASE(spawn_returns_the_whole_result_for_a_quick_command)
 
     const ResultText result = f.result_of(record);
     BOOST_TEST(!result.field("session_id").empty());
-    BOOST_TEST(result.field("executable") == "echo");
+    BOOST_TEST(!result.has("executable"));
+    BOOST_TEST(!result.has("arguments"));
     BOOST_TEST(result.field("description") == "a quick command");
     BOOST_TEST(result.field("finished") == "true");
     BOOST_TEST(result.field("state") == "exited");
@@ -1508,17 +1509,9 @@ BOOST_AUTO_TEST_CASE(run_command_runs_a_line_through_the_platform_shell)
     BOOST_TEST(result.block("stdout") == "one\ntwo\n");
     BOOST_TEST(result.block("stderr").empty());
 
-    // What the tool built from that one property: the host's own interpreter as
-    // the executable, and the line as the single argument after the flag that
-    // says "this is the command". The model wrote neither. The interpreter is
-    // named by PATH — an absolute one, so the environment the call passes along
-    // cannot decide which shell reads the line — and the flag is the POSIX one.
-    const std::string shell = result.field("executable");
-    BOOST_TEST(shell.starts_with("/"));
-    BOOST_TEST(shell.find("sh") != std::string::npos);
-    const std::string arguments = result.field("arguments");
-    BOOST_TEST(arguments.starts_with("[\"-c\","));
-    BOOST_TEST(arguments.find(line) != std::string::npos);
+    // Launch details remain in the invocation/session, not repeated in output.
+    BOOST_TEST(!result.has("executable"));
+    BOOST_TEST(!result.has("arguments"));
     // ...and the command is the session's label, so every later report about
     // this session says what it was. There is no `description` argument to ask
     // a model for one.
@@ -1600,7 +1593,8 @@ BOOST_AUTO_TEST_CASE(spawn_accepts_a_path_as_the_executable)
     const ResultText result = f.result_of(record);
     BOOST_TEST(result.field("finished") == "true");
     BOOST_TEST(result.field("exit_code") == "0");
-    BOOST_TEST(result.field("executable") == "/bin/sh");
+    BOOST_TEST(!result.has("executable"));
+    BOOST_TEST(!result.has("arguments"));
     BOOST_TEST(result.block("stdout") == "ran-from-a-path");
 }
 
@@ -1955,7 +1949,7 @@ BOOST_AUTO_TEST_CASE(poll_releases_exited_sessions_only_after_reporting_them)
     // The output is in THIS result — reaping before reading would have lost a
     // dead child's last words for good. Two session records, then the one
     // naming what was let go.
-    BOOST_TEST_REQUIRE(result.records().size() == std::size_t{4});
+    BOOST_TEST_REQUIRE(result.records().size() == std::size_t{3});
     BOOST_TEST(result.records()[1].block("new_stdout") == "last words\n");
     BOOST_TEST(result.field("released") == "[" + std::string("\"") + finished +
                                            "\"]");

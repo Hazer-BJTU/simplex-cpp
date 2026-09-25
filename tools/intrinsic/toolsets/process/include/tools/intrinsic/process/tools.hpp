@@ -342,7 +342,7 @@ public:
 /// at. So a command line written the ordinary way works on a host whose only
 /// shell is `sh`, a model never has to know which one it is talking to, and
 /// nothing the call puts in `environment` can change which shell reads the
-/// line — the result's `executable` line says which file it got.
+/// line; the host session snapshot retains the selected executable.
 class RunCommandTool final : public ProcessToolBase {
 public:
     /// How long a command is waited for before its child is left running in the
