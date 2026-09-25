@@ -94,6 +94,7 @@ std::string require_string_at(const json& object, std::string_view key,
 //   default      what the implementation settles when the property is absent.
 //   enum         the values a caller may send, all of the declared kind.
 //   minimum      a lower bound, on an integer.
+//   maximum      an upper bound, on an integer.
 //   minLength    a shortest length, on a string.
 //   items        what an array's elements are; `{type: string}` is the only
 //                array this tree reads (optional_string_list).
@@ -107,8 +108,8 @@ std::string require_string_at(const json& object, std::string_view key,
 constexpr std::string_view kSchemaVocabulary =
     "type, properties, required, anyOf";
 constexpr std::string_view kPropertyVocabulary =
-    "type, description, default, enum, minimum, minLength, items";
-constexpr std::string_view kNarrowingVocabulary = "enum, minimum, minLength";
+    "type, description, default, enum, minimum, maximum, minLength, items";
+constexpr std::string_view kNarrowingVocabulary = "enum, minimum, maximum, minLength";
 constexpr std::string_view kTypeVocabulary = "string, boolean, integer, array";
 
 /// Whether `value` is a JSON instance of `kind`. No coercion, and the same rule
@@ -151,19 +152,20 @@ constexpr std::string_view kTypeVocabulary = "string, boolean, integer, array";
     return word;
 }
 
-/// The value clauses a property states — `enum`, `minimum`, `minLength` — each
+/// The value clauses a property states — `enum`, `minimum`, `maximum`, `minLength` — each
 /// checked against the kind it applies to, and handed back so a caller can hold
 /// a `default` (or a sibling clause) against them.
 struct ValueClauses {
     const json* allowed_values = nullptr; ///< `enum`, when stated
     const json* minimum = nullptr;        ///< `minimum`, when stated
+    const json* maximum = nullptr;        ///< `maximum`, when stated
     const json* min_length = nullptr;     ///< `minLength`, when stated
 
     /// Nothing stated about the values, so any value of the declared kind is a
     /// value the declaration allows.
     [[nodiscard]] bool says_nothing() const noexcept
     {
-        return allowed_values == nullptr && minimum == nullptr
+        return allowed_values == nullptr && minimum == nullptr && maximum == nullptr
                && min_length == nullptr;
     }
 };
@@ -187,11 +189,15 @@ void check_value_against_clauses(const json& value, std::string_view kind,
              std::format("{} is not one of the values this declaration lists "
                          "in its enum", value.dump()));
     }
-    if (clauses.minimum != nullptr
-        && value.get<std::int64_t>() < clauses.minimum->get<std::int64_t>()) {
+    if (clauses.minimum != nullptr && value < *clauses.minimum) {
         fail(file, path,
              std::format("{} is below the minimum this declaration states ({})",
                          value.dump(), clauses.minimum->dump()));
+    }
+    if (clauses.maximum != nullptr && value > *clauses.maximum) {
+        fail(file, path,
+             std::format("{} is above the maximum this declaration states ({})",
+                         value.dump(), clauses.maximum->dump()));
     }
     if (clauses.min_length != nullptr) {
         const auto shortest = static_cast<std::size_t>(
@@ -205,7 +211,7 @@ void check_value_against_clauses(const json& value, std::string_view kind,
     }
 }
 
-/// Check the `enum`/`minimum`/`minLength` a schema states against `kind` and
+/// Check the `enum`/`minimum`/`maximum`/`minLength` a schema states against `kind` and
 /// answer them.
 ///
 /// The clauses are checked against EACH OTHER as well as against the kind —
@@ -240,6 +246,24 @@ void check_value_against_clauses(const json& value, std::string_view kind,
         }
         clauses.minimum = &*lower;
     }
+    if (const auto upper = schema.find("maximum"); upper != schema.end()) {
+        if (kind != "integer") {
+            fail(file, path + "/maximum",
+                 std::format("maximum applies to an integer property, and this "
+                             "one is a {}", kind));
+        }
+        if (!upper->is_number_integer()) {
+            fail(file, path + "/maximum",
+                 std::format("maximum must be an integer, got {}",
+                             upper->type_name()));
+        }
+        clauses.maximum = &*upper;
+    }
+    if (clauses.minimum != nullptr && clauses.maximum != nullptr &&
+        *clauses.minimum > *clauses.maximum) {
+        fail(file, path + "/maximum",
+             "maximum must not be below minimum");
+    }
     if (const auto length = schema.find("minLength"); length != schema.end()) {
         if (kind != "string") {
             fail(file, path + "/minLength",
@@ -260,8 +284,8 @@ void check_value_against_clauses(const json& value, std::string_view kind,
     }
 
     if (clauses.allowed_values != nullptr) {
-        // Each member, against the other two clauses: an enum that lists a
-        // value its own minimum forbids is a document two readers would take
+        // Each member against its sibling clauses: an enum that lists a
+        // value outside its own bounds is a document two readers would take
         // two ways.
         for (std::size_t index = 0; index < clauses.allowed_values->size();
              ++index) {
@@ -315,7 +339,7 @@ void check_property(const json& property, const std::filesystem::path& file,
     }
     for (const auto& entry : property.items()) {
         if (!is_one_of(entry.key(), {"type", "description", "default", "enum",
-                                     "minimum", "minLength", "items"})) {
+                                     "minimum", "maximum", "minLength", "items"})) {
             fail(file, path + "/" + entry.key(),
                  std::format("\"{}\" is not part of the argument-schema "
                              "vocabulary this project supports ({}); a keyword "
@@ -347,7 +371,7 @@ void check_property(const json& property, const std::filesystem::path& file,
         fallback != property.end()) {
         // The default is what the implementation settles, so it has to be a
         // value the same declaration would let a caller send: of the kind, in
-        // the enum, above the minimum. Anything else is a schema that describes
+        // the enum, inside the numeric bounds. Anything else is a schema that describes
         // two different call sets depending on who is reading it.
         check_value_against_clauses(*fallback, kind, clauses, file,
                                     path + "/default");
@@ -410,7 +434,7 @@ void check_required_list(const json& names, const json& properties,
 /// nothing at all — and that is exactly the property the tests lean on when
 /// they ask whether a call naming only the required properties is valid), and
 /// its property entries may only tighten a value (`enum`, `minimum`,
-/// `minLength`), because the type and the description come from the property
+/// `maximum`, `minLength`), because the type and the description come from the property
 /// itself.
 void check_branch(const json& branch, const json& properties,
                   const json& required, const std::filesystem::path& file,
@@ -474,7 +498,7 @@ void check_branch(const json& branch, const json& properties,
                                  entry.value().type_name()));
             }
             for (const auto& clause : entry.value().items()) {
-                if (!is_one_of(clause.key(), {"enum", "minimum", "minLength"})) {
+                if (!is_one_of(clause.key(), {"enum", "minimum", "maximum", "minLength"})) {
                     fail(file, here + "/" + clause.key(),
                          std::format("\"{}\" is not something an alternative "
                                      "may narrow ({}): the type and the "
@@ -488,7 +512,7 @@ void check_branch(const json& branch, const json& properties,
                                                  + entry.key());
             if (check_clauses(entry.value(), kind, file, here).says_nothing()) {
                 fail(file, here,
-                     "a narrowing must state one of enum, minimum or "
+                     "a narrowing must state one of enum, minimum, maximum or "
                      "minLength; leave the entry out to require the property "
                      "as it stands");
             }

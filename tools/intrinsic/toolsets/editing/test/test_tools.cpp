@@ -93,6 +93,8 @@ BOOST_FIXTURE_TEST_CASE(schema_registration_confirmation_and_aligned_preview, Fi
     BOOST_TEST(tool.get_details().name == "str_replace_edit");
     BOOST_TEST(schema.at("required") == Json::array({"path", "old_text", "new_text"}));
     BOOST_TEST(schema.at("properties").at("context_lines").at("default") == 3);
+    BOOST_TEST(schema.at("properties").at("context_lines").at("minimum") == 0);
+    BOOST_TEST(schema.at("properties").at("context_lines").at("maximum") == 20);
     model_io::PromptTemplate prompt;
     BOOST_TEST(registry.inject_skills(prompt) == 1u);
     tools::intrinsic::EditingToolSet set;

@@ -163,14 +163,38 @@ BOOST_FIXTURE_TEST_CASE(file_edit_preserves_mode_and_declines_unsafe_targets, Sc
 BOOST_FIXTURE_TEST_CASE(fileio_detects_stale_expected_bytes_before_publish, Scratch)
 {
     const auto file = write("old");
-    BOOST_CHECK_THROW(fileio::replace_existing_file(file, "older", "new"),
+    auto original = fileio::read_editable_file(file, 1024);
+    auto wrong_size = original;
+    wrong_size.bytes = "older";
+    BOOST_CHECK_THROW(fileio::replace_existing_file(file, wrong_size, "new"),
                       fileio::ReplaceConflict);
-    BOOST_CHECK_THROW(fileio::replace_existing_file(file, "bad", "new"),
+    auto wrong_bytes = original;
+    wrong_bytes.bytes = "bad";
+    BOOST_CHECK_THROW(fileio::replace_existing_file(file, wrong_bytes, "new"),
                       fileio::ReplaceConflict);
     BOOST_TEST(read(file) == "old");
-    fileio::replace_existing_file(file, "old", "new");
+    fileio::replace_existing_file(file, original, "new");
     BOOST_TEST(read(file) == "new");
     for (const auto& entry : fs::directory_iterator(root)) {
         BOOST_TEST(!entry.path().filename().string().starts_with(".simplex-edit-"));
     }
+}
+
+BOOST_FIXTURE_TEST_CASE(same_contents_on_a_replacement_inode_are_a_conflict, Scratch)
+{
+    const auto file = write("old");
+    const auto initial = fileio::read_editable_file(file, 1024);
+    const auto replacement = root / "replacement";
+    {
+        std::ofstream output(replacement, std::ios::binary);
+        output << "old";
+        BOOST_REQUIRE(output.good());
+    }
+    fs::rename(replacement, file);
+    const auto current = fileio::read_editable_file(file, 1024);
+    BOOST_TEST(current.bytes == initial.bytes);
+    BOOST_TEST(current.identity.inode != initial.identity.inode);
+    BOOST_CHECK_THROW(fileio::replace_existing_file(file, initial, "new"),
+                      fileio::ReplaceConflict);
+    BOOST_TEST(read(file) == "old");
 }

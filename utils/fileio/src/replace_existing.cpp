@@ -93,6 +93,23 @@ bool same_file(const struct stat& left, const struct stat& right)
            left.st_ctim.tv_nsec == right.st_ctim.tv_nsec;
 }
 
+FileIdentity identity_of(const struct stat& info)
+{
+    return {
+        static_cast<std::uintmax_t>(info.st_dev),
+        static_cast<std::uintmax_t>(info.st_ino),
+        static_cast<std::uintmax_t>(info.st_size),
+        static_cast<std::uintmax_t>(info.st_mode),
+        static_cast<std::uintmax_t>(info.st_uid),
+        static_cast<std::uintmax_t>(info.st_gid),
+        static_cast<std::uintmax_t>(info.st_nlink),
+        static_cast<std::intmax_t>(info.st_mtim.tv_sec),
+        static_cast<std::intmax_t>(info.st_ctim.tv_sec),
+        info.st_mtim.tv_nsec,
+        info.st_ctim.tv_nsec
+    };
+}
+
 void compare_expected(int descriptor, std::string_view expected)
 {
     std::array<char, 8192> chunk{};
@@ -135,14 +152,16 @@ void write_all(int descriptor, std::string_view bytes)
 ReplaceConflict::ReplaceConflict(const std::string& reason)
     : std::runtime_error(reason) {}
 
-std::string read_editable_file(const std::filesystem::path& path, std::size_t max_bytes)
+EditableSnapshot read_editable_file(const std::filesystem::path& path, std::size_t max_bytes)
 {
     if (max_bytes == std::numeric_limits<std::size_t>::max()) {
         throw std::invalid_argument("editable file limit leaves no lookahead byte");
     }
     const Descriptor source(open_source(checked_path(path)));
-    (void)checked_regular(source.get());
-    std::string bytes;
+    const auto opened = checked_regular(source.get());
+    EditableSnapshot snapshot;
+    snapshot.identity = identity_of(opened);
+    auto& bytes = snapshot.bytes;
     std::array<char, 8192> chunk{};
     const auto limit = max_bytes + 1;
     while (bytes.size() < limit) {
@@ -156,22 +175,32 @@ std::string read_editable_file(const std::filesystem::path& path, std::size_t ma
     if (bytes.size() > max_bytes) {
         throw std::length_error("editable file exceeds the configured byte limit");
     }
-    return bytes;
+    struct stat after_read {};
+    if (::fstat(source.get(), &after_read) != 0) fail("inspect read file");
+    if (!same_file(opened, after_read) ||
+        opened.st_size < 0 ||
+        static_cast<std::uintmax_t>(opened.st_size) != bytes.size()) {
+        throw ReplaceConflict("file changed during initial read");
+    }
+    return snapshot;
 }
 
 void replace_existing_file(
     const std::filesystem::path& path,
-    std::string_view expected,
+    const EditableSnapshot& expected,
     std::string_view replacement)
 {
     const auto destination = checked_path(path);
     const Descriptor source(open_source(destination));
     const auto original = checked_regular(source.get());
+    if (identity_of(original) != expected.identity) {
+        throw ReplaceConflict("file identity changed after initial read");
+    }
     if (original.st_size < 0 ||
-        static_cast<std::uintmax_t>(original.st_size) != expected.size()) {
+        static_cast<std::uintmax_t>(original.st_size) != expected.bytes.size()) {
         throw ReplaceConflict("file size changed before replacement");
     }
-    compare_expected(source.get(), expected);
+    compare_expected(source.get(), expected.bytes);
     struct stat after_compare {};
     if (::fstat(source.get(), &after_compare) != 0) fail("inspect compared file");
     if (!same_file(original, after_compare)) {

@@ -2,7 +2,7 @@
 
 `fileio/replace_existing.hpp` provides bounded reads and replacement of an
 existing single-link regular file for text editing. It refuses the final
-symlink and special mode bits, compares expected bytes before publication,
+symlink and special mode bits, compares initially read identity and bytes before publication,
 preserves owner/group/POSIX mode, and reports a conflict if the file changed.
 Unlike `atomic_write`, it does not create parent directories and does not
 replace a symlink. It does not preserve ACLs or extended attributes. The

@@ -31,5 +31,6 @@ argument_schema:
     context_lines:
       type: integer
       minimum: 0
+      maximum: 20
       default: 3
       description: Number of unchanged lines shown on each side; accepted range is 0 through 20.

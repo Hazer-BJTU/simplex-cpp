@@ -250,7 +250,7 @@ EditResult str_replace_file(
 {
     const auto original = fileio::read_editable_file(path, max_file_bytes);
     auto plan = prepare_str_replace(
-        original, old_text, new_text, context_lines, max_file_bytes);
+        original.bytes, old_text, new_text, context_lines, max_file_bytes);
     if (plan.result.status != EditStatus::Modified) {
         return std::move(plan.result);
     }

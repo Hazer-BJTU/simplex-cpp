@@ -273,8 +273,9 @@ session wants — and it keeps the source tree on purpose too: the process
 tools' declarations AND the set's `skill.yaml` resolve to the path the build
 baked in (`tools/intrinsic/toolsets/process/schemas`), which is the dev tree's
 answer. The staged `/src/stage` tree carries them the way a release does
-(`bin/schemas/process`); the reading tools use the same layout under
-`bin/schemas/reading`. Both lookup paths can be exercised side by side.
+(`bin/schemas/process`); reading and editing use the same layout under
+`bin/schemas/reading` and `bin/schemas/editing`. All three lookup paths can be
+exercised side by side.
 `--tools` and `--skill` in the demo print both halves of what the model is
 given, without an API key and without starting a child.
 
