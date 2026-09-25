@@ -2,3 +2,8 @@ add_executable(test_utf8_probe test_utf8_probe.cpp)
 target_link_libraries(test_utf8_probe PRIVATE textedit_lib Boost::unit_test_framework)
 add_test(NAME test_utf8_probe COMMAND test_utf8_probe)
 set_tests_properties(test_utf8_probe PROPERTIES TIMEOUT 30)
+
+add_executable(test_line_index test_line_index.cpp)
+target_link_libraries(test_line_index PRIVATE textedit_lib Boost::unit_test_framework)
+add_test(NAME test_line_index COMMAND test_line_index)
+set_tests_properties(test_line_index PROPERTIES TIMEOUT 30)
