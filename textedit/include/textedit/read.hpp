@@ -21,6 +21,11 @@ enum class ByteReadFormat {
 /** Rendered selection plus coordinates in the original, unformatted input. */
 struct ReadResult {
     std::string text;
+    /// Full input size, independent of the selection and rendered output.
+    std::size_t total_bytes = 0;
+    /// Full logical line count using LineIndex rules, including the final empty
+    /// line after a terminator. Empty input has one line. Also set in byte mode.
+    std::size_t total_lines = 0;
     /// Half-open byte range; offsets never refer to the formatted output.
     std::size_t start_byte = 0;
     std::size_t end_byte = 0;
@@ -71,6 +76,7 @@ struct LineReadResult : ReadResult {
  * Selection may split a UTF-8 character. Counts clamp to available bytes; zero
  * selects nothing. EOF is valid; offsets beyond EOF throw std::out_of_range.
  * Unknown format values throw std::invalid_argument. The view is not retained.
+ * Computing total_lines scans the whole input, even for a small byte selection.
  */
 [[nodiscard]] ReadResult read_bytes(
     std::string_view text,

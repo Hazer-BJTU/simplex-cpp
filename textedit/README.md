@@ -39,7 +39,8 @@ Byte formats are `Plain` (exact bytes) and `HexEscaped` (every byte becomes
 bytes `A`, NUL and LF become `\x41\x00\x0A`. Byte selection can split a UTF-8
 character; neither mode enforces UTF-8 validity.
 
-Results include `text`, original `start_byte` / exclusive `end_byte`, and
+Results include `text`, full-input `total_lines` / `total_bytes`, original
+`start_byte` / exclusive `end_byte`, and
 `reached_end`. Line results also include `start_line` and `lines_read`.
 `reached_end` indicates that there are no more entries in the selected mode:
 after reading the bytes of a final newline, a zero-byte logical line can still
@@ -48,6 +49,11 @@ overflow. A zero count returns empty output at the requested position. Starting
 exactly at the total line count or byte count returns an empty EOF selection;
 starting beyond it throws `std::out_of_range`. Invalid format enums throw
 `std::invalid_argument`.
+
+Totals come from the same input bytes as the selection, including for empty
+selections. Line totals follow `LineIndex` (empty input has one line, and a final
+terminator introduces an empty line). Byte reads also scan the complete input
+to compute total_lines; they do not count just the selected bytes.
 
 File functions currently load the whole file before selection, bounded by an
 optional `max_file_bytes` parameter (default 16 MiB). One lookahead byte detects

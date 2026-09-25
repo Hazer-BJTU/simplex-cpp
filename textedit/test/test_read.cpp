@@ -7,6 +7,8 @@
 #include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 #include <sys/stat.h>
 
 namespace {
@@ -160,6 +162,28 @@ BOOST_AUTO_TEST_CASE(invalid_ranges_and_formats_throw_without_overflow)
                       std::invalid_argument);
     BOOST_CHECK_THROW((void)textedit::read_bytes("", 0, 0, static_cast<ByteReadFormat>(99)),
                       std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(totals_cover_the_whole_input_for_both_modes_and_empty_selections)
+{
+    for (const auto& [text, lines] : std::vector<std::pair<std::string, std::size_t>>{
+             {"", 1}, {"abc", 1}, {"a\r\nb\n", 3},
+             {"a\xc2\x85\xe2\x80\xa8z", 3}}) {
+        for (const auto count : {0u, 1u}) {
+            const auto line_result = textedit::read_lines(text, 0, count);
+            BOOST_TEST(line_result.total_bytes == text.size());
+            BOOST_TEST(line_result.total_lines == lines);
+            const auto byte_result = textedit::read_bytes(text, 0, count);
+            BOOST_TEST(byte_result.total_bytes == text.size());
+            BOOST_TEST(byte_result.total_lines == lines);
+        }
+        const auto eof = textedit::read_bytes(text, text.size(), 1);
+        BOOST_TEST(eof.total_bytes == text.size());
+        BOOST_TEST(eof.total_lines == lines);
+        const auto after_lines = textedit::read_lines(text, lines, 1);
+        BOOST_TEST(after_lines.total_bytes == text.size());
+        BOOST_TEST(after_lines.total_lines == lines);
+    }
 }
 
 BOOST_FIXTURE_TEST_CASE(file_reading_obeys_limits_and_does_not_change_contents, Scratch)

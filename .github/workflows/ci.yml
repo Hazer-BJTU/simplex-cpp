@@ -168,6 +168,8 @@ jobs:
           echo "staged declaration files: $found"
           test "$found" -eq 6
           test -f stage/bin/schemas/process/skill.yaml
+          test -s stage/bin/schemas/reading/read_text.yaml
+          test -s stage/bin/schemas/reading/skill.yaml
 
       - name: Assert the release carries the default role prompt
         run: test -s stage/bin/prompts/coding_agent.yaml

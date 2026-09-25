@@ -189,7 +189,7 @@ requires deployment credentials and remains a separate operator check.
 
 ## Build dependencies
 
-The top-level core package composes load, loop, IO, intrinsic process tools and
+The top-level core package composes load, loop, IO, intrinsic process/reading tools and
 the intrinsic context-statistic hook. core_protocol contains only message
 validation/identities and links the dataclass and Boost header interfaces.
 The shell links core_protocol and intercom_iface, without worker or provider

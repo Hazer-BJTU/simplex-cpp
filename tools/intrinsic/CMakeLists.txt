@@ -94,6 +94,7 @@ endif()
 # library, linking the core above. Added after it so a package's
 # target_link_libraries names a target that already exists.
 add_subdirectory(toolsets/process)
+add_subdirectory(toolsets/reading)
 
 if(BUILD_TESTS)
     add_subdirectory(test)

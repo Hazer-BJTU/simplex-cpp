@@ -62,6 +62,8 @@ LineReadResult read_lines(
     }
 
     LineReadResult result;
+    result.total_bytes = text.size();
+    result.total_lines = index.line_count();
     result.start_line = start_line;
     result.lines_read = std::min(line_count, index.line_count() - start_line);
     result.start_byte = start_line == index.line_count()
@@ -117,6 +119,8 @@ ReadResult read_bytes(
     }
     const auto count = std::min(byte_count, text.size() - start_byte);
     ReadResult result;
+    result.total_bytes = text.size();
+    result.total_lines = LineIndex(text).line_count();
     result.start_byte = start_byte;
     result.end_byte = start_byte + count;
     result.reached_end = result.end_byte == text.size();

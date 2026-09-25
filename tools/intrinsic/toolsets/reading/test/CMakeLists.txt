@@ -1,0 +1,4 @@
+add_executable(test_reading_tools test_tools.cpp)
+target_link_libraries(test_reading_tools PRIVATE tools_intrinsic_reading Boost::unit_test_framework)
+add_test(NAME test_reading_tools COMMAND test_reading_tools)
+set_tests_properties(test_reading_tools PROPERTIES TIMEOUT 30)
