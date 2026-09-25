@@ -499,16 +499,16 @@ header-only dialect (`llm/deepseek/dialect.hpp`) carries every deviation from
 the neutral wire:
 
 - endpoint defaults `https://api.deepseek.com/chat/completions` with Bearer
-  auth and user agent `simplex-cpp/deepseek`; models `deepseek-v4-flash` and
-  `deepseek-v4-pro` (the experimental `deepseek-v4-flash-vision-exp` image
-  model works through the adapter's input-image content parts unchanged);
+  auth and user agent `simplex-cpp/deepseek`; the advertised model choices are
+  `deepseek-flash` and `deepseek-v4-pro`;
 - thinking mode: the dialect always emits `thinking` — `enabled` by default,
   `disabled` when the effort is `none`/`minimal` — unless the config already
   carries a native `thinking` object, which passes through verbatim;
-- `reasoning_effort` passes through verbatim: live 2026-08 the server accepts
-  `none|minimal|low|medium|high|xhigh|max` and rejects anything else with a
-  400 that enumerates the vocabulary, so an invalid value fails loudly at
-  the server instead of being silently reshaped;
+- `reasoning_effort` passes through verbatim for trusted in-process generation
+  settings. The current [Chat Completions API reference](https://api-docs.deepseek.com/api/create-chat-completion/)
+  lists `none|low|high|max`; remotely configurable provider options expose
+  `low|high|max`. Unsupported values fail at the provider rather than being
+  silently reshaped by the adapter;
 - `n` is rejected server-side ("currently only n = 1 is supported", live
   2026-08) and the deprecated no-op `frequency_penalty`/
   `presence_penalty` are stripped from every request;
@@ -527,7 +527,7 @@ the neutral wire:
 ```json
 {
   "provider": "deepseek",
-  "model": "deepseek-v4-flash",
+  "model": "deepseek-flash",
   "endpoint": { "auth": { "api_key": "${DEEPSEEK_API_KEY}" } },
   "reasoning": { "effort": "high" },
   "temperature": 0.3

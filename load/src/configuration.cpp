@@ -136,10 +136,10 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
 
     const auto& client = object(document, "client");
     result.client = websocket_endpoint(text(client, "endpoint"));
-    result.queues.payload_capacity = number(client, "payload_capacity", 64);
-    result.queues.signal_capacity = number(client, "signal_capacity", 64);
+    result.queues.payload_capacity = number(client, "payload_capacity", 256);
+    result.queues.signal_capacity = number(client, "signal_capacity", 256);
     const auto& transport = object(client, "transport");
-    result.transport.write_capacity = number(transport, "write_capacity", 64);
+    result.transport.write_capacity = number(transport, "write_capacity", 256);
     result.transport.initial_backoff = std::chrono::milliseconds(number(transport, "initial_backoff_ms", 250));
     result.transport.max_backoff = std::chrono::milliseconds(number(transport, "max_backoff_ms", 10000));
     result.transport.idle_timeout = std::chrono::seconds(number(transport, "idle_timeout_seconds", 0, true));
@@ -152,8 +152,8 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
         result.confirmation_timeout = std::chrono::milliseconds(number(confirmation, "timeout_ms", 120000));
     }
     const auto& worker = object(document, "worker");
-    result.event_capacity = number(worker, "event_capacity", 256);
-    result.max_exchanges = number(worker, "max_exchanges", 12);
+    result.event_capacity = number(worker, "event_capacity", 1024);
+    result.max_exchanges = number(worker, "max_exchanges", 512);
     result.system_prompt = text(worker, "system_prompt", result.system_prompt);
     const auto& storage = object(document, "persistence");
     result.persistence = flag(storage, "enabled", true);

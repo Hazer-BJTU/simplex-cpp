@@ -19,8 +19,8 @@ struct Configuration {
     intercom::StableWebSocketOptions transport;
     std::optional<endpoint::ResolvedEndpoint> confirmation;
     std::chrono::milliseconds confirmation_timeout{120000};
-    std::size_t event_capacity = 256;
-    std::size_t max_exchanges = 12;
+    std::size_t event_capacity = 1024;
+    std::size_t max_exchanges = 512;
     std::string system_prompt = "You are a helpful assistant. Follow the available tool guidance.";
     bool persistence = true;
     std::filesystem::path storage;

@@ -19,8 +19,8 @@ security:
     endpoint: ws://127.0.0.1:8765/agent/confirm
     timeout_ms: 120000
 worker:
-  max_exchanges: 12
-  event_capacity: 256
+  max_exchanges: 512
+  event_capacity: 1024
   system_prompt: You are a helpful assistant. Follow the available tool guidance.
 persistence:
   directory: ./data/sessions

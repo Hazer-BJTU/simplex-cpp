@@ -1,7 +1,7 @@
 # Startup configuration
 
 `load` defines the process startup configuration in
-[`config.example.yaml`](config.example.yaml). The plugin loading stage is
+[`config.example.yaml`](schemas/config.example.yaml). The plugin loading stage is
 implemented: it reads YAML, discovers provider modules, and constructs selected
 dynamic toolsets and loop hooks. Explicit JSON snapshot IO and Markdown session
 export are also implemented. The core worker now consumes the full startup
@@ -169,8 +169,9 @@ snapshots; Markdown export is selected explicitly through this API.
 
 ## Template and installation
 
-CMake copies the template unchanged to `<build>/bin/config.example.yaml` and
-installs it as `<prefix>/bin/config.example.yaml`. Copy it to a deployment's
+CMake copies `load/schemas/config.example.yaml` unchanged to
+`<build>/bin/config.example.yaml` and installs it as
+`<prefix>/bin/config.example.yaml`. Copy it to a deployment's
 `config.yaml`, set its client endpoint, and supply the referenced credentials.
 The installer never writes an active `config.yaml`. The example's model and
 endpoint values are illustrative, not host defaults or a service availability
@@ -316,9 +317,9 @@ headers and TLS overrides are not exposed by this template.
 
 | Field | Default | Constraint / behavior |
 | --- | --- | --- |
-| `payload_capacity` | `64` | Positive integer; queued incoming payloads. |
-| `signal_capacity` | `64` | Positive integer; queued incoming signals. |
-| `transport.write_capacity` | `64` | Positive integer; queued outgoing messages. |
+| `payload_capacity` | `256` | Positive integer; queued incoming payloads. |
+| `signal_capacity` | `256` | Positive integer; queued incoming signals. |
+| `transport.write_capacity` | `256` | Positive integer; queued outgoing messages. |
 | `transport.initial_backoff_ms` | `250` | Positive integer milliseconds. |
 | `transport.max_backoff_ms` | `10000` | Integer milliseconds, at least the initial delay. |
 | `transport.idle_timeout_seconds` | `0` | Nonnegative integer seconds; zero disables idle timeout. |
@@ -389,7 +390,7 @@ client.endpoint; the timeout invalidates approval across the whole exchange.
 It is not a hard bound on return latency: an already-running system DNS backend
 may delay completion and shutdown until it returns. Late results remain denied.
 
-worker.max_exchanges defaults to 12, event_capacity to 256, and system_prompt
+worker.max_exchanges defaults to 512, event_capacity to 1024, and system_prompt
 to a general assistant prompt. The prompt applies only to new sessions.
 persistence.readable defaults to false and enables an additional Markdown
 export. JSON remains authoritative. See core for safety checkpoints, cancellation

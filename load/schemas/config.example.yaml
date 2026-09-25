@@ -1,6 +1,6 @@
 # Startup configuration for simplex_worker.
 # load::read_configuration validates host settings; load_plugins handles discovery.
-# See README.md for defaults, compatibility rules, and lifecycle semantics.
+# See load/README.md in the source tree for defaults and lifecycle semantics.
 # Copy this example to config.yaml before editing it for a deployment.
 # Explicit relative paths are relative to that configuration file's directory.
 # No version field is required. Unknown host fields are ignored.
@@ -65,12 +65,12 @@ providers:
       extras: {}
 
     # Required nonempty provider model name for an instantiated configuration.
-    model: deepseek-v4-flash
+    model: deepseek-flash
     # Provider-specific generation options, passed through to the model plugin.
     # Do not repeat endpoint, provider, model, or retry inside this mapping.
     config:
       reasoning:
-        effort: medium
+        effort: high
 
     retry:
       # Maximum retries AFTER the first attempt; zero means no retries.
@@ -89,12 +89,12 @@ client:
   # Replace this placeholder with the actual server endpoint.
   endpoint: ws://127.0.0.1:8765/agent/events
   # Positive incoming queue capacities, measured in complete JSON messages.
-  payload_capacity: 64
-  signal_capacity: 64
+  payload_capacity: 256
+  signal_capacity: 256
   transport:
     # Positive outgoing queue capacity, measured in complete messages.
     # Queue admission does not acknowledge delivery to the peer.
-    write_capacity: 64
+    write_capacity: 256
     initial_backoff_ms: 250
     max_backoff_ms: 10000
     # Zero disables idle timeout. Positive values enable idle ping/deadline.
@@ -109,9 +109,9 @@ security:
     timeout_ms: 120000
 
 worker:
-  max_exchanges: 12
+  max_exchanges: 512
   # Bounded host event queue. Overflow safely stops the worker.
-  event_capacity: 256
+  event_capacity: 1024
   # Used only for a new session; restored prompts are retained.
   system_prompt: You are a helpful assistant. Follow the available tool guidance.
 

@@ -3,7 +3,7 @@ target_link_libraries(test_load_plugins PRIVATE
     load_lib yamlconfig_iface Boost::unit_test_framework)
 set_target_properties(test_load_plugins PROPERTIES ENABLE_EXPORTS ON)
 target_compile_definitions(test_load_plugins PRIVATE
-    LOAD_TEMPLATE="${PROJECT_SOURCE_DIR}/load/config.example.yaml"
+    LOAD_TEMPLATE="${PROJECT_SOURCE_DIR}/load/schemas/config.example.yaml"
     LOAD_OPENAI_MODULE="$<TARGET_FILE:llm_openai>"
     LOAD_DEEPSEEK_MODULE="$<TARGET_FILE:llm_deepseek>"
     LOAD_TOOL_MODULE="$<TARGET_FILE:tools_extension_noop>"

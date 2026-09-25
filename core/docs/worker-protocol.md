@@ -45,10 +45,10 @@ fragment; provider/model configuration is also required to start a worker:
 ```yaml
 client:
   endpoint: wss://hub.example.com/agent/events
-  payload_capacity: 64
-  signal_capacity: 64
+  payload_capacity: 256
+  signal_capacity: 256
   transport:
-    write_capacity: 64
+    write_capacity: 256
     initial_backoff_ms: 250
     max_backoff_ms: 10000
     idle_timeout_seconds: 0
@@ -57,8 +57,8 @@ security:
     endpoint: wss://hub.example.com/agent/confirm
     timeout_ms: 120000
 worker:
-  event_capacity: 256
-  max_exchanges: 12
+  event_capacity: 1024
+  max_exchanges: 512
 persistence:
   enabled: true
   directory: ./data/sessions
