@@ -8,6 +8,7 @@
 #include <atomic>
 #include <algorithm>
 #include <fstream>
+#include <iterator>
 #include <thread>
 #include <unistd.h>
 
@@ -57,6 +58,7 @@ void scenario(Mode mode) {
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
     config.directory = scratch.root;
+    config.provider = "fixture";
     config.document = Json::object();
     config.client = load::websocket_endpoint("ws://127.0.0.1:"
         + std::to_string(acceptor.local_endpoint().port()) + "/events");
@@ -176,6 +178,11 @@ sections:
             BOOST_REQUIRE(state.system_prompt.contains("persona"));
             BOOST_TEST(state.system_prompt.find("persona")->text == "Initial instructions.");
             BOOST_TEST(state.system_prompt.contains("status"));
+            const auto& signature = *std::prev(state.system_prompt.end());
+            BOOST_TEST(signature.name == "signature.runtime");
+            BOOST_TEST(signature.title.empty());
+            BOOST_TEST(signature.text.find("Welcome to simplex ") == 0u);
+            BOOST_TEST(signature.text.find("Hello, fixture!") != std::string::npos);
             const auto environment = state.system_prompt.find("environment.runtime");
             BOOST_REQUIRE(environment != state.system_prompt.end());
             BOOST_CHECK(environment->stability == model_io::SectionStability::Volatile);
@@ -209,6 +216,7 @@ sections:
         // Both replacement and removal must discard the snapshot's old hints.
         for (const bool clear : {false, true}) {
             io.restart();
+            config.provider = "restored-provider";
             config.environment = {};
             if (!clear) config.environment.platform = "Replacement platform";
             core::Application restored(io.get_executor(), config, "test", model);
@@ -219,6 +227,10 @@ sections:
             restart.get();
             const auto snapshot = load::load_state(config.storage / "test/state.json");
             BOOST_TEST(snapshot.turns.size() == 2u);
+            const auto& signature = *std::prev(snapshot.system_prompt.end());
+            BOOST_TEST(signature.name == "signature.runtime");
+            BOOST_TEST(signature.title.empty());
+            BOOST_TEST(signature.text.find("Hello, restored-provider!") != std::string::npos);
             BOOST_TEST(snapshot.system_prompt.find("persona")->text == "Initial instructions.");
             const auto environment = snapshot.system_prompt.find("environment.runtime");
             if (clear) {
@@ -250,6 +262,7 @@ BOOST_AUTO_TEST_CASE(startup_failure_releases_ownership_while_application_surviv
     asio::io_context io;
     load::Configuration config;
     config.directory = scratch.root;
+    config.provider = "fixture";
     config.document = Json::object();
     config.client = load::websocket_endpoint("ws://127.0.0.1:1/events");
     config.storage = scratch.root / "sessions";
@@ -300,6 +313,7 @@ void options_scenario(Json choices, bool fail = false) {
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
     config.directory = scratch.root;
+    config.provider = "fixture";
     config.document = Json::object();
     config.persistence = false;
     config.client = load::websocket_endpoint(
@@ -467,6 +481,7 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
     config.directory = scratch.root;
+    config.provider = "fixture";
     config.document = Json::object();
     config.persistence = false;
     config.client = load::websocket_endpoint(

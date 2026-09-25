@@ -1,4 +1,5 @@
 #include "core/application.hpp"
+#include "versioning/version.hpp"
 #include "fileio/session_lock.hpp"
 #include "core/confirmation.hpp"
 #include "core/protocol.hpp"
@@ -302,7 +303,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             state.system_prompt = std::move(config.system_prompt);
         }
         state.tools = registry.get_tools();
-        // Skills and environment.runtime are host-owned. Rebuild at startup:
+        // Skills, environment.runtime, and signature.runtime are host-owned.
         // replace old host sections and place skills and runtime hints before
         // Volatile sections without modifying any historical conversation record.
         model_io::PromptTemplate prompt;
@@ -310,6 +311,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         for (const auto& section : state.system_prompt) {
             if (!section.name.starts_with("skill.")
                 && section.name != "environment.runtime"
+                && section.name != "signature.runtime"
                 && section.stability != model_io::SectionStability::Volatile)
                 prompt.add_section(section.name, section.title, section.text, section.stability);
         }
@@ -318,9 +320,21 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         for (const auto& section : state.system_prompt) {
             if (!section.name.starts_with("skill.")
                 && section.name != "environment.runtime"
+                && section.name != "signature.runtime"
                 && section.stability == model_io::SectionStability::Volatile)
                 prompt.add_section(section.name, section.title, section.text, section.stability);
         }
+        // A decorative footer only; always last and refreshed on restore.
+        std::string signature = "Welcome to simplex ";
+        signature += simplex::VERSION_STRING;
+        signature += ". Hello, " + (config.provider.empty() ? std::string("provider") : config.provider);
+        signature += "! May your tasks go smoothly.";
+        prompt.add_section(
+            "signature.runtime",
+            "",
+            signature,
+            model_io::SectionStability::Volatile
+        );
         state.system_prompt = std::move(prompt);
     }
 

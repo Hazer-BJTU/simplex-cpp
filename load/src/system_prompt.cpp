@@ -27,8 +27,9 @@ model_io::PromptTemplate read_system_prompt(const std::filesystem::path& file) {
                 throw std::invalid_argument("each section must be a mapping");
             }
             const auto name = section.at("name").get<std::string>();
-            if (name.empty() || name.starts_with("skill.") || name == "environment.runtime") {
-                throw std::invalid_argument("section names must be nonempty; skill.* and environment.runtime are reserved");
+            if (name.empty() || name.starts_with("skill.")
+                || name == "environment.runtime" || name == "signature.runtime") {
+                throw std::invalid_argument("section names must be nonempty; skill.*, environment.runtime, and signature.runtime are reserved");
             }
             const auto title = section.value("title", std::string{});
             const auto text = section.at("text").get<std::string>();

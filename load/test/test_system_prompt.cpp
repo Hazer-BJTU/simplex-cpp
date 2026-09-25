@@ -78,7 +78,7 @@ BOOST_AUTO_TEST_CASE(malformed_or_missing_prompt_files_fail_with_filename_contex
         invalid.push_back(document);
     }
     for (const auto& patch : std::vector<Json>{
-        {{"name", "environment.runtime"}}, {{"name", ""}}, {{"name", "skill.process"}}, {{"name", nullptr}},
+        {{"name", "signature.runtime"}}, {{"name", "environment.runtime"}}, {{"name", ""}}, {{"name", "skill.process"}}, {{"name", nullptr}},
         {{"text", 1}}, {{"text", nullptr}}, {{"stability", "typo"}},
         {{"stability", nullptr}}, {{"title", false}}
     }) {

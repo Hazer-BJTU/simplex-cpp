@@ -55,7 +55,7 @@ Configuration read_configuration(const std::filesystem::path& file);
 /**
  * Read and validate a standalone PromptTemplate YAML document synchronously.
  * Required sections are ordered immutable, growing, then volatile; names must
- * be unique and nonempty. The skill.* namespace and environment.runtime name are host-owned.
+ * be unique and nonempty. The skill.* namespace, environment.runtime, and signature.runtime are host-owned.
  * Unknown fields are tolerated, but malformed known fields are rejected. Empty
  * sections are permitted. Errors include the filename; no fallback is applied.
  */

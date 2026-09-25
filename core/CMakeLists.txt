@@ -12,7 +12,7 @@ set_target_properties(core_protocol PROPERTIES OUTPUT_NAME simplex_core_protocol
 add_library(core_lib SHARED src/application.cpp src/confirmation.cpp)
 target_include_directories(core_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(core_lib PUBLIC core_protocol load_lib loop_lib intercom_exchange)
-target_link_libraries(core_lib PRIVATE fileio_lib tools_intrinsic_process async_eventbus_iface loop_intrinsic_context_statistic)
+target_link_libraries(core_lib PRIVATE simplex_versioning fileio_lib tools_intrinsic_process async_eventbus_iface loop_intrinsic_context_statistic)
 set_target_properties(core_lib PROPERTIES OUTPUT_NAME simplex_core)
 add_executable(simplex_worker src/main.cpp)
 target_link_libraries(simplex_worker PRIVATE core_lib Boost::program_options)

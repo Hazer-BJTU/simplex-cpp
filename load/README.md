@@ -443,7 +443,7 @@ a unique, nonempty string `name` and string `text`. `title` defaults to an empty
 string (no heading), and `stability` defaults to `immutable`. Sections must be
 ordered by stability: `immutable`, then `growing`, then `volatile`. Duplicate
 names, unknown stability values, wrong field types, and names beginning with
-`skill.` or equal to `environment.runtime` are rejected. These names are reserved
+`skill.` or equal to `environment.runtime` / `signature.runtime` are rejected. These names are reserved
 for host-injected skills and runtime environment hints.
 Unknown additional fields are tolerated. The existing PromptTemplate text
 normalization and Markdown rendering rules apply; prompt text does not undergo
@@ -490,3 +490,9 @@ current configuration, including when restoring a session. It is Volatile and
 appears after tool skills, before user-defined Volatile sections. Empty settings
 remove any old section without adding a new one. The section is saved with the
 session, is not hot-reloaded, and remains editable through existing loop hooks.
+
+The worker appends a short, untitled `signature.runtime` Volatile section after
+all other sections: a simplex version welcome, a greeting to the configured
+provider, and a wish for successful tasks. This decorative footer is regenerated
+at startup, including on restore, using the current build version and provider.
+It is host-owned and cannot be declared in a role YAML file.
