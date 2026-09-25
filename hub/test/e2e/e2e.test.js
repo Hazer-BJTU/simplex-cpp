@@ -17,17 +17,10 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { hubRoot } from '../../src/config.js';
 import { persistenceRoot, sessionDir } from '../../src/launch/config-render.js';
+import { WORKER_BIN, PROMPTS_DIR, e2eSkip, startE2eHub } from '../helpers/e2e.js';
 import { connectWorker, until } from '../helpers/worker.js';
-import { startTestHub } from '../helpers/hub.js';
 
-const repoRoot = join(hubRoot, '..');
-const WORKER_BIN = process.env.SIMPLEX_WORKER_BIN ?? join(repoRoot, 'build/bin/simplex_worker');
-const PROMPTS_DIR = process.env.SIMPLEX_PROMPTS_DIR ?? join(repoRoot, 'build/bin/prompts');
-const promptFile = join(PROMPTS_DIR, 'coding_agent.yaml');
-const available = existsSync(WORKER_BIN) && existsSync(promptFile);
-const skip = available
-    ? false
-    : `real worker not built: ${WORKER_BIN} / ${promptFile}`;
+const skip = e2eSkip;
 
 /** Fetch JSON from a hub base URL. */
 async function api(base, path, options = {}) {
@@ -94,17 +87,7 @@ function waitForExit(child, timeoutMs = 10000) {
 
 describe('end to end with the real worker', { skip }, () => {
     it('runs a tool call, asks for confirmation, and completes', { timeout: 180000 }, async () => {
-        const ctx = await startTestHub({
-            worker: {
-                bin: WORKER_BIN,
-                promptsDir: PROMPTS_DIR,
-                threads: 2,
-                confirmationTimeoutMs: 60000,
-                stopTimeoutMs: 20000,
-                persistence: { enabled: true, readable: true },
-            },
-            mock: { enabled: true },
-        });
+        const ctx = await startE2eHub();
         const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
         try {
             const created = await api(ctx.base, '/api/sessions', {
