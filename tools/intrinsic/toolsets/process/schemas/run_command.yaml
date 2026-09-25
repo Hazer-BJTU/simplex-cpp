@@ -8,10 +8,12 @@ description: >-
   pipelines, redirections, variable expansion and globs; supported syntax depends
   on the selected shell. Use spawn_process for a program with literal arguments.
   Wait up to expected_runtime_milliseconds for the child to exit; expiration
-  leaves it running. A successful launch returns a session_id, including when
-  the child has already exited. If finished is true, the result includes
+  leaves it running. A successful launch returns a session_id for correlation. If finished is true, the result includes
   captured output; check output_complete and truncation markers before treating
   it as complete. Continue with poll_process, read_process or send_process.
+  With auto_release (default true), an initially finished child with complete
+  output capture is released after collecting its output. Check released before
+  using the session_id again; released sessions cannot be read or polled.
 
 type: serial_write
 security: require_confirm
@@ -48,6 +50,15 @@ argument_schema:
       description: >-
         Inherit the host's environment before applying environment entries.
         Default: true. False starts with only the supplied entries.
+    auto_release:
+      type: boolean
+      default: true
+      description: >-
+        Release the session after initial completion and complete output capture,
+        after copying output into this result. Default: true, including nonzero
+        exit codes. False retains it for later reads. No automatic release occurs
+        when the initial wait is skipped, expires, or output capture is incomplete;
+        those sessions require manual release. Check the returned released flag.
     expected_runtime_milliseconds:
       type: integer
       minimum: 0

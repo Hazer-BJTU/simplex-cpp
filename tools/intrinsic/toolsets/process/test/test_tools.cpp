@@ -1185,6 +1185,7 @@ BOOST_AUTO_TEST_CASE(settling_materializes_the_defaults_into_the_query)
           {"description", ""},
           {"environment", nlohmann::json::array()},
           {"inherit_environment", true},
+          {"auto_release", true},
           {"expected_runtime_milliseconds",
            tools::intrinsic::SpawnProcessTool::kDefaultExpectedRuntimeMilliseconds}}},
         {tool_names::kRun,
@@ -1192,6 +1193,7 @@ BOOST_AUTO_TEST_CASE(settling_materializes_the_defaults_into_the_query)
          {{"command", "ls /tmp"},
           {"environment", nlohmann::json::array()},
           {"inherit_environment", true},
+          {"auto_release", true},
           {"expected_runtime_milliseconds",
            tools::intrinsic::RunCommandTool::kDefaultExpectedRuntimeMilliseconds}}},
         {tool_names::kPoll,
@@ -1414,7 +1416,7 @@ BOOST_AUTO_TEST_CASE(spawn_returns_the_whole_result_for_a_quick_command)
         std::string(tool_names::kSpawn),
         nlohmann::json{{"executable", "echo"},
                        {"arguments", nlohmann::json::array({"quick"})},
-                       {"description", "a quick command"}}));
+                       {"description", "a quick command"}, {"auto_release", false}}));
 
     const ResultText result = f.result_of(record);
     BOOST_TEST(!result.field("session_id").empty());
@@ -1458,6 +1460,7 @@ BOOST_AUTO_TEST_CASE(spawn_hands_back_a_session_for_a_program_that_keeps_running
     const ResultText result = f.result_of(record);
     BOOST_TEST(!result.field("session_id").empty());
     BOOST_TEST(result.field("finished") == "false");
+    BOOST_TEST(result.field("released") == "false");
     BOOST_TEST(result.field("state") == "running");
     BOOST_TEST(std::stoi(result.field("pid")) > 0);
     // Still running, so there is no exit code and no output slice the caller
@@ -1481,6 +1484,7 @@ BOOST_AUTO_TEST_CASE(a_zero_window_returns_a_session_without_waiting)
 
     const ResultText result = f.result_of(record);
     BOOST_TEST(result.field("finished") == "false");
+    BOOST_TEST(result.field("released") == "false");
     BOOST_TEST(result.field("state") == "running");
 }
 
@@ -1533,6 +1537,7 @@ BOOST_AUTO_TEST_CASE(run_command_hints_how_to_follow_a_command_that_outlives_its
     const ResultText result = f.result_of(record);
     const std::string id = result.field("session_id");
     BOOST_TEST(result.field("finished") == "false");
+    BOOST_TEST(result.field("released") == "false");
     BOOST_TEST(result.field("state") == "running");
     BOOST_TEST(result.field("description") == "sleep 30");
     // No exit code line and no output slice: there is no result yet, and a
@@ -1571,6 +1576,7 @@ BOOST_AUTO_TEST_CASE(a_zero_window_run_command_starts_in_the_background_at_once)
 
     const ResultText result = f.result_of(record);
     BOOST_TEST(result.field("finished") == "false");
+    BOOST_TEST(result.field("released") == "false");
     BOOST_TEST(result.field("state") == "running");
     const std::string hint = result.field("hint");
     BOOST_TEST(hint.find("without waiting") != std::string::npos);
@@ -1813,6 +1819,8 @@ BOOST_AUTO_TEST_CASE(a_spawn_that_finishes_with_an_incomplete_capture_says_so)
     BOOST_TEST(result.field("finished") == "true");
     BOOST_TEST(result.field("output_complete") == "false");
     BOOST_TEST(result.field("state") == "exited");
+    BOOST_TEST(result.field("released") == "false");
+    BOOST_TEST(f.run(f.store->snapshot(result.field("session_id"))).has_value());
     // The hint names the way to the rest of the output.
     BOOST_TEST(result.field("hint").find("poll_process") != std::string::npos);
 }
@@ -2140,7 +2148,7 @@ BOOST_AUTO_TEST_CASE(spawn_honours_the_working_directory_and_environment)
 
     const std::string id = f.result_of(f.call(call_for(
         std::string(tool_names::kSpawn),
-        nlohmann::json{{"executable", "pwd"},
+        nlohmann::json{{"executable", "pwd"}, {"auto_release", false},
                        {"arguments", nlohmann::json::array({"-P"})},
                        {"working_directory", temp}}))).field("session_id");
     const ResultText waited = wait_through_tool(f, id, 5000, true);
@@ -2150,7 +2158,7 @@ BOOST_AUTO_TEST_CASE(spawn_honours_the_working_directory_and_environment)
     const std::string env_id = f.result_of(f.call(call_for(
         std::string(tool_names::kSpawn),
         nlohmann::json{
-            {"executable", "sh"},
+            {"executable", "sh"}, {"auto_release", false},
             {"arguments", nlohmann::json::array({"-c", "printf %s \"$MARKER\""})},
             {"environment",
              nlohmann::json::array({"MARKER=sentinel-value"})}}))).field("session_id");
@@ -2261,4 +2269,53 @@ BOOST_AUTO_TEST_CASE(an_unconfirmed_state_change_is_refused)
     const auto poll_tool = f.prepare(poll);
     BOOST_CHECK(poll.security == model_io::InvokeSecurity::Trusted);
     BOOST_TEST(!tools::is_error(f.run(f.set->execute(poll_tool, poll))));
+}
+
+BOOST_AUTO_TEST_CASE(initial_completion_releases_by_default_for_both_launchers)
+{
+    for (const auto name : {tool_names::kSpawn, tool_names::kRun}) {
+        for (const int exit_code : {0, 7}) {
+            for (const auto option : {nlohmann::json(nullptr), nlohmann::json(true), nlohmann::json(false)}) {
+                Fixture f;
+                const std::string command = "printf output; printf error >&2; exit " + std::to_string(exit_code);
+                nlohmann::json arguments = name == tool_names::kRun
+                    ? nlohmann::json{{"command", command}}
+                    : nlohmann::json{{"executable", "/bin/sh"}, {"arguments", {"-c", command}}};
+                arguments["expected_runtime_milliseconds"] = 5000;
+                if (!option.is_null()) arguments["auto_release"] = option;
+                const auto record = f.call(call_for(std::string(name), arguments));
+                const auto result = f.result_of(record);
+                const bool release = option.is_null() || option.get<bool>();
+                BOOST_TEST(record.query.arguments.at("auto_release") == release);
+                BOOST_TEST(result.field("released") == (release ? "true" : "false"));
+                BOOST_TEST(result.field("exit_code") == std::to_string(exit_code));
+                BOOST_TEST(result.block("stdout") == "output");
+                BOOST_TEST(result.block("stderr") == "error");
+                const auto id = result.field("session_id");
+                BOOST_TEST(f.run(f.store->size()) == (release ? 0u : 1u));
+                const auto read = f.call(call_for(std::string(tool_names::kRead), {{"session_id", id}}));
+                BOOST_TEST(tools::is_error(read) == release);
+                if (release) {
+                    BOOST_TEST(!result.has("hint"));
+                } else {
+                    BOOST_TEST(f.result_of(read).block("stdout") == "output");
+                }
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(auto_release_is_a_boolean_for_both_launchers)
+{
+    Fixture f;
+    for (const auto name : {tool_names::kSpawn, tool_names::kRun}) {
+        for (const auto invalid : {nlohmann::json("true"), nlohmann::json(1), nlohmann::json::array()}) {
+            auto arguments = name == tool_names::kRun
+                ? nlohmann::json{{"command", "true"}}
+                : nlohmann::json{{"executable", "true"}};
+            arguments["auto_release"] = invalid;
+            const auto record = f.call(call_for(std::string(name), arguments));
+            BOOST_CHECK(tools::error_stage(record) == InvokeException::Stage::ArgumentParse);
+        }
+    }
 }

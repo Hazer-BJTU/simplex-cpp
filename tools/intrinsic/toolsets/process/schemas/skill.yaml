@@ -39,8 +39,11 @@ text: |
      or to 0 to return without waiting. This is a wait setting, not a runtime
      limit: expiration leaves the child running. After an observed exit, the
      call may spend up to another such window draining output.
-  2. Inspect the result. Successful launches retain a session even if the child
-     exits immediately. `finished: true` means exit was observed during the
+  2. Inspect the result. With `auto_release: true` (default), a session is
+     released after initial completion and complete capture, once output is
+     copied into the result. `released: true` means no follow-up is needed and
+     the ID is no longer usable. Set `auto_release: false` to retain the session.
+     `finished: true` means exit was observed during the
      initial wait; `output_complete: true` additionally means capture finished.
      If both are true, no further wait is needed. If output capture is still
      incomplete, keep the session and use `poll_process` to wait for it.
@@ -54,7 +57,8 @@ text: |
   4. Collect output. Poll includes new stdout and stderr by default. Use
      `read_process` for output while work continues, for one stream, or with
      `full: true` to review all retained output.
-  5. Once the needed output is collected, release the session with
+  5. For retained sessions (`released: false`), collect the needed output, then
+     release the session with
      `read_process` and `release: true`, or `poll_process` and
      `release_exited: true`. Release requires child exit, but does NOT require
      output capture to be complete. Check completion before releasing if later
@@ -112,7 +116,9 @@ text: |
     `include_output: false` checks status without reading output.
   - `full: true` reads retained output without advancing cursors. Output included
     in a launch result also leaves cursors unchanged, so the first incremental
-    read may repeat it. Reading does not delete captured output.
+    read may repeat it when `auto_release: false`. Reading does not delete
+    captured output. Automatic release applies only to the initial launch call,
+    never to background completion.
   - Capture has a size limit. A truncation marker means some output was not
     retained; `full: true` cannot recover it. `output_complete` describes whether
     capture has ended, not whether every byte was retained.

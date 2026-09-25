@@ -388,7 +388,7 @@ struct Fixture {
             std::string(tool_names::kSpawn),
             nlohmann::json{{"executable", std::move(executable)},
                            {"arguments", std::move(arguments)},
-                           {"expected_runtime_milliseconds", window}},
+                           {"expected_runtime_milliseconds", window}, {"auto_release", false}},
             std::move(id)));
         return result_of(record).field("session_id");
     }
@@ -511,16 +511,12 @@ BOOST_AUTO_TEST_CASE(a_quick_command_finishes_inside_its_spawn_window)
     BOOST_TEST(result.field("exit_code") == "0");
     BOOST_TEST(result.block("stdout") == "done already\n");
 
-    // The session is kept, so the release is a call of its own — a ReadOnly
-    // one, because removing a table entry is this layer's own bookkeeping and
-    // nothing outside the host changes.
-    const std::string id = result.field("session_id");
-    const auto released = f.call(call_for(
+    // Default release happens after output was copied into the launch result.
+    BOOST_TEST(result.field("released") == "true");
+    const auto read = f.call(call_for(
         std::string(tool_names::kRead),
-        nlohmann::json{{"session_id", id}, {"full", true}, {"release", true}},
-        "call_release"));
-    BOOST_CHECK(released.query.type == model_io::InvokeType::ReadOnly);
-    BOOST_TEST(result_of(released).field("released") == "true");
+        {{"session_id", result.field("session_id")}}, "call_read"));
+    BOOST_CHECK(tools::is_error(read));
 }
 
 BOOST_AUTO_TEST_CASE(a_command_line_runs_through_its_shell_at_the_registry_boundary)
@@ -543,6 +539,7 @@ BOOST_AUTO_TEST_CASE(a_command_line_runs_through_its_shell_at_the_registry_bound
                    {{"command", line},
                     {"environment", nlohmann::json::array()},
                     {"inherit_environment", true},
+                    {"auto_release", true},
                     {"expected_runtime_milliseconds",
                      tools::intrinsic::RunCommandTool::
                          kDefaultExpectedRuntimeMilliseconds}}));

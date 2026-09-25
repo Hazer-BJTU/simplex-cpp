@@ -65,7 +65,8 @@
 // strengths, answered the same way and refused for the same reason, so
 // `send_process` carries all three rather than making a model pick the right
 // verb for "please stop". Reaping is not a tool either —
-// it is a flag on the two reading tools (`release` / `release_exited`),
+// launchers auto-release complete initial results by default; retained sessions
+// use flags on the reading tools (`release` / `release_exited`),
 // because the moment a caller has read a dead child's last output is exactly
 // the moment its session becomes garbage, and a separate call would just be a
 // step to forget.
@@ -245,7 +246,7 @@ protected:
     ///                     Environment stage — a failure that would reach the
     ///                     model as a launch that went wrong when it is really
     ///                     the model's own argument to fix.
-    ///   inherit_environment, expected_runtime_milliseconds
+    ///   inherit_environment, auto_release, expected_runtime_milliseconds
     ///                     settled at their defaults, @p default_window being
     ///                     the tool's own constant (5000 for a program, 3000 for
     ///                     a command line) so each schema can state its own
@@ -288,8 +289,12 @@ protected:
     ///        out — the one part of the answer that depends on what the caller
     ///        asked for, since "still running" reads differently to a model that
     ///        ran a shell command line than to one that started a program.
+    /// @param auto_release release after an initially observed exit only when
+    ///        output capture is complete and its contents have been copied into
+    ///        the result. Nonzero exit codes also qualify. No deferred release
+    ///        is scheduled for background work or incomplete output capture.
     boost::asio::awaitable<model_io::Content> launch_and_report(
-        process::LaunchSpec spec, std::string still_running_hint);
+        process::LaunchSpec spec, std::string still_running_hint, bool auto_release);
 
     StorePtr _store;
 };

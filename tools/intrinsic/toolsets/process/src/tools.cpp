@@ -185,6 +185,7 @@ void ProcessToolBase::settle_launch_arguments(model_io::InvokeQuery& query,
     }
 
     (void)settle_bool(query, "inherit_environment", true);
+    (void)settle_bool(query, "auto_release", true);
     (void)settle_uint(query, "expected_runtime_milliseconds", default_window);
 
     // working_directory is validated here and left as it came: see the header
@@ -225,7 +226,7 @@ void ProcessToolBase::apply_launch_arguments(const model_io::InvokeQuery& query,
 }
 
 boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
-    process::LaunchSpec spec, std::string still_running_hint)
+    process::LaunchSpec spec, std::string still_running_hint, bool auto_release)
 {
     try {
         const SpawnResult spawned = co_await _store->spawn(std::move(spec));
@@ -237,6 +238,7 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
             // with the id alone is still a usable result.
             ToolResult lone;
             lone.field("session_id", spawned.id);
+            lone.field("released", false);
             co_return lone.render();
         }
 
@@ -255,6 +257,7 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
             // output would be a partial slice the caller did not ask for, and
             // what to do about it is the caller's own sentence (the hint its
             // tool passed in).
+            result.field("released", false);
             result.field("hint", std::move(still_running_hint));
             co_return result.render();
         }
@@ -264,8 +267,8 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
         // The FULL capture, and read with full=true so the delta cursor is left
         // alone — a later read still reports everything, and nothing is
         // silently consumed here.
-        if (const std::optional<OutputRead> read = co_await _store->read_output(
-                spawned.id, OutputStream::Both, true)) {
+        const auto read = co_await _store->read_output(spawned.id, OutputStream::Both, true);
+        if (read) {
             // Verbatim, both streams, even when a stream printed nothing: the
             // caller asked for the output, and "stderr: (empty)" is part of
             // the answer.
@@ -274,9 +277,15 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
             result.block("stderr", read->standard_error.text,
                          read->standard_error.truncated);
         }
-        // The session is kept, not reaped: its output stays readable, and the
-        // caller decides when to let it go. Saying so beats a caller assuming
-        // either way.
+        // Retain sessions whose descendants may still produce output. Automatic
+        // release is scoped to this initial call; background completion never
+        // schedules a later release. Copy the captured output before removal.
+        const bool released = auto_release && spawned.output_drained && read
+            && co_await _store->release(spawned.id);
+        result.field("released", released);
+        if (released) {
+            co_return result.render();
+        }
         if (!spawned.output_drained) {
             // The one case where "finished" alone would mislead: the text
             // above is what has arrived SO FAR. The usual cause is a child
@@ -350,7 +359,8 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
         std::move(spec),
         std::format(
             "Still running; use {} to wait or {} for output.",
-            tool_names::kPoll, tool_names::kRead));
+            tool_names::kPoll, tool_names::kRead),
+        optional_bool(query, "auto_release", true));
 }
 
 // ---- run_command ------------------------------------------------------------
@@ -422,7 +432,8 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
             ? std::format("Started without waiting.{}", tail)
             : std::format("Still running after {} ms; not killed.{}", window, tail);
 
-    co_return co_await launch_and_report(std::move(spec), std::move(hint));
+    co_return co_await launch_and_report(
+        std::move(spec), std::move(hint), optional_bool(query, "auto_release", true));
 }
 
 // ---- poll_process -----------------------------------------------------------

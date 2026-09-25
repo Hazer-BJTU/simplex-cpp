@@ -55,12 +55,17 @@ then wait a short while — 3000 ms for a command line, 5000 ms for a program �
 for the child to finish. A child that exits inside that window returns its
 exit code and captured output in the
 **same call**. Check `output_complete` and truncation markers before treating
-that output as complete. Every successful launch retains a session, including
-one that exits within the initial wait.
+that output as complete. Both launchers default `auto_release` to true: once
+initial completion and complete capture are observed, output is copied into the
+result and the session is released. `released: true` means its ID is no longer
+usable. Set `auto_release: false` to retain completed sessions for later reads.
+Skipped/expired waits and incomplete capture retain the session; no deferred
+automatic release is scheduled. Nonzero exit codes still qualify for release.
 
 ```text
 run_command / spawn_process -> session_id + completion flags
-  finished && output_complete -> inspect output, then release when done
+  released: true              -> inspect output; no follow-up required
+  released: false             -> retain ID; release manually when done
   otherwise                   -> poll_process to wait or inspect status
                               -> read_process to read output
                               -> send_process to send input, EOF, or a signal
@@ -82,8 +87,8 @@ same text every turn. Pass `full: true` for the whole capture; a full read
 leaves the incremental position alone, so it never steals bytes from a poll
 loop.
 
-**Sessions have to be let go.** A finished process keeps its session (and its
-output) until it is released, so the model can still read it. Release with
+**Retained sessions have to be let go.** Sessions not automatically released
+keep their output until manually released. Release with
 `release` on a read, or `release_exited` on a poll. At most **32**
 sessions may be retained at once — an exited-but-unreleased session still counts
 — and spawn refuses past that, which is a failure the model reads and can act on
@@ -195,7 +200,7 @@ still a successful tool invocation, reported through `exit_code`.
 session_id: proc_1
 state: exited
 exit_code: 0
-hint: Use read_process with release=true when done.
+released: true
 ```
 
 ## Output
@@ -241,6 +246,7 @@ not, it keeps running and the result carries a `session_id` instead.
   "working_directory": "/home/me/project", // defaults to the host's own cwd; "" is refused
   "environment": ["LANG=C"],               // "KEY=VALUE", merged over the inherited env
   "inherit_environment": true,             // default true
+  "auto_release": true,                   // false retains the session
   "expected_runtime_milliseconds": 5000    // default 5000; 0 returns a session id at once
 }
 ```
@@ -275,7 +281,7 @@ running_milliseconds: 8
 finished: true
 output_complete: true
 
-hint: Use read_process with release=true when done.
+released: true
 stdout (34 bytes):
 src/main.cpp:12: // TODO
 
@@ -289,9 +295,9 @@ names it and counts its bytes, and a stream that printed nothing says
 `(empty)`. See [The result shape](#the-result-shape) for the rules, and
 `tools/intrinsic/tool_result.hpp` for why it is this and not JSON.
 
-The session is **kept**, not reaped, even though it already finished: its
-output stays readable, and the model releases it when done (`release: true` on
-a later `read_process`, or `release_exited` on a poll).
+With default `auto_release: true`, this completed session is released after
+copying its output into the result. With `auto_release: false`, it remains
+readable and requires manual release.
 
 **`finished` and `output_complete` are two different facts**, and the second is
 not implied by the first. `finished` is about the child: it exited inside the
@@ -355,6 +361,7 @@ names the interpreter.
   "working_directory": "/home/me/project", // defaults to the host's own cwd; "" is refused
   "environment": ["LANG=C"],               // "KEY=VALUE", merged over the inherited env
   "inherit_environment": true,             // default true
+  "auto_release": true,                   // release after complete initial result
   "expected_runtime_milliseconds": 3000    // default 3000; 0 returns a session id at once
 }
 ```
@@ -374,7 +381,7 @@ running_milliseconds: 9
 finished: true
 output_complete: true
 
-hint: Use read_process with release=true when done.
+released: true
 stdout (3 bytes):
 42
 
@@ -634,7 +641,7 @@ line when the call asked for both.
 default window:
 
 ```text
-spawn_process { "executable": "ls", "arguments": ["-la", "/tmp"], "description": "list /tmp" }
+spawn_process { "auto_release": false, "executable": "ls", "arguments": ["-la", "/tmp"], "description": "list /tmp" }
 
    session_id: proc_1
    state: exited
@@ -652,7 +659,8 @@ spawn_process { "executable": "ls", "arguments": ["-la", "/tmp"], "description":
    stderr: (empty)
 ```
 
-The session is kept in case its output is wanted again; release it once done.
+This example opts out with `auto_release: false`, keeping output for later reads.
+Release the retained session once done.
 The launch used a full read without advancing the incremental cursors, so this
 first incremental read repeats the captured output:
 
