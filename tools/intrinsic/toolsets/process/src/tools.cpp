@@ -372,10 +372,19 @@ RunCommandTool::RunCommandTool(StorePtr store, eventbus::AsyncEventBus* bus)
 
 void RunCommandTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
-    // The whole call: one line, and the launch arguments it shares with
-    // spawn_process. No `description` — the command is the label (invoke()).
     (void)require_string(query, "command", "the command line to run");
-    settle_launch_arguments(query, kDefaultExpectedRuntimeMilliseconds);
+    for (const char* name : {"environment", "inherit_environment", "auto_release"}) {
+        if (query.arguments.contains(name)) {
+            bad_argument(std::format(
+                "property \"{}\" is not supported by run_command; use shell syntax "
+                "for environment changes or spawn_process for explicit launch options", name));
+        }
+    }
+    (void)settle_uint(query, "expected_runtime_milliseconds", kDefaultExpectedRuntimeMilliseconds);
+    if (const auto directory = optional_string(query, "working_directory");
+        find_argument(query, "working_directory") != nullptr && directory.empty()) {
+        bad_argument("property \"working_directory\" must not be empty; omit it to inherit the host directory");
+    }
 }
 
 void RunCommandTool::write_attributes(model_io::InvokeQuery& query) const
@@ -412,7 +421,15 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
     // a launch failure — then says which command it is about, so a model
     // holding several sessions can tell them apart from a poll alone.
     spec.description = command;
-    apply_launch_arguments(query, spec, kDefaultExpectedRuntimeMilliseconds);
+    // Shell commands inherit the host environment with no extra entries.
+    // Environment customization belongs in the command, not hidden arguments.
+    spec.inherit_environment = true;
+    spec.environment = std::vector<std::string>{};
+    if (const auto directory = optional_string(query, "working_directory"); !directory.empty()) {
+        spec.working_directory = directory;
+    }
+    spec.initial_wait_timeout_milliseconds = optional_uint(
+        query, "expected_runtime_milliseconds", kDefaultExpectedRuntimeMilliseconds);
 
     // What the caller is told when the window runs out. It is the one part of
     // the answer that differs from spawn_process's, and it says what a model
@@ -433,7 +450,7 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
             : std::format("Still running after {} ms; not killed.{}", window, tail);
 
     co_return co_await launch_and_report(
-        std::move(spec), std::move(hint), optional_bool(query, "auto_release", true));
+        std::move(spec), std::move(hint), true);
 }
 
 // ---- poll_process -----------------------------------------------------------

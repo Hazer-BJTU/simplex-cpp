@@ -537,9 +537,6 @@ BOOST_AUTO_TEST_CASE(a_command_line_runs_through_its_shell_at_the_registry_bound
     BOOST_TEST(record.query.arguments ==
                nlohmann::json(
                    {{"command", line},
-                    {"environment", nlohmann::json::array()},
-                    {"inherit_environment", true},
-                    {"auto_release", true},
                     {"expected_runtime_milliseconds",
                      tools::intrinsic::RunCommandTool::
                          kDefaultExpectedRuntimeMilliseconds}}));

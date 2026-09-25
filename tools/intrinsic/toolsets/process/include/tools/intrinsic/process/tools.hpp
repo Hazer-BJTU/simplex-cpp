@@ -237,8 +237,8 @@ protected:
     static void write_session(tools::intrinsic::ToolResult& result,
                               const SessionSnapshot& snapshot);
 
-    /// The launch arguments BOTH launching tools take — everything the two
-    /// schemas have in common, settled the one way:
+    /// The configurable spawn_process launch arguments, settled before
+    /// confirmation. run_command validates its smaller public surface separately:
     ///
     ///   environment       settled (so `[]` is what "none" looks like), and
     ///                     each entry checked for the execve KEY=VALUE shape
@@ -248,9 +248,7 @@ protected:
     ///                     the model's own argument to fix.
     ///   inherit_environment, auto_release, expected_runtime_milliseconds
     ///                     settled at their defaults, @p default_window being
-    ///                     the tool's own constant (5000 for a program, 3000 for
-    ///                     a command line) so each schema can state its own
-    ///                     number.
+    ///                     the spawn tool's initial wait constant.
     ///   working_directory validated IN PLACE and left as it came: it is the one
     ///                     optional property with no default to write back,
     ///                     because absent means "inherit the host's working
@@ -346,8 +344,10 @@ public:
 /// otherwise, and it is passed to the launch as the absolute path it was found
 /// at. So a command line written the ordinary way works on a host whose only
 /// shell is `sh`, a model never has to know which one it is talking to, and
-/// nothing the call puts in `environment` can change which shell reads the
-/// line; the host session snapshot retains the selected executable.
+/// the host session snapshot retains the selected executable. The shell inherits
+/// the host environment with no added entries. Only command, working_directory,
+/// and expected_runtime_milliseconds are public arguments; environment changes
+/// belong in shell syntax. Complete initial results are always auto-released.
 class RunCommandTool final : public ProcessToolBase {
 public:
     /// How long a command is waited for before its child is left running in the

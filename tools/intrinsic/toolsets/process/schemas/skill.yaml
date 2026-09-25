@@ -21,7 +21,12 @@ text: |
 
   - `run_command`: run a command line through the selected shell (bash when
     available at its standard paths, otherwise /bin/sh). Use it for pipelines,
-    redirections, variables and globs. Syntax must match that shell.
+    redirections, variables and globs. Syntax must match that shell. It always
+    inherits the host environment with no extra entries. Use `VAR=value command`,
+    `export VAR=value; command`, or `env -i ...` inside the command for changes.
+    Initial completion with complete capture is always automatically released.
+    Its only arguments are `command`, `working_directory`, and
+    `expected_runtime_milliseconds`. Use `spawn_process` for launch controls.
   - `spawn_process`: run a program with an array of literal arguments. Each
     element is one argument; do not add shell quoting. Shell operators and
     globs are not interpreted. Bare executable names use PATH; explicit paths
@@ -39,10 +44,11 @@ text: |
      or to 0 to return without waiting. This is a wait setting, not a runtime
      limit: expiration leaves the child running. After an observed exit, the
      call may spend up to another such window draining output.
-  2. Inspect the result. With `auto_release: true` (default), a session is
+  2. Inspect the result. Both launchers automatically release by default. A session is
      released after initial completion and complete capture, once output is
      copied into the result. `released: true` means no follow-up is needed and
-     the ID is no longer usable. Set `auto_release: false` to retain the session.
+     the ID is no longer usable. Only `spawn_process` exposes `auto_release`:
+     set it to false when a completed session must remain readable.
      `finished: true` means exit was observed during the
      initial wait; `output_complete: true` additionally means capture finished.
      If both are true, no further wait is needed. If output capture is still
@@ -116,7 +122,7 @@ text: |
     `include_output: false` checks status without reading output.
   - `full: true` reads retained output without advancing cursors. Output included
     in a launch result also leaves cursors unchanged, so the first incremental
-    read may repeat it when `auto_release: false`. Reading does not delete
+    read may repeat it for retained sessions. Reading does not delete
     captured output. Automatic release applies only to the initial launch call,
     never to background completion.
   - Capture has a size limit. A truncation marker means some output was not

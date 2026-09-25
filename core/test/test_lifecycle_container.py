@@ -207,7 +207,7 @@ with tempfile.TemporaryDirectory() as directory:
     try:
         # Keep quick-command sessions for the cross-worker stale-ID checks.
         first, peer = start()
-        result = peer.run('run_command', {'command': 'printf FIRST', 'expected_runtime_milliseconds': 1000, 'auto_release': False})
+        result = peer.run('spawn_process', {'executable': '/bin/sh', 'arguments': ['-c', 'printf FIRST'], 'expected_runtime_milliseconds': 1000, 'auto_release': False})
         old = re.search(r'proc_[0-9a-f-]+_\d+', result).group()
         snapshot = root / 'sessions/same/state.json'
         original = snapshot.read_bytes()
@@ -219,7 +219,7 @@ with tempfile.TemporaryDirectory() as directory:
         shutdown(first, peer)
 
         second, peer = start()
-        result = peer.run('run_command', {'command': 'printf SECOND', 'expected_runtime_milliseconds': 1000, 'auto_release': False})
+        result = peer.run('spawn_process', {'executable': '/bin/sh', 'arguments': ['-c', 'printf SECOND'], 'expected_runtime_milliseconds': 1000, 'auto_release': False})
         new = re.search(r'proc_[0-9a-f-]+_\d+', result).group()
         assert old != new
         stale = peer.run('read_process', {'session_id': old, 'full': True})

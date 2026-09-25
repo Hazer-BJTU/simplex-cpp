@@ -55,10 +55,11 @@ then wait a short while — 3000 ms for a command line, 5000 ms for a program �
 for the child to finish. A child that exits inside that window returns its
 exit code and captured output in the
 **same call**. Check `output_complete` and truncation markers before treating
-that output as complete. Both launchers default `auto_release` to true: once
+that output as complete. Both launchers automatically release complete initial results: once
 initial completion and complete capture are observed, output is copied into the
 result and the session is released. `released: true` means its ID is no longer
-usable. Set `auto_release: false` to retain completed sessions for later reads.
+usable. `spawn_process` accepts `auto_release: false` to retain completed
+sessions for later reads; `run_command` always uses automatic release.
 Skipped/expired waits and incomplete capture retain the session; no deferred
 automatic release is scheduled. Nonzero exit codes still qualify for release.
 
@@ -295,7 +296,7 @@ names it and counts its bytes, and a stream that printed nothing says
 `(empty)`. See [The result shape](#the-result-shape) for the rules, and
 `tools/intrinsic/tool_result.hpp` for why it is this and not JSON.
 
-With default `auto_release: true`, this completed session is released after
+With the default `spawn_process` setting `auto_release: true`, this completed session is released after
 copying its output into the result. With `auto_release: false`, it remains
 readable and requires manual release.
 
@@ -359,14 +360,21 @@ names the interpreter.
 {
   "command": "ls -l /tmp | wc -l",         // required: one line, as a shell reads it
   "working_directory": "/home/me/project", // defaults to the host's own cwd; "" is refused
-  "environment": ["LANG=C"],               // "KEY=VALUE", merged over the inherited env
-  "inherit_environment": true,             // default true
-  "auto_release": true,                   // release after complete initial result
   "expected_runtime_milliseconds": 3000    // default 3000; 0 returns a session id at once
 }
 ```
 
-Only `command` is required. What the tool builds from it is the host's own
+Only `command` is required. These three fields are the complete public argument
+set. The shell always inherits the host environment with no additional entries.
+Use `LANG=C command` for a child command, `export LANG=C; command` for the shell,
+or `env -i ...` for a clean environment. Complete initial results are always
+automatically released after copying their output, including nonzero exits.
+Skipped/expired waits or incomplete capture retain the session for manual release.
+The removed `environment`, `inherit_environment`, and `auto_release` arguments
+are rejected with guidance to use shell syntax or `spawn_process`, rather than
+silently accepting ineffective settings.
+
+What the tool builds from it is the host's own
 interpreter as the executable and the line as the single argument after the
 flag that says "this is the command" — so `bash -c 'ls -l /tmp | wc -l'` is what
 actually runs. The result reports execution state and output:

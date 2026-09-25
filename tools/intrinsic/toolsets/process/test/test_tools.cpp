@@ -1191,9 +1191,6 @@ BOOST_AUTO_TEST_CASE(settling_materializes_the_defaults_into_the_query)
         {tool_names::kRun,
          {{"command", "ls /tmp"}},
          {{"command", "ls /tmp"},
-          {"environment", nlohmann::json::array()},
-          {"inherit_environment", true},
-          {"auto_release", true},
           {"expected_runtime_milliseconds",
            tools::intrinsic::RunCommandTool::kDefaultExpectedRuntimeMilliseconds}}},
         {tool_names::kPoll,
@@ -1604,14 +1601,9 @@ BOOST_AUTO_TEST_CASE(spawn_accepts_a_path_as_the_executable)
     BOOST_TEST(result.block("stdout") == "ran-from-a-path");
 }
 
-BOOST_AUTO_TEST_CASE(run_command_takes_the_same_launch_arguments_as_spawn_process)
+BOOST_AUTO_TEST_CASE(run_command_uses_shell_environment_syntax_and_working_directory)
 {
-    // working_directory, environment and a nonzero exit code, through the
-    // shortcut: the two launchers build these from the same pair of helpers
-    // (ProcessToolBase's settle/apply), and this is where that shows. The
-    // marker is read by the SHELL's expansion inside the command line rather
-    // than by a program's own getenv — which is the other half of what a shell
-    // buys, and why the launch arguments had to work here too.
+    // Environment changes are expressed inside the shell command.
     Fixture f;
     const std::string temp =
         std::filesystem::canonical(std::filesystem::temp_directory_path())
@@ -1620,10 +1612,8 @@ BOOST_AUTO_TEST_CASE(run_command_takes_the_same_launch_arguments_as_spawn_proces
     const auto record = f.call(call_for(
         std::string(tool_names::kRun),
         nlohmann::json{
-            {"command", "pwd -P; printf %s \"$SIMPLEX_RUN_MARKER\"; exit 3"},
-            {"working_directory", temp},
-            {"environment",
-             nlohmann::json::array({"SIMPLEX_RUN_MARKER=sentinel-value"})}}));
+            {"command", "export SIMPLEX_RUN_MARKER=sentinel-value; pwd -P; printf %s \"$SIMPLEX_RUN_MARKER\"; exit 3"},
+            {"working_directory", temp}}));
 
     const ResultText result = f.result_of(record);
     BOOST_TEST(result.field("working_directory") == temp);
@@ -2275,7 +2265,10 @@ BOOST_AUTO_TEST_CASE(initial_completion_releases_by_default_for_both_launchers)
 {
     for (const auto name : {tool_names::kSpawn, tool_names::kRun}) {
         for (const int exit_code : {0, 7}) {
-            for (const auto option : {nlohmann::json(nullptr), nlohmann::json(true), nlohmann::json(false)}) {
+            for (const auto& option : {nlohmann::json(nullptr), nlohmann::json(true), nlohmann::json(false)}) {
+                if (name == tool_names::kRun && !option.is_null()) {
+                    continue; // run_command always releases complete initial results.
+                }
                 Fixture f;
                 const std::string command = "printf output; printf error >&2; exit " + std::to_string(exit_code);
                 nlohmann::json arguments = name == tool_names::kRun
@@ -2286,7 +2279,11 @@ BOOST_AUTO_TEST_CASE(initial_completion_releases_by_default_for_both_launchers)
                 const auto record = f.call(call_for(std::string(name), arguments));
                 const auto result = f.result_of(record);
                 const bool release = option.is_null() || option.get<bool>();
-                BOOST_TEST(record.query.arguments.at("auto_release") == release);
+                if (name == tool_names::kSpawn) {
+                    BOOST_TEST(record.query.arguments.at("auto_release") == release);
+                } else {
+                    BOOST_TEST(!record.query.arguments.contains("auto_release"));
+                }
                 BOOST_TEST(result.field("released") == (release ? "true" : "false"));
                 BOOST_TEST(result.field("exit_code") == std::to_string(exit_code));
                 BOOST_TEST(result.block("stdout") == "output");
@@ -2305,7 +2302,7 @@ BOOST_AUTO_TEST_CASE(initial_completion_releases_by_default_for_both_launchers)
     }
 }
 
-BOOST_AUTO_TEST_CASE(auto_release_is_a_boolean_for_both_launchers)
+BOOST_AUTO_TEST_CASE(invalid_auto_release_is_rejected)
 {
     Fixture f;
     for (const auto name : {tool_names::kSpawn, tool_names::kRun}) {
@@ -2318,4 +2315,42 @@ BOOST_AUTO_TEST_CASE(auto_release_is_a_boolean_for_both_launchers)
             BOOST_CHECK(tools::error_stage(record) == InvokeException::Stage::ArgumentParse);
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(run_command_exposes_only_shell_command_directory_and_wait)
+{
+    Fixture f;
+    const auto catalogue = f.set->get_tools();
+    const auto found = std::find_if(catalogue.begin(), catalogue.end(), [](const auto& tool) {
+        return tool.name == tool_names::kRun;
+    });
+    BOOST_REQUIRE(found != catalogue.end());
+    const auto& properties = found->argument_schema.at("properties");
+    BOOST_TEST(properties.size() == 3u);
+    BOOST_TEST(properties.contains("command"));
+    BOOST_TEST(properties.contains("working_directory"));
+    BOOST_TEST(properties.contains("expected_runtime_milliseconds"));
+    for (const char* name : {"environment", "inherit_environment", "auto_release"}) {
+        for (const auto& value : {nlohmann::json(nullptr), nlohmann::json(false),
+                                 nlohmann::json(true), nlohmann::json::array()}) {
+            const auto record = f.call(call_for(std::string(tool_names::kRun),
+                {{"command", "true"}, {name, value}}));
+            BOOST_CHECK(tools::error_stage(record) == InvokeException::Stage::ArgumentParse);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(run_command_inherits_host_environment_without_extra_parameters)
+{
+    const auto directory = tools::intrinsic::schema_directory();
+    SchemaDirectoryOverride environment(directory);
+    Fixture f;
+    const auto record = f.call(call_for(std::string(tool_names::kRun),
+        {{"command", "printf %s \"$SIMPLEX_PROCESS_SCHEMA_DIR\""}}));
+    const auto result = f.result_of(record);
+    BOOST_TEST(result.block("stdout") == directory.string());
+    BOOST_TEST(result.field("released") == "true");
+    BOOST_TEST(!record.query.arguments.contains("environment"));
+    BOOST_TEST(!record.query.arguments.contains("inherit_environment"));
+    BOOST_TEST(!record.query.arguments.contains("auto_release"));
 }
