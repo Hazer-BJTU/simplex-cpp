@@ -183,6 +183,20 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         return value;
     }
 
+    /**
+     * Read-only option discovery. Each category contains a list of advertised
+     * choices, not active configuration. Empty reserved categories do not imply
+     * that tools or confirmation are disabled; their options are not exposed yet.
+     */
+    Json options() const {
+        const llm::LLMModel& provider = *model;
+        return {
+            {"model", provider.get_options()},
+            {"tools", Json::array()},
+            {"confirmation", Json::array()}
+        };
+    }
+
     /** Required JSON saves latch failure even if RunFinished swallows observers. */
     void save(SaveBoundary boundary) {
         if (!config.persistence || storage_failed) return;
@@ -346,6 +360,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                             self->shutdown();
                         } else if (operation == "status") {
                             self->emit("status", self->status());
+                        } else if (operation == "options") {
+                            self->emit("options", self->options());
                         } else {
                             throw std::invalid_argument("unknown signal operation");
                         }

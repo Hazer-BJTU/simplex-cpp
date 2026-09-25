@@ -276,7 +276,8 @@ struct Server {
                     continue;
                 }
                 Json message;
-                if (line == "/cancel" || line == "/status" || line == "/shutdown") {
+                if (line == "/cancel" || line == "/status" ||
+                    line == "/options" || line == "/shutdown") {
                     message = {{"type", "signal"}, {"data", {
                         {"operation", line.substr(1)},
                         // Independent approval/event sockets can reorder observations.
@@ -318,7 +319,7 @@ int main(int argc, char** argv) {
             if (flag == "--help") {
                 std::cout << "simplex_shell --listen IP:PORT --events-path /agent/events "
                              "--confirmation-path /agent/confirm\n"
-                             "/continue /cancel /status /shutdown /quit /approve ID /deny ID\n";
+                             "/continue /cancel /status /options /shutdown /quit /approve ID /deny ID\n";
                 return 0;
             }
             if (i + 1 == argc) throw std::invalid_argument("missing option value");

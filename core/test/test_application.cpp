@@ -219,3 +219,136 @@ BOOST_AUTO_TEST_CASE(startup_failure_releases_ownership_while_application_surviv
     io.run();
     BOOST_CHECK_NO_THROW(result.get());
 }
+
+namespace {
+
+/** Provider-owned option metadata, or a failure, without any remote catalogue IO. */
+struct OptionsModel : Model {
+    OptionsModel(asio::any_io_executor executor, Json choices, bool fail)
+        : Model(executor), choices(std::move(choices)), fail(fail) {
+        delay = std::chrono::seconds(10);
+    }
+
+    Json get_options() const override {
+        if (fail) {
+            throw std::runtime_error("option discovery failed");
+        }
+        return choices;
+    }
+
+    const Json choices;
+    const bool fail;
+};
+
+/** Query over real text WebSockets while idle and during a cancellable run. */
+void options_scenario(Json choices, bool fail = false) {
+    Scratch scratch;
+    asio::io_context io;
+    asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
+    load::Configuration config;
+    config.directory = scratch.root;
+    config.document = Json::object();
+    config.persistence = false;
+    config.client = load::websocket_endpoint(
+        "ws://127.0.0.1:" + std::to_string(acceptor.local_endpoint().port()) + "/events");
+    auto model = std::make_shared<OptionsModel>(io.get_executor(), choices, fail);
+    core::Application app(io.get_executor(), config, "test", model);
+    int replies = 0;
+    std::string identity;
+    std::string run;
+    std::uint64_t sequence = 0;
+    auto peer = [&]() -> asio::awaitable<void> {
+        beast::websocket::stream<asio::ip::tcp::socket> socket(
+            co_await acceptor.async_accept(asio::use_awaitable));
+        co_await socket.async_accept(asio::use_awaitable);
+        auto send = [&](Json message) -> asio::awaitable<void> {
+            const auto wire = message.dump();
+            co_await socket.async_write(asio::buffer(wire), asio::use_awaitable);
+        };
+        for (;;) {
+            beast::flat_buffer buffer;
+            boost::system::error_code error;
+            co_await socket.async_read(buffer, asio::redirect_error(asio::use_awaitable, error));
+            if (error) {
+                break;
+            }
+            const auto event = Json::parse(beast::buffers_to_string(buffer.data()));
+            BOOST_TEST(event.at("type") == "event");
+            BOOST_TEST(event.at("session_id") == "test");
+            const auto next = event.at("sequence").get<std::uint64_t>();
+            BOOST_TEST(next > sequence);
+            sequence = next;
+            const auto name = event.at("event").get<std::string>();
+            if (name == "ready") {
+                identity = event.at("worker_id").get<std::string>();
+                BOOST_TEST(!identity.empty());
+                co_await send({{"type", "signal"}, {"data", {{"operation", "options"}}}});
+            } else if (name == "options") {
+                BOOST_TEST(!fail);
+                BOOST_TEST(event.at("worker_id") == identity);
+                BOOST_TEST(event.at("data") == Json({
+                    {"model", choices}, {"tools", Json::array()},
+                    {"confirmation", Json::array()}
+                }));
+                ++replies;
+                if (replies == 1) {
+                    BOOST_TEST(event.at("request_id") == "");
+                    BOOST_TEST(event.at("run_id") == "");
+                    BOOST_TEST(model->calls.load() == 0);
+                    co_await send({{"type", "payload"}, {"data", {
+                        {"operation", "message"}, {"request_id", "options-run"},
+                        {"content", Json::array({{{"type", "text"}, {"raw", "hello"}}})}
+                    }}});
+                } else {
+                    BOOST_TEST(event.at("request_id") == "options-run");
+                    BOOST_TEST(event.at("run_id") == run);
+                    co_await send({{"type", "signal"}, {"data", {
+                        {"operation", "cancel"}, {"run_id", run}
+                    }}});
+                }
+            } else if (name == "run_started") {
+                run = event.at("run_id").get<std::string>();
+                co_await send({{"type", "signal"}, {"data", {{"operation", "options"}}}});
+            } else if (name == "error") {
+                BOOST_TEST(fail);
+                BOOST_TEST(event.at("data").at("message") == "option discovery failed");
+                ++replies;
+                co_await send({{"type", "signal"}, {"data", {{"operation", "status"}}}});
+            } else if (name == "run_finished" || (fail && name == "status")) {
+                if (fail) {
+                    BOOST_TEST(event.at("data").at("active") == false);
+                } else {
+                    BOOST_TEST(event.at("data").at("status") == "cancelled");
+                }
+                co_await send({{"type", "signal"}, {"data", {{"operation", "shutdown"}}}});
+            }
+        }
+    };
+    auto server = asio::co_spawn(io, peer, asio::use_future);
+    auto worker = asio::co_spawn(io, app.run(), asio::use_future);
+    std::jthread other([&] { io.run(); });
+    io.run();
+    other.join();
+    server.get();
+    worker.get();
+    BOOST_TEST(replies == (fail ? 1 : 2));
+    if (fail) {
+        BOOST_TEST(model->calls.load() == 0);
+    }
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(options_signal_returns_categories_and_run_metadata) {
+    options_scenario(Json::array({{
+        {"name", "model"}, {"options", {"fixture-a", "fixture-b"}}
+    }}));
+}
+
+BOOST_AUTO_TEST_CASE(options_signal_preserves_an_empty_provider_list) {
+    options_scenario(Json::array());
+}
+
+BOOST_AUTO_TEST_CASE(options_failure_reports_error_and_keeps_worker_available) {
+    options_scenario(Json::array(), true);
+}

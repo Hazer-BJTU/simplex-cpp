@@ -305,6 +305,7 @@ processing do not have a combined cross-queue execution order.
 | `data.operation` | Required additional fields | Effect and response |
 | --- | --- | --- |
 | `status` | None | Emits a `status` event containing current state information. |
+| `options` | None | Emits an `options` event with advertised choices grouped by category; does not change configuration. |
 | `cancel` | Nonempty string `run_id` | Requests cancellation only if the ID matches the current/last run ID, then emits `status`. A stale ID changes nothing. |
 | `shutdown` | None | Requests process-worker shutdown. No dedicated acknowledgement or final shutdown event exists. |
 
@@ -340,6 +341,7 @@ may occur in nested dataclass records.
 | --- | --- | --- |
 | `ready` | Status object | Startup initialization finished and payload consumption is starting. Emitted once per worker lifetime, not once per WebSocket connection. |
 | `status` | Status object | Snapshot produced by `status` or `cancel`. |
+| `options` | Options object | Advertised choices returned in response to the `options` signal. |
 | `input_admitted` | `{}` | Host admitted an input and assigned its run ID. |
 | `input_rejected` | `{ "request_id": any JSON value or null, "message": string }` | Dequeued input failed host validation; no run was started for that input. |
 | `run_started` | `{}` | Loop admitted the invocation. |
@@ -358,6 +360,61 @@ No per-tool-start, per-tool-finish, process-output-stream, or connection-state
 event is defined. Fatal startup/transport/queue/storage errors can end the
 worker without delivering `error` or `run_finished`; process diagnostics and
 connection loss must also be observed by the deployment.
+
+### Options object
+
+The hub can discover available choices without starting a run:
+
+```json
+{"type":"signal","data":{"operation":"options"}}
+```
+
+The worker replies on the same event connection using its ordinary metadata
+envelope. For a DeepSeek worker before the first request, an example is:
+
+```json
+{
+  "type": "event",
+  "event": "options",
+  "session_id": "demo",
+  "worker_id": "204d23ea-0f10-4dbb-b2ef-613bc3f7852d",
+  "request_id": "",
+  "run_id": "",
+  "sequence": 2,
+  "data": {
+    "model": [
+      {"name": "model", "options": ["deepseek-flash", "deepseek-v4-pro"]},
+      {"name": "reasoning_effort", "options": ["low", "high", "max"]}
+    ],
+    "tools": [],
+    "confirmation": []
+  }
+}
+```
+
+| Category | Current contents | Meaning |
+| --- | --- | --- |
+| `model` | Selected provider's `get_options() const` result | Array of `{ "name": string, "options": [string, ...] }` descriptors, in provider display order. Providers without advertised choices return `[]`. |
+| `tools` | `[]` | Reserved for future tool configuration choices; not a list of registered tools. |
+| `confirmation` | `[]` | Reserved for future confirmation configuration choices; not the current security policy or pending approvals. |
+
+These lists describe choices, not current values. Empty reserved categories do
+not mean tools or confirmation are disabled. Hubs should tolerate new categories
+and preserve provider-defined option names and values. This query exposes no
+credentials or endpoint configuration and does not fetch a remote model catalogue.
+
+The query can be handled while idle or while a run is suspended on asynchronous
+work. It uses the worker's existing signal path and does not admit an input,
+change generation parameters, or create a new run. Metadata identifies the
+current or most recently admitted run, exactly as for `status`; the signal has
+no separate request ID or echoed correlation ID. Every response gets a new event
+sequence number. No options event is sent automatically at startup or reconnect.
+
+If provider option discovery throws a standard exception, the worker reports
+an `error` event through the normal signal error path and can continue serving
+requests. The usual event-queue failure and delivery limits still apply. There
+is no wire operation to apply these choices yet; setting model/tool/confirmation
+configuration remotely is a future extension.
 
 ### Status object
 

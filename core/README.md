@@ -60,7 +60,9 @@ text/attachment parts. Use `external_ref` for image URLs; optional `extras`
 preserves additional metadata for future richer modalities.
 It is the reference for independently implemented hubs
 and clients. The [documentation index](docs/index.md) lists the package's formal
-documents and their publishing conventions.
+documents and their publishing conventions. The `options` signal returns
+provider model choices plus reserved tool/confirmation categories in the normal
+event metadata envelope; it does not change settings.
 
 ## Confirmation and cancellation
 
