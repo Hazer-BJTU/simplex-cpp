@@ -126,3 +126,26 @@ BOOST_AUTO_TEST_CASE(worker_text_and_image_reach_chat_completions_in_order) {
     BOOST_TEST(parts[1]["image_url"]["url"] == "https://example.com/photo.png");
     BOOST_TEST(parts[1]["image_url"]["detail"] == "low");
 }
+
+BOOST_AUTO_TEST_CASE(payload_options_validate_all_categories_without_mutation) {
+    auto message = payload(Json::array({text_part()}));
+    BOOST_TEST(core::parse_input(message).options == Json::object());
+    const Json options = {
+        {"model", {{"model", "deepseek-v4-pro"}}},
+        {"tools", Json::object()}, {"confirmation", Json::object()}
+    };
+    message["options"] = options;
+    BOOST_TEST(core::parse_input(message).options == options);
+    message["operation"] = "continue";
+    BOOST_TEST(core::parse_input(message).options == options);
+    for (const auto& bad : std::vector<Json>{
+        nullptr, Json::array(), {{"model", "name"}},
+        {{"tools", {{"enabled", true}}}}, {{"confirmation", false}},
+        {{"unknown", Json::object()}}
+    }) {
+        message["options"] = bad;
+        const auto before = message;
+        BOOST_CHECK_THROW(core::parse_input(message), std::invalid_argument);
+        BOOST_TEST(message == before);
+    }
+}

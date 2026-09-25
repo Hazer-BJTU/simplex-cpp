@@ -51,7 +51,8 @@
 #       Both layouts cross the same model plugin boundary.
 #   v7: LLMModel gained the const virtual get_options() metadata query.
 #       Host and providers must be rebuilt together for the new vtable slot.
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 7)
+#   v8: LLMModel gained the synchronous virtual handle_options() mutation hook.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 8)
 
 # Independent contracts for dynamic toolsets and loop hooks.
 set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 1)

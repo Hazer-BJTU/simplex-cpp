@@ -573,6 +573,26 @@ public:
         return nlohmann::json::array();
     }
 
+    /**
+     * Apply a provider-defined object of runtime option names and values.
+     * This synchronous hook is called at payload admission, before converse(),
+     * never by a configuration signal during an active run. Missing keys retain
+     * their values. Overrides must validate the entire object before committing
+     * any mutation and throw std::invalid_argument for unsupported keys/values.
+     * An exception must leave the previous settings intact. Do not perform IO.
+     *
+     * Hosts serialize this call against run execution. Implementations must
+     * still synchronize mutable data exposed by concurrent const queries.
+     * Options remain in effect for later runs; persistence is host policy.
+     * The default accepts only an empty object. Providers explicitly opt in,
+     * rather than exposing unrestricted set_generation() patches remotely.
+     */
+    virtual void handle_options(const nlohmann::json& options) {
+        if (!options.is_object() || !options.empty()) {
+            throw std::invalid_argument("model does not support these options");
+        }
+    }
+
 protected:
     /**
      * @brief Construct a model bound to one executor and one configuration.

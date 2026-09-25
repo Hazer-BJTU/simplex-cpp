@@ -170,6 +170,55 @@ User requests use `type: "payload"`. They enter a bounded FIFO queue and are
 validated when the current run has finished and the consumer dequeues them.
 Sending while a run is active does not create a concurrent run.
 
+### Apply options at the next run boundary
+
+Both `message` and `continue` accept an optional `data.options` object. For example:
+
+```json
+{
+  "type": "payload",
+  "data": {
+    "operation": "message",
+    "request_id": "req-options-1",
+    "options": {
+      "model": {"model": "deepseek-v4-pro", "reasoning_effort": "max"},
+      "tools": {},
+      "confirmation": {}
+    },
+    "content": [{"type": "text", "raw": "Explain this carefully."}]
+  }
+}
+```
+
+| Category | Accepted value | Current behavior |
+| --- | --- | --- |
+| `model` | Object mapping provider option names to values | Passed to the selected provider's synchronous, polymorphic `handle_options()` method. DeepSeek accepts `model`: `deepseek-flash` or `deepseek-v4-pro`, and `reasoning_effort`: `low`, `high`, or `max`. |
+| `tools` | Empty object | Reserved; does not change tool configuration. |
+| `confirmation` | Empty object | Reserved; does not change confirmation policy. |
+
+Omitted categories and omitted model keys retain their current values. An empty
+options object is a no-op. Unknown categories, non-object categories, and
+nonempty reserved categories are rejected. Providers reject unsupported model
+keys or values; `null` is not a reset operation. The default provider handler
+supports only an empty object. This API does not expose arbitrary generation
+patches, credentials, endpoints, or provider switching.
+
+The worker first validates the whole payload, duplicate request ID, and session
+recovery prerequisites. It then applies model options synchronously, before
+`input_admitted` and before starting the loop. Provider validation is atomic:
+invalid options produce `input_rejected`, preserve the prior settings, and do not
+consume the request ID or add a user message. A corrected request may reuse that
+ID. A queued payload cannot change the settings of the active run; its options
+are processed only after that run settles. All exchanges within the new run use
+the selected settings. Signals never apply options: `options` remains a read-only
+query, including while a run is active.
+
+Successfully applied settings remain in effect for subsequent runs, including
+after cancellation or failure. They are runtime model-instance state, not part
+of the persisted `AgentInputState`; restarting restores the startup configuration.
+A shutdown racing admission can stop the worker after options have been applied
+but before a run starts. Applying options is not a delivery or execution guarantee.
+
 ### Submit a message
 
 ```json
@@ -412,9 +461,9 @@ sequence number. No options event is sent automatically at startup or reconnect.
 
 If provider option discovery throws a standard exception, the worker reports
 an `error` event through the normal signal error path and can continue serving
-requests. The usual event-queue failure and delivery limits still apply. There
-is no wire operation to apply these choices yet; setting model/tool/confirmation
-configuration remotely is a future extension.
+requests. The usual event-queue failure and delivery limits still apply. To apply model
+choices, include `data.options.model` in the next payload as described under
+[Apply options at the next run boundary](#apply-options-at-the-next-run-boundary).
 
 ### Status object
 

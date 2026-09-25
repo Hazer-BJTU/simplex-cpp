@@ -559,9 +559,24 @@ The DeepSeek plugin returns exactly:
 string choices in display order. This list is not the current selection or a
 live catalogue, and does not restrict the existing `set_generation()` API.
 Use `generation()` for current settings and `provider_info()` for remote
-provider information. Apply these DeepSeek choices with JSON patches such as
+provider information. Apply these DeepSeek choices through `handle_options()` with
 `{"model":"deepseek-v4-pro","reasoning_effort":"max"}`. The typed
 `ReasoningEffort` enum is unchanged; `max` is available through the JSON API.
 
-This virtual interface addition raises the LLM plugin ABI to 7. Rebuild model
+`handle_options(const nlohmann::json&)` is a synchronous virtual mutation hook
+for provider-validated runtime options. The base implementation accepts only an
+empty object. DeepSeek accepts only the names and values shown above; unknown
+keys, invalid values, and non-object inputs throw `std::invalid_argument`. All
+validation precedes the atomic generation merge, so failure preserves settings.
+Omitted keys retain their values and an empty object changes nothing. This is a
+restricted remote-configuration API; the existing `set_generation()` API remains
+available for trusted in-process callers.
+
+Hosts must serialize option updates against loop execution and invoke this hook
+only at request boundaries. Overrides must avoid IO, provide the strong exception
+guarantee, and synchronize state used by concurrent const queries. The worker
+applies `payload.data.options.model` before admitting each run, never through a
+signal; runtime selections are not persisted with conversation state.
+
+These virtual interface additions raise the LLM plugin ABI to 8. Rebuild model
 plugins and hosts together; older plugins are rejected by the admission check.

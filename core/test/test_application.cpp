@@ -352,3 +352,97 @@ BOOST_AUTO_TEST_CASE(options_signal_preserves_an_empty_provider_list) {
 BOOST_AUTO_TEST_CASE(options_failure_reports_error_and_keeps_worker_available) {
     options_scenario(Json::array(), true);
 }
+
+namespace {
+/** Record which settings each run observes; mutation must never overlap a run. */
+struct MutableOptionsModel : Model {
+    using Model::Model;
+    std::string selected = "initial";
+    std::vector<std::string> observed;
+    int updates = 0;
+
+    void handle_options(const Json& options) override {
+        BOOST_TEST(active.load() == 0);
+        const auto choice = options.at("model").get<std::string>();
+        if (choice != "first" && choice != "second") {
+            throw std::invalid_argument("unsupported fixture model");
+        }
+        selected = choice;
+        ++updates;
+    }
+
+    asio::awaitable<model_io::MessageItem> converse(model_io::AgentInputState state) override {
+        observed.push_back(selected);
+        auto response = co_await Model::converse(std::move(state));
+        BOOST_TEST(selected == observed.back());
+        co_return response;
+    }
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_preserves_settings) {
+    Scratch scratch;
+    asio::io_context io;
+    asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
+    load::Configuration config;
+    config.directory = scratch.root;
+    config.document = Json::object();
+    config.persistence = false;
+    config.client = load::websocket_endpoint(
+        "ws://127.0.0.1:" + std::to_string(acceptor.local_endpoint().port()) + "/events");
+    auto model = std::make_shared<MutableOptionsModel>(io.get_executor());
+    core::Application app(io.get_executor(), config, "test", model);
+    int completed = 0;
+    int rejected = 0;
+    auto peer = [&]() -> asio::awaitable<void> {
+        beast::websocket::stream<asio::ip::tcp::socket> socket(
+            co_await acceptor.async_accept(asio::use_awaitable));
+        co_await socket.async_accept(asio::use_awaitable);
+        auto send = [&](Json data) -> asio::awaitable<void> {
+            const auto wire = Json({{"type", "payload"}, {"data", std::move(data)}}).dump();
+            co_await socket.async_write(asio::buffer(wire), asio::use_awaitable);
+        };
+        for (;;) {
+            beast::flat_buffer buffer;
+            boost::system::error_code error;
+            co_await socket.async_read(buffer, asio::redirect_error(asio::use_awaitable, error));
+            if (error) break;
+            const auto event = Json::parse(beast::buffers_to_string(buffer.data()));
+            const auto name = event.at("event").get<std::string>();
+            if (name == "ready") {
+                co_await send({{"operation", "message"}, {"request_id", "first"},
+                    {"content", Json::array({{{"type", "text"}, {"raw", "hello"}}})},
+                    {"options", {{"model", {{"model", "first"}}}}}});
+            } else if (name == "run_started" && event.at("request_id") == "first") {
+                // These arrive during the first run but are applied after it.
+                co_await send({{"operation", "continue"}, {"request_id", "second"},
+                    {"options", {{"model", {{"model", "invalid"}}}}}});
+                co_await send({{"operation", "continue"}, {"request_id", "second"},
+                    {"options", {{"model", {{"model", "second"}}}}}});
+                co_await send({{"operation", "continue"}, {"request_id", "third"}});
+            } else if (name == "input_rejected") {
+                ++rejected;
+                BOOST_TEST(event.at("data").at("message") == "unsupported fixture model");
+            } else if (name == "run_finished") {
+                BOOST_TEST(event.at("data").at("status") == "completed");
+                if (++completed == 3) {
+                    const auto wire = Json({{"type", "signal"},
+                        {"data", {{"operation", "shutdown"}}}}).dump();
+                    co_await socket.async_write(asio::buffer(wire), asio::use_awaitable);
+                }
+            }
+        }
+    };
+    auto server = asio::co_spawn(io, peer, asio::use_future);
+    auto worker = asio::co_spawn(io, app.run(), asio::use_future);
+    std::jthread other([&] { io.run(); });
+    io.run();
+    other.join();
+    server.get();
+    worker.get();
+    BOOST_TEST(rejected == 1);
+    BOOST_TEST(completed == 3);
+    BOOST_TEST(model->updates == 2);
+    BOOST_TEST(model->observed == std::vector<std::string>({"first", "second", "second"}),
+               boost::test_tools::per_element());
+}

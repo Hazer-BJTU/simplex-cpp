@@ -375,3 +375,34 @@ BOOST_AUTO_TEST_CASE(dlopened_provider_advertises_const_generation_options) {
     BOOST_TEST(interface.get_options() == expected);
     BOOST_TEST(model->generation()["reasoning_effort"] == "max");
 }
+
+BOOST_AUTO_TEST_CASE(dlopened_provider_applies_options_atomically) {
+    llm::LLMDispatcher dispatcher;
+    BOOST_REQUIRE_EQUAL(
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+    boost::asio::io_context io;
+    auto model = dispatcher.create_model(
+        "deepseek", io.get_executor(), {{"model", "deepseek-flash"}});
+    model->handle_options({{"model", "deepseek-v4-pro"}, {"reasoning_effort", "max"}});
+    const auto selected = model->generation();
+    BOOST_TEST(selected.at("model") == "deepseek-v4-pro");
+    BOOST_TEST(selected.at("reasoning_effort") == "max");
+    for (const auto& bad : std::vector<nlohmann::json>{
+        {{"model", "deepseek-flash"}, {"reasoning_effort", "medium"}},
+        {{"model", nullptr}}, {{"reasoning_effort", 1}},
+        {{"endpoint", "other"}}, {{"temperature", 0.5}},
+        nlohmann::json::array()
+    }) {
+        BOOST_CHECK_THROW(model->handle_options(bad), std::invalid_argument);
+        BOOST_TEST(model->generation() == selected);
+    }
+    model->handle_options(nlohmann::json::object());
+    BOOST_TEST(model->generation() == selected);
+    for (const char* effort : {"low", "high", "max"}) {
+        model->handle_options({{"reasoning_effort", effort}});
+        BOOST_TEST(model->generation().at("reasoning_effort") == effort);
+        BOOST_TEST(model->generation().at("model") == "deepseek-v4-pro");
+    }
+    model->handle_options({{"model", "deepseek-flash"}});
+    BOOST_TEST(model->generation().at("model") == "deepseek-flash");
+}

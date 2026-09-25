@@ -11,6 +11,8 @@ struct Input {
     std::string request_id;
     bool has_message = true;
     model_io::MessageItem message;
+    /** Validated category objects; applied only when this payload is admitted. */
+    nlohmann::json options = nlohmann::json::object();
 };
 /**
  * Parse a message's ordered content parts into user MessageItem::content.
@@ -19,6 +21,10 @@ struct Input {
  * category fields. Binary/reference bytes are retained verbatim: this boundary
  * neither decodes nor fetches them. Current Chat Completions adapters map
  * external_ref to image_url; future richer modalities can use extras metadata.
+ *
+ * Optional options must contain category objects. Model values are validated
+ * later by the provider; tools/confirmation are reserved empty objects. Unknown
+ * categories are rejected. Parsing never applies options or calls a provider.
  *
  * Reject invalid shapes and attempts to supply roles or tool-call metadata.
  * A continue request carries no new content. Parsing never mutates payload.

@@ -405,6 +405,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     throw std::invalid_argument("session requires operator recovery inspection");
                 if (!input->has_message && state.turns.empty())
                     throw std::invalid_argument("no turn to continue");
+                // Apply options only after validation and after the previous run
+                // has settled. Reserved categories were checked by parse_input.
+                if (input->options.contains("model")) {
+                    model->handle_options(input->options.at("model"));
+                }
             } catch (const std::exception& error) {
                 emit("input_rejected", {{"request_id", payload.is_object() ? payload.value("request_id", Json()) : Json()},
                     {"message", error.what()}});

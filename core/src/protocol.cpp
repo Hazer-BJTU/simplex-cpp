@@ -63,6 +63,25 @@ Input parse_input(const nlohmann::json& payload) {
             input.message.content.push_back(std::move(content));
         }
     }
+    if (const auto options = payload.find("options"); options != payload.end()) {
+        if (!options->is_object()) {
+            throw std::invalid_argument("options must be an object");
+        }
+        // Validate every category before any provider is allowed to mutate state.
+        // Future category handlers belong at the same serialized admission point.
+        for (const auto& [category, values] : options->items()) {
+            if (!values.is_object()) {
+                throw std::invalid_argument("each options category must be an object");
+            }
+            if (category == "model") {
+                continue;
+            }
+            if ((category != "tools" && category != "confirmation") || !values.empty()) {
+                throw std::invalid_argument("unsupported options category: " + category);
+            }
+        }
+        input.options = *options;
+    }
     return input;
 }
 std::string new_identity() {

@@ -48,6 +48,31 @@ public:
             }
         });
     }
+
+    /** Validate all advertised choices before atomically merging generation knobs. */
+    void handle_options(const nlohmann::json& options) override {
+        if (!options.is_object()) {
+            throw std::invalid_argument("model options must be an object");
+        }
+        const auto descriptors = get_options();
+        for (const auto& [name, value] : options.items()) {
+            bool supported = false;
+            for (const auto& descriptor : descriptors) {
+                if (descriptor.at("name") == name) {
+                    for (const auto& choice : descriptor.at("options")) {
+                        supported = supported || value == choice;
+                    }
+                }
+            }
+            if (!supported) {
+                throw std::invalid_argument("unsupported DeepSeek option: " + name);
+            }
+        }
+        if (!options.empty()) {
+            apply_generation_patch(options);
+        }
+    }
+
 };
 
 class DeepSeekPlugin final : public LLMModelExtensionContext {
