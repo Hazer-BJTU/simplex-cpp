@@ -32,8 +32,14 @@ tools:
 
 ~~~sh
 simplex_shell --listen 127.0.0.1:8765
-simplex_worker --config ./config.yaml --session demo
+simplex_worker --config ./config.yaml --session demo --threads 4
 ~~~
+
+`simplex_worker --help` prints the available options. `--config/-c` defaults
+to `config.yaml`; `--session/-s` is required. `--threads/-t` accepts a positive
+integer and defaults to 1. It counts all threads running the worker io_context,
+including the main thread; it does not increase the number of active agent loops.
+All executor threads are joined before the application is destroyed.
 
 The shell uses plain local WebSockets without authentication, for a trusted
 local test environment. Production deployments supply an authenticated service;

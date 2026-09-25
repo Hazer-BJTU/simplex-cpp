@@ -31,3 +31,8 @@ add_test(NAME core_lifecycle_container
     COMMAND /bin/sh ${PROJECT_SOURCE_DIR}/loop/test/run_example_container_smoke.sh
         ${CMAKE_CURRENT_SOURCE_DIR}/test_lifecycle_container.py $<TARGET_FILE:simplex_worker>)
 set_tests_properties(core_lifecycle_container PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+
+add_test(NAME core_worker_cli
+    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/run_python_test.sh
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_worker_cli.py $<TARGET_FILE:simplex_worker>)
+set_tests_properties(core_worker_cli PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)

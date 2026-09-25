@@ -250,7 +250,7 @@ RUN wget -q -O /tmp/boost.tar.gz \
     && tar -xzf /tmp/boost.tar.gz -C /tmp \
     && cd /tmp/boost_1_91_0 \
     && printf 'using gcc : 14.3 : /usr/local/bin/g++-14 ;\n' > /root/user-config.jam \
-    && ./bootstrap.sh --with-toolset=gcc --with-libraries=filesystem,process,test \
+    && ./bootstrap.sh --with-toolset=gcc --with-libraries=filesystem,process,program_options,test \
     && ./b2 -j${JOBS} toolset=gcc-14.3 \
         link=shared runtime-link=shared variant=release install \
     && ldconfig \
