@@ -58,7 +58,7 @@ boost::asio::awaitable<model_io::Content> StrReplaceEditTool::invoke(
         invoke_failed("old_text matches at least twice; include more context to make it unique");
     }
     if (edit.status == textedit::EditStatus::Conflict) {
-        invoke_failed("file changed before publication; read it again before retrying");
+        invoke_failed("file changed during the edit operation; read it again before retrying");
     }
 
     ToolResult output;

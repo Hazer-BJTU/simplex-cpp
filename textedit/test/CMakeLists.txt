@@ -23,3 +23,9 @@ target_link_libraries(test_edit_publication PRIVATE textedit_lib Boost::unit_tes
 set_target_properties(test_edit_publication PROPERTIES ENABLE_EXPORTS ON)
 add_test(NAME test_edit_publication COMMAND test_edit_publication)
 set_tests_properties(test_edit_publication PROPERTIES TIMEOUT 30)
+
+add_executable(test_edit_initial_conflict test_edit_initial_conflict.cpp)
+target_link_libraries(test_edit_initial_conflict PRIVATE textedit_lib Boost::unit_test_framework)
+set_target_properties(test_edit_initial_conflict PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME test_edit_initial_conflict COMMAND test_edit_initial_conflict)
+set_tests_properties(test_edit_initial_conflict PROPERTIES TIMEOUT 30)

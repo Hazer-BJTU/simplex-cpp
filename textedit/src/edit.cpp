@@ -248,7 +248,12 @@ EditResult str_replace_file(
     std::size_t context_lines,
     std::size_t max_file_bytes)
 {
-    const auto original = fileio::read_editable_file(path, max_file_bytes);
+    fileio::EditableSnapshot original;
+    try {
+        original = fileio::read_editable_file(path, max_file_bytes);
+    } catch (const fileio::ReplaceConflict&) {
+        return {.status = EditStatus::Conflict};
+    }
     auto plan = prepare_str_replace(
         original.bytes, old_text, new_text, context_lines, max_file_bytes);
     if (plan.result.status != EditStatus::Modified) {

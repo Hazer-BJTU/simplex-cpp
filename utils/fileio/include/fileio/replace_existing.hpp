@@ -9,7 +9,7 @@
 
 namespace fileio {
 
-/** The target changed after the caller read it; no replacement was published. */
+/** The target changed during snapshot acquisition or before publication. */
 class ReplaceConflict : public std::runtime_error {
 public:
     explicit ReplaceConflict(const std::string& reason);

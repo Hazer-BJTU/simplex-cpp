@@ -73,7 +73,8 @@ struct PreparedEdit {
 /**
  * Edit an existing single-link regular file, with the same pure semantics.
  * Missing/ambiguous matches and unchanged content never write. Before commit,
- * the original bytes and file identity are checked again. Conflict means no
+ * the original bytes and file identity are checked again. A change detected
+ * during the initial read also returns Conflict. Conflict means no
  * replacement was published. PublishedSyncFailed means the replacement is
  * visible but directory fsync failed; do not retry blindly. Other IO failures
  * throw before publication. External writers that ignore this protocol can
