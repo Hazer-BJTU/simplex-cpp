@@ -39,7 +39,33 @@ secret never passes through the hub:
 export DEEPSEEK_API_KEY=sk-...
 ```
 
+### In a disposable container
+
+This is the way to drive the hub by hand. A session can propose arbitrary
+commands through the process tools and, once confirmed, they run wherever the
+worker runs — so the container is there to be the thing that gets deleted, not
+your working directory:
+
+```sh
+docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .
+docker run --rm --init -p 127.0.0.1:8800:8800 simplex-hub-test
+# → http://127.0.0.1:8800/?token=simplex-hub-dev
+```
+
+It carries the worker (Debug, built in the image), the hub, its dependencies,
+and the offline mock provider, so it needs no key and no configuration. Add
+`-e DEEPSEEK_API_KEY=sk-...` to use a real provider as well — a session chooses
+its profile either way — and `-v simplex-hub-data:/data` to keep sessions after
+the container is gone. `docker run -it --rm simplex-hub-test bash` gives a shell
+in the same tree.
+
+The image mounts nothing from the host, runs unprivileged, and publishes the port
+to loopback only. See
+[docker/README.md](../docker/README.md#the-hub-test-image) for what that does and
+does not protect against.
+
 ### Try it without credentials
+
 
 The hub can serve its own scripted model, which makes the whole chain —
 including tool calls, confirmations, and persistence — clickable offline:
@@ -221,6 +247,10 @@ the runner's Ubuntu.
 - The hub cannot prove that a payload was admitted, executed, or persisted. It
   shows what it observed and marks the rest unknown, and it never resends
   automatically.
+- The strongest boundary here is the container, not the token: run sessions in
+  `docker/Dockerfile.hub-test` (above) and the worst case is a container you
+  throw away. `run_command` is `require_confirm`, so every command is shown in
+  the panel before it runs — but a confirmation is a decision, not a sandbox.
 
 ## Troubleshooting
 
