@@ -147,6 +147,10 @@ declarations, its skill, and whatever state they share.
 
 ## Toolsets
 
+- **[toolsets/editing/](toolsets/editing/)** — confirmed, byte-exact replacement
+  of one unique text span in an existing file. Its before/after previews use
+  aligned line numbers and change markers. The worker registers it by default.
+
 - **[toolsets/reading/](toolsets/reading/)** — file reading, currently `read_text`
   with line and byte selection. Future multimodal readers belong here; editing
   remains separate. The worker registers this set and injects its skill by default.

@@ -1,8 +1,35 @@
 # textedit
 
 Text-file operations independent of model-facing toolsets. The package currently
-provides advisory UTF-8 inspection, a byte-based line index and text reading;
-editing and reading tools will be separate consumers of the package.
+provides advisory UTF-8 inspection, a byte-based line index, text reading, and
+precise replacement. Editing and reading tools are separate consumers.
+
+## Exact replacement
+
+`textedit/edit.hpp` provides `prepare_str_replace` for a pure decision and
+`str_replace_file` for publication to an existing file. `old_text` must be
+nonempty and occur exactly once (overlapping matches count separately). An
+empty `new_text` deletes it; an identical replacement reports `Unchanged`
+without writing. The file path is not confined to a workspace. Files over
+16 MiB, final symlinks, multiple hard links and special-mode files are
+rejected. Existing owner, group and POSIX permissions are preserved. Other
+inode metadata, such as ACLs and extended attributes, is not preserved.
+
+Results include a before excerpt and an after excerpt with a shared line-number
+width. `-` marks changed original lines, `+` marks changed replacement lines,
+and `=` marks an unchanged match. `context_lines` defaults to 3 (range 0–20).
+Each shown line is limited to 512 display bytes, with long changed lines
+focused near the match; spans over 48 lines retain
+their first and last 24 lines with an omission marker. These limits affect
+only previews: the edit retains exact bytes, including newlines and invalid
+UTF-8. `preview_truncated` reports clipping or omission.
+
+Before publication, the file's bytes and identity are checked again.
+`Conflict` means this call did not publish a replacement. Publication uses a
+temporary file in the same directory, followed by rename and directory sync.
+`PublishedSyncFailed` means new content is visible but crash durability is
+uncertain; inspect the destination before retrying. Independent writers can
+still race after the final check, so this is not a compare-and-swap protocol.
 
 ## Reading selections
 

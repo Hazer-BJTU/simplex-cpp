@@ -11,6 +11,7 @@
 #include "loop/intrinsic/context_statistic/hook.hpp"
 #include "tools/intrinsic/process/toolset.hpp"
 #include "tools/intrinsic/reading/toolset.hpp"
+#include "tools/intrinsic/editing/toolset.hpp"
 #include "tools/registry.hpp"
 #include <boost/asio/experimental/channel.hpp>
 #include <unordered_set>
@@ -285,6 +286,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         registry.add(std::make_shared<tools::intrinsic::ProcessToolSet>(
             store, &eventbus::default_async_bus()));
         registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>());
+        registry.add(std::make_shared<tools::intrinsic::EditingToolSet>());
         for (auto& tool : extensions.tools) registry.add(std::move(tool));
         hooks.add(loop::intrinsic::ContextStatisticHook::from_config());
         for (auto& hook : extensions.loop_hooks) hooks.add(std::move(hook));

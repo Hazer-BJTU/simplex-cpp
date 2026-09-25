@@ -1,0 +1,35 @@
+name: str_replace_edit
+description: >-
+  Replace exactly one byte-exact occurrence of old_text in an existing regular
+  file. Missing or multiple matches, including overlaps, do not write. Empty
+  new_text deletes the match; an identical replacement reports unchanged.
+  The operation requires confirmation and checks the original file again before
+  atomic publication. Final symlinks, hard-linked files, and files larger than
+  16 MiB are refused. Normal file owner, group and permissions are preserved.
+  Results show aligned line-numbered before/after excerpts: '-' marks removed
+  lines, '+' marks replacement lines. context_lines controls surrounding rows.
+  Long lines and large spans are visibly clipped. A published_sync_failed
+  result means content is already visible but directory durability is uncertain;
+  inspect the file rather than blindly retrying.
+type: serial_write
+security: require_confirm
+argument_schema:
+  type: object
+  required: [path, old_text, new_text]
+  properties:
+    path:
+      type: string
+      minLength: 1
+      description: Existing regular file. Relative paths use the host working directory; NUL is invalid.
+    old_text:
+      type: string
+      minLength: 1
+      description: Nonempty, exact byte sequence expected to occur once. Whitespace and line endings matter.
+    new_text:
+      type: string
+      description: Replacement bytes. Empty string deletes old_text.
+    context_lines:
+      type: integer
+      minimum: 0
+      default: 3
+      description: Number of unchanged lines shown on each side; accepted range is 0 through 20.

@@ -170,6 +170,8 @@ jobs:
           test -f stage/bin/schemas/process/skill.yaml
           test -s stage/bin/schemas/reading/read_text.yaml
           test -s stage/bin/schemas/reading/skill.yaml
+          test -s stage/bin/schemas/editing/str_replace_edit.yaml
+          test -s stage/bin/schemas/editing/skill.yaml
 
       - name: Assert the release carries the default role prompt
         run: test -s stage/bin/prompts/coding_agent.yaml
@@ -415,6 +417,19 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_reading_tools --log_level=error \
             --run_test=defaults_schema_skill_and_attributes_match,installed_declarations_take_precedence_when_present,all_read_modes_preserve_expected_selection
+
+      - name: Assert a release binary finds the STAGED editing declarations
+        run: |
+          set -euo pipefail
+          sources=tools/intrinsic/toolsets/editing/schemas
+          parked=$(mktemp -d)
+          mv "$sources" "$parked/schemas"
+          trap 'mv "$parked/schemas" "$sources"; rmdir "$parked"' EXIT
+          cp build/bin/test_editing_tools stage/bin/
+          unset SIMPLEX_EDITING_SCHEMA_DIR
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          stage/bin/test_editing_tools --log_level=error \
+            --run_test=schema_registration_confirmation_and_aligned_preview,installed_declarations_take_precedence_when_present
 
       - name: Verify executable-relative default prompt in the installed tree
         run: |
