@@ -137,6 +137,9 @@ export function parseEventEnvelope(text) {
         sequence: sequence.display,
         data: parsed.data ?? {},
         known: isKnownEvent(parsed.event),
+        // Wire size, measured once: a bounded transcript needs a cheap size and
+        // re-serializing a large payload on every append is not cheap.
+        bytes: text.length,
         // Everything the worker sent, so the panel's raw view and any future
         // extension field survive untouched.
         raw: parsed,

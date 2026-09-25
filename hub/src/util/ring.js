@@ -14,11 +14,14 @@ export class RingBuffer {
     /**
      * @param {object} options
      * @param {number} options.limit maximum entries retained.
-     * @param {number} [options.byteLimit] maximum total characters retained.
+     * @param {number} [options.byteLimit] maximum total size retained.
+     * @param {(item: any) => number} [options.sizeOf] size of one entry;
+     *   defaults to string length, which is what a log ring needs.
      */
-    constructor({ limit, byteLimit = 0 }) {
+    constructor({ limit, byteLimit = 0, sizeOf }) {
         this.limit = limit;
         this.byteLimit = byteLimit;
+        this.sizeOf = sizeOf ?? ((item) => (typeof item === 'string' ? item.length : 0));
         this.items = [];
         this.bytes = 0;
         this.dropped = 0;
@@ -27,11 +30,11 @@ export class RingBuffer {
     /** Append one entry, evicting the oldest as needed. */
     push(item) {
         this.items.push(item);
-        this.bytes += typeof item === 'string' ? item.length : 0;
+        this.bytes += this.sizeOf(item);
         while (this.items.length > this.limit
             || (this.byteLimit > 0 && this.bytes > this.byteLimit && this.items.length > 1)) {
             const removed = this.items.shift();
-            this.bytes -= typeof removed === 'string' ? removed.length : 0;
+            this.bytes -= this.sizeOf(removed);
             this.dropped += 1;
         }
     }

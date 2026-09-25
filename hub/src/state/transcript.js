@@ -21,11 +21,16 @@ export class SessionTranscript {
      * @param {object} options
      * @param {string} options.sessionId
      * @param {number} options.limit retained envelopes.
+     * @param {number} [options.byteLimit] retained wire bytes.
      * @param {string} [options.filePath] JSONL path; omit to keep memory only.
      */
-    constructor({ sessionId, limit, filePath }) {
+    constructor({ sessionId, limit, byteLimit = 0, filePath }) {
         this.sessionId = sessionId;
-        this.buffer = new RingBuffer({ limit });
+        this.buffer = new RingBuffer({
+            limit,
+            byteLimit,
+            sizeOf: (envelope) => envelope.bytes ?? 0,
+        });
         this.filePath = filePath ?? null;
         this.stream = null;
         this.sequence = 0;
@@ -115,6 +120,7 @@ export class TranscriptStore {
             transcript = new SessionTranscript({
                 sessionId,
                 limit: this.config.limits.transcriptEvents,
+                byteLimit: this.config.limits.transcriptBytes,
                 filePath: join(this.config.dataDir, 'events', `${sessionId}.jsonl`),
             });
             this.transcripts.set(sessionId, transcript);

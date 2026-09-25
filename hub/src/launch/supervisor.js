@@ -228,7 +228,7 @@ export class WorkerSupervisor {
         rotateLog(logPath, this.config.limits);
         const logs = new RingBuffer({
             limit: this.config.limits.logLines,
-            byteLimit: this.config.limits.logBytes,
+            byteLimit: this.config.limits.logRingBytes,
         });
         const logStream = createWriteStream(logPath, { flags: 'a' });
         const record = new ProcessRecord({ sessionId: session.id, invocation, logPath, logStream, logs });
@@ -461,7 +461,7 @@ export class WorkerSupervisor {
             logStream: { write() {}, end() {} },
             logs: new RingBuffer({
                 limit: this.config.limits.logLines,
-                byteLimit: this.config.limits.logBytes,
+                byteLimit: this.config.limits.logRingBytes,
             }),
         });
         record.pid = stored.pid;

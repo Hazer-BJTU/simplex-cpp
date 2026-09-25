@@ -116,8 +116,13 @@ export function defaultConfig() {
             slowMs: 1500,
         },
         limits: {
+            // In-memory budgets per session: an entry count plus a byte ceiling,
+            // because a single model response can dwarf a thousand small events.
             transcriptEvents: 5000,
+            transcriptBytes: 32 * 1024 * 1024,
             logLines: 500,
+            logRingBytes: 256 * 1024,
+            // On-disk worker log rotation.
             logBytes: 8 * 1024 * 1024,
             logFiles: 2,
             maxMessageBytes: 32 * 1024 * 1024,
@@ -325,7 +330,8 @@ export function validateConfig(config) {
     }
 
     const limits = config.limits ?? {};
-    for (const key of ['transcriptEvents', 'logLines', 'logBytes', 'logFiles', 'maxMessageBytes']) {
+    for (const key of ['transcriptEvents', 'transcriptBytes', 'logLines', 'logRingBytes',
+        'logBytes', 'logFiles', 'maxMessageBytes']) {
         check(Number.isInteger(limits[key]) && limits[key] > 0,
             `limits.${key} must be a positive integer`);
     }
