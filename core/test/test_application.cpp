@@ -99,8 +99,16 @@ void scenario(Mode mode) {
                     co_await socket.async_write(asio::buffer(binary), asio::use_awaitable);
                     continue;
                 }
-                Json input = {{"type", "payload"}, {"data", {
-                    {"operation", "message"}, {"request_id", "one"}, {"text", "hello"}}}};
+                Json input = {
+                    {"type", "payload"},
+                    {"data", {
+                        {"operation", "message"},
+                        {"request_id", "one"},
+                        {"content", Json::array({{
+                            {"type", "text"}, {"raw", "hello"}, {"label", "text"}
+                        }})}
+                    }}
+                };
                 co_await send(input);
                 if (mode == Mode::Normal) {
                     co_await send(input);

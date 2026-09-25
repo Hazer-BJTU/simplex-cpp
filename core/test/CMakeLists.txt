@@ -1,9 +1,10 @@
-foreach(name configuration confirmation application)
+foreach(name configuration confirmation application protocol)
     add_executable(test_core_${name} test_${name}.cpp)
     target_link_libraries(test_core_${name} PRIVATE core_lib Boost::unit_test_framework)
     add_test(NAME test_core_${name} COMMAND test_core_${name})
     set_tests_properties(test_core_${name} PROPERTIES TIMEOUT 30)
 endforeach()
+target_link_libraries(test_core_protocol PRIVATE llm_chat_completions)
 
 add_test(NAME core_worker_container
     COMMAND /bin/sh ${PROJECT_SOURCE_DIR}/loop/test/run_example_container_smoke.sh

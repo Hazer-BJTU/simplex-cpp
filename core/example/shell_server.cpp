@@ -286,7 +286,12 @@ struct Server {
                 } else if (!line.empty()) {
                     message = {{"type", "payload"}, {"data", {
                         {"operation", line == "/continue" ? "continue" : "message"},
-                        {"request_id", core::new_identity()}, {"text", line}}}};
+                        {"request_id", core::new_identity()}}}};
+                    if (line != "/continue") {
+                        message["data"]["content"] = Json::array({{
+                            {"type", "text"}, {"raw", line}, {"label", "text"}
+                        }});
+                    }
                 } else continue;
                 if (!outgoing || !outgoing->try_send(boost::system::error_code{}, std::move(message)))
                     core_example::block("Not sent", "Worker offline or outgoing queue full; input was not queued.");

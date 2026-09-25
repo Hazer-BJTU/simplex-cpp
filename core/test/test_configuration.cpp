@@ -62,7 +62,13 @@ BOOST_AUTO_TEST_CASE(protocol_never_admits_fabricated_tool_messages) {
     for (const auto id : {"", ".", "..", "a/b", "../x", "a.b", "x y"})
         BOOST_CHECK_THROW(core::validate_session_id(id), std::invalid_argument);
     core::validate_session_id("session_01-demo");
-    Json payload = {{"operation", "message"}, {"request_id", "input-1"}, {"text", "hello"}};
+    Json payload = {
+        {"operation", "message"},
+        {"request_id", "input-1"},
+        {"content", Json::array({{
+            {"type", "text"}, {"raw", "hello"}, {"label", "text"}
+        }})}
+    };
     auto input = core::parse_input(payload);
     BOOST_TEST(input.message.role == "user");
     BOOST_TEST(input.message.content.front().raw == "hello");

@@ -111,7 +111,7 @@ in a text WebSocket message.
 Hub-to-worker event-connection messages have this envelope:
 
 ```json
-{"type":"payload","data":{"operation":"message","request_id":"req-001","text":"Hello"}}
+{"type":"payload","data":{"operation":"message","request_id":"req-001","content":[{"type":"text","raw":"Hello","label":"text"}]}}
 ```
 
 `type` must be `payload` or `signal`; `data` must be present. Each operation
@@ -173,14 +173,70 @@ Sending while a run is active does not create a concurrent run.
 ### Submit a message
 
 ```json
-{"type":"payload","data":{"operation":"message","request_id":"req-001","text":"Explain this project."}}
+{
+  "type": "payload",
+  "data": {
+    "operation": "message",
+    "request_id": "req-001",
+    "content": [
+      {"type": "text", "raw": "Describe this image.", "label": "text"},
+      {
+        "type": "external_ref",
+        "raw": "https://example.com/photo.png",
+        "label": "image",
+        "extras": {"detail": "low"}
+      }
+    ]
+  }
+}
 ```
 
 Required fields are string `operation` equal to `message`, a valid `request_id`,
-and nonempty string `text`. Whitespace-only text is not trimmed by the protocol.
-There is no application-level text-length setting; transport and memory limits
-still apply. The worker constructs an ordinary user message. This operation
-does not accept an arbitrary conversation record or multimodal content array.
+and a nonempty `content` array of objects. Each object becomes one entry in the
+user message's ordered `content` list:
+
+| Input part field | Requirement | Conversion |
+| --- | --- | --- |
+| `type` | Required string: `text`, `binary`, or `external_ref` | `Content.type`; describes encoding, not media category. Unknown values are rejected. |
+| `raw` | Required nonempty string | `Content.raw`, unchanged: text, base64 bytes, or an external reference according to `type`. |
+| `label` | Required nonempty string | Stored as `Content.extras.label`; describes the provider-facing content category, such as `text`, `image`, or `video`. |
+| `extras` | Optional JSON object | Additional content metadata, such as image `detail` or a media type. Other members are preserved; the top-level `label` overrides an existing `extras.label`. |
+
+For example, the image part above becomes the following persisted/output Content
+object. The label is nested in `extras`, not emitted as a new Content field:
+
+```json
+{
+  "type": "external_ref",
+  "raw": "https://example.com/photo.png",
+  "extras": {"detail": "low", "label": "image"}
+}
+```
+
+An attachment-only message is valid; no text part is required. Parts remain in
+array order. Unknown extra part fields are ignored; metadata that must survive
+conversion belongs in `extras`. `type: "image"` is invalid: use an encoding such
+as `external_ref` together with `label: "image"`. Labels are not an enum at this
+boundary, so a provider can define additional categories without changing core.
+
+The worker neither fetches references nor decodes base64 during admission.
+There is no upload endpoint or implicit mapping from a hub-local filename to
+worker/provider-accessible bytes. The sender must provide the bytes/reference
+required by its selected provider adapter. There is no application-level raw
+length setting; transport and memory limits still apply. Text is not trimmed.
+
+Provider support is separate from input admission. The current Chat Completions
+adapter converts text to text parts and external references to `image_url` parts;
+it supports metadata such as `extras.detail`, but does not yet dispatch by
+`extras.label`. It does not currently provide a video/audio/binary routing
+contract. Preserving `label: "video"` in state does **not** make that adapter
+video-capable; do not send such content through it until provider conversion is
+implemented. An adapter may also support a modality that its selected model
+does not support. Hubs must match both adapter and model capabilities.
+
+The former `data.text` field is no longer accepted for `message`, including when
+`content` is also present. Send a one-element text array instead. Role and tool
+metadata remain worker-owned; a content array is not an arbitrary MessageItem.
 
 ### Continue the existing turn
 
@@ -192,7 +248,8 @@ does not accept an arbitrary conversation record or multimodal content array.
 a user message. It requires at least one existing turn. It is useful after
 cancellation or an exchange limit when the recovery phase permits continuation;
 it is not restricted to those outcomes. Each invocation receives a fresh model
-exchange budget. A supplied `text` field is ignored for `continue`.
+exchange budget. Content fields supplied with `continue` are ignored; omit them to avoid
+suggesting that a new attachment or user message will be committed.
 
 For both operations, `role`, `invokes`, `invoke_return`, and `type` inside `data`
 are rejected even if their values are null. Other unknown fields are ignored.
@@ -381,7 +438,7 @@ them as commands.
 | --- | --- | --- |
 | `type` | `text`, `binary`, `external_ref` | Encoding of `raw`. |
 | `raw` | String | UTF-8 text, base64 binary, or an external URI/reference, respectively. |
-| `extras` | Optional JSON | Provider/tool metadata. |
+| `extras` | Optional JSON | Provider/tool metadata. For admitted user content, an object containing the input part's `label` and any supplied metadata. |
 
 Render text as untrusted content. Do not execute HTML, terminal escape sequences,
 or references received from models or tools. URI references are data; the

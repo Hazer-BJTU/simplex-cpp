@@ -23,11 +23,48 @@ Input parse_input(const nlohmann::json& payload) {
     input.has_message = operation == "message";
     input.message.role = "user";
     if (input.has_message) {
-        const auto text = payload.at("text").get<std::string>();
-        if (text.empty()) throw std::invalid_argument("message text must not be empty");
-        model_io::Content content;
-        content.raw = text;
-        input.message.content.push_back(std::move(content));
+        if (payload.contains("text")) {
+            throw std::invalid_argument("message requires content instead of text");
+        }
+        const auto& parts = payload.at("content");
+        if (!parts.is_array() || parts.empty()) {
+            throw std::invalid_argument("content must be a nonempty array");
+        }
+        input.message.content.reserve(parts.size());
+        for (const auto& part : parts) {
+            if (!part.is_object()) {
+                throw std::invalid_argument("each content part must be an object");
+            }
+            model_io::Content content;
+            const auto type = part.at("type").get<std::string>();
+            // Content's general JSON decoder tolerates unknown enum labels.
+            // The public input boundary must reject them rather than silently
+            // turn an attachment into text.
+            if (type == "text") {
+                content.type = model_io::ContentType::Text;
+            } else if (type == "binary") {
+                content.type = model_io::ContentType::Binary;
+            } else if (type == "external_ref") {
+                content.type = model_io::ContentType::ExternalRef;
+            } else {
+                throw std::invalid_argument("unknown content type");
+            }
+            content.raw = part.at("raw").get<std::string>();
+            const auto label = part.at("label").get<std::string>();
+            if (content.raw.empty() || label.empty()) {
+                throw std::invalid_argument("content raw and label must not be empty");
+            }
+            const auto extras = part.find("extras");
+            if (extras != part.end() && !extras->is_object()) {
+                throw std::invalid_argument("content extras must be an object");
+            }
+            content.extras = extras == part.end()
+                ? nlohmann::json::object() : *extras;
+            // The dedicated wire field is authoritative. Keep all other
+            // metadata, including provider options such as image detail.
+            (*content.extras)["label"] = label;
+            input.message.content.push_back(std::move(content));
+        }
     }
     return input;
 }
