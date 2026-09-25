@@ -4,7 +4,9 @@
 binary inspection of regular files. It follows symlinks, checks the opened
 descriptor's type and uses nonblocking open so a FIFO does not wait for a
 writer. Regular-file reads are synchronous, retry interrupted reads, stop at
-EOF and return no more than `max_bytes`. The descriptor is close-on-exec and
+EOF and return no more than `max_bytes`. A fixed-size scratch buffer grows the
+returned string only as bytes arrive; a small file does not allocate its entire
+maximum read allowance. The descriptor is close-on-exec and
 closed on every exit. Errors throw; no text decoding or snapshot guarantee is
 provided. `textedit` uses this primitive for advisory UTF-8 sampling.
 

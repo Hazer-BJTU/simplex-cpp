@@ -211,3 +211,96 @@ BOOST_FIXTURE_TEST_CASE(file_reading_obeys_limits_and_does_not_change_contents, 
     BOOST_CHECK_THROW((void)textedit::read_file_lines(root / "fifo", 0, 1), std::system_error);
     BOOST_TEST(textedit::read_file_bytes(write(""), 0, all, ByteReadFormat::Plain, 0).text.empty());
 }
+
+BOOST_AUTO_TEST_CASE(bounded_read_agrees_with_full_rendering_when_it_fits)
+{
+    const std::string text = "a\r\nb\xc2\x85\xe4\xb8\xad\n";
+    for (const auto format : {textedit::LineReadFormat::Plain,
+                              textedit::LineReadFormat::LineIndex,
+                              textedit::LineReadFormat::ByteRange}) {
+        const auto full = textedit::read_lines(text, 1, all, format);
+        const auto bounded = textedit::read_lines_bounded(text, 1, all, format, 1024);
+        BOOST_TEST(bounded.text == full.text);
+        BOOST_TEST(bounded.start_byte == full.start_byte);
+        BOOST_TEST(bounded.end_byte == full.end_byte);
+        BOOST_TEST(bounded.total_lines == full.total_lines);
+        BOOST_TEST(bounded.lines_read == full.lines_read);
+        BOOST_TEST(!bounded.output_truncated);
+        BOOST_TEST(!bounded.display_replaced);
+    }
+    for (const auto format : {textedit::ByteReadFormat::Plain,
+                              textedit::ByteReadFormat::HexEscaped}) {
+        const auto full = textedit::read_bytes(text, 0, all, format);
+        const auto bounded = textedit::read_bytes_bounded(text, 0, all, format, 1024);
+        BOOST_TEST(bounded.text == full.text);
+        BOOST_TEST(bounded.total_lines == full.total_lines);
+        BOOST_TEST(!bounded.output_truncated);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(bounded_rendering_stops_before_materializing_large_selection)
+{
+    const std::string dense(16 * 1024 * 1024, '\n');
+    const auto lines = textedit::read_lines_bounded(
+        dense, 0, all, textedit::LineReadFormat::ByteRange, 65536);
+    BOOST_TEST(lines.total_lines == dense.size() + 1);
+    BOOST_TEST(lines.lines_read == dense.size() + 1);
+    BOOST_TEST(lines.total_bytes == dense.size());
+    BOOST_TEST(lines.reached_end);
+    BOOST_TEST(lines.output_truncated);
+    BOOST_TEST(lines.text.size() <= 65536u);
+    BOOST_TEST(lines.text.starts_with("[       0:       1] | "));
+
+    const auto hex = textedit::read_bytes_bounded(
+        dense, 0, all, textedit::ByteReadFormat::HexEscaped, 65536);
+    BOOST_TEST(hex.total_lines == dense.size() + 1);
+    BOOST_TEST(hex.output_truncated);
+    BOOST_TEST(hex.text.size() == 65536u);
+    BOOST_TEST(hex.text.starts_with("\\x0A\\x0A"));
+    BOOST_TEST(hex.text.ends_with("\\x0A"));
+    const auto tiny = textedit::read_bytes_bounded(
+        dense, 0, 1, textedit::ByteReadFormat::HexEscaped, 3);
+    BOOST_TEST(tiny.text.empty());
+    BOOST_TEST(tiny.output_truncated);
+}
+
+BOOST_AUTO_TEST_CASE(malformed_bytes_across_budget_are_repaired_before_clipping)
+{
+    const std::string malformed(70000, '\x80');
+    const auto result = textedit::read_bytes_bounded(
+        malformed, 0, all, textedit::ByteReadFormat::Plain, 65536);
+    BOOST_TEST(result.text.size() == 65535u); // 21845 complete U+FFFD scalars.
+    BOOST_TEST(result.text.starts_with("\xef\xbf\xbd\xef\xbf\xbd"));
+    BOOST_TEST(result.display_replaced);
+    BOOST_TEST(result.output_truncated);
+    BOOST_TEST(result.end_byte == malformed.size());
+
+    const auto valid = textedit::read_bytes_bounded(
+        "\xe4\xb8\xad\xe4\xb8\xad", 0, all,
+        textedit::ByteReadFormat::Plain, 4);
+    BOOST_TEST(valid.text == "\xe4\xb8\xad");
+    BOOST_TEST(valid.output_truncated);
+    BOOST_TEST(!valid.display_replaced);
+    const auto split = textedit::read_bytes_bounded(
+        "\xe4\xb8\xad", 1, 1, textedit::ByteReadFormat::Plain, 3);
+    BOOST_TEST(split.text == "\xef\xbf\xbd");
+    BOOST_TEST(split.display_replaced);
+    BOOST_TEST(!split.output_truncated);
+}
+
+BOOST_FIXTURE_TEST_CASE(file_bounded_read_has_same_limits_and_totals, Scratch)
+{
+    const auto path = write("a\r\nb\n");
+    const auto lines = textedit::read_file_lines_bounded(
+        path, 0, all, textedit::LineReadFormat::LineIndex, 5, 5);
+    BOOST_TEST(lines.text == "0 | a");
+    BOOST_TEST(lines.output_truncated);
+    BOOST_TEST(lines.total_lines == 3u);
+    BOOST_TEST(lines.total_bytes == 5u);
+    const auto hex = textedit::read_file_bytes_bounded(
+        path, 0, all, textedit::ByteReadFormat::HexEscaped, 4, 5);
+    BOOST_TEST(hex.text == "\\x61");
+    BOOST_TEST(hex.output_truncated);
+    BOOST_CHECK_THROW((void)textedit::read_file_lines_bounded(
+        path, 0, 1, textedit::LineReadFormat::Plain, 5, 4), std::length_error);
+}

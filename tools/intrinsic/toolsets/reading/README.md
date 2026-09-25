@@ -58,7 +58,10 @@ Concise hints, including suspected non-UTF-8 text warnings, appear with metadata
 before content.
 ToolResult framing adds a final newline when needed; it is not file content.
 
-Rendered content is clipped to 65536 bytes, at a UTF-8 boundary. With truncation,
+Rendered content is limited to 65536 bytes as it is produced. Line counts are
+scanned with constant index space; indexed labels and hex escapes are appended
+only until the output limit. Invalid UTF-8 is replaced during bounded rendering,
+so runs of malformed continuation bytes cannot disappear at the boundary. With truncation,
 lines_read describes the original selection, **not** the clipped
 display: request fewer entries rather than advancing past undisplayed content.
 For a single oversized line, switch to byte mode and read smaller chunks.
@@ -91,6 +94,8 @@ does not disable a valid tool.
 
 `test_reading_tools` checks defaults against the loaded schema, all format modes,
 invalid arguments, filesystem failures, encoding repair, clipping, oversize input,
-skill injection and missing declarations through real registry calls. Core tests
-verify default registration and guidance injection. CI checks the installed YAML
-files, and the staged test executable resolves declarations beside itself.
+skill injection and missing declarations through real registry calls. Dense
+newline and malformed continuation runs exercise bounded memory and boundary
+behavior. Core tests verify default registration and guidance injection. CI
+also hides source schemas and runs the staged test executable to prove the
+installed declarations and skill load beside it.

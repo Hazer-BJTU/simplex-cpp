@@ -400,6 +400,22 @@ jobs:
           stage/bin/test_tools --log_level=error \
             --run_test=the_set_offers_five_routable_tools,every_tool_is_declared_by_its_own_yaml_file,the_set_carries_its_skill_and_hands_it_to_a_prompt
 
+        # The source path baked into the library must not rescue a broken
+        # executable-relative lookup. Use the installed test executable and
+        # temporarily hide the source declarations, like the process check.
+      - name: Assert a release binary finds the STAGED reading declarations
+        run: |
+          set -euo pipefail
+          sources=tools/intrinsic/toolsets/reading/schemas
+          parked=$(mktemp -d)
+          mv "$sources" "$parked/schemas"
+          trap 'mv "$parked/schemas" "$sources"; rmdir "$parked"' EXIT
+          cp build/bin/test_reading_tools stage/bin/
+          unset SIMPLEX_READING_SCHEMA_DIR
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          stage/bin/test_reading_tools --log_level=error \
+            --run_test=defaults_schema_skill_and_attributes_match,installed_declarations_take_precedence_when_present,all_read_modes_preserve_expected_selection
+
       - name: Verify executable-relative default prompt in the installed tree
         run: |
           set -euo pipefail

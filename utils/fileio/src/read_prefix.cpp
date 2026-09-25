@@ -1,8 +1,8 @@
 #include "fileio/read_prefix.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
-#include <limits>
 #include <stdexcept>
 #include <system_error>
 
@@ -54,13 +54,12 @@ std::string read_prefix(const std::filesystem::path& path, std::size_t max_bytes
             "file prefix requires a regular file");
     }
 
-    std::string bytes(max_bytes, '\0');
-    std::size_t count = 0;
-    while (count < max_bytes) {
+    std::string bytes;
+    std::array<char, 8192> chunk{};
+    while (bytes.size() < max_bytes) {
         const auto request = std::min(
-            max_bytes - count,
-            static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()));
-        const auto received = ::read(file.get(), bytes.data() + count, request);
+            max_bytes - bytes.size(), chunk.size());
+        const auto received = ::read(file.get(), chunk.data(), request);
         if (received < 0) {
             if (errno == EINTR) {
                 continue;
@@ -70,9 +69,8 @@ std::string read_prefix(const std::filesystem::path& path, std::size_t max_bytes
         if (received == 0) {
             break;
         }
-        count += static_cast<std::size_t>(received);
+        bytes.append(chunk.data(), static_cast<std::size_t>(received));
     }
-    bytes.resize(count);
     return bytes;
 }
 

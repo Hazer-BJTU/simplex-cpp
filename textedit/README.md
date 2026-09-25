@@ -59,8 +59,20 @@ File functions currently load the whole file before selection, bounded by an
 optional `max_file_bytes` parameter (default 16 MiB). One lookahead byte detects
 oversize input, which throws `std::length_error`; content is never silently
 truncated to satisfy this bound. Zero allows an empty file, while `SIZE_MAX` is
-invalid. This is an input-size bound, not a combined memory/output bound: the
-line index, prefixes, and especially fourfold hex expansion need extra memory.
+invalid. The original unrestricted read functions can allocate a full line
+index and full formatted selection; they are intended for callers that need
+the complete result.
+
+`read_lines_bounded` / `read_bytes_bounded` and their file counterparts enforce
+an output byte budget during rendering. They count lines with constant index
+space and never allocate a full line-start vector. Indexed labels and hex
+escapes are produced only until the display budget is reached. Plain display
+validates UTF-8 as it appends, replacing malformed bytes with U+FFFD without
+splitting valid characters. `display_replaced` reports replacements in the
+displayed prefix; `output_truncated` reports undisplayed selection content.
+The file bytes remain subject to the input limit and are loaded once. These
+bounded functions use O(file size + display budget) memory, excluding normal
+allocator overhead and the small metadata/result objects.
 For repeated selections, load once and use the string-view functions. Reads are
 synchronous and use `fileio`'s regular-file checks and symlink handling. Filesystem
 errors throw `std::system_error`; concurrent modifications are not a snapshot.

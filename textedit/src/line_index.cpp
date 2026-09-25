@@ -1,39 +1,15 @@
 #include "textedit/line_index.hpp"
+#include "line_break.hpp"
 
 #include <algorithm>
 #include <stdexcept>
 
 namespace textedit {
-namespace {
-
-/// Return the complete terminator width, or zero for an ordinary byte.
-/// Inspect only available bytes; a partial UTF-8 newline is ordinary content.
-std::size_t newline_width(std::string_view remaining)
-{
-    const auto first = static_cast<unsigned char>(remaining.front());
-    if (first == '\r') {
-        return remaining.size() >= 2 && remaining[1] == '\n' ? 2 : 1;
-    }
-    if (first == '\n' || first == '\v' || first == '\f') {
-        return 1;
-    }
-    if (remaining.starts_with("\xc2\x85")) {
-        return 2;
-    }
-    if (remaining.starts_with("\xe2\x80\xa8") ||
-        remaining.starts_with("\xe2\x80\xa9")) {
-        return 3;
-    }
-    return 0;
-}
-
-} // namespace
-
 LineIndex::LineIndex(std::string_view text)
     : _byte_count(text.size()), _line_starts{0}
 {
     for (std::size_t offset = 0; offset < text.size();) {
-        const auto width = newline_width(text.substr(offset));
+        const auto width = detail::line_break_width(text.substr(offset));
         if (width == 0) {
             ++offset;
         } else {

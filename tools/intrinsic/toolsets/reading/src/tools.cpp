@@ -8,23 +8,6 @@
 #include <stdexcept>
 
 namespace tools::intrinsic {
-namespace {
-
-/// Clip at a UTF-8 boundary. Invalid source bytes are repaired separately.
-bool clip_output(std::string& text, std::size_t limit)
-{
-    if (text.size() <= limit) {
-        return false;
-    }
-    auto end = limit;
-    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xc0) == 0x80) {
-        --end;
-    }
-    text.resize(end);
-    return true;
-}
-
-} // namespace
 
 ReadTextTool::ReadTextTool()
     : DeclaredTool(reading::schema_directory() / "read_text.yaml")
@@ -71,18 +54,20 @@ boost::asio::awaitable<model_io::Content> ReadTextTool::invoke(
     try {
         ToolResult output;
         output.field("path", path);
-        textedit::ReadResult selected;
+        textedit::BoundedReadResult selected;
         if (mode == "lines") {
             const auto layout = format == "line_index" ? textedit::LineReadFormat::LineIndex
                 : format == "byte_range" ? textedit::LineReadFormat::ByteRange
                 : textedit::LineReadFormat::Plain;
-            auto lines = textedit::read_file_lines(path, start, count, layout, kMaxFileBytes);
+            auto lines = textedit::read_file_lines_bounded(
+                path, start, count, layout, kMaxOutputBytes, kMaxFileBytes);
             output.field("lines_read", lines.lines_read);
             selected = std::move(lines);
         } else {
             const auto layout = format == "hex_escaped" ? textedit::ByteReadFormat::HexEscaped
                 : textedit::ByteReadFormat::Plain;
-            selected = textedit::read_file_bytes(path, start, count, layout, kMaxFileBytes);
+            selected = textedit::read_file_bytes_bounded(
+                path, start, count, layout, kMaxOutputBytes, kMaxFileBytes);
         }
 
         // Probe separately: this is advisory evidence, never a read precondition
@@ -92,26 +77,19 @@ boost::asio::awaitable<model_io::Content> ReadTextTool::invoke(
         if (probe.likelihood == textedit::Utf8TextLikelihood::Unlikely) {
             hints.emplace_back("File may not be UTF-8 text; use bytes with hex_escaped for exact bytes.");
         }
-        bool truncated = clip_output(selected.text, kMaxOutputBytes);
-        // Model messages must serialize as UTF-8 even for malformed input or a
-        // byte selection cutting through a character. The library stays lossless.
-        auto safe = nlohmann::json::parse(nlohmann::json(selected.text).dump(
-            -1, ' ', false, nlohmann::json::error_handler_t::replace)).get<std::string>();
-        const bool replaced = safe != selected.text;
-        truncated = clip_output(safe, kMaxOutputBytes) || truncated;
-        if (replaced) {
+        if (selected.display_replaced) {
             hints.emplace_back("Invalid UTF-8 bytes replaced for display; use hex_escaped for exact bytes.");
         }
-        if (truncated) {
+        if (selected.output_truncated) {
             hints.emplace_back("Output clipped to 65536 bytes; reduce count and reread. For a single long line, use byte mode.");
         }
         output.field("total_lines", selected.total_lines)
             .field("total_bytes", selected.total_bytes)
             .field("reached_end", selected.reached_end)
-            .field("output_truncated", truncated)
-            .field("display_replaced", replaced)
+            .field("output_truncated", selected.output_truncated)
+            .field("display_replaced", selected.display_replaced)
             .field("hints", hints)
-            .block("text", std::move(safe), truncated);
+            .block("text", std::move(selected.text), selected.output_truncated);
         co_return output.render();
     } catch (const std::exception& error) {
         invoke_failed(std::string("read_text: ") + error.what());

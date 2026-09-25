@@ -40,6 +40,19 @@ struct LineReadResult : ReadResult {
     std::size_t lines_read = 0;
 };
 
+/** A model-safe bounded display. Metadata still describes the full selection. */
+struct BoundedReadResult : ReadResult {
+    /// The selection contains more display content than text could hold.
+    bool output_truncated = false;
+    /// At least one malformed UTF-8 byte was replaced in the displayed prefix.
+    bool display_replaced = false;
+};
+
+struct BoundedLineReadResult : BoundedReadResult {
+    std::size_t start_line = 0;
+    std::size_t lines_read = 0;
+};
+
 /**
  * Read up to line_count logical lines, starting at a zero-based line index.
  *
@@ -76,7 +89,8 @@ struct LineReadResult : ReadResult {
  * Selection may split a UTF-8 character. Counts clamp to available bytes; zero
  * selects nothing. EOF is valid; offsets beyond EOF throw std::out_of_range.
  * Unknown format values throw std::invalid_argument. The view is not retained.
- * Computing total_lines scans the whole input, even for a small byte selection.
+ * Computing total_lines scans the whole input, even for a small byte selection,
+ * using constant additional space.
  */
 [[nodiscard]] ReadResult read_bytes(
     std::string_view text,
@@ -113,6 +127,55 @@ struct LineReadResult : ReadResult {
     std::size_t start_byte,
     std::size_t byte_count,
     ByteReadFormat format = ByteReadFormat::Plain,
+    std::size_t max_file_bytes = 16 * 1024 * 1024);
+
+/**
+ * Model-facing line read with an enforced display budget.
+ *
+ * Scans the whole input for totals and requested boundaries in O(bytes) time
+ * and O(1) index storage. Only the selected prefix that fits output_bytes is
+ * rendered; no full LineIndex or full formatted selection is constructed.
+ * Valid UTF-8 scalars remain intact, malformed bytes become U+FFFD and set
+ * display_replaced. Indexed separators and labels follow read_lines().
+ * output_truncated means the selected display has more content; lines_read,
+ * byte bounds, totals and reached_end still describe the full selection.
+ * Zero output_bytes is allowed. The borrowed input is not retained.
+ */
+[[nodiscard]] BoundedLineReadResult read_lines_bounded(
+    std::string_view text,
+    std::size_t start_line,
+    std::size_t line_count,
+    LineReadFormat format,
+    std::size_t output_bytes);
+
+/**
+ * Model-facing byte read with a bounded display and constant index storage.
+ * Plain decodes like read_lines_bounded; HexEscaped uses four ASCII bytes per
+ * source byte and never emits a partial escape. Input coordinates remain raw
+ * byte offsets, so a selection may start inside a UTF-8 sequence.
+ */
+[[nodiscard]] BoundedReadResult read_bytes_bounded(
+    std::string_view text,
+    std::size_t start_byte,
+    std::size_t byte_count,
+    ByteReadFormat format,
+    std::size_t output_bytes);
+
+/** File counterparts with the same whole-file bound as read_file_lines/bytes. */
+[[nodiscard]] BoundedLineReadResult read_file_lines_bounded(
+    const std::filesystem::path& path,
+    std::size_t start_line,
+    std::size_t line_count,
+    LineReadFormat format,
+    std::size_t output_bytes,
+    std::size_t max_file_bytes = 16 * 1024 * 1024);
+
+[[nodiscard]] BoundedReadResult read_file_bytes_bounded(
+    const std::filesystem::path& path,
+    std::size_t start_byte,
+    std::size_t byte_count,
+    ByteReadFormat format,
+    std::size_t output_bytes,
     std::size_t max_file_bytes = 16 * 1024 * 1024);
 
 } // namespace textedit

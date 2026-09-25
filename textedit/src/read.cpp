@@ -2,6 +2,8 @@
 
 #include "fileio/read_prefix.hpp"
 #include "textedit/line_index.hpp"
+#include "line_break.hpp"
+#include "read_detail.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -31,8 +33,9 @@ void append_index(std::string& output, std::size_t value, std::size_t width)
     output += digits;
 }
 
-/// Reject oversize input rather than silently interpreting a truncated file.
-std::string load_file(const std::filesystem::path& path, std::size_t limit)
+} // namespace
+
+std::string detail::load_file(const std::filesystem::path& path, std::size_t limit)
 {
     if (limit == std::numeric_limits<std::size_t>::max()) {
         throw std::invalid_argument("file byte limit must leave room for one lookahead byte");
@@ -43,8 +46,6 @@ std::string load_file(const std::filesystem::path& path, std::size_t limit)
     }
     return bytes;
 }
-
-} // namespace
 
 LineReadResult read_lines(
     std::string_view text,
@@ -120,7 +121,7 @@ ReadResult read_bytes(
     const auto count = std::min(byte_count, text.size() - start_byte);
     ReadResult result;
     result.total_bytes = text.size();
-    result.total_lines = LineIndex(text).line_count();
+    result.total_lines = detail::count_lines(text);
     result.start_byte = start_byte;
     result.end_byte = start_byte + count;
     result.reached_end = result.end_byte == text.size();
@@ -149,7 +150,7 @@ LineReadResult read_file_lines(
     LineReadFormat format,
     std::size_t max_file_bytes)
 {
-    const auto bytes = load_file(path, max_file_bytes);
+    const auto bytes = detail::load_file(path, max_file_bytes);
     return read_lines(bytes, start_line, line_count, format);
 }
 
@@ -160,7 +161,7 @@ ReadResult read_file_bytes(
     ByteReadFormat format,
     std::size_t max_file_bytes)
 {
-    const auto bytes = load_file(path, max_file_bytes);
+    const auto bytes = detail::load_file(path, max_file_bytes);
     return read_bytes(bytes, start_byte, byte_count, format);
 }
 

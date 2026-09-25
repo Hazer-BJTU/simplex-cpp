@@ -11,7 +11,9 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_future.hpp>
 #include <cstdlib>
+#include <cstdint>
 #include <fstream>
+#include <limits>
 #include <sys/stat.h>
 
 namespace {
@@ -231,6 +233,43 @@ BOOST_FIXTURE_TEST_CASE(output_limits_are_visible_and_preserve_utf8_boundaries, 
     BOOST_CHECK_NO_THROW(Json(result.output.raw).dump());
     const auto oversize = write(std::string(tools::intrinsic::ReadTextTool::kMaxFileBytes + 1, 'a'));
     BOOST_TEST(tools::is_error(call({{"path", oversize}})));
+}
+
+BOOST_FIXTURE_TEST_CASE(dense_newlines_are_bounded_before_indexed_rendering, Fixture)
+{
+    const auto path = write(std::string(16 * 1024 * 1024, '\n'));
+    const auto indexed = call({{"path", path}, {"format", "byte_range"},
+                               {"count", std::numeric_limits<std::uint64_t>::max()}});
+    BOOST_REQUIRE(!tools::is_error(indexed));
+    contains(indexed, "[[total_lines]]: 16777217");
+    contains(indexed, "[[lines_read]]: 16777217");
+    contains(indexed, "[[output_truncated]]: true");
+    contains(indexed, "[       0:       1] | ");
+    BOOST_TEST(indexed.output.raw.size() < 70000u);
+
+    const auto hex = call({{"path", path}, {"mode", "bytes"},
+                           {"format", "hex_escaped"},
+                           {"count", std::numeric_limits<std::uint64_t>::max()}});
+    BOOST_REQUIRE(!tools::is_error(hex));
+    contains(hex, "[[total_lines]]: 16777217");
+    contains(hex, "[[output_truncated]]: true");
+    contains(hex, "\\x0A\\x0A");
+    BOOST_TEST(hex.output.raw.size() < 70000u);
+}
+
+BOOST_FIXTURE_TEST_CASE(malformed_continuation_run_crosses_display_boundary, Fixture)
+{
+    const auto path = write(std::string(70000, '\x80'));
+    const auto result = call({{"path", path}, {"mode", "bytes"},
+                              {"count", 70000}});
+    BOOST_REQUIRE(!tools::is_error(result));
+    contains(result, "[[display_replaced]]: true");
+    contains(result, "[[output_truncated]]: true");
+    contains(result, "File may not be UTF-8 text");
+    contains(result, "\xef\xbf\xbd\xef\xbf\xbd");
+    BOOST_TEST(result.output.raw.size() > 65000u);
+    BOOST_TEST(result.output.raw.size() < 70000u);
+    BOOST_CHECK_NO_THROW(Json(result.output.raw).dump());
 }
 
 BOOST_FIXTURE_TEST_CASE(missing_schema_override_disables_the_tool_and_skill, Fixture)
