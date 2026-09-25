@@ -2,7 +2,7 @@
 #
 # Everything the core tree needs to configure, build and test, and nothing
 # else: g++-14, CMake, OpenSSL dev, Boost 1.91.0 SHARED with exactly the
-# compiled components the tree links (filesystem + unit_test_framework), and
+# compiled components the tree links (filesystem, process, program_options, unit_test_framework), and
 # the vendored third parties the core consumes (nlohmann/json, yaml-cpp)
 # installed under /opt/simplex-thirdparty in the same include/ + libs/ layout
 # as the in-tree third_party/ (so simplex_thirdparty_iface works unchanged
