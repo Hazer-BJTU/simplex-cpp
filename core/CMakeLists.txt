@@ -8,7 +8,7 @@ target_link_libraries(core_lib PUBLIC core_protocol load_lib loop_lib intercom_e
 target_link_libraries(core_lib PRIVATE fileio_lib tools_intrinsic_process async_eventbus_iface loop_intrinsic_context_statistic)
 set_target_properties(core_lib PROPERTIES OUTPUT_NAME simplex_core)
 add_executable(simplex_worker src/main.cpp)
-target_link_libraries(simplex_worker PRIVATE core_lib)
+target_link_libraries(simplex_worker PRIVATE core_lib Boost::program_options)
 add_dependencies(simplex_worker llm_openai llm_deepseek)
 set_target_properties(simplex_worker PROPERTIES ENABLE_EXPORTS ON)
 if(BUILD_TESTS)

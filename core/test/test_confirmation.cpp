@@ -15,7 +15,10 @@ using Json = nlohmann::json;
 
 namespace {
 /** A local peer that can stop progressing at each established transport stage. */
-enum class Mode { LateApprove, Approve, Deny, Mismatch, Binary, Disconnect, ReadWait, CloseWait, UpgradeWait };
+enum class Mode {
+    LateApprove, Approve, Deny, Mismatch, WorkerMismatch, WorkerMissing,
+    Binary, Disconnect, ReadWait, CloseWait, UpgradeWait
+};
 tools::InvokeConfirmEvent exercise(Mode mode, bool stop = false) {
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
@@ -33,6 +36,9 @@ tools::InvokeConfirmEvent exercise(Mode mode, bool stop = false) {
         beast::flat_buffer buffer;
         co_await socket.async_read(buffer, asio::use_awaitable);
         auto data = Json::parse(beast::buffers_to_string(buffer.data())).at("data");
+        BOOST_TEST(data.at("worker_id") == "worker");
+        BOOST_TEST(data.at("session_id") == "session");
+        BOOST_TEST(data.at("run_id") == "run");
         if (mode == Mode::Disconnect) co_return;
         if (mode == Mode::ReadWait) {
             boost::system::error_code error;
@@ -48,6 +54,8 @@ tools::InvokeConfirmEvent exercise(Mode mode, bool stop = false) {
         data["decision"] = mode == Mode::Deny ? "denied" : "approved";
         data["reason"] = "fixture";
         if (mode == Mode::Mismatch) data["confirmation_id"] = "wrong";
+        if (mode == Mode::WorkerMismatch) data["worker_id"] = "other-worker";
+        if (mode == Mode::WorkerMissing) data.erase("worker_id");
         const auto wire = Json({{"type", "confirmation_response"}, {"data", data}}).dump();
         socket.text(mode != Mode::Binary);
         boost::system::error_code write_error;
@@ -69,8 +77,10 @@ tools::InvokeConfirmEvent exercise(Mode mode, bool stop = false) {
     event.query.id = "call";
     auto result = asio::co_spawn(io, core::confirm(event, scope, io.get_executor(), endpoint,
         std::chrono::milliseconds(mode == Mode::Approve || mode == Mode::Deny
-            || mode == Mode::Mismatch || mode == Mode::Binary || mode == Mode::Disconnect ? 1000 : 50),
-        "session", "run"), asio::use_future);
+            || mode == Mode::Mismatch || mode == Mode::WorkerMismatch
+            || mode == Mode::WorkerMissing || mode == Mode::Binary
+            || mode == Mode::Disconnect ? 1000 : 50),
+        "worker", "session", "run"), asio::use_future);
     asio::steady_timer cancel(io, std::chrono::milliseconds(20));
     if (stop) cancel.async_wait([scope](auto) { scope->cancel(); });
     io.run();
@@ -81,7 +91,9 @@ tools::InvokeConfirmEvent exercise(Mode mode, bool stop = false) {
 
 BOOST_AUTO_TEST_CASE(only_matching_explicit_approval_can_authorize) {
     BOOST_CHECK(exercise(Mode::Approve).decision == tools::ConfirmDecision::Approved);
-    for (auto mode : {Mode::Deny, Mode::Mismatch, Mode::Binary, Mode::Disconnect, Mode::LateApprove})
+    for (auto mode : {Mode::Deny, Mode::Mismatch, Mode::WorkerMismatch,
+                      Mode::WorkerMissing, Mode::Binary, Mode::Disconnect,
+                      Mode::LateApprove})
         BOOST_CHECK(exercise(mode).decision == tools::ConfirmDecision::Denied);
 }
 
@@ -96,11 +108,11 @@ BOOST_AUTO_TEST_CASE(pre_cancelled_and_missing_endpoint_never_connect) {
     asio::io_context io;
     auto scope = std::make_shared<core::ConfirmationScope>();
     auto absent = asio::co_spawn(io, core::confirm({}, scope, io.get_executor(), {},
-        std::chrono::seconds(1), "s", "r"), asio::use_future);
+        std::chrono::seconds(1), "w", "s", "r"), asio::use_future);
     scope->cancel();
     auto endpoint = load::websocket_endpoint("ws://127.0.0.1:1/no-server");
     auto stopped = asio::co_spawn(io, core::confirm({}, scope, io.get_executor(), endpoint,
-        std::chrono::seconds(1), "s", "r"), asio::use_future);
+        std::chrono::seconds(1), "w", "s", "r"), asio::use_future);
     io.run();
     BOOST_CHECK(absent.get().decision == tools::ConfirmDecision::Denied);
     BOOST_CHECK(stopped.get().decision == tools::ConfirmDecision::Denied);
@@ -143,7 +155,7 @@ BOOST_AUTO_TEST_CASE(parallel_pending_confirmations_cancel_together) {
     std::vector<std::future<tools::InvokeConfirmEvent>> answers;
     for (int i = 0; i < 4; ++i) {
         answers.push_back(asio::co_spawn(io, core::confirm({}, scope, io.get_executor(),
-            endpoint, std::chrono::seconds(2), "s", "r"), asio::use_future));
+            endpoint, std::chrono::seconds(2), "w", "s", "r"), asio::use_future));
     }
     io.run();
     server.get();
@@ -222,4 +234,59 @@ BOOST_AUTO_TEST_CASE(approval_and_cancel_contend_at_the_control_boundary) {
         BOOST_TEST(approved == !cancel_first);
         BOOST_TEST(!scope->settle_approval(true));
     }
+}
+
+BOOST_AUTO_TEST_CASE(confirmation_options_validate_atomically_and_return_owned_metadata) {
+    core::ConfirmationOptions options;
+    const auto& readonly = options;
+    const auto expected = Json::array({{
+        {"name", "mode"}, {"options", {"ask", "approve", "deny"}}
+    }});
+    BOOST_TEST(readonly.get_options() == expected);
+    BOOST_TEST(readonly.get_current_options() == Json({{"mode", "ask"}}));
+    BOOST_CHECK(options.mode() == core::ConfirmationMode::Ask);
+    auto copy = readonly.get_options();
+    copy.clear();
+    BOOST_TEST(readonly.get_options() == expected);
+    options.handle_options({{"mode", "deny"}});
+    BOOST_TEST(readonly.get_current_options() == Json({{"mode", "deny"}}));
+    options.handle_options(Json::object());
+    for (const auto& invalid : std::vector<Json>{
+        nullptr, Json::array(), {{"mode", nullptr}}, {{"mode", 1}},
+        {{"mode", "unknown"}}, {{"mode", "approve"}, {"timeout_ms", 1}},
+        {{"endpoint", "ws://other"}}
+    }) {
+        BOOST_CHECK_THROW(options.handle_options(invalid), std::invalid_argument);
+        BOOST_CHECK(options.mode() == core::ConfirmationMode::Deny);
+    }
+    const core::ConfirmationScope previous(options.mode());
+    options.handle_options({{"mode", "approve"}});
+    BOOST_CHECK(previous.mode() == core::ConfirmationMode::Deny);
+    BOOST_CHECK(options.mode() == core::ConfirmationMode::Approve);
+    options.handle_options({{"mode", "ask"}});
+    BOOST_CHECK(options.mode() == core::ConfirmationMode::Ask);
+    BOOST_TEST(readonly.get_options() == expected);
+    BOOST_TEST(readonly.get_current_options() == Json({{"mode", "ask"}}));
+}
+
+BOOST_AUTO_TEST_CASE(local_confirmation_modes_respect_scope_and_cancellation) {
+    for (const auto mode : {core::ConfirmationMode::Ask,
+                           core::ConfirmationMode::Approve, core::ConfirmationMode::Deny}) {
+        for (const bool stopped : {false, true}) {
+            asio::io_context io;
+            auto scope = std::make_shared<core::ConfirmationScope>(mode);
+            if (stopped) scope->cancel();
+            // No endpoint: Ask fails closed, but explicit local modes need no IO.
+            auto result = asio::co_spawn(io, core::confirm({}, scope, io.get_executor(), {},
+                std::chrono::seconds(1), "w", "s", "r"), asio::use_future);
+            io.run();
+            BOOST_CHECK(result.get().decision == (!stopped && mode == core::ConfirmationMode::Approve
+                ? tools::ConfirmDecision::Approved : tools::ConfirmDecision::Denied));
+        }
+    }
+    asio::io_context io;
+    auto absent = asio::co_spawn(io, core::confirm({}, {}, io.get_executor(), {},
+        std::chrono::seconds(1), "w", "s", "r"), asio::use_future);
+    io.run();
+    BOOST_CHECK(absent.get().decision == tools::ConfirmDecision::Denied);
 }

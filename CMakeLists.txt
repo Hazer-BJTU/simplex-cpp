@@ -89,6 +89,7 @@ target_link_libraries(openssl_iface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 # layer), filesystem (the Boost.DLL support target below) and process (the
 # boost_process_iface target below — Boost.Process v2 grew a compiled piece,
 # libboost_process, so it needs the component, not just headers).
+# program_options supplies the worker command-line parser and formatted help.
 #
 # Linked SHARED deliberately: the whole tree now standardizes on shared
 # libraries (the plugin-boundary strategy in docs/abi-context.md — one copy of
@@ -98,7 +99,7 @@ target_link_libraries(openssl_iface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 # its own private copy of the compiled components again.
 set(Boost_USE_STATIC_LIBS OFF)
 
-find_package(Boost REQUIRED COMPONENTS unit_test_framework filesystem process)
+find_package(Boost REQUIRED COMPONENTS unit_test_framework filesystem process program_options)
 
 # Boost.DLL is header-only (no compiled component / CMake config), but it
 # depends on Boost.Filesystem, Boost.System and, on Linux, libdl. Bundle those

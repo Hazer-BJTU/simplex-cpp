@@ -504,3 +504,23 @@ BOOST_AUTO_TEST_CASE(descriptor_type_defaults_to_conversation) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_CASE(default_options_are_an_owned_empty_array_on_a_const_model) {
+    boost::asio::io_context io;
+    const BareModel model(io.get_executor(), nlohmann::json::object());
+    const llm::LLMModel& interface = model;
+    auto options = interface.get_options();
+    BOOST_CHECK(options.is_array());
+    BOOST_CHECK(options.empty());
+    options.push_back({{"name", "local"}, {"options", {"choice"}}});
+    BOOST_CHECK(interface.get_options().empty());
+}
+
+BOOST_AUTO_TEST_CASE(default_option_handler_rejects_unsupported_mutation) {
+    boost::asio::io_context io;
+    BareModel model(io.get_executor(), nlohmann::json::object());
+    BOOST_CHECK_NO_THROW(model.handle_options(nlohmann::json::object()));
+    BOOST_CHECK_THROW(model.handle_options({{"model", "other"}}), std::invalid_argument);
+    BOOST_CHECK_THROW(model.handle_options(nullptr), std::invalid_argument);
+    BOOST_TEST(model.get_current_options() == nlohmann::json::object());
+}

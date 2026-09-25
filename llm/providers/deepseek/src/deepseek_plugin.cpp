@@ -34,6 +34,67 @@ public:
                       nlohmann::json config)
         : ChatCompletionsModel(std::move(executor), std::move(config),
                                deepseek_dialect()) {}
+
+    /** Fixed UI choices; independent of credentials, network and current settings. */
+    nlohmann::json get_options() const override {
+        return nlohmann::json::array({
+            {
+                {"name", "model"},
+                {"options", {"deepseek-flash", "deepseek-v4-pro"}}
+            },
+            {
+                {"name", "reasoning_effort"},
+                {"options", {"low", "high", "max"}}
+            }
+        });
+    }
+
+    /** Report effective provider choices, including startup generation values. */
+    nlohmann::json get_current_options() const override {
+        const auto snapshot = generation();
+        nlohmann::json current = nlohmann::json::object();
+        if (const auto model = snapshot.find("model"); model != snapshot.end()) {
+            current["model"] = *model;
+        }
+        // The chat adapter prefers an explicit top-level effort to the
+        // shared reasoning envelope; use that same precedence here.
+        if (const auto effort = snapshot.find("reasoning_effort");
+            effort != snapshot.end()) {
+            current["reasoning_effort"] = *effort;
+        } else if (const auto reasoning = snapshot.find("reasoning");
+                   reasoning != snapshot.end() && reasoning->is_object()) {
+            if (const auto nested = reasoning->find("effort");
+                nested != reasoning->end()) {
+                current["reasoning_effort"] = *nested;
+            }
+        }
+        return current;
+    }
+
+    /** Validate all advertised choices before atomically merging generation knobs. */
+    void handle_options(const nlohmann::json& options) override {
+        if (!options.is_object()) {
+            throw std::invalid_argument("model options must be an object");
+        }
+        const auto descriptors = get_options();
+        for (const auto& [name, value] : options.items()) {
+            bool supported = false;
+            for (const auto& descriptor : descriptors) {
+                if (descriptor.at("name") == name) {
+                    for (const auto& choice : descriptor.at("options")) {
+                        supported = supported || value == choice;
+                    }
+                }
+            }
+            if (!supported) {
+                throw std::invalid_argument("unsupported DeepSeek option: " + name);
+            }
+        }
+        if (!options.empty()) {
+            apply_generation_patch(options);
+        }
+    }
+
 };
 
 class DeepSeekPlugin final : public LLMModelExtensionContext {

@@ -113,6 +113,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     model_io::AgentInputState state;
     std::vector<eventbus::EventBus::ScopedSubscription> subscriptions;
     eventbus::AsyncEventBus::ScopedSubscription confirmation;
+    ConfirmationOptions confirmation_options;
     std::unordered_set<std::string> requests;
     std::deque<std::string> request_order;
     std::atomic<bool> started{false};
@@ -181,6 +182,25 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             {"storage_failed", storage_failed}, {"rejected_payloads", client.rejected_payloads()}};
         if (state.loop) value["loop"] = *state.loop;
         return value;
+    }
+
+    /**
+     * Read-only capability and current-selection snapshot. Empty reserved
+     * categories do not imply that tools are disabled.
+     */
+    Json options() const {
+        const llm::LLMModel& provider = *model;
+        return {
+            {"model", {
+                {"available", provider.get_options()},
+                {"current", provider.get_current_options()}
+            }},
+            {"tools", {{"available", Json::array()}, {"current", Json::object()}}},
+            {"confirmation", {
+                {"available", confirmation_options.get_options()},
+                {"current", confirmation_options.get_current_options()}
+            }}
+        };
     }
 
     /** Required JSON saves latch failure even if RunFinished swallows observers. */
@@ -288,7 +308,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 }
                 co_return co_await confirm(std::move(event), std::move(current), self->strand,
                     self->config.confirmation, self->config.confirmation_timeout,
-                    self->session_id, std::move(run));
+                    self->worker_id, self->session_id, std::move(run));
             });
     }
 
@@ -346,6 +366,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                             self->shutdown();
                         } else if (operation == "status") {
                             self->emit("status", self->status());
+                        } else if (operation == "options") {
+                            self->emit("options", self->options());
                         } else {
                             throw std::invalid_argument("unknown signal operation");
                         }
@@ -389,6 +411,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     throw std::invalid_argument("session requires operator recovery inspection");
                 if (!input->has_message && state.turns.empty())
                     throw std::invalid_argument("no turn to continue");
+                // Validate confirmation on a value copy before invoking the
+                // provider. If either category fails, neither selection changes.
+                // Enum-only assignment after provider success cannot throw.
+                auto next_confirmation = confirmation_options;
+                if (input->options.contains("confirmation")) {
+                    next_confirmation.handle_options(input->options.at("confirmation"));
+                }
+                if (input->options.contains("model")) {
+                    model->handle_options(input->options.at("model"));
+                }
+                confirmation_options = next_confirmation;
             } catch (const std::exception& error) {
                 emit("input_rejected", {{"request_id", payload.is_object() ? payload.value("request_id", Json()) : Json()},
                     {"message", error.what()}});
@@ -410,7 +443,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     stopping = true;
                     break;
                 }
-                scope = std::make_shared<ConfirmationScope>();
+                scope = std::make_shared<ConfirmationScope>(confirmation_options.mode());
                 run_stop = std::stop_source();
                 run_id = new_identity();
             }

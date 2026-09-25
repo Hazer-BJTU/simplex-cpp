@@ -26,40 +26,25 @@
 #    2.28 therefore means building OpenSSL from source too; 2.34 gets a
 #    supported system OpenSSL for free.
 #
-# 2. **GCC 14.3.0 built from source, full bootstrap.** Not the distro's
-#    gcc-toolset-14 (14.2.1), for two reasons:
-#      - Toolchain identity. The plugin admission fingerprint hashes the
-#        complete compiler version (SIMPLEX_PLUGIN_TOOLCHAIN_ID), so building
-#        from source keeps this image's identity byte-identical to
-#        Dockerfile.build-base's "GNU-14.3.0" — the two images stay one
-#        execution context and their artifacts remain mutually loadable.
-#      - Runtime shipping. A source build yields a complete, standalone
-#        libstdc++.so.6 that can be shipped NEXT TO the release binaries.
-#        gcc-toolset instead links new C++ symbols in statically from
-#        libstdc++_nonshared.a so artifacts keep depending on the host's old
-#        libstdc++.so.6. That trick is invisible for ordinary programs, but
-#        this tree passes C++ types across dlopen boundaries and compares
-#        typeinfo identity — exactly the case where duplicated-in-each-DSO
-#        library internals are hazardous.
-#
-#    NOTE: static-linking libstdc++ into the release (-static-libstdc++) is
-#    NOT an option for this tree, for that same reason: host and plugin would
-#    each get a private copy of the vtables/typeinfo, and cross-DSO RTTI and
-#    exception propagation stop working. Ship the .so, do not embed it.
+# 2. **Download the previously validated GCC 14.3.0 toolchain.** The
+#    gcc-toolchain stage pins the original portable image by immutable digest.
+#    Only its compiler, headers and GCC runtime are copied; Boost is rebuilt
+#    below with the current component list. Keep that source image published:
+#    rebuilding this image requires downloading it, but never bootstraps GCC.
+#    Its complete shared libstdc++.so.6 is bundled with releases so C++ types
+#    crossing plugin boundaries use one runtime rather than per-DSO static copies.
 #
 # ## Cost
 #
-# A full three-stage bootstrap plus Boost is roughly 1-1.5 h on 4 jobs. This
-# image is rebuilt rarely (compiler/Boost/OpenSSL bumps only), so that is
-# paid once and cached hard. Adjust with --build-arg JOBS=N; the default of 4
-# mirrors the repo's WSL constraint (the container shares host CPUs, and
-# saturating them destabilizes the WSL services).
+# Downloads the prebuilt compiler and builds Boost/yaml-cpp with JOBS=4 by
+# default. There is no GCC source build, even when the local cache is empty.
 #
 # ## Build (from the repository root — the root .dockerignore governs it)
 #
 #   docker build -f docker/Dockerfile.build-portable \
 #       --build-arg JOBS=4 \
-#       -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3 .
+#       -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3 \
+#       -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:latest .
 #
 # Behind a proxy, add --build-arg HTTP_PROXY=... --build-arg HTTPS_PROXY=...
 # (BuildKit predefines them, so nothing persists into the image).
@@ -67,88 +52,10 @@
 # Version pins must stay in sync with third_party/versions/*.md and with the
 # g++ pin in the top-level CMakeLists.txt.
 
-# =============================================================================
-# Stage 1 — bootstrap GCC. Discarded except for its install tree.
-# =============================================================================
-FROM almalinux:9 AS gcc-build
+# Downloaded compiler source, independent of the tag being produced below.
+# Do not replace this with latest: that would make the toolchain input mutable.
+FROM ghcr.io/hazer-bjtu/simplex-cpp/build-portable@sha256:911758332795a533364858149b8475a4a2a6743de0a11a947e8e89f40d101eb1 AS gcc-toolchain
 
-ARG GCC_VERSION=14.3.0
-ARG JOBS=4
-
-# GCC's own build dependencies. The system gcc-c++ 11.5.0 is the stage-1
-# compiler; gmp/mpfr/mpc are GCC's arithmetic prerequisites (taken from the
-# distro rather than contrib/download_prerequisites so the build has exactly
-# one download to fail on).
-# The last group is easy to miss: almalinux:9 is a minimal image, and GCC's
-# build shells out to these without checking for them. diffutils (cmp) is used
-# by move-if-change on the generated tm.texi and its absence fails stage 1 with
-# a misleading "verify that you have permission to grant a GFDL license"
-# message; file(1) is what libtool uses to classify objects; perl/gawk/m4 drive
-# generator scripts.
-RUN dnf -y install --setopt=install_weak_deps=False \
-        gcc gcc-c++ make bzip2 tar wget \
-        gmp-devel mpfr-devel libmpc-devel \
-        flex bison zlib-devel \
-        diffutils file perl gawk m4 which \
-    && dnf clean all
-
-# texinfo is deliberately NOT installed: it lives in the CRB repo (disabled by
-# default on AlmaLinux 9) and is only needed to REGENERATE the manuals. GCC
-# release tarballs ship pre-built .info files and configure falls back to
-# MAKEINFO=true when makeinfo is absent, so the compiler itself is unaffected.
-
-# Out-of-tree build (GCC refuses in-tree), full bootstrap: stage 1 builds with
-# the distro gcc, then GCC rebuilds itself twice and compares stage 2 vs 3 for
-# bit-identical output. That comparison is why the resulting compiler and its
-# libstdc++ are self-consistent rather than artifacts of gcc-11.
-#
-# --enable-languages=c,c++  : nothing else is needed; fortran/go/d would each
-#                             add build time and runtime .sos for no consumer.
-# --disable-multilib        : no 32-bit target; halves libgcc/libstdc++ work.
-# --enable-default-pie      : match modern distro defaults so the tree's
-#                             hardening expectations hold.
-# --with-linker-hash-style=gnu, --enable-linker-build-id : distro-standard.
-#
-# Integrity: the tarball is hashed before it is extracted, so a re-pushed
-# release, a compromised mirror or a hijacked redirect fails the build HERE
-# instead of quietly becoming the toolchain every artifact is then measured
-# against. GCC publishes no checksum file for its releases — only the detached
-# signature gcc-14.3.0.tar.xz.sig — so this digest was derived by verifying that
-# signature and hashing the result: GOODSIG from subkey
-# 7F74F97C103468EE5D750B583AB00996FC26A641 of Richard Guenther's release key
-# 6EEB81F8981C74C7 (signature dated 2025-05-23), against a tarball fetched over
-# HTTPS from a mirror whose .sig file was byte-identical to ftp.gnu.org's. A
-# signature check inside the
-# image would need gnupg plus a keyring fetch, i.e. a second network dependency
-# at build time and a key whose authenticity then rests on the first fetch
-# anyway; the digest carries the same guarantee from here on. Re-derive it the
-# same way when GCC_VERSION moves — the two must move together, which is why the
-# digest is a literal and not an ARG: an ARG can be overridden from the command
-# line, and a check that can be disarmed by a flag still looks like a check.
-RUN wget -q -O /tmp/gcc.tar.xz \
-        https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz \
-    && echo "e0dc77297625631ac8e50fa92fffefe899a4eb702592da5c32ef04e2293aca3a  /tmp/gcc.tar.xz" \
-        | sha256sum -c - \
-    && tar -xf /tmp/gcc.tar.xz -C /tmp \
-    && mkdir -p /tmp/gcc-build \
-    && cd /tmp/gcc-build \
-    && /tmp/gcc-${GCC_VERSION}/configure \
-        --prefix=/usr/local \
-        --enable-languages=c,c++ \
-        --disable-multilib \
-        --enable-default-pie \
-        --enable-threads=posix \
-        --enable-__cxa_atexit \
-        --enable-linker-build-id \
-        --with-linker-hash-style=gnu \
-        --with-system-zlib \
-    && make -j${JOBS} \
-    && make install-strip DESTDIR=/opt/gcc-install \
-    && rm -rf /tmp/gcc.tar.xz /tmp/gcc-${GCC_VERSION} /tmp/gcc-build
-
-# =============================================================================
-# Stage 2 — the actual base image: GCC 14.3.0 + Boost + vendored third parties
-# =============================================================================
 FROM almalinux:9
 
 ARG JOBS=4
@@ -170,7 +77,7 @@ ARG JOBS=4
 #   gmp/mpfr/libmpc  runtime halves of GCC's arithmetic prerequisites: the
 #                    copied compiler links them, so omitting them leaves a
 #                    cc1plus that cannot start
-#   diffutils/file/which  same minimal-image gap as stage 1; Boost's
+#   diffutils/file/which  minimal-image tooling requirements; Boost's
 #                    bootstrap.sh and b2 shell out to them
 RUN dnf -y install --setopt=install_weak_deps=False \
         cmake make openssl-devel binutils \
@@ -180,8 +87,13 @@ RUN dnf -y install --setopt=install_weak_deps=False \
         diffutils file which \
     && dnf clean all
 
-# The bootstrapped toolchain.
-COPY --from=gcc-build /opt/gcc-install/usr/local /usr/local
+# Copy only GCC; the source image's Boost and vendored dependencies are not
+# imported. /usr/local/bin in this pinned image contains only GCC executables.
+COPY --from=gcc-toolchain /usr/local/bin/ /usr/local/bin/
+COPY --from=gcc-toolchain /usr/local/include/c++/ /usr/local/include/c++/
+COPY --from=gcc-toolchain /usr/local/lib/gcc/ /usr/local/lib/gcc/
+COPY --from=gcc-toolchain /usr/local/libexec/gcc/ /usr/local/libexec/gcc/
+COPY --from=gcc-toolchain /usr/local/lib64/ /usr/local/lib64/
 
 # Teach the dynamic loader about /usr/local/lib64 BEFORE anything is compiled:
 # the fresh libstdc++.so.6 (GCC 14's, i.e. GLIBCXX_3.4.33) lives there while
@@ -196,11 +108,11 @@ RUN echo "/usr/local/lib64" > /etc/ld.so.conf.d/00-gcc-local.conf \
 # compiler. gcc-ar/nm/ranlib get the same aliases: CMake resolves
 # CMAKE_CXX_COMPILER_AR/RANLIB by the same "-14" name, and an LTO build would
 # otherwise feed 14.3.0 bytecode to mismatched plugin tools.
-RUN ln -s g++ /usr/local/bin/g++-14 \
-    && ln -s gcc /usr/local/bin/gcc-14 \
-    && ln -s gcc-ar /usr/local/bin/gcc-ar-14 \
-    && ln -s gcc-nm /usr/local/bin/gcc-nm-14 \
-    && ln -s gcc-ranlib /usr/local/bin/gcc-ranlib-14
+RUN ln -sf g++ /usr/local/bin/g++-14 \
+    && ln -sf gcc /usr/local/bin/gcc-14 \
+    && ln -sf gcc-ar /usr/local/bin/gcc-ar-14 \
+    && ln -sf gcc-nm /usr/local/bin/gcc-nm-14 \
+    && ln -sf gcc-ranlib /usr/local/bin/gcc-ranlib-14
 
 # Fail the build loudly if the toolchain is not the one the fingerprint
 # expects: a silent drift here would produce artifacts whose admission
@@ -225,12 +137,12 @@ RUN test "$(g++-14 -dumpfullversion)" = "14.3.0" \
 #
 # The compiler is named EXPLICITLY rather than left to b2's autodetection.
 # bootstrap.sh's toolset guess probes for a distro-shaped install and finds
-# nothing here (stage 2 installs no distro gcc on purpose), so it aborts with
+# nothing here (this image installs no distro gcc on purpose), so it aborts with
 # "Could not find a suitable toolset" despite a perfectly good g++ on PATH.
 # Being explicit fixes that and is what we want regardless: the whole premise
 # of this image is one known toolchain, so b2 guessing which compiler builds
 # Boost is a failure mode even when it guesses right. user-config.jam binds the
-# gcc-14.3 toolset to the absolute path of the bootstrapped compiler; b2 then
+# gcc-14.3 toolset to the absolute path of the downloaded compiler; b2 then
 # selects it by name.
 #
 # Installs to /usr/local: headers, libboost_*.so.1.91.0, and the CMake config
@@ -250,7 +162,7 @@ RUN wget -q -O /tmp/boost.tar.gz \
     && tar -xzf /tmp/boost.tar.gz -C /tmp \
     && cd /tmp/boost_1_91_0 \
     && printf 'using gcc : 14.3 : /usr/local/bin/g++-14 ;\n' > /root/user-config.jam \
-    && ./bootstrap.sh --with-toolset=gcc --with-libraries=filesystem,process,test \
+    && ./bootstrap.sh --with-toolset=gcc --with-libraries=filesystem,process,program_options,test \
     && ./b2 -j${JOBS} toolset=gcc-14.3 \
         link=shared runtime-link=shared variant=release install \
     && ldconfig \
@@ -326,10 +238,10 @@ RUN mkdir -p /opt/simplex-runtime \
     && cp -P /usr/local/lib/libboost_*.so* /opt/simplex-runtime/
 
 LABEL org.opencontainers.image.title="simplex-cpp build-portable" \
-      org.opencontainers.image.description="Portable toolchain base for building redistributable simplex-cpp binaries: AlmaLinux 9 (glibc 2.34), GCC 14.3.0 bootstrapped from source, Boost 1.91.0 shared, OpenSSL 3.5, vendored nlohmann/json + yaml-cpp" \
+      org.opencontainers.image.description="Portable toolchain base for building redistributable simplex-cpp binaries: AlmaLinux 9 (glibc 2.34), GCC 14.3.0 from a pinned prebuilt image, Boost 1.91.0 shared, OpenSSL 3.5, vendored nlohmann/json + yaml-cpp" \
       org.opencontainers.image.source="https://github.com/Hazer-BJTU/simplex-cpp" \
       simplex.build.gcc="14.3.0" \
-      simplex.build.gcc-origin="source-bootstrap" \
+      simplex.build.gcc-origin="prebuilt-image" \
       simplex.build.glibc="2.34" \
       simplex.build.distro="almalinux9" \
       simplex.build.boost="1.91.0" \

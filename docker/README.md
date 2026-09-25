@@ -24,9 +24,9 @@ interchangeable:
 | Distro | Debian 13 (via `gcc:14.3.0`) | AlmaLinux 9 |
 | glibc floor | **2.41** | **2.34** |
 | Artifacts run on | Ubuntu 25.04+, Debian 13+, Fedora 42+ | RHEL/Alma/Rocky 9+, Ubuntu 22.04+, Debian 12+ |
-| GCC | 14.3.0, from the upstream image | 14.3.0, bootstrapped from source |
+| GCC | 14.3.0, from the upstream image | 14.3.0, downloaded from a pinned image |
 | OpenSSL | Debian 13's | AlmaLinux 9's 3.5.x |
-| Build time | minutes | ~1–1.5 h (the bootstrap) |
+| Build time | minutes | download plus Boost/yaml-cpp builds |
 | Use for | CI, local dev, in-container testing | **binary releases** |
 
 The single fact behind that table: **glibc is backward- but not
@@ -53,7 +53,7 @@ free. The `manylinux` images themselves were rejected for a different reason:
 ### Two things this image deliberately does not do
 
 **It does not use `gcc-toolset-14`.** AlmaLinux 9 packages GCC 14.2.1 as an
-SCL, which would be far cheaper than a source bootstrap. It is not used
+SCL. It is not used
 because (a) the plugin admission fingerprint hashes the *complete* compiler
 version, so 14.2.1 would make this image a different execution context from
 `build-base`'s `GNU-14.3.0` for no reason, and (b) `gcc-toolset` links new C++
@@ -61,7 +61,8 @@ symbols in statically from `libstdc++_nonshared.a`, leaving artifacts
 dependent on the *host's* old `libstdc++.so.6`. Ordinary programs never
 notice; this tree passes C++ types across `dlopen` boundaries and compares
 typeinfo identity, which is exactly where duplicated library internals bite.
-A source build yields a complete standalone `libstdc++.so.6` to ship instead.
+The downloaded toolchain contains a complete standalone `libstdc++.so.6`
+to ship instead.
 
 **It does not statically link libstdc++.** `-static-libstdc++` is the usual
 answer to "my binary needs a newer libstdc++ than the target has", and it is
@@ -219,7 +220,7 @@ the full suite there.
 | CMake | 3.31 (apt) | PATH | Tree requires ≥ 3.20. |
 | OpenSSL dev | distro version | apt `libssl-dev` | For the asio SSL runtime; no pin by design (`third_party/versions/README.md`). |
 | binutils (nm/readelf) | from the gcc base image | PATH | Needed by the `llm_plugin_boundary_hygiene` ctest. |
-| Boost | 1.91.0 **shared** | `/usr/local` | Built with exactly `filesystem` + `process` + `test` (= unit_test_framework): headers, `libboost_*.so.1.91.0`, and the CMake config package under `/usr/local/lib/cmake/Boost-1.91.0` — `find_package(Boost)` needs no `BOOST_ROOT`. |
+| Boost | 1.91.0 **shared** | `/usr/local` | Built with exactly `filesystem` + `process` + `program_options` + `test` (= unit_test_framework): headers, `libboost_*.so.1.91.0`, and the CMake config package under `/usr/local/lib/cmake/Boost-1.91.0` — `find_package(Boost)` needs no `BOOST_ROOT`. |
 | nlohmann/json | 3.12.0 (single header) | `/opt/simplex-thirdparty/include/nlohmann/json.hpp` | |
 | yaml-cpp | 0.9.0, static **PIC** | `/opt/simplex-thirdparty/libs/libyaml-cpp.a` | PIC because it reaches MODULE plugin `.so`s through `simplex_thirdparty_iface`. |
 
@@ -319,14 +320,16 @@ digest, so the digest has to be read back after the push and pasted into
 `.github/workflows/ci.yml`.
 
 ```bash
-# ~1-1.5 h: the GCC bootstrap dominates. JOBS defaults to 4; raise it only if
-# the host can spare the cores (see the WSL note at the end of this file).
+# GCC is downloaded from the pinned original image; no source bootstrap.
+# JOBS defaults to 4 for Boost and yaml-cpp.
 docker build -f docker/Dockerfile.build-portable \
     --build-arg JOBS=4 \
-    -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3 .
+    -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3 \
+    -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:latest .
 
 echo <PAT> | docker login ghcr.io -u Hazer-BJTU --password-stdin   # write:packages
 docker push ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
+docker push ghcr.io/hazer-bjtu/simplex-cpp/build-portable:latest
 
 # then pin it in the workflow:
 docker buildx imagetools inspect \
@@ -336,9 +339,15 @@ docker buildx imagetools inspect \
 
 The tag encodes both halves of what the image promises — the glibc floor and
 the compiler — because those are the two things a consumer needs to know and
-the two things a rebuild could silently change. `latest` is deliberately not
-published for this image: "latest portable base" is not a meaningful thing to
-depend on when the whole point is a specific floor.
+the two things a rebuild could silently change. `latest` is a convenience
+alias; CI continues to use the version tag plus an immutable digest.
+
+The Dockerfile downloads GCC from the original portable image at
+`sha256:911758332795a533364858149b8475a4a2a6743de0a11a947e8e89f40d101eb1`.
+Keep that GHCR image version available even after updating the tags: it is an
+explicit build input. Only GCC executables, headers and runtime libraries are
+copied; Boost and yaml-cpp are built afresh. This preserves the validated
+GCC 14.3.0/glibc 2.34 toolchain without a source bootstrap on cache misses.
 
 ### Behind a proxy
 

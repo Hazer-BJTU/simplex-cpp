@@ -32,8 +32,14 @@ tools:
 
 ~~~sh
 simplex_shell --listen 127.0.0.1:8765
-simplex_worker --config ./config.yaml --session demo
+simplex_worker --config ./config.yaml --session demo --threads 4
 ~~~
+
+`simplex_worker --help` prints the available options. `--config/-c` defaults
+to `config.yaml`; `--session/-s` is required. `--threads/-t` accepts a positive
+integer and defaults to 1. It counts all threads running the worker io_context,
+including the main thread; it does not increase the number of active agent loops.
+All executor threads are joined before the application is destroyed.
 
 The shell uses plain local WebSockets without authentication, for a trusted
 local test environment. Production deployments supply an authenticated service;
@@ -45,56 +51,43 @@ uses readable.md in the same directory. New sessions use the configured system
 prompt; restoration retains the stored prompt and history. Startup and reconnect
 never start a run automatically.
 
-## Input and output protocol
+## Communication protocol
 
-Incoming envelopes preserve the IO package's payload/signal routing:
-
-~~~json
-{"type":"payload","data":{"operation":"message","request_id":"input-1","text":"Hello"}}
-{"type":"payload","data":{"operation":"continue","request_id":"input-2"}}
-{"type":"signal","data":{"operation":"cancel","run_id":"<run UUID>"}}
-{"type":"signal","data":{"operation":"status"}}
-{"type":"signal","data":{"operation":"shutdown"}}
-~~~
-
-Payloads cannot provide roles, tool results or call metadata. One consumer
-executes payloads serially. Signals are independent and post onto the
-state-owning strand. A stale run ID never cancels a later run.
-
-Outgoing objects have type=event, event, session_id, worker_id, request_id,
-run_id, sequence, and data. Worker/run UUIDs distinguish process restarts;
-sequence increases within a worker lifetime. Events include ready, status,
-input_admitted, input_committed, input_rejected, run_started, model_response,
-tool_calls, tool_results, persisted, export_error, error and run_finished.
-Responses are complete messages, not token deltas. Correlation fields describe
-the active or last run; input_rejected also names the rejected request in data.
-
-Queue admission is not peer receipt, application admission or durable
-completion. A bounded cache rejects duplicate IDs among the most recent 4096 admitted
-requests in this worker lifetime. Older entries are evicted. This cache is not
-persisted and does not promise exactly-once execution outside that window or
-across restarts.
-Clients must inspect status/state instead of automatically replaying inputs
-with unknown outcomes. The shell discards inputs submitted while disconnected.
-
-The bounded application-event queue fails the worker on exhaustion. It requests
-safe cancellation and preserves local state instead of silently dropping
-results. Transport admission is separately bounded. status.rejected_payloads
-reports inbound IO queue rejection. Connection failures follow the existing
-stable-client policy, including indefinite connect-stage retries.
+See the [formal worker client protocol](docs/worker-protocol.md) for all message
+formats, event data, connection roles, confirmation decisions, delivery limits,
+and recovery behavior. Message payloads carry an ordered `content` array of
+text/attachment parts. Use `external_ref` for image URLs; optional `extras`
+preserves additional metadata for future richer modalities.
+It is the reference for independently implemented hubs
+and clients. The [documentation index](docs/index.md) lists the package's formal
+documents and their publishing conventions. The `options` signal returns
+available choices and current selections for model and confirmation, plus a
+reserved tools category, in the normal event metadata envelope. Hubs can query
+it after reconnecting; the query does not change settings.
 
 ## Confirmation and cancellation
 
 The worker owns one authoritative InvokeConfirmEvent subscription on the
 default asynchronous bus. Another existing confirmer is a startup error.
 Private plugin security buses are outside this contract. Missing endpoint
-configuration denies calls requiring confirmation, with a diagnostic.
+configuration denies calls requiring confirmation in the default `ask` mode,
+with a diagnostic. A payload may set `options.confirmation.mode` to `ask`,
+`approve`, or `deny` for that run and subsequent runs. Local approval/denial
+performs no network IO; approval still respects run cancellation. `Trusted` and
+`DefaultDeny` retain their tool-layer meaning. Model and confirmation options are
+validated together at admission, cannot change an active run, and are not
+persisted. The `options` signal reports choices and selections without
+modifying them.
+Any party allowed to submit payloads can select automatic approval. Production
+Hubs must authorize that payload channel as an approval authority; correlation
+IDs are not credentials. See the formal protocol for deployment requirements.
 
-Confirmation uses one independent text WebSocket exchange without retries.
-The request has type=confirmation_request and data containing session_id,
-run_id, a fresh confirmation_id, and the settled call (including security,
-type and normalized arguments). The response has type=confirmation_response
-and echoes all three IDs with decision=approved|denied and optional reason.
+In `ask` mode, confirmation uses one independent text WebSocket exchange without retries.
+The request has type=confirmation_request and data containing worker_id,
+session_id, run_id, a fresh confirmation_id, and the settled call (including
+security, type and normalized arguments). The response has
+type=confirmation_response and echoes all four IDs with
+decision=approved|denied and optional reason.
 Malformed, mismatched, binary, disconnected or expired replies deny execution.
 
 The overall deadline spans DNS, TCP/TLS, upgrade, write, read and graceful

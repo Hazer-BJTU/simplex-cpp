@@ -126,7 +126,8 @@ try:
         connections.append(connection)
         confirmations.append(connection)
         send(connection, {"type": "confirmation_request", "data": {
-            "session_id": "test", "run_id": "run-1", "confirmation_id": identifier,
+            "worker_id": "worker", "session_id": "test", "run_id": "run-1",
+            "confirmation_id": identifier,
             "call": {"name": "fixture", "arguments": {}}}})
         wait_for("=== Confirm " + identifier)
     send(worker, {"type": "event", "event": "status", "session_id": "test",
@@ -143,12 +144,14 @@ try:
     for connection, decision in zip(confirmations, ["approved", "denied"]):
         reply = receive(connection)[1]
         assert reply["data"]["decision"] == decision, reply
+        assert reply["data"]["worker_id"] == "worker", reply
         close(connection)
 
     pending = connect(port, "/agent/confirm")
     connections.append(pending)
     send(pending, {"type": "confirmation_request", "data": {
-        "session_id": "test", "run_id": "run-1", "confirmation_id": "expired",
+        "worker_id": "worker", "session_id": "test", "run_id": "run-1",
+        "confirmation_id": "expired",
         "call": {"name": "fixture"}}})
     wait_for("=== Confirm expired")
     offset = len(transcript)

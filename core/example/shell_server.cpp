@@ -168,6 +168,8 @@ struct Server {
             auto data = request.at("data");
             if (request.at("type") != "confirmation_request"
                 || session_id.empty() || data.at("session_id") != session_id
+                || data.at("worker_id").get<std::string>().empty()
+                || (!worker_id.empty() && data.at("worker_id") != worker_id)
                 || data.at("run_id").get<std::string>().empty())
                 throw std::invalid_argument("confirmation is not from the active run");
             // Independent sockets need not preserve event-channel ordering.
@@ -276,7 +278,8 @@ struct Server {
                     continue;
                 }
                 Json message;
-                if (line == "/cancel" || line == "/status" || line == "/shutdown") {
+                if (line == "/cancel" || line == "/status" ||
+                    line == "/options" || line == "/shutdown") {
                     message = {{"type", "signal"}, {"data", {
                         {"operation", line.substr(1)},
                         // Independent approval/event sockets can reorder observations.
@@ -286,7 +289,12 @@ struct Server {
                 } else if (!line.empty()) {
                     message = {{"type", "payload"}, {"data", {
                         {"operation", line == "/continue" ? "continue" : "message"},
-                        {"request_id", core::new_identity()}, {"text", line}}}};
+                        {"request_id", core::new_identity()}}}};
+                    if (line != "/continue") {
+                        message["data"]["content"] = Json::array({{
+                            {"type", "text"}, {"raw", line}
+                        }});
+                    }
                 } else continue;
                 if (!outgoing || !outgoing->try_send(boost::system::error_code{}, std::move(message)))
                     core_example::block("Not sent", "Worker offline or outgoing queue full; input was not queued.");
@@ -313,7 +321,7 @@ int main(int argc, char** argv) {
             if (flag == "--help") {
                 std::cout << "simplex_shell --listen IP:PORT --events-path /agent/events "
                              "--confirmation-path /agent/confirm\n"
-                             "/continue /cancel /status /shutdown /quit /approve ID /deny ID\n";
+                             "/continue /cancel /status /options /shutdown /quit /approve ID /deny ID\n";
                 return 0;
             }
             if (i + 1 == argc) throw std::invalid_argument("missing option value");

@@ -7,6 +7,33 @@
 #include "load/configuration.hpp"
 
 namespace core {
+/** Runtime policy for RequireConfirm calls; other tool security levels are unchanged. */
+enum class ConfirmationMode { Ask, Approve, Deny };
+
+/**
+ * Session-owned confirmation choices, updated synchronously at payload admission.
+ * The application serializes access on its strand. Copy this small value before
+ * applying a multi-category update; handle_options validates before mutation.
+ * No endpoint/timeout configuration or durable conversation state is modified.
+ */
+class ConfirmationOptions {
+public:
+    /** Owned descriptors, not current selections; no IO or state mutation. */
+    nlohmann::json get_options() const;
+    /** The currently selected mode as a JSON object, independent of discovery. */
+    nlohmann::json get_current_options() const;
+    /**
+     * Accept an object with optional mode: ask/approve/deny. Empty means no change.
+     * Unknown keys, null, and unsupported values throw std::invalid_argument and
+     * leave the selection intact. Ask is the default and uses the startup endpoint.
+     */
+    void handle_options(const nlohmann::json& options);
+    ConfirmationMode mode() const noexcept { return mode_; }
+
+private:
+    ConfirmationMode mode_ = ConfirmationMode::Ask;
+};
+
 /**
  * One run's confirmation admission and cancellation boundary.
  * A short mutex arbitrates approval against stop. No lock spans network work.
@@ -15,20 +42,30 @@ namespace core {
  */
 class ConfirmationScope {
 public:
+    /** Freeze the selected policy for this run, including all parallel tool calls. */
+    explicit ConfirmationScope(ConfirmationMode mode = ConfirmationMode::Ask)
+        : mode_(mode) {}
+    ConfirmationMode mode() const noexcept { return mode_; }
     void cancel();
     bool settle_approval(bool approved);
     std::stop_token token() const { return stop_.get_token(); }
 private:
+    const ConfirmationMode mode_;
     std::mutex mutex_;
     bool stopping_ = false;
     std::stop_source stop_;
 };
 
-/** One attempt per event. Always fail closed; all exchange tasks are joined.
+/** Apply the scope's immutable run policy. Automatic decisions perform no IO.
+ * Ask makes one attempt per event and fails closed; all exchange tasks are joined.
+ * Automatic approval uses the same cancellation boundary as endpoint approval.
  * The host keeps exactly one authoritative async-bus listener alive through
- * batch completion. Missing endpoint, bad correlation and transport errors deny.
+ * batch completion. In Ask mode, missing endpoint, bad correlation and transport
+ * errors deny.
  * Timeout invalidates approval but completion can wait for an already-running
  * system DNS backend. See intercom::cancellable_exchange for the lifetime contract.
+ * In Ask mode, worker_id, session_id, run_id and the generated confirmation ID
+ * must all be echoed by the peer. They are correlation labels, not credentials.
  */
 boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     tools::InvokeConfirmEvent event,
@@ -36,6 +73,7 @@ boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     boost::asio::any_io_executor executor,
     std::optional<endpoint::ResolvedEndpoint> endpoint,
     std::chrono::milliseconds timeout,
+    std::string worker_id,
     std::string session_id,
     std::string run_id);
 } // namespace core

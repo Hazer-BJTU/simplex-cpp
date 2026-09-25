@@ -72,7 +72,8 @@ class Peer:
     def run(self, name, arguments):
         send(self.sock, {'type': 'payload', 'data': {
             'request_id': os.urandom(8).hex(), 'operation': 'message',
-            'text': json.dumps({'name': name, 'arguments': arguments})}})
+            'content': [{'type': 'text',
+                         'raw': json.dumps({'name': name, 'arguments': arguments})}]}})
         results = self.wait('tool_results')
         done = self.wait('run_finished')
         assert done['data']['durable'], done
@@ -115,6 +116,7 @@ class Router:
             if b'/confirm ' in header.split(b'\r\n')[0]:
                 _, raw = receive(sock)
                 data = json.loads(raw)['data']
+                assert data['worker_id']
                 data['decision'] = 'approved'
                 send(sock, {'type': 'confirmation_response', 'data': data})
             else:

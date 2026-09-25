@@ -537,3 +537,51 @@ the neutral wire:
 The `endpoint` object overlays the dialect's defaults recursively, so
 `base_url`/`request_path` only need spelling out for a proxy or a
 self-hosted gateway.
+
+## Locally advertised generation options
+
+`LLMModel::get_options() const` is a synchronous virtual query for provider-owned
+option metadata. It performs no network request and does not change generation
+settings. The default returns `[]`; providers override it to advertise finite
+choices. The result is an owned JSON array, so callers may keep or modify their
+copy independently of the model. Calls through a `const LLMModel&` are supported.
+
+The DeepSeek plugin returns exactly:
+
+```json
+[
+  {"name": "model", "options": ["deepseek-flash", "deepseek-v4-pro"]},
+  {"name": "reasoning_effort", "options": ["low", "high", "max"]}
+]
+```
+
+`name` is a provider-defined generation key; `options` contains its advertised
+string choices in display order. This list is not the current selection or a
+live catalogue, and does not restrict the existing `set_generation()` API.
+Use `get_current_options() const` for the effective remotely configurable
+selections; it returns an object keyed by advertised option names. The default
+is `{}`, and DeepSeek derives the effective `reasoning_effort` from either the
+explicit generation key or the startup `reasoning.effort` envelope. A value
+from trusted startup configuration may fall outside the advertised choices.
+Use `generation()` for the full in-process generation snapshot and
+`provider_info()` for remote provider information. Apply these DeepSeek choices through `handle_options()` with
+`{"model":"deepseek-v4-pro","reasoning_effort":"max"}`. The typed
+`ReasoningEffort` enum is unchanged; `max` is available through the JSON API.
+
+`handle_options(const nlohmann::json&)` is a synchronous virtual mutation hook
+for provider-validated runtime options. The base implementation accepts only an
+empty object. DeepSeek accepts only the names and values shown above; unknown
+keys, invalid values, and non-object inputs throw `std::invalid_argument`. All
+validation precedes the atomic generation merge, so failure preserves settings.
+Omitted keys retain their values and an empty object changes nothing. This is a
+restricted remote-configuration API; the existing `set_generation()` API remains
+available for trusted in-process callers.
+
+Hosts must serialize option updates against loop execution and invoke this hook
+only at request boundaries. Overrides must avoid IO, provide the strong exception
+guarantee, and synchronize state used by concurrent const queries. The worker
+applies `payload.data.options.model` before admitting each run, never through a
+signal; runtime selections are not persisted with conversation state.
+
+These virtual interface additions raise the LLM plugin ABI to 9. Rebuild model
+plugins and hosts together; older plugins are rejected by the admission check.
