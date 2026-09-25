@@ -15,9 +15,9 @@
  *
  * A model instance is a *client bound to one provider configuration* — not an
  * agent, not a loop, not storage. Its interface covers the three stages of
- * one model invocation, plus the two runtime services every host needs from
- * such a client: the provider's live catalogue (provider_info) and the
- * generation knobs' adjustment (set_generation):
+ * one model invocation, plus runtime services: the provider's live catalogue (provider_info),
+ * locally advertised choices (get_options), and generation-knob adjustment
+ * (set_generation):
  *
  *   1. **Input translation** — model_io::AgentInputState (plus its stored
  *      config) into a provider request, via the plugin's own
@@ -551,6 +551,26 @@ public:
     nlohmann::json generation() const {
         std::shared_lock<std::shared_mutex> lock(_generation_mutex);
         return _generation;
+    }
+
+    /**
+     * Return locally advertised generation choices without performing IO or
+     * changing model state. Providers override this const method; the default
+     * empty array means that no finite option list is advertised.
+     *
+     * The returned JSON is an owned array of objects shaped as
+     * {"name": "generation_key", "options": ["choice", ...]}. Names are unique
+     * provider-defined generation keys; both names and choices are nonempty
+     * strings. Array order is the provider's display order. The caller may edit
+     * its copy without affecting this model or future results.
+     *
+     * This is descriptive metadata, not the current generation snapshot, a
+     * live provider catalogue, or a validation whitelist for set_generation().
+     * Overrides must support concurrent const calls and avoid unsynchronized
+     * access to mutable configuration; use generation() if a snapshot is needed.
+     */
+    virtual nlohmann::json get_options() const {
+        return nlohmann::json::array();
     }
 
 protected:

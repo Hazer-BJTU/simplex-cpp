@@ -34,6 +34,20 @@ public:
                       nlohmann::json config)
         : ChatCompletionsModel(std::move(executor), std::move(config),
                                deepseek_dialect()) {}
+
+    /** Fixed UI choices; independent of credentials, network and current settings. */
+    nlohmann::json get_options() const override {
+        return nlohmann::json::array({
+            {
+                {"name", "model"},
+                {"options", {"deepseek-flash", "deepseek-v4-pro"}}
+            },
+            {
+                {"name", "reasoning_effort"},
+                {"options", {"low", "high", "max"}}
+            }
+        });
+    }
 };
 
 class DeepSeekPlugin final : public LLMModelExtensionContext {

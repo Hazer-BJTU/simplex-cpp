@@ -537,3 +537,31 @@ the neutral wire:
 The `endpoint` object overlays the dialect's defaults recursively, so
 `base_url`/`request_path` only need spelling out for a proxy or a
 self-hosted gateway.
+
+## Locally advertised generation options
+
+`LLMModel::get_options() const` is a synchronous virtual query for provider-owned
+option metadata. It performs no network request and does not change generation
+settings. The default returns `[]`; providers override it to advertise finite
+choices. The result is an owned JSON array, so callers may keep or modify their
+copy independently of the model. Calls through a `const LLMModel&` are supported.
+
+The DeepSeek plugin returns exactly:
+
+```json
+[
+  {"name": "model", "options": ["deepseek-flash", "deepseek-v4-pro"]},
+  {"name": "reasoning_effort", "options": ["low", "high", "max"]}
+]
+```
+
+`name` is a provider-defined generation key; `options` contains its advertised
+string choices in display order. This list is not the current selection or a
+live catalogue, and does not restrict the existing `set_generation()` API.
+Use `generation()` for current settings and `provider_info()` for remote
+provider information. Apply these DeepSeek choices with JSON patches such as
+`{"model":"deepseek-v4-pro","reasoning_effort":"max"}`. The typed
+`ReasoningEffort` enum is unchanged; `max` is available through the JSON API.
+
+This virtual interface addition raises the LLM plugin ABI to 7. Rebuild model
+plugins and hosts together; older plugins are rejected by the admission check.

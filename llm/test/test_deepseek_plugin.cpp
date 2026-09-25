@@ -348,3 +348,30 @@ BOOST_AUTO_TEST_CASE(dlopened_model_generation_knobs_reach_the_wire) {
     BOOST_CHECK_EQUAL(body["reasoning_effort"], "medium");
     BOOST_CHECK_EQUAL(body["temperature"], 0.9);
 }
+
+/** Exercise const virtual dispatch and owned JSON across the actual DSO boundary. */
+BOOST_AUTO_TEST_CASE(dlopened_provider_advertises_const_generation_options) {
+    llm::LLMDispatcher dispatcher;
+    BOOST_REQUIRE_EQUAL(
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+    boost::asio::io_context io;
+    auto model = dispatcher.create_model(
+        "deepseek", io.get_executor(), {{"model", "deepseek-flash"}});
+    BOOST_REQUIRE(model);
+    const llm::LLMModel& interface = *model;
+    const auto original = model->generation();
+    const auto expected = nlohmann::json::array({
+        {{"name", "model"}, {"options", {"deepseek-flash", "deepseek-v4-pro"}}},
+        {{"name", "reasoning_effort"}, {"options", {"low", "high", "max"}}}
+    });
+    auto options = interface.get_options();
+    BOOST_TEST(options == expected);
+    BOOST_TEST(model->generation() == original);
+    options[0]["options"][0] = "local edit";
+    BOOST_TEST(interface.get_options() == expected);
+    model->set_generation(nlohmann::json{
+        {"model", "deepseek-v4-pro"}, {"reasoning_effort", "max"}
+    });
+    BOOST_TEST(interface.get_options() == expected);
+    BOOST_TEST(model->generation()["reasoning_effort"] == "max");
+}

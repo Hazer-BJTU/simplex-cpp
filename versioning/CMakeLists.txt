@@ -49,7 +49,9 @@
 #       converse()/integrate() and must agree between host and model plugins.
 #   v6: LoopProgress and AgentLoopStep gained durable response commit sequences.
 #       Both layouts cross the same model plugin boundary.
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 6)
+#   v7: LLMModel gained the const virtual get_options() metadata query.
+#       Host and providers must be rebuilt together for the new vtable slot.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 7)
 
 # Independent contracts for dynamic toolsets and loop hooks.
 set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 1)
