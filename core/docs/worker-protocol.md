@@ -45,10 +45,10 @@ fragment; provider/model configuration is also required to start a worker:
 ```yaml
 client:
   endpoint: wss://hub.example.com/agent/events
-  payload_capacity: 64
-  signal_capacity: 64
+  payload_capacity: 256
+  signal_capacity: 256
   transport:
-    write_capacity: 64
+    write_capacity: 256
     initial_backoff_ms: 250
     max_backoff_ms: 10000
     idle_timeout_seconds: 0
@@ -57,8 +57,9 @@ security:
     endpoint: wss://hub.example.com/agent/confirm
     timeout_ms: 120000
 worker:
-  event_capacity: 256
-  max_exchanges: 12
+  event_capacity: 1024
+  max_exchanges: 512
+  system_prompt_file: ./prompts/coding_agent.yaml
 persistence:
   enabled: true
   directory: ./data/sessions
@@ -77,6 +78,17 @@ configuration denies calls that require confirmation. Queue capacities,
 backoff delays, confirmation timeout, and `max_exchanges` must be positive.
 `max_backoff_ms` must be at least `initial_backoff_ms`. The idle timeout is
 nonnegative; zero disables it.
+
+`worker.system_prompt_file` selects an independent YAML prompt file for new
+sessions. Explicit relative paths resolve against the main configuration file.
+Omitting it reads `prompts/coding_agent.yaml` beside the executable. The file is
+validated at startup, including when restoring a session; missing or malformed
+files fail startup. Restored sessions retain their stored prompt. Current tool
+skills and configured `worker.environment` hints are refreshed in both cases.
+Environment hints describe the workspace, platform, and expected software without
+changing the working directory or restricting access. See
+[environment configuration](../../load/README.md#runtime-environment-hints) and the [prompt file format](../../load/README.md#system-prompt-files).
+The previous inline `worker.system_prompt` field is rejected.
 
 Paths such as `/agent/events` and `/agent/confirm` are examples, not reserved
 protocol routes. URLs accept `ws://` and `wss://`, an explicit or scheme-default

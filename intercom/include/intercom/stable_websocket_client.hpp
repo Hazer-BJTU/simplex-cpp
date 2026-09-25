@@ -24,7 +24,7 @@ namespace intercom {
 /** Configuration for a long-lived WebSocket client. */
 struct StableWebSocketOptions {
     /// Maximum number of messages accepted while the writer is busy or offline.
-    std::size_t write_capacity = 64;
+    std::size_t write_capacity = 256;
     /// Delay before the first reconnect attempt after a failed session.
     std::chrono::milliseconds initial_backoff{250};
     /// Upper bound for exponential reconnect delays.

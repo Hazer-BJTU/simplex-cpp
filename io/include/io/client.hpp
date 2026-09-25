@@ -27,8 +27,8 @@ struct SignalEvent {
 
 /** Capacities of the two incoming queues. Both must be positive. */
 struct ClientOptions {
-    std::size_t payload_capacity = 64;
-    std::size_t signal_capacity = 64;
+    std::size_t payload_capacity = 256;
+    std::size_t signal_capacity = 256;
 };
 
 /**

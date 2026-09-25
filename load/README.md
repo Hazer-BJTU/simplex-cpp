@@ -1,7 +1,7 @@
 # Startup configuration
 
 `load` defines the process startup configuration in
-[`config.example.yaml`](config.example.yaml). The plugin loading stage is
+[`config.example.yaml`](schemas/config.example.yaml). The plugin loading stage is
 implemented: it reads YAML, discovers provider modules, and constructs selected
 dynamic toolsets and loop hooks. Explicit JSON snapshot IO and Markdown session
 export are also implemented. The core worker now consumes the full startup
@@ -169,8 +169,9 @@ snapshots; Markdown export is selected explicitly through this API.
 
 ## Template and installation
 
-CMake copies the template unchanged to `<build>/bin/config.example.yaml` and
-installs it as `<prefix>/bin/config.example.yaml`. Copy it to a deployment's
+CMake copies `load/schemas/config.example.yaml` unchanged to
+`<build>/bin/config.example.yaml` and installs it as
+`<prefix>/bin/config.example.yaml`. Copy it to a deployment's
 `config.yaml`, set its client endpoint, and supply the referenced credentials.
 The installer never writes an active `config.yaml`. The example's model and
 endpoint values are illustrative, not host defaults or a service availability
@@ -181,6 +182,8 @@ guarantee.
   <host executable>
   config.example.yaml
   config.yaml                  # operator-owned copy
+  prompts/
+    coding_agent.yaml         # default prompt for new sessions
   plugins/
     llm/
     tools/
@@ -316,9 +319,9 @@ headers and TLS overrides are not exposed by this template.
 
 | Field | Default | Constraint / behavior |
 | --- | --- | --- |
-| `payload_capacity` | `64` | Positive integer; queued incoming payloads. |
-| `signal_capacity` | `64` | Positive integer; queued incoming signals. |
-| `transport.write_capacity` | `64` | Positive integer; queued outgoing messages. |
+| `payload_capacity` | `256` | Positive integer; queued incoming payloads. |
+| `signal_capacity` | `256` | Positive integer; queued incoming signals. |
+| `transport.write_capacity` | `256` | Positive integer; queued outgoing messages. |
 | `transport.initial_backoff_ms` | `250` | Positive integer milliseconds. |
 | `transport.max_backoff_ms` | `10000` | Integer milliseconds, at least the initial delay. |
 | `transport.idle_timeout_seconds` | `0` | Nonnegative integer seconds; zero disables idle timeout. |
@@ -389,8 +392,107 @@ client.endpoint; the timeout invalidates approval across the whole exchange.
 It is not a hard bound on return latency: an already-running system DNS backend
 may delay completion and shutdown until it returns. Late results remain denied.
 
-worker.max_exchanges defaults to 12, event_capacity to 256, and system_prompt
-to a general assistant prompt. The prompt applies only to new sessions.
+worker.max_exchanges defaults to 512 and event_capacity to 1024.
+worker.system_prompt_file selects a structured YAML prompt for new sessions.
 persistence.readable defaults to false and enables an additional Markdown
 export. JSON remains authoritative. See core for safety checkpoints, cancellation
 saving and failure policy; the explicit persistence APIs do not interpret YAML.
+
+
+## System prompt files
+
+The default file is maintained in `core/prompts/coding_agent.yaml` and exported
+as `<build>/bin/prompts/coding_agent.yaml` and
+`<prefix>/bin/prompts/coding_agent.yaml`. The startup template selects it using:
+
+```yaml
+worker:
+  system_prompt_file: ./prompts/coding_agent.yaml
+```
+
+An explicit path is resolved relative to the main configuration file, regardless
+of the working directory. Absolute paths are accepted. If the field is omitted,
+the loader reads `<executable_dir>/prompts/coding_agent.yaml`. Empty paths and
+missing files fail startup; there is no embedded text fallback. If an operator
+copies the example configuration to another directory, copy the prompt beside it
+or change this path. The old inline `worker.system_prompt` field is rejected with
+a migration error. Plugin-only loading APIs do not read prompt files.
+
+```yaml
+heading_level: 2
+sections:
+  - name: persona
+    title: ""
+    stability: immutable
+    text: |
+      You are a helpful assistant.
+      Follow the available tool guidance.
+  - name: notes
+    title: Session notes
+    stability: growing
+    text: ""
+  - name: context
+    title: Current context
+    stability: volatile
+    text: ""
+```
+
+The root must be a mapping with a `sections` list; an empty list is permitted.
+`heading_level` defaults to 2 and must be an integer in 1..6. Each section requires
+a unique, nonempty string `name` and string `text`. `title` defaults to an empty
+string (no heading), and `stability` defaults to `immutable`. Sections must be
+ordered by stability: `immutable`, then `growing`, then `volatile`. Duplicate
+names, unknown stability values, wrong field types, and names beginning with
+`skill.` or equal to `environment.runtime` / `signature.runtime` are rejected. These names are reserved
+for host-injected skills and runtime environment hints.
+Unknown additional fields are tolerated. The existing PromptTemplate text
+normalization and Markdown rendering rules apply; prompt text does not undergo
+environment-variable substitution.
+
+`load::read_system_prompt(path)` performs synchronous YAML loading and validation,
+returning an owned `model_io::PromptTemplate`. `read_configuration` and
+`parse_configuration` invoke it during startup and place the result in
+`Configuration::system_prompt`. Invalid or unreadable files fail with filename
+context. Hosts constructing Configuration directly must supply their own parsed
+prompt; a default-constructed Configuration has an empty prompt and performs no IO.
+
+The worker moves this prompt into a **new** AgentInputState and then injects
+current tool skills. For a restored session, the snapshot's complete prompt is
+retained and only host-owned skill sections are rebuilt. Editing the YAML file
+therefore affects newly created sessions, not restored ones. The file is still
+validated on every startup, including restoration; removing it can prevent
+startup even when a snapshot exists. There is no hot reload or remote prompt
+replacement operation.
+
+## Runtime environment hints
+
+Optional `worker.environment` settings describe the worker to the model:
+
+```yaml
+worker:
+  environment:
+    workspace: ./project
+    platform: Linux x86_64
+    software:
+      - Python 3.12
+      - Docker CLI
+```
+
+`workspace` and `platform` are strings; `software` is a list of strings. Missing
+or empty values are omitted. Unknown fields are tolerated; malformed known
+fields are rejected. Relative workspace paths resolve against the configuration
+file's directory without requiring the path to exist. These settings do not
+change the process working directory, restrict tool access, or detect/verify
+platform and software availability. They are operator-supplied prompt hints.
+
+At startup, core replaces the host-owned `environment.runtime` section with
+current configuration, including when restoring a session. It is Volatile and
+appears after tool skills, before user-defined Volatile sections. Empty settings
+remove any old section without adding a new one. The section is saved with the
+session, is not hot-reloaded, and remains editable through existing loop hooks.
+
+The worker appends a short, untitled `signature.runtime` Volatile section after
+all other sections: a simplex version welcome, a greeting to the configured
+provider, and a wish for successful tasks. This decorative footer is regenerated
+at startup, including on restore, using the current build version and provider.
+It is host-owned and cannot be declared in a role YAML file.

@@ -6,7 +6,9 @@
 #include <boost/beast.hpp>
 #include <boost/asio/use_future.hpp>
 #include <atomic>
+#include <algorithm>
 #include <fstream>
+#include <iterator>
 #include <thread>
 #include <unistd.h>
 
@@ -56,10 +58,25 @@ void scenario(Mode mode) {
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
     config.directory = scratch.root;
+    config.provider = "fixture";
     config.document = Json::object();
     config.client = load::websocket_endpoint("ws://127.0.0.1:"
         + std::to_string(acceptor.local_endpoint().port()) + "/events");
     config.storage = scratch.root / "sessions";
+    const auto prompt_file = scratch.root / "prompt.yaml";
+    std::ofstream(prompt_file) << R"(heading_level: 3
+sections:
+  - name: persona
+    text: Initial instructions.
+  - name: status
+    stability: volatile
+    text: Initial status.
+)";
+    config.system_prompt = load::read_system_prompt(prompt_file);
+    config.environment.workspace = scratch.root / "workspace";
+    config.environment.platform = "Test platform";
+    config.environment.software = {"Test compiler"};
+    const auto original_cwd = std::filesystem::current_path();
     config.event_capacity = mode == Mode::Overflow ? 1 : 256;
     if (mode == Mode::StorageFailure) {
         std::filesystem::create_directories(config.storage / "test/state.json");
@@ -157,6 +174,30 @@ void scenario(Mode mode) {
             BOOST_TEST(model->calls.load() == 2);
             const auto state = load::load_state(config.storage / "test/state.json");
             BOOST_TEST(state.turns.size() == 2u);
+            BOOST_TEST(state.system_prompt.heading_level == 3);
+            BOOST_REQUIRE(state.system_prompt.contains("persona"));
+            BOOST_TEST(state.system_prompt.find("persona")->text == "Initial instructions.");
+            BOOST_TEST(state.system_prompt.contains("status"));
+            const auto& signature = *std::prev(state.system_prompt.end());
+            BOOST_TEST(signature.name == "signature.runtime");
+            BOOST_TEST(signature.title.empty());
+            BOOST_TEST(signature.text.find("Welcome to simplex ") == 0u);
+            BOOST_TEST(signature.text.find("Hello, fixture!") != std::string::npos);
+            const auto environment = state.system_prompt.find("environment.runtime");
+            BOOST_REQUIRE(environment != state.system_prompt.end());
+            BOOST_CHECK(environment->stability == model_io::SectionStability::Volatile);
+            BOOST_TEST(environment->text.find(config.environment.workspace.string()) != std::string::npos);
+            BOOST_TEST(environment->text.find("Test platform") != std::string::npos);
+            BOOST_TEST(environment->text.find("Test compiler") != std::string::npos);
+            bool saw_environment = false;
+            for (const auto& section : state.system_prompt) {
+                if (section.name.starts_with("skill.")) BOOST_TEST(!saw_environment);
+                if (section.name == "environment.runtime") saw_environment = true;
+                if (section.name == "status") BOOST_TEST(saw_environment);
+            }
+            BOOST_CHECK(std::filesystem::current_path() == original_cwd);
+            BOOST_TEST(std::any_of(state.system_prompt.begin(), state.system_prompt.end(),
+                [](const auto& section) { return section.name.starts_with("skill."); }));
             BOOST_TEST(!state.meta.created_at.empty());
             BOOST_TEST(!state.meta.updated_at.empty());
         } else if (mode == Mode::Cancel || mode == Mode::Stop) {
@@ -170,13 +211,36 @@ void scenario(Mode mode) {
     }
     if (mode == Mode::Normal) {
         io.restart();
-        core::Application restored(io.get_executor(), config, "test", model);
-        std::stop_source stop;
-        stop.request_stop();
-        auto restart = asio::co_spawn(io, restored.run(stop.get_token()), asio::use_future);
-        io.run();
-        restart.get();
-        BOOST_TEST(load::load_state(config.storage / "test/state.json").turns.size() == 2u);
+        std::ofstream(prompt_file) << "sections: [{name: persona, text: Changed instructions.}]\n";
+        config.system_prompt = load::read_system_prompt(prompt_file);
+        // Both replacement and removal must discard the snapshot's old hints.
+        for (const bool clear : {false, true}) {
+            io.restart();
+            config.provider = "restored-provider";
+            config.environment = {};
+            if (!clear) config.environment.platform = "Replacement platform";
+            core::Application restored(io.get_executor(), config, "test", model);
+            std::stop_source stop;
+            stop.request_stop();
+            auto restart = asio::co_spawn(io, restored.run(stop.get_token()), asio::use_future);
+            io.run();
+            restart.get();
+            const auto snapshot = load::load_state(config.storage / "test/state.json");
+            BOOST_TEST(snapshot.turns.size() == 2u);
+            const auto& signature = *std::prev(snapshot.system_prompt.end());
+            BOOST_TEST(signature.name == "signature.runtime");
+            BOOST_TEST(signature.title.empty());
+            BOOST_TEST(signature.text.find("Hello, restored-provider!") != std::string::npos);
+            BOOST_TEST(snapshot.system_prompt.find("persona")->text == "Initial instructions.");
+            const auto environment = snapshot.system_prompt.find("environment.runtime");
+            if (clear) {
+                BOOST_CHECK(environment == snapshot.system_prompt.end());
+            } else {
+                BOOST_REQUIRE(environment != snapshot.system_prompt.end());
+                BOOST_TEST(environment->text == "Platform (configured): Replacement platform");
+            }
+            BOOST_CHECK(std::filesystem::current_path() == original_cwd);
+        }
     }
     io.restart();
     auto twice = asio::co_spawn(io, app.run(), asio::use_future);
@@ -198,6 +262,7 @@ BOOST_AUTO_TEST_CASE(startup_failure_releases_ownership_while_application_surviv
     asio::io_context io;
     load::Configuration config;
     config.directory = scratch.root;
+    config.provider = "fixture";
     config.document = Json::object();
     config.client = load::websocket_endpoint("ws://127.0.0.1:1/events");
     config.storage = scratch.root / "sessions";
@@ -248,6 +313,7 @@ void options_scenario(Json choices, bool fail = false) {
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
     config.directory = scratch.root;
+    config.provider = "fixture";
     config.document = Json::object();
     config.persistence = false;
     config.client = load::websocket_endpoint(
@@ -415,6 +481,7 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
     config.directory = scratch.root;
+    config.provider = "fixture";
     config.document = Json::object();
     config.persistence = false;
     config.client = load::websocket_endpoint(

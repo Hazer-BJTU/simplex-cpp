@@ -147,7 +147,7 @@ using tools_example::security_name;
 /// variable.
 const char* model_name() {
     if (const char* env = std::getenv("DEEPSEEK_MODEL")) return env;
-    return "deepseek-v4-flash";
+    return "deepseek-flash";
 }
 
 /// How many model exchanges one user turn may take before the loop stops.
@@ -638,8 +638,7 @@ int main(int argc, char* argv[]) {
 
     std::string effort = "high";
     if (!options.list_models_only) {
-        std::cout << "reasoning effort [high] (none|minimal|low|medium|high|"
-                     "xhigh|max; none/minimal disable thinking): ";
+        std::cout << "reasoning effort [high] (none|low|high|max; none disables thinking): ";
         if (std::string line; std::getline(std::cin, line) && !line.empty()) {
             effort = line;
         }

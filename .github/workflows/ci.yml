@@ -169,6 +169,9 @@ jobs:
           test "$found" -eq 6
           test -f stage/bin/schemas/process/skill.yaml
 
+      - name: Assert the release carries the default role prompt
+        run: test -s stage/bin/prompts/coding_agent.yaml
+
       - name: Test
         run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
 
@@ -394,6 +397,14 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_tools --log_level=error \
             --run_test=the_set_offers_five_routable_tools,every_tool_is_declared_by_its_own_yaml_file,the_set_carries_its_skill_and_hands_it_to_a_prompt
+
+      - name: Verify executable-relative default prompt in the installed tree
+        run: |
+          set -euo pipefail
+          test -s stage/bin/prompts/coding_agent.yaml
+          cp build/bin/test_load_system_prompt stage/bin/
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          stage/bin/test_load_system_prompt --run_test=default_prompt_is_loaded_beside_the_executable
 
       - name: Verify installed dynamic toolsets and loop hooks
         run: |

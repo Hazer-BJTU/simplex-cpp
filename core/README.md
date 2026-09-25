@@ -9,7 +9,9 @@ a separate one-to-one terminal server, not a multi-worker hub.
 
 Build simplex_worker and simplex_shell, or install the complete project.
 Copy bin/config.example.yaml to an operator-owned config.yaml. Select the
-provider/model and set credentials. For the local example:
+provider/model and set credentials. If config.yaml is outside bin, copy the
+`prompts` directory alongside it or set an absolute `worker.system_prompt_file`.
+Omitting that field uses the default prompt beside the executable. For the local example:
 
 ~~~yaml
 client:
@@ -19,13 +21,21 @@ security:
     endpoint: ws://127.0.0.1:8765/agent/confirm
     timeout_ms: 120000
 worker:
-  max_exchanges: 12
-  event_capacity: 256
-  system_prompt: You are a helpful assistant. Follow the available tool guidance.
+  max_exchanges: 512
+  event_capacity: 1024
+  system_prompt_file: ./prompts/coding_agent.yaml
 persistence:
   directory: ./data/sessions
   readable: false
 ~~~
+
+The default structured prompt lives in [core/prompts/coding_agent.yaml](prompts/coding_agent.yaml)
+and is copied/installed as `bin/prompts/coding_agent.yaml`. The loader resolves
+an explicit relative path against the startup configuration file's directory.
+It validates the file at startup, even when restoring a session. New sessions
+use its sections; restored sessions retain the prompt in their snapshot. Tool
+skills are rebuilt from the active registry in both cases. See the
+[load prompt format](../load/README.md#system-prompt-files) for custom files.
 
 Run in separate terminals inside a disposable container when testing process
 tools:
@@ -186,3 +196,11 @@ The shell links core_protocol and intercom_iface, without worker or provider
 implementation dependencies. intercom_exchange supplies a cancellable one-shot
 transport with an overall deadline. load now parses full worker settings in
 addition to its independent plugin-discovery and explicit persistence APIs.
+
+Runtime environment hints can be supplied through `worker.environment`:
+`workspace` and `platform` strings and a `software` string list. These describe
+expected conditions without changing the working directory or enforcing access
+restrictions. At startup, including restore, current hints replace the
+`environment.runtime` Volatile section after tool skills and before other
+Volatile sections. Empty configuration removes old hints. See
+[configuration and lifecycle details](../load/README.md#runtime-environment-hints).

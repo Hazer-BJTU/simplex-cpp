@@ -4,6 +4,7 @@
 #include <charconv>
 #include <limits>
 #include <stdexcept>
+#include <boost/dll/runtime_symbol_info.hpp>
 
 namespace load {
 namespace {
@@ -136,10 +137,10 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
 
     const auto& client = object(document, "client");
     result.client = websocket_endpoint(text(client, "endpoint"));
-    result.queues.payload_capacity = number(client, "payload_capacity", 64);
-    result.queues.signal_capacity = number(client, "signal_capacity", 64);
+    result.queues.payload_capacity = number(client, "payload_capacity", 256);
+    result.queues.signal_capacity = number(client, "signal_capacity", 256);
     const auto& transport = object(client, "transport");
-    result.transport.write_capacity = number(transport, "write_capacity", 64);
+    result.transport.write_capacity = number(transport, "write_capacity", 256);
     result.transport.initial_backoff = std::chrono::milliseconds(number(transport, "initial_backoff_ms", 250));
     result.transport.max_backoff = std::chrono::milliseconds(number(transport, "max_backoff_ms", 10000));
     result.transport.idle_timeout = std::chrono::seconds(number(transport, "idle_timeout_seconds", 0, true));
@@ -152,9 +153,47 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
         result.confirmation_timeout = std::chrono::milliseconds(number(confirmation, "timeout_ms", 120000));
     }
     const auto& worker = object(document, "worker");
-    result.event_capacity = number(worker, "event_capacity", 256);
-    result.max_exchanges = number(worker, "max_exchanges", 12);
-    result.system_prompt = text(worker, "system_prompt", result.system_prompt);
+    result.event_capacity = number(worker, "event_capacity", 1024);
+    result.max_exchanges = number(worker, "max_exchanges", 512);
+    if (worker.contains("system_prompt")) {
+        throw std::invalid_argument("worker.system_prompt is no longer supported; use system_prompt_file");
+    }
+    std::filesystem::path prompt_file;
+    if (worker.contains("system_prompt_file")) {
+        const auto path = text(worker, "system_prompt_file");
+        if (path.empty() || path.find('\0') != std::string::npos) {
+            throw std::invalid_argument("system_prompt_file must be a nonempty path without NUL");
+        }
+        prompt_file = (directory / path).lexically_normal();
+    } else {
+        prompt_file = boost::dll::program_location().parent_path()
+            / "prompts" / "coding_agent.yaml";
+    }
+    result.system_prompt = read_system_prompt(prompt_file);
+    const auto& environment = object(worker, "environment");
+    const auto workspace = text(environment, "workspace");
+    if (workspace.find('\0') != std::string::npos) {
+        throw std::invalid_argument("worker.environment.workspace must not contain NUL");
+    }
+    if (!workspace.empty()) {
+        result.environment.workspace = (directory / workspace).lexically_normal();
+    }
+    result.environment.platform = text(environment, "platform");
+    if (const auto software = environment.find("software"); software != environment.end()) {
+        if (!software->is_array()) {
+            throw std::invalid_argument("worker.environment.software must be a list of strings");
+        }
+        for (const auto& entry : *software) {
+            if (!entry.is_string()) {
+                throw std::invalid_argument("worker.environment.software entries must be strings");
+            }
+            const auto value = entry.get<std::string>();
+            if (!value.empty()) {
+                result.environment.software.push_back(value);
+            }
+        }
+    }
+
     const auto& storage = object(document, "persistence");
     result.persistence = flag(storage, "enabled", true);
     auto location = text(storage, "directory", "./data/sessions");
