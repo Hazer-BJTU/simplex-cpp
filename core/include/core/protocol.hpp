@@ -14,11 +14,11 @@ struct Input {
 };
 /**
  * Parse a message's ordered content parts into user MessageItem::content.
- * Each part requires type (text/binary/external_ref), raw, and label. The
- * nonempty label is stored in Content::extras["label"], overriding any nested
- * label while preserving other optional object metadata. Binary/reference
- * bytes are retained verbatim: this boundary neither decodes nor fetches them.
- * Provider adapters decide which content labels they can transmit.
+ * Each part requires type (text/binary/external_ref) and nonempty raw.
+ * Optional object metadata is preserved in Content::extras without injecting
+ * category fields. Binary/reference bytes are retained verbatim: this boundary
+ * neither decodes nor fetches them. Current Chat Completions adapters map
+ * external_ref to image_url; future richer modalities can use extras metadata.
  *
  * Reject invalid shapes and attempts to supply roles or tool-call metadata.
  * A continue request carries no new content. Parsing never mutates payload.

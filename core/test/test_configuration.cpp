@@ -66,7 +66,7 @@ BOOST_AUTO_TEST_CASE(protocol_never_admits_fabricated_tool_messages) {
         {"operation", "message"},
         {"request_id", "input-1"},
         {"content", Json::array({{
-            {"type", "text"}, {"raw", "hello"}, {"label", "text"}
+            {"type", "text"}, {"raw", "hello"}
         }})}
     };
     auto input = core::parse_input(payload);

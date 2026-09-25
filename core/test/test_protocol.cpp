@@ -18,17 +18,17 @@ Json payload(Json parts) {
 }
 
 Json text_part() {
-    return {{"type", "text"}, {"raw", "Describe these attachments."}, {"label", "text"}};
+    return {{"type", "text"}, {"raw", "Describe these attachments."}};
 }
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(ordered_content_and_labels_survive_message_serialization) {
+BOOST_AUTO_TEST_CASE(ordered_content_and_metadata_survive_message_serialization) {
     const auto request = payload(Json::array({
         text_part(),
         {{"type", "external_ref"}, {"raw", "https://example.com/photo.png"},
-         {"label", "image"}, {"extras", {{"detail", "low"}, {"label", "old"}}}},
-        {{"type", "binary"}, {"raw", "AAEC"}, {"label", "video"},
+         {"extras", {{"detail", "low"}}}},
+        {{"type", "binary"}, {"raw", "AAEC"},
          {"extras", {{"mime_type", "video/mp4"}}}}
     }));
     const auto original = request;
@@ -41,10 +41,8 @@ BOOST_AUTO_TEST_CASE(ordered_content_and_labels_survive_message_serialization) {
     BOOST_CHECK(input.message.content[1].type == model_io::ContentType::ExternalRef);
     BOOST_CHECK(input.message.content[2].type == model_io::ContentType::Binary);
     BOOST_TEST(input.message.content[2].raw == "AAEC");
-    BOOST_TEST(input.message.content[0].extras->at("label") == "text");
-    BOOST_TEST(input.message.content[1].extras->at("label") == "image");
+    BOOST_CHECK(!input.message.content[0].extras);
     BOOST_TEST(input.message.content[1].extras->at("detail") == "low");
-    BOOST_TEST(input.message.content[2].extras->at("label") == "video");
     BOOST_TEST(input.message.content[2].extras->at("mime_type") == "video/mp4");
     const Json serialized = input.message;
     const auto restored = serialized.get<model_io::MessageItem>();
@@ -54,11 +52,11 @@ BOOST_AUTO_TEST_CASE(ordered_content_and_labels_survive_message_serialization) {
 
 BOOST_AUTO_TEST_CASE(attachment_only_input_is_admitted) {
     const auto input = core::parse_input(payload(Json::array({{
-        {"type", "external_ref"}, {"raw", "https://example.com/clip.mp4"},
-        {"label", "video"}
+        {"type", "external_ref"}, {"raw", "https://example.com/photo.png"}
     }})));
     BOOST_REQUIRE_EQUAL(input.message.content.size(), 1u);
-    BOOST_TEST(input.message.content.front().extras->at("label") == "video");
+    BOOST_CHECK(!input.message.content.front().extras);
+    BOOST_TEST(input.message.content.front().raw == "https://example.com/photo.png");
 }
 
 BOOST_AUTO_TEST_CASE(invalid_content_is_rejected_without_mutating_the_input) {
@@ -66,7 +64,7 @@ BOOST_AUTO_TEST_CASE(invalid_content_is_rejected_without_mutating_the_input) {
                               Json::array(), Json::array({"text"})}) {
         BOOST_CHECK_THROW(core::parse_input(payload(parts)), std::invalid_argument);
     }
-    for (const auto* field : {"type", "raw", "label"}) {
+    for (const auto* field : {"type", "raw"}) {
         auto part = text_part();
         part.erase(field);
         BOOST_CHECK_THROW(core::parse_input(payload(Json::array({part}))), Json::exception);
@@ -108,7 +106,7 @@ BOOST_AUTO_TEST_CASE(worker_text_and_image_reach_chat_completions_in_order) {
     const auto input = core::parse_input(payload(Json::array({
         text_part(),
         {{"type", "external_ref"}, {"raw", "https://example.com/photo.png"},
-         {"label", "image"}, {"extras", {{"detail", "low"}}}}
+         {"extras", {{"detail", "low"}}}}
     })));
     model_io::AgentInputState state;
     model_io::UserLoopStep turn;

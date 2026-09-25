@@ -105,7 +105,7 @@ void scenario(Mode mode) {
                         {"operation", "message"},
                         {"request_id", "one"},
                         {"content", Json::array({{
-                            {"type", "text"}, {"raw", "hello"}, {"label", "text"}
+                            {"type", "text"}, {"raw", "hello"}
                         }})}
                     }}
                 };

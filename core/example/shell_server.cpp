@@ -289,7 +289,7 @@ struct Server {
                         {"request_id", core::new_identity()}}}};
                     if (line != "/continue") {
                         message["data"]["content"] = Json::array({{
-                            {"type", "text"}, {"raw", line}, {"label", "text"}
+                            {"type", "text"}, {"raw", line}
                         }});
                     }
                 } else continue;

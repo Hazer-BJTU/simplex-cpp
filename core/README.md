@@ -56,7 +56,8 @@ never start a run automatically.
 See the [formal worker client protocol](docs/worker-protocol.md) for all message
 formats, event data, connection roles, confirmation decisions, delivery limits,
 and recovery behavior. Message payloads carry an ordered `content` array of
-text/attachment parts; each part's `label` is retained in `Content.extras`.
+text/attachment parts. Use `external_ref` for image URLs; optional `extras`
+preserves additional metadata for future richer modalities.
 It is the reference for independently implemented hubs
 and clients. The [documentation index](docs/index.md) lists the package's formal
 documents and their publishing conventions.

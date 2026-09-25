@@ -111,7 +111,7 @@ in a text WebSocket message.
 Hub-to-worker event-connection messages have this envelope:
 
 ```json
-{"type":"payload","data":{"operation":"message","request_id":"req-001","content":[{"type":"text","raw":"Hello","label":"text"}]}}
+{"type":"payload","data":{"operation":"message","request_id":"req-001","content":[{"type":"text","raw":"Hello"}]}}
 ```
 
 `type` must be `payload` or `signal`; `data` must be present. Each operation
@@ -179,11 +179,10 @@ Sending while a run is active does not create a concurrent run.
     "operation": "message",
     "request_id": "req-001",
     "content": [
-      {"type": "text", "raw": "Describe this image.", "label": "text"},
+      {"type": "text", "raw": "Describe this image."},
       {
         "type": "external_ref",
         "raw": "https://example.com/photo.png",
-        "label": "image",
         "extras": {"detail": "low"}
       }
     ]
@@ -199,25 +198,25 @@ user message's ordered `content` list:
 | --- | --- | --- |
 | `type` | Required string: `text`, `binary`, or `external_ref` | `Content.type`; describes encoding, not media category. Unknown values are rejected. |
 | `raw` | Required nonempty string | `Content.raw`, unchanged: text, base64 bytes, or an external reference according to `type`. |
-| `label` | Required nonempty string | Stored as `Content.extras.label`; describes the provider-facing content category, such as `text`, `image`, or `video`. |
-| `extras` | Optional JSON object | Additional content metadata, such as image `detail` or a media type. Other members are preserved; the top-level `label` overrides an existing `extras.label`. |
+| `extras` | Optional JSON object | Additional content metadata, preserved unchanged. Current image options include `detail`; richer modality distinctions will be defined through this object in future extensions. |
 
 For example, the image part above becomes the following persisted/output Content
-object. The label is nested in `extras`, not emitted as a new Content field:
+object. No category field is added during conversion; absent `extras` remains
+absent:
 
 ```json
 {
   "type": "external_ref",
   "raw": "https://example.com/photo.png",
-  "extras": {"detail": "low", "label": "image"}
+  "extras": {"detail": "low"}
 }
 ```
 
 An attachment-only message is valid; no text part is required. Parts remain in
 array order. Unknown extra part fields are ignored; metadata that must survive
-conversion belongs in `extras`. `type: "image"` is invalid: use an encoding such
-as `external_ref` together with `label: "image"`. Labels are not an enum at this
-boundary, so a provider can define additional categories without changing core.
+conversion belongs in `extras`. `type: "image"` is invalid: use
+`type: "external_ref"` with the image URL in `raw`. No `label` parameter is
+part of the current input contract.
 
 The worker neither fetches references nor decodes base64 during admission.
 There is no upload endpoint or implicit mapping from a hub-local filename to
@@ -225,14 +224,28 @@ worker/provider-accessible bytes. The sender must provide the bytes/reference
 required by its selected provider adapter. There is no application-level raw
 length setting; transport and memory limits still apply. Text is not trimmed.
 
-Provider support is separate from input admission. The current Chat Completions
-adapter converts text to text parts and external references to `image_url` parts;
-it supports metadata such as `extras.detail`, but does not yet dispatch by
-`extras.label`. It does not currently provide a video/audio/binary routing
-contract. Preserving `label: "video"` in state does **not** make that adapter
-video-capable; do not send such content through it until provider conversion is
-implemented. An adapter may also support a modality that its selected model
-does not support. Hubs must match both adapter and model capabilities.
+The current Chat Completions adapter maps `external_ref` to an `image_url`
+content part, using `raw` as its URL (including provider-supported image data
+URLs). Thus current multimodal input consists of text and image references:
+
+```json
+{"type":"image_url","image_url":{"url":"https://example.com/photo.png","detail":"low"}}
+```
+
+This is the provider-facing form of the image example above, not a worker input
+part. The worker input keeps the provider-independent `type`/`raw` representation.
+Image options such as `extras.detail` are forwarded by the adapter. The existing
+`extras.image_url` option can override the provider URL; normally omit it and
+use `raw` to avoid two competing URLs.
+
+More complex modalities, such as video/audio or binary attachments requiring a
+media-specific encoding, will be distinguished through `extras` in future
+provider extensions. No category key or values are standardized for those modes
+yet. Core can retain binary content and opaque metadata, but that does **not**
+make the current adapter support those modalities. Do not send a video reference
+as `external_ref` expecting video behavior: this adapter treats it as an image.
+Provider adapter support and the selected model's capabilities must both match
+what the hub sends.
 
 The former `data.text` field is no longer accepted for `message`, including when
 `content` is also present. Send a one-element text array instead. Role and tool
@@ -438,7 +451,7 @@ them as commands.
 | --- | --- | --- |
 | `type` | `text`, `binary`, `external_ref` | Encoding of `raw`. |
 | `raw` | String | UTF-8 text, base64 binary, or an external URI/reference, respectively. |
-| `extras` | Optional JSON | Provider/tool metadata. For admitted user content, an object containing the input part's `label` and any supplied metadata. |
+| `extras` | Optional JSON | Provider/tool metadata. Admitted user content retains the supplied metadata object unchanged. |
 
 Render text as untrusted content. Do not execute HTML, terminal escape sequences,
 or references received from models or tools. URI references are data; the

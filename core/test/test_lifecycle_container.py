@@ -72,7 +72,7 @@ class Peer:
     def run(self, name, arguments):
         send(self.sock, {'type': 'payload', 'data': {
             'request_id': os.urandom(8).hex(), 'operation': 'message',
-            'content': [{'type': 'text', 'label': 'text',
+            'content': [{'type': 'text',
                          'raw': json.dumps({'name': name, 'arguments': arguments})}]}})
         results = self.wait('tool_results')
         done = self.wait('run_finished')

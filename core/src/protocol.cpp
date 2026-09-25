@@ -50,19 +50,16 @@ Input parse_input(const nlohmann::json& payload) {
                 throw std::invalid_argument("unknown content type");
             }
             content.raw = part.at("raw").get<std::string>();
-            const auto label = part.at("label").get<std::string>();
-            if (content.raw.empty() || label.empty()) {
-                throw std::invalid_argument("content raw and label must not be empty");
+            if (content.raw.empty()) {
+                throw std::invalid_argument("content raw must not be empty");
             }
             const auto extras = part.find("extras");
             if (extras != part.end() && !extras->is_object()) {
                 throw std::invalid_argument("content extras must be an object");
             }
-            content.extras = extras == part.end()
-                ? nlohmann::json::object() : *extras;
-            // The dedicated wire field is authoritative. Keep all other
-            // metadata, including provider options such as image detail.
-            (*content.extras)["label"] = label;
+            if (extras != part.end()) {
+                content.extras = *extras;
+            }
             input.message.content.push_back(std::move(content));
         }
     }
