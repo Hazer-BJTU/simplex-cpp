@@ -171,7 +171,9 @@ export function workerEvent({
 export async function until(predicate, { timeout = 2000, label = 'condition' } = {}) {
     const deadline = Date.now() + timeout;
     for (;;) {
-        const value = predicate();
+        // `await` handles both a synchronous predicate and an asynchronous one,
+        // which the child-process end-to-end tests need.
+        const value = await predicate();
         if (value) return value;
         if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
         await new Promise((resolve) => setTimeout(resolve, 5));

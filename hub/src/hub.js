@@ -9,6 +9,7 @@
 import { authorizePanel } from './http/auth.js';
 import { createHttpServer, sendError, sendJson } from './http/server.js';
 import { createLauncher } from './launch/launcher.js';
+import { MockProvider, parseAddress } from './mock/provider.js';
 import { WorkerSupervisor } from './launch/supervisor.js';
 import { createPanelApi } from './panel/api.js';
 import { HubState } from './state/persist.js';
@@ -125,13 +126,15 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extr
     });
     http.useUpgrade(confirmations);
 
+    /** Started by `start()` when configured; read lazily by the supervisor. */
+    let mock = null;
     const supervisor = new WorkerSupervisor({
         config,
         log,
         registry,
         launcher: createLauncher({ config, log }),
         endpointsFor,
-        mockProvider: extraHooks.mockProvider,
+        mockProvider: () => (mock ? { baseUrl: mock.baseUrl } : null),
         onProcessChange: (session, record) => {
             panel?.hooks.onProcessChange(session, record);
             extraHooks.onProcessChange?.(session, record);
@@ -172,10 +175,22 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extr
         panel,
         config,
         log,
+        /** The offline provider, when enabled and started. */
+        get mock() {
+            return mock;
+        },
         /** Bind the listener and restore sessions recorded by a previous run. */
         start: async () => {
             const address = await http.listen();
             bound = { host: address.host, port: address.port };
+            if (config.mock.enabled) {
+                mock = new MockProvider({
+                    log: log.child('mock'),
+                    scenario: config.mock.scenario,
+                    slowMs: config.mock.slowMs,
+                });
+                await mock.start(parseAddress(config.mock.listen));
+            }
             const stored = state.load();
             let restored = 0;
             for (const entry of stored.sessions ?? []) {
@@ -199,6 +214,7 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extr
         stop: async () => {
             const stopped = await supervisor.stopAll();
             state.flush(registry.list());
+            await mock?.stop();
             panel.close();
             confirmations.close();
             workerEvents.close();

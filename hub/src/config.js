@@ -12,6 +12,7 @@
  * src/launch/config-render.js.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { SCENARIOS } from './mock/provider.js';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -107,8 +108,12 @@ export function defaultConfig() {
         mock: {
             enabled: false,
             listen: '127.0.0.1:0',
+            // Provider profile rewritten with the resolved mock address.
             profile: 'mock',
+            // Fallback scenario for a model name without a mock-* suffix.
             scenario: 'auto',
+            // Delay used by the "slow" scenario, in milliseconds.
+            slowMs: 1500,
         },
         limits: {
             transcriptEvents: 5000,
@@ -311,6 +316,9 @@ export function validateConfig(config) {
         'launcher.pidFile must be an absolute path');
 
     check(typeof config.mock?.enabled === 'boolean', 'mock.enabled must be a boolean');
+    check(SCENARIOS.includes(config.mock?.scenario), `mock.scenario must be one of ${SCENARIOS.join(', ')}`);
+    check(Number.isInteger(config.mock?.slowMs) && config.mock.slowMs >= 0,
+        'mock.slowMs must be a nonnegative integer');
     if (config.mock.enabled) {
         check(typeof config.providerProfiles[config.mock.profile] === 'object',
             `mock.profile "${config.mock.profile}" is not a configured provider profile`);

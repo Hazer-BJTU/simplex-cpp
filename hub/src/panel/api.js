@@ -79,9 +79,17 @@ export function createPanelApi({
         broadcast({ type: 'session', session: session.describe() });
     }
 
-    /** Persist the session list after a change. */
-    function persist() {
-        onSessionsChanged?.(registry.list());
+    /**
+     * Persist the session list after a change.
+     *
+     * Process changes are written immediately: adoption after a hub restart
+     * depends on the recorded pid, and a worker that starts and outlives a
+     * crash must not be lost to a pending debounce.
+     */
+    function persist({ immediate = false } = {}) {
+        const sessions = registry.list();
+        if (immediate) state.flush(sessions);
+        else onSessionsChanged?.(sessions);
     }
 
     // ---------------------------------------------------------------------
@@ -146,7 +154,7 @@ export function createPanelApi({
                 process: session.process?.describe() ?? null,
             });
             broadcastSession(session);
-            persist();
+            persist({ immediate: true });
         },
 
         onConnectionChange: (session, connection) => {

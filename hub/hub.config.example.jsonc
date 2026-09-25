@@ -80,11 +80,15 @@
         "pidFile": ""
     },
 
+    // Offline model provider for demos and end-to-end tests: no API key needed.
+    // The scenario is chosen by the model name a session asks for
+    // (mock-flash/mock-auto, mock-text, mock-echo, mock-slow, mock-error).
     "mock": {
         "enabled": false,
         "listen": "127.0.0.1:0",
         "profile": "mock",
-        "scenario": "auto"
+        "scenario": "auto",
+        "slowMs": 1500
     },
 
     "limits": {
