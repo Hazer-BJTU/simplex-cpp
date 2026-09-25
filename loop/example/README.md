@@ -14,7 +14,7 @@ docker run --rm -it -e DEEPSEEK_API_KEY simplex-cpp-loop-test \
 
 Set `DEEPSEEK_API_KEY` in the current terminal first. `-e DEEPSEEK_API_KEY` passes the variable without putting its value in the command. Do not mount the host workspace or Docker socket into the experiment container. To use the installed version, run `/src/stage/bin/loop_deepseek_chat` instead. By default, the image opens an instructions page and a shell.
 
-The default model is `deepseek-v4-flash`; override it with `DEEPSEEK_MODEL`. `DEEPSEEK_BASE_URL` selects a compatible service or local protocol fixture; if unset, the DeepSeek plugin uses its default URL. If the API key is absent, the program prompts for it. Terminal input is echoed, so the environment variable is preferred.
+The default model is `deepseek-flash`; override it with `DEEPSEEK_MODEL`. `DEEPSEEK_BASE_URL` selects a compatible service or local protocol fixture; if unset, the DeepSeek plugin uses its default URL. If the API key is absent, the program prompts for it. Terminal input is echoed, so the environment variable is preferred.
 
 Options:
 

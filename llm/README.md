@@ -503,12 +503,16 @@ the neutral wire:
   `deepseek-flash` and `deepseek-v4-pro`;
 - thinking mode: the dialect always emits `thinking` — `enabled` by default,
   `disabled` when the effort is `none`/`minimal` — unless the config already
-  carries a native `thinking` object, which passes through verbatim;
+  carries a native `thinking` object, which passes through verbatim. `minimal`
+  is retained as a **local legacy disable alias**, unlike the current API's
+  compatibility mapping of `minimal` to `low`;
 - `reasoning_effort` passes through verbatim for trusted in-process generation
   settings. The current [Chat Completions API reference](https://api-docs.deepseek.com/api/create-chat-completion/)
   lists `none|low|high|max`; remotely configurable provider options expose
-  `low|high|max`. Unsupported values fail at the provider rather than being
-  silently reshaped by the adapter;
+  `low|high|max`. Compatibility values such as `medium` and `xhigh`, and
+  unknown values, pass through for server interpretation/validation. The API
+  documents `medium`/`xhigh` as aliases of `high`; the dialect does not clamp
+  them locally. The legacy `minimal` toggle above is the explicit exception;
 - `n` is rejected server-side ("currently only n = 1 is supported", live
   2026-08) and the deprecated no-op `frequency_penalty`/
   `presence_penalty` are stripped from every request;

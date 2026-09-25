@@ -596,7 +596,7 @@ namespace {
 // variable.
 const char* model_name() {
     if (const char* env = std::getenv("DEEPSEEK_MODEL")) return env;
-    return "deepseek-v4-flash";
+    return "deepseek-flash";
 }
 
 /// The tool registration (dataclass/model_io.hpp): the wire triple providers

@@ -56,11 +56,17 @@ sections:
         BOOST_CHECK(parsed.system_prompt.find("notes")->stability == model_io::SectionStability::Growing);
         BOOST_CHECK(parsed.system_prompt.find("status")->stability == model_io::SectionStability::Volatile);
     }
+    BOOST_TEST(load::read_system_prompt(scratch.write("sections: []\n")).size() == 0u);
+}
+
+// Also run after relocation into stage/bin to validate release resource lookup.
+BOOST_AUTO_TEST_CASE(default_prompt_is_loaded_beside_the_executable) {
+    Scratch scratch;
     // Missing field uses the shipped file beside the executable, not this directory.
     const auto defaults = load::parse_configuration(configuration(), scratch.root);
     BOOST_TEST(defaults.system_prompt.contains("persona"));
     BOOST_TEST(!defaults.system_prompt.render().markdown.empty());
-    BOOST_TEST(load::read_system_prompt(scratch.write("sections: []\n")).size() == 0u);
+    BOOST_TEST(!fs::exists(scratch.root / "prompts/coding_agent.yaml"));
 }
 
 BOOST_AUTO_TEST_CASE(malformed_or_missing_prompt_files_fail_with_filename_context) {

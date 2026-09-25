@@ -51,7 +51,7 @@ void usage() {
     std::cout <<
         "loop_deepseek_chat [--tools] [--skill] [--list-models] [--yes]\n"
         "  [--max-exchanges N] [--reasoning] [--effort high] [--log PATH]\n"
-        "Environment: DEEPSEEK_API_KEY, DEEPSEEK_MODEL (default deepseek-v4-flash),\n"
+        "Environment: DEEPSEEK_API_KEY, DEEPSEEK_MODEL (default deepseek-flash),\n"
         "  DEEPSEEK_BASE_URL (optional compatible endpoint).\n"
         "Commands: /tools /skill /sessions /state /continue /help /quit\n"
         "Empty input quits. Ctrl-C stops a run; at the input prompt it quits.\n"
@@ -290,7 +290,7 @@ asio::awaitable<void> chat(
     }
     if (key.empty()) throw std::runtime_error("no API key supplied");
     const auto configured_model = std::getenv("DEEPSEEK_MODEL");
-    const std::string model_name = configured_model ? configured_model : "deepseek-v4-flash";
+    const std::string model_name = configured_model ? configured_model : "deepseek-flash";
     llm::LLMDispatcher dispatcher;
     dispatcher.load_default_models();
     nlohmann::json config{

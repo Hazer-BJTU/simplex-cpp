@@ -16,12 +16,12 @@
  *     `{"type": "enabled" | "disabled"}` — an explicit native object in the
  *     config passes through verbatim, otherwise the dialect emits it:
  *     efforts "none"/"minimal" mean disabled, anything else enabled;
- *   - `reasoning_effort` passes through verbatim. Live 2026-08 the server's
- *     own vocabulary is none|minimal|low|medium|high|xhigh|max (an
- *     out-of-vocabulary value is rejected with that enumeration in the 400
- *     body), so an earlier client-side clamp to high/max — based on docs
- *     that have since been restructured — only distorted the caller's
- *     intent and is gone;
+ *   - public reasoning efforts are none|low|high|max; remote model options
+ *     expose low|high|max. The low-level dialect remains permissive: efforts
+ *     not consumed by the thinking toggle pass through for server validation.
+ *     medium/xhigh are compatibility values, not advertised options. minimal
+ *     retains the local legacy disable alias above (unlike the current API's
+ *     minimal-to-low mapping), unless native thinking is explicitly supplied;
  *   - intermediate assistant messages replay their reasoning_content
  *     (replay_assistant_reasoning): the endpoint prototype era documented a
  *     hard 400 when thinking+tools omitted it; live 2026-08 the omission is
@@ -106,12 +106,10 @@ public:
             body["thinking"] = {{"type", disable ? "disabled" : "enabled"}};
             if (disable) body.erase("reasoning_effort");
         }
-        // reasoning_effort passes through verbatim: live 2026-08 the server
-        // accepts none|minimal|low|medium|high|xhigh|max and rejects anything
-        // else with a 400 that enumerates the vocabulary, so an invalid value
-        // fails loudly at the server instead of being silently reshaped here.
-        // (An earlier clamp low/medium→high, xhigh→max mirrored since-
-        // restructured docs and distorted the caller's intent.)
+        // Preserve remaining efforts, including compatibility and unknown
+        // values, for server interpretation rather than clamping locally.
+        // Public values are none|low|high|max; see the legacy minimal toggle
+        // above. A native thinking object bypasses that toggle entirely.
         // n is rejected server-side ("currently only n = 1 is supported");
         // the two penalties are deprecated no-ops. All three stripped so a
         // stale config cannot fail the request or silently do nothing.

@@ -5,9 +5,9 @@
  *
  * Every provider deviation is pinned: the endpoint defaults, the
  * thinking-mode toggle (server default enabled, native object passthrough,
- * none/minimal disable), the effort vocabulary pass-through (the server's
- * live 2026-08 vocabulary is none|minimal|low|medium|high|xhigh|max and it
- * rejects out-of-vocabulary values itself), the undocumented/deprecated
+ * none and the local legacy minimal alias disable), the public effort values
+ * (none|low|high|max) and permissive compatibility/unknown-value pass-through,
+ * the undocumented/deprecated
  * parameter stripping, and the prompt_cache_hit_tokens → cached_tokens
  * usage bridge. All offline: the dialect is a pure JSON→JSON
  * transformation.
@@ -100,11 +100,8 @@ BOOST_AUTO_TEST_CASE(effort_none_and_minimal_disable_thinking_and_erase_effort) 
 }
 
 BOOST_AUTO_TEST_CASE(effort_vocabulary_passes_through_verbatim) {
-    // Live 2026-08: the server accepts none|minimal|low|medium|high|xhigh|max
-    // and answers 400 with that enumeration for anything else — so the
-    // dialect must NOT reshape the caller's effort. (An earlier clamp
-    // low/medium→high, xhigh→max mirrored docs that have since been
-    // restructured; it silently bought more thinking than asked for.)
+    // Public enabled efforts and compatibility values all pass through.
+    // This offline test asserts adapter policy, not server acceptance.
     for (const char* effort : {"low", "medium", "high", "xhigh", "max"}) {
         const auto body = transformed({
             {"model", "deepseek-v4-flash"},
@@ -113,9 +110,7 @@ BOOST_AUTO_TEST_CASE(effort_vocabulary_passes_through_verbatim) {
         BOOST_CHECK_EQUAL(body["thinking"]["type"], "enabled");
         BOOST_CHECK_EQUAL(body["reasoning_effort"], effort);
     }
-    // An out-of-vocabulary effort is likewise passed through untouched: the
-    // server's 400 ("unknown variant ... expected one of none, minimal, low,
-    // medium, high, xhigh, max") is a better failure than a silent rewrite.
+    // Unknown values also reach the server unchanged for validation.
     const auto bogus = transformed({
         {"model", "deepseek-v4-flash"},
         {"reasoning_effort", "turbo"},

@@ -2,7 +2,7 @@
 #
 # test_deepseek_dialect — offline coverage of the dialect policy matrix:
 # endpoint defaults, thinking-mode toggle (default enabled, native
-# passthrough, none/minimal disable), the high/max effort vocabulary clamp,
+# passthrough, none/minimal disable), public/compatibility effort pass-through,
 # undocumented/deprecated parameter stripping, and the prompt_cache_hit_tokens
 # usage bridge. The dialect is header-only, so the test includes it directly.
 #
