@@ -25,8 +25,7 @@ ToolResult& ToolResult::field(std::string_view name, nlohmann::json value) {
         rendered = value.dump();
     }
     auto& metadata = _records.back().metadata;
-    metadata += name;
-    metadata += ": " + rendered + "\n";
+    metadata += textformat::metadata_field(name, rendered);
     _dirty = true;
     return *this;
 }
@@ -42,7 +41,10 @@ ToolResult& ToolResult::block(std::string_view name, std::string body, bool trun
     } else {
         output += std::format(" ({}{} bytes):\n",
             truncated ? "truncated, first " : "", body.size());
-        output += textformat::literal_block(body);
+        output += body;
+        if (body.back() != '\n') {
+            output += '\n';
+        }
     }
     _dirty = true;
     return *this;
@@ -68,12 +70,12 @@ const std::string& ToolResult::text() const {
         if (!rendered.empty()) {
             rendered += "\n---\n\n";
         }
-        rendered += textformat::metadata(record.metadata);
+        rendered += record.metadata;
         if (!record.output.empty()) {
             if (!record.metadata.empty()) {
                 rendered += '\n';
             }
-            rendered += "## Output\n" + record.output;
+            rendered += record.output;
         }
     }
     _text = std::move(rendered);

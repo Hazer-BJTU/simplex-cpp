@@ -13,7 +13,8 @@ text: |
   released or the store shuts down. Use the IDs returned by the tools; IDs in
   the examples below are placeholders.
 
-  Results group status and concise hints in `Metadata`, before literal `Output`.
+  Results put status and concise hints first as `⟦key⟧: value` lines, followed
+  by plain stdout/stderr labels and literal output. No headings or fences are added.
   Each session in a poll has its own record. Executable and argument details
   remain in the invocation rather than being repeated in the result.
 

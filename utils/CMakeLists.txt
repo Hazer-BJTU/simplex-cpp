@@ -3,8 +3,8 @@
 #
 # Umbrella for the small shared utility modules every other package leans on:
 #
-#   - textformat/ `textformat_iface` (INTERFACE): dependency-free Markdown
-#                 framing for metadata and literal output.
+#   - textformat/ `textformat_iface` (INTERFACE): dependency-free plain
+#                 metadata field formatting.
 #   - logging/    `logging_lib` (STATIC): thread-safe console logger
 #                 (logging::Logger), standard-library only.
 #   - fileio/     `fileio_lib` (SHARED): atomic file replacement through a

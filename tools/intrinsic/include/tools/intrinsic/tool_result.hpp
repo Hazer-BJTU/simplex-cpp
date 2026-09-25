@@ -9,12 +9,12 @@
 namespace tools::intrinsic {
 
 /**
- * Model-facing text result shared by intrinsic tools. Each record renders a
- * fenced Metadata region followed by an optional Output region. Fields added
- * after output (including hints) are still placed in Metadata. Separate records
- * are divided by a Markdown rule. Literal output uses fences longer than any
- * backtick run it contains, preserving readable text without JSON escaping.
- * This is a presentation format, not a machine protocol or trust boundary.
+ * Model-facing plain text shared by intrinsic tools. Each record renders all
+ * metadata first using "⟦name⟧: value" lines, followed by an optional blank line
+ * and named literal output blocks. Fields added after output (including hints)
+ * still precede that output. Records are divided by a plain "---" separator.
+ * No Markdown headings or fences are added. Output is not escaped, so its text
+ * can resemble metadata; the markers are visual cues, not a trust boundary.
  */
 class ToolResult {
 public:

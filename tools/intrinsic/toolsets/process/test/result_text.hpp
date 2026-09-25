@@ -11,9 +11,8 @@
 // hint survive", "what did THIS session print" — and asking them by searching
 // the text would make every case a substring hunt.
 //
-// Metadata is fenced separately from Output. Each nonempty output block has
-// a byte count followed by a Markdown fence; consume exactly that many bytes
-// so embedded metadata-looking lines, separators, and fences stay output.
+// Metadata uses bracketed keys. Nonempty output blocks declare byte counts;
+// consume exactly that many bytes so metadata-looking text stays in the body.
 // This parser is only a test convenience, not a supported wire protocol.
 
 #include <boost/test/unit_test.hpp>
@@ -197,17 +196,21 @@ inline ResultText::ResultText(std::string_view raw) : _text(raw)
         if (detail::is_block_header(line)) {
             const std::size_t length =
                 detail::body_length(line).value_or(0);
-            // Skip the opening output fence before consuming literal bytes.
-            const auto fence_end = raw.find('\n', position);
-            BOOST_REQUIRE(fence_end != std::string_view::npos);
-            BOOST_REQUIRE(raw.substr(position, fence_end - position).starts_with("```"));
-            position = fence_end + 1;
             // Exactly the bytes the header counted, from where the body
             // starts. What follows them is the renderer's separation.
             _records.back().blocks.push_back(Block{
                 std::string(detail::name_of(line)),
                 std::string(raw.substr(position, length))});
             position = std::min(raw.size(), position + length);
+            continue;
+        }
+        if (line.starts_with("⟦")) {
+            const auto marker = line.find("⟧: ");
+            BOOST_REQUIRE(marker != std::string_view::npos);
+            constexpr auto prefix = std::string_view("⟦").size();
+            _records.back().fields.push_back(Field{
+                std::string(line.substr(prefix, marker - prefix)),
+                std::string(line.substr(marker + std::string_view("⟧: ").size()))});
             continue;
         }
         if (detail::is_field_line(line)) {

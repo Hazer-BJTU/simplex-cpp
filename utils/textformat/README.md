@@ -1,14 +1,12 @@
-# Text document framing
+# Plain metadata formatting
 
 Link `textformat_iface` and include `textformat/document.hpp`.
 
-- `textformat::metadata(fields)` renders nonempty field text under `## Metadata`
-  inside a Markdown code fence. Empty metadata produces no text.
-- `textformat::literal_block(body)` renders literal text with a fence longer than
-  any run of backticks in the body, with a minimum length of three. It adds a
-  final newline if needed for the closing fence but does not escape the body.
+`textformat::metadata_field(name, value)` produces one `⟦name⟧: value` line,
+including a final newline. It adds no Markdown heading or code fence.
 
-These pure helpers have no tool, model, JSON, or IO dependency. Callers serialize
-metadata fields and supply trusted labels. They provide visual boundaries, not
-security boundaries. Intrinsic `ToolResult` uses them to keep metadata and hints
-before each record's literal output.
+Callers supply trusted labels and serialize values to one line, escaping control
+characters where needed. Empty-field policy belongs to the caller. The helper
+has no tool, model, JSON, or IO dependency. Intrinsic `ToolResult` uses it to put
+metadata and hints before literal output. Markers provide visual distinction;
+output may contain similar text, so they are not a security boundary.
