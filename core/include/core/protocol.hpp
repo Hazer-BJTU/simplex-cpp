@@ -22,8 +22,8 @@ struct Input {
  * neither decodes nor fetches them. Current Chat Completions adapters map
  * external_ref to image_url; future richer modalities can use extras metadata.
  *
- * Optional options must contain category objects. Model values are validated
- * later by the provider; tools/confirmation are reserved empty objects. Unknown
+ * Optional options must contain category objects. Model and confirmation values
+ * are validated by their handlers; tools is a reserved empty object. Unknown
  * categories are rejected. Parsing never applies options or calls a provider.
  *
  * Reject invalid shapes and attempts to supply roles or tool-call metadata.

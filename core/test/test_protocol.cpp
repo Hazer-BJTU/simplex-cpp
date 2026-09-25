@@ -132,7 +132,7 @@ BOOST_AUTO_TEST_CASE(payload_options_validate_all_categories_without_mutation) {
     BOOST_TEST(core::parse_input(message).options == Json::object());
     const Json options = {
         {"model", {{"model", "deepseek-v4-pro"}}},
-        {"tools", Json::object()}, {"confirmation", Json::object()}
+        {"tools", Json::object()}, {"confirmation", {{"mode", "deny"}}}
     };
     message["options"] = options;
     BOOST_TEST(core::parse_input(message).options == options);

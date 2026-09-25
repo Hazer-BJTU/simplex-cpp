@@ -73,10 +73,10 @@ Input parse_input(const nlohmann::json& payload) {
             if (!values.is_object()) {
                 throw std::invalid_argument("each options category must be an object");
             }
-            if (category == "model") {
+            if (category == "model" || category == "confirmation") {
                 continue;
             }
-            if ((category != "tools" && category != "confirmation") || !values.empty()) {
+            if (category != "tools" || !values.empty()) {
                 throw std::invalid_argument("unsupported options category: " + category);
             }
         }

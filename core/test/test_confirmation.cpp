@@ -223,3 +223,55 @@ BOOST_AUTO_TEST_CASE(approval_and_cancel_contend_at_the_control_boundary) {
         BOOST_TEST(!scope->settle_approval(true));
     }
 }
+
+BOOST_AUTO_TEST_CASE(confirmation_options_validate_atomically_and_return_owned_metadata) {
+    core::ConfirmationOptions options;
+    const auto& readonly = options;
+    const auto expected = Json::array({{
+        {"name", "mode"}, {"options", {"ask", "approve", "deny"}}
+    }});
+    BOOST_TEST(readonly.get_options() == expected);
+    BOOST_CHECK(options.mode() == core::ConfirmationMode::Ask);
+    auto copy = readonly.get_options();
+    copy.clear();
+    BOOST_TEST(readonly.get_options() == expected);
+    options.handle_options({{"mode", "deny"}});
+    options.handle_options(Json::object());
+    for (const auto& invalid : std::vector<Json>{
+        nullptr, Json::array(), {{"mode", nullptr}}, {{"mode", 1}},
+        {{"mode", "unknown"}}, {{"mode", "approve"}, {"timeout_ms", 1}},
+        {{"endpoint", "ws://other"}}
+    }) {
+        BOOST_CHECK_THROW(options.handle_options(invalid), std::invalid_argument);
+        BOOST_CHECK(options.mode() == core::ConfirmationMode::Deny);
+    }
+    const core::ConfirmationScope previous(options.mode());
+    options.handle_options({{"mode", "approve"}});
+    BOOST_CHECK(previous.mode() == core::ConfirmationMode::Deny);
+    BOOST_CHECK(options.mode() == core::ConfirmationMode::Approve);
+    options.handle_options({{"mode", "ask"}});
+    BOOST_CHECK(options.mode() == core::ConfirmationMode::Ask);
+    BOOST_TEST(readonly.get_options() == expected);
+}
+
+BOOST_AUTO_TEST_CASE(local_confirmation_modes_respect_scope_and_cancellation) {
+    for (const auto mode : {core::ConfirmationMode::Ask,
+                           core::ConfirmationMode::Approve, core::ConfirmationMode::Deny}) {
+        for (const bool stopped : {false, true}) {
+            asio::io_context io;
+            auto scope = std::make_shared<core::ConfirmationScope>(mode);
+            if (stopped) scope->cancel();
+            // No endpoint: Ask fails closed, but explicit local modes need no IO.
+            auto result = asio::co_spawn(io, core::confirm({}, scope, io.get_executor(), {},
+                std::chrono::seconds(1), "s", "r"), asio::use_future);
+            io.run();
+            BOOST_CHECK(result.get().decision == (!stopped && mode == core::ConfirmationMode::Approve
+                ? tools::ConfirmDecision::Approved : tools::ConfirmDecision::Denied));
+        }
+    }
+    asio::io_context io;
+    auto absent = asio::co_spawn(io, core::confirm({}, {}, io.get_executor(), {},
+        std::chrono::seconds(1), "s", "r"), asio::use_future);
+    io.run();
+    BOOST_CHECK(absent.get().decision == tools::ConfirmDecision::Denied);
+}

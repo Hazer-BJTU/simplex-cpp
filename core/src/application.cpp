@@ -113,6 +113,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     model_io::AgentInputState state;
     std::vector<eventbus::EventBus::ScopedSubscription> subscriptions;
     eventbus::AsyncEventBus::ScopedSubscription confirmation;
+    ConfirmationOptions confirmation_options;
     std::unordered_set<std::string> requests;
     std::deque<std::string> request_order;
     std::atomic<bool> started{false};
@@ -186,14 +187,14 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     /**
      * Read-only option discovery. Each category contains a list of advertised
      * choices, not active configuration. Empty reserved categories do not imply
-     * that tools or confirmation are disabled; their options are not exposed yet.
+     * that tools are disabled; their options are not exposed yet.
      */
     Json options() const {
         const llm::LLMModel& provider = *model;
         return {
             {"model", provider.get_options()},
             {"tools", Json::array()},
-            {"confirmation", Json::array()}
+            {"confirmation", confirmation_options.get_options()}
         };
     }
 
@@ -405,11 +406,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     throw std::invalid_argument("session requires operator recovery inspection");
                 if (!input->has_message && state.turns.empty())
                     throw std::invalid_argument("no turn to continue");
-                // Apply options only after validation and after the previous run
-                // has settled. Reserved categories were checked by parse_input.
+                // Validate confirmation on a value copy before invoking the
+                // provider. If either category fails, neither selection changes.
+                // Enum-only assignment after provider success cannot throw.
+                auto next_confirmation = confirmation_options;
+                if (input->options.contains("confirmation")) {
+                    next_confirmation.handle_options(input->options.at("confirmation"));
+                }
                 if (input->options.contains("model")) {
                     model->handle_options(input->options.at("model"));
                 }
+                confirmation_options = next_confirmation;
             } catch (const std::exception& error) {
                 emit("input_rejected", {{"request_id", payload.is_object() ? payload.value("request_id", Json()) : Json()},
                     {"message", error.what()}});
@@ -431,7 +438,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     stopping = true;
                     break;
                 }
-                scope = std::make_shared<ConfirmationScope>();
+                scope = std::make_shared<ConfirmationScope>(confirmation_options.mode());
                 run_stop = std::stop_source();
                 run_id = new_identity();
             }

@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE CoreApplication
 #include <boost/test/unit_test.hpp>
 #include "core/application.hpp"
+#include "core/confirmation.hpp"
 #include "load/persistence.hpp"
 #include <boost/beast.hpp>
 #include <boost/asio/use_future.hpp>
@@ -288,7 +289,8 @@ void options_scenario(Json choices, bool fail = false) {
                 BOOST_TEST(event.at("worker_id") == identity);
                 BOOST_TEST(event.at("data") == Json({
                     {"model", choices}, {"tools", Json::array()},
-                    {"confirmation", Json::array()}
+                    {"confirmation", Json::array({{{"name", "mode"},
+                        {"options", {"ask", "approve", "deny"}}}})}
                 }));
                 ++replies;
                 if (replies == 1) {
@@ -359,6 +361,7 @@ struct MutableOptionsModel : Model {
     using Model::Model;
     std::string selected = "initial";
     std::vector<std::string> observed;
+    std::vector<bool> approvals;
     int updates = 0;
 
     void handle_options(const Json& options) override {
@@ -373,7 +376,21 @@ struct MutableOptionsModel : Model {
 
     asio::awaitable<model_io::MessageItem> converse(model_io::AgentInputState state) override {
         observed.push_back(selected);
+        model_io::InvokeQuery query;
+        query.security = model_io::InvokeSecurity::RequireConfirm;
+        const auto [before, before_reason] = co_await tools::default_security_check(query);
+        approvals.push_back(before);
+        query.security = model_io::InvokeSecurity::Trusted;
+        const auto [trusted, trusted_reason] = co_await tools::default_security_check(query);
+        BOOST_TEST(trusted);
+        query.security = model_io::InvokeSecurity::DefaultDeny;
+        const auto [denied, denied_reason] = co_await tools::default_security_check(query);
+        BOOST_TEST(!denied);
+        query.security = model_io::InvokeSecurity::RequireConfirm;
         auto response = co_await Model::converse(std::move(state));
+        const auto [after, after_reason] = co_await tools::default_security_check(query);
+        BOOST_TEST(before == after);
+        BOOST_TEST(before_reason == after_reason);
         BOOST_TEST(selected == observed.back());
         co_return response;
     }
@@ -412,20 +429,31 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
             if (name == "ready") {
                 co_await send({{"operation", "message"}, {"request_id", "first"},
                     {"content", Json::array({{{"type", "text"}, {"raw", "hello"}}})},
-                    {"options", {{"model", {{"model", "first"}}}}}});
+                    {"options", {{"model", {{"model", "first"}}},
+                        {"confirmation", {{"mode", "deny"}}}}}});
             } else if (name == "run_started" && event.at("request_id") == "first") {
                 // These arrive during the first run but are applied after it.
                 co_await send({{"operation", "continue"}, {"request_id", "second"},
-                    {"options", {{"model", {{"model", "invalid"}}}}}});
+                    {"options", {{"model", {{"model", "second"}}},
+                        {"confirmation", {{"mode", "invalid"}}}}}});
                 co_await send({{"operation", "continue"}, {"request_id", "second"},
-                    {"options", {{"model", {{"model", "second"}}}}}});
+                    {"options", {{"model", {{"model", "invalid"}}},
+                        {"confirmation", {{"mode", "approve"}}}}}});
+                co_await send({{"operation", "continue"}, {"request_id", "unchanged"}});
+                co_await send({{"operation", "continue"}, {"request_id", "second"},
+                    {"options", {{"model", {{"model", "second"}}},
+                        {"confirmation", {{"mode", "approve"}}}}}});
                 co_await send({{"operation", "continue"}, {"request_id", "third"}});
+                co_await send({{"operation", "continue"}, {"request_id", "ask-again"},
+                    {"options", {{"confirmation", {{"mode", "ask"}}}}}});
             } else if (name == "input_rejected") {
                 ++rejected;
-                BOOST_TEST(event.at("data").at("message") == "unsupported fixture model");
+                BOOST_TEST(event.at("data").at("message") == (rejected == 1
+                    ? "confirmation mode must be ask, approve or deny"
+                    : "unsupported fixture model"));
             } else if (name == "run_finished") {
                 BOOST_TEST(event.at("data").at("status") == "completed");
-                if (++completed == 3) {
+                if (++completed == 5) {
                     const auto wire = Json({{"type", "signal"},
                         {"data", {{"operation", "shutdown"}}}}).dump();
                     co_await socket.async_write(asio::buffer(wire), asio::use_awaitable);
@@ -440,9 +468,11 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
     other.join();
     server.get();
     worker.get();
-    BOOST_TEST(rejected == 1);
-    BOOST_TEST(completed == 3);
+    BOOST_TEST(rejected == 2);
+    BOOST_TEST(completed == 5);
     BOOST_TEST(model->updates == 2);
-    BOOST_TEST(model->observed == std::vector<std::string>({"first", "second", "second"}),
+    BOOST_TEST(model->observed == std::vector<std::string>({"first", "first", "second", "second", "second"}),
+               boost::test_tools::per_element());
+    BOOST_TEST(model->approvals == std::vector<bool>({false, false, true, true, false}),
                boost::test_tools::per_element());
 }

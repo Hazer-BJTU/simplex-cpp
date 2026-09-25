@@ -183,7 +183,7 @@ Both `message` and `continue` accept an optional `data.options` object. For exam
     "options": {
       "model": {"model": "deepseek-v4-pro", "reasoning_effort": "max"},
       "tools": {},
-      "confirmation": {}
+      "confirmation": {"mode": "ask"}
     },
     "content": [{"type": "text", "raw": "Explain this carefully."}]
   }
@@ -194,9 +194,9 @@ Both `message` and `continue` accept an optional `data.options` object. For exam
 | --- | --- | --- |
 | `model` | Object mapping provider option names to values | Passed to the selected provider's synchronous, polymorphic `handle_options()` method. DeepSeek accepts `model`: `deepseek-flash` or `deepseek-v4-pro`, and `reasoning_effort`: `low`, `high`, or `max`. |
 | `tools` | Empty object | Reserved; does not change tool configuration. |
-| `confirmation` | Empty object | Reserved; does not change confirmation policy. |
+| `confirmation` | Object with optional `mode`: `ask`, `approve`, or `deny` | Selects the policy for `RequireConfirm` calls. `ask` is the default and requests the configured confirmation endpoint; `approve` and `deny` decide locally without network IO. |
 
-Omitted categories and omitted model keys retain their current values. An empty
+Omitted categories and omitted option keys retain their current values. An empty
 options object is a no-op. Unknown categories, non-object categories, and
 nonempty reserved categories are rejected. Providers reject unsupported model
 keys or values; `null` is not a reset operation. The default provider handler
@@ -204,9 +204,10 @@ supports only an empty object. This API does not expose arbitrary generation
 patches, credentials, endpoints, or provider switching.
 
 The worker first validates the whole payload, duplicate request ID, and session
-recovery prerequisites. It then applies model options synchronously, before
-`input_admitted` and before starting the loop. Provider validation is atomic:
-invalid options produce `input_rejected`, preserve the prior settings, and do not
+recovery prerequisites. It then validates confirmation options on a temporary
+copy, applies model options synchronously, and commits the confirmation selection
+before `input_admitted` and before starting the loop. If either category is
+invalid, neither selection changes. Invalid options produce `input_rejected`, preserve the prior settings, and do not
 consume the request ID or add a user message. A corrected request may reuse that
 ID. A queued payload cannot change the settings of the active run; its options
 are processed only after that run settles. All exchanges within the new run use
@@ -214,8 +215,9 @@ the selected settings. Signals never apply options: `options` remains a read-onl
 query, including while a run is active.
 
 Successfully applied settings remain in effect for subsequent runs, including
-after cancellation or failure. They are runtime model-instance state, not part
-of the persisted `AgentInputState`; restarting restores the startup configuration.
+after cancellation or failure. They are runtime session settings, not part of
+the persisted `AgentInputState`; restarting restores the startup model
+configuration and confirmation mode `ask`.
 A shutdown racing admission can stop the worker after options have been applied
 but before a run starts. Applying options is not a delivery or execution guarantee.
 
@@ -436,7 +438,9 @@ envelope. For a DeepSeek worker before the first request, an example is:
       {"name": "reasoning_effort", "options": ["low", "high", "max"]}
     ],
     "tools": [],
-    "confirmation": []
+    "confirmation": [
+      {"name": "mode", "options": ["ask", "approve", "deny"]}
+    ]
   }
 }
 ```
@@ -445,10 +449,10 @@ envelope. For a DeepSeek worker before the first request, an example is:
 | --- | --- | --- |
 | `model` | Selected provider's `get_options() const` result | Array of `{ "name": string, "options": [string, ...] }` descriptors, in provider display order. Providers without advertised choices return `[]`. |
 | `tools` | `[]` | Reserved for future tool configuration choices; not a list of registered tools. |
-| `confirmation` | `[]` | Reserved for future confirmation configuration choices; not the current security policy or pending approvals. |
+| `confirmation` | `[{"name":"mode","options":["ask","approve","deny"]}]` | Supported confirmation modes; not the current selection or pending approvals. |
 
 These lists describe choices, not current values. Empty reserved categories do
-not mean tools or confirmation are disabled. Hubs should tolerate new categories
+not mean tools are disabled. Hubs should tolerate new categories
 and preserve provider-defined option names and values. This query exposes no
 credentials or endpoint configuration and does not fetch a remote model catalogue.
 
@@ -461,8 +465,9 @@ sequence number. No options event is sent automatically at startup or reconnect.
 
 If provider option discovery throws a standard exception, the worker reports
 an `error` event through the normal signal error path and can continue serving
-requests. The usual event-queue failure and delivery limits still apply. To apply model
-choices, include `data.options.model` in the next payload as described under
+requests. The usual event-queue failure and delivery limits still apply. To apply
+runtime choices, include `data.options.model` or `data.options.confirmation` in
+the next payload as described under
 [Apply options at the next run boundary](#apply-options-at-the-next-run-boundary).
 
 ### Status object
@@ -637,9 +642,33 @@ contract, not assumptions based on its name.
 
 ## Tool confirmation
 
+### Run policy
+
+`options.confirmation.mode` in a payload selects how the worker answers
+`RequireConfirm` requests for that run and subsequent runs:
+
+- `ask` (default): request the configured confirmation endpoint. A missing
+  endpoint denies the call, preserving the startup behavior.
+- `approve`: approve locally without opening a confirmation connection.
+- `deny`: deny locally without opening a confirmation connection.
+
+The policy is frozen in the run's confirmation scope before `run_started` and
+shared by every confirmation in that run, including parallel tool calls.
+Queued payloads and read-only `options` signals cannot alter it. Automatic
+approval still arbitrates against run cancellation using the same synchronized
+boundary as endpoint approval; a missing or cancelled scope never approves.
+`Trusted` calls still pass and `DefaultDeny` calls still fail without consulting
+this policy. Individual tools may also implement their own security checks.
+
+Only `mode` is remotely configurable. Unknown keys, unsupported modes, and
+non-string modes are rejected without changing either model or confirmation
+settings. Endpoint and timeout remain startup configuration. `{}` preserves the
+current mode; `null` is invalid. Settings are not persisted with conversation
+state, and a restarted worker begins in `ask` mode.
+
 ### Request
 
-For each call requiring confirmation, the worker opens the configured confirmation
+In `ask` mode, for each call requiring confirmation, the worker opens the configured confirmation
 WebSocket, sends one text message, and awaits one response:
 
 ```json
@@ -703,7 +732,7 @@ sends approval cannot infer tool execution until it observes subsequent results.
 
 There are no retries for a confirmation exchange. The default 120000 ms deadline
 covers DNS, TCP, TLS, upgrade, request write, response read, and graceful close.
-A missing endpoint, invalid JSON, wrong envelope, mismatched ID, unknown decision,
+In `ask` mode, a missing endpoint, invalid JSON, wrong envelope, mismatched ID, unknown decision,
 wrong reason type, binary response, disconnection, timeout, or cancellation
 results in denial. A timed-out/closed request must not be retried with the same
 approval on a new connection.

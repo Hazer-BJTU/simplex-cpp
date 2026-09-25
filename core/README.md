@@ -61,17 +61,23 @@ preserves additional metadata for future richer modalities.
 It is the reference for independently implemented hubs
 and clients. The [documentation index](docs/index.md) lists the package's formal
 documents and their publishing conventions. The `options` signal returns
-provider model choices plus reserved tool/confirmation categories in the normal
-event metadata envelope; it does not change settings.
+provider model choices, confirmation modes, and a reserved tools category in
+the normal event metadata envelope; it does not change settings.
 
 ## Confirmation and cancellation
 
 The worker owns one authoritative InvokeConfirmEvent subscription on the
 default asynchronous bus. Another existing confirmer is a startup error.
 Private plugin security buses are outside this contract. Missing endpoint
-configuration denies calls requiring confirmation, with a diagnostic.
+configuration denies calls requiring confirmation in the default `ask` mode,
+with a diagnostic. A payload may set `options.confirmation.mode` to `ask`,
+`approve`, or `deny` for that run and subsequent runs. Local approval/denial
+performs no network IO; approval still respects run cancellation. `Trusted` and
+`DefaultDeny` retain their tool-layer meaning. Model and confirmation options are
+validated together at admission, cannot change an active run, and are not
+persisted. The `options` signal advertises choices without modifying them.
 
-Confirmation uses one independent text WebSocket exchange without retries.
+In `ask` mode, confirmation uses one independent text WebSocket exchange without retries.
 The request has type=confirmation_request and data containing session_id,
 run_id, a fresh confirmation_id, and the settled call (including security,
 type and normalized arguments). The response has type=confirmation_response

@@ -3,6 +3,34 @@
 #include "intercom/cancellable_exchange.hpp"
 
 namespace core {
+nlohmann::json ConfirmationOptions::get_options() const {
+    return nlohmann::json::array({{
+        {"name", "mode"}, {"options", {"ask", "approve", "deny"}}
+    }});
+}
+
+void ConfirmationOptions::handle_options(const nlohmann::json& options) {
+    if (!options.is_object()) {
+        throw std::invalid_argument("confirmation options must be an object");
+    }
+    auto selected = mode_;
+    for (const auto& [name, value] : options.items()) {
+        if (name != "mode") {
+            throw std::invalid_argument("unsupported confirmation option: " + name);
+        }
+        if (value == "ask") {
+            selected = ConfirmationMode::Ask;
+        } else if (value == "approve") {
+            selected = ConfirmationMode::Approve;
+        } else if (value == "deny") {
+            selected = ConfirmationMode::Deny;
+        } else {
+            throw std::invalid_argument("confirmation mode must be ask, approve or deny");
+        }
+    }
+    mode_ = selected;
+}
+
 void ConfirmationScope::cancel() {
     {
         std::lock_guard lock(mutex_);
@@ -23,6 +51,19 @@ boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     event.reason = "confirmation endpoint is not configured";
     if (!scope || scope->token().stop_requested()) {
         event.reason = "run cancelled before confirmation";
+        co_return event;
+    }
+    if (scope->mode() == ConfirmationMode::Deny) {
+        event.reason = "confirmation policy denies the invocation";
+        co_return event;
+    }
+    if (scope->mode() == ConfirmationMode::Approve) {
+        if (scope->settle_approval(true)) {
+            event.decision = tools::ConfirmDecision::Approved;
+            event.reason = "confirmation policy approves the invocation";
+        } else {
+            event.reason = "run cancelled during confirmation";
+        }
         co_return event;
     }
     if (!endpoint) co_return event;
