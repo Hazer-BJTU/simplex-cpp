@@ -182,6 +182,8 @@ guarantee.
   <host executable>
   config.example.yaml
   config.yaml                  # operator-owned copy
+  prompts/
+    system_prompt.yaml         # default prompt for new sessions
   plugins/
     llm/
     tools/
@@ -390,8 +392,73 @@ client.endpoint; the timeout invalidates approval across the whole exchange.
 It is not a hard bound on return latency: an already-running system DNS backend
 may delay completion and shutdown until it returns. Late results remain denied.
 
-worker.max_exchanges defaults to 512, event_capacity to 1024, and system_prompt
-to a general assistant prompt. The prompt applies only to new sessions.
+worker.max_exchanges defaults to 512 and event_capacity to 1024.
+worker.system_prompt_file selects a structured YAML prompt for new sessions.
 persistence.readable defaults to false and enables an additional Markdown
 export. JSON remains authoritative. See core for safety checkpoints, cancellation
 saving and failure policy; the explicit persistence APIs do not interpret YAML.
+
+
+## System prompt files
+
+The default file is maintained in `core/prompts/system_prompt.yaml` and exported
+as `<build>/bin/prompts/system_prompt.yaml` and
+`<prefix>/bin/prompts/system_prompt.yaml`. The startup template selects it using:
+
+```yaml
+worker:
+  system_prompt_file: ./prompts/system_prompt.yaml
+```
+
+An explicit path is resolved relative to the main configuration file, regardless
+of the working directory. Absolute paths are accepted. If the field is omitted,
+the loader reads `<executable_dir>/prompts/system_prompt.yaml`. Empty paths and
+missing files fail startup; there is no embedded text fallback. If an operator
+copies the example configuration to another directory, copy the prompt beside it
+or change this path. The old inline `worker.system_prompt` field is rejected with
+a migration error. Plugin-only loading APIs do not read prompt files.
+
+```yaml
+heading_level: 2
+sections:
+  - name: persona
+    title: ""
+    stability: immutable
+    text: |
+      You are a helpful assistant.
+      Follow the available tool guidance.
+  - name: notes
+    title: Session notes
+    stability: growing
+    text: ""
+  - name: context
+    title: Current context
+    stability: volatile
+    text: ""
+```
+
+The root must be a mapping with a `sections` list; an empty list is permitted.
+`heading_level` defaults to 2 and must be an integer in 1..6. Each section requires
+a unique, nonempty string `name` and string `text`. `title` defaults to an empty
+string (no heading), and `stability` defaults to `immutable`. Sections must be
+ordered by stability: `immutable`, then `growing`, then `volatile`. Duplicate
+names, unknown stability values, wrong field types, and names beginning with
+`skill.` are rejected. That namespace is reserved for registry-injected skills.
+Unknown additional fields are tolerated. The existing PromptTemplate text
+normalization and Markdown rendering rules apply; prompt text does not undergo
+environment-variable substitution.
+
+`load::read_system_prompt(path)` performs synchronous YAML loading and validation,
+returning an owned `model_io::PromptTemplate`. `read_configuration` and
+`parse_configuration` invoke it during startup and place the result in
+`Configuration::system_prompt`. Invalid or unreadable files fail with filename
+context. Hosts constructing Configuration directly must supply their own parsed
+prompt; a default-constructed Configuration has an empty prompt and performs no IO.
+
+The worker moves this prompt into a **new** AgentInputState and then injects
+current tool skills. For a restored session, the snapshot's complete prompt is
+retained and only host-owned skill sections are rebuilt. Editing the YAML file
+therefore affects newly created sessions, not restored ones. The file is still
+validated on every startup, including restoration; removing it can prevent
+startup even when a snapshot exists. There is no hot reload or remote prompt
+replacement operation.

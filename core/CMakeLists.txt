@@ -1,3 +1,10 @@
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/system_prompt.yaml"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/system_prompt.yaml"
+    COPYONLY)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/system_prompt.yaml"
+    DESTINATION bin/prompts)
+
 add_library(core_protocol SHARED src/protocol.cpp)
 target_include_directories(core_protocol PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(core_protocol PUBLIC dataclass_iface Boost::headers)

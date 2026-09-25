@@ -9,7 +9,9 @@ a separate one-to-one terminal server, not a multi-worker hub.
 
 Build simplex_worker and simplex_shell, or install the complete project.
 Copy bin/config.example.yaml to an operator-owned config.yaml. Select the
-provider/model and set credentials. For the local example:
+provider/model and set credentials. If config.yaml is outside bin, copy the
+`prompts` directory alongside it or set an absolute `worker.system_prompt_file`.
+Omitting that field uses the default prompt beside the executable. For the local example:
 
 ~~~yaml
 client:
@@ -21,11 +23,19 @@ security:
 worker:
   max_exchanges: 512
   event_capacity: 1024
-  system_prompt: You are a helpful assistant. Follow the available tool guidance.
+  system_prompt_file: ./prompts/system_prompt.yaml
 persistence:
   directory: ./data/sessions
   readable: false
 ~~~
+
+The default structured prompt lives in [core/prompts/system_prompt.yaml](prompts/system_prompt.yaml)
+and is copied/installed as `bin/prompts/system_prompt.yaml`. The loader resolves
+an explicit relative path against the startup configuration file's directory.
+It validates the file at startup, even when restoring a session. New sessions
+use its sections; restored sessions retain the prompt in their snapshot. Tool
+skills are rebuilt from the active registry in both cases. See the
+[load prompt format](../load/README.md#system-prompt-files) for custom files.
 
 Run in separate terminals inside a disposable container when testing process
 tools:

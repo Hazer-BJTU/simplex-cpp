@@ -6,6 +6,7 @@
 #include <boost/beast.hpp>
 #include <boost/asio/use_future.hpp>
 #include <atomic>
+#include <algorithm>
 #include <fstream>
 #include <thread>
 #include <unistd.h>
@@ -60,6 +61,16 @@ void scenario(Mode mode) {
     config.client = load::websocket_endpoint("ws://127.0.0.1:"
         + std::to_string(acceptor.local_endpoint().port()) + "/events");
     config.storage = scratch.root / "sessions";
+    const auto prompt_file = scratch.root / "prompt.yaml";
+    std::ofstream(prompt_file) << R"(heading_level: 3
+sections:
+  - name: persona
+    text: Initial instructions.
+  - name: status
+    stability: volatile
+    text: Initial status.
+)";
+    config.system_prompt = load::read_system_prompt(prompt_file);
     config.event_capacity = mode == Mode::Overflow ? 1 : 256;
     if (mode == Mode::StorageFailure) {
         std::filesystem::create_directories(config.storage / "test/state.json");
@@ -157,6 +168,12 @@ void scenario(Mode mode) {
             BOOST_TEST(model->calls.load() == 2);
             const auto state = load::load_state(config.storage / "test/state.json");
             BOOST_TEST(state.turns.size() == 2u);
+            BOOST_TEST(state.system_prompt.heading_level == 3);
+            BOOST_REQUIRE(state.system_prompt.contains("persona"));
+            BOOST_TEST(state.system_prompt.find("persona")->text == "Initial instructions.");
+            BOOST_TEST(state.system_prompt.contains("status"));
+            BOOST_TEST(std::any_of(state.system_prompt.begin(), state.system_prompt.end(),
+                [](const auto& section) { return section.name.starts_with("skill."); }));
             BOOST_TEST(!state.meta.created_at.empty());
             BOOST_TEST(!state.meta.updated_at.empty());
         } else if (mode == Mode::Cancel || mode == Mode::Stop) {
@@ -170,13 +187,17 @@ void scenario(Mode mode) {
     }
     if (mode == Mode::Normal) {
         io.restart();
+        std::ofstream(prompt_file) << "sections: [{name: persona, text: Changed instructions.}]\n";
+        config.system_prompt = load::read_system_prompt(prompt_file);
         core::Application restored(io.get_executor(), config, "test", model);
         std::stop_source stop;
         stop.request_stop();
         auto restart = asio::co_spawn(io, restored.run(stop.get_token()), asio::use_future);
         io.run();
         restart.get();
-        BOOST_TEST(load::load_state(config.storage / "test/state.json").turns.size() == 2u);
+        const auto snapshot = load::load_state(config.storage / "test/state.json");
+        BOOST_TEST(snapshot.turns.size() == 2u);
+        BOOST_TEST(snapshot.system_prompt.find("persona")->text == "Initial instructions.");
     }
     io.restart();
     auto twice = asio::co_spawn(io, app.run(), asio::use_future);

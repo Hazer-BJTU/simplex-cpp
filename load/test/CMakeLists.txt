@@ -3,7 +3,7 @@ target_link_libraries(test_load_plugins PRIVATE
     load_lib yamlconfig_iface Boost::unit_test_framework)
 set_target_properties(test_load_plugins PROPERTIES ENABLE_EXPORTS ON)
 target_compile_definitions(test_load_plugins PRIVATE
-    LOAD_TEMPLATE="${PROJECT_SOURCE_DIR}/load/schemas/config.example.yaml"
+    LOAD_TEMPLATE="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/config.example.yaml"
     LOAD_OPENAI_MODULE="$<TARGET_FILE:llm_openai>"
     LOAD_DEEPSEEK_MODULE="$<TARGET_FILE:llm_deepseek>"
     LOAD_TOOL_MODULE="$<TARGET_FILE:tools_extension_noop>"
@@ -37,3 +37,7 @@ target_link_libraries(test_persistence_publication PRIVATE
     load_lib fileio_lib Boost::unit_test_framework)
 set_target_properties(test_persistence_publication PROPERTIES ENABLE_EXPORTS ON)
 add_test(NAME test_persistence_publication COMMAND test_persistence_publication)
+
+add_executable(test_load_system_prompt test_system_prompt.cpp)
+target_link_libraries(test_load_system_prompt PRIVATE load_lib Boost::unit_test_framework)
+add_test(NAME test_load_system_prompt COMMAND test_load_system_prompt)

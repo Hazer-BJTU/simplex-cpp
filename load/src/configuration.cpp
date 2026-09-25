@@ -4,6 +4,7 @@
 #include <charconv>
 #include <limits>
 #include <stdexcept>
+#include <boost/dll/runtime_symbol_info.hpp>
 
 namespace load {
 namespace {
@@ -154,7 +155,21 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
     const auto& worker = object(document, "worker");
     result.event_capacity = number(worker, "event_capacity", 1024);
     result.max_exchanges = number(worker, "max_exchanges", 512);
-    result.system_prompt = text(worker, "system_prompt", result.system_prompt);
+    if (worker.contains("system_prompt")) {
+        throw std::invalid_argument("worker.system_prompt is no longer supported; use system_prompt_file");
+    }
+    std::filesystem::path prompt_file;
+    if (worker.contains("system_prompt_file")) {
+        const auto path = text(worker, "system_prompt_file");
+        if (path.empty() || path.find('\0') != std::string::npos) {
+            throw std::invalid_argument("system_prompt_file must be a nonempty path without NUL");
+        }
+        prompt_file = (directory / path).lexically_normal();
+    } else {
+        prompt_file = boost::dll::program_location().parent_path()
+            / "prompts" / "system_prompt.yaml";
+    }
+    result.system_prompt = read_system_prompt(prompt_file);
     const auto& storage = object(document, "persistence");
     result.persistence = flag(storage, "enabled", true);
     auto location = text(storage, "directory", "./data/sessions");

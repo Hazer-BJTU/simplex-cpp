@@ -262,8 +262,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             state.meta.session_id = session_id;
             state.meta.created_at = timestamp();
             state.meta.updated_at = state.meta.created_at;
-            state.system_prompt.add_section("persona", "", config.system_prompt,
-                model_io::SectionStability::Immutable);
+            state.system_prompt = std::move(config.system_prompt);
         }
         state.tools = registry.get_tools();
         // Skills are host-owned sections. Rebuild only the prompt at startup:

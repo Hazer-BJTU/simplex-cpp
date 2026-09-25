@@ -59,6 +59,7 @@ security:
 worker:
   event_capacity: 1024
   max_exchanges: 512
+  system_prompt_file: ./prompts/system_prompt.yaml
 persistence:
   enabled: true
   directory: ./data/sessions
@@ -77,6 +78,14 @@ configuration denies calls that require confirmation. Queue capacities,
 backoff delays, confirmation timeout, and `max_exchanges` must be positive.
 `max_backoff_ms` must be at least `initial_backoff_ms`. The idle timeout is
 nonnegative; zero disables it.
+
+`worker.system_prompt_file` selects an independent YAML prompt file for new
+sessions. Explicit relative paths resolve against the main configuration file.
+Omitting it reads `prompts/system_prompt.yaml` beside the executable. The file is
+validated at startup, including when restoring a session; missing or malformed
+files fail startup. Restored sessions retain their stored prompt. Current tool
+skills are injected in both cases. See the [prompt file format](../../load/README.md#system-prompt-files).
+The previous inline `worker.system_prompt` field is rejected.
 
 Paths such as `/agent/events` and `/agent/confirm` are examples, not reserved
 protocol routes. URLs accept `ws://` and `wss://`, an explicit or scheme-default

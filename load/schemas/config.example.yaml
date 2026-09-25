@@ -113,7 +113,8 @@ worker:
   # Bounded host event queue. Overflow safely stops the worker.
   event_capacity: 1024
   # Used only for a new session; restored prompts are retained.
-  system_prompt: You are a helpful assistant. Follow the available tool guidance.
+  # Relative to this config file. Omit to use <executable_dir>/prompts/system_prompt.yaml.
+  system_prompt_file: ./prompts/system_prompt.yaml
 
 # Interpreted by core. Explicit save_state/load_state APIs remain policy-free.
 # Pre-dispatch/results checkpoints remain enabled independently of save flags.
