@@ -17,7 +17,7 @@ import { HubState } from './state/persist.ts';
 import { SessionRegistry } from './state/registry.ts';
 import { isValidSessionId } from './state/session-id.ts';
 import { TranscriptStore } from './state/transcript.ts';
-import { createWorkerConfirmationRoute } from './worker/confirmation.js';
+import { createWorkerConfirmationRoute } from './worker/confirmation.ts';
 import { createWorkerEventRoute } from './worker/connection.ts';
 import { CAPABILITIES, PANEL_PROTOCOL } from '../shared/protocol.ts';
 

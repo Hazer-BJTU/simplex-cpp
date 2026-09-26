@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { PROMPT_STATE, awaitWorkerIdentity } from '../src/worker/confirmation.js';
+import { PROMPT_STATE, awaitWorkerIdentity } from '../src/worker/confirmation.ts';
 import { IDENTITY } from '../src/state/registry.ts';
 import { connectWorker, upgradeStatus, until, workerEvent } from './helpers/worker.js';
 import { startTestHub } from './helpers/hub.js';

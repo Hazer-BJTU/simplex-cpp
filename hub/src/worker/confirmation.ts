@@ -25,11 +25,23 @@
  * legitimate confirmation after a restart.
  */
 import { WebSocketServer } from 'ws';
+import type { RawData, WebSocket } from 'ws';
+import type { Duplex } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
 import { presentedToken, safeEqual } from '../http/auth.ts';
 import { buildConfirmationResponse } from '../protocol/messages.ts';
 import { IDENTITY } from '../state/registry.ts';
+import type { Session, SessionRegistry, TrackedIdentity } from '../state/registry.ts';
 import { isValidSessionId } from '../state/session-id.ts';
 import { truncateReason } from './connection.ts';
+import type { UpgradeContext, UpgradeHandler } from '../http/server.ts';
+import type { HubConfig } from '../config.ts';
+import type { Logger } from '../log.ts';
+import type {
+    ConfirmationOutcome,
+    ConfirmationPrompt,
+    PendingCall,
+} from '../../shared/protocol.ts';
 
 /** Upgrade path pattern for a one-shot confirmation connection. */
 const CONFIRM_ROUTE = /^\/agent\/([^/]+)\/confirm$/;
@@ -50,10 +62,41 @@ export const PROMPT_STATE = {
     decided: 'decided',
     /** Closed without an answer: deadline, disconnect, or hub shutdown. */
     retired: 'retired',
-};
+} as const;
+
+/** One prompt state. */
+export type PromptState = (typeof PROMPT_STATE)[keyof typeof PROMPT_STATE];
+
+/** A decision, once the operator has made one. */
+export interface DecisionOutcome {
+    decision: 'approved' | 'denied';
+    reason: string;
+}
+
+/** The outcome of judging a worker identity against a confirmation. */
+export type IdentityVerdict =
+    | { ok: true; held: boolean }
+    | { ok: false; reason: string };
+
+/** The result of trying to answer a prompt. */
+export type DecideResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * A confirmation request's `data`, after validation.
+ *
+ * `call` is what the worker is asking to do; the operator decides on it, so it
+ * has to survive to the panel unharmed.
+ */
+export interface ConfirmationRequest {
+    worker_id: string;
+    session_id: string;
+    run_id: string;
+    confirmation_id: string;
+    call: PendingCall;
+}
 
 /** Write a plain HTTP rejection on a socket that never became a WebSocket. */
-function rejectUpgrade(socket, status, text) {
+function rejectUpgrade(socket: Duplex, status: number, text: string): void {
     socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     socket.destroy();
 }
@@ -61,19 +104,22 @@ function rejectUpgrade(socket, status, text) {
 /**
  * Wait until the session's live worker identity can judge a confirmation.
  *
- * @param {object} session registry session.
- * @param {string} workerId identity claimed by the request.
- * @param {number} holdMs how long an unknown identity may be held.
- * @returns {Promise<{ok: true, held: boolean}|{ok: false, reason: string}>}
+ * @param session registry session.
+ * @param workerId identity claimed by the request.
+ * @param holdMs how long an unknown identity may be held.
  */
-export function awaitWorkerIdentity(session, workerId, holdMs) {
-    const judge = (identity) => {
+export function awaitWorkerIdentity(
+    session: Session,
+    workerId: string,
+    holdMs: number,
+): Promise<IdentityVerdict> {
+    const judge = (identity: TrackedIdentity): IdentityVerdict | null => {
         if (identity.state !== IDENTITY.live) return null;
         if (identity.workerId === workerId) return { ok: true, held: false };
         return {
             ok: false,
             reason: `worker identity mismatch: the confirmation claims ${workerId} but the `
-                + `event connection is ${identity.workerId}`,
+                + `event connection is ${String(identity.workerId)}`,
         };
     };
 
@@ -86,10 +132,10 @@ export function awaitWorkerIdentity(session, workerId, holdMs) {
         });
     }
 
-    return new Promise((resolve) => {
-        let timer = null;
-        let unsubscribe = () => {};
-        const finish = (value) => {
+    return new Promise<IdentityVerdict>((resolve) => {
+        let timer: NodeJS.Timeout | null = null;
+        let unsubscribe: () => void = () => {};
+        const finish = (value: IdentityVerdict): void => {
             if (timer) clearTimeout(timer);
             unsubscribe();
             resolve(value);
@@ -109,9 +155,35 @@ export function awaitWorkerIdentity(session, workerId, holdMs) {
     });
 }
 
+/** Everything `new PendingConfirmation` needs. */
+export interface PendingConfirmationOptions {
+    request: ConfirmationRequest;
+    session: Session;
+    receivedAt: string;
+    deadlineAt: string;
+    log: Logger;
+    onSettled?: ((prompt: PendingConfirmation, outcome: ConfirmationOutcome) => void) | undefined;
+}
+
 /** One open confirmation prompt, as seen by the panel. */
 export class PendingConfirmation {
-    constructor({ request, session, receivedAt, deadlineAt, log, onSettled }) {
+    readonly request: ConfirmationRequest;
+    readonly session: Session;
+    readonly receivedAt: string;
+    readonly deadlineAt: string;
+    readonly log: Logger;
+    onSettled: ((prompt: PendingConfirmation, outcome: ConfirmationOutcome) => void)
+        | null | undefined;
+    state: PromptState;
+    verified: boolean;
+    decision: string | null;
+    reason: string | null;
+    settledAt: string | null;
+    deadlineTimer: NodeJS.Timeout | null;
+    private settle: ((value: DecisionOutcome | null) => void) | null;
+    readonly finished: Promise<DecisionOutcome | null>;
+
+    constructor({ request, session, receivedAt, deadlineAt, log, onSettled }: PendingConfirmationOptions) {
         this.request = request;
         this.session = session;
         this.receivedAt = receivedAt;
@@ -129,32 +201,29 @@ export class PendingConfirmation {
     }
 
     /** Worker-generated confirmation identifier. */
-    get id() {
+    get id(): string {
         return this.request.confirmation_id;
     }
 
     /** The settled call the worker is asking about. */
-    get call() {
+    get call(): PendingCall {
         return this.request.call ?? {};
     }
 
     /** Mark the prompt verified and let the operator answer it. */
-    markVerified() {
+    markVerified(): void {
         if (this.state !== PROMPT_STATE.identity) return;
         this.verified = true;
         this.state = PROMPT_STATE.decision;
     }
 
     /** Resolve when a decision is sent or the prompt is retired. */
-    wait() {
+    wait(): Promise<DecisionOutcome | null> {
         return this.finished;
     }
 
-    /**
-     * Answer the prompt.
-     * @returns {{ok: true}|{ok: false, error: string}}
-     */
-    decide(decision, reason = 'operator decision') {
+    /** Answer the prompt. */
+    decide(decision: string, reason = 'operator decision'): DecideResult {
         if (this.state === PROMPT_STATE.decided) {
             return { ok: false, error: 'this confirmation was already answered' };
         }
@@ -175,40 +244,41 @@ export class PendingConfirmation {
         this.reason = reason;
         this.settledAt = new Date().toISOString();
         this.clearDeadline();
-        this.settle({ decision, reason });
+        this.settle?.({ decision, reason });
         return { ok: true };
     }
 
     /**
      * Close the prompt without answering it.
-     * @param {string} phase deadline|disconnected|shutdown|protocol-error
-     * @param {string} detail human-readable explanation for the panel.
+     *
+     * @param phase deadline|disconnected|shutdown|protocol-error
+     * @param detail human-readable explanation for the panel.
      */
-    retire(phase, detail) {
+    retire(phase: string, detail: string): boolean {
         if (this.state === PROMPT_STATE.decided || this.state === PROMPT_STATE.retired) return false;
         this.state = PROMPT_STATE.retired;
         this.reason = detail;
         this.settledAt = new Date().toISOString();
         this.clearDeadline();
-        this.settle(null);
+        this.settle?.(null);
         this.onSettled?.(this, { phase, detail });
         return true;
     }
 
     /** Arm the advisory deadline; the worker's own deadline started earlier. */
-    armDeadline(afterMs, onExpired) {
+    armDeadline(afterMs: number, onExpired: () => void): void {
         this.deadlineTimer = setTimeout(onExpired, afterMs);
         this.deadlineTimer.unref?.();
     }
 
     /** Stop the advisory deadline timer. */
-    clearDeadline() {
+    clearDeadline(): void {
         if (this.deadlineTimer) clearTimeout(this.deadlineTimer);
         this.deadlineTimer = null;
     }
 
     /** Serializable description for the panel. */
-    describe() {
+    describe(): ConfirmationPrompt {
         return {
             confirmation_id: this.id,
             session_id: this.session.id,
@@ -227,33 +297,52 @@ export class PendingConfirmation {
     }
 }
 
-/**
- * Build the confirmation upgrade route.
- *
- * @param {object} options
- * @param {import('../state/registry.ts').SessionRegistry} options.registry
- * @param {object} options.config
- * @param {object} options.log
- * @param {(prompt: PendingConfirmation) => void} [options.onPrompt] verified prompt.
- * @param {(prompt: PendingConfirmation, outcome: object) => void} [options.onSettled]
- * @returns {{match: Function, handle: Function, close: Function}}
- */
-export function createWorkerConfirmationRoute({ registry, config, log, onPrompt, onSettled }) {
+/** One inbound message, or null when the socket closed first. */
+interface ReceivedMessage {
+    data: RawData;
+    isBinary: boolean;
+}
+
+/** A validated request, or the reason it was refused. */
+type ReadRequestResult =
+    | { ok: true; request: ConfirmationRequest }
+    | { ok: false; error: string };
+
+/** Everything `createWorkerConfirmationRoute` needs. */
+export interface ConfirmationRouteOptions {
+    registry: SessionRegistry;
+    config: HubConfig;
+    log: Logger;
+    /** Called with a verified prompt, once the operator can answer it. */
+    onPrompt?: ((prompt: PendingConfirmation) => void) | undefined;
+    /** Called when a prompt settles, for any reason. */
+    onSettled?: ((prompt: PendingConfirmation, outcome: ConfirmationOutcome) => void) | undefined;
+}
+
+/** The confirmation route, as a WebSocket upgrade handler. */
+export interface ConfirmationRoute extends UpgradeHandler {
+    close(): void;
+}
+
+/** Build the confirmation upgrade route. */
+export function createWorkerConfirmationRoute({
+    registry, config, log, onPrompt, onSettled,
+}: ConfirmationRouteOptions): ConfirmationRoute {
     const wss = new WebSocketServer({
         noServer: true,
         maxPayload: config.limits.maxMessageBytes,
         perMessageDeflate: false,
     });
-    const open = new Set();
+    const open = new Set<WebSocket>();
 
     /** Read one text message, or null when the socket closes first. */
-    function nextMessage(ws) {
+    function nextMessage(ws: WebSocket): Promise<ReceivedMessage | null> {
         return new Promise((resolve) => {
-            const onMessage = (data, isBinary) => {
+            const onMessage = (data: RawData, isBinary: boolean): void => {
                 ws.off('close', onClose);
                 resolve({ data, isBinary });
             };
-            const onClose = () => {
+            const onClose = (): void => {
                 ws.off('message', onMessage);
                 resolve(null);
             };
@@ -263,13 +352,21 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
     }
 
     /** Write exactly one decision to the connection. */
-    function sendDecision(ws, request, decision, reason, slog) {
+    function sendDecision(
+        ws: WebSocket,
+        request: ConfirmationRequest,
+        decision: string,
+        reason: string,
+        slog: Logger,
+    ): boolean {
         if (ws.readyState !== ws.OPEN) return false;
-        const response = buildConfirmationResponse(request, decision, truncateReason(reason));
+        const response = buildConfirmationResponse(request, decision as 'approved' | 'denied',
+            truncateReason(reason));
         try {
             ws.send(JSON.stringify(response));
         } catch (error) {
-            slog.warn(`could not send a decision: ${error.message}`);
+            const message = error instanceof Error ? error.message : String(error);
+            slog.warn(`could not send a decision: ${message}`);
             ws.terminate();
             return false;
         }
@@ -283,7 +380,7 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
      * The observer is notified *before* this runs: whether the transport
      * finishes closing must not delay what the panel is told.
      */
-    async function completeClose(ws) {
+    async function completeClose(ws: WebSocket): Promise<void> {
         if (ws.readyState === ws.CLOSED) return;
         const closed = new Promise((resolve) => ws.once('close', resolve));
         const timer = setTimeout(() => {
@@ -295,7 +392,7 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
     }
 
     /** Reject a malformed or duplicate request without answering it. */
-    function abort(ws, slog, message) {
+    function abort(ws: WebSocket, slog: Logger, message: string): void {
         slog.warn(`confirmation aborted: ${message}`);
         try {
             ws.close(1008, truncateReason(message));
@@ -305,52 +402,67 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
     }
 
     /** Validate a received confirmation request. */
-    function readRequest(text, session) {
+    function readRequest(text: string | null, session: Session): ReadRequestResult {
         if (typeof text !== 'string') {
             return { ok: false, error: 'binary confirmation request' };
         }
-        let parsed;
+        let parsed: unknown;
         try {
             parsed = JSON.parse(text);
         } catch (cause) {
-            return { ok: false, error: `invalid JSON: ${cause.message}` };
+            const message = cause instanceof Error ? cause.message : String(cause);
+            return { ok: false, error: `invalid JSON: ${message}` };
         }
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
             return { ok: false, error: 'confirmation request must be a JSON object' };
         }
-        if (parsed.type !== 'confirmation_request') {
-            return { ok: false, error: `expected confirmation_request, got ${JSON.stringify(parsed.type)}` };
+        const document = parsed as Record<string, unknown>;
+        if (document.type !== 'confirmation_request') {
+            return {
+                ok: false,
+                error: `expected confirmation_request, got ${JSON.stringify(document.type)}`,
+            };
         }
-        const data = parsed.data;
+        const data = document.data;
         if (typeof data !== 'object' || data === null || Array.isArray(data)) {
             return { ok: false, error: 'confirmation request data must be an object' };
         }
-        for (const field of ['worker_id', 'session_id', 'run_id', 'confirmation_id']) {
-            if (typeof data[field] !== 'string' || data[field].length === 0) {
+        const fields = data as Record<string, unknown>;
+        for (const field of ['worker_id', 'session_id', 'run_id', 'confirmation_id'] as const) {
+            if (typeof fields[field] !== 'string' || (fields[field] as string).length === 0) {
                 return { ok: false, error: `confirmation ${field} must be a nonempty string` };
             }
         }
-        if (data.session_id !== session.id) {
+        if (fields.session_id !== session.id) {
             return {
                 ok: false,
-                error: `confirmation session_id "${data.session_id}" does not match route session`,
+                error: `confirmation session_id "${String(fields.session_id)}" does not match route session`,
             };
         }
-        if (typeof data.call !== 'object' || data.call === null || Array.isArray(data.call)) {
+        if (typeof fields.call !== 'object' || fields.call === null || Array.isArray(fields.call)) {
             return { ok: false, error: 'confirmation call must be an object' };
         }
-        if (session.prompts.has(data.confirmation_id)) {
-            return { ok: false, error: `duplicate confirmation_id ${data.confirmation_id}` };
+        if (session.prompts.has(fields.confirmation_id as string)) {
+            return { ok: false, error: `duplicate confirmation_id ${String(fields.confirmation_id)}` };
         }
-        return { ok: true, request: data };
+        return {
+            ok: true,
+            request: {
+                worker_id: fields.worker_id as string,
+                session_id: fields.session_id as string,
+                run_id: fields.run_id as string,
+                confirmation_id: fields.confirmation_id as string,
+                call: fields.call as PendingCall,
+            },
+        };
     }
 
     /** Run one exchange to completion. */
-    async function exchange(ws, session) {
+    async function exchange(ws: WebSocket, session: Session): Promise<void> {
         const slog = log.child(`confirm:${session.id}`);
-        let prompt = null;
+        let prompt: PendingConfirmation | null = null;
         let settled = false;
-        const cleanup = (phase, detail) => {
+        const cleanup = (phase: string, detail: string): void => {
             if (settled) return;
             settled = true;
             if (prompt) {
@@ -403,7 +515,7 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
             });
             prompt.markVerified();
             session.addPrompt(prompt);
-            const closed = new Promise((resolve) => ws.once('close', () => resolve(null)));
+            const closed = new Promise<null>((resolve) => ws.once('close', () => resolve(null)));
             const remainingMs = Math.max(0, deadlineMs - (Date.now() - receivedAt));
             prompt.armDeadline(remainingMs, () => {
                 // Advisory: the worker's own deadline started before this
@@ -426,7 +538,8 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
             onSettled?.(prompt, { phase: 'decided', detail: outcome.decision });
             await completeClose(ws);
         } catch (error) {
-            slog.warn(`confirmation exchange failed: ${error.message}`);
+            const message = error instanceof Error ? error.message : String(error);
+            slog.warn(`confirmation exchange failed: ${message}`);
             try {
                 ws.terminate();
             } catch { /* already gone */ }
@@ -436,28 +549,28 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
         }
     }
 
-    function accept(ws, session) {
+    function accept(ws: WebSocket, session: Session): void {
         open.add(ws);
         ws.once('close', () => open.delete(ws));
         void exchange(ws, session);
     }
 
     return {
-        match(req, url) {
+        match(req: IncomingMessage, url: URL): Record<string, unknown> | null {
             if (req.method !== 'GET') return null;
             const matched = CONFIRM_ROUTE.exec(url.pathname);
             if (!matched) return null;
             try {
-                return { session: decodeURIComponent(matched[1]) };
+                return { session: decodeURIComponent(matched[1] as string) };
             } catch {
                 return null;
             }
         },
 
-        handle({ req, socket, head, url, params }) {
+        handle({ req, socket, head, url, params }: UpgradeContext): void {
             const sessionId = params.session;
             if (!isValidSessionId(sessionId)) {
-                log.warn(`rejected confirmation upgrade: invalid session id "${sessionId}"`);
+                log.warn(`rejected confirmation upgrade: invalid session id "${String(sessionId)}"`);
                 rejectUpgrade(socket, 404, 'Not Found');
                 return;
             }
@@ -475,10 +588,10 @@ export function createWorkerConfirmationRoute({ registry, config, log, onPrompt,
             wss.handleUpgrade(req, socket, head, (ws) => accept(ws, session));
         },
 
-        close() {
+        close(): void {
             for (const session of registry.list()) {
                 for (const prompt of [...session.prompts.values()]) {
-                    prompt.retire('shutdown', 'the hub is shutting down');
+                    (prompt as PendingConfirmation).retire('shutdown', 'the hub is shutting down');
                     session.removePrompt(prompt);
                 }
             }
