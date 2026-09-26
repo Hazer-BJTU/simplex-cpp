@@ -36,10 +36,17 @@
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true
     },
+    // Both extensions are listed while the migration is in flight: `tsc` type
+    // checks every `.ts` file and resolves the `.js` ones it imports, so a
+    // module that has been converted is held to its types immediately and an
+    // unconverted neighbour is left alone until its turn.
     "include": [
-        "bin/**/*.js",
-        "src/**/*.js",
+        "src/**/*.ts",
+        "bin/**/*.ts",
         "shared/**/*.ts",
-        "vite.config.ts"
+        "src/**/*.js",
+        "bin/**/*.js",
+        "vite.config.ts",
+        "playwright.config.ts"
     ]
 }

@@ -15,7 +15,7 @@ import { WorkerSupervisor } from './launch/supervisor.js';
 import { createPanelApi } from './panel/api.js';
 import { HubState } from './state/persist.js';
 import { SessionRegistry } from './state/registry.js';
-import { isValidSessionId } from './state/session-id.js';
+import { isValidSessionId } from './state/session-id.ts';
 import { TranscriptStore } from './state/transcript.js';
 import { createWorkerConfirmationRoute } from './worker/confirmation.js';
 import { createWorkerEventRoute } from './worker/connection.js';

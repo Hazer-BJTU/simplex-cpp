@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync }
     from 'node:fs';
 import { join } from 'node:path';
-import { LineSplitter, RingBuffer } from '../util/ring.js';
+import { LineSplitter, RingBuffer } from '../util/ring.ts';
 import { renderSessionConfig, sessionDir, workerConfigPath } from './config-render.js';
 
 /** Process lifecycle as the panel sees it. */

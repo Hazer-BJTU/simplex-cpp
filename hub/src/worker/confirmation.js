@@ -28,7 +28,7 @@ import { WebSocketServer } from 'ws';
 import { presentedToken, safeEqual } from '../http/auth.js';
 import { buildConfirmationResponse } from '../protocol/messages.js';
 import { IDENTITY } from '../state/registry.js';
-import { isValidSessionId } from '../state/session-id.js';
+import { isValidSessionId } from '../state/session-id.ts';
 import { truncateReason } from './connection.js';
 
 /** Upgrade path pattern for a one-shot confirmation connection. */

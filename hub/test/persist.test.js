@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { HubState, STATE_VERSION } from '../src/state/persist.js';
 import { PROCESS_STATE, readProcessStartTime } from '../src/launch/supervisor.js';
-import { createLogger } from '../src/log.js';
+import { createLogger } from '../src/log.ts';
 import { loadConfig } from '../src/config.js';
 import { createHub } from '../src/hub.js';
 import { hubRoot } from '../src/config.js';

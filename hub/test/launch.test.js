@@ -11,7 +11,7 @@ import { persistenceRoot, renderSessionConfig, sessionDir } from '../src/launch/
 import { createLauncher } from '../src/launch/launcher.js';
 import { buildSimplexWorkerInvocation } from '../src/launch/simplex-worker.js';
 import { normalizeSpec } from '../src/launch/spec.js';
-import { createLogger } from '../src/log.js';
+import { createLogger } from '../src/log.ts';
 import { testConfig } from './helpers/hub.js';
 
 const log = createLogger({ level: 'silent' });

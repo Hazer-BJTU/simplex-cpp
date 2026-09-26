@@ -21,7 +21,7 @@ import { readJsonBody, sendError, sendJson } from '../http/server.js';
 import { persistenceRoot } from '../launch/config-render.js';
 import { normalizeSpec } from '../launch/spec.js';
 import { buildPayload, buildSignal, newRequestId } from '../protocol/messages.js';
-import { isValidSessionId } from '../state/session-id.js';
+import { isValidSessionId } from '../state/session-id.ts';
 import { checkEnvelope } from '../../shared/guards.ts';
 import { PANEL_VERSION, SESSIONLESS_MESSAGE_TYPES } from '../../shared/protocol.ts';
 

@@ -24,7 +24,7 @@ import { after, describe, it } from 'node:test';
 import { ProcessRecord, PROCESS_STATE, readProcessStartTime } from '../src/launch/supervisor.js';
 import { sessionDir } from '../src/launch/config-render.js';
 import { resolveStaticPath } from '../src/http/static.js';
-import { RingBuffer } from '../src/util/ring.js';
+import { RingBuffer } from '../src/util/ring.ts';
 import { ConfigError, hubRoot, loadConfig } from '../src/config.js';
 import { startTestHub } from './helpers/hub.js';
 import { connectWorker, until, workerEvent } from './helpers/worker.js';

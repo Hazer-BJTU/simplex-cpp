@@ -11,7 +11,7 @@
  * emits an unfamiliar event (core/docs/worker-protocol.md, "Encoding and
  * message envelopes").
  */
-import { validateSessionId } from '../state/session-id.js';
+import { validateSessionId } from '../state/session-id.ts';
 
 /**
  * Events emitted by core, with rendering hints for the panel.

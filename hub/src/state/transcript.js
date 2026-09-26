@@ -13,7 +13,7 @@
  */
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { RingBuffer } from '../util/ring.js';
+import { RingBuffer } from '../util/ring.ts';
 
 /** One session's bounded event history plus its append-only log. */
 export class SessionTranscript {

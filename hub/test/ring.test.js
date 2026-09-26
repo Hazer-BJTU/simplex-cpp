@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { LineSplitter, RingBuffer } from '../src/util/ring.js';
+import { LineSplitter, RingBuffer } from '../src/util/ring.ts';
 
 describe('RingBuffer', () => {
     it('keeps the most recent entries up to the count limit', () => {

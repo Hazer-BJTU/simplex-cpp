@@ -11,7 +11,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigError, hubRoot, loadConfig } from '../src/config.js';
 import { createHub } from '../src/hub.js';
-import { createLogger, isLogLevel } from '../src/log.js';
+import { createLogger, isLogLevel } from '../src/log.ts';
 
 const USAGE = `Usage: simplex-hub [options]
 

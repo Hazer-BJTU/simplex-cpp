@@ -12,7 +12,7 @@
  * no lock in this file by design.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
-import { validateSessionId } from './session-id.js';
+import { validateSessionId } from './session-id.ts';
 
 /** A fresh per-session access token. */
 export function newToken() {

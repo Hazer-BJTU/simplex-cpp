@@ -24,7 +24,7 @@ import { WebSocketServer } from 'ws';
 import { presentedToken, safeEqual } from '../http/auth.js';
 import { buildSignal } from '../protocol/messages.js';
 import { parseEventEnvelope } from '../protocol/events.js';
-import { isValidSessionId } from '../state/session-id.js';
+import { isValidSessionId } from '../state/session-id.ts';
 
 /** Upgrade path pattern for the persistent event connection. */
 const EVENTS_ROUTE = /^\/agent\/([^/]+)\/events$/;

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { MockProvider, SCENARIOS, parseAddress, scenarioForModel } from '../src/mock/provider.js';
-import { createLogger } from '../src/log.js';
+import { createLogger } from '../src/log.ts';
 
 const log = createLogger({ level: 'silent' });
 
