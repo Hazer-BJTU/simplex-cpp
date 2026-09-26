@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { PROCESS_STATE, isSameProcess, readProcessStartTime } from '../src/launch/supervisor.js';
+import { PROCESS_STATE, isSameProcess, readProcessStartTime } from '../src/launch/supervisor.ts';
 import { sessionDir, workerConfigPath } from '../src/launch/config-render.ts';
 import { until } from './helpers/worker.js';
 import { startTestHub } from './helpers/hub.js';

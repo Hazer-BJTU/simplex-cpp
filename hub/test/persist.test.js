@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { HubState, STATE_VERSION } from '../src/state/persist.ts';
-import { PROCESS_STATE, readProcessStartTime } from '../src/launch/supervisor.js';
+import { PROCESS_STATE, readProcessStartTime } from '../src/launch/supervisor.ts';
 import { createLogger } from '../src/log.ts';
 import { loadConfig } from '../src/config.ts';
 import { createHub } from '../src/hub.js';

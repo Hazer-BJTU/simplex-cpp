@@ -21,7 +21,7 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { ProcessRecord, PROCESS_STATE, readProcessStartTime } from '../src/launch/supervisor.js';
+import { ProcessRecord, PROCESS_STATE, readProcessStartTime } from '../src/launch/supervisor.ts';
 import { sessionDir } from '../src/launch/config-render.ts';
 import { resolveStaticPath } from '../src/http/static.ts';
 import { RingBuffer } from '../src/util/ring.ts';

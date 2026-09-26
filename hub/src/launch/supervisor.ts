@@ -19,11 +19,19 @@
  * still alive, and a restart always waits for the exit before spawning.
  */
 import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync }
     from 'node:fs';
 import { join } from 'node:path';
 import { LineSplitter, RingBuffer } from '../util/ring.ts';
 import { renderSessionConfig, sessionDir, workerConfigPath } from './config-render.ts';
+import type { NormalizedSpec } from './spec.ts';
+import type { Launcher, InvocationContext } from './launcher.ts';
+import type { LauncherInvocation, WorkerEndpoints } from './invocation.ts';
+import type { Session, SessionRegistry } from '../state/registry.ts';
+import type { HubConfig } from '../config.ts';
+import type { Logger } from '../log.ts';
+import type { ProcessDescription } from '../../shared/protocol.ts';
 
 /** Process lifecycle as the panel sees it. */
 export const PROCESS_STATE = {
@@ -33,10 +41,40 @@ export const PROCESS_STATE = {
     stopping: 'stopping',
     exited: 'exited',
     failed: 'failed',
-};
+} as const;
+
+/** One process lifecycle state. */
+export type ProcessState = (typeof PROCESS_STATE)[keyof typeof PROCESS_STATE];
 
 /** Delay between exit checks while waiting for a stop to complete. */
 const EXIT_POLL_MS = 25;
+
+/** How a stop ended. */
+export interface StopResult {
+    ok: boolean;
+    how: string;
+    forced: boolean;
+}
+
+/**
+ * How a start ended.
+ *
+ * `config` is the spec that was rendered, or the raw one when rendering was not
+ * reached. It is optional because one refusal — "a worker is already running" —
+ * happens before any spec is looked at, and has nothing to report.
+ */
+export interface StartResult {
+    ok: boolean;
+    pid?: number | undefined;
+    error?: string | undefined;
+    config?: unknown;
+}
+
+/** The write side of a worker log. The adopted path substitutes a no-op. */
+export interface LogStream {
+    write(chunk: string): unknown;
+    end(): unknown;
+}
 
 /**
  * Read field 22 (`starttime`) of `/proc/<pid>/stat`.
@@ -45,9 +83,9 @@ const EXIT_POLL_MS = 25;
  * hub spawned is still the process it will signal. The boot-relative start
  * time, recorded at spawn, distinguishes them.
  *
- * @returns {string|null} raw tick value, or null when unavailable.
+ * @returns raw tick value, or null when unavailable.
  */
-export function readProcessStartTime(pid) {
+export function readProcessStartTime(pid: number): string | null {
     try {
         const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
         const after = stat.slice(stat.lastIndexOf(')') + 1).trim();
@@ -65,15 +103,15 @@ export function readProcessStartTime(pid) {
  * distinguish the worker from an unrelated process that later reused it, and
  * the cost of being wrong is signalling a stranger.
  */
-export function isSameProcess(pid, startTime) {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
+export function isSameProcess(pid: unknown, startTime: unknown): boolean {
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
     if (typeof startTime !== 'string' || startTime.length === 0) return false;
     const current = readProcessStartTime(pid);
     return current !== null && current === startTime;
 }
 
 /** Sleep helper. */
-function delay(ms) {
+function delay(ms: number): Promise<void> {
     return new Promise((resolve) => {
         const timer = setTimeout(resolve, ms);
         timer.unref?.();
@@ -81,7 +119,7 @@ function delay(ms) {
 }
 
 /** Read a pid from a pid file, or null when there is nothing usable in it. */
-function readPidFile(path) {
+function readPidFile(path: string | null): number | null {
     if (!path) return null;
     try {
         const value = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
@@ -99,10 +137,15 @@ function readPidFile(path) {
  * — `/proc` is unavailable off Linux — the pid is used as-is rather than
  * refusing to stop a worker the hub did start.
  *
- * @returns {number|null} the pid to signal, or null when nothing may be signalled.
+ * @returns the pid to signal, or null when nothing may be signalled.
  */
-function verifiedTarget(record, pid, startTime, log) {
-    if (!Number.isInteger(pid) || pid <= 0) return null;
+function verifiedTarget(
+    record: ProcessRecord,
+    pid: number | null,
+    startTime: string | null,
+    log: Logger,
+): number | null {
+    if (pid === null || !Number.isInteger(pid) || pid <= 0) return null;
     if (typeof startTime !== 'string' || startTime.length === 0) return pid;
     if (isSameProcess(pid, startTime)) return pid;
     log.warn(`session ${record.sessionId}: pid ${pid} is no longer the process recorded`
@@ -111,7 +154,7 @@ function verifiedTarget(record, pid, startTime, log) {
 }
 
 /** Rotate a log file when it has grown past its budget. */
-function rotateLog(path, { logBytes, logFiles }) {
+function rotateLog(path: string, { logBytes, logFiles }: { logBytes: number; logFiles: number }): void {
     try {
         if (!existsSync(path) || statSync(path).size < logBytes) return;
         for (let index = logFiles - 1; index >= 1; index -= 1) {
@@ -124,9 +167,52 @@ function rotateLog(path, { logBytes, logFiles }) {
     }
 }
 
+/** Everything `new ProcessRecord` needs. */
+export interface ProcessRecordOptions {
+    sessionId: string;
+    invocation: LauncherInvocation;
+    logPath: string | null;
+    logStream: LogStream;
+    logs: RingBuffer<string>;
+}
+
 /** One supervised worker process, plus its captured output. */
 export class ProcessRecord {
-    constructor({ sessionId, invocation, logPath, logStream, logs }) {
+    readonly sessionId: string;
+    state: ProcessState;
+    pid: number | null;
+    pidStartTime: string | null;
+    startedAt: string;
+    exitedAt: string | null;
+    exitCode: number | null;
+    signal: string | null;
+    error: string | null;
+    stopRequested: boolean;
+    readonly command: string;
+    readonly args: string[];
+    readonly cwd: string;
+    readonly pidFile: string | null;
+    /**
+     * Pid last read from `launcher.pidFile` and the `/proc` start time that was
+     * observed for it. A daemonizing launcher's pid is not the pid the hub
+     * spawned, so it has to be verified on its own terms.
+     */
+    pidFilePid: number | null;
+    pidFileStartTime: string | null;
+    processGroupKilled: boolean;
+    readonly logPath: string | null;
+    readonly logStream: LogStream;
+    readonly logs: RingBuffer<string>;
+    child: ChildProcess | null;
+    /** True when this record was reconstructed from a previous hub run. */
+    adopted: boolean;
+    /** Interval watching an adopted process, when one was needed. */
+    monitor: NodeJS.Timeout | null;
+    readonly exited: Promise<ProcessRecord>;
+    /** Assigned by the `exited` initializer below. */
+    resolveExit!: (record: ProcessRecord) => void;
+
+    constructor({ sessionId, invocation, logPath, logStream, logs }: ProcessRecordOptions) {
         this.sessionId = sessionId;
         this.state = PROCESS_STATE.starting;
         this.pid = null;
@@ -141,11 +227,6 @@ export class ProcessRecord {
         this.args = invocation.args;
         this.cwd = invocation.cwd;
         this.pidFile = invocation.pidFile;
-        /**
-         * Pid last read from `launcher.pidFile` and the `/proc` start time that
-         * was observed for it. A daemonizing launcher's pid is not the pid the
-         * hub spawned, so it has to be verified on its own terms.
-         */
         this.pidFilePid = null;
         this.pidFileStartTime = null;
         this.processGroupKilled = false;
@@ -153,13 +234,13 @@ export class ProcessRecord {
         this.logStream = logStream;
         this.logs = logs;
         this.child = null;
-        /** Interval watching an adopted process, when one was needed. */
+        this.adopted = false;
         this.monitor = null;
         this.exited = new Promise((resolve) => { this.resolveExit = resolve; });
     }
 
     /** Serializable description for the panel. */
-    describe() {
+    describe(): ProcessDescription {
         return {
             state: this.state,
             pid: this.pid,
@@ -180,19 +261,31 @@ export class ProcessRecord {
     }
 }
 
+/** Everything `WorkerSupervisor` needs. */
+export interface WorkerSupervisorOptions {
+    config: HubConfig;
+    log: Logger;
+    registry: SessionRegistry;
+    launcher: Launcher;
+    endpointsFor: (sessionId: string, token: string) => WorkerEndpoints;
+    /** Resolved mock provider address, read lazily. */
+    mockProvider?: (() => { baseUrl: string } | null) | undefined;
+    onProcessChange?: ((session: Session, record: ProcessRecord) => void) | undefined;
+}
+
 /** Starts, observes, and stops worker processes. */
 export class WorkerSupervisor {
-    /**
-     * @param {object} options
-     * @param {object} options.config hub configuration.
-     * @param {object} options.log hub logger.
-     * @param {object} options.registry session registry.
-     * @param {object} options.launcher launcher from src/launch/launcher.js.
-     * @param {(sessionId: string, token: string) => {events: string, confirm: string}} options.endpointsFor
-     * @param {() => ({baseUrl: string}|null)} [options.mockProvider] resolved mock address.
-     * @param {(session: object, record: ProcessRecord|null) => void} [options.onProcessChange]
-     */
-    constructor({ config, log, registry, launcher, endpointsFor, mockProvider, onProcessChange }) {
+    readonly config: HubConfig;
+    readonly log: Logger;
+    readonly registry: SessionRegistry;
+    readonly launcher: Launcher;
+    readonly endpointsFor: (sessionId: string, token: string) => WorkerEndpoints;
+    readonly mockProvider: (() => { baseUrl: string } | null) | undefined;
+    onProcessChange: ((session: Session, record: ProcessRecord) => void) | undefined;
+
+    constructor({
+        config, log, registry, launcher, endpointsFor, mockProvider, onProcessChange,
+    }: WorkerSupervisorOptions) {
         this.config = config;
         this.log = log;
         this.registry = registry;
@@ -203,8 +296,8 @@ export class WorkerSupervisor {
     }
 
     /** True when a worker process is believed to be alive for this session. */
-    isRunning(session) {
-        const record = session.process;
+    isRunning(session: Session): boolean {
+        const record = session.process as ProcessRecord | null;
         if (!record) return false;
         return record.state === PROCESS_STATE.starting
             || record.state === PROCESS_STATE.running
@@ -212,33 +305,28 @@ export class WorkerSupervisor {
     }
 
     /** Worker configuration path for a session (written even when unused). */
-    configPathFor(sessionId) {
+    configPathFor(sessionId: string): string {
         return workerConfigPath(this.config, sessionId);
     }
 
-    /**
-     * Start a worker for a session.
-     *
-     * @param {object} session registry session.
-     * @param {object} [rawSpec] session spec overrides stored on the session.
-     * @returns {Promise<{ok: boolean, pid?: number, error?: string, config: object}>}
-     */
-    async start(session, rawSpec) {
+    /** Start a worker for a session. */
+    async start(session: Session, rawSpec?: unknown): Promise<StartResult> {
         if (this.isRunning(session)) {
             return { ok: false, error: 'a worker process is already running for this session' };
         }
-        const specSource = rawSpec ?? session.spec ?? {};
+        const specSource: unknown = rawSpec ?? session.spec ?? {};
         const directory = sessionDir(this.config, session.id);
         // Filesystem failures are answered rather than thrown: this runs from a
         // panel WebSocket message, where a rejection would end the hub.
         try {
             mkdirSync(directory, { recursive: true });
         } catch (error) {
-            return { ok: false, error: `cannot create ${directory}: ${error.message}`,
+            const message = error instanceof Error ? error.message : String(error);
+            return { ok: false, error: `cannot create ${directory}: ${message}`,
                 config: specSource };
         }
         const configPath = workerConfigPath(this.config, session.id);
-        let rendered;
+        let rendered: { spec: NormalizedSpec; document: unknown };
         try {
             rendered = renderSessionConfig({
                 config: this.config,
@@ -248,19 +336,21 @@ export class WorkerSupervisor {
                 mock: this.mockProvider?.(),
             });
         } catch (error) {
-            return { ok: false, error: `invalid session spec: ${error.message}`, config: specSource };
+            const message = error instanceof Error ? error.message : String(error);
+            return { ok: false, error: `invalid session spec: ${message}`, config: specSource };
         }
         // The path is always written, so an operator can inspect what a
         // launcher-owned configuration would have contained.
         try {
             writeFileSync(configPath, `${JSON.stringify(rendered.document, null, 2)}\n`);
         } catch (error) {
-            return { ok: false, error: `cannot write ${configPath}: ${error.message}`,
+            const message = error instanceof Error ? error.message : String(error);
+            return { ok: false, error: `cannot write ${configPath}: ${message}`,
                 config: rendered.spec };
         }
         session.spec = rendered.spec;
 
-        let invocation;
+        let invocation: LauncherInvocation;
         try {
             invocation = this.launcher.buildInvocation({
                 sessionId: session.id,
@@ -269,15 +359,16 @@ export class WorkerSupervisor {
                 sessionDir: directory,
                 endpoints: this.endpointsFor(session.id, session.token),
                 token: session.token,
-            });
+            } satisfies InvocationContext);
         } catch (error) {
-            return { ok: false, error: `cannot build the launcher invocation: ${error.message}`,
+            const message = error instanceof Error ? error.message : String(error);
+            return { ok: false, error: `cannot build the launcher invocation: ${message}`,
                 config: rendered.spec };
         }
 
         const logPath = join(directory, 'worker.log');
         rotateLog(logPath, this.config.limits);
-        const logs = new RingBuffer({
+        const logs = new RingBuffer<string>({
             limit: this.config.limits.logLines,
             byteLimit: this.config.limits.logRingBytes,
         });
@@ -285,13 +376,13 @@ export class WorkerSupervisor {
         // An async open or write failure (ENOSPC, EACCES, a rotated-away
         // directory) emits 'error'; without a listener that is an uncaught
         // exception, and the worker's output is not worth ending the hub for.
-        logStream.on('error', (error) => {
+        logStream.on('error', (error: Error) => {
             this.log.warn(`session ${session.id}: worker log stream failed: ${error.message}`);
         });
         const record = new ProcessRecord({ sessionId: session.id, invocation, logPath, logStream, logs });
         session.process = record;
 
-        let child;
+        let child: ChildProcess;
         try {
             child = spawn(invocation.command, invocation.args, {
                 cwd: invocation.cwd,
@@ -302,14 +393,15 @@ export class WorkerSupervisor {
                 stdio: ['ignore', 'pipe', 'pipe'],
             });
         } catch (error) {
-            this.finish(record, { error: error.message });
-            return { ok: false, error: `cannot spawn ${invocation.command}: ${error.message}`,
+            const message = error instanceof Error ? error.message : String(error);
+            this.finish(record, { error: message });
+            return { ok: false, error: `cannot spawn ${invocation.command}: ${message}`,
                 config: rendered.spec };
         }
 
         record.child = child;
         if (child.pid === undefined) {
-            const failure = await new Promise((resolve) => {
+            const failure = await new Promise<Error>((resolve) => {
                 child.once('error', resolve);
                 // `error` is emitted on the next tick for a failed spawn; a
                 // stray immediate resolve keeps this from hanging if it is not.
@@ -326,13 +418,13 @@ export class WorkerSupervisor {
             logs.push(line);
             logStream.write(`${line}\n`);
         });
-        child.stdout.on('data', (chunk) => splitter.push(chunk));
-        child.stderr.on('data', (chunk) => splitter.push(chunk));
-        child.on('error', (error) => {
+        child.stdout?.on('data', (chunk: Buffer) => splitter.push(chunk));
+        child.stderr?.on('data', (chunk: Buffer) => splitter.push(chunk));
+        child.on('error', (error: Error) => {
             record.error = error.message;
             this.log.error(`session ${session.id}: worker process error: ${error.message}`);
         });
-        child.on('exit', (code, signal) => {
+        child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
             splitter.flush();
             this.finish(record, { exitCode: code, signal });
         });
@@ -345,7 +437,11 @@ export class WorkerSupervisor {
     }
 
     /** Record process termination and release per-process resources. */
-    finish(record, { exitCode = null, signal = null, error = null }) {
+    finish(
+        record: ProcessRecord,
+        { exitCode = null, signal = null, error = null }:
+        { exitCode?: number | null; signal?: string | null; error?: string | null },
+    ): void {
         if (record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed) return;
         record.exitedAt = new Date().toISOString();
         record.exitCode = exitCode;
@@ -372,7 +468,7 @@ export class WorkerSupervisor {
     }
 
     /** Wait for a record to reach a terminal state. */
-    async waitForExit(record, timeoutMs) {
+    async waitForExit(record: ProcessRecord, timeoutMs: number): Promise<boolean> {
         if (record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed) return true;
         const outcome = await Promise.race([
             record.exited.then(() => true),
@@ -382,7 +478,11 @@ export class WorkerSupervisor {
     }
 
     /** Send a signal to the worker process (or its pid file when declared). */
-    signalProcess(record, signal, { processGroup = false } = {}) {
+    signalProcess(
+        record: ProcessRecord,
+        signal: NodeJS.Signals,
+        { processGroup = false }: { processGroup?: boolean } = {},
+    ): boolean {
         const pid = this.targetPid(record);
         if (!pid) {
             this.log.warn(`session ${record.sessionId}: ${signal} not sent: no verified pid to signal`);
@@ -397,7 +497,8 @@ export class WorkerSupervisor {
             }
             return true;
         } catch (error) {
-            this.log.warn(`session ${record.sessionId}: ${signal} failed: ${error.message}`);
+            const message = error instanceof Error ? error.message : String(error);
+            this.log.warn(`session ${record.sessionId}: ${signal} failed: ${message}`);
             return false;
         }
     }
@@ -411,7 +512,7 @@ export class WorkerSupervisor {
      * what was recorded, so a stale pid file cannot become a signal to whoever
      * reused the pid.
      */
-    targetPid(record) {
+    targetPid(record: ProcessRecord): number | null {
         const declared = readPidFile(record.pidFile);
         if (declared === null) {
             return verifiedTarget(record, record.pid, record.pidStartTime, this.log);
@@ -426,15 +527,13 @@ export class WorkerSupervisor {
 
     /**
      * Stop a worker: protocol first, then SIGTERM, then SIGKILL.
-     *
-     * @param {object} session
-     * @param {object} [options]
-     * @param {number} [options.timeoutMs] graceful budget before SIGTERM.
-     * @param {boolean} [options.processGroup] allow a process-group SIGKILL.
-     * @returns {Promise<{ok: boolean, how: string, forced: boolean}>}
      */
-    async stop(session, { timeoutMs = this.config.worker.stopTimeoutMs, processGroup } = {}) {
-        const record = session.process;
+    async stop(
+        session: Session,
+        { timeoutMs = this.config.worker.stopTimeoutMs, processGroup }:
+        { timeoutMs?: number; processGroup?: boolean } = {},
+    ): Promise<StopResult> {
+        const record = session.process as ProcessRecord | null;
         if (!record) return { ok: true, how: 'not-started', forced: false };
         if (record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed) {
             return { ok: true, how: 'already-exited', forced: false };
@@ -443,7 +542,8 @@ export class WorkerSupervisor {
         record.state = PROCESS_STATE.stopping;
         this.notify(session, record);
 
-        const connection = session.connection;
+        const connection = session.connection as
+            { isOpen: boolean; requestShutdown(): { ok: boolean; error?: string } } | null;
         if (connection?.isOpen) {
             const sent = connection.requestShutdown();
             if (!sent.ok) this.log.warn(`session ${session.id}: shutdown signal not sent: ${sent.error}`);
@@ -471,10 +571,11 @@ export class WorkerSupervisor {
     }
 
     /** Stop and start again, waiting for the session lock to be released. */
-    async restart(session, rawSpec) {
+    async restart(session: Session, rawSpec?: unknown): Promise<StartResult & { stop?: string }> {
         const stopped = await this.stop(session);
         if (!stopped.ok) {
-            return { ok: false, error: `could not stop the previous worker (${stopped.how})` };
+            return { ok: false, error: `could not stop the previous worker (${stopped.how})`,
+                config: session.spec };
         }
         // The next worker takes the session lock; the previous owner releases it
         // when its process exits, which has just been observed.
@@ -489,8 +590,11 @@ export class WorkerSupervisor {
      * SIGTERM, and by default kills the process group, which also reaches
      * descendants the worker itself would not have promised to terminate.
      */
-    async forceKill(session, { processGroup = true } = {}) {
-        const record = session.process;
+    async forceKill(
+        session: Session,
+        { processGroup = true }: { processGroup?: boolean } = {},
+    ): Promise<StopResult | { ok: false; error: string }> {
+        const record = session.process as ProcessRecord | null;
         if (!record) return { ok: false, error: 'no worker process is recorded for this session' };
         if (record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed) {
             return { ok: true, how: 'already-exited', forced: false };
@@ -506,8 +610,8 @@ export class WorkerSupervisor {
     }
 
     /** Capture the tail of a session's captured worker output. */
-    logs(session, { limit } = {}) {
-        const lines = session.process?.logs?.toArray() ?? [];
+    logs(session: Session, { limit }: { limit?: number } = {}): string[] {
+        const lines = (session.process as ProcessRecord | null)?.logs?.toArray() ?? [];
         return typeof limit === 'number' && limit > 0 ? lines.slice(-limit) : lines;
     }
 
@@ -515,28 +619,34 @@ export class WorkerSupervisor {
      * Adopt a process recorded by a previous hub run, when it is still alive.
      *
      * `stored` is the persisted record (snake_case), not a live ProcessRecord:
-     * this is the one place the hub reconstructs supervision from disk.
+     * this is the one place the hub reconstructs supervision from disk, so the
+     * value is validated rather than trusted.
      */
-    adopt(session, stored) {
-        if (!stored || !isSameProcess(stored.pid, stored.pid_start_time)) return false;
+    adopt(session: Session, stored: unknown): boolean {
+        if (typeof stored !== 'object' || stored === null) return false;
+        const entry = stored as Record<string, unknown>;
+        if (!isSameProcess(entry.pid, entry.pid_start_time)) return false;
         const record = new ProcessRecord({
             sessionId: session.id,
             invocation: {
-                command: stored.command ?? '',
-                args: stored.args ?? [],
-                cwd: stored.cwd ?? '',
-                pidFile: stored.pid_file ?? null,
+                command: typeof entry.command === 'string' ? entry.command : '',
+                args: Array.isArray(entry.args) ? entry.args as string[] : [],
+                cwd: typeof entry.cwd === 'string' ? entry.cwd : '',
+                pidFile: typeof entry.pid_file === 'string' ? entry.pid_file : null,
+                // Never read for an adopted record: there is no environment to
+                // spawn with, only a process that already exists.
+                env: {},
             },
-            logPath: stored.log_path ?? null,
+            logPath: typeof entry.log_path === 'string' ? entry.log_path : null,
             logStream: { write() {}, end() {} },
-            logs: new RingBuffer({
+            logs: new RingBuffer<string>({
                 limit: this.config.limits.logLines,
                 byteLimit: this.config.limits.logRingBytes,
             }),
         });
-        record.pid = stored.pid;
-        record.pidStartTime = stored.pid_start_time;
-        record.startedAt = stored.started_at ?? record.startedAt;
+        record.pid = entry.pid as number;
+        record.pidStartTime = entry.pid_start_time as string;
+        record.startedAt = typeof entry.started_at === 'string' ? entry.started_at : record.startedAt;
         record.state = PROCESS_STATE.running;
         record.adopted = true;
         record.stopRequested = false;
@@ -546,7 +656,7 @@ export class WorkerSupervisor {
         if (typeof record.pidStartTime === 'string' && record.pidStartTime.length > 0) {
             record.monitor = setInterval(() => {
                 if (!isSameProcess(record.pid, record.pidStartTime)) {
-                    clearInterval(record.monitor);
+                    if (record.monitor) clearInterval(record.monitor);
                     record.monitor = null;
                     this.finish(record, { exitCode: null, signal: null });
                 }
@@ -561,8 +671,10 @@ export class WorkerSupervisor {
     }
 
     /** Stop every running worker; used by hub shutdown. */
-    async stopAll(options) {
-        const results = [];
+    async stopAll(
+        options?: { timeoutMs?: number; processGroup?: boolean },
+    ): Promise<Array<StopResult & { session: string }>> {
+        const results: Array<StopResult & { session: string }> = [];
         for (const session of this.registry.list()) {
             if (!this.isRunning(session)) continue;
             results.push({ session: session.id, ...(await this.stop(session, options)) });
@@ -571,11 +683,12 @@ export class WorkerSupervisor {
     }
 
     /** Notify the process-change hook, containing its failures. */
-    notify(session, record) {
+    notify(session: Session, record: ProcessRecord): void {
         try {
             this.onProcessChange?.(session, record);
         } catch (error) {
-            this.log.warn(`process-change hook failed: ${error.message}`);
+            const message = error instanceof Error ? error.message : String(error);
+            this.log.warn(`process-change hook failed: ${message}`);
         }
     }
 }
