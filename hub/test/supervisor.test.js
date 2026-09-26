@@ -126,6 +126,9 @@ describe('worker supervisor', () => {
         const session = ctx.hub.registry.create('sup-hung');
         const started = await ctx.hub.supervisor.start(session, { extraArgs: ['--hang', '--ignore-shutdown'] });
         assert.equal(started.ok, true, started.error);
+        // start() returns after spawn, before the fixture has installed its
+        // SIGTERM handler. Its event connection proves startup is complete.
+        await until(() => session.connected, { label: 'hung worker connection' });
         const stopped = await ctx.hub.supervisor.stop(session);
         assert.equal(stopped.ok, true);
         assert.equal(stopped.forced, true);

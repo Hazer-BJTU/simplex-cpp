@@ -244,15 +244,6 @@ export function SessionHeader() {
                         <Glyph name="options" />
                     </IconButton>
                 </Tooltip>
-                <Tooltip label={runActive ? 'Ask the worker to cancel the active run' : 'No run is active'}>
-                    <IconButton
-                        label="Cancel"
-                        onClick={() => client.sendSignal(sessionId, 'cancel')}
-                        disabled={!session.connected || !runActive}
-                    >
-                        <Glyph name="cancel" />
-                    </IconButton>
-                </Tooltip>
                 <Tooltip label={inspectorOpen ? 'Hide the context drawer' : 'Show the context drawer'}>
                     <IconButton
                         label={inspectorOpen ? 'Hide inspector' : 'Show inspector'}

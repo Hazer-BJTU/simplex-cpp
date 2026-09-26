@@ -478,7 +478,7 @@ may occur in nested dataclass records.
 | `persisted` | `{ "boundary": string, "format": "json" }` | A required JSON snapshot write completed successfully at the named boundary. |
 | `export_error` | `{ "message": string }` | Optional Markdown export failed after successful JSON persistence. |
 | `error` | `{ "message": string }`, sometimes also `"durable": false` | Control-validation or worker/storage diagnostic. Not a universal fatal-error notification. |
-| `run_finished` | `{ "status": string, "error": string, "exchanges": unsigned integer, "durable": boolean }` | Invocation settled and its configured final persistence was handled. |
+| `run_finished` | `{ "status": string, "error": string, "exchanges": unsigned integer, "durable": boolean, "failure"?: object }` | Invocation settled and its configured final persistence was handled. |
 
 All of these are wrapped in the common event envelope. `model_response`,
 `tool_calls`, and `tool_results` are separate events, not token or output chunks.
@@ -611,6 +611,16 @@ all delivery or durability ambiguity.
 - `exchange_limit`: the per-invocation model exchange budget was reached after
   settlement of the last batch.
 - `failed`: a loop-level error occurred; inspect `error` and the recovery phase.
+
+For `failed`, `failure` contains `stage` and `can_continue`. The stage is
+`model_request` when the model conversation request raised before a response
+was committed; other failures use `other`. `can_continue: true` means a turn
+exists and the settled loop phase is `ready`, so a `continue` request may be
+admitted without adding a user message. It does not promise that the next
+request will succeed or that the provider is healthy. `false` calls for
+inspection before retrying. Older workers may omit `failure`; clients should
+treat that as unclassified and avoid automatic retry advice. `error` remains
+the technical diagnostic, which clients may show on demand.
 
 `exchanges` counts model responses committed in this invocation, not network
 attempts, provider retries, tool calls, or lifetime exchanges. Individual tool

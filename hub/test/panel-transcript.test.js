@@ -139,6 +139,60 @@ describe('tool output', () => {
 describe('rounds', () => {
     const noPrompts = new Map();
 
+    it('retains classified failure details in the failed round', () => {
+        const items = [
+            event('e1', 'run_started', {}),
+            event('e2', 'run_finished', {
+                status: 'failed', error: 'HTTP 503 after retries', exchanges: 0,
+                failure: { stage: 'model_request', can_continue: true },
+            }),
+        ];
+        const run = buildRounds(items, noPrompts).at(-1);
+        assert.equal(run.status, 'failed');
+        assert.deepEqual(run.failure, {
+            stage: 'model_request', canContinue: true, error: 'HTTP 503 after retries',
+        });
+    });
+
+    it('treats an older unclassified failure conservatively', () => {
+        const run = buildRounds([
+            event('e1', 'run_finished', { status: 'failed', error: 'unknown failure' }),
+        ], noPrompts).at(-1);
+        assert.deepEqual(run.failure, {
+            stage: 'other', canContinue: false, error: 'unknown failure',
+        });
+    });
+
+    it('renders a locally sent continuation without a user input', () => {
+        const items = [
+            { kind: 'outbox', id: 'out-1', requestId: 'req-cont', parts: [],
+                operation: 'continue', state: 'pending' },
+            event('e2', 'run_started', {}, { request_id: 'req-cont' }),
+            response('e3', 'continued', null, { request_id: 'req-cont' }),
+            event('e4', 'run_finished', { status: 'completed' }, { request_id: 'req-cont' }),
+        ];
+        const run = buildRounds(items, noPrompts).at(-1);
+        assert.equal(run.continued, true);
+        assert.equal(run.input, null);
+        assert.equal(run.admitted, null);
+        assert.equal(run.assistant[0].text, 'continued');
+    });
+
+    it('recognizes a replayed continuation from its hub request record', () => {
+        const items = [
+            event('e1', 'input_admitted', {}, { request_id: 'req-cont' }),
+            event('e2', 'run_started', {}, { request_id: 'req-cont' }),
+            response('e3', 'continued', null, { request_id: 'req-cont' }),
+            event('e4', 'run_finished', { status: 'completed' }, { request_id: 'req-cont' }),
+        ];
+        const requests = new Map([['req-cont', { request_id: 'req-cont', operation: 'continue' }]]);
+        const run = buildRounds(items, noPrompts, requests).at(-1);
+        assert.equal(run.continued, true);
+        assert.equal(run.input, null);
+        assert.equal(run.admitted, null);
+        assert.equal(buildRounds(items, noPrompts).at(-1).admitted?.id, 'e1');
+    });
+
     it('groups one turn into a single round', () => {
         const items = [
             event('e1', 'ready', {}),

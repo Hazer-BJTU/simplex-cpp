@@ -280,6 +280,111 @@ test('the composer keeps references as parts and clears on Escape (D12)', async 
     await expect(page.getByLabel('message')).toHaveValue('');
 });
 
+test('an unattached worker cannot receive a message from the composer', async ({ page }) => {
+    await open(page);
+    await withSession(page, stoppedSession('demo'));
+    await page.reload();
+    await page.getByTestId('session-row').click();
+
+    const message = page.getByLabel('message');
+    await message.fill('send after the worker starts');
+    await expect(page.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await message.press('Enter');
+    await expect(message).toHaveValue('send after the worker starts');
+
+    const response = await page.request.get(`${STUB}/__stub/received`);
+    const received = (await response.json()).received;
+    expect(received.some((entry: { type: string }) => entry.type === 'input')).toBe(false);
+
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
+    await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect.poll(async () => {
+        const next = await page.request.get(`${STUB}/__stub/received`);
+        return (await next.json()).received.filter(
+            (entry: { type: string }) => entry.type === 'input').length;
+    }).toBe(1);
+});
+
+test('the primary composer button cancels an active run and keeps the draft', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    const message = page.getByLabel('message');
+    await message.fill('keep for the next run');
+    await emit(page, 'run_started', {});
+
+    const cancel = page.getByRole('button', { name: 'Cancel run' });
+    await expect(cancel).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Send' })).toHaveCount(0);
+    await expect(page.locator('button[aria-label="Cancel"]')).toHaveCount(0);
+    await message.press('Enter');
+    await cancel.click();
+
+    const response = await page.request.get(`${STUB}/__stub/received`);
+    const received = (await response.json()).received;
+    expect(received.some((entry: { type: string }) => entry.type === 'input')).toBe(false);
+    expect(received.some((entry: { type: string; operation?: string }) => (
+        entry.type === 'signal' && entry.operation === 'cancel'
+    ))).toBe(true);
+    await expect(message).toHaveValue('keep for the next run');
+});
+
+test('command mode completes a prefix without sending or losing a message draft', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.getByLabel('message').fill('keep this draft');
+
+    await page.keyboard.press('Alt+Enter');
+    const commandInput = page.getByLabel('command input');
+    await expect(commandInput).toBeFocused();
+    await commandInput.fill('unrecognized');
+    await expect(page.getByRole('option')).toHaveCount(0);
+    await commandInput.press('Enter');
+    await expect(commandInput).toHaveValue('unrecognized');
+    await commandInput.fill('ref');
+    await expect(page.getByRole('option', { name: /Refresh conversation/ })).toBeVisible();
+    await commandInput.press('Tab');
+    await expect(commandInput).toHaveValue('Refresh conversation');
+    await commandInput.press('Enter');
+
+    await expect(commandInput).toHaveValue('');
+    await commandInput.press('Alt+Enter');
+    await expect(page.getByLabel('message')).toHaveValue('keep this draft');
+    const received = await page.request.get(`${STUB}/__stub/received`);
+    const messages = (await received.json()).received;
+    expect(messages.some((message: { type: string }) => message.type === 'status_snapshot')).toBe(true);
+    expect(messages.some((message: { type: string }) => message.type === 'input')).toBe(false);
+});
+
+test('only Alt+Enter switches modes without changing the composer height', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    const draft = 'keep this '.repeat(100);
+    await page.getByLabel('message').fill(draft);
+    const composer = page.locator('main > form');
+    const initialHeight = (await composer.boundingBox())?.height;
+    expect(initialHeight).toBeGreaterThan(0);
+
+    await page.getByLabel('message').press('ControlOrMeta+.');
+    await expect(page.getByLabel('message')).toHaveValue(draft);
+    await page.getByLabel('message').press('Alt+Enter');
+    await expect(page.getByLabel('command input')).toBeFocused();
+    expect((await composer.boundingBox())?.height).toBe(initialHeight);
+    await page.getByLabel('command input').fill('ref');
+    await page.getByLabel('command input').press('Alt+Enter');
+    await expect(page.getByLabel('message')).toHaveValue(draft);
+    await expect(page.getByLabel('message')).toBeFocused();
+    expect((await composer.boundingBox())?.height).toBe(initialHeight);
+
+    await page.getByLabel('message').press('Alt+Enter');
+    await expect(page.getByLabel('command input')).toBeFocused();
+    await page.getByLabel('command input').press('ControlOrMeta+.');
+    await expect(page.getByLabel('command input')).toBeFocused();
+    await page.getByLabel('command input').press('Alt+Enter');
+    await expect(page.getByLabel('message')).toHaveValue(draft);
+    expect((await composer.boundingBox())?.height).toBe(initialHeight);
+});
+
 test('a refused input restores references as references', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
@@ -305,19 +410,53 @@ test('a refused input restores references as references', async ({ page }) => {
     expect(inputs.at(-1).content).toEqual(inputs.at(-2).content);
 });
 
-test('Continue sends no content and preserves an unsent draft', async ({ page }) => {
+test('Continue run command sends no content and preserves an unsent draft', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
-    await emit(page, 'run_started', {});
 
-    const continueButton = page.getByRole('button', { name: 'Continue' });
-    await expect(continueButton).toBeVisible();
-    await continueButton.click();
+    await page.getByLabel('message').press('Alt+Enter');
+    await expect(page.getByRole('option', { name: /Continue run/ })).toBeVisible();
+    await page.getByLabel('command input').fill('Cont');
+    const option = page.getByRole('option', { name: /Continue run/ });
+    await expect(option).toBeVisible();
+    await expect(option).toBeEnabled();
+
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+    await expect(option).toBeDisabled();
+    await expect(option).toContainText('Connect a worker first.');
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
+    await expect(option).toBeEnabled();
+
+    await emit(page, 'run_started', {});
+    await expect(option).toBeDisabled();
+    await expect(option).toContainText('Wait for the current run to finish');
+    await page.getByLabel('command input').press('Enter');
+    await page.getByLabel('command input').press('Alt+Enter');
+    await emit(page, 'input_committed', {});
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 });
+
+    async function continueRun(): Promise<void> {
+        await page.getByLabel('message').press('Alt+Enter');
+        const command = page.getByLabel('command input');
+        await command.fill('Cont');
+        await expect(page.getByRole('option', { name: /Continue run/ })).toBeEnabled();
+        await command.press('Enter');
+        await expect(command).toHaveValue('');
+        await command.press('Alt+Enter');
+    }
+
+    await continueRun();
+    await expect(page.getByTestId('round-summary').last())
+        .toContainText('continued from worker state');
+    await expect(page.getByTestId('outbox-item')).toHaveCount(0);
+    await expect(page.getByTestId('admitted-placeholder')).toHaveCount(0);
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 });
     await page.getByRole('textbox', { name: 'message' }).fill('save this for later');
-    await continueButton.click();
+    await continueRun();
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 });
 
     await page.request.post(`${STUB}/__stub/settings`, { data: { refuseInput: true } });
-    await continueButton.click();
+    await continueRun();
     await expect(page.getByText('the stub refused the input')).toBeVisible();
     await expect(page.getByRole('textbox', { name: 'message' }))
         .toHaveValue('save this for later');
@@ -459,7 +598,9 @@ test('a transcript can be recovered over HTTP when the socket is down (D28)', as
     await expect(page.getByText('refused this connection')).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId('transcript')).not.toContainText('history from the hub');
 
-    await page.getByRole('button', { name: 'reload transcript' }).click();
+    await page.keyboard.press('Alt+Enter');
+    await page.getByLabel('command input').fill('Ref');
+    await page.getByLabel('command input').press('Enter');
     await expect(page.getByTestId('transcript')).toContainText('history from the hub');
     expect(recoveries.length).toBeGreaterThan(0);
     await page.request.post(`${STUB}/__stub/up`);

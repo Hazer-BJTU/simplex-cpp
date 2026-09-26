@@ -118,6 +118,14 @@ std::string run_status(loop::RunStatus status) {
     }
     throw std::invalid_argument("invalid run status");
 }
+
+const char* failure_stage(loop::RunFailureStage stage) {
+    switch (stage) {
+        case loop::RunFailureStage::Other: return "other";
+        case loop::RunFailureStage::ModelRequest: return "model_request";
+    }
+    throw std::invalid_argument("invalid run failure stage");
+}
 }
 
 
@@ -563,9 +571,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 emit("error", {{"message", "required snapshot failed; worker is stopping"},
                     {"durable", false}});
             } else {
-                emit("run_finished", {{"status", run_status(result.status)},
+                Json finished = {{"status", run_status(result.status)},
                     {"error", result.error}, {"exchanges", result.completed_exchanges},
-                    {"durable", run_saved}});
+                    {"durable", run_saved}};
+                if (result.status == loop::RunStatus::Failed) {
+                    finished["failure"] = {
+                        {"stage", failure_stage(result.failure_stage)},
+                        {"can_continue", !state.turns.empty() && state.loop
+                            && state.loop->phase == model_io::LoopPhase::Ready}
+                    };
+                }
+                emit("run_finished", std::move(finished));
             }
         }
     }

@@ -10,6 +10,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { buildCommands, filterCommands, matches } from '../web/src/app/palette.ts';
+import {
+    matchingComposerCommands,
+    unavailableReason,
+} from '../web/src/app/composerCommands.ts';
 
 /** One session description, as the store holds it. */
 function session(id, process = null) {
@@ -129,5 +133,32 @@ describe('command filtering', () => {
     it('returns nothing rather than everything for a query nothing matches', () => {
         const commands = buildCommands(input());
         assert.deepEqual(filterCommands(commands, 'qqqq'), []);
+    });
+});
+
+describe('composer command prefixes', () => {
+    it('offers one conversation refresh command by name prefix only', () => {
+        assert.deepEqual(matchingComposerCommands('ref').map((command) => command.name),
+            ['Refresh conversation']);
+        assert.deepEqual(matchingComposerCommands('REFRESH').map((command) => command.id),
+            ['refresh-conversation']);
+        assert.deepEqual(matchingComposerCommands('conversation'), []);
+    });
+
+    it('always lists Continue run but explains when it cannot execute', () => {
+        const command = matchingComposerCommands('CONT')[0];
+        assert.deepEqual(matchingComposerCommands('cont').map((entry) => entry.id),
+            ['continue-run']);
+        assert.equal(unavailableReason(command, false, false), 'Connect a worker first.');
+        assert.equal(unavailableReason(command, true, true),
+            'Wait for the current run to finish or cancel it.');
+        assert.equal(unavailableReason(command, true, false), null);
+    });
+
+    it('offers the same refresh action through the existing palette', () => {
+        const command = buildCommands(input())
+            .find((entry) => entry.id === 'conversation:refresh');
+        assert.deepEqual(command.action,
+            { kind: 'refresh-conversation', session: 'demo' });
     });
 });

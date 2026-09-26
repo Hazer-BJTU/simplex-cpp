@@ -51,6 +51,12 @@ This is a recovery protocol for a live process, not a write-ahead log. The host 
 
 `run()` converts ordinary runtime exceptions into `RunResult`; callers normally inspect `result.status` and `result.error`. A previous `Tools` or `Blocked` phase is different: admission is rejected with `RecoveryRequired` carrying the original phase, leaving state unchanged for the host to handle. Exception handling has three layers:
 
+`RunResult::failure_stage` identifies an exception from the model request as
+`ModelRequest`; all other failures remain `Other`. This transient classification
+lets a host explain a failed request without inferring its origin from the
+diagnostic string. It does not imply that another request will succeed. The
+persisted loop progress still records status, phase, and error.
+
 1. `converse_interruptibly()` waits for the model coroutine to exit. On an exception it closes this invocation's cancellation bridge and rethrows unchanged; it does not classify the failure.
 2. The model-wait boundary recognizes cancellation only when both `stop.stop_requested()` is true and a `boost::system::system_error` has error code `operation_aborted`. Neither condition alone proves cancellation.
 3. The run body rethrows `RecoveryRequired` separately, then catches all other exceptions with `catch (...)`, including failures in parameter validation, projection recovery, model calls, history integration, registry dispatch, and synchronous hooks. It records a log and returns `Failed`. Diagnostics use `what()` for `std::exception` and `unknown exception` otherwise.

@@ -25,6 +25,7 @@ struct Model : llm::LLMModel {
     std::atomic<int> maximum{0};
     std::atomic<int> calls{0};
     std::chrono::milliseconds delay{40};
+    std::atomic<bool> fail_model{false};
 
     asio::awaitable<model_io::MessageItem> converse(model_io::AgentInputState) override {
         ++calls;
@@ -32,6 +33,7 @@ struct Model : llm::LLMModel {
         struct Exit { std::atomic<int>& active; ~Exit() { --active; } } exit{active};
         asio::steady_timer timer(co_await asio::this_coro::executor, delay);
         co_await timer.async_wait(asio::use_awaitable);
+        if (fail_model) throw std::runtime_error("scripted model request failed");
         model_io::MessageItem item;
         item.type = model_io::MessageItemType::ModelResponse;
         item.role = "assistant";
@@ -50,7 +52,7 @@ struct Scratch {
 };
 
 enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
-                  ProtocolFailure, History };
+                  ProtocolFailure, History, ModelFailure };
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
 void scenario(Mode mode) {
@@ -91,6 +93,7 @@ sections:
         load::save_state(config.storage / "test/state.json", state);
     }
     auto model = std::make_shared<Model>(io.get_executor());
+    if (mode == Mode::ModelFailure) model->fail_model = true;
     if (mode == Mode::Cancel || mode == Mode::Stop) model->delay = std::chrono::seconds(10);
     if (mode == Mode::History) model->delay = std::chrono::milliseconds(500);
     core::Application app(io.get_executor(), config, "test", model);
@@ -168,7 +171,21 @@ sections:
             } else if (name == "run_finished") {
                 ++completed;
                 cancelled = event["data"]["status"] == "cancelled";
-                if (mode != Mode::Normal || completed == 2)
+                if (mode == Mode::ModelFailure && completed == 1) {
+                    const auto& data = event.at("data");
+                    BOOST_TEST(data.at("status") == "failed");
+                    BOOST_TEST(data.at("failure").at("stage") == "model_request");
+                    BOOST_TEST(data.at("failure").at("can_continue") == true);
+                    BOOST_TEST(data.at("error") == "scripted model request failed");
+                    model->fail_model = false;
+                    co_await send(Json{{"type", "payload"}, {"data", {
+                        {"operation", "continue"}, {"request_id", "retry"}}}});
+                } else if (mode == Mode::ModelFailure) {
+                    BOOST_TEST(event.at("data").at("status") == "completed");
+                    BOOST_TEST(!event.at("data").contains("failure"));
+                    co_await send(Json{{"type", "signal"},
+                        {"data", {{"operation", "shutdown"}}}});
+                } else if (mode != Mode::Normal || completed == 2)
                     co_await send(Json{{"type", "signal"}, {"data", {{"operation", "shutdown"}}}});
             } else if (name == "input_rejected") {
                 ++rejected;
@@ -236,6 +253,12 @@ sections:
                 [](const auto& section) { return section.name.starts_with("skill."); }));
             BOOST_TEST(!state.meta.created_at.empty());
             BOOST_TEST(!state.meta.updated_at.empty());
+        } else if (mode == Mode::ModelFailure) {
+            BOOST_TEST(completed == 2);
+            BOOST_TEST(model->calls.load() == 2);
+            const auto state = load::load_state(config.storage / "test/state.json");
+            BOOST_REQUIRE_EQUAL(state.turns.size(), 1u);
+            BOOST_REQUIRE_EQUAL(state.turns[0].agent_loop_step.size(), 1u);
         } else if (mode == Mode::History) {
             BOOST_TEST(history_during_run);
             BOOST_TEST(completed == 1);
@@ -289,6 +312,9 @@ sections:
 }
 BOOST_AUTO_TEST_CASE(serial_admission_duplicate_rejection_and_stale_cancel) { scenario(Mode::Normal); }
 BOOST_AUTO_TEST_CASE(model_cancellation_saves_settled_state) { scenario(Mode::Cancel); }
+BOOST_AUTO_TEST_CASE(model_failure_reports_recoverable_stage_and_continues) {
+    scenario(Mode::ModelFailure);
+}
 BOOST_AUTO_TEST_CASE(cross_thread_stop_drains_active_model) { scenario(Mode::Stop); }
 BOOST_AUTO_TEST_CASE(event_overflow_stops_worker) { scenario(Mode::Overflow); }
 BOOST_AUTO_TEST_CASE(required_snapshot_failure_stops_admission) { scenario(Mode::StorageFailure); }

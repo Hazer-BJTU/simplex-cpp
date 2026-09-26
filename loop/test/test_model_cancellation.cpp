@@ -174,6 +174,7 @@ void exhausted_http_retries_return_failed() {
     server.get();
     const auto outcome = result.get();
     BOOST_CHECK(outcome.status == loop::RunStatus::Failed);
+    BOOST_CHECK(outcome.failure_stage == loop::RunFailureStage::ModelRequest);
     BOOST_CHECK(outcome.error.find("503") != std::string::npos);
     BOOST_CHECK_EQUAL(outcome.completed_exchanges, 0u);
     BOOST_CHECK_EQUAL(requests, 2);

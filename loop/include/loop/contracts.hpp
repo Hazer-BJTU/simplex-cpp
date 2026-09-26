@@ -29,6 +29,12 @@ enum class RunStatus {
     Failed     // Inspect error and state.loop before deciding how to continue.
 };
 
+/** Where a failed invocation originated; not a claim that retry will succeed. */
+enum class RunFailureStage {
+    Other,
+    ModelRequest
+};
+
 /**
  * Admission is refused because earlier tool effects cannot be replayed safely.
  *
@@ -64,6 +70,9 @@ struct RunResult {
 
     /// Diagnostic text on failure; tool-level failures remain in tool results.
     std::string error;
+
+    /// ModelRequest only when converse() raised before committing its response.
+    RunFailureStage failure_stage = RunFailureStage::Other;
 };
 
 /** Limits one invocation; it does not change model generation configuration. */
