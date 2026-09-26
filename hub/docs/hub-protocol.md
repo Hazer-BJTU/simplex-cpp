@@ -160,7 +160,7 @@ confirmation connection existed.
 | `GET /api/sessions` | — | `{sessions: [session...]}` |
 | `POST /api/sessions` | `{session, spec?}` | `201 {session}`; `400 invalid_session`; `409 session_exists` |
 | `GET /api/sessions/:id` | — | `{session}`; `404 unknown_session` |
-| `DELETE /api/sessions/:id` | — | `{removed}`; `409 session_busy` while a worker runs or is connected |
+| `DELETE /api/sessions/:id` | — | `{removed}`; removes the worker snapshot and hub event log, preserving tool-created files under `workers/<session>/`; `409 session_busy` while a worker runs or is connected |
 | `POST /api/sessions/:id/start` | `{spec?}` | `{ok, pid?, config}`; `409` with `{ok:false, error}` |
 | `POST /api/sessions/:id/stop` | — | `{ok, how, forced}` — `how` is `shutdown-signal`, `sigterm`, `sigkill`, `sigkill-process-group`, `already-exited`, or `not-started` |
 | `POST /api/sessions/:id/restart` | `{spec?}` | start result plus `stop` |
@@ -191,7 +191,7 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 | `unsubscribe` | `session` | stops live messages for that session |
 | `list_sessions` | — | answers with `sessions` |
 | `create_session` | `session`, optional `spec` | answers with `created`, or `session_exists` / `invalid_session` |
-| `delete_session` | `session` | answers with `session_removed`; refused while busy |
+| `delete_session` | `session` | removes the worker snapshot and hub event log, then answers with `session_removed`; refused while busy |
 | `worker` | `session`, `action`: `start`\|`stop`\|`restart`\|`force-kill`, optional `spec` | answers with `accepted` (carrying the result) or `worker_action_failed` |
 | `input` | `session`, `content`, optional `operation`, `request_id`, `options` | validates, sends a payload, answers with `accepted` and `request_id` |
 | `history` | `session`, optional `request_id`, `start`, `step`, `limit` | sends a read-only worker history payload; response arrives as a `history` worker event |

@@ -3,7 +3,7 @@
  * request tracking, worker actions, and the trust boundary around all of it.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { persistenceRoot } from '../src/launch/config-render.ts';
@@ -130,10 +130,40 @@ describe('panel API', () => {
         const missing = await api('/api/sessions/nope');
         assert.equal(missing.status, 404);
 
+        const stateDirectory = join(persistenceRoot(ctx.config), 'rest-created');
+        const statePath = join(stateDirectory, 'state.json');
+        const eventPath = join(ctx.config.dataDir, 'events', 'rest-created.jsonl');
+        mkdirSync(stateDirectory, { recursive: true });
+        mkdirSync(join(ctx.config.dataDir, 'events'), { recursive: true });
+        writeFileSync(statePath, '{"turns":[{"user":"old"}]}');
+        writeFileSync(eventPath, '{"event":"old"}\n');
+
         const removed = await api('/api/sessions/rest-created', { method: 'DELETE' });
         assert.equal(removed.status, 200);
         assert.equal(removed.body.removed, 'rest-created');
         assert.equal(ctx.hub.registry.get('rest-created'), undefined);
+        assert.equal(existsSync(statePath), false);
+        assert.equal(existsSync(eventPath), false);
+
+        const recreated = await api('/api/sessions', {
+            method: 'POST', body: { session: 'rest-created' },
+        });
+        assert.equal(recreated.status, 201);
+        assert.equal(existsSync(statePath), false);
+    });
+
+    it('deletes a session snapshot through the panel socket too', async () => {
+        const session = ctx.hub.registry.create('socket-delete');
+        const stateDirectory = join(persistenceRoot(ctx.config), session.id);
+        const statePath = join(stateDirectory, 'state.json');
+        mkdirSync(stateDirectory, { recursive: true });
+        writeFileSync(statePath, '{"turns":[{"user":"old"}]}');
+        const socket = await panel();
+        socket.send({ v: 1, type: 'delete_session', session: session.id });
+        await socket.waitFor((message) => message.type === 'session_removed'
+            && message.session === session.id);
+        assert.equal(ctx.hub.registry.get(session.id), undefined);
+        assert.equal(existsSync(statePath), false);
     });
 
     it('refuses to delete a session that still has a worker', async () => {

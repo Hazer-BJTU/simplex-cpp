@@ -17,7 +17,7 @@
  * `shared/protocol.ts`, the same module the panel imports, so what this file
  * sends and what the browser expects cannot drift apart without a type error.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import type { RawData, WebSocket } from 'ws';
@@ -165,6 +165,18 @@ export function createPanelApi({
         const sessions = registry.list();
         if (immediate) state.flush(sessions);
         else onSessionsChanged?.(sessions);
+    }
+
+    /** Delete restorable history before forgetting an inactive session ID. */
+    function removeSession(session: Session): void {
+        // A later session with the same ID must start empty. The worker owns
+        // this directory, so only remove it after the worker has stopped.
+        rmSync(join(persistenceRoot(config), session.id), { recursive: true, force: true });
+        transcripts.remove(session.id);
+        rmSync(join(config.dataDir, 'events', `${session.id}.jsonl`), { force: true });
+        registry.remove(session.id);
+        persist({ immediate: true });
+        broadcast({ type: 'session_removed', session: session.id });
     }
 
     // ---------------------------------------------------------------------
@@ -513,10 +525,13 @@ export function createPanelApi({
                     'stop the worker and disconnect it before deleting the session');
                 return;
             }
-            transcripts.remove(session.id);
-            registry.remove(session.id);
-            persist();
-            broadcast({ type: 'session_removed', session: session.id });
+            try {
+                removeSession(session);
+            } catch (error) {
+                sendError(res, 500, 'session_delete_failed',
+                    error instanceof Error ? error.message : String(error));
+                return;
+            }
             sendJson(res, 200, { removed: session.id });
         },
 
@@ -700,11 +715,17 @@ export function createPanelApi({
                     });
                     return;
                 }
-                transcripts.remove(target.id);
-                registry.remove(target.id);
+                try {
+                    removeSession(target);
+                } catch (error) {
+                    send(client, {
+                        type: 'error', error: 'session_delete_failed',
+                        message: error instanceof Error ? error.message : String(error),
+                        request: message,
+                    });
+                    return;
+                }
                 client.subscriptions.delete(target.id);
-                persist();
-                broadcast({ type: 'session_removed', session: target.id });
                 return;
             }
             case 'worker': {
