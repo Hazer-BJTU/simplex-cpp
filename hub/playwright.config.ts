@@ -11,18 +11,34 @@
  * Playwright brings its own browser, so "is a browser available" stops being a
  * property of the host and becomes a property of the install.
  *
- * The dev server under test is `vite preview` over a fresh build, not the hub:
- * the panel is not served by the hub until the rewrite replaces the old one,
- * and a test that needed the hub would be testing the wrong thing anyway.
+ * Two servers, because the panel needs both halves:
+ *
+ * - `vite preview` serves the built bundle over the `preview.proxy` in
+ *   `vite.config.ts`, which forwards `/api` and the `/panel/ws` upgrade to the
+ *   hub. A static preview alone cannot do WebSockets at all, which is why the
+ *   earlier version of this file could only ever load a shell.
+ * - `test/browser/stub-hub.mjs` is a hub that speaks the panel protocol and can
+ *   be told to emit, confirm and restart on demand. A real hub needs a real
+ *   worker and a real model to produce those, and cannot be asked to pretend it
+ *   restarted halfway through a test.
  */
 import { defineConfig, devices } from '@playwright/test';
 
 /** Port for the preview server; unlikely to collide with a running hub. */
 const PREVIEW_PORT = 4173;
 
+/** Port for the scripted hub the preview server proxies to. */
+const STUB_PORT = Number(process.env.STUB_HUB_PORT ?? 4180);
+
 export default defineConfig({
     testDir: './test/browser',
-    fullyParallel: true,
+    testMatch: '*.spec.ts',
+    // The stub hub is a single shared server that tests reset and script, so
+    // they cannot run at the same time as each other. Each one is fast; making
+    // them independent would mean one stub per worker, which is a lot of
+    // machinery for the seconds it would save.
+    fullyParallel: false,
+    workers: 1,
     forbidOnly: Boolean(process.env.CI),
     retries: process.env.CI ? 1 : 0,
     reporter: process.env.CI ? 'github' : 'list',
@@ -38,14 +54,24 @@ export default defineConfig({
         { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     ],
 
-    webServer: {
-        // The build runs as part of the server command so a stale `dist` can
-        // never be what the browser loads.
-        command: `npm run build && npx vite preview --port ${PREVIEW_PORT} --strictPort`,
-        url: `http://127.0.0.1:${PREVIEW_PORT}/app.html`,
-        reuseExistingServer: !process.env.CI,
-        timeout: 120_000,
-        stdout: 'ignore',
-        stderr: 'pipe',
-    },
+    webServer: [
+        {
+            command: `node test/browser/stub-hub.mjs`,
+            url: `http://127.0.0.1:${STUB_PORT}/api/meta`,
+            reuseExistingServer: !process.env.CI,
+            timeout: 30_000,
+            env: { STUB_HUB_PORT: String(STUB_PORT) },
+        },
+        {
+            // The build runs as part of the server command so a stale `dist` can
+            // never be what the browser loads.
+            command: `npm run build && npx vite preview --port ${PREVIEW_PORT} --strictPort`,
+            url: `http://127.0.0.1:${PREVIEW_PORT}/app.html`,
+            reuseExistingServer: !process.env.CI,
+            timeout: 120_000,
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: { SIMPLEX_HUB_ORIGIN: `http://127.0.0.1:${STUB_PORT}` },
+        },
+    ],
 });

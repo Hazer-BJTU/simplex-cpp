@@ -16,9 +16,10 @@
     "dev": "node --watch bin/simplex-hub.ts",
     "dev:panel": "vite",
     "build": "vite build",
-    "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json && tsc -p test/browser/tsconfig.json",
     "test": "node --test test/*.test.js",
-    "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.js"
+    "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.js",
+    "check:panel": "node test/browser/real-hub-check.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"
@@ -36,6 +37,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.1",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.2",
+    "zustand": "^5.0.15"
   }
 }
