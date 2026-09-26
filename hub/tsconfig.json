@@ -22,8 +22,6 @@
         "exactOptionalPropertyTypes": true,
         "noUncheckedIndexedAccess": true,
 
-        "allowJs": true,
-        "checkJs": false,
         "noEmit": true,
 
         // Node resolves a relative import to the file that exists, with the
@@ -36,16 +34,10 @@
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true
     },
-    // Both extensions are listed while the migration is in flight: `tsc` type
-    // checks every `.ts` file and resolves the `.js` ones it imports, so a
-    // module that has been converted is held to its types immediately and an
-    // unconverted neighbour is left alone until its turn.
     "include": [
         "src/**/*.ts",
         "bin/**/*.ts",
         "shared/**/*.ts",
-        "src/**/*.js",
-        "bin/**/*.js",
         "vite.config.ts",
         "playwright.config.ts"
     ]
