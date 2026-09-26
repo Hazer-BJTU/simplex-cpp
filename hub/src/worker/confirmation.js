@@ -25,8 +25,8 @@
  * legitimate confirmation after a restart.
  */
 import { WebSocketServer } from 'ws';
-import { presentedToken, safeEqual } from '../http/auth.js';
-import { buildConfirmationResponse } from '../protocol/messages.js';
+import { presentedToken, safeEqual } from '../http/auth.ts';
+import { buildConfirmationResponse } from '../protocol/messages.ts';
 import { IDENTITY } from '../state/registry.js';
 import { isValidSessionId } from '../state/session-id.ts';
 import { truncateReason } from './connection.js';

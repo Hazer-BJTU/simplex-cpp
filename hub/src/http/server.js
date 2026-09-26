@@ -13,8 +13,8 @@
  */
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { createRouter } from './router.js';
-import { serveStatic } from './static.js';
+import { createRouter } from './router.ts';
+import { serveStatic } from './static.ts';
 
 /** Write a JSON response. */
 export function sendJson(res, status, body, headers = {}) {

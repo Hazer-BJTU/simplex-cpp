@@ -5,9 +5,12 @@
  * persistence directory, and prompt path, so the command line stays exactly the
  * one the worker documents in core/README.md.
  */
+import type { LauncherInput, LauncherInvocation } from './invocation.ts';
 
 /** Placeholder-free invocation for the bundled worker binary. */
-export function buildSimplexWorkerInvocation({ config, sessionId, spec, configPath, sessionDir }) {
+export function buildSimplexWorkerInvocation({
+    config, sessionId, spec, configPath, sessionDir,
+}: LauncherInput): LauncherInvocation {
     const args = [
         '--config', configPath,
         '--session', sessionId,

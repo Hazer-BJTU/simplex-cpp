@@ -12,7 +12,7 @@ import {
     newRequestId,
     normalizeOptions,
     utf8Length,
-} from '../src/protocol/messages.js';
+} from '../src/protocol/messages.ts';
 
 describe('buildPayload', () => {
     it('builds a text message envelope', () => {

@@ -16,11 +16,11 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
-import { authorizePanel, presentedToken, safeEqual } from '../http/auth.js';
+import { authorizePanel, presentedToken, safeEqual } from '../http/auth.ts';
 import { readJsonBody, sendError, sendJson } from '../http/server.js';
 import { persistenceRoot } from '../launch/config-render.js';
 import { normalizeSpec } from '../launch/spec.js';
-import { buildPayload, buildSignal, newRequestId } from '../protocol/messages.js';
+import { buildPayload, buildSignal, newRequestId } from '../protocol/messages.ts';
 import { isValidSessionId } from '../state/session-id.ts';
 import { checkEnvelope } from '../../shared/guards.ts';
 import { PANEL_VERSION, SESSIONLESS_MESSAGE_TYPES } from '../../shared/protocol.ts';

@@ -7,7 +7,7 @@
  * place that knows the whole object graph.
  */
 import { randomUUID } from 'node:crypto';
-import { authorizePanel } from './http/auth.js';
+import { authorizePanel } from './http/auth.ts';
 import { createHttpServer, sendError, sendJson } from './http/server.js';
 import { createLauncher } from './launch/launcher.js';
 import { MockProvider, parseAddress } from './mock/provider.js';

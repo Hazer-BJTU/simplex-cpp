@@ -9,45 +9,103 @@
 import { randomUUID } from 'node:crypto';
 
 /** Input content encodings accepted by the worker. */
-export const CONTENT_TYPES = ['text', 'binary', 'external_ref'];
+export const CONTENT_TYPES = ['text', 'binary', 'external_ref'] as const;
 
 /** Confirmation policies selectable per payload. */
-export const CONFIRMATION_MODES = ['ask', 'approve', 'deny'];
+export const CONFIRMATION_MODES = ['ask', 'approve', 'deny'] as const;
 
 /** Signal operations accepted by the worker. */
-export const SIGNAL_OPERATIONS = ['status', 'options', 'cancel', 'shutdown'];
+export const SIGNAL_OPERATIONS = ['status', 'options', 'cancel', 'shutdown'] as const;
 
 /** Input operations accepted by the worker. */
-export const INPUT_OPERATIONS = ['message', 'continue'];
+export const INPUT_OPERATIONS = ['message', 'continue'] as const;
+
+/** One accepted content encoding. */
+export type ContentType = (typeof CONTENT_TYPES)[number];
+/** One confirmation policy. */
+export type ConfirmationMode = (typeof CONFIRMATION_MODES)[number];
+/** One signal operation. */
+export type SignalOperation = (typeof SIGNAL_OPERATIONS)[number];
+/** One input operation. */
+export type InputOperation = (typeof INPUT_OPERATIONS)[number];
 
 /** Fields the worker rejects inside a payload's `data`. */
-const FORBIDDEN_DATA_FIELDS = ['role', 'invokes', 'invoke_return', 'type'];
+const FORBIDDEN_DATA_FIELDS = ['role', 'invokes', 'invoke_return', 'type'] as const;
+
+/** A content part after validation. */
+export interface NormalizedContentPart {
+    type: ContentType;
+    raw: string;
+    extras?: Record<string, unknown>;
+}
+
+/** Payload options after validation. */
+export interface NormalizedOptions {
+    model?: Record<string, unknown>;
+    /** Reserved by the worker protocol, and required to be empty. */
+    tools?: Record<string, unknown>;
+    confirmation?: { mode?: ConfirmationMode };
+}
+
+/** The `data` of a payload envelope. */
+export interface PayloadData {
+    operation: InputOperation;
+    request_id: string;
+    content?: NormalizedContentPart[];
+    options?: NormalizedOptions;
+}
+
+/** A payload envelope, ready to write to a worker socket. */
+export interface PayloadEnvelope {
+    type: 'payload';
+    data: PayloadData;
+}
+
+/** A signal envelope, ready to write to a worker socket. */
+export interface SignalEnvelope {
+    type: 'signal';
+    data: { operation: SignalOperation; run_id?: string };
+}
+
+/** The identifiers a confirmation response has to echo back. */
+export interface ConfirmationCorrelation {
+    worker_id: string;
+    session_id: string;
+    run_id: string;
+    confirmation_id: string;
+}
+
+/** A confirmation response, ready to write to a confirmation socket. */
+export interface ConfirmationResponseEnvelope {
+    type: 'confirmation_response';
+    data: ConfirmationCorrelation & { decision: 'approved' | 'denied'; reason: string };
+}
 
 /** Error raised for a message the worker would reject. */
 export class ProtocolError extends Error {
-    constructor(message) {
+    constructor(message: string) {
         super(message);
         this.name = 'ProtocolError';
     }
 }
 
 /** A fresh request identifier: nonempty, at most 128 UTF-8 bytes. */
-export function newRequestId() {
+export function newRequestId(): string {
     return randomUUID();
 }
 
 /** UTF-8 length in bytes, which is what the 128-byte request ID limit counts. */
-export function utf8Length(text) {
+export function utf8Length(text: string): number {
     return Buffer.byteLength(text, 'utf8');
 }
 
 /** Validate one content part, returning a normalized copy. */
-export function normalizeContentPart(part, index) {
+export function normalizeContentPart(part: unknown, index: number): NormalizedContentPart {
     if (typeof part !== 'object' || part === null || Array.isArray(part)) {
         throw new ProtocolError(`content[${index}] must be an object`);
     }
-    const { type, raw } = part;
-    if (!CONTENT_TYPES.includes(type)) {
+    const { type, raw, extras } = part as Record<string, unknown>;
+    if (!(CONTENT_TYPES as readonly unknown[]).includes(type)) {
         throw new ProtocolError(
             `content[${index}].type must be one of ${CONTENT_TYPES.join(', ')}`
             + (type === 'image' ? ' (use external_ref with the image URL in raw)' : ''));
@@ -55,12 +113,12 @@ export function normalizeContentPart(part, index) {
     if (typeof raw !== 'string' || raw.length === 0) {
         throw new ProtocolError(`content[${index}].raw must be a nonempty string`);
     }
-    const normalized = { type, raw };
-    if (part.extras !== undefined) {
-        if (typeof part.extras !== 'object' || part.extras === null || Array.isArray(part.extras)) {
+    const normalized: NormalizedContentPart = { type: type as ContentType, raw };
+    if (extras !== undefined) {
+        if (typeof extras !== 'object' || extras === null || Array.isArray(extras)) {
             throw new ProtocolError(`content[${index}].extras must be an object`);
         }
-        normalized.extras = part.extras;
+        normalized.extras = extras as Record<string, unknown>;
     }
     return normalized;
 }
@@ -69,26 +127,28 @@ export function normalizeContentPart(part, index) {
  * Validate optional payload `options`: `model` (provider keys), `tools`
  * (reserved, must be empty), `confirmation.mode`.
  */
-export function normalizeOptions(options) {
+export function normalizeOptions(options: unknown): NormalizedOptions | undefined {
     if (options === undefined || options === null) return undefined;
     if (typeof options !== 'object' || Array.isArray(options)) {
         throw new ProtocolError('options must be an object');
     }
-    const normalized = {};
-    for (const [category, value] of Object.entries(options)) {
+    const normalized: NormalizedOptions = {};
+    for (const [category, value] of Object.entries(options as Record<string, unknown>)) {
         if (category === 'model' || category === 'confirmation') {
             if (typeof value !== 'object' || value === null || Array.isArray(value)) {
                 throw new ProtocolError(`options.${category} must be an object`);
             }
             if (category === 'confirmation') {
-                const mode = value.mode;
-                if (mode !== undefined && !CONFIRMATION_MODES.includes(mode)) {
+                const mode = (value as Record<string, unknown>).mode;
+                if (mode !== undefined && !(CONFIRMATION_MODES as readonly unknown[]).includes(mode)) {
                     throw new ProtocolError(
                         `options.confirmation.mode must be one of ${CONFIRMATION_MODES.join(', ')}`);
                 }
-                normalized.confirmation = mode === undefined ? {} : { mode };
+                normalized.confirmation = mode === undefined
+                    ? {}
+                    : { mode: mode as ConfirmationMode };
             } else {
-                normalized.model = value;
+                normalized.model = value as Record<string, unknown>;
             }
             continue;
         }
@@ -107,18 +167,20 @@ export function normalizeOptions(options) {
     return normalized;
 }
 
-/**
- * Build a `payload` envelope for a user message or a continuation.
- *
- * @param {object} input
- * @param {'message'|'continue'} input.operation
- * @param {string} input.requestId
- * @param {Array<object>} [input.content] required for `message`.
- * @param {object} [input.options]
- * @returns {{type: 'payload', data: object}}
- */
-export function buildPayload({ operation = 'message', requestId, content, options }) {
-    if (!INPUT_OPERATIONS.includes(operation)) {
+/** What `buildPayload` accepts. */
+export interface PayloadInput {
+    operation?: InputOperation;
+    requestId: string;
+    /** Required for `message`, refused for `continue`. */
+    content?: unknown;
+    options?: unknown;
+}
+
+/** Build a `payload` envelope for a user message or a continuation. */
+export function buildPayload({
+    operation = 'message', requestId, content, options,
+}: PayloadInput): PayloadEnvelope {
+    if (!(INPUT_OPERATIONS as readonly unknown[]).includes(operation)) {
         throw new ProtocolError(`operation must be one of ${INPUT_OPERATIONS.join(', ')}`);
     }
     if (typeof requestId !== 'string' || requestId.length === 0) {
@@ -127,7 +189,7 @@ export function buildPayload({ operation = 'message', requestId, content, option
     if (utf8Length(requestId) > 128) {
         throw new ProtocolError('request_id must be at most 128 UTF-8 bytes');
     }
-    const data = { operation, request_id: requestId };
+    const data: PayloadData = { operation, request_id: requestId };
 
     if (operation === 'continue') {
         if (content !== undefined && content !== null) {
@@ -137,27 +199,29 @@ export function buildPayload({ operation = 'message', requestId, content, option
         if (!Array.isArray(content) || content.length === 0) {
             throw new ProtocolError('content must be a nonempty array of parts');
         }
-        data.content = content.map(normalizeContentPart);
+        data.content = content.map((part, index) => normalizeContentPart(part, index));
     }
 
     const normalized = normalizeOptions(options);
     if (normalized !== undefined) data.options = normalized;
     for (const field of FORBIDDEN_DATA_FIELDS) {
-        if (Object.hasOwn(data, field)) throw new ProtocolError(`"${field}" is not accepted in payload data`);
+        if (Object.hasOwn(data, field)) {
+            throw new ProtocolError(`"${field}" is not accepted in payload data`);
+        }
     }
     return { type: 'payload', data };
 }
 
-/**
- * Build a `signal` envelope.
- *
- * @param {object} input
- * @param {'status'|'options'|'cancel'|'shutdown'} input.operation
- * @param {string} [input.runId] required for `cancel`.
- * @returns {{type: 'signal', data: object}}
- */
-export function buildSignal({ operation, runId }) {
-    if (!SIGNAL_OPERATIONS.includes(operation)) {
+/** What `buildSignal` accepts. */
+export interface SignalInput {
+    operation: SignalOperation;
+    /** Required for `cancel`. */
+    runId?: string;
+}
+
+/** Build a `signal` envelope. */
+export function buildSignal({ operation, runId }: SignalInput): SignalEnvelope {
+    if (!(SIGNAL_OPERATIONS as readonly unknown[]).includes(operation)) {
         throw new ProtocolError(`signal operation must be one of ${SIGNAL_OPERATIONS.join(', ')}`);
     }
     if (operation === 'cancel') {
@@ -174,12 +238,12 @@ export function buildSignal({ operation, runId }) {
  *
  * All four identifiers are echoed exactly as received: the worker rejects a
  * mismatch, and a decision is only valid for the request it answers.
- *
- * @param {object} request parsed `confirmation_request.data`.
- * @param {'approved'|'denied'} decision
- * @param {string} [reason]
  */
-export function buildConfirmationResponse(request, decision, reason = 'operator decision') {
+export function buildConfirmationResponse(
+    request: ConfirmationCorrelation,
+    decision: 'approved' | 'denied',
+    reason = 'operator decision',
+): ConfirmationResponseEnvelope {
     if (decision !== 'approved' && decision !== 'denied') {
         throw new ProtocolError('decision must be approved or denied');
     }

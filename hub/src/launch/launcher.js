@@ -20,8 +20,8 @@
  * the process it spawned. See hub/docs/worker-adapter.md.
  */
 import { LAUNCHER_KINDS } from '../config.js';
-import { buildCommandInvocation } from './command.js';
-import { buildSimplexWorkerInvocation } from './simplex-worker.js';
+import { buildCommandInvocation } from './command.ts';
+import { buildSimplexWorkerInvocation } from './simplex-worker.ts';
 
 export { LAUNCHER_KINDS };
 

@@ -31,7 +31,7 @@ import {
     buildPayload,
     buildSignal,
     normalizeOptions,
-} from '../src/protocol/messages.js';
+} from '../src/protocol/messages.ts';
 
 const DOC_PATH = join(hubRoot, '..', 'core', 'docs', 'worker-protocol.md');
 const available = existsSync(DOC_PATH);

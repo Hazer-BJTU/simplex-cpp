@@ -21,8 +21,8 @@
  * the worker's own session lock.
  */
 import { WebSocketServer } from 'ws';
-import { presentedToken, safeEqual } from '../http/auth.js';
-import { buildSignal } from '../protocol/messages.js';
+import { presentedToken, safeEqual } from '../http/auth.ts';
+import { buildSignal } from '../protocol/messages.ts';
 import { parseEventEnvelope } from '../protocol/events.js';
 import { isValidSessionId } from '../state/session-id.ts';
 

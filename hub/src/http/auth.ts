@@ -10,9 +10,10 @@
  * authentication headers, cookies, or subprotocols.
  */
 import { timingSafeEqual } from 'node:crypto';
+import type { IncomingMessage } from 'node:http';
 
 /** Constant-time string comparison that tolerates different lengths. */
-export function safeEqual(left, right) {
+export function safeEqual(left: unknown, right: unknown): boolean {
     const a = Buffer.from(String(left ?? ''), 'utf8');
     const b = Buffer.from(String(right ?? ''), 'utf8');
     if (a.length !== b.length) {
@@ -25,21 +26,21 @@ export function safeEqual(left, right) {
 }
 
 /** Token presented by a worker or panel upgrade/request, or '' when absent. */
-export function presentedToken(url) {
+export function presentedToken(url: URL | null | undefined): string {
     const fromQuery = url?.searchParams?.get('token');
     return typeof fromQuery === 'string' ? fromQuery : '';
 }
 
 /** Bearer token from an Authorization header, or '' when absent. */
-export function bearerToken(req) {
+export function bearerToken(req: IncomingMessage | null | undefined): string {
     const header = req?.headers?.authorization;
     if (typeof header !== 'string') return '';
     const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-    return match ? match[1] : '';
+    return match ? (match[1] as string) : '';
 }
 
 /** Read one cookie value from a request, or '' when absent. */
-export function cookieValue(req, name) {
+export function cookieValue(req: IncomingMessage | null | undefined, name: string): string {
     const header = req?.headers?.cookie;
     if (typeof header !== 'string') return '';
     for (const part of header.split(';')) {
@@ -52,15 +53,25 @@ export function cookieValue(req, name) {
     return '';
 }
 
+/** The slice of hub configuration this module reads. */
+export interface PanelAuthConfig {
+    panel?: { token?: string };
+}
+
+/** The verdict on a panel request. */
+export type PanelAuth = { ok: true } | { ok: false; reason: string };
+
 /**
  * Decide whether a panel request may proceed.
  *
  * Authentication is disabled when no token is configured, which configuration
  * validation only permits for a loopback listener.
- *
- * @returns {{ok: true}|{ok: false, reason: string}}
  */
-export function authorizePanel(config, req, url) {
+export function authorizePanel(
+    config: PanelAuthConfig,
+    req: IncomingMessage | null | undefined,
+    url: URL | null | undefined,
+): PanelAuth {
     const expected = config.panel?.token ?? '';
     if (expected.length === 0) return { ok: true };
     const candidates = [
