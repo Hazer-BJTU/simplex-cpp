@@ -144,7 +144,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<
 
     const hub = createHub({ config, log, hubRoot, version: packageVersion() });
     const address = await hub.start();
-    log.info(`panel: ${address.url}`);
 
     let stopping = false;
     const stop = async (signal: string): Promise<void> => {
@@ -165,6 +164,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<
     };
     process.on('SIGINT', () => onSignal('SIGINT'));
     process.on('SIGTERM', () => onSignal('SIGTERM'));
+    // This is the CLI's readiness line. Publish it only after shutdown
+    // signals are handled, so an operator can safely stop a newly started hub.
+    log.info(`panel: ${address.url}`);
     return { hub, address, stop };
 }
 
