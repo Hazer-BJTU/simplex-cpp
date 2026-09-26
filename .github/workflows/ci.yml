@@ -167,7 +167,6 @@ jobs:
       # settings must not intercept 127.0.0.1 or readiness times out even after
       # Vite has built the panel successfully.
       NO_PROXY: 127.0.0.1,localhost
-      no_proxy: 127.0.0.1,localhost
     steps:
       - uses: actions/checkout@v4
         with:
