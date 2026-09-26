@@ -2,10 +2,12 @@
  * @file hub panel protocol: the vocabulary both ends share.
  *
  * This module is the single place the panel protocol is written down. Before it
- * existed, the version was spelled out three times — in `src/hub.js`, in
- * `src/panel/api.js`, and in the browser's `web/js/api.js` — and nothing
- * compared them, so `protocol.version` in `/api/meta` and the `v` stamped on
- * every frame could drift apart unnoticed.
+ * existed, the version was spelled out three times — in the hub, in the panel
+ * API, and in the browser half — and nothing compared them, so
+ * `protocol.version` in `/api/meta` and the `v` stamped on every frame could
+ * drift apart unnoticed. Two of those copies are gone (the browser's went with
+ * the panel it belonged to); the two that remain are compared by
+ * `test/protocol-constants.test.js`.
  *
  * It is TypeScript on purpose. Node runs it directly (type stripping, which the
  * declared floor of 22.18 guarantees) and the panel bundle compiles the same

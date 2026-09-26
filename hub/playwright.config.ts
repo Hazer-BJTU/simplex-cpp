@@ -66,7 +66,7 @@ export default defineConfig({
             // The build runs as part of the server command so a stale `dist` can
             // never be what the browser loads.
             command: `npm run build && npx vite preview --port ${PREVIEW_PORT} --strictPort`,
-            url: `http://127.0.0.1:${PREVIEW_PORT}/app.html`,
+            url: `http://127.0.0.1:${PREVIEW_PORT}/`,
             reuseExistingServer: !process.env.CI,
             timeout: 120_000,
             stdout: 'ignore',

@@ -29,7 +29,8 @@ behaviour: it implements the worker side of
 
 ```sh
 cd hub
-npm install          # add --omit=dev to skip the panel's build toolchain
+npm install
+npm run build        # bundles the panel into web/dist
 npm start
 ```
 
@@ -189,17 +190,15 @@ read it; nothing can replace, edit, or reset it.
 ```sh
 npm run typecheck   # tsc over the server, the shared protocol, the panel, the browser tests
 npm test            # unit and integration tests, no build required
-npm run build       # bundle the new panel into web/dist
+npm run build       # bundle the panel into web/dist
 npx playwright test # the panel in a browser Playwright brings with it
 npm run test:e2e    # end-to-end against build/bin/simplex_worker (skipped if absent)
 ```
 
 The end-to-end tests drive the real binary through the hub and the offline mock:
-a full loop with a real tool call and confirmation, a crashed hub whose worker is
-adopted by the next hub, and the old panel itself in headless Chrome (the browser
-check skips when none is installed; set `PANEL_REQUIRE_BROWSER=1` to make that a
-failure, and `CHROME_BIN` to choose one). Set `SIMPLEX_WORKER_BIN` to test a
-different build.
+a full loop with a real tool call and confirmation, and a crashed hub whose
+worker is adopted by the next hub. Set `SIMPLEX_WORKER_BIN` to test a different
+build.
 
 Overlays — menus, dialogs, popovers, tooltips, tabs — are Radix primitives, and
 the reason is specific rather than fashionable: the old panel hand-wrote a focus
@@ -220,12 +219,16 @@ set statically. Radix and lucide together add about 42 kB gzipped on top of
 that. The whole panel is ~230 kB gzipped, which for a tool that runs on loopback
 is not a constraint anyone is paying for.
 
-Two panels coexist while the rewrite is in progress. `web/index.html` is the
-panel you get today; `web/app.html` is the new one, built from `web/src` into
-`web/dist` and not yet served by the hub. `npm run dev:panel` runs Vite against
-a hub on `127.0.0.1:8800` when you want to iterate on it with hot reload, and
-the same proxy is configured for `vite preview`, which is what the browser tests
-load.
+The panel is one page, built from `web/src` into `web/dist`, and the hub serves
+that directory as its front door. There is no separate panel deployment and no
+second copy of it: `npm run build` is the whole step, and a hub started without
+it answers `503` with the command rather than a bare `404`.
+
+`npm run dev:panel` runs Vite against a hub on `127.0.0.1:8800` when you want to
+iterate with hot reload; the same proxy is configured for `vite preview`, which
+is what the browser tests load. Both forward `/api` and the `/panel/ws` upgrade
+and deliberately do **not** rewrite `Host` — see `vite.config.ts` for why
+`changeOrigin` is the one setting that breaks the hub's cross-site check.
 
 The panel's browser tests run against `test/browser/stub-hub.mjs`, a server that
 speaks the panel protocol and can be told to emit an event, raise a confirmation
@@ -239,14 +242,16 @@ against the real thing.
 To check the panel against a real hub and a real worker:
 
 ```sh
-node bin/simplex-hub.ts --mock --listen 127.0.0.1:8899 --data-dir /tmp/hub-check
-SIMPLEX_HUB_ORIGIN=http://127.0.0.1:8899 npx vite preview --port 4174 --strictPort
-SIMPLEX_HUB_ORIGIN=http://127.0.0.1:8899 npm run check:panel
+npm run build
+node bin/simplex-hub.ts --mock --listen 127.0.0.1:8899 --data-dir /tmp/hub-check &
+npm run check:panel
 ```
 
 That creates a session, starts its worker, sends a message, answers the tool
 approval the mock provider asks for, and prints the transcript the panel
-rendered next to the hub's own counters.
+rendered next to the hub's own counters. The browser loads the hub's own front
+page over the hub's own socket — no build server in between — so it is the
+deployment path being checked, not a preview of it.
 
 ### Continuous integration
 
@@ -259,7 +264,7 @@ ABI fingerprint the C++ jobs depend on.
 | --- | --- | --- |
 | `hub-test` | the suite and the type checker on the declared Node floor (22.18) and the current release (24) | no C++ tree needed; drives stand-in workers over real WebSockets |
 | `hub-panel` | the panel build and its browser tests | Node 24 only: Vite and Vitest both require more than the hub's floor, and installing a browser needs root |
-| `hub-e2e` | the hub against the *staged release* worker from `portable-release`, plus the old panel in the runner's Chrome | the first workload that runs a release binary rather than a ctest executable |
+| `hub-e2e` | the hub against the *staged release* worker from `portable-release` | the first workload that runs a release binary rather than a ctest executable |
 
 Between them they also assert things a reader might otherwise assume:
 
@@ -268,14 +273,24 @@ Between them they also assert things a reader might otherwise assume:
   input operation, or an option category the hub does not know about. A hub that
   silently rendered a new event as "unknown" would otherwise stay green.
 - **Protocol constants.** `test/protocol-constants.test.js` fails if the hub's
-  announced version, the version stamped on every panel message, the browser's
-  copy of it, and `shared/protocol.ts` ever disagree.
-- **Panel integrity.** The old panel has no build step, so nothing compiles it.
-  `test/panel-assets.test.js` checks that every referenced asset exists, every
-  module parses, every import resolves, both theme token sets exist, and nothing
-  writes markup as HTML.
-- **The panel in a browser.** `npx playwright test` builds the new panel, serves
-  it, loads it in the browser Playwright installs, and fails on a console error.
+  announced version, the version stamped on every panel message, and
+  `shared/protocol.ts` ever disagree — and fails if a panel module writes a
+  version down instead of importing it, which is how the old panel's copy
+  drifted.
+- **Panel integrity.** `test/panel-assets.test.js` checks that the entry
+  document references only files that exist, that every relative import in the
+  panel resolves, that both theme token sets declare the same names, and that
+  nothing writes markup as HTML.
+- **Panel accessibility.** `test/browser/panel-contrast.spec.ts` computes
+  contrast from the rendered page in both themes, using the browser's own colour
+  parser and the WCAG formula, and audits the structure a screen reader needs:
+  a name on every control, one `h1`, no skipped heading level, landmarks, and no
+  icon that says nothing.
+- **The panel in a browser.** `npx playwright test` builds the panel, serves it
+  through `vite preview` against a scripted hub, loads it in the browser
+  Playwright installs, and fails on a console error. A separate CI step starts
+  the real hub and asks *it* for `/`, because a preview server cannot notice a
+  hub whose static root and build output disagree.
   The interaction suite is the one that matters most for review: each of its
   tests closes a numbered defect from the plan, and most are written so that
   they fail against the behaviour the old panel had.
@@ -296,8 +311,8 @@ Between them they also assert things a reader might otherwise assume:
   is active, no per-session entries when no session is selected — because the
   offer is the interesting part, and a command that exists and then refuses is
   worse than one that is not there.
-- **No markup from untrusted text.** `test/panel-assets.test.js` scans both
-  panels for `innerHTML` and its relatives, `dangerouslySetInnerHTML` included,
+- **No markup from untrusted text.** `test/panel-assets.test.js` scans the panel
+  for `innerHTML` and its relatives, `dangerouslySetInnerHTML` included,
   and fails if a raw-HTML plugin is added to the markdown renderer. The
   behavioural half of the same claim is the browser test that feeds a model
   response a `<script>` tag and a `javascript:` link and asserts neither becomes

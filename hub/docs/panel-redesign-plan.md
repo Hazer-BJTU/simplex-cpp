@@ -336,13 +336,13 @@ Docker（`docker/Dockerfile.hub-test`）加前端构建步骤；`hub/web/dist` �
 
 | 约束 | 位置 | 处理方式 |
 | --- | --- | --- |
-| 静态根就是 `hubRoot/web`，**没有 SPA fallback**——未知深链接返回 404 纯文本 | `src/http/server.js:71`、`src/http/static.js:55-72` | 改指向 `web/dist` 并加 fallback（§3.2） |
+| 静态根就是 `hubRoot/web`，**没有 SPA fallback**——未知深链接返回 404 纯文本 | `src/http/server.js:71`、`src/http/static.js:55-72` | ✅ 改指向 `web/dist`；**fallback 没有做，而且不该做**：面板是单页、无客户端路由，`?session=`/`?token=` 是查询参数，所以不存在的路径本来就该是 404。未构建时答 503 + 构建命令 |
 | `index.html` 必须引用 `/css/app.css` 与 `/js/main.js`，且每个 `src\|href` 都要存在；`web/js/*.js` **至少 4 个顶层模块**且每个都要能 `node --check` | `test/panel-assets.test.js:56-99` | 测试重写为"构建成功 + 类型检查 + 入口存在"；`node --check` 那套随无构建模式一起退役 |
 | CSS 必须是 `:root{` + `[data-theme="dark"]{` 两套 token，且 JS 要设置 `data-theme`；e2e 要求 `#theme-toggle` 之后 `dataset.theme` 恰好是 `light\|dark` | `test/panel-assets.test.js:101-110`、`test/e2e/panel.test.js:146-150` | 保留两套 token 与 `data-theme` 机制；选择器改为 `data-testid` |
 | e2e 硬编码了整套 DOM 契约 | `test/e2e/panel.test.js:84, 87, 113, 117-123, 127, 130-143` | Playwright + `data-testid` 重写（计划内破坏） |
 | `?session=` 与 `?token=` 两个查询键是契约 | `web/js/api.js:65-85`、`web/js/app.js:317-320`、`test/e2e/panel.test.js:79` | 必须保留 |
-| 缓存策略：静态 `no-cache`、API `no-store`；**没有 ETag，没有 hash 资产方案** | `src/http/static.js:76`、`src/http/server.js:25` | 引入 Vite 的 hash 产物后改为"hash 资产长缓存 + `index.html` no-cache" |
-| **完全没有安全响应头**（CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy / CORS 一个都没有）；跨源防护只有面板 socket 的 Origin 检查，而**缺 Origin 头时直接跳过** | `src/panel/api.js:645-660` | 重构时顺手加安全头与严格 CSP；补齐 Origin 缺失的分支 |
+| 缓存策略：静态 `no-cache`、API `no-store`；**没有 ETag，没有 hash 资产方案** | `src/http/static.js:76`、`src/http/server.js:25` | ✅ `cacheControlFor()`：`-<hash>.js/.css/...` 一年 immutable，其余（尤其文档本身）no-cache |
+| **完全没有安全响应头**（CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy / CORS 一个都没有）；跨源防护只有面板 socket 的 Origin 检查，而**缺 Origin 头时直接跳过** | `src/panel/api.js:645-660` | ✅ `src/http/panel-headers.ts`：nosniff / Referrer-Policy / X-Frame-Options / COOP，加上 **CSP**——内联脚本的 hash 从构建产物里算，所以策略与文档不可能不一致。**Origin 缺失的分支不改**，理由见 §6.5 |
 | 传输层字面量：`/panel/ws`、`/api` 前缀、按段数精确匹配的路由、`'METHOD /path'` 路由键格式 | `src/panel/api.js:631`、`src/http/server.js:80`、`src/http/router.js:39`、`src/hub.js:161-170` | 保持不变；新路由沿用同样的键格式 |
 
 ---
@@ -494,9 +494,9 @@ P2 落地后的状态：
 | **P5 对话流** ✅ 已完成 | markdown + GFM（react-markdown，不经 HTML）、代码高亮与复制、工具卡片（命令当命令读、结果按结构读）、run 分组与窗口化、技术细节开关、长消息与长输出折叠 | 20 个纯函数测试（`test/panel-transcript.test.js`）+ 9 个新浏览器测试（共 15 个）+ 真实 hub/worker 全流程。**§5.3 有三条按字面做不到**，改成如实呈现，见 §6.2；另外发现 P4 的移植丢掉了一处**旧面板本来知道的事**（N5） |
 | **P6 交互重构** ✅ 已完成 | 会话头层次化、溢出菜单、危险确认对话框、composer、Inspector 抽屉、命令面板、per-session 确认模式 | **§1.2 的 D 组 15 项全部关闭**，逐条对应见下方 §6.2 表。10 个新的纯函数测试（`test/panel-palette.test.js`）+ 12 个新的浏览器测试（共 30 个）+ 真实 hub/worker 全流程无 console error |
 | **P7 打磨** ✅ 已完成 | 语义 token 层（OKLCH，明暗两套）+ Tailwind 自带调色板整体关闭；light/dark/system 三态主题，首屏前置脚本消除闪白；单一图标模块（一个含义一个图标、三档尺寸、统一线宽）；动效 token + 单一 `prefers-reduced-motion` 收口；`md` 以下两侧栏改为抽屉；骨架屏与空状态；a11y 专项（对话框聚焦自身而非首个按钮、审批 live region、焦点环、状态不只靠颜色） | **键盘可完成全流程**（选择会话 → 启动 worker → 发送消息，全程只用 `page.keyboard`）；**390px 可用**（无横向滚动、抽屉可开可关、composer 可发）；对比度**实测**而非声称：浅色 17.8/17.8/6.5/4.8:1，深色 14.7/14.7/8.0/4.7:1。P7 发现两个类型检查与构建都看不见的缺陷，见 §6.4 |
-| **P8 收尾** | 删除 `web/js`、`web/css`；更新 `hub/README.md`、`hub-protocol.md`；Playwright 取代 CDP helper | 文档与实现一致 |
+| **P8 收尾** ✅ 已完成 | 删除 `web/js`、`web/css`、旧 `web/index.html`（新面板 `app.html` 更名 `index.html`，成为 Vite 默认入口）；`src/http/static.ts` 改服务 `web/dist`，未构建时回 **503 + 构建命令**；`test/e2e/panel.test.js` 与 CDP helper（`test/helpers/browser.js`）删除，Playwright 是唯一的浏览器路径；`protocol-constants` 去掉第三份版本字面量并改为结构性断言；`panel-assets` 按单面板重写；README/hub-protocol/worker-adapter 更新（含 15 处 `.js`→`.ts` 路径）；CI 增加「hub 服务自己构建出的面板」一步；Dockerfile 增加 `npm run build`；另外补上 hash 资产长缓存与安全响应头（含按文档内联脚本 hash 生成的 CSP，见 §6.5） | 文档与实现一致：`npm test` 297、`npx playwright test` 47、`npm run test:e2e` 2、三份 tsconfig 全清；真实 hub 验收 `npm run check:panel` **直接加载 hub 自己服务的面板**（不再经任何 preview 代理）全流程通过、console error 为零 |
 
-P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物与旧静态文件并存，按开关切换），P8 再删。
+P4 之前不做视觉改动；P4–P7 期间旧面板保持可用（Vite 产物与旧静态文件并存），P8 已删——迁移期间它一直有测试守着，所以整个重写过程中 hub 始终可用，而不是拿一个能用的面板去换一个半成品。
 
 ### 6.1 P4 期间新发现的三个问题
 
@@ -577,6 +577,40 @@ JSX 里 `attr="a" + \`b\`` **不是拼接**：属性值在第二个引号处结�
 按 WCAG 公式算比值，明暗两套主题各跑一遍，顺带审计结构性可访问性（每个控件有无障碍名、landmark、标题层级不跳级、图标要么 `aria-hidden` 要么有名字）。
 第一次跑就抓到 `--ink-faint` 在浅色下只有 3.65:1（12px 文本要求 4.5:1），于是改的是 token 而不是阈值。
 
+### 6.5 P8：收尾时的四个决定
+
+**D1 · 不加 SPA fallback。** 计划 §3.2 写的是"改指向 `web/dist` 并加 fallback"，做的时候发现前提不成立：
+面板是单页且**没有客户端路由**，`?session=` 与 `?token=` 都是查询参数，所以"路径不认识"本来就该是 404。
+加一个"任何路径都回 `index.html`"的 fallback 只会把打错的资源路径变成一份 200 的 HTML——而那正是
+"脚本没加载"最难查的形状。真的加了路由再补，也不迟。
+
+**D2 · 未构建时回 503，而不是 404。** 从 git clone 下来直接 `npm start` 是真实会发生的事，此时
+`web/dist` 不存在。原来的行为是一个毫无线索的 404；现在是一个 503，正文里写着 `npm install && npm run build`。
+这不是错误处理，是可诊断性：hub 启动得好好的、却对自己的首页回 404，是运维分不清"部署坏了"还是"URL 写错了"的形状。
+
+**D3 · 缺 `Origin` 的 upgrade 继续放行，并且把理由写进代码。** 计划写的是"补齐 Origin 缺失的分支"，
+语气默认那个分支应该拒绝。实际上**缺 Origin ≠ Origin 不对**：浏览器一定会发，所以缺失只可能是非浏览器客户端
+（`wscat`、脚本、别的运维工具），而那种客户端要么已经持有面板 token、要么本来就能直接调 HTTP API——
+拒绝它只是把这份协议里"或任何运维工具"那一半砍掉，换不来任何安全。真正值得点名的是 sandboxed frame，
+它发的是字面量 `null`，而 `new URL('null')` 抛错后 `originHost` 为 null，与 host 不等，**已经被拒绝**。
+结论写进了 `src/panel/api.ts` 的注释里，因为下一个人读到的应该是论证而不是一条沉默的分支。
+
+**D4 · CSP 的 hash 从文档里算，不写死在头里。** 面板有一个内联脚本（主题，必须在 bundle 之前跑，
+否则深色偏好每次刷新都闪白）。写死 hash 的 CSP 会在那个脚本改一个字之后静默失效——而"脚本被 CSP 挡了"
+在浏览器里表现为主题不生效，不是白屏，很容易被当成别的问题。所以 `panelHeaders()` 每次响应读一遍
+`web/dist/index.html`，算出内联脚本的 sha256 放进 `script-src`。代价是每个文档请求多一次读文件（本地磁盘、
+几 KB、`no-cache` 本来就不缓存），换来的是策略与文档**不可能**不一致。
+`style-src` 保留 `'unsafe-inline'`，理由写在同一处：Radix 用 React 写 `style` 属性定位浮层，
+去掉它每个菜单和对话框都会跑到左上角。
+
+顺带把 hash 资产的缓存补上了（计划 §3.2 里的一条）：`index-<hash>.js` 一年 immutable，文档本身 no-cache。
+这在这里不是优化问题，是 230 KB gzip 的面板每次刷新都重下的问题。
+
+**证据**：`npm test` 297、`npx playwright test` 47、`npm run test:e2e` 2、三份 tsconfig 全清；
+`npm run check:panel` 现在**直接指向 hub 自己服务出来的面板**（不再有 preview 代理夹在中间），
+建会话 → 启动 → 发消息 → 审批 → 工具卡 → 刷新重放全流程通过，`{events:14, gaps:0, duplicates:0, protocolErrors:0}`，
+console error 为零——CSP 是否挡住了什么，这一条就是证据。
+
 ### 6.3 P5 期间新发现的三个问题
 
 **N5 · `tool_results` 的条目不是文档写的 Result object，而 P4 的移植把这件事忘了。**
@@ -611,7 +645,7 @@ P4 把 `state.js`/`api.js` 移植成了 TypeScript，却**没有移植 `render.j
 | **引入构建步骤** | 打破"改完刷新即可"与"无构建部署" | `vite dev` 的 HMR 反而更快；生产走多阶段构建 |
 | **依赖从 1 个变成几十个** | 供应链面、`npm ci` 变慢 | 运行时依赖仍只有 `ws`；前端依赖全是构建期产物；锁文件 + CI 审计 |
 | **Node floor 提升到 22.18** | 放弃 Node 20（2026-04-30 已 EOL）；本机与 CI 都需要 ≥22.18 | 已接受。这是 P1 实测后唯一自洽的选择：见 §9。缓解是 CI 矩阵仍测 floor 本身（`22.18`）而非只测最新版 |
-| **`test/e2e/panel.test.js` 会失效** | 它断言 `#timeline article.card`、`section.run-group`、`#panel-badge`、`#theme-toggle`、Approve 按钮文本 | ⏸ **没有按计划在 P4 失效**：旧面板这一阶段一个字节都没改（新面板走 `app.html` 与 `preview` 代理，两者互不干扰），所以它仍然全绿，`npm run test:e2e` 3/3。真正删除它的时机是 P8 删 `web/js` 时——**比计划更好，而不是更差**：迁移期间旧面板继续可用且有测试守着 |
+| **`test/e2e/panel.test.js` 会失效** | 它断言 `#timeline article.card`、`section.run-group`、`#panel-badge`、`#theme-toggle`、Approve 按钮文本 | ✅ **已随 P8 删除**（连同只服务于它的 CDP helper `test/helpers/browser.js`）。它没有按计划在 P4 失效，因为旧面板在 P4–P7 期间一个字节都没改——比计划更好：迁移期间旧面板继续可用且有测试守着 |
 | **`panel-assets.test.js` 的安全契约** | markdown 渲染看似与"禁止写 HTML"冲突 | `react-markdown` 不经 `innerHTML`；契约按 §2.4 重写并保留语义 |
 | **重写期间双份前端** | 维护成本 | 时间盒；旧面板冻结，只修安全级 bug |
 | **P0 加固与重构并行** | 两处改动互相冲突 | P0 先合入并单独发布；P3 的 TS 化以加固后的代码为基线 |

@@ -160,7 +160,7 @@ test('a decision the hub never answers leaves a usable button (D18)', async ({ p
 test('the confirmation mode belongs to one session (D15)', async ({ page }) => {
     await page.request.post(`${STUB}/__stub/reset`);
     await setSessions(page, ['first', 'second']);
-    await page.goto('/app.html');
+    await page.goto('/');
     await expect(page.getByText('connected', { exact: true })).toBeVisible();
 
     await page.getByTestId('session-row').filter({ hasText: 'first' }).click();
@@ -241,7 +241,7 @@ test('the drawer shows one pane at a time, and only while it is open (A3)', asyn
 test('the palette reaches everything the buttons do, from the keyboard', async ({ page }) => {
     await page.request.post(`${STUB}/__stub/reset`);
     await setSessions(page, ['alpha', 'beta']);
-    await page.goto('/app.html');
+    await page.goto('/');
     await expect(page.getByText('connected', { exact: true })).toBeVisible();
     await page.getByTestId('session-row').filter({ hasText: 'alpha' }).click();
 
@@ -274,7 +274,7 @@ test('the palette toggles technical details without a mouse', async ({ page }) =
 test('a snapshot that arrives after a session switch is discarded (D25)', async ({ page }) => {
     await page.request.post(`${STUB}/__stub/reset`);
     await setSessions(page, ['first', 'second']);
-    await page.goto('/app.html');
+    await page.goto('/');
     await expect(page.getByText('connected', { exact: true })).toBeVisible();
 
     // Make the fetch slow enough to switch sessions while it is in flight.

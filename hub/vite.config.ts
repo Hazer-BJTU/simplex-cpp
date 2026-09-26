@@ -6,11 +6,10 @@
  * file server reads that directory, so the two concerns meet in one place and
  * nowhere else.
  *
- * `app.html` is the entry today rather than `index.html`, because
- * `web/index.html` is still the panel being replaced. The old file and the new
- * app coexist until the new one is complete, which keeps the hub usable
- * throughout the rewrite instead of trading a working panel for a half-built
- * one. The rename happens when the transcript lands.
+ * `web/index.html` is the entry, and Vite's default input picks it up: the
+ * panel is one page, so there is nothing to name explicitly. The old
+ * build-free panel that `app.html` existed to sit beside is gone, which is why
+ * the explicit input went with it.
  */
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -49,13 +48,6 @@ export default defineConfig({
     build: {
         outDir: resolve(here, 'web', 'dist'),
         emptyOutDir: true,
-        // Without this Vite would treat `web/index.html` — still the panel being
-        // replaced — as the entry, and the build would quietly bundle the old
-        // panel into `dist`. Naming the entry explicitly is what keeps "which
-        // panel did that build?" from being a question.
-        rollupOptions: {
-            input: resolve(here, 'web', 'app.html'),
-        },
         // The panel is served from the hub's own origin, so asset URLs must be
         // absolute rather than relative to the entry document.
         sourcemap: true,

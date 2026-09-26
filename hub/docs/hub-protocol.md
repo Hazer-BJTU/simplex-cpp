@@ -14,9 +14,15 @@ the worker side is described in [worker-adapter.md](worker-adapter.md).
 
 | Surface | Path | Notes |
 | --- | --- | --- |
+| The panel | `GET /` | the built browser client, served from `web/dist` |
 | Metadata | `GET /api/meta` | protocol version, capabilities, provider profiles |
 | JSON API | `/api/...` | management and read-only queries |
 | Panel socket | `GET /panel/ws` (WebSocket) | live events, prompts, and commands |
+
+The panel is one page with no client-side routing, so every path under `/` that
+is not `/api` or `/panel/ws` is a static file request and nothing needs a
+fallback. Anything else — a wrong path, a missing asset — is a `404`, and a hub
+whose panel has not been built answers `503` with the command that builds it.
 
 Every panel WebSocket message carries `"v": 1`. The hub ignores unknown message
 types and preserves unknown fields, so a newer panel may talk to an older hub and

@@ -820,6 +820,15 @@ export function createPanelApi({
             // Cross-site WebSocket hijacking: a browser sends Origin on an
             // upgrade, and a page the operator visits must not be able to drive
             // the hub just because it can reach loopback.
+            //
+            // A *missing* Origin is not the same as a wrong one, and it is
+            // deliberately allowed: every browser sends one, so its absence
+            // means a non-browser client — `wscat`, a script, another tool —
+            // which must already hold the panel token and can reach the HTTP
+            // API directly anyway. Rejecting it would break the "or any operator
+            // tool" half of this protocol to defend against a caller that has
+            // already been let in. A sandboxed frame is the case worth naming,
+            // and it sends the literal `null`, which fails the comparison below.
             const origin = req.headers.origin;
             if (typeof origin === 'string' && origin.length > 0) {
                 let originHost: string | null = null;

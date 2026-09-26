@@ -1,32 +1,28 @@
 /**
  * @file panel asset integrity.
  *
- * Two panels live here during the rewrite. `web/js` and `web/css` have no build
- * step and are served as-is, so nothing compiles them; `web/src` is TypeScript
- * that Vite bundles, so the compiler catches more of it but the bundle is what
- * actually runs. These checks cover the gap in both directions, and they run on
- * every Node version in the matrix:
+ * The panel is TypeScript that Vite bundles, so most of it is checked by the
+ * compiler and by the browser suite. These four checks cover what neither does:
  *
- *   - every local asset index.html references exists,
- *   - every legacy panel module parses as an ES module,
- *   - every relative import in the legacy panel resolves to a file that exists,
+ *   - the entry document references only files that exist,
+ *   - every relative import in the panel's own sources resolves,
  *   - both theme token sets are still declared,
  *   - nothing writes markup as HTML, because model and tool output is untrusted,
- *   - and the markdown renderer does not re-enable inline HTML.
+ *     and the markdown renderer has not re-enabled inline HTML.
  *
- * None of this proves the panel works. It proves the files it needs are there
- * and are syntactically loadable, which is the part a browser test would
- * otherwise be the only witness to.
+ * There used to be a second, build-free panel here, and half of this file was
+ * about it: its modules were checked with `node --check` because nothing else
+ * compiled them. That panel is gone (P8), and so are those checks — a test that
+ * verifies a deleted thing is worse than no test, because it reads as coverage.
  */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { hubRoot } from '../src/config.ts';
 
 const webRoot = join(hubRoot, 'web');
-const jsRoot = join(webRoot, 'js');
+const sourceRoot = join(webRoot, 'src');
 
 /**
  * Directories the integrity checks skip.
@@ -122,30 +118,16 @@ describe('panel assets', () => {
             const path = join(webRoot, reference.replace(/^\//, '').split('?')[0]);
             assert.ok(existsSync(path), `index.html references a missing asset: ${reference}`);
         }
-        // The modules are reached through main.js; assert the entry point is
-        // one of the referenced files rather than trusting the loop above.
-        assert.ok(references.some((reference) => reference.includes('js/main.js')),
-            'index.html no longer loads js/main.js');
+        assert.ok(references.some((reference) => reference.includes('src/main.tsx')),
+            'index.html no longer loads the panel entry point');
     });
 
-    it('parses every panel module as an ES module', () => {
-        const modules = readdirSync(jsRoot).filter((name) => name.endsWith('.js'));
-        assert.ok(modules.length >= 4, `expected several panel modules, found ${modules.length}`);
-        for (const name of modules) {
-            const path = join(jsRoot, name);
-            const result = spawnSync(
-                process.execPath,
-                ['--input-type=module', '--check'],
-                { input: readFileSync(path, 'utf8'), encoding: 'utf8' },
-            );
-            assert.equal(result.status, 0,
-                `${name} is not a loadable ES module: ${result.stderr?.trim()}`);
-        }
-    });
-
-    it('resolves every relative import to a file that exists', () => {
+    it('resolves every relative import in the panel to a file that exists', () => {
+        // The bundler would fail on a missing import, but this runs in the unit
+        // suite, on every Node in the matrix, without a build — so a broken
+        // specifier is caught before anything is installed or bundled.
         let checked = 0;
-        for (const path of walk(jsRoot).filter((file) => file.endsWith('.js'))) {
+        for (const path of walk(sourceRoot).filter((file) => /\.tsx?$/.test(file))) {
             for (const specifier of importSpecifiers(readFileSync(path, 'utf8'))) {
                 if (!specifier.startsWith('.')) continue;
                 checked += 1;
@@ -154,18 +136,20 @@ describe('panel assets', () => {
                     `${path.slice(hubRoot.length + 1)} imports a missing module: ${specifier}`);
             }
         }
-        assert.ok(checked > 0, 'no relative imports found; the panel would not be wired up');
+        assert.ok(checked > 20, `expected the panel to have imports, found ${checked}`);
     });
 
     it('keeps both theme token sets', () => {
-        const css = readFileSync(join(webRoot, 'css', 'app.css'), 'utf8');
+        const css = readFileSync(join(sourceRoot, 'styles', 'app.css'), 'utf8');
         assert.match(css, /:root\s*\{/, 'the light token set is gone');
         assert.match(css, /\[data-theme="dark"\]\s*\{/, 'the dark token set is gone');
-        // The toggle drives this attribute; a panel that stopped setting it
-        // would still pass the two matches above.
-        const panel = walk(jsRoot).map((file) => readFileSync(file, 'utf8')).join('\n');
-        assert.match(panel, /dataset\.theme|setAttribute\(\s*['"]data-theme['"]/,
-            'nothing sets data-theme, so the dark theme is unreachable');
+        // The two sets have to declare the same names, or a token that exists in
+        // one theme and not the other renders as an invalid value in the other.
+        const names = (block) => new Set([...block.matchAll(/(--[a-z-]+):/g)].map((m) => m[1]));
+        const light = names(css.slice(css.indexOf(':root {'), css.indexOf('[data-theme="dark"]')));
+        const dark = names(css.slice(css.indexOf('[data-theme="dark"]')));
+        const missing = [...light].filter((name) => !dark.has(name));
+        assert.deepEqual(missing, [], 'a token is declared for light and not for dark');
     });
 
     it('never writes panel markup as HTML', () => {
@@ -191,8 +175,7 @@ describe('panel assets', () => {
         // a one-line change that would turn every `<img onerror=…>` a model
         // emits into a real element, so it is a change that has to be argued
         // for rather than made by accident.
-        const newPanel = join(webRoot, 'src');
-        const offenders = walk(newPanel)
+        const offenders = walk(sourceRoot)
             .filter((path) => /rehype-raw|rehypeRaw/.test(stripComments(readFileSync(path, 'utf8'))))
             .map((path) => path.slice(hubRoot.length + 1));
         assert.deepEqual(offenders, [],

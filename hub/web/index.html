@@ -1,138 +1,37 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="light" data-theme-preference="system">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
     <title>simplex hub panel</title>
-    <link rel="stylesheet" href="/css/app.css">
-    <script type="module" src="/js/main.js"></script>
+    <script>
+        /*
+         * The theme, applied before the bundle loads.
+         *
+         * Without this the panel paints its light background for one frame on
+         * every reload for an operator who chose dark — the flash is the whole
+         * reason this is inline rather than a module.
+         *
+         * It duplicates two literals from `src/ui/theme.ts` (the storage key
+         * and the attribute names) and nothing else: the resolution rule below
+         * is three lines precisely so that "which copy is right?" is not a
+         * question worth asking. `panel-theme.test.js` asserts the two agree.
+         */
+        try {
+            var stored = localStorage.getItem('simplex.panel.theme');
+            var preference = stored === 'light' || stored === 'dark' ? stored : 'system';
+            var dark = preference === 'dark' || (preference === 'system'
+                && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-theme-preference', preference);
+        } catch (error) {
+            document.documentElement.setAttribute('data-theme', 'light');
+        }
+    </script>
 </head>
 <body>
-    <div class="app" id="app">
-        <!-- Left: hub + sessions -->
-        <aside class="sidebar" id="sidebar" aria-label="Sessions">
-            <header class="sidebar-head">
-                <div class="brand">
-                    <span class="brand-name" id="hub-name">simplex hub</span>
-                    <span class="brand-sub" id="hub-version"></span>
-                </div>
-                <div class="head-right">
-                    <span class="badge badge-muted" id="panel-badge" title="panel socket state">offline</span>
-                    <button type="button" class="btn btn-ghost btn-sm" id="theme-toggle"
-                            aria-label="Toggle dark theme">dark</button>
-                </div>
-            </header>
-            <div class="sidebar-actions">
-                <button type="button" class="btn btn-primary" id="new-session">New session</button>
-                <button type="button" class="btn btn-ghost btn-sm" id="refresh-sessions"
-                        aria-label="Refresh session list">refresh</button>
-            </div>
-            <div class="session-list" id="session-list"></div>
-            <footer class="sidebar-foot footnote">
-                The hub has <strong>no delivery acknowledgement</strong>: <em>sent</em> is not
-                <em>executed</em>. A payload whose outcome is unknown must be checked before
-                retrying side-effecting work.
-            </footer>
-        </aside>
-
-        <!-- Center: one session -->
-        <main class="center" id="center">
-            <header class="center-head">
-                <div class="head-main">
-                    <h1 class="session-title" id="session-title">no session selected</h1>
-                    <div class="meta-line" id="session-meta"></div>
-                </div>
-                <div class="actions" id="session-actions">
-                    <button type="button" class="btn btn-sm" id="act-start">Start</button>
-                    <button type="button" class="btn btn-sm" id="act-stop">Stop</button>
-                    <button type="button" class="btn btn-sm" id="act-restart">Restart</button>
-                    <button type="button" class="btn btn-sm btn-danger-strong" id="act-force-kill"
-                            aria-label="Force kill the worker process">Force kill</button>
-                    <button type="button" class="btn btn-sm" id="act-status">Status</button>
-                    <button type="button" class="btn btn-sm" id="act-options">Options</button>
-                    <button type="button" class="btn btn-sm" id="act-cancel">Cancel</button>
-                    <button type="button" class="btn btn-sm" id="act-shutdown">Shutdown</button>
-                    <button type="button" class="btn btn-sm btn-ghost" id="act-delete"
-                            aria-label="Delete this session">Delete</button>
-                    <button type="button" class="btn btn-sm btn-ghost" id="inspector-toggle"
-                            aria-label="Toggle inspector" aria-expanded="true">Inspector</button>
-                </div>
-            </header>
-            <div class="confirm-banner" id="confirm-banner" hidden></div>
-            <nav class="tabs" role="tablist" aria-label="Transcript view">
-                <button type="button" class="tab active" id="tab-chat" role="tab" aria-selected="true">Chat</button>
-                <button type="button" class="tab" id="tab-raw" role="tab" aria-selected="false">Raw events</button>
-            </nav>
-            <section class="pane" id="pane-chat" role="tabpanel" aria-label="Chat transcript">
-                <div class="timeline" id="timeline"></div>
-            </section>
-            <section class="pane" id="pane-raw" role="tabpanel" aria-label="Raw event envelopes" hidden>
-                <div class="raw-list" id="raw-list"></div>
-            </section>
-            <section class="composer" aria-label="Composer">
-                <div class="part-chips" id="part-chips"></div>
-                <textarea id="composer-text" rows="3" aria-label="Message"
-                          placeholder="Message the worker…  (Enter sends, Shift+Enter newline)"></textarea>
-                <div class="composer-row">
-                    <button type="button" class="btn btn-primary" id="send">Send</button>
-                    <button type="button" class="btn" id="continue">Continue</button>
-                    <label class="inline-field">image URL
-                        <input type="text" id="image-url" placeholder="https://…" aria-label="Image URL">
-                    </label>
-                    <button type="button" class="btn btn-sm" id="add-image">Add ref</button>
-                    <label class="inline-field">confirm
-                        <select id="confirm-mode" aria-label="Confirmation mode">
-                            <option value="ask">ask</option>
-                            <option value="approve">approve</option>
-                            <option value="deny">deny</option>
-                        </select>
-                    </label>
-                    <span class="composer-hint" id="composer-hint"></span>
-                </div>
-            </section>
-        </main>
-
-        <!-- Right: inspector -->
-        <aside class="inspector" id="inspector" aria-label="Inspector">
-            <header class="inspector-head">
-                <nav class="inspector-tabs" role="tablist" aria-label="Inspector tabs">
-                    <button type="button" class="tab active" data-itab="status" role="tab" aria-selected="true">Status</button>
-                    <button type="button" class="tab" data-itab="options" role="tab" aria-selected="false">Options</button>
-                    <button type="button" class="tab" data-itab="process" role="tab" aria-selected="false">Process</button>
-                    <button type="button" class="tab" data-itab="logs" role="tab" aria-selected="false">Logs</button>
-                    <button type="button" class="tab" data-itab="snapshot" role="tab" aria-selected="false">Snapshot</button>
-                </nav>
-            </header>
-            <div class="inspector-body" id="inspector-body">
-                <section class="ipane" data-ipane="status" id="ipane-status"></section>
-                <section class="ipane" data-ipane="options" id="ipane-options" hidden></section>
-                <section class="ipane" data-ipane="process" id="ipane-process" hidden></section>
-                <section class="ipane" data-ipane="logs" id="ipane-logs" hidden></section>
-                <section class="ipane" data-ipane="snapshot" id="ipane-snapshot" hidden></section>
-            </div>
-        </aside>
-    </div>
-
-    <div class="modal-root" id="modal-root" hidden>
-        <div class="modal-backdrop"></div>
-        <div class="modal-stack" id="modal-stack" role="presentation"></div>
-    </div>
-
-    <div class="toast-root" id="toast-root" aria-live="polite" aria-label="Notifications"></div>
-
-    <div class="overlay" id="token-overlay" hidden>
-        <form class="overlay-card" id="token-form">
-            <h2>token required</h2>
-            <p>This hub requires a panel token. It is stored only in this browser's
-                <code>localStorage</code> and sent as a bearer token; it is never displayed.</p>
-            <label class="field">Panel token
-                <input type="password" id="token-input" autocomplete="off" spellcheck="false">
-            </label>
-            <p class="overlay-error" id="token-error" role="alert"></p>
-            <div class="overlay-actions">
-                <button type="submit" class="btn btn-primary" id="token-submit">Connect</button>
-            </div>
-        </form>
-    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

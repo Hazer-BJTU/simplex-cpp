@@ -164,7 +164,7 @@ export interface HttpServerOptions {
 export function createHttpServer({ config, log, hubRoot }: HttpServerOptions): HubHttpServer {
     const router = createRouter();
     const upgradeHandlers: UpgradeHandler[] = [];
-    const staticRoot = join(hubRoot, 'web');
+    const staticRoot = join(hubRoot, 'web', 'dist');
 
     const server = createServer((req, res) => {
         // Never `void` a request handler: a rejection that escapes it would end

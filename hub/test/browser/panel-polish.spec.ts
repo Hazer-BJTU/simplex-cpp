@@ -60,7 +60,7 @@ test.describe('theme', () => {
         // that appears when the script is dropped in favour of doing it in React.
         await page.route('**/assets/*.js', (route) => route.abort());
         await page.addInitScript(() => localStorage.setItem('simplex.panel.theme', 'dark'));
-        await page.goto('/app.html');
+        await page.goto('/');
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
         await expect(page.locator('html')).toHaveAttribute('data-theme-preference', 'dark');
     });

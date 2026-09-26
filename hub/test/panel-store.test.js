@@ -7,8 +7,10 @@
  * browser because the store is the *vanilla* Zustand store: no React, no DOM,
  * so a rule about replay merging can be checked in milliseconds.
  *
- * Every test here fails against `web/js/state.js`'s semantics, which is what
- * makes it a regression test rather than a description.
+ * Every test here was written against the behaviour of the panel it replaced,
+ * and fails against it — which is what makes these regression tests rather than
+ * descriptions. That panel is gone (P8); the behaviour it had is not, and these
+ * are now the only record of what was wrong with it that is executable.
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';

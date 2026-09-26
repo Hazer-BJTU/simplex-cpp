@@ -18,7 +18,7 @@ export const STUB = `http://127.0.0.1:${process.env.STUB_HUB_PORT ?? 4180}`;
 /** Reset the stub, then load the panel and wait for it to connect. */
 export async function open(page: Page, query = ''): Promise<void> {
     await page.request.post(`${STUB}/__stub/reset`);
-    await page.goto(`/app.html${query}`);
+    await page.goto(`/${query}`);
     await expect(page.getByText('connected', { exact: true })).toBeVisible();
 }
 

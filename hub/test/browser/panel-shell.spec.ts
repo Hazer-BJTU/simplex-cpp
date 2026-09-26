@@ -81,7 +81,7 @@ test('a reconnecting panel keeps the transcript it already had (A2)', async ({ p
 test('an approval for a session the panel is not watching still arrives (A1)', async ({ page }) => {
     await page.request.post(`${STUB}/__stub/reset`);
     await setSessions(page, ['watched', 'other']);
-    await page.goto('/app.html');
+    await page.goto('/');
     await expect(page.getByText('connected', { exact: true })).toBeVisible();
 
     await page.getByTestId('session-row').filter({ hasText: 'watched' }).click();

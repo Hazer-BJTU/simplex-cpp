@@ -2,35 +2,38 @@
  * @file the acceptance check for the panel: a real hub, a real worker, a browser.
  *
  * `panel-shell.spec.ts` runs in CI against `stub-hub.mjs`, which is fast and
- * scriptable but is not the hub. This is the other half: the built panel served
- * through `vite preview`, proxied to a real hub running the real
- * `simplex_worker` against the offline mock provider — create a session, start
- * it, send a message, answer the tool approval, and read the transcript the
- * worker produced.
+ * scriptable but is not the hub. This is the other half: a real hub serving the
+ * panel it will actually ship, running the real `simplex_worker` against the
+ * offline mock provider — create a session, start it, send a message, answer
+ * the tool approval, and read the transcript the worker produced.
+ *
+ * The browser talks to the hub's own origin, with no build server in between.
+ * That is the point of doing it this way: the panel is loaded from `web/dist`
+ * over the hub's static file server, over the hub's socket, with the hub's own
+ * `Origin`/`Host` check in the path. A preview server would test the bundle and
+ * skip the deployment.
  *
  * It is a script rather than a Playwright test because it needs the C++ build
- * and two servers already running, and a test that skips itself when the build
- * is missing is a test nobody runs. Run it deliberately:
+ * and a running hub, and a test that skips itself when the build is missing is
+ * a test nobody runs. Run it deliberately:
  *
  * ```sh
- * # 1. the hub, with the mock provider
- * node bin/simplex-hub.ts --mock --listen 127.0.0.1:8899 --data-dir /tmp/p4-hub
- * # 2. the built panel, proxied to it
- * SIMPLEX_HUB_ORIGIN=http://127.0.0.1:8899 npx vite preview --port 4174 --strictPort
- * # 3. the check
+ * npm run build
+ * node bin/simplex-hub.ts --mock --listen 127.0.0.1:8899 --data-dir /tmp/p8-hub &
  * npm run check:panel
  * ```
  *
  * Everything it prints is evidence: the transcript as rendered, the panel's own
- * counters against the hub's, and any console error. The hub origin, panel URL
- * and screenshot directory come from the environment, so it can be pointed
+ * counters against the hub's, and any console error. The hub origin and
+ * screenshot directory come from the environment, so it can be pointed
  * somewhere else.
  */
 import { chromium } from '@playwright/test';
 
 const HUB = process.env.SIMPLEX_HUB_ORIGIN ?? 'http://127.0.0.1:8899';
-const PANEL = process.env.SIMPLEX_PANEL_URL ?? 'http://127.0.0.1:4174/app.html';
-const SESSION = `p4-${Date.now().toString(36)}`;
+/** The panel is the hub's own front page; override only to check a proxy. */
+const PANEL = process.env.SIMPLEX_PANEL_URL ?? `${HUB}/`;
+const SESSION = `p8-${Date.now().toString(36)}`;
 
 /** Screenshots land here; override to keep a record of a particular run. */
 const SHOTS = process.env.SIMPLEX_SHOT_DIR ?? '/tmp';
@@ -85,7 +88,7 @@ console.log(`approval banner: ${(await banner.innerText()).split('\n').slice(0, 
 const dialog = page.getByRole('dialog');
 await dialog.waitFor({ timeout: 10_000 });
 console.log(`approval dialog: ${(await dialog.innerText()).split('\n').slice(0, 3).join(' | ')}`);
-await page.screenshot({ path: `${SHOTS}/p6-approval.png` });
+await page.screenshot({ path: `${SHOTS}/p8-approval.png` });
 
 await dialog.getByRole('button', { name: 'Approve' }).click();
 await page.getByTestId('approval-banner').waitFor({ state: 'detached', timeout: 30_000 });
@@ -99,7 +102,7 @@ console.log('--- transcript as rendered ---');
 console.log(await page.getByTestId('transcript').innerText());
 console.log('--- panel counters ---');
 console.log(await page.getByTestId('transcript-stats').innerText());
-await page.screenshot({ path: `${SHOTS}/p4-real-hub.png` });
+await page.screenshot({ path: `${SHOTS}/p8-real-hub.png` });
 
 // A reload is the harshest test of the replay path: a fresh page, an empty
 // store, and a cursor of zero against a hub that already has history.
