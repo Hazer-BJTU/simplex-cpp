@@ -217,6 +217,14 @@ test.describe('a narrow screen', () => {
         await page.getByRole('button', { name: 'Send' }).click();
         await expect.poll(async () => (await received(page))
             .some((message) => message.type === 'input')).toBe(true);
+
+        await emit(page, 'run_started', {});
+        const continueBox = await page.getByRole('button', { name: 'Continue' }).boundingBox();
+        const sendBox = await page.getByRole('button', { name: 'Send' }).boundingBox();
+        expect(continueBox).not.toBeNull();
+        expect(sendBox).not.toBeNull();
+        expect(Math.abs((continueBox?.y ?? 0) - (sendBox?.y ?? 0)))
+            .toBeLessThan(4);
     });
 
     test('closes the drawer with Escape', async ({ page }) => {

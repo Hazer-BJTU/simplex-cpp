@@ -151,6 +151,7 @@ export function createPanelSocket(options: PanelSocketOptions = {}): PanelSocket
             return;
         }
         intentionalClose = false;
+        sawWelcome = false;
         report('connecting');
         let created: WebSocket;
         try {
@@ -163,10 +164,12 @@ export function createPanelSocket(options: PanelSocketOptions = {}): PanelSocket
         }
         socket = created;
         created.onopen = () => {
+            if (socket !== created) return;
             attempt = 0;
             report('open');
         };
         created.onmessage = (event: MessageEvent) => {
+            if (socket !== created) return;
             const raw = typeof event.data === 'string' ? event.data : '';
             const check = checkHubEnvelope(raw);
             if (check.kind === 'unknown_type') {
@@ -187,6 +190,9 @@ export function createPanelSocket(options: PanelSocketOptions = {}): PanelSocket
             // The close handler owns reconnection; browsers give no detail here.
         };
         created.onclose = () => {
+            // Closing the old socket during a token change must not clear the
+            // replacement or schedule a second reconnect.
+            if (socket !== created) return;
             socket = null;
             if (intentionalClose) {
                 report('closed');

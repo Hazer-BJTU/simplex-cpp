@@ -450,6 +450,13 @@ function handle(ws, message) {
             return;
         }
         case 'input': {
+            if (settings.refuseInput) {
+                send(ws, {
+                    type: 'error', error: 'input_not_sent', session: message.session,
+                    message: 'the stub refused the input', request: message,
+                });
+                return;
+            }
             const requestId = message.request_id ?? 'stub-request';
             send(ws, {
                 type: 'accepted', action: 'input', session: message.session, request_id: requestId,

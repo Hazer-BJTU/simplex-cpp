@@ -48,6 +48,59 @@ const EMPTY_ITEMS: readonly TranscriptItem[] = [];
 const EMPTY_PROMPTS: ReadonlyMap<string, ConfirmationPrompt> = new Map();
 
 /**
+ * Describe the last visible phase of an active run. The worker sends complete
+ * model responses rather than token chunks, so this is an activity cue, not a
+ * claim that text is streaming or that thinking and generation are separable.
+ */
+function activityLabel(items: readonly TranscriptItem[]): string {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        if (item?.kind !== 'event') continue;
+        switch (item.envelope.event) {
+            case 'input_admitted':
+                return 'Starting run';
+            case 'tool_calls':
+                return 'Running tools';
+            case 'model_response':
+                return 'Processing response';
+            case 'run_started':
+            case 'input_committed':
+            case 'tool_results':
+            case 'persisted':
+                return 'Waiting for model response';
+            default:
+                break;
+        }
+    }
+    return 'Working on this run';
+}
+
+/** A quiet, accessible activity cue at the end of the live conversation. */
+function RunActivity({ label }: { label: string }) {
+    return (
+        <div
+            data-testid="run-activity"
+            role="status"
+            aria-live="polite"
+            className="animate-enter flex w-fit items-center gap-3 rounded-xl border border-line
+                bg-sunken px-3 py-2 text-sm text-ink-muted"
+        >
+            <span aria-hidden="true" className="flex items-center gap-1">
+                <span className="activity-dot" />
+                <span className="activity-dot" />
+                <span className="activity-dot" />
+            </span>
+            <span>
+                <span className="block">{label}</span>
+                {label === 'Waiting for model response' && (
+                    <span className="block text-xs text-ink-faint">Reply appears when complete</span>
+                )}
+            </span>
+        </div>
+    );
+}
+
+/**
  * One line of the quiet protocol timeline.
  *
  * Rendering this at all is the "technical details" switch. The raw payload is
@@ -455,6 +508,10 @@ export function Transcript() {
                         )}
                     </section>
                 ))}
+
+                {view?.runActive && session?.connected && (
+                    <RunActivity label={activityLabel(items)} />
+                )}
             </div>
 
             {!following && (

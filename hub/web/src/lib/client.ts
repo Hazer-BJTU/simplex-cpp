@@ -362,7 +362,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 session: sessionId,
                 request_id: requestId,
                 operation,
-                content: [...parts],
+                ...(operation === 'continue' ? {} : { content: [...parts] }),
                 ...(options ? { options } : {}),
             });
             if (!sent) {

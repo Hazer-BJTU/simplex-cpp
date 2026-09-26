@@ -200,8 +200,8 @@ Two things to know before reading the result:
   endpoint rejects it, change it in the session's spec rather than in code.
 - **A real model is slower in a way the panel is honest about.** There is no
   token streaming anywhere in this path — the worker carries whole messages — so
-  the reply appears when it is finished. The footer says so rather than
-  animating a spinner that implies otherwise.
+  the reply appears when it is finished. The activity cue shows that the run is
+  waiting and explains that the reply appears when complete.
 
 ## Configuration
 

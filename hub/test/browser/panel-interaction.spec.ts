@@ -252,6 +252,61 @@ test('the composer keeps references as parts and clears on Escape (D12)', async 
     await expect(page.getByLabel('message')).toHaveValue('');
 });
 
+test('a refused input restores references as references', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.request.post(`${STUB}/__stub/settings`, { data: { refuseInput: true } });
+
+    await page.getByLabel('Attach a reference').click();
+    await page.getByLabel('external reference').fill('https://example.com/a.png');
+    await page.getByRole('button', { name: 'Attach', exact: true }).click();
+    await page.getByRole('textbox', { name: 'message' }).fill('look at this');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    await expect(page.getByRole('textbox', { name: 'message' })).toHaveValue('look at this');
+    await expect(page.getByRole('button', {
+        name: 'remove reference https://example.com/a.png',
+    })).toBeVisible();
+
+    await page.request.post(`${STUB}/__stub/settings`, { data: { refuseInput: false } });
+    await page.getByRole('button', { name: 'Send' }).click();
+    const received = await page.request.get(`${STUB}/__stub/received`);
+    const inputs = (await received.json()).received.filter(
+        (message: { type: string }) => message.type === 'input',
+    );
+    expect(inputs.at(-1).content).toEqual(inputs.at(-2).content);
+});
+
+test('Continue sends no content and preserves an unsent draft', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'run_started', {});
+
+    const continueButton = page.getByRole('button', { name: 'Continue' });
+    await expect(continueButton).toBeVisible();
+    await continueButton.click();
+    await page.getByRole('textbox', { name: 'message' }).fill('save this for later');
+    await continueButton.click();
+
+    await page.request.post(`${STUB}/__stub/settings`, { data: { refuseInput: true } });
+    await continueButton.click();
+    await expect(page.getByText('the stub refused the input')).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'message' }))
+        .toHaveValue('save this for later');
+
+    const received = await page.request.get(`${STUB}/__stub/received`);
+    const inputs = (await received.json()).received.filter(
+        (message: { type: string }) => message.type === 'input',
+    );
+    expect(inputs).toHaveLength(3);
+    for (const input of inputs) {
+        expect(input.operation).toBe('continue');
+        expect(input).not.toHaveProperty('content');
+    }
+    await expect(page.getByRole('textbox', { name: 'message' }))
+        .toHaveValue('save this for later');
+});
+
 test('the drawer shows one pane at a time, and only while it is open (A3)', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();

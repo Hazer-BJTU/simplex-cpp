@@ -17,6 +17,39 @@ import {
     toolResult,
 } from './harness.ts';
 
+test('shows an honest activity cue through a live run', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    const activity = page.getByTestId('run-activity');
+    await expect(activity).toHaveCount(0);
+
+    await emit(page, 'run_started', {});
+    await expect(activity).toContainText('Waiting for model response');
+    await expect(activity.locator('.activity-dot')).toHaveCount(3);
+
+    await emit(page, 'tool_calls', []);
+    await expect(activity).toContainText('Running tools');
+    await emit(page, 'tool_results', []);
+    await expect(activity).toContainText('Waiting for model response');
+    await emit(page, 'model_response', modelResponse('Done.'));
+    await expect(activity).toContainText('Processing response');
+    await emit(page, 'run_finished', { status: 'completed' });
+    await expect(activity).toHaveCount(0);
+});
+
+test('keeps the activity text and stops its motion when requested', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'run_started', {});
+    const activity = page.getByTestId('run-activity');
+    await expect(activity).toContainText('Waiting for model response');
+    const duration = await activity.locator('.activity-dot').first().evaluate(
+        (dot) => getComputedStyle(dot).animationDuration,
+    );
+    expect(Number.parseFloat(duration)).toBeLessThan(0.01);
+});
+
 test('renders a model response as markdown', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();

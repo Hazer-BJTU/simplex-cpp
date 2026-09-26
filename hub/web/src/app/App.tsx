@@ -27,11 +27,9 @@ import { SessionHeader } from './SessionHeader.tsx';
 import { SessionList } from './SessionList.tsx';
 import { StatusBar } from './StatusBar.tsx';
 import { Transcript } from './Transcript.tsx';
-import { usePanel } from '../state/usePanel.ts';
 import { TooltipProvider } from '../ui/overlays.tsx';
 
 export function App() {
-    const workerProtocol = usePanel((state) => state.hub?.worker_protocol ?? '');
     // The session list is a drawer below `md`. On a wide screen this state is
     // simply irrelevant: the sidebar is visible either way.
     const [sessionsOpen, setSessionsOpen] = useState(false);
@@ -72,23 +70,6 @@ export function App() {
                     </main>
                     <Inspector />
                 </div>
-                <footer
-                    className="flex items-center gap-2 border-t border-line bg-surface px-4 py-1
-                        text-xs text-ink-faint"
-                >
-                    <span className="shrink-0 font-mono">
-                        worker protocol {workerProtocol || 'unknown'}
-                    </span>
-                    {/* The honest limitation, where it is always visible rather
-                        than in a tooltip: there is no streaming here, and there
-                        cannot be one without a worker-protocol change. */}
-                    <span className="hidden truncate sm:inline">
-                        · a response appears when it is complete: the worker protocol carries whole
-                        messages, not token deltas
-                    </span>
-                    <span className="flex-1" />
-                    <span className="hidden shrink-0 md:inline">⌘K for commands</span>
-                </footer>
                 <CommandPalette />
             </div>
         </TooltipProvider>

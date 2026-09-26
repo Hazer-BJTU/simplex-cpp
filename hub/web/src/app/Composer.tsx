@@ -8,7 +8,7 @@
  * it to all of them (defect D15): `approve` means "approve every call that would
  * have asked", so the leak quietly disabled approvals session-wide.
  *
- * Here the mode belongs to a session, lives behind a `⚙` popover, and is shown
+ * Here the mode belongs to a session, lives in a compact settings popover, and is shown
  * as a permanent badge whenever it is not the default — because a setting that
  * turns approvals off should not be discoverable only by opening the thing that
  * sets it.
@@ -72,15 +72,6 @@ export function Composer() {
     const [refOpen, setRefOpen] = useState(false);
     const box = useRef<HTMLTextAreaElement>(null);
 
-    // The store's refunded draft. Keyed by `at` so two identical failures both
-    // restore the text, and cleared so a re-render does not restore it again.
-    useEffect(() => {
-        if (!failed || failed.sessionId !== selected) return;
-        setDraft(failed.parts.map((part) => part.raw).join('\n\n'));
-        clearFailedInput();
-        box.current?.focus();
-    }, [failed, selected, clearFailedInput]);
-
     // Switching sessions must not carry one session's draft, or its references,
     // into another.
     useEffect(() => {
@@ -88,6 +79,26 @@ export function Composer() {
         setReferences([]);
         setRefOpen(false);
     }, [selected]);
+
+    // Restore each refused part in its original form. A reference must remain
+    // an external_ref: turning its URL into message text silently changes the
+    // next request. This runs after the selection reset so a failed request
+    // for the newly selected session is not cleared by that reset.
+    useEffect(() => {
+        if (!failed || failed.sessionId !== selected) return;
+        if (failed.operation === 'continue') {
+            // A continuation has no content to refund. In particular, a
+            // rejected continuation must not erase a separate unsent draft.
+            clearFailedInput();
+            return;
+        }
+        setDraft(failed.parts.filter((part) => part.type === 'text')
+            .map((part) => part.raw).join('\n\n'));
+        setReferences(failed.parts.filter((part) => part.type === 'external_ref')
+            .map((part) => ({ kind: 'external_ref', raw: part.raw })));
+        clearFailedInput();
+        box.current?.focus();
+    }, [failed, selected, clearFailedInput]);
 
     // Grow with the content, up to a limit, then scroll. `height` is reset first
     // so the textarea can also shrink when the text does.
@@ -115,16 +126,21 @@ export function Composer() {
     }
 
     function send(operation: 'message' | 'continue' = 'message'): void {
-        if (!canSend) return;
+        if (operation === 'continue' ? !runActive : !canSend) return;
         // The mode travels with the payload. The worker freezes the policy per
         // run, so sending it every time is what makes a change take effect on
         // the next run rather than the next restart — and what keeps one
         // session's choice out of another's.
         const options: PayloadOptions = { confirmation: { mode } };
-        const sent = client.sendInput(sessionId, parts(), operation, options);
+        const sent = client.sendInput(
+            sessionId,
+            operation === 'continue' ? [] : parts(),
+            operation,
+            options,
+        );
         // Clear only when the frame actually left; otherwise the store has
         // already handed the text back and clearing here would lose it.
-        if (sent) {
+        if (sent && operation === 'message') {
             setDraft('');
             setReferences([]);
         }
@@ -132,92 +148,42 @@ export function Composer() {
 
     return (
         <form
-            className="border-t border-line bg-surface px-4 py-2"
+            className="shrink-0 border-t border-line bg-sunken px-3 py-3 sm:px-5"
             onSubmit={(event) => {
                 event.preventDefault();
                 send();
             }}
         >
-            {references.length > 0 && (
-                <ul className="mb-1 flex flex-wrap gap-1">
-                    {references.map((reference) => (
-                        <li
-                            key={reference.raw}
-                            className="flex items-center gap-1 rounded-full bg-subtle py-0.5 pl-2 pr-1
-                                text-xs text-ink-muted"
-                        >
-                            <span className="max-w-72 truncate font-mono">{reference.raw}</span>
-                            <button
-                                type="button"
-                                aria-label={`remove reference ${reference.raw}`}
-                                className="rounded-full p-0.5 hover:bg-line"
-                                onClick={() => setReferences((current) => (
-                                    current.filter((item) => item.raw !== reference.raw)
-                                ))}
+            <div className="mx-auto max-w-4xl overflow-hidden rounded-2xl border border-line-strong
+                bg-surface shadow-sm transition-colors focus-within:border-interactive">
+                {references.length > 0 && (
+                    <ul className="flex flex-wrap gap-1.5 px-4 pt-3">
+                        {references.map((reference) => (
+                            <li
+                                key={reference.raw}
+                                className="flex items-center gap-1 rounded-full border border-line
+                                    bg-subtle py-1 pl-2.5 pr-1 text-xs text-ink-muted"
                             >
-                                <Glyph name="close" size="sm" />
-                            </button>
-                        </li>
-                    ))}
-                </ul>
-            )}
-
-            <div className="flex items-end gap-2">
-                <Popover open={refOpen} onOpenChange={setRefOpen}>
-                    <PopoverTrigger asChild>
-                        <IconButton label="Attach a reference" disabled={!connected}>
-                            <Glyph name="attach" />
-                        </IconButton>
-                    </PopoverTrigger>
-                    <PopoverContent align="start" width="w-80">
-                        <form
-                            onSubmit={(event) => {
-                                event.preventDefault();
-                                const field = event.currentTarget.elements.namedItem('reference');
-                                if (!(field instanceof HTMLInputElement)) return;
-                                const value = field.value.trim();
-                                if (!value) return;
-                                // Attached as an external reference, never
-                                // fetched: the protocol says a reference is
-                                // data, and a panel that loaded it would turn
-                                // the operator's paste into a request they did
-                                // not make.
-                                setReferences((current) => (
-                                    current.some((item) => item.raw === value)
-                                        ? current
-                                        : [...current, { kind: 'external_ref', raw: value }]
-                                ));
-                                field.value = '';
-                                setRefOpen(false);
-                            }}
-                        >
-                            <label className="block text-xs font-medium text-ink-muted"
-                                htmlFor="composer-reference">
-                                external reference
-                            </label>
-                            <input
-                                id="composer-reference"
-                                name="reference"
-                                autoFocus
-                                placeholder="https://…"
-                                className="mt-1 w-full rounded border border-line-strong px-2 py-1
-                                    font-mono text-xs focus:border-line-strong focus:outline-none"
-                            />
-                            <p className="mt-1 text-xs text-ink-muted">
-                                Sent to the worker as an <code>external_ref</code> part. The panel
-                                never fetches it.
-                            </p>
-                            <div className="mt-2 flex justify-end">
-                                <Button type="submit" variant="primary">Attach</Button>
-                            </div>
-                        </form>
-                    </PopoverContent>
-                </Popover>
+                                <span className="max-w-72 truncate font-mono">{reference.raw}</span>
+                                <button
+                                    type="button"
+                                    aria-label={`remove reference ${reference.raw}`}
+                                    className="rounded-full p-0.5 hover:bg-line"
+                                    onClick={() => setReferences((current) => (
+                                        current.filter((item) => item.raw !== reference.raw)
+                                    ))}
+                                >
+                                    <Glyph name="close" size="sm" />
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
 
                 <textarea
                     ref={box}
                     value={draft}
-                    rows={1}
+                    rows={2}
                     aria-label="message"
                     onChange={(event) => setDraft(event.target.value)}
                     onKeyDown={(event) => {
@@ -231,88 +197,135 @@ export function Composer() {
                             setDraft('');
                         }
                     }}
-                    placeholder={connected
-                        ? 'Message the worker — Enter sends, Shift+Enter breaks the line'
-                        : 'No worker is attached to this session'}
-                    className="min-h-[2.25rem] flex-1 resize-none rounded border border-line-strong
-                        px-2 py-1.5 text-sm focus:border-line-strong focus:outline-none"
+                    placeholder={connected ? 'Message the worker…' : 'No worker is attached to this session'}
+                    className="block min-h-16 w-full resize-none bg-transparent px-4 pb-1 pt-3
+                        text-sm text-ink placeholder:text-ink-faint focus:outline-none"
                 />
 
-                {runActive && (
+                <div className="flex items-center gap-2 px-3 pb-3">
+                    <Popover open={refOpen} onOpenChange={setRefOpen}>
+                        <PopoverTrigger asChild>
+                            <IconButton label="Attach a reference" disabled={!connected}>
+                                <Glyph name="attach" />
+                            </IconButton>
+                        </PopoverTrigger>
+                        <PopoverContent align="start" width="w-80">
+                            <form
+                                onSubmit={(event) => {
+                                    event.preventDefault();
+                                    const field = event.currentTarget.elements.namedItem('reference');
+                                    if (!(field instanceof HTMLInputElement)) return;
+                                    const value = field.value.trim();
+                                    if (!value) return;
+                                    // A reference is sent as data, not fetched by the panel.
+                                    setReferences((current) => (
+                                        current.some((item) => item.raw === value)
+                                            ? current
+                                            : [...current, { kind: 'external_ref', raw: value }]
+                                    ));
+                                    field.value = '';
+                                    setRefOpen(false);
+                                }}
+                            >
+                                <label className="block text-xs font-medium text-ink-muted"
+                                    htmlFor="composer-reference">
+                                    external reference
+                                </label>
+                                <input
+                                    id="composer-reference"
+                                    name="reference"
+                                    autoFocus
+                                    placeholder="https://…"
+                                    className="mt-1 w-full rounded border border-line-strong px-2 py-1
+                                        font-mono text-xs focus:border-line-strong focus:outline-none"
+                                />
+                                <p className="mt-1 text-xs text-ink-muted">
+                                    Sent to the worker as an <code>external_ref</code> part. The panel
+                                    never fetches it.
+                                </p>
+                                <div className="mt-2 flex justify-end">
+                                    <Button type="submit" variant="primary">Attach</Button>
+                                </div>
+                            </form>
+                        </PopoverContent>
+                    </Popover>
+
+                    <Popover>
+                        <PopoverTrigger asChild>
+                            <button
+                                type="button"
+                                aria-label={`confirmation mode: ${mode}`}
+                                className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5
+                                    text-xs text-ink-muted hover:bg-subtle hover:text-ink"
+                                title="how the worker should answer tool confirmations for this session"
+                            >
+                                <Glyph name="options" size="sm" />
+                                <span className="hidden sm:inline">confirmation ·</span>
+                                <span>{mode}</span>
+                            </button>
+                        </PopoverTrigger>
+                        <PopoverContent align="start">
+                            <p className="text-xs font-medium text-ink">
+                                Confirmation mode for <span className="font-mono">{sessionId}</span>
+                            </p>
+                            <div className="mt-2 space-y-1">
+                                {(['ask', 'approve', 'deny'] as const).map((value) => (
+                                    <label
+                                        key={value}
+                                        className="flex cursor-pointer items-start gap-2 rounded p-1
+                                            hover:bg-sunken"
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="confirm-mode"
+                                            value={value}
+                                            checked={mode === value}
+                                            onChange={() => setConfirmMode(sessionId, value)}
+                                            className="mt-0.5 accent-interactive"
+                                        />
+                                        <span>
+                                            <span className="font-mono text-xs text-ink">{value}</span>
+                                            <span className="block text-xs text-ink-muted">
+                                                {MODES[value].detail}
+                                            </span>
+                                        </span>
+                                    </label>
+                                ))}
+                            </div>
+                            <p className="mt-2 border-t border-line pt-2 text-xs text-ink-muted">
+                                This choice applies to the next run for this session.
+                            </p>
+                        </PopoverContent>
+                    </Popover>
+
+                    {runActive && (
+                        <Button
+                            onClick={() => send('continue')}
+                            title="ask the worker to continue the run without a new message"
+                            className="ml-auto"
+                        >
+                            Continue
+                        </Button>
+                    )}
                     <Button
-                        onClick={() => send('continue')}
-                        title="ask the worker to continue the run without a new message"
+                        type="submit"
+                        variant="primary"
+                        size="md"
+                        disabled={!canSend}
+                        className={runActive ? '' : 'ml-auto'}
+                        icon={<Glyph name="send" />}
                     >
-                        Continue
+                        Send
                     </Button>
-                )}
-                <Button
-                    type="submit"
-                    variant="primary"
-                    size="md"
-                    disabled={!canSend}
-                    icon={<Glyph name="send" />}
-                >
-                    Send
-                </Button>
+                </div>
             </div>
 
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+            <div className="mx-auto mt-2 flex max-w-4xl flex-wrap items-center gap-x-3 gap-y-1
+                px-1 text-xs text-ink-muted">
                 {connectionState !== 'open' && (
                     <span className="text-warn">the panel is not connected</span>
                 )}
                 {!connected && <span>no worker attached</span>}
-                {runActive && <span className="text-info">a run is active</span>}
-
-                <Popover>
-                    <PopoverTrigger asChild>
-                        <button
-                            type="button"
-                            className="inline-flex items-center gap-1 rounded px-1 hover:bg-subtle"
-                            title="how the worker should answer tool confirmations for this session"
-                        >
-                            <Glyph name="options" size="sm" />
-                            confirmation
-                        </button>
-                    </PopoverTrigger>
-                    <PopoverContent align="start">
-                        <p className="text-xs font-medium text-ink">
-                            Confirmation mode for <span className="font-mono">{sessionId}</span>
-                        </p>
-                        <div className="mt-2 space-y-1">
-                            {(['ask', 'approve', 'deny'] as const).map((value) => (
-                                <label
-                                    key={value}
-                                    className="flex cursor-pointer items-start gap-2 rounded p-1
-                                        hover:bg-sunken"
-                                >
-                                    <input
-                                        type="radio"
-                                        name="confirm-mode"
-                                        value={value}
-                                        checked={mode === value}
-                                        onChange={() => setConfirmMode(sessionId, value)}
-                                        className="mt-0.5 accent-interactive"
-                                    />
-                                    <span>
-                                        <span className="font-mono text-xs text-ink">{value}</span>
-                                        <span className="block text-xs text-ink-muted">
-                                            {MODES[value].detail}
-                                        </span>
-                                    </span>
-                                </label>
-                            ))}
-                        </div>
-                        <p className="mt-2 border-t border-line pt-2 text-xs text-ink-muted">
-                            Sent with every message. The worker freezes the policy for a run before
-                            it starts, so a change applies to the next run. This is stored per
-                            session — the old panel kept one control for all of them.
-                        </p>
-                    </PopoverContent>
-                </Popover>
-
-                {/* A mode that turns approvals off is shown, not hidden behind
-                    the control that set it. */}
                 {mode !== 'ask' && (
                     <Badge tone={MODES[mode].tone} title={MODES[mode].detail}>
                         approvals: {MODES[mode].label}
@@ -320,7 +333,7 @@ export function Composer() {
                 )}
 
                 <span className="flex-1" />
-                <span>Enter sends · Shift+Enter breaks the line · Esc clears</span>
+                <span className="hidden sm:inline">Enter to send · Shift+Enter for a new line</span>
             </div>
         </form>
     );

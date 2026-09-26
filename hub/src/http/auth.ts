@@ -47,7 +47,13 @@ export function cookieValue(req: IncomingMessage | null | undefined, name: strin
         const separator = part.indexOf('=');
         if (separator === -1) continue;
         if (part.slice(0, separator).trim() === name) {
-            return decodeURIComponent(part.slice(separator + 1).trim());
+            try {
+                return decodeURIComponent(part.slice(separator + 1).trim());
+            } catch {
+                // A malformed cookie is an unusable credential, not a server
+                // error. Other credentials on the request may still be valid.
+                return '';
+            }
         }
     }
     return '';
