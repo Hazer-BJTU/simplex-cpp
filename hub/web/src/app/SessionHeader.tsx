@@ -1,140 +1,354 @@
 /**
- * @file the session header: which session this is, and how to drive its worker.
+ * @file the session header, in three layers.
  *
- * Not the redesigned header — that is a later stage. What is already different
- * is that the controls are *conditional*. The old panel computed one `disabled`
- * flag from "is a session selected" and applied it to all ten buttons, so Stop
- * was clickable with no process and Delete was clickable while one was running.
- * Here a control appears when it can do something, and says why when it cannot.
+ * The old header was ten peer buttons of the same size and weight, ordered as
+ * they happened to be written: three kinds of action — process lifecycle,
+ * control signals, and destructive operations — with no grouping, and a single
+ * `disabled = !session` flag on all of them. So Stop was clickable with no
+ * process, Delete was clickable while one was running, and `Force kill` was red
+ * while `Delete`, the one that actually removes data, was a ghost.
+ *
+ * The layers here are the design's:
+ *
+ *   primary    Start ⇄ Stop, one solid button, the state decides which;
+ *   common     Status, Options, approvals — icon buttons with tooltips;
+ *   overflow   Restart, Shutdown, Force kill, Delete — a menu, with the
+ *              destructive entries in red and behind a dialog.
+ *
+ * Every control is enabled exactly when it can do something, and says why when
+ * it cannot. That is the whole of the fix for "button availability divorced
+ * from real state": a disabled control here has a reason attached to it.
  */
-import { usePanel } from '../state/usePanel.ts';
+import {
+    AlertTriangle,
+    ChevronsLeftRight,
+    Info,
+    ListTree,
+    MoreHorizontal,
+    Play,
+    Settings2,
+    Square,
+    XCircle,
+} from 'lucide-react';
+import { useState } from 'react';
+import type { SessionDescription } from '../../../shared/protocol.ts';
+import { usePanel, useSession, useView } from '../state/usePanel.ts';
+import { Badge, Button, IconButton } from '../ui/Button.tsx';
+import {
+    Dialog,
+    DialogButton,
+    DialogContent,
+    Menu,
+    MenuContent,
+    MenuItem,
+    MenuLabel,
+    MenuSeparator,
+    MenuTrigger,
+    Tooltip,
+} from '../ui/overlays.tsx';
 import { useClient } from './ClientContext.tsx';
 
-/** One control. */
-function Action({ label, title, danger, onClick }: {
+/** What the worker process is doing, in the words the buttons use. */
+function processState(session: SessionDescription): {
+    running: boolean;
     label: string;
+    tone: 'neutral' | 'info' | 'ok' | 'warn' | 'bad';
+} {
+    const process = session.process;
+    if (!process) return { running: false, label: 'no process', tone: 'neutral' };
+    switch (process.state) {
+        case 'running':
+            return {
+                running: true,
+                label: process.pid === null ? 'running' : `running · pid ${process.pid}`,
+                tone: 'ok',
+            };
+        case 'starting':
+            return { running: true, label: 'starting', tone: 'info' };
+        case 'stopping':
+            return { running: true, label: 'stopping', tone: 'warn' };
+        case 'exited':
+            return {
+                running: false,
+                label: process.exit_code === null ? 'exited' : `exited (${process.exit_code})`,
+                tone: 'neutral',
+            };
+        case 'failed':
+            return {
+                running: false,
+                label: process.error ? `failed: ${process.error}` : 'failed',
+                tone: 'bad',
+            };
+        default:
+            return { running: false, label: process.state, tone: 'neutral' };
+    }
+}
+
+/** One destructive action awaiting confirmation. */
+interface Pending {
+    action: 'restart' | 'force-kill' | 'shutdown' | 'delete';
     title: string;
-    danger?: boolean;
-    onClick: () => void;
-}) {
-    return (
-        <button
-            type="button"
-            title={title}
-            onClick={onClick}
-            className={`rounded border px-2 py-1 text-xs font-medium transition-colors
-                ${danger
-                    ? 'border-rose-200 text-rose-700 hover:bg-rose-50'
-                    : 'border-slate-200 text-slate-700 hover:bg-slate-100'}`}
-        >
-            {label}
-        </button>
-    );
+    body: string;
+    confirm: string;
+    danger: boolean;
+}
+
+/**
+ * What an action will actually do.
+ *
+ * The old panel's force-kill confirmation claimed it would kill the process
+ * group unconditionally, while the hub only does that when it is configured to
+ * (defect D27). A confirmation that describes the wrong consequence is worse
+ * than none: it teaches the operator to stop reading them.
+ */
+function describe(action: Pending['action'], options: { processGroup: boolean }): Pending {
+    switch (action) {
+        case 'restart':
+            return {
+                action,
+                title: 'Restart this worker?',
+                body: 'The current worker is asked to shut down and a new one is launched'
+                    + ' with the same specification. Anything the worker has not persisted is lost.',
+                confirm: 'Restart',
+                danger: false,
+            };
+        case 'force-kill':
+            return {
+                action,
+                title: 'Force kill this worker?',
+                body: options.processGroup
+                    ? 'The worker is signalled immediately, skipping the protocol. This hub is'
+                        + ' configured to kill the whole process group, so any process the worker'
+                        + ' started is killed with it.'
+                    : 'The worker is signalled immediately, skipping the protocol. This hub is'
+                        + ' **not** configured to kill the process group, so a process the worker'
+                        + ' started may outlive it.',
+                confirm: 'Force kill',
+                danger: true,
+            };
+        case 'shutdown':
+            return {
+                action,
+                title: 'Ask the worker to shut down?',
+                body: 'The worker is asked to stop over the protocol and is given time to finish.'
+                    + ' This is the same as Stop; it is here for when the worker is attached but'
+                    + ' the panel is not driving it.',
+                confirm: 'Shut down',
+                danger: false,
+            };
+        case 'delete':
+            return {
+                action,
+                title: 'Delete this session?',
+                body: 'The session, its transcript in this hub, and its place in the hub\'s state'
+                    + ' file are removed. The worker\'s own persisted files under the data directory'
+                    + ' are left where they are. This cannot be undone.',
+                confirm: 'Delete',
+                danger: true,
+            };
+    }
 }
 
 export function SessionHeader() {
     const client = useClient();
     const selected = usePanel((state) => state.selected);
-    const session = usePanel((state) => (
-        state.selected ? state.sessions.get(state.selected) ?? null : null
-    ));
-    const runActive = usePanel((state) => (
-        state.selected ? Boolean(state.views.get(state.selected)?.runActive) : false
-    ));
+    const session = useSession(selected);
+    const view = useView(selected);
+    const hub = usePanel((state) => state.hub);
+    const inspectorOpen = usePanel((state) => state.inspectorOpen);
+    const setInspectorOpen = usePanel((state) => state.setInspectorOpen);
     const model = usePanel((state) => (state.selected ? state.model(state.selected) : ''));
+    const [pending, setPending] = useState<Pending | null>(null);
 
     if (!selected || !session) return null;
 
-    const process = session.process;
-    const running = process !== null
-        && (process.state === 'running' || process.state === 'starting');
-    const pending = session.confirmations.filter((prompt) => prompt.settled_at === null);
+    // Bound to a local so the narrowing survives into the callbacks below,
+    // which the compiler cannot narrow through.
+    const sessionId: string = selected;
+    const state = processState(session);
+    const runActive = Boolean(view?.runActive);
+    const processGroup = hub?.force_kill_process_group ?? false;
+    const pendingApprovals = [...(view?.confirmations.values() ?? [])]
+        .filter((prompt) => prompt.settled_at === null).length;
+
+    // The hub refuses to delete a session whose worker is running or attached,
+    // so the menu says which of the two it is rather than just greying out.
+    const busy = state.running || session.connected;
+    const deleteHint = state.running
+        ? 'stop the worker first'
+        : session.connected ? 'the worker is still attached' : undefined;
+
+    function ask(action: Pending['action']): void {
+        setPending(describe(action, { processGroup }));
+    }
+
+    function run(action: Pending['action']): void {
+        setPending(null);
+        if (action === 'delete') {
+            void client.deleteSession(sessionId);
+            return;
+        }
+        if (action === 'shutdown') {
+            client.sendSignal(sessionId, 'shutdown');
+            return;
+        }
+        void client.workerAction(sessionId, action);
+    }
 
     return (
         <div className="border-b border-slate-200 bg-white px-4 py-2">
             <div className="flex flex-wrap items-center gap-2">
-                <h2 className="font-mono text-sm font-semibold text-slate-900">{selected}</h2>
-
-                <span className={`text-xs ${session.connected ? 'text-emerald-700' : 'text-slate-500'}`}>
-                    {session.connected ? 'worker attached' : 'worker not attached'}
-                </span>
-
-                {runActive && (
-                    <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px]
-                        font-medium text-sky-800">
-                        run active
-                    </span>
+                <h2 className="font-mono text-sm font-semibold text-slate-900">{sessionId}</h2>
+                <Badge tone={state.tone}>{state.label}</Badge>
+                {session.connected && <Badge tone="info">worker attached</Badge>}
+                {runActive && <Badge tone="info">run active</Badge>}
+                {pendingApprovals > 0 && (
+                    <Badge tone="warn" title="tool calls waiting for a decision">
+                        {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'}
+                    </Badge>
                 )}
-
                 {model && <span className="text-xs text-slate-500">{model}</span>}
 
                 <span className="flex-1" />
 
-                {running ? (
-                    <>
-                        <Action
-                            label="Stop"
-                            title="ask the worker to shut down, then signal the process"
-                            onClick={() => { void client.workerAction(selected, 'stop'); }}
-                        />
-                        <Action
-                            label="Restart"
-                            title="stop and start again with the same spec"
-                            onClick={() => { void client.workerAction(selected, 'restart'); }}
-                        />
-                        <Action
-                            label="Force kill"
-                            title="signal the process group immediately, skipping the protocol"
-                            danger
-                            onClick={() => {
-                                // No `window.confirm`: the wording a dangerous
-                                // action deserves belongs in a dialog that can
-                                // state what will actually be killed, which the
-                                // confirm dialog stage adds. Until then the
-                                // button says what it does and does it.
-                                void client.workerAction(selected, 'force-kill');
-                            }}
-                        />
-                    </>
+                {/* The primary action: one button, and the state picks which. */}
+                {state.running ? (
+                    <Button
+                        variant="primary"
+                        icon={<Square aria-hidden className="h-3 w-3" />}
+                        onClick={() => { void client.workerAction(sessionId, 'stop'); }}
+                        title="ask the worker to shut down, then signal the process"
+                    >
+                        Stop
+                    </Button>
                 ) : (
-                    <Action
-                        label="Start"
+                    <Button
+                        variant="primary"
+                        icon={<Play aria-hidden className="h-3 w-3" />}
+                        onClick={() => { void client.workerAction(sessionId, 'start'); }}
                         title="launch a worker process for this session"
-                        onClick={() => { void client.workerAction(selected, 'start'); }}
-                    />
+                    >
+                        Start
+                    </Button>
                 )}
 
-                <Action
-                    label="Status"
-                    title="ask the worker for a status snapshot"
-                    onClick={() => client.sendSignal(selected, 'status')}
-                />
-                <Action
-                    label="Options"
-                    title="ask the worker what models and tools it offers"
-                    onClick={() => client.sendSignal(selected, 'options')}
-                />
-                {runActive && (
-                    <Action
+                <Tooltip label="Ask the worker for a status snapshot">
+                    <IconButton
+                        label="Status"
+                        onClick={() => client.sendSignal(sessionId, 'status')}
+                        disabled={!session.connected}
+                    >
+                        <Info aria-hidden className="h-4 w-4" />
+                    </IconButton>
+                </Tooltip>
+                <Tooltip label="Ask the worker which models and tools it offers">
+                    <IconButton
+                        label="Options"
+                        onClick={() => client.sendSignal(sessionId, 'options')}
+                        disabled={!session.connected}
+                    >
+                        <Settings2 aria-hidden className="h-4 w-4" />
+                    </IconButton>
+                </Tooltip>
+                <Tooltip label={runActive ? 'Ask the worker to cancel the active run' : 'No run is active'}>
+                    <IconButton
                         label="Cancel"
-                        title="ask the worker to cancel the active run"
-                        onClick={() => client.sendSignal(selected, 'cancel')}
-                    />
-                )}
+                        onClick={() => client.sendSignal(sessionId, 'cancel')}
+                        disabled={!session.connected || !runActive}
+                    >
+                        <XCircle aria-hidden className="h-4 w-4" />
+                    </IconButton>
+                </Tooltip>
+                <Tooltip label={inspectorOpen ? 'Hide the context drawer' : 'Show the context drawer'}>
+                    <IconButton
+                        label={inspectorOpen ? 'Hide inspector' : 'Show inspector'}
+                        onClick={() => setInspectorOpen(!inspectorOpen)}
+                    >
+                        <ListTree aria-hidden className="h-4 w-4" />
+                    </IconButton>
+                </Tooltip>
+
+                <Menu>
+                    <MenuTrigger asChild>
+                        <IconButton label="More actions">
+                            <MoreHorizontal aria-hidden className="h-4 w-4" />
+                        </IconButton>
+                    </MenuTrigger>
+                    <MenuContent>
+                        <MenuLabel>process</MenuLabel>
+                        <MenuItem
+                            disabled={!state.running}
+                            hint={state.running ? undefined : 'no process is running'}
+                            onSelect={() => ask('restart')}
+                        >
+                            <span className="inline-flex items-center gap-2">
+                                <ChevronsLeftRight aria-hidden className="h-3.5 w-3.5" />
+                                Restart
+                            </span>
+                        </MenuItem>
+                        <MenuItem
+                            disabled={!session.connected}
+                            hint={session.connected ? undefined : 'no worker is attached'}
+                            onSelect={() => ask('shutdown')}
+                        >
+                            <span className="inline-flex items-center gap-2">
+                                <Square aria-hidden className="h-3.5 w-3.5" />
+                                Shut down over the protocol
+                            </span>
+                        </MenuItem>
+
+                        <MenuSeparator />
+                        <MenuLabel>destructive</MenuLabel>
+                        <MenuItem
+                            danger
+                            disabled={!state.running}
+                            hint={state.running ? undefined : 'no process is running'}
+                            onSelect={() => ask('force-kill')}
+                        >
+                            <span className="inline-flex items-center gap-2">
+                                <AlertTriangle aria-hidden className="h-3.5 w-3.5" />
+                                Force kill
+                            </span>
+                        </MenuItem>
+                        <MenuItem
+                            danger
+                            disabled={busy}
+                            hint={deleteHint}
+                            onSelect={() => ask('delete')}
+                        >
+                            <span className="inline-flex items-center gap-2">
+                                <XCircle aria-hidden className="h-3.5 w-3.5" />
+                                Delete session
+                            </span>
+                        </MenuItem>
+                    </MenuContent>
+                </Menu>
             </div>
 
-            {pending.length > 0 && (
-                // The approval itself is answered by the banner below; this says
-                // that one exists, which the old panel could not do for a
-                // session it was not subscribed to.
-                <p
-                    data-testid="pending-approval-banner"
-                    className="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs
-                        text-amber-900"
-                >
-                    {pending.length} tool call{pending.length === 1 ? '' : 's'} waiting for a
-                    decision below.
-                </p>
+            {pending && (
+                <Dialog open onOpenChange={(open) => { if (!open) setPending(null); }}>
+                    <DialogContent
+                        title={pending.title}
+                        description={`session ${sessionId}`}
+                        footer={
+                            <>
+                                {/* Cancel is first in the DOM, which is where
+                                    Radix puts focus — so Enter cancels rather
+                                    than confirming a destructive action the
+                                    operator has not read yet. */}
+                                <DialogButton onClick={() => setPending(null)}>Cancel</DialogButton>
+                                <DialogButton
+                                    variant={pending.danger ? 'danger' : 'primary'}
+                                    onClick={() => run(pending.action)}
+                                >
+                                    {pending.confirm}
+                                </DialogButton>
+                            </>
+                        }
+                    >
+                        <p className="whitespace-pre-wrap">{pending.body}</p>
+                    </DialogContent>
+                </Dialog>
             )}
         </div>
     );

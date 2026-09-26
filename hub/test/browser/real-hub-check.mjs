@@ -76,13 +76,19 @@ await page.getByRole('button', { name: 'Send' }).click();
 // The mock provider's scripted first turn proposes a call that needs approval,
 // so this exercises the approval path end to end rather than only asserting
 // that a prompt can be drawn.
-const approval = page.getByTestId('approval');
-await approval.waitFor({ timeout: 60_000 });
-console.log(`approval card: ${(await approval.innerText()).split('\n').slice(0, 3).join(' | ')}`);
-await page.screenshot({ path: `${SHOTS}/p4-approval.png` });
+const banner = page.getByTestId('approval-banner');
+await banner.waitFor({ timeout: 60_000 });
+console.log(`approval banner: ${(await banner.innerText()).split('\n').slice(0, 2).join(' | ')}`);
 
-await approval.getByRole('button', { name: 'Approve' }).click();
-await page.getByTestId('approval').waitFor({ state: 'detached', timeout: 30_000 });
+// The dialog opens itself, and nothing in it is armed: a decision has to be
+// made rather than pressed Enter into.
+const dialog = page.getByRole('dialog');
+await dialog.waitFor({ timeout: 10_000 });
+console.log(`approval dialog: ${(await dialog.innerText()).split('\n').slice(0, 3).join(' | ')}`);
+await page.screenshot({ path: `${SHOTS}/p6-approval.png` });
+
+await dialog.getByRole('button', { name: 'Approve' }).click();
+await page.getByTestId('approval-banner').waitFor({ state: 'detached', timeout: 30_000 });
 console.log('approval settled');
 
 await page.getByTestId('tool-card').filter({ hasText: 'run_command' }).last()

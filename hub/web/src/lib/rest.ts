@@ -76,7 +76,6 @@ export interface RestClient {
     }): Promise<T>;
     meta(): Promise<HubMetadata>;
     sessions(): Promise<SessionListResponse>;
-    session(id: SessionId): Promise<SessionResponse>;
     createSession(session: SessionId, spec?: SessionSpec): Promise<SessionResponse>;
     deleteSession(id: SessionId): Promise<RemovedResponse>;
     worker(id: SessionId, action: WorkerAction, spec?: SessionSpec): Promise<SupervisorResult>;
@@ -170,7 +169,6 @@ export function createRest(options: RestOptions = {}): RestClient {
         request,
         meta: () => request<HubMetadata>('GET', '/api/meta'),
         sessions: () => request<SessionListResponse>('GET', '/api/sessions'),
-        session: (id) => request<SessionResponse>('GET', `/api/sessions/${encodeURIComponent(id)}`),
         createSession: (session, spec) => request<SessionResponse>('POST', '/api/sessions', {
             body: spec === undefined ? { session } : { session, spec },
         }),

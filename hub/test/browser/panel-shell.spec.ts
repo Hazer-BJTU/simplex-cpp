@@ -92,21 +92,26 @@ test('an approval for a session the panel is not watching still arrives (A1)', a
     });
     expect(response.ok()).toBe(true);
 
-    // The card names the session that raised it, which is the whole point: the
-    // operator can approve it without navigating there first.
-    const approval = page.getByTestId('approval');
-    await expect(approval).toBeVisible();
-    await expect(approval).toContainText('other');
-    await expect(approval).toContainText('run_command');
-    await expect(approval).toContainText('ls');
+    // The banner names the session that raised it, which is the whole point:
+    // the operator can answer it without navigating there first. And the dialog
+    // opens itself, so an approval cannot sit unnoticed in a corner.
+    const banner = page.getByTestId('approval-banner');
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText('other');
+    await expect(banner).toContainText('run_command');
 
-    await approval.getByRole('button', { name: 'Approve' }).click();
-    await expect(approval).toContainText('waiting for the hub');
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('session other');
+    await expect(dialog).toContainText('ls');
+
+    await dialog.getByRole('button', { name: 'Approve' }).click();
 
     await page.request.post(`${STUB}/__stub/settle`, {
         data: { session: 'other', confirmation_id: 'c-other', decision: 'approved' },
     });
-    await expect(page.getByTestId('approval')).toHaveCount(0);
+    await expect(page.getByTestId('approval-banner')).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
 test('a message the operator sends appears and stays (D19)', async ({ page }) => {

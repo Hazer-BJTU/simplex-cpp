@@ -12,7 +12,13 @@
  * request's real state arrives later as a `request` message, and the panel's
  * job is to keep saying `sent` until it does.
  */
-import type { ContentPart, HubMessage, SessionId, SessionSpec } from '../../../shared/protocol.ts';
+import type {
+    ContentPart,
+    HubMessage,
+    PayloadOptions,
+    SessionId,
+    SessionSpec,
+} from '../../../shared/protocol.ts';
 import type { PanelStoreApi } from '../state/store.ts';
 import { panelStore } from '../state/store.ts';
 import { ApiError, createRest, type RestClient, type WorkerAction } from './rest.ts';
@@ -47,7 +53,26 @@ export interface PanelClient {
     /** Ask the hub to re-send a session's whole transcript, replacing what is held. */
     reloadTranscript(sessionId: SessionId): void;
     refreshSessions(): void;
-    sendInput(sessionId: SessionId, parts: readonly ContentPart[], operation?: string): boolean;
+    /**
+     * Send a message.
+     *
+     * `options.confirmation.mode` is carried on every payload rather than held
+     * on the hub, because it is the panel's setting: the worker freezes the
+     * policy per run, so sending it each time is what keeps a change take
+     * effect on the next run instead of the next restart.
+     */
+    sendInput(
+        sessionId: SessionId,
+        parts: readonly ContentPart[],
+        operation?: string,
+        options?: PayloadOptions,
+    ): boolean;
+    /** Ask the hub for a session's captured worker output. */
+    refreshLogs(sessionId: SessionId, limit?: number): boolean;
+    /** Time a round trip to the hub; the result lands in `pingMs`. */
+    ping(): boolean;
+    /** Read the worker's persisted snapshot, and keep it only if still current. */
+    loadSnapshot(sessionId: SessionId): Promise<void>;
     sendSignal(
         sessionId: SessionId,
         operation: 'status' | 'options' | 'cancel' | 'shutdown',
@@ -158,6 +183,9 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         socket.send({ type: 'subscribe', session: sessionId, since: cursor });
     }
 
+    /** When the outstanding heartbeat was sent, so its reply can be timed. */
+    let pendingPing = 0;
+
     function handleMessage(message: HubMessage): void {
         switch (message.type) {
             case 'welcome': {
@@ -223,7 +251,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 store.getState().applyError(message);
                 return;
             case 'pong':
-                // Nothing sends `ping` yet; a pong is accepted and ignored.
+                store.getState().finishPing(pendingPing, Date.now());
                 return;
             default:
                 // Unreachable while `HubMessage` is exhaustive, and the reason
@@ -294,14 +322,39 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             // than merges. This is also what makes `status_snapshot` — a
             // message the old panel never sent, leaving it with no way back
             // from a lost transcript — a working recovery path.
-            socket.send({ type: 'status_snapshot', session: sessionId, since: 0 });
+            const sent = socket.send({ type: 'status_snapshot', session: sessionId, since: 0 });
+            if (sent) return;
+            // The socket is not open, which is exactly when a reader most wants
+            // the history back. `GET /api/sessions/:id/events` answers the same
+            // question over HTTP, so there is a way through rather than only a
+            // message that cannot be sent.
+            void rest.events(sessionId, 0, 0)
+                .then((result) => {
+                    store.getState().mergeTranscript(sessionId, result.events, result.latest);
+                })
+                .catch((error: unknown) => {
+                    const detail = error instanceof ApiError
+                        ? error.message
+                        : error instanceof Error ? error.message : String(error);
+                    store.getState().setNotice('error', 'transcript_unavailable', detail);
+                });
+        },
+
+        ping() {
+            const at = Date.now();
+            const sent = socket.send({ type: 'ping' });
+            if (sent) {
+                pendingPing = at;
+                store.getState().beginPing(at);
+            }
+            return sent;
         },
 
         refreshSessions() {
             socket.send({ type: 'list_sessions' });
         },
 
-        sendInput(sessionId, parts, operation = 'message') {
+        sendInput(sessionId, parts, operation = 'message', options) {
             const requestId = newRequestId();
             store.getState().beginInput(sessionId, requestId, parts, operation);
             const sent = socket.send({
@@ -310,6 +363,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 request_id: requestId,
                 operation,
                 content: [...parts],
+                ...(options ? { options } : {}),
             });
             if (!sent) {
                 store.getState().failInput(
@@ -336,6 +390,27 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 decision,
                 ...(reason ? { reason } : {}),
             });
+        },
+
+        refreshLogs(sessionId, limit) {
+            return socket.send({
+                type: 'logs',
+                session: sessionId,
+                ...(limit === undefined ? {} : { limit }),
+            });
+        },
+
+        async loadSnapshot(sessionId) {
+            store.getState().beginSnapshot(sessionId);
+            try {
+                const view = await rest.snapshot(sessionId);
+                store.getState().finishSnapshot(sessionId, view, null);
+            } catch (error) {
+                const detail = error instanceof ApiError
+                    ? error.message
+                    : error instanceof Error ? error.message : String(error);
+                store.getState().finishSnapshot(sessionId, null, detail);
+            }
         },
 
         async workerAction(sessionId, action, spec) {

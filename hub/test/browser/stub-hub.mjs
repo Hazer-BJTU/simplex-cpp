@@ -24,6 +24,13 @@ const PORT = Number(process.env.STUB_HUB_PORT ?? 4180);
 /** Identifies this stub's transcript series; `/__stub/restart` changes it. */
 let epoch = 'stub-epoch-1';
 
+/**
+ * What `/api/meta` reports, so a test can change the configuration the panel
+ * describes consequences from. `force_kill_process_group` is the one that
+ * matters: the old panel's force-kill confirmation claimed it unconditionally.
+ */
+let settings = { force_kill_process_group: false };
+
 /** One session description, as `describe()` builds it on the real hub. */
 function makeSession(id, createdAt = '2026-01-01T00:00:00.000Z') {
     return {
@@ -56,6 +63,18 @@ const panels = new Set();
 
 /** Everything panels sent, so a test can assert what the panel asked for. */
 const received = [];
+
+/** How long a snapshot answer takes; a test sets it to create a race. */
+let payloadDelay = 0;
+
+/**
+ * When true, panel upgrades are refused and existing sockets closed.
+ *
+ * Taking the socket away is not something `page.route` can do — a WebSocket
+ * upgrade is not an HTTP request it intercepts — so the hub has to be the one
+ * to go down, which is also closer to what actually happens.
+ */
+let down = false;
 
 /** The next hub sequence to hand out. */
 let sequence = 0;
@@ -91,7 +110,7 @@ function meta() {
         listen: { host: '127.0.0.1', port: PORT },
         launcher: { kind: 'local', owns_config: true },
         provider_profiles: [],
-        force_kill_process_group: false,
+        force_kill_process_group: settings.force_kill_process_group,
         mock: { enabled: true },
     };
 }
@@ -150,12 +169,19 @@ const server = createServer((req, res) => {
     if (url.pathname.startsWith('/__stub/')) {
         void (async () => {
             const payload = await body(req);
+            if (url.pathname === '/__stub/snapshot-delay') {
+                payloadDelay = Number(payload.ms) || 0;
+                json(res, 200, { ok: true, payloadDelay });
+                return;
+            }
             switch (url.pathname) {
                 case '/__stub/reset': {
                     sequence = 0;
                     transcripts.clear();
                     received.length = 0;
                     epoch = 'stub-epoch-1';
+                    settings = { force_kill_process_group: false };
+                    down = false;
                     sessions = DEFAULT_SESSIONS.map((session) => ({
                         ...session, confirmations: [], requests: [],
                     }));
@@ -245,8 +271,34 @@ const server = createServer((req, res) => {
                     json(res, 200, { ok: true, epoch });
                     return;
                 }
+                case '/__stub/down': {
+                    down = true;
+                    for (const socket of panels) socket.close();
+                    json(res, 200, { ok: true });
+                    return;
+                }
+                case '/__stub/up': {
+                    down = false;
+                    json(res, 200, { ok: true });
+                    return;
+                }
+                case '/__stub/settings': {
+                    settings = { ...settings, ...payload };
+                    json(res, 200, settings);
+                    return;
+                }
                 case '/__stub/received': {
                     json(res, 200, { received });
+                    return;
+                }
+                case '/__stub/decisions': {
+                    // Confirmations the panel sent. The stub deliberately never
+                    // answers them, which is what a refused or lost decision
+                    // looks like from inside the panel — the case that used to
+                    // disable its buttons forever.
+                    json(res, 200, {
+                        decisions: received.filter((message) => message.type === 'confirmation'),
+                    });
                     return;
                 }
                 default:
@@ -265,6 +317,30 @@ const server = createServer((req, res) => {
         json(res, 200, { sessions });
         return;
     }
+    const snapshot = /^\/api\/sessions\/([^/]+)\/snapshot$/.exec(url.pathname);
+    if (snapshot) {
+        // Deliberately slow, so a test can switch sessions while the fetch is
+        // in flight — which is the race the old snapshot pane lost.
+        const id = decodeURIComponent(snapshot[1]);
+        setTimeout(() => json(res, 200, {
+            session_id: id,
+            state: { session_id: id, marker: `state for ${id}` },
+            readable: `# readable for ${id}`,
+            files: { state: `/tmp/${id}/state.json` },
+        }), Number(payloadDelay));
+        return;
+    }
+    const events = /^\/api\/sessions\/([^/]+)\/events$/.exec(url.pathname);
+    if (events) {
+        const id = decodeURIComponent(events[1]);
+        json(res, 200, {
+            session: id,
+            since: 0,
+            latest: transcriptOf(id).at(-1)?.hub_sequence ?? 0,
+            events: transcriptOf(id),
+        });
+        return;
+    }
     const match = /^\/api\/sessions\/([^/]+)$/.exec(url.pathname);
     if (match) {
         json(res, 200, { session: describe(decodeURIComponent(match[1])) });
@@ -277,7 +353,7 @@ const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
-    if (url.pathname !== '/panel/ws') {
+    if (url.pathname !== '/panel/ws' || down) {
         socket.destroy();
         return;
     }

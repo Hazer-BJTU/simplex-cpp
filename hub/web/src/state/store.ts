@@ -46,6 +46,7 @@ import type {
     SessionDescription,
     SessionId,
     SessionIdentity,
+    SnapshotView,
     TranscriptEpoch,
     WorkerEnvelope,
 } from '../../../shared/protocol.ts';
@@ -146,6 +147,29 @@ export interface ApplyEffects {
 
 const NO_EFFECTS: ApplyEffects = {};
 
+/**
+ * How the worker should answer tool confirmations for one session.
+ *
+ * `approve` means "approve every call that would have asked" — it is the one
+ * setting here that grants something, which is why it is stored per session
+ * rather than read from a control that outlives the session it was set for.
+ * The old panel kept it in a single DOM `<select>` that was never reset, so
+ * choosing `approve` in one session silently applied it to every session
+ * opened afterwards (defect D15).
+ */
+export type ConfirmMode = 'ask' | 'approve' | 'deny';
+
+/** What the inspector drawer is showing. */
+export type InspectorTab = 'run' | 'process' | 'logs' | 'snapshot';
+
+/** A snapshot fetched over REST, kept with the session it belongs to. */
+export interface SnapshotState {
+    readonly sessionId: SessionId;
+    readonly loading: boolean;
+    readonly view: SnapshotView | null;
+    readonly error: string | null;
+}
+
 /** The state held by the store. */
 export interface PanelState {
     hub: HubMetadata | null;
@@ -163,6 +187,32 @@ export interface PanelState {
     notice: Notice | null;
     /** True when protocol events are rendered alongside the conversation. */
     showDetails: boolean;
+    /**
+     * Per-session confirmation mode.
+     *
+     * Absent means `ask`, which is the worker's own default. Storing the
+     * absence rather than a value is what keeps a session that was never
+     * configured from looking like one that was.
+     */
+    confirmMode: ReadonlyMap<SessionId, ConfirmMode>;
+    /** Whether the context drawer is open, and what it is showing. */
+    inspectorOpen: boolean;
+    inspectorTab: InspectorTab;
+    /** The worker's persisted snapshot, or the attempt to read it. */
+    snapshot: SnapshotState | null;
+    /** Whether the command palette is open. */
+    paletteOpen: boolean;
+    /** When the outstanding heartbeat was sent, or null. Not read by the UI. */
+    pingSentAt: number | null;
+    /**
+     * Round trip of the last heartbeat, in milliseconds.
+     *
+     * `ping` was the one message the old panel could receive and never sent, so
+     * the hub's `pong` was dead protocol surface. It is also the only way to
+     * measure the link rather than guess at it from a socket state that a
+     * browser reports as "open" long after the other end has stopped answering.
+     */
+    pingMs: number | null;
 }
 
 /** Everything the store can be asked to do. */
@@ -187,13 +237,6 @@ export interface PanelActions {
     loop(sessionId: SessionId): Record<string, unknown> | null;
     statusData(sessionId: SessionId): unknown;
     model(sessionId: SessionId): string;
-    /**
-     * Counters for one session.
-     *
-     * Not usable as a React selector: it builds a new object on every call, so
-     * a component must take the view instead and memoise `statsOf` against it.
-     */
-    stats(sessionId: SessionId): ViewStats;
     hasCapability(capability: Capability): boolean;
 
     // ------------------------------------------------------------- writes --
@@ -224,6 +267,16 @@ export interface PanelActions {
     applyLogs(message: LogsMessage): void;
     /** A full transcript handed over by the hub; replaces what is held. */
     applySnapshot(message: SnapshotMessage): void;
+    /**
+     * Merge a transcript read over HTTP.
+     *
+     * The recovery path when the socket is down: `GET /api/sessions/:id/events`
+     * answers the same question as a re-subscribe, but it is a request rather
+     * than a message, so it arrives without a session description or a cursor.
+     * Merging is the right shape here for the same reason it is right for a
+     * re-subscribe — anything already held is kept, anything new is appended.
+     */
+    mergeTranscript(sessionId: SessionId, transcript: readonly WorkerEnvelope[], latest: number): void;
     /** A refusal from the hub, matched to the message it answers. */
     applyError(message: ErrorMessage): void;
     /** An accepted command; a refused worker action is reported here. */
@@ -244,6 +297,32 @@ export interface PanelActions {
      */
     setShowDetails(show: boolean): void;
     toggleDetails(): void;
+
+    // ------------------------------------------------------------- session --
+    /** The mode in effect for a session; `ask` when none was chosen. */
+    confirmModeOf(sessionId: SessionId): ConfirmMode;
+    setConfirmMode(sessionId: SessionId, mode: ConfirmMode): void;
+
+    setInspectorOpen(open: boolean): void;
+    setInspectorTab(tab: InspectorTab): void;
+    /** Record a snapshot fetch started for a session. */
+    beginSnapshot(sessionId: SessionId): void;
+    /**
+     * Record a snapshot result — but only if it is still the session in hand.
+     *
+     * The old panel's snapshot pane awaited and then rendered whatever came
+     * back, so switching sessions mid-request painted one session's state under
+     * another's header (defect D25).
+     */
+    finishSnapshot(sessionId: SessionId, view: SnapshotView | null, error: string | null): void;
+
+    setPaletteOpen(open: boolean): void;
+    togglePalette(): void;
+
+    /** A heartbeat was sent at `at`; the reply has not arrived yet. */
+    beginPing(at: number): void;
+    /** A `pong` arrived at `at` for a heartbeat sent at `sentAt`. */
+    finishPing(sentAt: number, at: number): void;
 
     /** Append a note to a transcript (replay gaps, local warnings). */
     note(sessionId: SessionId, text: string, tone?: NoteTone): void;
@@ -288,6 +367,13 @@ const INITIAL: PanelState = {
     failedInput: null,
     notice: null,
     showDetails: false,
+    confirmMode: new Map(),
+    inspectorOpen: false,
+    inspectorTab: 'run',
+    snapshot: null,
+    paletteOpen: false,
+    pingSentAt: null,
+    pingMs: null,
 };
 
 /** Read a view, creating an empty one without storing it. */
@@ -416,7 +502,7 @@ function foldEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
  * event overtook the replay — and anything above it is new and appended, so the
  * operator keeps reading the history they already had.
  */
-function mergeTranscript(view: ViewState, transcript: readonly WorkerEnvelope[]): ViewState {
+function mergeEnvelopes(view: ViewState, transcript: readonly WorkerEnvelope[]): ViewState {
     const previousLast = view.lastSeq;
     let duplicates = 0;
     let firstSeq: number | null = null;
@@ -502,6 +588,19 @@ function reconcileEpoch(
 }
 
 /**
+ * Counters for one session.
+ *
+ * A function of the view rather than a store method, and that is deliberate:
+ * a method that built a fresh object on every call is a natural thing to put in
+ * a React selector and re-renders forever when you do. Removing it removes the
+ * trap instead of documenting it — components take the view with `useView` and
+ * memoise against its identity.
+ */
+export function statsFor(state: PanelState, sessionId: SessionId): ViewStats {
+    return statsOf(state.views.get(sessionId));
+}
+
+/**
  * Create a panel store.
  *
  * A factory rather than a bare singleton so a test can have its own; the
@@ -574,7 +673,6 @@ export function createPanelStore() {
             if (typeof spec.provider === 'string') return spec.provider;
             return '';
         },
-        stats: (sessionId) => statsOf(get().views.get(sessionId)),
         hasCapability: (capability) => get().capabilities.has(capability),
 
         // ----------------------------------------------------------- writes --
@@ -713,7 +811,7 @@ export function createPanelStore() {
             }
 
             set(withView(get(), sessionId, (view) => {
-                const merged = mergeTranscript(view, message.transcript ?? []);
+                const merged = mergeEnvelopes(view, message.transcript ?? []);
                 return { ...merged, lastSeq: Math.max(merged.lastSeq, latest) };
             }));
 
@@ -863,6 +961,15 @@ export function createPanelStore() {
             set(seedFromSession(get(), sessionId));
         },
 
+        mergeTranscript(sessionId, transcript, latest) {
+            if (typeof sessionId !== 'string') return;
+            set(withView(get(), sessionId, (view) => {
+                const merged = mergeEnvelopes(view, transcript);
+                return { ...merged, lastSeq: Math.max(merged.lastSeq, latest) };
+            }));
+            set(seedFromSession(get(), sessionId));
+        },
+
         applyError(message) {
             const code = typeof message.error === 'string' ? message.error : 'unknown_error';
             get().setNotice('error', code, message.message || 'the hub refused the message');
@@ -906,6 +1013,59 @@ export function createPanelStore() {
 
         toggleDetails() {
             set({ showDetails: !get().showDetails });
+        },
+
+        confirmModeOf: (sessionId) => get().confirmMode.get(sessionId) ?? 'ask',
+
+        setConfirmMode(sessionId, mode) {
+            const confirmMode = new Map(get().confirmMode);
+            // `ask` is the default, so recording it would only make an
+            // untouched session indistinguishable from a configured one.
+            if (mode === 'ask') confirmMode.delete(sessionId);
+            else confirmMode.set(sessionId, mode);
+            set({ confirmMode });
+        },
+
+        setInspectorOpen(open) {
+            if (get().inspectorOpen === open) return;
+            set({ inspectorOpen: open });
+        },
+
+        setInspectorTab(tab) {
+            if (get().inspectorTab === tab) return;
+            set({ inspectorTab: tab });
+        },
+
+        beginSnapshot(sessionId) {
+            set({ snapshot: { sessionId, loading: true, view: null, error: null } });
+        },
+
+        finishSnapshot(sessionId, view, error) {
+            const current = get().snapshot;
+            // A reply for a session the operator has already left is dropped:
+            // it describes something no longer on screen.
+            if (!current || current.sessionId !== sessionId || current.loading === false) return;
+            set({ snapshot: { sessionId, loading: false, view, error } });
+        },
+
+        setPaletteOpen(open) {
+            if (get().paletteOpen === open) return;
+            set({ paletteOpen: open });
+        },
+
+        togglePalette() {
+            set({ paletteOpen: !get().paletteOpen });
+        },
+
+        beginPing(at) {
+            set({ pingMs: null, pingSentAt: at });
+        },
+
+        finishPing(sentAt, at) {
+            // A reply to an earlier heartbeat is stale: reporting it would give
+            // a latency that belongs to a request already superseded.
+            if (get().pingSentAt !== sentAt) return;
+            set({ pingMs: Math.max(0, at - sentAt), pingSentAt: null });
         },
 
         note(sessionId, text, tone = 'muted') {
