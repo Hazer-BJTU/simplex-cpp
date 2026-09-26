@@ -9,10 +9,11 @@
  * command-line overrides resolve against the process working directory.
  *
  * The worker configuration the hub *generates* is a different document: see
- * src/launch/config-render.js.
+ * src/launch/config-render.ts.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { SCENARIOS } from './mock/provider.ts';
+import type { Scenario } from './mock/provider.ts';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,17 +22,89 @@ export const hubRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Configuration error raised for unusable files or values. */
 export class ConfigError extends Error {
-    constructor(message) {
+    constructor(message: string) {
         super(message);
         this.name = 'ConfigError';
     }
 }
 
-/** Launcher kinds the hub understands; see src/launch/launcher.js. */
-export const LAUNCHER_KINDS = ['simplex-worker', 'command'];
+/** Launcher kinds the hub understands; see src/launch/launcher.ts. */
+export const LAUNCHER_KINDS = ['simplex-worker', 'command'] as const;
+
+/** One launcher kind. */
+export type LauncherKind = (typeof LAUNCHER_KINDS)[number];
+
+/**
+ * One provider profile, copied into the generated worker configuration.
+ *
+ * The hub reads only `plugin` and `model`; the rest is the provider plugin's
+ * own vocabulary, which is why the index signature is there.
+ */
+export interface ProviderProfile {
+    plugin?: string;
+    model: string;
+    [field: string]: unknown;
+}
+
+/** The hub's complete configuration, exactly as `defaultConfig()` produces it. */
+export interface HubConfig {
+    listen: { host: string; port: number };
+    dataDir: string;
+    /** Empty token disables panel authentication on a loopback listener. */
+    panel: { token: string };
+    worker: {
+        bin: string;
+        args: string[];
+        threads: number;
+        promptsDir: string;
+        systemPromptFile: string;
+        maxExchanges: number;
+        eventCapacity: number;
+        confirmationTimeoutMs: number;
+        payloadCapacity: number;
+        signalCapacity: number;
+        writeCapacity: number;
+        initialBackoffMs: number;
+        maxBackoffMs: number;
+        idleTimeoutSeconds: number;
+        stopTimeoutMs: number;
+        sigtermGraceMs: number;
+        sigkillGraceMs: number;
+        persistence: { enabled: boolean; readable: boolean };
+        environment: { workspace: string; platform: string; software: string[] };
+    };
+    providerProfiles: Record<string, ProviderProfile>;
+    launcher: {
+        kind: LauncherKind;
+        command: string[];
+        args: string[];
+        config: 'hub' | 'launcher';
+        cwd: string;
+        pidFile: string;
+    };
+    mock: {
+        enabled: boolean;
+        listen: string;
+        profile: string;
+        scenario: Scenario;
+        slowMs: number;
+    };
+    limits: {
+        transcriptEvents: number;
+        transcriptBytes: number;
+        logLines: number;
+        logRingBytes: number;
+        logBytes: number;
+        logFiles: number;
+        maxMessageBytes: number;
+        pingIntervalMs: number;
+        confirmIdentityHoldMs: number;
+    };
+    forceKillProcessGroup: boolean;
+}
 
 /** A fresh default configuration object; never shared or mutated in place. */
-export function defaultConfig() {
+export function defaultConfig(): HubConfig {
     return {
         listen: { host: '127.0.0.1', port: 8800 },
         dataDir: './data',
@@ -132,7 +205,7 @@ export function defaultConfig() {
             pingIntervalMs: 30000,
             // How long a confirmation with an unverified worker identity is
             // held before it is denied. Always clamped to the confirmation
-            // deadline; see src/worker/confirmation.js.
+            // deadline; see src/worker/confirmation.ts.
             confirmIdentityHoldMs: 15000,
         },
         // Off by default: SIGKILL to the worker's process group also kills its
@@ -143,7 +216,7 @@ export function defaultConfig() {
 }
 
 /** True for a plain JSON object (not an array, not null). */
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -162,17 +235,17 @@ const OPAQUE_CONFIG_PATHS = new Set(['providerProfiles']);
  * cannot be added without automatically being accepted, and a misspelled or
  * stale key is reported instead of being merged in and silently ignored — the
  * failure mode that makes a typo in `limits.logLines` look like a hub bug.
- *
- * @param {object} value merged configuration.
- * @param {object} shape default configuration.
- * @param {string} [prefix] dotted path of `value`, for messages.
- * @returns {string[]} dotted paths of unknown keys.
  */
-function unknownConfigKeys(value, shape, prefix = '') {
-    const found = [];
+function unknownConfigKeys(
+    value: object,
+    shape: object,
+    prefix = '',
+): string[] {
+    const found: string[] = [];
+    const expectedKeys = shape as Record<string, unknown>;
     for (const [key, item] of Object.entries(value)) {
         const path = prefix ? `${prefix}.${key}` : key;
-        const expected = shape?.[key];
+        const expected = expectedKeys[key];
         if (expected === undefined) {
             found.push(path);
             continue;
@@ -185,16 +258,23 @@ function unknownConfigKeys(value, shape, prefix = '') {
     return found;
 }
 
-/** Recursively overlay `override` onto `base`; arrays replace, objects merge. */
-export function mergeConfig(base, override) {
-    if (!isPlainObject(override)) return override;
-    const result = isPlainObject(base) ? { ...base } : {};
+/**
+ * Recursively overlay `override` onto `base`; arrays replace, objects merge.
+ *
+ * The return type is the base's: an override may add, change, or omit keys, but
+ * what comes out is a whole configuration, and saying so is what lets the rest
+ * of the hub read it without a null check on every field.
+ */
+export function mergeConfig<T>(base: T, override: unknown): T {
+    if (!isPlainObject(override)) return override as T;
+    const result: Record<string, unknown> = isPlainObject(base) ? { ...base } : {};
     for (const [key, value] of Object.entries(override)) {
-        result[key] = isPlainObject(value) && isPlainObject(base?.[key])
-            ? mergeConfig(base[key], value)
+        const existing = isPlainObject(base) ? base[key] : undefined;
+        result[key] = isPlainObject(value) && isPlainObject(existing)
+            ? mergeConfig(existing, value)
             : value;
     }
-    return result;
+    return result as T;
 }
 
 /**
@@ -202,16 +282,15 @@ export function mergeConfig(base, override) {
  * contents. Removed characters become spaces so byte offsets — and therefore
  * parse-error positions — stay meaningful.
  *
- * @param {string} text
- * @returns {string} JSON text with comments blanked out.
+ * @returns JSON text with comments blanked out.
  */
-export function stripJsonComments(text) {
+export function stripJsonComments(text: string): string {
     let out = '';
     let index = 0;
     let inString = false;
     let escaped = false;
     while (index < text.length) {
-        const char = text[index];
+        const char = text[index] as string;
         if (inString) {
             out += char;
             if (escaped) escaped = false;
@@ -249,34 +328,30 @@ export function stripJsonComments(text) {
 }
 
 /** Parse comment-tolerant JSON, reporting the file and offset on failure. */
-export function parseConfigText(text, file) {
+export function parseConfigText(text: string, file: string): Record<string, unknown> {
     try {
-        const value = JSON.parse(stripJsonComments(text));
+        const value: unknown = JSON.parse(stripJsonComments(text));
         if (!isPlainObject(value)) {
             throw new ConfigError(`${file}: configuration must be a JSON object`);
         }
         return value;
     } catch (error) {
         if (error instanceof ConfigError) throw error;
-        throw new ConfigError(`${file}: ${error.message}`);
+        const message = error instanceof Error ? error.message : String(error);
+        throw new ConfigError(`${file}: ${message}`);
     }
 }
 
 /** Resolve a possibly relative path against `base`; absolute paths pass through. */
-export function resolveAgainst(base, value) {
+export function resolveAgainst(base: string, value: string): string {
     return isAbsolute(value) ? value : resolve(base, value);
 }
 
 /** Apply path resolution to a merged configuration. */
-function resolvePaths(config, baseDir) {
-    const paths = {
-        dataDir: resolveAgainst(baseDir, config.dataDir),
-        workerBin: resolveAgainst(baseDir, config.worker.bin),
-        promptsDir: resolveAgainst(baseDir, config.worker.promptsDir),
-    };
-    config.dataDir = paths.dataDir;
-    config.worker.bin = paths.workerBin;
-    config.worker.promptsDir = paths.promptsDir;
+function resolvePaths(config: HubConfig, baseDir: string): HubConfig {
+    config.dataDir = resolveAgainst(baseDir, config.dataDir);
+    config.worker.bin = resolveAgainst(baseDir, config.worker.bin);
+    config.worker.promptsDir = resolveAgainst(baseDir, config.worker.promptsDir);
     if (config.worker.environment.workspace) {
         config.worker.environment.workspace =
             resolveAgainst(baseDir, config.worker.environment.workspace);
@@ -285,12 +360,12 @@ function resolvePaths(config, baseDir) {
 }
 
 /** Throw a ConfigError unless `condition` holds. */
-function check(condition, message) {
+function check(condition: unknown, message: string): asserts condition {
     if (!condition) throw new ConfigError(message);
 }
 
 /** Validate a merged configuration; throws ConfigError with a specific reason. */
-export function validateConfig(config) {
+export function validateConfig(config: HubConfig): HubConfig {
     check(isPlainObject(config), 'configuration must be an object');
     const unknown = unknownConfigKeys(config, defaultConfig());
     check(unknown.length === 0,
@@ -311,7 +386,7 @@ export function validateConfig(config) {
             + 'payload channel grants tool-approval authority (core/docs/worker-protocol.md)');
     }
 
-    const worker = config.worker ?? {};
+    const worker = config.worker;
     check(typeof worker.bin === 'string' && worker.bin.length > 0, 'worker.bin must be a path');
     check(Array.isArray(worker.args), 'worker.args must be an array of strings');
     check(worker.args.every((value) => typeof value === 'string'),
@@ -326,8 +401,9 @@ export function validateConfig(config) {
         'worker.confirmationTimeoutMs must be a positive integer');
     for (const key of ['payloadCapacity', 'signalCapacity', 'writeCapacity',
         'initialBackoffMs', 'maxBackoffMs', 'idleTimeoutSeconds', 'stopTimeoutMs',
-        'sigtermGraceMs', 'sigkillGraceMs']) {
-        check(Number.isInteger(worker[key]) && worker[key] >= 0,
+        'sigtermGraceMs', 'sigkillGraceMs'] as const) {
+        const value = worker[key];
+        check(Number.isInteger(value) && value >= 0,
             `worker.${key} must be a nonnegative integer`);
     }
     check(worker.maxBackoffMs >= worker.initialBackoffMs,
@@ -349,9 +425,9 @@ export function validateConfig(config) {
             `providerProfiles.${name}.model must be a nonempty string`);
     }
 
-    check(LAUNCHER_KINDS.includes(config.launcher?.kind),
+    check((LAUNCHER_KINDS as readonly string[]).includes(config.launcher?.kind),
         `launcher.kind must be one of ${LAUNCHER_KINDS.join(', ')}`);
-    check(Array.isArray(config.launcher.command) && config.launcher.command.length > 0
+    check((Array.isArray(config.launcher.command) && config.launcher.command.length > 0)
         || config.launcher.kind !== 'command',
     'launcher.command must be a nonempty template array for the command launcher');
     check(['hub', 'launcher'].includes(config.launcher.config),
@@ -362,7 +438,8 @@ export function validateConfig(config) {
         'launcher.pidFile must be an absolute path');
 
     check(typeof config.mock?.enabled === 'boolean', 'mock.enabled must be a boolean');
-    check(SCENARIOS.includes(config.mock?.scenario), `mock.scenario must be one of ${SCENARIOS.join(', ')}`);
+    check((SCENARIOS as readonly string[]).includes(config.mock?.scenario),
+        `mock.scenario must be one of ${SCENARIOS.join(', ')}`);
     check(Number.isInteger(config.mock?.slowMs) && config.mock.slowMs >= 0,
         'mock.slowMs must be a nonnegative integer');
     if (config.mock.enabled) {
@@ -370,10 +447,11 @@ export function validateConfig(config) {
             `mock.profile "${config.mock.profile}" is not a configured provider profile`);
     }
 
-    const limits = config.limits ?? {};
+    const limits = config.limits;
     for (const key of ['transcriptEvents', 'transcriptBytes', 'logLines', 'logRingBytes',
-        'logBytes', 'logFiles', 'maxMessageBytes']) {
-        check(Number.isInteger(limits[key]) && limits[key] > 0,
+        'logBytes', 'logFiles', 'maxMessageBytes'] as const) {
+        const value = limits[key];
+        check(Number.isInteger(value) && value > 0,
             `limits.${key} must be a positive integer`);
     }
     check(Number.isInteger(limits.confirmIdentityHoldMs) && limits.confirmIdentityHoldMs >= 0,
@@ -387,19 +465,44 @@ export function validateConfig(config) {
     return config;
 }
 
+/** Recursively optional, for the parts of a configuration a caller may set. */
+export type DeepPartial<T> = {
+    [K in keyof T]?: T[K] extends readonly unknown[]
+        ? T[K]
+        : T[K] extends object
+            ? DeepPartial<T[K]>
+            : T[K];
+};
+
+/** What `loadConfig` accepts. */
+export interface LoadConfigOptions {
+    /** Configuration path; when omitted, an existing config beside the package is used. */
+    file?: string;
+    /** Command-line overrides, already shaped like the configuration. */
+    overrides?: DeepPartial<HubConfig>;
+    /** Directory for override path resolution; defaults to the process cwd. */
+    cwd?: string;
+    /** Fail when no configuration file exists. */
+    requireFile?: boolean;
+}
+
+/** What `loadConfig` returns. */
+export interface LoadedConfig {
+    config: HubConfig;
+    file: string | null;
+    baseDir: string;
+    overrideDir: string;
+}
+
 /**
  * Load, merge, resolve, and validate the hub configuration.
- *
- * @param {object} [options]
- * @param {string} [options.file] configuration path; when omitted, an existing
- *   `hub.config.jsonc`/`hub.config.json` beside the package is used if present.
- * @param {object} [options.overrides] command-line overrides, already shaped
- *   like the configuration (relative paths resolve against `cwd`).
- * @param {string} [options.cwd] directory for override path resolution.
- * @param {boolean} [options.requireFile] fail when no configuration file exists.
- * @returns {{config: object, file: string|null, baseDir: string, overrideDir: string}}
  */
-export function loadConfig({ file, overrides = {}, cwd = process.cwd(), requireFile = false } = {}) {
+export function loadConfig({
+    file,
+    overrides = {},
+    cwd = process.cwd(),
+    requireFile = false,
+}: LoadConfigOptions = {}): LoadedConfig {
     let selected = file ? resolve(cwd, file) : null;
     if (!selected) {
         for (const candidate of ['hub.config.jsonc', 'hub.config.json']) {

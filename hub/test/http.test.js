@@ -7,7 +7,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { hubRoot, loadConfig } from '../src/config.js';
+import { hubRoot, loadConfig } from '../src/config.ts';
 import { createHub } from '../src/hub.js';
 import { createLogger } from '../src/log.ts';
 import { resolveStaticPath } from '../src/http/static.ts';

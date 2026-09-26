@@ -15,7 +15,7 @@ import {
     parseConfigText,
     stripJsonComments,
     validateConfig,
-} from '../src/config.js';
+} from '../src/config.ts';
 
 function tempDir() {
     return mkdtempSync(join(tmpdir(), 'simplex-hub-config-'));

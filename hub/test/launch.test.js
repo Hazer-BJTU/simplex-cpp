@@ -5,12 +5,12 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { ConfigError } from '../src/config.js';
+import { ConfigError } from '../src/config.ts';
 import { buildCommandInvocation, expandTemplate } from '../src/launch/command.ts';
-import { persistenceRoot, renderSessionConfig, sessionDir } from '../src/launch/config-render.js';
+import { persistenceRoot, renderSessionConfig, sessionDir } from '../src/launch/config-render.ts';
 import { createLauncher } from '../src/launch/launcher.js';
 import { buildSimplexWorkerInvocation } from '../src/launch/simplex-worker.ts';
-import { normalizeSpec } from '../src/launch/spec.js';
+import { normalizeSpec } from '../src/launch/spec.ts';
 import { createLogger } from '../src/log.ts';
 import { testConfig } from './helpers/hub.js';
 

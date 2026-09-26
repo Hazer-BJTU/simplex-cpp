@@ -23,7 +23,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
-import { hubRoot } from '../src/config.js';
+import { hubRoot } from '../src/config.ts';
 
 const webRoot = join(hubRoot, 'web');
 const jsRoot = join(webRoot, 'js');

@@ -23,7 +23,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, sta
     from 'node:fs';
 import { join } from 'node:path';
 import { LineSplitter, RingBuffer } from '../util/ring.ts';
-import { renderSessionConfig, sessionDir, workerConfigPath } from './config-render.js';
+import { renderSessionConfig, sessionDir, workerConfigPath } from './config-render.ts';
 
 /** Process lifecycle as the panel sees it. */
 export const PROCESS_STATE = {

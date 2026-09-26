@@ -19,7 +19,7 @@
  * declare `launcher.pidFile`; the supervisor then signals that pid instead of
  * the process it spawned. See hub/docs/worker-adapter.md.
  */
-import { LAUNCHER_KINDS } from '../config.js';
+import { LAUNCHER_KINDS } from '../config.ts';
 import { buildCommandInvocation } from './command.ts';
 import { buildSimplexWorkerInvocation } from './simplex-worker.ts';
 

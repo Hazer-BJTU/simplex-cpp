@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { persistenceRoot } from '../src/launch/config-render.js';
+import { persistenceRoot } from '../src/launch/config-render.ts';
 import { IDENTITY } from '../src/state/registry.js';
 import { connectWorker, upgradeStatus, until, workerEvent } from './helpers/worker.js';
 import { startTestHub } from './helpers/hub.js';

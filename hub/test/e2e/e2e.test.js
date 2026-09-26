@@ -15,8 +15,8 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { hubRoot } from '../../src/config.js';
-import { persistenceRoot, sessionDir } from '../../src/launch/config-render.js';
+import { hubRoot } from '../../src/config.ts';
+import { persistenceRoot, sessionDir } from '../../src/launch/config-render.ts';
 import { WORKER_BIN, PROMPTS_DIR, e2eSkip, startE2eHub } from '../helpers/e2e.js';
 import { connectWorker, until } from '../helpers/worker.js';
 

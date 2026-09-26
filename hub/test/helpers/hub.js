@@ -4,7 +4,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hubRoot, loadConfig } from '../../src/config.js';
+import { hubRoot, loadConfig } from '../../src/config.ts';
 import { createHub } from '../../src/hub.js';
 import { createLogger } from '../../src/log.ts';
 

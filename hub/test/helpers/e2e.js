@@ -12,7 +12,7 @@
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { hubRoot } from '../../src/config.js';
+import { hubRoot } from '../../src/config.ts';
 import { startTestHub } from './hub.js';
 
 const repoRoot = join(hubRoot, '..');

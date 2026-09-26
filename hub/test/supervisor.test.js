@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { PROCESS_STATE, isSameProcess, readProcessStartTime } from '../src/launch/supervisor.js';
-import { sessionDir, workerConfigPath } from '../src/launch/config-render.js';
+import { sessionDir, workerConfigPath } from '../src/launch/config-render.ts';
 import { until } from './helpers/worker.js';
 import { startTestHub } from './helpers/hub.js';
 
