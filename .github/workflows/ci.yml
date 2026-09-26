@@ -130,6 +130,13 @@ jobs:
         working-directory: hub
         run: npm run typecheck
 
+      - name: Build panel for HTTP tests
+        # The hub serves web/dist, which is ignored by Git. The HTTP tests
+        # exercise the real static handler and need a fresh bundle in a clean
+        # checkout; a developer's pre-existing dist must not be a prerequisite.
+        working-directory: hub
+        run: npm run build
+
       - name: Test
         # Covers the protocol adapters, the session registry, the supervisor,
         # the panel API, worker-protocol drift against core/docs, and the
@@ -155,6 +162,12 @@ jobs:
   hub-panel:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # Playwright probes the two local web servers over HTTP. A runner's proxy
+      # settings must not intercept 127.0.0.1 or readiness times out even after
+      # Vite has built the panel successfully.
+      NO_PROXY: 127.0.0.1,localhost
+      no_proxy: 127.0.0.1,localhost
     steps:
       - uses: actions/checkout@v4
         with:
