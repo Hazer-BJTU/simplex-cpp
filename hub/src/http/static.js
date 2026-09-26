@@ -34,7 +34,13 @@ export function contentTypeFor(path) {
  * escapes the root or is not a servable path.
  */
 export function resolveStaticPath(root, pathname) {
-    const decoded = decodeURIComponent(pathname);
+    let decoded;
+    try {
+        decoded = decodeURIComponent(pathname);
+    } catch {
+        // A malformed escape is a bad request; the caller answers 400 for null.
+        return null;
+    }
     if (decoded.includes('\0')) return null;
     const relative = normalize(decoded).replace(/^([/\\])+/, '');
     const target = resolve(join(root, relative));

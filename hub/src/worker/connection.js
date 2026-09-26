@@ -234,7 +234,23 @@ export class WorkerConnection {
         if (!envelope.known) {
             this.log.debug(`session ${this.session.id}: unknown event "${envelope.event}"`);
         }
-        this.onEvent?.(envelope, this);
+        this.emit(envelope);
+    }
+
+    /**
+     * Hand a validated envelope to the observer, containing its failure.
+     *
+     * This runs inside the socket's `message` listener, so a throwing observer
+     * would surface as an uncaught exception rather than a rejected promise.
+     * The envelope is already recorded by the time this is called; losing the
+     * observer's reaction is strictly better than losing the hub.
+     */
+    emit(envelope) {
+        try {
+            this.onEvent?.(envelope, this);
+        } catch (error) {
+            this.log.error(`session ${this.session.id}: event observer failed: ${error.message}`, error);
+        }
     }
 
     /** Update gap/duplicate counters from an event's sequence number. */
@@ -312,8 +328,11 @@ export function createWorkerEventRoute({ registry, config, log, onEvent, onConne
             log: log.child(`worker:${session.id}`),
             onEvent,
             onClosed: (closed) => {
-                onConnectionChange?.(session, null);
-                void closed;
+                // A superseded connection closes *after* its replacement is
+                // already attached, so only the connection the session still
+                // holds may report a disconnect. Without this the panel is told
+                // `connected: false` while a live worker is attached.
+                if (session.connection === closed) onConnectionChange?.(session, null);
             },
         });
         const { previous, replaced } = session.attach(connection);

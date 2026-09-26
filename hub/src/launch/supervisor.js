@@ -80,6 +80,36 @@ function delay(ms) {
     });
 }
 
+/** Read a pid from a pid file, or null when there is nothing usable in it. */
+function readPidFile(path) {
+    if (!path) return null;
+    try {
+        const value = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
+        return Number.isInteger(value) && value > 0 ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Trust a pid only while its recorded `/proc` start time still matches.
+ *
+ * Pids are reused, so a pid alone cannot distinguish the worker from an
+ * unrelated process that later took its number. When no start time was recorded
+ * — `/proc` is unavailable off Linux — the pid is used as-is rather than
+ * refusing to stop a worker the hub did start.
+ *
+ * @returns {number|null} the pid to signal, or null when nothing may be signalled.
+ */
+function verifiedTarget(record, pid, startTime, log) {
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    if (typeof startTime !== 'string' || startTime.length === 0) return pid;
+    if (isSameProcess(pid, startTime)) return pid;
+    log.warn(`session ${record.sessionId}: pid ${pid} is no longer the process recorded`
+        + ' for it; refusing to signal it');
+    return null;
+}
+
 /** Rotate a log file when it has grown past its budget. */
 function rotateLog(path, { logBytes, logFiles }) {
     try {
@@ -111,11 +141,20 @@ export class ProcessRecord {
         this.args = invocation.args;
         this.cwd = invocation.cwd;
         this.pidFile = invocation.pidFile;
+        /**
+         * Pid last read from `launcher.pidFile` and the `/proc` start time that
+         * was observed for it. A daemonizing launcher's pid is not the pid the
+         * hub spawned, so it has to be verified on its own terms.
+         */
+        this.pidFilePid = null;
+        this.pidFileStartTime = null;
         this.processGroupKilled = false;
         this.logPath = logPath;
         this.logStream = logStream;
         this.logs = logs;
         this.child = null;
+        /** Interval watching an adopted process, when one was needed. */
+        this.monitor = null;
         this.exited = new Promise((resolve) => { this.resolveExit = resolve; });
     }
 
@@ -190,7 +229,14 @@ export class WorkerSupervisor {
         }
         const specSource = rawSpec ?? session.spec ?? {};
         const directory = sessionDir(this.config, session.id);
-        mkdirSync(directory, { recursive: true });
+        // Filesystem failures are answered rather than thrown: this runs from a
+        // panel WebSocket message, where a rejection would end the hub.
+        try {
+            mkdirSync(directory, { recursive: true });
+        } catch (error) {
+            return { ok: false, error: `cannot create ${directory}: ${error.message}`,
+                config: specSource };
+        }
         const configPath = workerConfigPath(this.config, session.id);
         let rendered;
         try {
@@ -204,10 +250,15 @@ export class WorkerSupervisor {
         } catch (error) {
             return { ok: false, error: `invalid session spec: ${error.message}`, config: specSource };
         }
-        session.spec = rendered.spec;
         // The path is always written, so an operator can inspect what a
         // launcher-owned configuration would have contained.
-        writeFileSync(configPath, `${JSON.stringify(rendered.document, null, 2)}\n`);
+        try {
+            writeFileSync(configPath, `${JSON.stringify(rendered.document, null, 2)}\n`);
+        } catch (error) {
+            return { ok: false, error: `cannot write ${configPath}: ${error.message}`,
+                config: rendered.spec };
+        }
+        session.spec = rendered.spec;
 
         let invocation;
         try {
@@ -231,6 +282,12 @@ export class WorkerSupervisor {
             byteLimit: this.config.limits.logRingBytes,
         });
         const logStream = createWriteStream(logPath, { flags: 'a' });
+        // An async open or write failure (ENOSPC, EACCES, a rotated-away
+        // directory) emits 'error'; without a listener that is an uncaught
+        // exception, and the worker's output is not worth ending the hub for.
+        logStream.on('error', (error) => {
+            this.log.warn(`session ${session.id}: worker log stream failed: ${error.message}`);
+        });
         const record = new ProcessRecord({ sessionId: session.id, invocation, logPath, logStream, logs });
         session.process = record;
 
@@ -300,6 +357,12 @@ export class WorkerSupervisor {
         try {
             record.logStream.end();
         } catch { /* already closed */ }
+        // `finish` is reachable from paths an adopted record's own monitor does
+        // not own, so the interval is released here rather than only there.
+        if (record.monitor) {
+            clearInterval(record.monitor);
+            record.monitor = null;
+        }
         record.resolveExit(record);
         this.log.info(
             `session ${record.sessionId}: worker process ${record.state}`
@@ -321,7 +384,10 @@ export class WorkerSupervisor {
     /** Send a signal to the worker process (or its pid file when declared). */
     signalProcess(record, signal, { processGroup = false } = {}) {
         const pid = this.targetPid(record);
-        if (!pid) return false;
+        if (!pid) {
+            this.log.warn(`session ${record.sessionId}: ${signal} not sent: no verified pid to signal`);
+            return false;
+        }
         try {
             if (processGroup) {
                 process.kill(-pid, signal);
@@ -337,21 +403,25 @@ export class WorkerSupervisor {
     }
 
     /**
-     * Pid that signals should target.
+     * Pid that signals should target, or null when nothing may be signalled.
      *
      * A launcher that daemonizes writes its real pid to `launcher.pidFile`; the
-     * pid the hub spawned would then name a short-lived wrapper.
+     * pid the hub spawned would then name a short-lived wrapper. Either
+     * candidate is signalled only while its `/proc` start time still matches
+     * what was recorded, so a stale pid file cannot become a signal to whoever
+     * reused the pid.
      */
     targetPid(record) {
-        if (record.pidFile) {
-            try {
-                const value = Number.parseInt(readFileSync(record.pidFile, 'utf8').trim(), 10);
-                if (Number.isInteger(value) && value > 0) return value;
-            } catch {
-                // Fall back to the spawned pid.
-            }
+        const declared = readPidFile(record.pidFile);
+        if (declared === null) {
+            return verifiedTarget(record, record.pid, record.pidStartTime, this.log);
         }
-        return record.pid;
+        if (declared !== record.pidFilePid) {
+            // First sighting of this pid: record which incarnation it is.
+            record.pidFilePid = declared;
+            record.pidFileStartTime = readProcessStartTime(declared);
+        }
+        return verifiedTarget(record, declared, record.pidFileStartTime, this.log);
     }
 
     /**
@@ -481,8 +551,10 @@ export class WorkerSupervisor {
                     this.finish(record, { exitCode: null, signal: null });
                 }
             }, 2000);
+            // Inside the guard: an unconditional unref would throw whenever the
+            // monitor was never created.
+            record.monitor.unref?.();
         }
-        record.monitor.unref?.();
         session.process = record;
         this.log.info(`session ${session.id}: adopted worker pid ${record.pid} from a previous hub run`);
         return true;

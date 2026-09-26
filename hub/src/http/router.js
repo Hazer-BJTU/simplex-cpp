@@ -13,6 +13,23 @@ function segments(pathname) {
 }
 
 /**
+ * Percent-decode one captured path segment.
+ *
+ * `decodeURIComponent` throws on a malformed escape such as `%ZZ`. That is a
+ * client error, so it is surfaced with a 400 status instead of reaching the
+ * server's catch-all as an opaque 500 with the raw URIError text.
+ */
+function decodeParam(segment) {
+    try {
+        return decodeURIComponent(segment);
+    } catch {
+        const error = new Error('malformed percent-encoding in the request path');
+        error.status = 400;
+        throw error;
+    }
+}
+
+/**
  * @returns {{
  *   add: (method: string, pattern: string, handler: Function) => void,
  *   find: (method: string, pathname: string) => ({handler: Function, params: object}|null),
@@ -42,7 +59,7 @@ export function createRouter() {
                 for (let index = 0; index < route.parts.length; index += 1) {
                     const expected = route.parts[index];
                     if (expected.startsWith(':')) {
-                        params[expected.slice(1)] = decodeURIComponent(parts[index]);
+                        params[expected.slice(1)] = decodeParam(parts[index]);
                     } else if (expected !== parts[index]) {
                         matched = false;
                         break;

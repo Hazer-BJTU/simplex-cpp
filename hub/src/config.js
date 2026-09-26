@@ -147,6 +147,44 @@ function isPlainObject(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Subtrees whose shape belongs to the user rather than to the hub.
+ *
+ * A provider profile is handed to the worker largely as written, so its keys
+ * are the plugin's vocabulary, not the hub's.
+ */
+const OPAQUE_CONFIG_PATHS = new Set(['providerProfiles']);
+
+/**
+ * Collect configuration keys that the hub does not know.
+ *
+ * The defaults *are* the schema. Deriving it by walking them means a new option
+ * cannot be added without automatically being accepted, and a misspelled or
+ * stale key is reported instead of being merged in and silently ignored — the
+ * failure mode that makes a typo in `limits.logLines` look like a hub bug.
+ *
+ * @param {object} value merged configuration.
+ * @param {object} shape default configuration.
+ * @param {string} [prefix] dotted path of `value`, for messages.
+ * @returns {string[]} dotted paths of unknown keys.
+ */
+function unknownConfigKeys(value, shape, prefix = '') {
+    const found = [];
+    for (const [key, item] of Object.entries(value)) {
+        const path = prefix ? `${prefix}.${key}` : key;
+        const expected = shape?.[key];
+        if (expected === undefined) {
+            found.push(path);
+            continue;
+        }
+        if (OPAQUE_CONFIG_PATHS.has(path)) continue;
+        if (isPlainObject(item) && isPlainObject(expected)) {
+            found.push(...unknownConfigKeys(item, expected, path));
+        }
+    }
+    return found;
+}
+
 /** Recursively overlay `override` onto `base`; arrays replace, objects merge. */
 export function mergeConfig(base, override) {
     if (!isPlainObject(override)) return override;
@@ -254,6 +292,9 @@ function check(condition, message) {
 /** Validate a merged configuration; throws ConfigError with a specific reason. */
 export function validateConfig(config) {
     check(isPlainObject(config), 'configuration must be an object');
+    const unknown = unknownConfigKeys(config, defaultConfig());
+    check(unknown.length === 0,
+        `unknown configuration ${unknown.length === 1 ? 'key' : 'keys'}: ${unknown.join(', ')}`);
     check(typeof config.listen?.host === 'string' && config.listen.host.length > 0,
         'listen.host must be a nonempty string');
     const port = config.listen?.port;

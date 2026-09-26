@@ -99,18 +99,38 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extr
 
     /** Panel API first: the worker routes report through its hooks. */
     let panel = null;
+
+    /**
+     * Run one observer without letting its failure reach the caller.
+     *
+     * These hooks fan out from socket callbacks. A hook that throws would
+     * otherwise become an uncaught exception in the middle of the worker's own
+     * message handling, so each one is contained separately: a broken panel
+     * observer must not stop the hub from recording an event, and must not stop
+     * the other observers either.
+     */
+    const safely = (label, run) => {
+        try {
+            run();
+        } catch (error) {
+            log.error(`${label} hook failed: ${error.message}`, error);
+        }
+    };
+
     const workerEvents = createWorkerEventRoute({
         registry,
         config,
         log,
         onEvent: (envelope, connection) => {
             connection.log.debug(`event ${envelope.event} (seq ${envelope.sequence})`);
-            panel?.hooks.onEvent(envelope, connection);
-            extraHooks.onEvent?.(envelope, connection);
+            safely('panel onEvent', () => panel?.hooks.onEvent(envelope, connection));
+            safely('extra onEvent', () => extraHooks.onEvent?.(envelope, connection));
         },
         onConnectionChange: (session, connection) => {
-            panel?.hooks.onConnectionChange(session, connection);
-            extraHooks.onConnectionChange?.(session, connection);
+            safely('panel onConnectionChange',
+                () => panel?.hooks.onConnectionChange(session, connection));
+            safely('extra onConnectionChange',
+                () => extraHooks.onConnectionChange?.(session, connection));
         },
     });
     http.useUpgrade(workerEvents);
@@ -120,12 +140,12 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extr
         config,
         log,
         onPrompt: (prompt) => {
-            panel?.hooks.onPrompt(prompt);
-            extraHooks.onPrompt?.(prompt);
+            safely('panel onPrompt', () => panel?.hooks.onPrompt(prompt));
+            safely('extra onPrompt', () => extraHooks.onPrompt?.(prompt));
         },
         onSettled: (prompt, outcome) => {
-            panel?.hooks.onPromptSettled(prompt, outcome);
-            extraHooks.onPromptSettled?.(prompt, outcome);
+            safely('panel onPromptSettled', () => panel?.hooks.onPromptSettled(prompt, outcome));
+            safely('extra onPromptSettled', () => extraHooks.onPromptSettled?.(prompt, outcome));
         },
     });
     http.useUpgrade(confirmations);
@@ -140,8 +160,8 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extr
         endpointsFor,
         mockProvider: () => (mock ? { baseUrl: mock.baseUrl } : null),
         onProcessChange: (session, record) => {
-            panel?.hooks.onProcessChange(session, record);
-            extraHooks.onProcessChange?.(session, record);
+            safely('panel onProcessChange', () => panel?.hooks.onProcessChange(session, record));
+            safely('extra onProcessChange', () => extraHooks.onProcessChange?.(session, record));
         },
     });
 

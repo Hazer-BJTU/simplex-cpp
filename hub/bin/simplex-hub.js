@@ -129,8 +129,18 @@ export async function main(argv = process.argv.slice(2)) {
         log.info(`received ${signal}; shutting down`);
         await hub.stop();
     };
-    process.on('SIGINT', () => { void stop('SIGINT'); });
-    process.on('SIGTERM', () => { void stop('SIGTERM'); });
+    // A `void`-ed rejection is fatal in Node, which during shutdown means a
+    // stack trace instead of an exit code. Report it and leave deliberately:
+    // a half-finished shutdown has already skipped the listener teardown, so
+    // the process would otherwise sit there holding the port.
+    const onSignal = (signal) => {
+        stop(signal).catch((error) => {
+            log.error(`shutdown failed: ${error.message}`);
+            process.exit(1);
+        });
+    };
+    process.on('SIGINT', () => onSignal('SIGINT'));
+    process.on('SIGTERM', () => onSignal('SIGTERM'));
     return { hub, address, stop };
 }
 

@@ -19,6 +19,7 @@ import { WebSocketServer } from 'ws';
 import { authorizePanel, presentedToken, safeEqual } from '../http/auth.js';
 import { readJsonBody, sendError, sendJson } from '../http/server.js';
 import { persistenceRoot } from '../launch/config-render.js';
+import { normalizeSpec } from '../launch/spec.js';
 import { buildPayload, buildSignal, newRequestId } from '../protocol/messages.js';
 import { isValidSessionId } from '../state/session-id.js';
 
@@ -194,6 +195,31 @@ export function createPanelApi({
         return authorizePanel(config, req, url).ok;
     }
 
+    /**
+     * Check a session spec before the session is stored.
+     *
+     * A spec that cannot produce a worker is refused here, while the operator is
+     * still looking at the form, instead of being persisted and only surfacing
+     * later as a start failure. What gets stored is deliberately unchanged: the
+     * defaults are applied at start, which is also when the resolved spec is
+     * echoed back to the panel.
+     *
+     * @param {unknown} rawSpec the `spec` field as the client sent it.
+     * @returns {string|null} an error message, or null when the spec is usable.
+     */
+    function checkSpec(rawSpec) {
+        if (rawSpec === undefined || rawSpec === null) return null;
+        if (typeof rawSpec !== 'object' || Array.isArray(rawSpec)) {
+            return 'spec must be a JSON object';
+        }
+        try {
+            normalizeSpec(config, rawSpec);
+            return null;
+        } catch (error) {
+            return error.message;
+        }
+    }
+
     /** Read the tail of a session's on-disk snapshot, read-only. */
     function readSnapshot(session) {
         const directory = join(persistenceRoot(config), session.id);
@@ -296,9 +322,15 @@ export function createPanelApi({
                 sendError(res, 409, 'session_exists', `session "${id}" already exists`);
                 return;
             }
+            const rawSpec = parsed.spec ?? {};
+            const specError = checkSpec(rawSpec);
+            if (specError) {
+                sendError(res, 400, 'invalid_session', specError);
+                return;
+            }
             try {
-                const session = registry.create(id, parsed.spec ?? {});
-                session.spec = parsed.spec ?? {};
+                const session = registry.create(id, rawSpec);
+                session.spec = rawSpec;
                 persist();
                 broadcastSession(session);
                 sendJson(res, 201, { session: session.describe() });
@@ -488,6 +520,14 @@ export function createPanelApi({
                     });
                     return;
                 }
+                const specError = checkSpec(message.spec);
+                if (specError) {
+                    send(client, {
+                        type: 'error', error: 'invalid_session',
+                        message: specError, request: message,
+                    });
+                    return;
+                }
                 const created = registry.create(sessionId, message.spec ?? {});
                 created.spec = message.spec ?? {};
                 persist();
@@ -614,7 +654,16 @@ export function createPanelApi({
                 });
                 return;
             }
-            void handleMessage(client, data);
+            // A rejected handler must not escape: the hub treats an unhandled
+            // rejection as fatal, and a message it cannot answer is still far
+            // better than a hub that stops serving every other session.
+            handleMessage(client, data).catch((error) => {
+                log.error(`panel message failed: ${error.message}`, error);
+                send(client, {
+                    type: 'error', error: 'internal_error',
+                    message: 'the hub failed to process that message',
+                });
+            });
         });
         ws.on('close', () => clients.delete(client));
         ws.on('error', (error) => log.debug(`panel socket error: ${error.message}`));

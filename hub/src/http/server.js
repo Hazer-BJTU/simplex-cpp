@@ -57,6 +57,37 @@ export async function readJsonBody(req, limit) {
 }
 
 /**
+ * Parse a request target against the authority the client presented.
+ *
+ * `req.headers.host` is client-controlled and `new URL` throws on a malformed
+ * authority, so this never lets a bad `Host` header escape as an exception —
+ * the caller answers 400 instead. That matters because the request handler runs
+ * before any authentication, and an unhandled rejection ends the process.
+ *
+ * An origin-form target with no `Host` header at all is still parsed, against a
+ * fixed authority, since the hub's routing never consults the host.
+ *
+ * @returns {URL|null} null when the target cannot be parsed.
+ */
+export function requestUrl(req) {
+    const target = typeof req.url === 'string' && req.url.length > 0 ? req.url : '/';
+    const host = req.headers?.host;
+    if (typeof host === 'string' && host.length > 0) {
+        try {
+            return new URL(target, `http://${host}`);
+        } catch {
+            // A malformed authority is a client error, not a crash.
+            return null;
+        }
+    }
+    try {
+        return new URL(target, 'http://localhost');
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Create the hub's HTTP front door. Call `listen()` to bind it.
  *
  * @param {object} options
@@ -71,11 +102,21 @@ export function createHttpServer({ config, log, hubRoot }) {
     const staticRoot = join(hubRoot, 'web');
 
     const server = createServer((req, res) => {
-        void handleRequest(req, res);
+        // Never `void` a request handler: a rejection that escapes it would end
+        // the hub, and this callback runs before authentication.
+        handleRequest(req, res).catch((error) => {
+            log.error('request failed', error);
+            if (!res.headersSent) sendError(res, 500, 'internal_error', 'request failed');
+            else res.destroy();
+        });
     });
 
     async function handleRequest(req, res) {
-        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        const url = requestUrl(req);
+        if (!url) {
+            sendError(res, 400, 'bad_request', 'malformed request target');
+            return;
+        }
         try {
             if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
                 const found = router.find(req.method ?? 'GET', url.pathname);
@@ -103,7 +144,13 @@ export function createHttpServer({ config, log, hubRoot }) {
     }
 
     server.on('upgrade', (req, socket, head) => {
-        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        const url = requestUrl(req);
+        if (!url) {
+            log.debug('rejected upgrade with a malformed request target');
+            socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+            socket.destroy();
+            return;
+        }
         for (const handler of upgradeHandlers) {
             let params = null;
             try {
@@ -112,8 +159,17 @@ export function createHttpServer({ config, log, hubRoot }) {
                 log.error('upgrade matcher failed', error);
             }
             if (!params) continue;
+            // This listener is synchronous, so a throwing handler would become
+            // an uncaughtException rather than a rejected promise. Both shapes
+            // are contained here.
             try {
-                handler.handle({ req, socket, head, url, params });
+                const outcome = handler.handle({ req, socket, head, url, params });
+                if (outcome && typeof outcome.catch === 'function') {
+                    outcome.catch((error) => {
+                        log.error('upgrade handler failed', error);
+                        socket.destroy();
+                    });
+                }
             } catch (error) {
                 log.error('upgrade handler failed', error);
                 socket.destroy();
