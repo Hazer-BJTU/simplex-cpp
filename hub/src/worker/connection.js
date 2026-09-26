@@ -23,7 +23,7 @@
 import { WebSocketServer } from 'ws';
 import { presentedToken, safeEqual } from '../http/auth.ts';
 import { buildSignal } from '../protocol/messages.ts';
-import { parseEventEnvelope } from '../protocol/events.js';
+import { parseEventEnvelope } from '../protocol/events.ts';
 import { isValidSessionId } from '../state/session-id.ts';
 
 /** Upgrade path pattern for the persistent event connection. */

@@ -10,7 +10,7 @@ import {
     isKnownEvent,
     parseEventEnvelope,
     readUnsignedInteger,
-} from '../src/protocol/events.js';
+} from '../src/protocol/events.ts';
 import { workerEvent } from './helpers/worker.js';
 
 describe('event vocabulary', () => {

@@ -14,6 +14,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import type { Logger } from '../log.ts';
 
 /** Bumped when the stored shape changes incompatibly. */
 export const STATE_VERSION = 1;
@@ -21,14 +22,84 @@ export const STATE_VERSION = 1;
 /** Delay before a scheduled write reaches the disk. */
 const SAVE_DEBOUNCE_MS = 200;
 
+/** A process as it is written to `hub.json`. Snake case is the on-disk format. */
+export interface StoredProcess {
+    pid: number;
+    pid_start_time: string | null;
+    started_at: string;
+    command: string;
+    args: string[];
+    cwd: string;
+    pid_file: string | null;
+    log_path: string | null;
+    state: string;
+}
+
+/** One session as it is written to `hub.json`. */
+export interface StoredSession {
+    id: string;
+    token: string;
+    spec: Record<string, unknown>;
+    created_at: string;
+    process: StoredProcess | null;
+}
+
+/** The document this module writes. */
+export interface StateDocument {
+    version: number;
+    saved_at: string;
+    sessions: StoredSession[];
+}
+
+/**
+ * The document as it is read back.
+ *
+ * `sessions` is `unknown[]` on purpose. The file may have been edited by hand or
+ * written by an older hub, so trusting its shape at the type level would move a
+ * runtime check into a comment. The caller narrows each entry.
+ */
+export interface LoadedState {
+    version: number;
+    sessions: unknown[];
+}
+
+/** The slice of a session this module persists. */
+export interface PersistableProcess {
+    pid: number | null;
+    pidStartTime: string | null;
+    startedAt: string;
+    command: string;
+    args: string[];
+    cwd: string;
+    pidFile?: string | null;
+    logPath?: string | null;
+    state: string;
+}
+
+/** The slice of a session record this module persists. */
+export interface PersistableSession {
+    id: string;
+    token: string;
+    spec?: Record<string, unknown>;
+    createdAt: string;
+    process?: PersistableProcess | null;
+}
+
+/** Everything `HubState` needs. */
+export interface HubStateOptions {
+    config: { dataDir: string };
+    log: Logger;
+}
+
 /** Durable hub state: sessions, tokens, and process identity. */
 export class HubState {
-    /**
-     * @param {object} options
-     * @param {object} options.config hub configuration.
-     * @param {object} options.log hub logger.
-     */
-    constructor({ config, log }) {
+    readonly config: { dataDir: string };
+    readonly log: Logger;
+    readonly path: string;
+    timer: NodeJS.Timeout | null;
+    pending: PersistableSession[] | null;
+
+    constructor({ config, log }: HubStateOptions) {
         this.config = config;
         this.log = log;
         this.path = join(config.dataDir, 'hub.json');
@@ -43,25 +114,29 @@ export class HubState {
      * treated as empty rather than preventing startup: the worker snapshots are
      * the authoritative conversation state, and refusing to boot would make a
      * damaged bookkeeping file unrecoverable.
-     *
-     * @returns {{version: number, sessions: object[]}}
      */
-    load() {
+    load(): LoadedState {
         if (!existsSync(this.path)) return { version: STATE_VERSION, sessions: [] };
         try {
-            const parsed = JSON.parse(readFileSync(this.path, 'utf8'));
-            if (typeof parsed !== 'object' || parsed === null || !Array.isArray(parsed.sessions)) {
+            const parsed: unknown = JSON.parse(readFileSync(this.path, 'utf8'));
+            if (typeof parsed !== 'object' || parsed === null
+                || !Array.isArray((parsed as { sessions?: unknown }).sessions)) {
                 throw new Error('state file has no session list');
             }
-            return { version: parsed.version ?? STATE_VERSION, sessions: parsed.sessions };
+            const document = parsed as { version?: unknown; sessions: unknown[] };
+            return {
+                version: typeof document.version === 'number' ? document.version : STATE_VERSION,
+                sessions: document.sessions,
+            };
         } catch (error) {
-            this.log.error(`could not read ${this.path}: ${error.message}; starting empty`);
+            const message = error instanceof Error ? error.message : String(error);
+            this.log.error(`could not read ${this.path}: ${message}; starting empty`);
             return { version: STATE_VERSION, sessions: [] };
         }
     }
 
     /** Build the document to persist for the given sessions. */
-    document(sessions) {
+    document(sessions: PersistableSession[]): StateDocument {
         return {
             version: STATE_VERSION,
             saved_at: new Date().toISOString(),
@@ -88,7 +163,7 @@ export class HubState {
     }
 
     /** Schedule a debounced save. Repeated calls collapse into one write. */
-    schedule(sessions) {
+    schedule(sessions: PersistableSession[]): void {
         this.pending = sessions;
         if (this.timer) return;
         this.timer = setTimeout(() => {
@@ -101,7 +176,7 @@ export class HubState {
     }
 
     /** Write state immediately, atomically. */
-    save(sessions) {
+    save(sessions: PersistableSession[]): boolean {
         try {
             mkdirSync(dirname(this.path), { recursive: true });
             const temporary = `${this.path}.tmp`;
@@ -109,13 +184,14 @@ export class HubState {
             renameSync(temporary, this.path);
             return true;
         } catch (error) {
-            this.log.error(`could not save ${this.path}: ${error.message}`);
+            const message = error instanceof Error ? error.message : String(error);
+            this.log.error(`could not save ${this.path}: ${message}`);
             return false;
         }
     }
 
     /** Flush a pending save and stop the timer. */
-    flush(sessions) {
+    flush(sessions?: PersistableSession[]): boolean {
         if (this.timer) {
             clearTimeout(this.timer);
             this.timer = null;

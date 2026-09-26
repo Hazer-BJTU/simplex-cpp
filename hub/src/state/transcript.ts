@@ -13,20 +13,46 @@
  */
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import type { WriteStream } from 'node:fs';
 import { RingBuffer } from '../util/ring.ts';
+import type { Logger } from '../log.ts';
+
+/**
+ * An envelope as far as the transcript cares.
+ *
+ * The transcript reads `bytes` and writes `hub_sequence`, so it is typed by what
+ * it touches rather than by the full envelope shape — what a panel sees in an
+ * envelope is `shared/protocol.ts`'s business, not this module's.
+ */
+export interface TranscriptEnvelope {
+    bytes?: number;
+    hub_sequence?: number;
+    [field: string]: unknown;
+}
+
+/** Options for one session's transcript. */
+export interface SessionTranscriptOptions {
+    sessionId: string;
+    /** Retained envelopes. */
+    limit: number;
+    /** Retained wire bytes; zero disables the byte budget. */
+    byteLimit?: number;
+    /** JSONL path; omit to keep memory only. */
+    filePath?: string | null;
+}
 
 /** One session's bounded event history plus its append-only log. */
 export class SessionTranscript {
-    /**
-     * @param {object} options
-     * @param {string} options.sessionId
-     * @param {number} options.limit retained envelopes.
-     * @param {number} [options.byteLimit] retained wire bytes.
-     * @param {string} [options.filePath] JSONL path; omit to keep memory only.
-     */
-    constructor({ sessionId, limit, byteLimit = 0, filePath }) {
+    readonly sessionId: string;
+    readonly buffer: RingBuffer<TranscriptEnvelope>;
+    readonly filePath: string | null;
+    stream: WriteStream | null;
+    sequence: number;
+    written: number;
+
+    constructor({ sessionId, limit, byteLimit = 0, filePath }: SessionTranscriptOptions) {
         this.sessionId = sessionId;
-        this.buffer = new RingBuffer({
+        this.buffer = new RingBuffer<TranscriptEnvelope>({
             limit,
             byteLimit,
             sizeOf: (envelope) => envelope.bytes ?? 0,
@@ -39,9 +65,10 @@ export class SessionTranscript {
 
     /**
      * Record one envelope, assigning its hub sequence number.
-     * @returns {object} the same envelope, with `hub_sequence` set.
+     *
+     * @returns the same envelope, with `hub_sequence` set.
      */
-    append(envelope) {
+    append<T extends TranscriptEnvelope>(envelope: T): T {
         this.sequence += 1;
         envelope.hub_sequence = this.sequence;
         this.buffer.push(envelope);
@@ -50,7 +77,7 @@ export class SessionTranscript {
     }
 
     /** Append one line to the JSONL log, creating the file on first use. */
-    write(envelope) {
+    write(envelope: TranscriptEnvelope): void {
         if (!this.filePath) return;
         try {
             if (!this.stream) {
@@ -68,31 +95,32 @@ export class SessionTranscript {
 
     /**
      * Envelopes after a hub sequence number.
-     * @param {number} since exclusive lower bound; 0 returns everything held.
-     * @param {number} [limit] maximum envelopes returned.
+     *
+     * @param since exclusive lower bound; 0 returns everything held.
+     * @param limit maximum envelopes returned; 0 returns all of them.
      */
-    since(since = 0, limit = 0) {
-        const items = this.buffer.toArray().filter((item) => item.hub_sequence > since);
+    since(since = 0, limit = 0): TranscriptEnvelope[] {
+        const items = this.buffer.toArray().filter((item) => (item.hub_sequence ?? 0) > since);
         return limit > 0 ? items.slice(-limit) : items;
     }
 
     /** Everything currently retained. */
-    toArray() {
+    toArray(): TranscriptEnvelope[] {
         return this.buffer.toArray();
     }
 
     /** Number of retained envelopes. */
-    get size() {
+    get size(): number {
         return this.buffer.size;
     }
 
     /** Envelopes dropped because the ring is full. */
-    get dropped() {
+    get dropped(): number {
         return this.buffer.dropped;
     }
 
     /** Close the JSONL stream. */
-    close() {
+    close(): void {
         try {
             this.stream?.end();
         } catch { /* already closed */ }
@@ -100,21 +128,32 @@ export class SessionTranscript {
     }
 }
 
+/** The slice of hub configuration the transcript store reads. */
+export interface TranscriptStoreConfig {
+    dataDir: string;
+    limits: { transcriptEvents: number; transcriptBytes: number };
+}
+
+/** Everything `TranscriptStore` needs. */
+export interface TranscriptStoreOptions {
+    config: TranscriptStoreConfig;
+    log: Logger;
+}
+
 /** Transcript store for every session the hub knows. */
 export class TranscriptStore {
-    /**
-     * @param {object} options
-     * @param {object} options.config hub configuration.
-     * @param {object} options.log hub logger.
-     */
-    constructor({ config, log }) {
+    readonly config: TranscriptStoreConfig;
+    readonly log: Logger;
+    readonly transcripts: Map<string, SessionTranscript>;
+
+    constructor({ config, log }: TranscriptStoreOptions) {
         this.config = config;
         this.log = log;
         this.transcripts = new Map();
     }
 
     /** Transcript for a session, created on first use. */
-    get(sessionId) {
+    get(sessionId: string): SessionTranscript {
         let transcript = this.transcripts.get(sessionId);
         if (!transcript) {
             transcript = new SessionTranscript({
@@ -129,13 +168,13 @@ export class TranscriptStore {
     }
 
     /** Drop a session's transcript and close its log. */
-    remove(sessionId) {
+    remove(sessionId: string): void {
         this.transcripts.get(sessionId)?.close();
         this.transcripts.delete(sessionId);
     }
 
     /** Close every transcript. */
-    close() {
+    close(): void {
         for (const transcript of this.transcripts.values()) transcript.close();
         this.transcripts.clear();
     }

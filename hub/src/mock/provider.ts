@@ -21,73 +21,119 @@
  */
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import type { Logger } from '../log.ts';
 
 /** Scenario names accepted by the configuration and the model-name mapping. */
-export const SCENARIOS = ['auto', 'text', 'echo', 'slow', 'error'];
+export const SCENARIOS = ['auto', 'text', 'echo', 'slow', 'error'] as const;
+
+/** One scripted model behaviour. */
+export type Scenario = (typeof SCENARIOS)[number];
 
 /** Default command proposed in the `auto` scenario. */
 const DEFAULT_TOOL_COMMAND = "printf 'mock stdout\\n'; printf 'mock stderr\\n' >&2; "
     + 'touch mock-tool-marker.txt';
 
-/** Parse `host:port`, accepting bracketed IPv6 hosts. */
-export function parseAddress(text) {
+/** A resolved listen address. */
+export interface MockAddress {
+    host: string;
+    port: number;
+}
+
+/**
+ * Parse `host:port`, accepting bracketed IPv6 hosts.
+ *
+ * Duplicated from the CLI's parser on purpose: this module is a fixture and
+ * should not drag the hub's argument handling into a configuration file's
+ * dependency graph.
+ */
+export function parseAddress(text: unknown): MockAddress {
     const match = /^(?:\[(?<v6>[^\]]+)\]|(?<host>[^:]*)):(?<port>\d+)$/.exec(String(text).trim());
-    if (!match) throw new Error(`mock.listen expects host:port, got "${text}"`);
+    if (!match) throw new Error(`mock.listen expects host:port, got "${String(text)}"`);
     return {
-        host: match.groups.v6 ?? match.groups.host,
-        port: Number.parseInt(match.groups.port, 10),
+        host: (match.groups?.v6 ?? match.groups?.host) as string,
+        port: Number.parseInt(match.groups?.port as string, 10),
     };
 }
 
 /** Map a requested model name onto a scenario. */
-export function scenarioForModel(model, fallback = 'auto') {
+export function scenarioForModel(model: unknown, fallback: Scenario = 'auto'): Scenario {
     if (typeof model !== 'string' || !model.startsWith('mock-')) return fallback;
     const suffix = model.slice('mock-'.length);
+    // `flash` and `tool` are aliases rather than scenarios: they name the model
+    // a profile happens to use, not a behaviour.
     if (suffix === 'flash' || suffix === 'auto' || suffix === 'tool') return 'auto';
-    return SCENARIOS.includes(suffix) ? suffix : fallback;
+    return (SCENARIOS as readonly string[]).includes(suffix) ? (suffix as Scenario) : fallback;
 }
 
 /** Sleep helper. */
-function delay(ms) {
+function delay(ms: number): Promise<void> {
     return new Promise((resolve) => {
         const timer = setTimeout(resolve, ms);
         timer.unref?.();
     });
 }
 
+/** A chat-completions request, as far as this fixture reads it. */
+interface ChatRequest {
+    model?: unknown;
+    messages?: Array<{ role?: string; content?: unknown }>;
+}
+
+/** What one scenario answers with: text, or a tool call to propose. */
+interface ScenarioDelta {
+    text?: string;
+    toolCall?: Record<string, unknown>;
+}
+
+/** Everything `MockProvider` needs. */
+export interface MockProviderOptions {
+    log: Logger;
+    /** Fallback scenario for a model name that maps to nothing. */
+    scenario?: Scenario;
+    /** Delay used by the `slow` scenario. */
+    slowMs?: number;
+    /** Command proposed by `auto`. */
+    toolCommand?: string;
+    /** Its runtime hint. */
+    toolExpectedRuntimeMs?: number;
+}
+
 /** Offline chat-completions server. */
 export class MockProvider {
-    /**
-     * @param {object} options
-     * @param {object} options.log hub logger.
-     * @param {string} [options.scenario] fallback scenario for unknown models.
-     * @param {number} [options.slowMs] delay used by the `slow` scenario.
-     * @param {string} [options.toolCommand] command proposed by `auto`.
-     * @param {number} [options.toolExpectedRuntimeMs] its runtime hint.
-     */
+    readonly log: Logger;
+    readonly scenario: Scenario;
+    readonly slowMs: number;
+    readonly toolCommand: string;
+    readonly toolExpectedRuntimeMs: number;
+    server: Server | null;
+    baseUrl: string | null;
+    /** Every request body received, newest last (bounded). */
+    readonly requests: ChatRequest[];
+    readonly failures: Error[];
+
     constructor({
         log,
         scenario = 'auto',
         slowMs = 1500,
         toolCommand = DEFAULT_TOOL_COMMAND,
         toolExpectedRuntimeMs = 1000,
-    }) {
+    }: MockProviderOptions) {
         this.log = log;
-        this.scenario = SCENARIOS.includes(scenario) ? scenario : 'auto';
+        this.scenario = (SCENARIOS as readonly string[]).includes(scenario) ? scenario : 'auto';
         this.slowMs = slowMs;
         this.toolCommand = toolCommand;
         this.toolExpectedRuntimeMs = toolExpectedRuntimeMs;
         this.server = null;
         this.baseUrl = null;
-        /** Every request body received, newest last (bounded). */
         this.requests = [];
         this.failures = [];
     }
 
     /** Bind the listener and record the resolved base URL. */
-    async start({ host = '127.0.0.1', port = 0 } = {}) {
+    async start({ host = '127.0.0.1', port = 0 }: Partial<MockAddress> = {}): Promise<string> {
         this.server = createServer((req, res) => {
-            void this.handle(req, res).catch((error) => {
+            void this.handle(req, res).catch((error: Error) => {
                 this.failures.push(error);
                 this.log.error(`mock provider request failed: ${error.message}`);
                 if (!res.headersSent) {
@@ -96,41 +142,45 @@ export class MockProvider {
                 res.end('{"error":"mock provider failure"}');
             });
         });
-        await new Promise((resolve, reject) => {
-            this.server.once('error', reject);
-            this.server.listen(port, host, () => {
-                this.server.removeListener('error', reject);
+        const server = this.server;
+        await new Promise<void>((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(port, host, () => {
+                server.removeListener('error', reject);
                 resolve();
             });
         });
-        const address = this.server.address();
+        const address = server.address();
+        if (address === null || typeof address === 'string') {
+            throw new Error('mock provider has no bound port');
+        }
         this.baseUrl = `http://${host}:${address.port}`;
         this.log.info(`mock provider listening at ${this.baseUrl}`);
         return this.baseUrl;
     }
 
     /** Stop the listener. */
-    async stop() {
+    async stop(): Promise<void> {
         if (!this.server) return;
         const server = this.server;
         this.server = null;
         this.baseUrl = null;
-        await new Promise((resolve) => {
-            server.close(resolve);
+        await new Promise<void>((resolve) => {
+            server.close(() => resolve());
             server.closeAllConnections?.();
         });
     }
 
     /** Read and parse a request body. */
-    async readBody(req) {
-        const chunks = [];
-        for await (const chunk of req) chunks.push(chunk);
+    async readBody(req: IncomingMessage): Promise<ChatRequest> {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk as Buffer);
         if (chunks.length === 0) return {};
-        return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        return JSON.parse(Buffer.concat(chunks).toString('utf8')) as ChatRequest;
     }
 
     /** Build the assistant delta for one request. */
-    scenarioDelta(scenario, body) {
+    scenarioDelta(scenario: Scenario, body: ChatRequest): ScenarioDelta {
         const messages = Array.isArray(body.messages) ? body.messages : [];
         const lastUser = [...messages].reverse().find((message) => message.role === 'user');
         switch (scenario) {
@@ -168,7 +218,7 @@ export class MockProvider {
     }
 
     /** Serve one chat-completions request. */
-    async handle(req, res) {
+    async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
         if (req.method !== 'POST') {
             res.writeHead(405, { 'Content-Type': 'application/json' });
             res.end('{"error":"POST only"}');
@@ -187,7 +237,7 @@ export class MockProvider {
         if (scenario === 'slow') await delay(this.slowMs);
 
         const delta = this.scenarioDelta(scenario, body);
-        const frames = [];
+        const frames: object[] = [];
         if (delta.toolCall) {
             frames.push({
                 id: randomUUID(),
@@ -215,12 +265,12 @@ export class MockProvider {
                 choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
             });
         }
-        const body_ = `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')}data: [DONE]\n\n`;
+        const payload = `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')}data: [DONE]\n\n`;
         res.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Content-Length': Buffer.byteLength(body_),
+            'Content-Length': Buffer.byteLength(payload),
         });
-        res.end(body_);
+        res.end(payload);
     }
 }

@@ -13,11 +13,22 @@
  */
 import { validateSessionId } from '../state/session-id.ts';
 
+/** Rendering hints for one event name. */
+export interface EventMeta {
+    tone: string;
+    note: string;
+    /** Delimits an invocation, which the panel groups into runs. */
+    run?: boolean;
+    /** Carries a state snapshot the panel caches. */
+    snapshot?: boolean;
+    /** `data` is an array rather than an object. */
+    array?: boolean;
+}
+
 /**
  * Events emitted by core, with rendering hints for the panel.
  *
- * `data` is `object` unless noted. `run` marks events that delimit an
- * invocation, which the panel uses to group a transcript into runs.
+ * `data` is an object unless `array` says otherwise.
  */
 export const EVENT_TABLE = {
     ready: { tone: 'info', note: 'worker startup finished' },
@@ -34,14 +45,27 @@ export const EVENT_TABLE = {
     export_error: { tone: 'warn', note: 'Markdown export failed' },
     error: { tone: 'error', note: 'control or storage diagnostic' },
     run_finished: { tone: 'summary', note: 'invocation settled', run: true },
-};
+} as const satisfies Record<string, EventMeta>;
+
+/** An event name core emits today. */
+export type KnownEvent = keyof typeof EVENT_TABLE;
 
 /** Event names core emits today. */
-export const KNOWN_EVENTS = Object.keys(EVENT_TABLE);
+export const KNOWN_EVENTS: string[] = Object.keys(EVENT_TABLE);
 
 /** True when the event name is one the hub has rendering knowledge about. */
-export function isKnownEvent(name) {
-    return Object.hasOwn(EVENT_TABLE, name);
+export function isKnownEvent(name: unknown): name is KnownEvent {
+    return typeof name === 'string' && Object.hasOwn(EVENT_TABLE, name);
+}
+
+/** A 64-bit unsigned integer, kept alongside what it is safe to display as. */
+export interface UnsignedInteger {
+    /** The exact value, or null when the field was absent or unusable. */
+    value: bigint | null;
+    /** True when `value` round-trips through a JavaScript number. */
+    safe: boolean;
+    /** What to put on the wire: a number when it fits, else the raw text. */
+    display: number | string | null;
 }
 
 /**
@@ -51,92 +75,115 @@ export function isKnownEvent(name) {
  * safe integer the raw text is re-read with a targeted pattern. Sequence
  * numbers do not realistically reach that range today, but a hub that silently
  * mis-orders events is worse than a hub that costs one regex.
- *
- * @returns {{value: bigint|null, safe: boolean, display: number|string|null}}
  */
-export function readUnsignedInteger(parsed, rawText, field) {
+export function readUnsignedInteger(
+    parsed: unknown,
+    rawText: string | undefined,
+    field: string,
+): UnsignedInteger {
     if (typeof parsed === 'number' && Number.isInteger(parsed) && parsed >= 0) {
         if (Number.isSafeInteger(parsed)) {
             return { value: BigInt(parsed), safe: true, display: parsed };
         }
     } else if (typeof parsed === 'string' && /^\d+$/.test(parsed)) {
         const value = BigInt(parsed);
-        return {
-            value,
-            safe: value <= BigInt(Number.MAX_SAFE_INTEGER),
-            display: value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : parsed,
-        };
+        const safe = value <= BigInt(Number.MAX_SAFE_INTEGER);
+        return { value, safe, display: safe ? Number(value) : parsed };
     } else if (parsed !== undefined && parsed !== null) {
         return { value: null, safe: false, display: null };
     }
     if (typeof parsed !== 'number') return { value: null, safe: false, display: null };
     const match = new RegExp(`"${field}"\\s*:\\s*(\\d+)`).exec(rawText ?? '');
     if (!match) return { value: null, safe: false, display: null };
-    const value = BigInt(match[1]);
-    return {
-        value,
-        safe: value <= BigInt(Number.MAX_SAFE_INTEGER),
-        display: value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : match[1],
-    };
+    const value = BigInt(match[1] as string);
+    const safe = value <= BigInt(Number.MAX_SAFE_INTEGER);
+    return { value, safe, display: safe ? Number(value) : (match[1] as string) };
 }
 
 /** Envelope fields core always emits; a missing one is recorded, not fatal. */
 const REQUIRED_ENVELOPE_FIELDS = [
     'event', 'session_id', 'worker_id', 'request_id', 'run_id', 'sequence',
-];
+] as const;
 
 /**
- * Parse one worker text message into a validated event envelope.
+ * A validated event envelope, normalised for the rest of the hub.
  *
- * @param {string} text complete WebSocket text message.
- * @returns {{ok: true, envelope: object, issues: string[]}
- *          |{ok: false, error: string}}
+ * The hub adds `hub_sequence`, `received_at`, `issues`, and `connection` before
+ * forwarding it, so this is the shape as parsed rather than as sent.
  */
-export function parseEventEnvelope(text) {
-    let parsed;
+export interface ParsedEnvelope {
+    type: 'event';
+    event: string;
+    session_id: string;
+    worker_id: string;
+    request_id: string;
+    run_id: string;
+    sequence: number | string | null;
+    data: unknown;
+    known: boolean;
+    /** Wire size, measured once: a bounded transcript needs a cheap size. */
+    bytes: number;
+    /** The document as received, so unknown fields survive untouched. */
+    raw: unknown;
+}
+
+/** A parsed envelope, or the reason it was refused. */
+export type EnvelopeParseResult =
+    | { ok: true; envelope: ParsedEnvelope; issues: string[]; sequence: UnsignedInteger }
+    | { ok: false; error: string };
+
+/** Parse one worker text message into a validated event envelope. */
+export function parseEventEnvelope(text: string): EnvelopeParseResult {
+    let parsed: unknown;
     try {
         parsed = JSON.parse(text);
     } catch (cause) {
-        return { ok: false, error: `invalid JSON: ${cause.message}` };
+        const message = cause instanceof Error ? cause.message : String(cause);
+        return { ok: false, error: `invalid JSON: ${message}` };
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         return { ok: false, error: 'event message must be a JSON object' };
     }
-    if (parsed.type !== 'event') {
-        return { ok: false, error: `expected envelope type "event", got ${JSON.stringify(parsed.type)}` };
+    const document = parsed as Record<string, unknown>;
+    if (document.type !== 'event') {
+        return {
+            ok: false,
+            error: `expected envelope type "event", got ${JSON.stringify(document.type)}`,
+        };
     }
 
-    const issues = [];
+    const issues: string[] = [];
     for (const field of REQUIRED_ENVELOPE_FIELDS) {
-        if (!Object.hasOwn(parsed, field)) issues.push(`missing envelope field "${field}"`);
+        if (!Object.hasOwn(document, field)) issues.push(`missing envelope field "${field}"`);
     }
-    if (typeof parsed.event !== 'string' || parsed.event.length === 0) {
+    if (typeof document.event !== 'string' || document.event.length === 0) {
         return { ok: false, error: 'event name must be a nonempty string' };
     }
-    if (typeof parsed.worker_id !== 'string' || parsed.worker_id.length === 0) {
+    if (typeof document.worker_id !== 'string' || document.worker_id.length === 0) {
         return { ok: false, error: 'worker_id must be a nonempty string' };
     }
-    if (typeof parsed.session_id !== 'string') {
+    if (typeof document.session_id !== 'string') {
         return { ok: false, error: 'session_id must be a string' };
     }
     try {
-        validateSessionId(parsed.session_id);
+        validateSessionId(document.session_id);
     } catch (cause) {
-        return { ok: false, error: `invalid session_id: ${cause.message}` };
+        const message = cause instanceof Error ? cause.message : String(cause);
+        return { ok: false, error: `invalid session_id: ${message}` };
     }
-    if (!Object.hasOwn(parsed, 'data')) issues.push('missing envelope field "data"');
+    if (!Object.hasOwn(document, 'data')) issues.push('missing envelope field "data"');
 
-    const sequence = readUnsignedInteger(parsed.sequence, text, 'sequence');
-    const envelope = {
+    const sequence = readUnsignedInteger(document.sequence, text, 'sequence');
+    const envelope: ParsedEnvelope = {
         type: 'event',
-        event: parsed.event,
-        session_id: parsed.session_id,
-        worker_id: parsed.worker_id,
-        request_id: typeof parsed.request_id === 'string' ? parsed.request_id : '',
-        run_id: typeof parsed.run_id === 'string' ? parsed.run_id : '',
+        event: document.event,
+        session_id: document.session_id,
+        worker_id: document.worker_id,
+        request_id: typeof document.request_id === 'string' ? document.request_id : '',
+        run_id: typeof document.run_id === 'string' ? document.run_id : '',
         sequence: sequence.display,
-        data: parsed.data ?? {},
-        known: isKnownEvent(parsed.event),
+        data: document.data ?? {},
+        known: isKnownEvent(document.event),
         // Wire size, measured once: a bounded transcript needs a cheap size and
         // re-serializing a large payload on every append is not cheap.
         bytes: text.length,

@@ -12,7 +12,7 @@
  * src/launch/config-render.js.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { SCENARIOS } from './mock/provider.js';
+import { SCENARIOS } from './mock/provider.ts';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 

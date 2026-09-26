@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { HubState, STATE_VERSION } from '../src/state/persist.js';
+import { HubState, STATE_VERSION } from '../src/state/persist.ts';
 import { PROCESS_STATE, readProcessStartTime } from '../src/launch/supervisor.js';
 import { createLogger } from '../src/log.ts';
 import { loadConfig } from '../src/config.js';

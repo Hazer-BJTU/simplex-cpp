@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { hubRoot } from '../src/config.js';
-import { EVENT_TABLE, KNOWN_EVENTS } from '../src/protocol/events.js';
+import { EVENT_TABLE, KNOWN_EVENTS } from '../src/protocol/events.ts';
 import {
     CONFIRMATION_MODES,
     CONTENT_TYPES,
