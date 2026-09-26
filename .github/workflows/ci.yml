@@ -78,6 +78,152 @@ jobs:
         run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
 
   # ---------------------------------------------------------------------------
+  # hub-test — the Node hub's own suite.
+  #
+  # It runs OUTSIDE every container above, and that is deliberate: those images
+  # pin a C++ execution context (g++ 14.3.0, Boost 1.91, OpenSSL) and contain no
+  # Node at all. Installing one would put a second, unrelated toolchain inside
+  # the fingerprint the plugin admission gate depends on, and would force a
+  # rebuild plus a new digest of two published images. Nothing here needs the
+  # C++ tree: the hub's tests drive stand-in workers over real WebSockets.
+  #
+  # What this job cannot see is whether the hub works against the actual worker.
+  # That is hub-e2e, at the end of this file, and it is why the two are not one.
+  # ---------------------------------------------------------------------------
+  hub-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is not decorative: hub/package.json declares >=22.18, which
+        # is where TypeScript type stripping became the default. The hub loads
+        # `shared/protocol.ts` directly rather than compiling it, so the floor is
+        # a functional requirement now, not a conservative one. Testing only the
+        # newest Node would let a newer API in while the declared floor stayed
+        # silently false — the same argument as the glibc and OpenSSL floors.
+        node: ['22.18', '24']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        working-directory: hub
+        # npm ci, not install: package-lock.json is committed, so every
+        # dependency is resolved by integrity hash rather than by whatever the
+        # registry happens to serve. --ignore-scripts because no step here needs
+        # a lifecycle script; the browser the panel job drives is installed
+        # explicitly there. No cache step on purpose: caching a tree this size
+        # would trade a real failure mode for no measurable time.
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Type check
+        # `tsc` runs on the declared floor too: it is a checker, not a builder,
+        # so a type that only holds on a newer Node is a real defect and belongs
+        # here rather than in the panel job. It is also what keeps the modules
+        # that are still `.js` under review while they are migrated.
+        working-directory: hub
+        run: npm run typecheck
+
+      - name: Build panel for HTTP tests
+        # The hub serves web/dist, which is ignored by Git. The HTTP tests
+        # exercise the real static handler and need a fresh bundle in a clean
+        # checkout; a developer's pre-existing dist must not be a prerequisite.
+        working-directory: hub
+        run: npm run build
+
+      - name: Test
+        # Covers the protocol adapters, the session registry, the supervisor,
+        # the panel API, worker-protocol drift against core/docs, and the
+        # panel's own asset integrity.
+        working-directory: hub
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # hub-panel — the browser half.
+  #
+  # It is a separate job rather than more steps in the matrix above for one
+  # reason that still holds: installing a browser needs root, and the floor
+  # matrix has no business asking for it. (The Node requirement that also
+  # justified the split stopped applying when the hub's floor moved to 22.18,
+  # which is above what Vite and Vitest ask for.)
+  #
+  # No C++ tree is needed: the browser tests drive `test/browser/stub-hub.mjs`,
+  # a server that speaks the panel protocol and can be told to emit an event,
+  # raise a confirmation, or restart with a new transcript epoch — none of which
+  # a real hub can be asked to do on cue. `npm run check:panel` is the check
+  # that does use a real worker, and it is run by hand.
+  # ---------------------------------------------------------------------------
+  hub-panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Playwright probes the two local web servers over HTTP. A runner's proxy
+      # settings must not intercept 127.0.0.1 or readiness times out even after
+      # Vite has built the panel successfully.
+      NO_PROXY: 127.0.0.1,localhost
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        working-directory: hub
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Build the panel
+        working-directory: hub
+        run: npm run build
+
+      - name: Install the browser
+        # --with-deps because the runner image does not carry libnss3 and
+        # friends — which is exactly what made the hand-rolled CDP check skip
+        # silently on a developer machine instead of failing.
+        working-directory: hub
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        working-directory: hub
+        run: npx playwright test
+
+      - name: The hub serves the built panel
+        # The browser tests load the bundle through `vite preview`, so they
+        # cannot notice a hub whose static root and build output disagree. This
+        # is the deployment path itself: start the hub, ask it for `/`, and
+        # require the real document back.
+        working-directory: hub
+        run: |
+          node bin/simplex-hub.ts --listen 127.0.0.1:8811 \
+            --data-dir "${RUNNER_TEMP}/hub-data" > "${RUNNER_TEMP}/hub.log" 2>&1 &
+          hub=$!
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:8811/ > "${RUNNER_TEMP}/panel.html"; then break; fi
+            sleep 0.2
+          done
+          kill "$hub" || true
+          cat "${RUNNER_TEMP}/hub.log"
+          grep -q '<div id="root">' "${RUNNER_TEMP}/panel.html"
+          grep -q '/assets/' "${RUNNER_TEMP}/panel.html"
+          ls web/dist/assets/*.js > /dev/null
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: hub/playwright-report/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
   # portable-release — the SAME tree, built in the portable base image, plus one
   # check the job above structurally cannot perform.
   #
@@ -446,3 +592,70 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_tool_extensions --run_test=load_register_execute_and_pin_handle
           stage/bin/test_loop_extensions --run_test=load_register_publish_and_release
+
+  # ---------------------------------------------------------------------------
+  # hub-e2e — the hub against the RELEASE worker, and the panel in a browser.
+  #
+  # It reuses portable-release's artifact rather than building the tree again,
+  # which makes the subject of the test the staged layout:
+  # stage/bin/simplex_worker finds its plugins, prompts and schemas through
+  # executable-relative lookup and its runtime through the release's own $ORIGIN
+  # RPATH. Until now the only thing that ran a release binary was ctest's test
+  # executables — this is the first real workload, and the first check that a
+  # release can serve the hub at all.
+  #
+  # Not a container job, unlike everything above: the artifact targets glibc
+  # >= 2.34 and the runner's is newer, which is the direction that works.
+  # Proving the floor is staged-runtime's job; this job is about the hub.
+  #
+  # What it does not prove: a real provider (the hub's offline mock stands in),
+  # wss or a reverse proxy, or any browser other than the one the runner ships.
+  # ---------------------------------------------------------------------------
+  hub-e2e:
+    runs-on: ubuntu-latest
+    needs: portable-release
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable-release
+
+      - name: Unpack
+        run: tar -xzf portable-release.tar.gz
+
+      - name: Install dependencies
+        working-directory: hub
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Assert the release worker starts
+        # Before blaming the hub for anything, prove the subject runs: --help
+        # links the release's shared libraries through its RPATH but loads no
+        # plugin, so this is the packaging half. The end-to-end run below is
+        # what loads plugins and executes a tool.
+        run: stage/bin/simplex_worker --help
+
+      - name: Assert a browser is available for the panel check
+        # An explicit red step rather than a test that quietly skips. A panel
+        # check with no browser reads as green while asserting nothing, which is
+        # the failure mode this whole workflow is written against. The runner
+        # image exports CHROME_BIN; chromium is the fallback.
+        run: command -v "${CHROME_BIN:-google-chrome}" || command -v chromium
+
+      - name: End to end
+        working-directory: hub
+        env:
+          # The staged release, not build/: the build tree's binaries carry
+          # CMake's absolute build RPATH into paths that do not exist here.
+          SIMPLEX_WORKER_BIN: ${{ github.workspace }}/stage/bin/simplex_worker
+          SIMPLEX_PROMPTS_DIR: ${{ github.workspace }}/stage/bin/prompts
+          # A browser check that cannot find a browser must fail, not skip.
+          PANEL_REQUIRE_BROWSER: '1'
+        run: npm run test:e2e

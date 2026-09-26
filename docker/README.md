@@ -11,6 +11,7 @@ one configure — inside one container.
 | `Dockerfile.build-context` | `simplex-cpp-build` | `FROM` the base; `COPY`s the tree and runs one configure + build + full ctest. Rebuilt per tree change. |
 | `Dockerfile.build-portable` | `…/build-portable` | Same role as `build-base`, different goal: artifacts that **run on other machines**. See [Which base to use](#which-base-to-use). |
 | `Dockerfile.test-context` | `simplex-cpp-tools-test` | `FROM` the portable base; one configure + Debug build, then it **stays** — the hand-over image for driving the live agent loop (`tools/example/deepseek_chat.cpp`) in a disposable container. See [The manual-test image](#the-manual-test-image). |
+| `Dockerfile.hub-test` | `simplex-hub-test` | The same idea for the Node hub: the worker, the panel and the hub's dependencies in one disposable container, whose entrypoint **starts the hub**. See [The hub test image](#the-hub-test-image). |
 | `portability_floor.cmake` | — | The ctest that keeps `build-portable` honest: asserts no artifact requires a newer glibc than the release targets. |
 | `../cmake/SimplexRelease.cmake` | — | The release install rules: what a staged tree contains and the `$ORIGIN` RPATHs that make it load its own bundled runtime. See [Building a release](#building-a-release). |
 
@@ -278,6 +279,52 @@ answer. The staged `/src/stage` tree carries them the way a release does
 exercised side by side.
 `--tools` and `--skill` in the demo print both halves of what the model is
 given, without an API key and without starting a child.
+
+## The hub test image
+
+`Dockerfile.test-context` is for driving the agent loop from a terminal.
+`Dockerfile.hub-test` is the same idea for the Node hub (`hub/`): the worker, the
+panel and the hub's own dependencies in one disposable container — except that
+its entrypoint starts the hub rather than dropping to a shell, because the thing
+being handed over is a service a browser connects to.
+
+```bash
+docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .
+
+# mock provider, no API key: create a session with the "mock" profile
+docker run --rm --init -p 127.0.0.1:8800:8800 simplex-hub-test
+# → open http://127.0.0.1:8800/?token=simplex-hub-dev
+
+# with a real provider as well (a session chooses per session)
+docker run --rm --init -p 127.0.0.1:8800:8800 \
+    -e DEEPSEEK_API_KEY=sk-... simplex-hub-test
+
+# keep sessions across containers, or poke at the tree by hand
+docker run --rm --init -p 127.0.0.1:8800:8800 -v simplex-hub-data:/data simplex-hub-test
+docker run -it --rm simplex-hub-test bash
+```
+
+Why it exists, rather than "run `npm start`": a session can propose arbitrary
+commands through the intrinsic process toolset and, once confirmed, they execute
+wherever the worker runs. Doing that from a terminal on the development machine
+is how the tooling is normally exercised, and `core/README.md` already says to
+do it "inside a disposable container when testing process tools". The hub makes
+that easier to forget — it looks like a web app — so the container is the
+documented way to drive it by hand.
+
+The image holds no host mounts, no privileged mode and no docker socket: what a
+session deletes is a container, and removing the container removes it. It is a
+blast-radius reduction, not a security boundary, and mounting a host path in
+gives that up for that path. `--init` is not decoration either — the hub spawns
+workers, workers spawn the commands a session runs, and Docker's init is what
+reaps a grandchild that outlives its parent.
+
+Two details it inherits from the manual-test image on purpose: it builds on the
+**portable** base so in-container behaviour matches the shipped binaries, and it
+builds the worker **Debug**, because assertions and stack frames are what a
+hand-driven session wants. The worker is built, not staged: the hub is pointed at
+`/src/build/bin/simplex_worker`. The staged release layout is CI's `hub-e2e`
+job's subject, not this image's.
 
 ## Using it
 

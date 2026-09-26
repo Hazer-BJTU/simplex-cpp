@@ -1,0 +1,28 @@
+{
+    // Browser test type checking. A third project because the spec files need
+    // three things the other two must not have together: the DOM (they run
+    // inside a page), Playwright's own types, and the module resolution of a
+    // bundler. Playwright transpiles TypeScript without checking it, so without
+    // this project a typo in a spec only shows up as a failing run.
+    "compilerOptions": {
+        "target": "ES2023",
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "types": ["node"],
+
+        "strict": true,
+        "noImplicitOverride": true,
+        "noFallthroughCasesInSwitch": true,
+        "exactOptionalPropertyTypes": true,
+        "noUncheckedIndexedAccess": true,
+
+        "allowImportingTsExtensions": true,
+        "verbatimModuleSyntax": true,
+        "noEmit": true,
+
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true
+    },
+    "include": ["./**/*.ts", "../../playwright.config.ts"]
+}

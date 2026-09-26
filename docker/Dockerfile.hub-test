@@ -1,0 +1,135 @@
+# Dockerfile.hub-test — the disposable container for driving the Node hub.
+#
+# WHAT THIS IS. Dockerfile.test-context answers "does the agent loop work when a
+# human drives it". This image answers the same question for the hub: it carries
+# the worker, the panel and the hub's own dependencies, and it starts the hub, so
+# a browser on the host can drive real sessions where every child process runs
+# inside this container instead of on the machine you are sitting at.
+#
+# That last clause is the point. A worker session can propose arbitrary commands
+# through the intrinsic process toolset and, once confirmed, they execute
+# wherever the worker runs. Confirming them from a terminal on the host is how
+# that tooling is normally exercised, and core/README.md already says to do it
+# "inside a disposable container when testing process tools". The hub makes that
+# easier to forget — it looks like a web app — so the container is the default
+# way to run it here rather than an advanced option.
+#
+# The hub itself is ordinary Node code with one runtime dependency; what it
+# needs from the image is a worker to launch and a filesystem to confine it to.
+#
+# BUILD (from the repository root — the root .dockerignore governs the context):
+#
+#   docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .
+#
+# The base is the PORTABLE toolchain, matching Dockerfile.test-context: it is
+# the image this machine already has, and building on the same base the release
+# is cut from keeps in-container behaviour identical to the shipped binaries'.
+# An existing test image built with the same toolchain may be passed instead:
+#
+#   docker build -f docker/Dockerfile.hub-test \
+#       --build-arg BASE_IMAGE=simplex-cpp-tools-test -t simplex-hub-test .
+#
+# RUN (the port goes to loopback only; the panel token is a convenience, not a
+# secret, and the hub refuses a non-loopback listener without one anyway):
+#
+#   docker run --rm --init -p 127.0.0.1:8800:8800 simplex-hub-test
+#   # then open http://127.0.0.1:8800/?token=simplex-hub-dev
+#
+#   docker run --rm --init -p 127.0.0.1:8800:8800 \
+#       -e DEEPSEEK_API_KEY=sk-... simplex-hub-test        # real provider too
+#   docker run --rm --init -p 127.0.0.1:8800:8800 \
+#       -v simplex-hub-data:/data simplex-hub-test         # keep sessions
+#   docker run -it --rm simplex-hub-test bash              # poke around
+#
+# `--init` is worth the word: the hub spawns workers, workers spawn the commands
+# a session runs, and a grandchild that outlives its parent must be reaped by
+# something. PID 1 in this image is the entrypoint, which execs the hub — neither
+# reaps strangers, so Docker's init does.
+#
+# WHAT IT DOES NOT DO: mount anything from the host, run privileged, or share a
+# namespace beyond the published port. A container is a blast-radius reduction,
+# not a security boundary — it is the difference between a model deleting your
+# home directory and a model deleting a directory you can throw away. If you
+# mount a host path in, that path is as exposed as the tools' arguments make it.
+
+ARG BASE_IMAGE=ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
+FROM ${BASE_IMAGE}
+
+# -j4 for the same reason every other image here uses it: the build shares the
+# host's CPUs, and this repository is developed on WSL, where saturating them
+# destabilises the WSL services.
+ARG JOBS=4
+# Pinned, and verified against the release's own SHASUMS256.txt below. AlmaLinux
+# 9's appstream Node is 18, which is below the hub's declared floor (22.18) and
+# would make this container a different execution context from CI. The static
+# tarball is the same artifact actions/setup-node installs there.
+ARG NODE_VERSION=24.15.0
+# 1 = run the hub's suite during the build, so the image is known-good before it
+# is handed over; 0 = build only, leaving the suite to whoever runs it.
+ARG RUN_TESTS=1
+
+# ---- Node -------------------------------------------------------------------
+# Checksummed against the same release's manifest rather than trusted for being
+# HTTPS: this is the one artifact in the image fetched from a third party, and a
+# truncated or substituted tarball would be a compiler-free way to run arbitrary
+# code as the hub.
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "${arch}" in \
+        x86_64) node_arch=x64 ;; \
+        aarch64) node_arch=arm64 ;; \
+        *) echo "no Node build rule for ${arch}" >&2; exit 1 ;; \
+    esac; \
+    base="https://nodejs.org/dist/v${NODE_VERSION}"; \
+    file="node-v${NODE_VERSION}-linux-${node_arch}.tar.xz"; \
+    curl -fsSLo "/tmp/${file}" "${base}/${file}"; \
+    curl -fsSLo /tmp/SHASUMS256.txt "${base}/SHASUMS256.txt"; \
+    (cd /tmp && grep " ${file}\$" SHASUMS256.txt | sha256sum -c -); \
+    mkdir -p /opt/node; \
+    tar -xJf "/tmp/${file}" -C /opt/node --strip-components=1; \
+    rm -f "/tmp/${file}" /tmp/SHASUMS256.txt; \
+    /opt/node/bin/node --version
+ENV PATH=/opt/node/bin:${PATH}
+
+WORKDIR /src
+COPY . .
+
+# ---- Worker -----------------------------------------------------------------
+# Debug, like Dockerfile.test-context and for the same reason: this image exists
+# for sessions a human drives, where an assertion and a stack frame are worth
+# more than startup time. Only the two servers are built — the hub launches
+# simplex_worker, and simplex_shell is kept because comparing the two servers by
+# hand is exactly the kind of thing this container is for. Debug also means the
+# worker's own debug logging is on, which the panel's Logs pane is where to read.
+RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
+        -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+    && cmake --build /src/build --target simplex_worker simplex_shell -j"${JOBS}" \
+    && /src/build/bin/simplex_worker --help > /dev/null
+
+# ---- Hub --------------------------------------------------------------------
+# `npm ci` from the committed lockfile: the hub's one runtime dependency (ws) is
+# resolved by integrity hash rather than by whatever the registry serves.
+#
+# `npm run build` is not optional any more: the hub serves `web/dist`, and a
+# `dist` left out of the context (see .dockerignore) means a panel that answers
+# 503 with the command that would have built it. Building here — rather than
+# copying a `dist` in — is what keeps the image's panel and its source the same
+# commit.
+RUN cd /src/hub \
+    && npm ci --no-audit --no-fund --ignore-scripts \
+    && npm run build \
+    && if [ "${RUN_TESTS}" = "1" ]; then npm test; fi
+
+# A workspace the worker's environment hint points at, so a mounted directory
+# has somewhere obvious to go. Nothing writes here unless a session is asked to.
+RUN mkdir -p /workspace /data
+
+COPY docker/hub-test.config.jsonc /etc/simplex-hub/hub.config.jsonc
+COPY docker/hub-test-entrypoint.sh /usr/local/bin/simplex-hub-entrypoint
+RUN chmod +x /usr/local/bin/simplex-hub-entrypoint
+
+# Documentation only: the mapping is chosen at run time, and publishing to
+# loopback is the documented default.
+EXPOSE 8800
+
+ENTRYPOINT ["/usr/local/bin/simplex-hub-entrypoint"]

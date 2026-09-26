@@ -81,7 +81,20 @@ Testing/
 docs/
 # Formal core documentation is maintained and published with the project.
 !/core/docs/
+# The hub's protocol and adapter references are published the same way.
+!/hub/docs/
 
 # Local agent/dev settings (absolute paths and per-machine permissions; not
 # part of the build or the runtime)
 .claude/
+
+# Node.js hub (hub/): installed dependencies and runtime data stay untracked.
+hub/node_modules/
+hub/data/
+.npm-cache/
+# Panel bundle output. Built by `npm run build` from hub/web/src, never edited.
+hub/web/dist/
+# Browser-test artifacts: traces and screenshots are written only on failure and
+# are for the person debugging that run, not for the repository.
+hub/test-results/
+hub/playwright-report/

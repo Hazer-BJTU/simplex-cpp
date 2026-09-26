@@ -1,0 +1,44 @@
+{
+    // Backend type checking. The hub runs TypeScript directly on Node (type
+    // stripping, Node >= 22.18), so `tsc` is a checker, not a builder: it never
+    // emits, and `npm start` runs `bin/simplex-hub.ts` — or a future `.ts` —
+    // as written.
+    //
+    // `allowJs` is what makes the migration incremental: the modules that are
+    // still `.js` are resolved and type-checked *statically* by `tsc` while
+    // their neighbours become `.ts` one commit at a time. `checkJs` stays off
+    // until a module is converted, so an untouched file cannot fail the build
+    // for a reason that has nothing to do with the change under review.
+    "compilerOptions": {
+        "target": "ES2023",
+        "lib": ["ES2023"],
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "types": ["node"],
+
+        "strict": true,
+        "noImplicitOverride": true,
+        "noFallthroughCasesInSwitch": true,
+        "exactOptionalPropertyTypes": true,
+        "noUncheckedIndexedAccess": true,
+
+        "noEmit": true,
+
+        // Node resolves a relative import to the file that exists, with the
+        // extension it has. During the migration that means a `.ts` module
+        // imported from a `.js` one has to be written as `.ts` in the source —
+        // which is also what lets Node run the tree without a build step.
+        "allowImportingTsExtensions": true,
+        "verbatimModuleSyntax": true,
+
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true
+    },
+    "include": [
+        "src/**/*.ts",
+        "bin/**/*.ts",
+        "shared/**/*.ts",
+        "vite.config.ts",
+        "playwright.config.ts"
+    ]
+}

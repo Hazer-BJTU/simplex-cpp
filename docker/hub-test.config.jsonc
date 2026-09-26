@@ -1,0 +1,97 @@
+{
+    // Configuration for the hub inside docker/Dockerfile.hub-test.
+    //
+    // Paths point at the build tree the image compiles, not at a staged
+    // release: this container exists to drive sessions by hand, and the build
+    // tree is what a Debug build leaves behind. The release layout is covered
+    // by CI's hub-e2e job, which runs the staged worker instead.
+    //
+    // The entrypoint overrides the listener and the token from the environment
+    // (HUB_PORT, HUB_PANEL_TOKEN); the values here are the defaults it uses and
+    // are what let a non-loopback listener pass validation on its own.
+
+    "listen": { "host": "0.0.0.0", "port": 8800 },
+    "dataDir": "/data",
+
+    // The container is reachable only through the published port. Publish it to
+    // loopback on the host (`-p 127.0.0.1:8800:8800`): a payload channel is an
+    // approval authority, and this token is a convenience, not a secret.
+    "panel": { "token": "simplex-hub-dev" },
+
+    "worker": {
+        "bin": "/src/build/bin/simplex_worker",
+        "promptsDir": "/src/build/bin/prompts",
+        "systemPromptFile": "coding_agent.yaml",
+        "threads": 2,
+        "maxExchanges": 256,
+        "eventCapacity": 1024,
+        "confirmationTimeoutMs": 120000,
+        "stopTimeoutMs": 15000,
+        "persistence": { "enabled": true, "readable": true },
+        "environment": {
+            // A hint to the model, nothing more: the process tools decide their
+            // own working directory per call, and an omitted one inherits the
+            // worker's, which is the session directory under /data.
+            "workspace": "/workspace",
+            "platform": "linux container (AlmaLinux 9)",
+            "software": ["bash", "coreutils"]
+        }
+    },
+
+    "providerProfiles": {
+        // A real model. The key stays as ${DEEPSEEK_API_KEY} on disk and is
+        // expanded by the worker from its own environment, which is the only
+        // way it reaches the process: `docker run -e DEEPSEEK_API_KEY=...`.
+        "deepseek": {
+            "plugin": "deepseek",
+            "model": "deepseek-flash",
+            "config": { "reasoning": { "effort": "high" } },
+            "endpoint": {
+                "base_url": "https://api.deepseek.com",
+                "auth": { "scheme": "bearer", "api_key": "${DEEPSEEK_API_KEY}" }
+            },
+            "retry": { "max_attempts": 3, "initial_backoff_ms": 500, "max_backoff_ms": 120000 }
+        },
+        // No key, no network: the hub serves this one itself.
+        "mock": {
+            "plugin": "deepseek",
+            "model": "mock-flash",
+            "endpoint": { "base_url": "http://127.0.0.1:0", "auth": { "scheme": "none" } },
+            "retry": { "max_attempts": 0 }
+        }
+    },
+
+    "launcher": {
+        "kind": "simplex-worker",
+        "command": [],
+        "args": [],
+        "config": "hub",
+        "cwd": "",
+        "pidFile": ""
+    },
+
+    // Enabled by default so the container is useful with no credentials at all.
+    // A session still chooses per session: `mock` profiles reach this server,
+    // `deepseek` reaches the API. HUB_MOCK=0 turns it off.
+    "mock": {
+        "enabled": true,
+        "listen": "127.0.0.1:0",
+        "profile": "mock",
+        "scenario": "auto",
+        "slowMs": 1500
+    },
+
+    "limits": {
+        "transcriptEvents": 5000,
+        "transcriptBytes": 33554432,
+        "logLines": 500,
+        "logRingBytes": 262144,
+        "logBytes": 8388608,
+        "logFiles": 2,
+        "maxMessageBytes": 33554432,
+        "pingIntervalMs": 30000,
+        "confirmIdentityHoldMs": 15000
+    },
+
+    "forceKillProcessGroup": false
+}
