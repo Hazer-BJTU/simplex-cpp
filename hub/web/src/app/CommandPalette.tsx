@@ -15,11 +15,11 @@
  * not this stage's job; a list of twenty entries filtered by substring is
  * faster to read than one sorted by a score nobody can predict.
  */
-import { Command } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { SessionDescription } from '../../../shared/protocol.ts';
 import { usePanel, useView } from '../state/usePanel.ts';
 import { Badge } from '../ui/Button.tsx';
+import { Glyph } from '../ui/icons.tsx';
 import { Dialog, DialogContent } from '../ui/overlays.tsx';
 import { buildCommands, filterCommands, type PaletteAction, type PaletteInput } from './palette.ts';
 import { useClient } from './ClientContext.tsx';
@@ -142,13 +142,13 @@ export function CommandPalette() {
                     }}
                     aria-label="filter commands"
                     placeholder="Type to filter…"
-                    className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm
-                        focus:border-slate-500 focus:outline-none"
+                    className="w-full rounded border border-line-strong px-2 py-1.5 text-sm
+                        focus:border-line-strong focus:outline-none"
                 />
 
                 <ul role="listbox" aria-label="commands" className="mt-2 max-h-80 overflow-y-auto">
                     {filtered.length === 0 && (
-                        <li className="px-2 py-3 text-center text-xs text-slate-500">
+                        <li className="px-2 py-3 text-center text-xs text-ink-muted">
                             Nothing matches “{query}”.
                         </li>
                     )}
@@ -162,12 +162,12 @@ export function CommandPalette() {
                                 onMouseEnter={() => setActive(position)}
                                 onClick={() => { setOpen(false); perform(command.action); }}
                                 className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left
-                                    text-xs ${position === highlighted ? 'bg-slate-100' : ''}`}
+                                    text-xs ${position === highlighted ? 'bg-subtle' : ''}`}
                             >
-                                <span className="text-slate-700">{command.label}</span>
+                                <span className="text-ink">{command.label}</span>
                                 <span className="flex-1" />
                                 {command.hint && (
-                                    <span className="font-mono text-[10px] text-slate-400">
+                                    <span className="font-mono text-xs text-ink-faint">
                                         {command.hint}
                                     </span>
                                 )}
@@ -177,9 +177,9 @@ export function CommandPalette() {
                     ))}
                 </ul>
 
-                <p className="mt-2 flex items-center gap-1 border-t border-slate-100 pt-2 text-[11px]
-                    text-slate-400">
-                    <Command aria-hidden className="h-3 w-3" />
+                <p className="mt-2 flex items-center gap-1 border-t border-line pt-2 text-xs
+                    text-ink-faint">
+                    <Glyph name="command" size="sm" />
                     ↑↓ to move · Enter to run · Esc to close
                 </p>
             </DialogContent>

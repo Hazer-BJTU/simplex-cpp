@@ -17,11 +17,11 @@
  * (defect D19, fixed in the store), and Enter sends while Shift+Enter breaks the
  * line.
  */
-import { Paperclip, Send, Settings2, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ContentPart, PayloadOptions } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { Badge, Button, IconButton } from '../ui/Button.tsx';
+import { Glyph } from '../ui/icons.tsx';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/overlays.tsx';
 import type { ConfirmMode } from '../state/store.ts';
 import { useClient } from './ClientContext.tsx';
@@ -132,7 +132,7 @@ export function Composer() {
 
     return (
         <form
-            className="border-t border-slate-200 bg-white px-4 py-2"
+            className="border-t border-line bg-surface px-4 py-2"
             onSubmit={(event) => {
                 event.preventDefault();
                 send();
@@ -143,19 +143,19 @@ export function Composer() {
                     {references.map((reference) => (
                         <li
                             key={reference.raw}
-                            className="flex items-center gap-1 rounded-full bg-slate-100 py-0.5 pl-2 pr-1
-                                text-[11px] text-slate-600"
+                            className="flex items-center gap-1 rounded-full bg-subtle py-0.5 pl-2 pr-1
+                                text-xs text-ink-muted"
                         >
                             <span className="max-w-72 truncate font-mono">{reference.raw}</span>
                             <button
                                 type="button"
                                 aria-label={`remove reference ${reference.raw}`}
-                                className="rounded-full p-0.5 hover:bg-slate-200"
+                                className="rounded-full p-0.5 hover:bg-line"
                                 onClick={() => setReferences((current) => (
                                     current.filter((item) => item.raw !== reference.raw)
                                 ))}
                             >
-                                <X aria-hidden className="h-3 w-3" />
+                                <Glyph name="close" size="sm" />
                             </button>
                         </li>
                     ))}
@@ -166,7 +166,7 @@ export function Composer() {
                 <Popover open={refOpen} onOpenChange={setRefOpen}>
                     <PopoverTrigger asChild>
                         <IconButton label="Attach a reference" disabled={!connected}>
-                            <Paperclip aria-hidden className="h-4 w-4" />
+                            <Glyph name="attach" />
                         </IconButton>
                     </PopoverTrigger>
                     <PopoverContent align="start" width="w-80">
@@ -191,7 +191,7 @@ export function Composer() {
                                 setRefOpen(false);
                             }}
                         >
-                            <label className="block text-[11px] font-medium text-slate-600"
+                            <label className="block text-xs font-medium text-ink-muted"
                                 htmlFor="composer-reference">
                                 external reference
                             </label>
@@ -200,10 +200,10 @@ export function Composer() {
                                 name="reference"
                                 autoFocus
                                 placeholder="https://…"
-                                className="mt-1 w-full rounded border border-slate-300 px-2 py-1
-                                    font-mono text-xs focus:border-slate-500 focus:outline-none"
+                                className="mt-1 w-full rounded border border-line-strong px-2 py-1
+                                    font-mono text-xs focus:border-line-strong focus:outline-none"
                             />
-                            <p className="mt-1 text-[11px] text-slate-500">
+                            <p className="mt-1 text-xs text-ink-muted">
                                 Sent to the worker as an <code>external_ref</code> part. The panel
                                 never fetches it.
                             </p>
@@ -234,8 +234,8 @@ export function Composer() {
                     placeholder={connected
                         ? 'Message the worker — Enter sends, Shift+Enter breaks the line'
                         : 'No worker is attached to this session'}
-                    className="min-h-[2.25rem] flex-1 resize-none rounded border border-slate-300
-                        px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none"
+                    className="min-h-[2.25rem] flex-1 resize-none rounded border border-line-strong
+                        px-2 py-1.5 text-sm focus:border-line-strong focus:outline-none"
                 />
 
                 {runActive && (
@@ -251,32 +251,32 @@ export function Composer() {
                     variant="primary"
                     size="md"
                     disabled={!canSend}
-                    icon={<Send aria-hidden className="h-3.5 w-3.5" />}
+                    icon={<Glyph name="send" />}
                 >
                     Send
                 </Button>
             </div>
 
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
                 {connectionState !== 'open' && (
-                    <span className="text-amber-700">the panel is not connected</span>
+                    <span className="text-warn">the panel is not connected</span>
                 )}
                 {!connected && <span>no worker attached</span>}
-                {runActive && <span className="text-sky-700">a run is active</span>}
+                {runActive && <span className="text-info">a run is active</span>}
 
                 <Popover>
                     <PopoverTrigger asChild>
                         <button
                             type="button"
-                            className="inline-flex items-center gap-1 rounded px-1 hover:bg-slate-100"
+                            className="inline-flex items-center gap-1 rounded px-1 hover:bg-subtle"
                             title="how the worker should answer tool confirmations for this session"
                         >
-                            <Settings2 aria-hidden className="h-3 w-3" />
+                            <Glyph name="options" size="sm" />
                             confirmation
                         </button>
                     </PopoverTrigger>
                     <PopoverContent align="start">
-                        <p className="text-[11px] font-medium text-slate-700">
+                        <p className="text-xs font-medium text-ink">
                             Confirmation mode for <span className="font-mono">{sessionId}</span>
                         </p>
                         <div className="mt-2 space-y-1">
@@ -284,7 +284,7 @@ export function Composer() {
                                 <label
                                     key={value}
                                     className="flex cursor-pointer items-start gap-2 rounded p-1
-                                        hover:bg-slate-50"
+                                        hover:bg-sunken"
                                 >
                                     <input
                                         type="radio"
@@ -292,18 +292,18 @@ export function Composer() {
                                         value={value}
                                         checked={mode === value}
                                         onChange={() => setConfirmMode(sessionId, value)}
-                                        className="mt-0.5 accent-slate-700"
+                                        className="mt-0.5 accent-interactive"
                                     />
                                     <span>
-                                        <span className="font-mono text-xs text-slate-800">{value}</span>
-                                        <span className="block text-[11px] text-slate-500">
+                                        <span className="font-mono text-xs text-ink">{value}</span>
+                                        <span className="block text-xs text-ink-muted">
                                             {MODES[value].detail}
                                         </span>
                                     </span>
                                 </label>
                             ))}
                         </div>
-                        <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
+                        <p className="mt-2 border-t border-line pt-2 text-xs text-ink-muted">
                             Sent with every message. The worker freezes the policy for a run before
                             it starts, so a change applies to the next run. This is stored per
                             session — the old panel kept one control for all of them.

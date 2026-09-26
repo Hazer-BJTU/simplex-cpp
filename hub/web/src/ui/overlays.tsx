@@ -20,11 +20,11 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import * as PopoverPrimitive from '@radix-ui/react-popover';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import * as TabsPrimitive from '@radix-ui/react-tabs';
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { buttonClass, type ButtonVariant } from './Button.tsx';
 
 /** Shared surface styling, so every floating layer looks the same. */
-const SURFACE = 'z-50 rounded-md border border-slate-200 bg-white p-1 shadow-lg '
+const SURFACE = 'z-50 rounded-md border border-line bg-raised p-1 shadow-lg '
     + 'outline-none';
 
 // --------------------------------------------------------------- menu --
@@ -58,24 +58,24 @@ export function MenuItem({ onSelect, danger, disabled, hint, children }: {
             {...(disabled === undefined ? {} : { disabled })}
             onSelect={onSelect}
             className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs outline-none `
-                + `data-[disabled]:cursor-not-allowed data-[disabled]:text-slate-400 `
+                + `data-[disabled]:cursor-not-allowed data-[disabled]:text-ink-faint `
                 + `${danger
-                    ? 'text-rose-700 data-[highlighted]:bg-rose-50'
-                    : 'text-slate-700 data-[highlighted]:bg-slate-100'}`}
+                    ? 'text-danger data-[highlighted]:bg-danger-soft'
+                    : 'text-ink data-[highlighted]:bg-subtle'}`}
         >
             <span>{children}</span>
-            {hint && <span className="ml-auto text-[10px] text-slate-400">{hint}</span>}
+            {hint && <span className="ml-auto text-xs text-ink-faint">{hint}</span>}
         </DropdownMenu.Item>
     );
 }
 
 export function MenuSeparator() {
-    return <DropdownMenu.Separator className="my-1 h-px bg-slate-200" />;
+    return <DropdownMenu.Separator className="my-1 h-px bg-line" />;
 }
 
 export function MenuLabel({ children }: { children: ReactNode }) {
     return (
-        <DropdownMenu.Label className="px-2 py-1 text-[10px] uppercase tracking-wide text-slate-400">
+        <DropdownMenu.Label className="px-2 py-1 text-xs uppercase tracking-wide text-ink-faint">
             {children}
         </DropdownMenu.Label>
     );
@@ -95,7 +95,9 @@ export const DialogClose = DialogPrimitive.Close;
  * element in DOM order, which was the header's "hide" button, so pressing Enter
  * on a freshly opened approval dismissed it silently.
  */
-export function DialogContent({ title, description, children, footer, focus = 'first' }: {
+export function DialogContent({
+    title, description, children, footer, focus = 'first',
+}: {
     title: string;
     description?: string | undefined;
     children?: ReactNode;
@@ -103,31 +105,49 @@ export function DialogContent({ title, description, children, footer, focus = 'f
     /**
      * Where focus lands when the dialog opens.
      *
-     * `first` is Radix's default and is right for a dialog whose first control
-     * is harmless. `none` focuses the dialog itself and arms nothing, which is
-     * what a decision the operator has not made yet requires — the old panel's
-     * approval modal focused the first focusable element in DOM order, which
-     * was its "hide" button, so Enter dismissed an approval silently (D16).
+     * - `first` is Radix's default: the first tabbable element. Right for a
+     *   dialog whose first control is harmless, and the reason the destructive
+     *   dialogs put Cancel first in the DOM.
+     * - `self` focuses the dialog *container*. Nothing is armed — Enter does
+     *   nothing — but focus is inside an `aria-modal` element with a title, so
+     *   the dialog is still announced. This is what an approval needs: the old
+     *   panel's approval modal focused its "hide" button, so Enter dismissed a
+     *   decision that had not been made (D16).
+     * - `none` leaves focus exactly where it was. Only for a dialog that focuses
+     *   something itself, like the palette's filter field.
      */
-    focus?: 'first' | 'none';
+    focus?: 'first' | 'self' | 'none';
 }) {
+    const surface = useRef<HTMLDivElement>(null);
     return (
         <DialogPrimitive.Portal>
-            <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-slate-900/30" />
+            <DialogPrimitive.Overlay className="fixed inset-0 z-40 animate-fade bg-scrim" />
             <DialogPrimitive.Content
-                className="fixed left-1/2 top-1/2 z-50 w-[min(32rem,calc(100vw-2rem))] `
-                    + `-translate-x-1/2 -translate-y-1/2 rounded-lg border border-slate-200 `
-                    + `bg-white p-4 shadow-xl focus:outline-none"
+                ref={surface}
+                tabIndex={-1}
+                onOpenAutoFocus={(event) => {
+                    if (focus === 'none') {
+                        event.preventDefault();
+                        return;
+                    }
+                    if (focus === 'self') {
+                        event.preventDefault();
+                        surface.current?.focus();
+                    }
+                }}
+                className={'fixed left-1/2 top-1/2 z-50 w-[min(32rem,calc(100vw-2rem))] '
+                    + '-translate-x-1/2 -translate-y-1/2 animate-pop rounded-lg '
+                    + 'border border-line bg-raised p-4 shadow-xl focus:outline-none'}
             >
-                <DialogPrimitive.Title className="text-sm font-semibold text-slate-900">
+                <DialogPrimitive.Title className="text-sm font-semibold text-ink">
                     {title}
                 </DialogPrimitive.Title>
                 {description && (
-                    <DialogPrimitive.Description className="mt-1 text-xs text-slate-600">
+                    <DialogPrimitive.Description className="mt-1 text-xs text-ink-muted">
                         {description}
                     </DialogPrimitive.Description>
                 )}
-                <div className="mt-3 text-sm text-slate-700">{children}</div>
+                <div className="mt-3 text-sm text-ink">{children}</div>
                 {footer && (
                     <div className="mt-4 flex items-center justify-end gap-2">{footer}</div>
                 )}
@@ -190,10 +210,10 @@ export function Tooltip({ label, children }: { label: string; children: ReactNod
             <TooltipPrimitive.Portal>
                 <TooltipPrimitive.Content
                     sideOffset={6}
-                    className="z-50 max-w-64 rounded bg-slate-900 px-2 py-1 text-[11px] text-white shadow"
+                    className="z-50 max-w-64 animate-fade rounded bg-tip px-2 py-1 text-xs text-tip-ink shadow"
                 >
                     {label}
-                    <TooltipPrimitive.Arrow className="fill-slate-900" />
+                    <TooltipPrimitive.Arrow className="fill-tip" />
                 </TooltipPrimitive.Content>
             </TooltipPrimitive.Portal>
         </TooltipPrimitive.Root>
@@ -208,7 +228,7 @@ export function TabsList({ children, label }: { children: ReactNode; label: stri
     return (
         <TabsPrimitive.List
             aria-label={label}
-            className="flex shrink-0 gap-0.5 border-b border-slate-200 px-1"
+            className="flex shrink-0 gap-0.5 border-b border-line px-1"
         >
             {children}
         </TabsPrimitive.List>
@@ -219,10 +239,10 @@ export function TabsTrigger({ value, children }: { value: string; children: Reac
     return (
         <TabsPrimitive.Trigger
             value={value}
-            className={'rounded-t px-2 py-1 text-[11px] font-medium text-slate-500 '
-                + 'hover:bg-slate-100 data-[state=active]:bg-slate-100 '
-                + 'data-[state=active]:text-slate-900 focus-visible:outline-2 '
-                + 'focus-visible:outline-slate-500'}
+            className={'rounded-t px-2 py-1 text-xs font-medium text-ink-muted '
+                + 'hover:bg-subtle data-[state=active]:bg-subtle '
+                + 'data-[state=active]:text-ink focus-visible:outline-2 '
+                + 'focus-visible:outline-interactive'}
         >
             {children}
         </TabsPrimitive.Trigger>

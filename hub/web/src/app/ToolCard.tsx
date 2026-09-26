@@ -18,6 +18,7 @@
  *   the card spells out which one it is.
  */
 import { useState } from 'react';
+import { Glyph, type GlyphName } from '../ui/icons.tsx';
 import { MarkdownBlock } from './Markdown.tsx';
 import { formatDuration, prettyJson } from './content.ts';
 import type { ToolCall, CallStatus } from './rounds.ts';
@@ -26,24 +27,39 @@ import type { OutputBlock, OutputDocument } from './toolOutput.ts';
 /** How long a result may be before it is folded away. */
 const COLLAPSED_CHARS = 1200;
 
-/** How a status reads, and how it is coloured. */
-const STATUS: Record<CallStatus, { label: string; tone: string }> = {
-    pending: { label: 'waiting for approval', tone: 'bg-amber-100 text-amber-900 ring-amber-300' },
-    running: { label: 'running', tone: 'bg-sky-100 text-sky-900 ring-sky-300' },
-    ok: { label: 'ok', tone: 'bg-emerald-100 text-emerald-900 ring-emerald-300' },
-    failed: { label: 'failed', tone: 'bg-rose-100 text-rose-900 ring-rose-300' },
-    skipped: { label: 'not run', tone: 'bg-slate-100 text-slate-600 ring-slate-300' },
-    unknown: { label: 'no result reported', tone: 'bg-slate-100 text-slate-600 ring-slate-300' },
+/**
+ * How a status reads, how it is coloured, and which glyph it carries.
+ *
+ * The glyph is not decoration: the six states were six tinted chips, and a
+ * reader who cannot separate the amber from the green had only the words — but
+ * the words are the same shape at a glance ("ok", "not run", "no result
+ * reported"). A shape distinguishes them before the word is read.
+ */
+const STATUS: Record<CallStatus, { label: string; tone: string; icon: GlyphName }> = {
+    pending: {
+        label: 'waiting for approval',
+        tone: 'bg-warn-soft text-warn ring-warn-line',
+        icon: 'approval',
+    },
+    running: { label: 'running', tone: 'bg-info-soft text-info ring-info-line', icon: 'spinner' },
+    ok: { label: 'ok', tone: 'bg-ok-soft text-ok ring-ok-line', icon: 'ok' },
+    failed: { label: 'failed', tone: 'bg-danger-soft text-danger ring-danger-line', icon: 'error' },
+    skipped: { label: 'not run', tone: 'bg-subtle text-ink-muted ring-line', icon: 'cancel' },
+    unknown: {
+        label: 'no result reported',
+        tone: 'bg-subtle text-ink-muted ring-line',
+        icon: 'warning',
+    },
 };
 
-/** The border colour a card carries, so status survives a glance. */
+/** The edge a card carries, so a status survives being scrolled past. */
 const BORDER: Record<CallStatus, string> = {
-    pending: 'border-l-amber-400',
-    running: 'border-l-sky-400',
-    ok: 'border-l-emerald-400',
-    failed: 'border-l-rose-400',
-    skipped: 'border-l-slate-300',
-    unknown: 'border-l-slate-300',
+    pending: 'border-l-warn-line',
+    running: 'border-l-info-line',
+    ok: 'border-l-ok-line',
+    failed: 'border-l-danger-line',
+    skipped: 'border-l-line-strong',
+    unknown: 'border-l-line-strong',
 };
 
 /**
@@ -71,10 +87,10 @@ function Block({ block }: { block: OutputBlock }) {
     const isError = /^stderr/i.test(block.name);
     const long = block.text.length > COLLAPSED_CHARS;
     return (
-        <div className={`rounded border-l-2 bg-slate-50 ${isError ? 'border-rose-300' : 'border-slate-300'}`}>
+        <div className={`rounded border-l-2 bg-sunken ${isError ? 'border-danger-line' : 'border-line-strong'}`}>
             <div className="flex items-center gap-2 px-2 py-0.5">
-                <span className="font-mono text-[11px] font-medium text-slate-600">{block.name}</span>
-                <span className="text-[11px] text-slate-400">
+                <span className="font-mono text-xs font-medium text-ink-muted">{block.name}</span>
+                <span className="text-xs text-ink-faint">
                     {block.empty
                         ? 'empty'
                         : `${block.bytes ?? block.text.length} bytes${block.truncated ? ' (truncated by the tool)' : ''}`}
@@ -83,7 +99,7 @@ function Block({ block }: { block: OutputBlock }) {
                 {long && (
                     <button
                         type="button"
-                        className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-200"
+                        className="rounded px-1.5 py-0.5 text-xs text-ink-muted hover:bg-line"
                         onClick={() => setOpen((value) => !value)}
                     >
                         {open ? 'collapse' : 'expand all'}
@@ -92,7 +108,7 @@ function Block({ block }: { block: OutputBlock }) {
             </div>
             {open && block.text && (
                 <pre className="overflow-x-auto whitespace-pre-wrap break-words px-2 pb-1.5
-                    font-mono text-[11px] text-slate-800">
+                    font-mono text-xs text-ink">
                     {block.text}
                 </pre>
             )}
@@ -104,11 +120,11 @@ function Block({ block }: { block: OutputBlock }) {
 function Fields({ fields }: { fields: OutputDocument['fields'] }) {
     if (fields.length === 0) return null;
     return (
-        <dl className="flex flex-wrap gap-x-3 gap-y-0.5 px-2 py-1 text-[11px]">
+        <dl className="flex flex-wrap gap-x-3 gap-y-0.5 px-2 py-1 text-xs">
             {fields.map((field) => (
                 <div key={field.name} className="flex gap-1">
-                    <dt className="text-slate-400">{field.name}</dt>
-                    <dd className="font-mono text-slate-700">{field.value}</dd>
+                    <dt className="text-ink-faint">{field.name}</dt>
+                    <dd className="font-mono text-ink">{field.value}</dd>
                 </div>
             ))}
         </dl>
@@ -125,19 +141,19 @@ function Result({ call }: { call: ToolCall }) {
     return (
         <div className="mt-1 space-y-1">
             {failed && result.error && (
-                <p className="rounded border-l-2 border-rose-400 bg-rose-50 px-2 py-1 text-[11px] text-rose-800">
+                <p className="rounded border-l-2 border-danger-line bg-danger-soft px-2 py-1 text-xs text-danger">
                     <span className="font-medium">{result.error.stage}</span>
                     {result.error.message ? ` — ${result.error.message}` : ''}
                 </p>
             )}
             {call.status === 'skipped' && (
-                <p className="px-2 text-[11px] text-slate-500">
+                <p className="px-2 text-xs text-ink-muted">
                     the loop did not dispatch this call — not an execution, and not a failure
                 </p>
             )}
 
             {result.text === '' && (
-                <p className="px-2 text-[11px] italic text-slate-400">(no output content)</p>
+                <p className="px-2 text-xs italic text-ink-faint">(no output content)</p>
             )}
 
             {call.output?.kind === 'document' && !raw && (
@@ -148,7 +164,7 @@ function Result({ call }: { call: ToolCall }) {
                     ))}
                     {call.output.document.rest.length > 0 && (
                         <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded
-                            bg-slate-50 px-2 py-1 font-mono text-[11px] text-slate-800">
+                            bg-sunken px-2 py-1 font-mono text-xs text-ink">
                             {call.output.document.rest.join('\n')}
                         </pre>
                     )}
@@ -156,15 +172,15 @@ function Result({ call }: { call: ToolCall }) {
             )}
 
             {call.output?.kind === 'text' && !raw && result.text !== '' && (
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded bg-slate-50
-                    px-2 py-1 font-mono text-[11px] text-slate-800">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded bg-sunken
+                    px-2 py-1 font-mono text-xs text-ink">
                     {result.text}
                 </pre>
             )}
 
             {raw && (
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded bg-slate-50
-                    px-2 py-1 font-mono text-[11px] text-slate-800">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded bg-sunken
+                    px-2 py-1 font-mono text-xs text-ink">
                     {result.text}
                 </pre>
             )}
@@ -173,7 +189,7 @@ function Result({ call }: { call: ToolCall }) {
                 {call.output?.kind === 'document' && (
                     <button
                         type="button"
-                        className="text-[11px] text-slate-400 hover:text-slate-700"
+                        className="text-xs text-ink-faint hover:text-ink"
                         onClick={() => setRaw((value) => !value)}
                     >
                         {raw ? 'as the tool rendered it' : 'raw output'}
@@ -181,12 +197,12 @@ function Result({ call }: { call: ToolCall }) {
                 )}
                 <span className="flex-1" />
                 {call.reportedMs !== null && (
-                    <span className="text-[11px] text-slate-500">
+                    <span className="text-xs text-ink-muted">
                         the process reported {formatDuration(call.reportedMs)} of runtime
                     </span>
                 )}
                 {call.elapsedMs !== null && (
-                    <span className="text-[11px] text-slate-400">
+                    <span className="text-xs text-ink-faint">
                         {formatDuration(call.elapsedMs)} from proposal to result
                     </span>
                 )}
@@ -207,19 +223,21 @@ export function ToolCard({ call }: { call: ToolCall }) {
             data-testid="tool-card"
             data-tool={call.name}
             data-status={call.status}
-            className={`rounded border border-l-2 border-slate-200 bg-white p-2 ${BORDER[call.status]}`}
+            className={`rounded border border-l-2 border-line bg-surface p-2 ${BORDER[call.status]}`}
         >
             <header className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-[13px] font-medium text-slate-900">{call.name}</span>
+                <span className="font-mono text-sm font-medium text-ink">{call.name}</span>
                 <span
                     data-testid="tool-status"
-                    className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${status.tone}`}
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs
+                        font-medium ring-1 ring-inset ${status.tone}`}
                 >
+                    <Glyph name={status.icon} size="sm" />
                     {status.label}
                 </span>
                 {call.security && (
                     <span
-                        className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600"
+                        className="rounded bg-subtle px-1.5 py-0.5 text-xs text-ink-muted"
                         title={call.result
                             ? 'the classification the host settled on before dispatch'
                             : 'the classification the model proposed; the host re-evaluates it before dispatch'}
@@ -228,11 +246,11 @@ export function ToolCard({ call }: { call: ToolCall }) {
                     </span>
                 )}
                 {call.scheduling && (
-                    <span className="text-[10px] text-slate-400">{call.scheduling}</span>
+                    <span className="text-xs text-ink-faint">{call.scheduling}</span>
                 )}
                 <span className="flex-1" />
                 {call.id && (
-                    <span className="font-mono text-[10px] text-slate-400">{call.id}</span>
+                    <span className="font-mono text-xs text-ink-faint">{call.id}</span>
                 )}
             </header>
 
@@ -244,14 +262,14 @@ export function ToolCard({ call }: { call: ToolCall }) {
                     )}
                 </div>
             ) : hasArgs && (
-                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-slate-50
-                    px-2 py-1 font-mono text-[11px] text-slate-700">
+                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-sunken
+                    px-2 py-1 font-mono text-xs text-ink">
                     {prettyJson(call.args)}
                 </pre>
             )}
 
             {call.status === 'pending' && call.prompt && (
-                <p className="mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+                <p className="mt-1 rounded border border-warn-line bg-warn-soft px-2 py-1 text-xs text-warn">
                     this call is waiting for an approval — answer it above.
                 </p>
             )}
@@ -261,14 +279,14 @@ export function ToolCard({ call }: { call: ToolCall }) {
             <div className="mt-1">
                 <button
                     type="button"
-                    className="text-[11px] text-slate-400 hover:text-slate-700"
+                    className="text-xs text-ink-faint hover:text-ink"
                     onClick={() => setShowArgs((value) => !value)}
                 >
                     {showArgs ? 'hide raw call' : 'raw call'}
                 </button>
                 {showArgs && (
-                    <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-slate-50
-                        px-2 py-1 font-mono text-[11px] text-slate-700">
+                    <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-sunken
+                        px-2 py-1 font-mono text-xs text-ink">
                         {prettyJson(call.args ?? {})}
                     </pre>
                 )}
@@ -282,10 +300,10 @@ function CallArguments({ value }: { value: unknown }) {
     const text = prettyJson(value);
     if (!text || text === '{}') return null;
     return (
-        <details className="text-[11px] text-slate-500">
+        <details className="text-xs text-ink-muted">
             <summary className="cursor-pointer select-none">other arguments</summary>
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-slate-50
-                px-2 py-1 font-mono text-slate-700">
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-sunken
+                px-2 py-1 font-mono text-ink">
                 {text}
             </pre>
         </details>

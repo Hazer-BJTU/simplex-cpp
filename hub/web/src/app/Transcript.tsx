@@ -25,9 +25,11 @@ import {
     useState,
 } from 'react';
 import type { ContentPart, ConfirmationPrompt, WorkerEnvelope } from '../../../shared/protocol.ts';
-import { usePanel, useView } from '../state/usePanel.ts';
+import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { statsOf, type NoteItem, type OutboxItem, type TranscriptItem } from '../state/view.ts';
 import { useClient } from './ClientContext.tsx';
+import { EmptyState, LoadingLines } from '../ui/States.tsx';
+import { Glyph } from '../ui/icons.tsx';
 import { Markdown } from './Markdown.tsx';
 import { ToolCard } from './ToolCard.tsx';
 import { clockOf, formatDuration, prettyJson, str } from './content.ts';
@@ -56,17 +58,17 @@ function ProtocolLine({ envelope }: { envelope: WorkerEnvelope }) {
     const label = str(envelope.event) || '(unnamed event)';
     const clock = clockOf(envelope);
     return (
-        <div data-testid="protocol-line" className="text-[11px] text-slate-400">
+        <div data-testid="protocol-line" className="text-xs text-ink-faint">
             <div className="flex items-baseline gap-2">
-                <span className="h-px flex-1 bg-slate-200" />
+                <span className="h-px flex-1 bg-line" />
                 <span className="font-mono">{label}</span>
                 {clock && <span>{clock}</span>}
-                <span className="h-px flex-1 bg-slate-200" />
+                <span className="h-px flex-1 bg-line" />
             </div>
             <details className="mt-0.5 text-center">
                 <summary className="cursor-pointer select-none">payload</summary>
                 <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded
-                    bg-slate-50 p-2 text-left font-mono text-[11px] text-slate-700">
+                    bg-sunken p-2 text-left font-mono text-xs text-ink">
                     {prettyJson(envelope.raw ?? envelope.data ?? {})}
                 </pre>
             </details>
@@ -77,10 +79,10 @@ function ProtocolLine({ envelope }: { envelope: WorkerEnvelope }) {
 /** A note the panel itself added: a replay gap, a restart, a warning. */
 function NoteLine({ item }: { item: NoteItem }) {
     const tone = item.tone === 'error'
-        ? 'border-rose-300 bg-rose-50 text-rose-800'
+        ? 'border-danger-line bg-danger-soft text-danger'
         : item.tone === 'warn'
-            ? 'border-amber-300 bg-amber-50 text-amber-900'
-            : 'border-slate-200 bg-slate-50 text-slate-600';
+            ? 'border-warn-line bg-warn-soft text-warn'
+            : 'border-line bg-sunken text-ink-muted';
     return (
         <div data-testid="transcript-note" className={`rounded border px-2 py-1 text-xs ${tone}`}>
             {item.text}
@@ -91,11 +93,11 @@ function NoteLine({ item }: { item: NoteItem }) {
 /** A problem the worker reported. */
 function ProblemLine({ problem }: { problem: Problem }) {
     const tone = problem.tone === 'error'
-        ? 'border-rose-400 bg-rose-50 text-rose-800'
-        : 'border-amber-400 bg-amber-50 text-amber-900';
+        ? 'border-danger-line bg-danger-soft text-danger'
+        : 'border-warn-line bg-warn-soft text-warn';
     return (
         <div data-testid="transcript-problem" className={`rounded border-l-2 px-2 py-1 ${tone}`}>
-            <p className="text-[11px] font-medium">{problem.label}</p>
+            <p className="text-xs font-medium">{problem.label}</p>
             <p className="text-xs">{problem.text}</p>
         </div>
     );
@@ -111,19 +113,19 @@ function UserMessage({ item }: { item: OutboxItem }) {
         <article
             data-testid="outbox-item"
             data-state={item.state}
-            className="ml-auto w-fit max-w-[80%] rounded-lg bg-slate-900 px-3 py-2 text-white"
+            className="ml-auto w-fit max-w-[80%] rounded-lg bg-accent px-3 py-2 text-accent-ink"
         >
             <p className="whitespace-pre-wrap break-words text-sm">{shown}</p>
             {long && (
                 <button
                     type="button"
-                    className="mt-1 text-[11px] text-slate-400 hover:text-slate-200"
+                    className="mt-1 text-xs text-ink-faint hover:text-ink-faint"
                     onClick={() => setOpen((value) => !value)}
                 >
                     {open ? 'show less' : `show all ${text.length} characters`}
                 </button>
             )}
-            <p className="mt-1 text-[11px] text-slate-400">
+            <p className="mt-1 text-xs text-ink-faint">
                 {item.state === 'admitted' ? 'admitted by the worker' : 'sent, not yet admitted'}
             </p>
         </article>
@@ -135,8 +137,8 @@ function AdmittedPlaceholder() {
     return (
         <p
             data-testid="admitted-placeholder"
-            className="rounded border border-dashed border-slate-300 px-2 py-1 text-[11px]
-                italic text-slate-500"
+            className="rounded border border-dashed border-line-strong px-2 py-1 text-xs
+                italic text-ink-muted"
         >
             user input — the worker protocol reports that an input was admitted, not what it said
         </p>
@@ -154,18 +156,18 @@ function AssistantMessage({ block, calls }: {
 
     return (
         <article data-testid="assistant-message" className="space-y-2">
-            <p className="flex items-baseline gap-2 text-[11px] text-slate-400">
-                <span className="font-medium text-slate-500">assistant</span>
+            <p className="flex items-baseline gap-2 text-xs text-ink-faint">
+                <span className="font-medium text-ink-muted">assistant</span>
                 {block.clock && <span>{block.clock}</span>}
                 {block.cost && <span>{block.cost}</span>}
             </p>
 
             {block.reasoning && (
-                <details className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
-                    <summary className="cursor-pointer select-none text-[11px] text-slate-500">
+                <details className="rounded border border-line bg-sunken px-2 py-1">
+                    <summary className="cursor-pointer select-none text-xs text-ink-muted">
                         reasoning
                     </summary>
-                    <div className="mt-1 text-[13px] text-slate-600">
+                    <div className="mt-1 text-sm text-ink-muted">
                         <Markdown>{block.reasoning}</Markdown>
                     </div>
                 </details>
@@ -173,7 +175,7 @@ function AssistantMessage({ block, calls }: {
 
             {block.text
                 ? <Markdown>{block.text}</Markdown>
-                : <p className="text-sm italic text-slate-400">(no text in this response)</p>}
+                : <p className="text-sm italic text-ink-faint">(no text in this response)</p>}
 
             {proposed.length > 0 && (
                 <div className="space-y-1">
@@ -215,16 +217,16 @@ function RoundSummary({ round, expanded, onToggle }: {
             data-testid="round-summary"
             aria-expanded={expanded}
             onClick={onToggle}
-            className="flex w-full items-baseline gap-2 rounded border border-slate-200 bg-slate-50
-                px-2 py-1 text-left hover:bg-slate-100"
+            className="flex w-full items-baseline gap-2 rounded border border-line bg-sunken
+                px-2 py-1 text-left hover:bg-subtle"
         >
-            <span className="text-[11px] text-slate-400">{expanded ? '▾' : '▸'}</span>
-            <span className="text-[11px] font-medium text-slate-500">turn {round.index}</span>
+            <span className="text-xs text-ink-faint">{expanded ? '▾' : '▸'}</span>
+            <span className="text-xs font-medium text-ink-muted">turn {round.index}</span>
             {preview && (
-                <span className="truncate text-[11px] text-slate-600">“{preview}”</span>
+                <span className="truncate text-xs text-ink-muted">“{preview}”</span>
             )}
             <span className="flex-1" />
-            <span className="shrink-0 text-[11px] text-slate-400">{parts.join(' · ')}</span>
+            <span className="shrink-0 text-xs text-ink-faint">{parts.join(' · ')}</span>
         </button>
     );
 }
@@ -303,6 +305,7 @@ function RoundBody({ round, showDetails }: { round: Round; showDetails: boolean 
 export function Transcript() {
     const client = useClient();
     const selected = usePanel((state) => state.selected);
+    const session = useSession(selected);
     const view = useView(selected);
     const items = view?.items ?? EMPTY_ITEMS;
     const confirmations = view?.confirmations ?? EMPTY_PROMPTS;
@@ -387,14 +390,12 @@ export function Transcript() {
 
     if (!selected) {
         return (
-            <div className="grid flex-1 place-items-center p-8 text-center">
-                <div>
-                    <p className="text-sm font-medium text-slate-700">No session selected</p>
-                    <p className="mt-1 text-xs text-slate-500">
-                        Pick one on the left, or create one and start its worker.
-                    </p>
-                </div>
-            </div>
+            <EmptyState
+                className="flex-1"
+                icon="empty-session"
+                title="No session selected"
+                detail="Pick one on the left, or create one and start its worker."
+            />
         );
     }
 
@@ -406,18 +407,32 @@ export function Transcript() {
                 className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3"
             >
                 {dropped > 0 && (
-                    <p className="text-[11px] text-slate-400">
+                    <p className="text-xs text-ink-faint">
                         {dropped} earlier item{dropped === 1 ? '' : 's'} dropped to keep the
                         transcript bounded
                     </p>
                 )}
 
-                {rounds.length === 0 ? (
-                    <p className="py-8 text-center text-xs text-slate-500">
-                        Nothing yet. Events appear here as the worker reports them.
-                    </p>
+                {!view ? (
+                    /* No `subscribed` frame yet: the transcript is on its way,
+                       and saying "nothing yet" here would be a claim the panel
+                       cannot support. */
+                    <LoadingLines label="waiting for this session's transcript" lines={4} />
+                ) : rounds.length === 0 ? (
+                    <EmptyState
+                        icon="empty-session"
+                        title="Nothing in this transcript yet"
+                        detail={session?.connected
+                            ? 'Events appear here as the worker reports them. Send a message to start a run.'
+                            : 'No worker is attached. Start one, then send a message.'}
+                    />
                 ) : rounds.map((round) => (
-                    <section key={round.key} data-testid="round" data-kind={round.kind}>
+                    <section
+                        key={round.key}
+                        data-testid="round"
+                        data-kind={round.kind}
+                        className="animate-enter"
+                    >
                         {round.kind === 'run' && (
                             <RoundSummary
                                 round={round}
@@ -446,20 +461,25 @@ export function Transcript() {
                 <button
                     type="button"
                     onClick={jumpToLatest}
-                    className="absolute bottom-12 left-1/2 -translate-x-1/2 rounded-full
-                        bg-slate-900 px-3 py-1 text-xs font-medium text-white shadow
-                        hover:bg-slate-700"
+                    className="absolute bottom-12 left-1/2 inline-flex -translate-x-1/2
+                        animate-enter items-center gap-1 rounded-full bg-accent px-3 py-1
+                        text-xs font-medium text-accent-ink shadow hover:bg-accent-hover
+                        focus-visible:outline-2 focus-visible:outline-offset-2
+                        focus-visible:outline-interactive"
                 >
+                    <Glyph name="latest" size="sm" />
                     jump to latest
                 </button>
             )}
 
-            <div className="flex items-center gap-3 border-t border-slate-100 px-4 py-1.5
-                text-[11px] text-slate-500">
+            <div className="flex items-center gap-3 border-t border-line px-4 py-1.5
+                text-xs text-ink-muted">
                 <button
                     type="button"
                     onClick={() => client.reloadTranscript(selected)}
-                    className="hover:text-slate-800"
+                    className="rounded px-1 hover:bg-subtle hover:text-ink
+                        focus-visible:outline-2 focus-visible:outline-offset-1
+                        focus-visible:outline-interactive"
                     title="ask the hub to re-send this session's whole transcript"
                 >
                     reload transcript
@@ -480,13 +500,13 @@ function TranscriptStats({ sessionId }: { sessionId: string }) {
         <span data-testid="transcript-stats" className="flex items-center gap-2">
             <span>{stats.items} items</span>
             <span>seq {stats.lastSeq}</span>
-            {stats.gaps > 0 && <span className="text-amber-700">{stats.gaps} gap(s)</span>}
+            {stats.gaps > 0 && <span className="text-warn">{stats.gaps} gap(s)</span>}
             {stats.duplicates > 0 && <span>{stats.duplicates} duplicate(s)</span>}
             {stats.confirmations > 0 && (
-                <span className="text-amber-700">{stats.confirmations} approval(s)</span>
+                <span className="text-warn">{stats.confirmations} approval(s)</span>
             )}
             {stats.unknownRequests > 0 && (
-                <span className="text-amber-700" title="sent, and never answered">
+                <span className="text-warn" title="sent, and never answered">
                     {stats.unknownRequests} unanswered
                 </span>
             )}

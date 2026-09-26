@@ -18,12 +18,12 @@ import type { ComponentPropsWithRef, ReactNode } from 'react';
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 
 const VARIANTS: Record<ButtonVariant, string> = {
-    primary: 'bg-slate-900 text-white hover:bg-slate-700 disabled:bg-slate-400',
-    secondary: 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 '
-        + 'disabled:text-slate-400 disabled:hover:bg-white',
-    ghost: 'text-slate-600 hover:bg-slate-100 disabled:text-slate-300 disabled:hover:bg-transparent',
-    danger: 'border border-rose-300 bg-white text-rose-700 hover:bg-rose-50 '
-        + 'disabled:border-slate-200 disabled:text-slate-400 disabled:hover:bg-white',
+    primary: 'bg-accent text-accent-ink hover:bg-accent-hover disabled:bg-line-strong',
+    secondary: 'border border-line-strong bg-surface text-ink hover:bg-subtle '
+        + 'disabled:text-ink-faint disabled:hover:bg-surface',
+    ghost: 'text-ink-muted hover:bg-subtle disabled:text-ink-faint disabled:hover:bg-transparent',
+    danger: 'border border-danger-line bg-surface text-danger hover:bg-danger-soft '
+        + 'disabled:border-line disabled:text-ink-faint disabled:hover:bg-surface',
 };
 
 /** Shared classes, so a button in a menu and a button in a header match. */
@@ -34,7 +34,7 @@ export function buttonClass(
     const sizing = size === 'md' ? 'px-3 py-1.5 text-sm' : 'px-2 py-1 text-xs';
     return `inline-flex items-center gap-1 rounded font-medium transition-colors `
         + `disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-1 `
-        + `focus-visible:outline-slate-500 ${sizing} ${VARIANTS[variant]}`;
+        + `focus-visible:outline-interactive ${sizing} ${VARIANTS[variant]}`;
 }
 
 /**
@@ -98,7 +98,7 @@ export function IconButton({
             title={label}
             className={`inline-flex h-7 w-7 items-center justify-center rounded transition-colors `
                 + `disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-1 `
-                + `focus-visible:outline-slate-500 ${VARIANTS[variant]} ${className}`}
+                + `focus-visible:outline-interactive ${VARIANTS[variant]} ${className}`}
         >
             {children}
         </button>
@@ -112,16 +112,16 @@ export function Badge({ tone = 'neutral', title, children }: {
     children: ReactNode;
 }) {
     const tones = {
-        neutral: 'bg-slate-100 text-slate-600 ring-slate-300',
-        info: 'bg-sky-100 text-sky-900 ring-sky-300',
-        ok: 'bg-emerald-100 text-emerald-900 ring-emerald-300',
-        warn: 'bg-amber-100 text-amber-900 ring-amber-300',
-        bad: 'bg-rose-100 text-rose-900 ring-rose-300',
+        neutral: 'bg-subtle text-ink-muted ring-line',
+        info: 'bg-info-soft text-info ring-info-line',
+        ok: 'bg-ok-soft text-ok ring-ok-line',
+        warn: 'bg-warn-soft text-warn ring-warn-line',
+        bad: 'bg-danger-soft text-danger ring-danger-line',
     } as const;
     return (
         <span
             title={title}
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] `
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs `
                 + `font-medium ring-1 ring-inset ${tones[tone]}`}
         >
             {children}

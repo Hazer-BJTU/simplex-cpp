@@ -19,21 +19,11 @@
  * it cannot. That is the whole of the fix for "button availability divorced
  * from real state": a disabled control here has a reason attached to it.
  */
-import {
-    AlertTriangle,
-    ChevronsLeftRight,
-    Info,
-    ListTree,
-    MoreHorizontal,
-    Play,
-    Settings2,
-    Square,
-    XCircle,
-} from 'lucide-react';
 import { useState } from 'react';
 import type { SessionDescription } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { Badge, Button, IconButton } from '../ui/Button.tsx';
+import { Glyph } from '../ui/icons.tsx';
 import {
     Dialog,
     DialogButton,
@@ -196,9 +186,11 @@ export function SessionHeader() {
     }
 
     return (
-        <div className="border-b border-slate-200 bg-white px-4 py-2">
-            <div className="flex flex-wrap items-center gap-2">
-                <h2 className="font-mono text-sm font-semibold text-slate-900">{sessionId}</h2>
+        <div className="animate-enter border-b border-line bg-surface px-3 py-2 sm:px-4">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <h2 data-testid="session-title" className="font-mono text-sm font-semibold text-ink">
+                    {sessionId}
+                </h2>
                 <Badge tone={state.tone}>{state.label}</Badge>
                 {session.connected && <Badge tone="info">worker attached</Badge>}
                 {runActive && <Badge tone="info">run active</Badge>}
@@ -207,7 +199,7 @@ export function SessionHeader() {
                         {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'}
                     </Badge>
                 )}
-                {model && <span className="text-xs text-slate-500">{model}</span>}
+                {model && <span className="text-xs text-ink-muted">{model}</span>}
 
                 <span className="flex-1" />
 
@@ -215,7 +207,8 @@ export function SessionHeader() {
                 {state.running ? (
                     <Button
                         variant="primary"
-                        icon={<Square aria-hidden className="h-3 w-3" />}
+                        data-testid="session-primary-action"
+                        icon={<Glyph name="stop" size="sm" />}
                         onClick={() => { void client.workerAction(sessionId, 'stop'); }}
                         title="ask the worker to shut down, then signal the process"
                     >
@@ -224,7 +217,8 @@ export function SessionHeader() {
                 ) : (
                     <Button
                         variant="primary"
-                        icon={<Play aria-hidden className="h-3 w-3" />}
+                        data-testid="session-primary-action"
+                        icon={<Glyph name="start" size="sm" />}
                         onClick={() => { void client.workerAction(sessionId, 'start'); }}
                         title="launch a worker process for this session"
                     >
@@ -238,7 +232,7 @@ export function SessionHeader() {
                         onClick={() => client.sendSignal(sessionId, 'status')}
                         disabled={!session.connected}
                     >
-                        <Info aria-hidden className="h-4 w-4" />
+                        <Glyph name="status" />
                     </IconButton>
                 </Tooltip>
                 <Tooltip label="Ask the worker which models and tools it offers">
@@ -247,7 +241,7 @@ export function SessionHeader() {
                         onClick={() => client.sendSignal(sessionId, 'options')}
                         disabled={!session.connected}
                     >
-                        <Settings2 aria-hidden className="h-4 w-4" />
+                        <Glyph name="options" />
                     </IconButton>
                 </Tooltip>
                 <Tooltip label={runActive ? 'Ask the worker to cancel the active run' : 'No run is active'}>
@@ -256,7 +250,7 @@ export function SessionHeader() {
                         onClick={() => client.sendSignal(sessionId, 'cancel')}
                         disabled={!session.connected || !runActive}
                     >
-                        <XCircle aria-hidden className="h-4 w-4" />
+                        <Glyph name="cancel" />
                     </IconButton>
                 </Tooltip>
                 <Tooltip label={inspectorOpen ? 'Hide the context drawer' : 'Show the context drawer'}>
@@ -264,14 +258,14 @@ export function SessionHeader() {
                         label={inspectorOpen ? 'Hide inspector' : 'Show inspector'}
                         onClick={() => setInspectorOpen(!inspectorOpen)}
                     >
-                        <ListTree aria-hidden className="h-4 w-4" />
+                        <Glyph name="inspector" />
                     </IconButton>
                 </Tooltip>
 
                 <Menu>
                     <MenuTrigger asChild>
                         <IconButton label="More actions">
-                            <MoreHorizontal aria-hidden className="h-4 w-4" />
+                            <Glyph name="more" />
                         </IconButton>
                     </MenuTrigger>
                     <MenuContent>
@@ -282,7 +276,7 @@ export function SessionHeader() {
                             onSelect={() => ask('restart')}
                         >
                             <span className="inline-flex items-center gap-2">
-                                <ChevronsLeftRight aria-hidden className="h-3.5 w-3.5" />
+                                <Glyph name="restart" size="sm" />
                                 Restart
                             </span>
                         </MenuItem>
@@ -292,7 +286,7 @@ export function SessionHeader() {
                             onSelect={() => ask('shutdown')}
                         >
                             <span className="inline-flex items-center gap-2">
-                                <Square aria-hidden className="h-3.5 w-3.5" />
+                                <Glyph name="shutdown" size="sm" />
                                 Shut down over the protocol
                             </span>
                         </MenuItem>
@@ -306,7 +300,7 @@ export function SessionHeader() {
                             onSelect={() => ask('force-kill')}
                         >
                             <span className="inline-flex items-center gap-2">
-                                <AlertTriangle aria-hidden className="h-3.5 w-3.5" />
+                                <Glyph name="force-kill" size="sm" />
                                 Force kill
                             </span>
                         </MenuItem>
@@ -317,7 +311,7 @@ export function SessionHeader() {
                             onSelect={() => ask('delete')}
                         >
                             <span className="inline-flex items-center gap-2">
-                                <XCircle aria-hidden className="h-3.5 w-3.5" />
+                                <Glyph name="delete" size="sm" />
                                 Delete session
                             </span>
                         </MenuItem>

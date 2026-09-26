@@ -9,19 +9,34 @@
  */
 import type { ReactNode } from 'react';
 import { usePanel } from '../state/usePanel.ts';
+import { IconButton } from '../ui/Button.tsx';
+import { Glyph } from '../ui/icons.tsx';
+import { ThemeToggle } from '../ui/ThemeToggle.tsx';
+import { Tooltip } from '../ui/overlays.tsx';
 import { useClient } from './ClientContext.tsx';
 
-/** One status pill. */
-function Pill({ tone, children }: { tone: 'ok' | 'warn' | 'bad' | 'idle'; children: ReactNode }) {
+/**
+ * One status pill.
+ *
+ * The tone is carried by an icon and by the words as well as by the colour: an
+ * operator who cannot tell amber from green still reads "reconnecting", and the
+ * icon is the same one the rest of the panel uses for that meaning.
+ */
+function Pill({ tone, icon, children }: {
+    tone: 'ok' | 'warn' | 'bad' | 'idle';
+    icon: 'online' | 'offline' | 'warning' | 'info';
+    children: ReactNode;
+}) {
     const tones = {
-        ok: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
-        warn: 'bg-amber-50 text-amber-800 ring-amber-600/20',
-        bad: 'bg-rose-50 text-rose-700 ring-rose-600/20',
-        idle: 'bg-slate-100 text-slate-600 ring-slate-500/20',
+        ok: 'bg-ok-soft text-ok ring-ok-line',
+        warn: 'bg-warn-soft text-warn ring-warn-line',
+        bad: 'bg-danger-soft text-danger ring-danger-line',
+        idle: 'bg-subtle text-ink-muted ring-line',
     } as const;
     return (
-        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs
-            font-medium ring-1 ring-inset ${tones[tone]}`}>
+        <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5
+            text-xs font-medium ring-1 ring-inset ${tones[tone]}`}>
+            <Glyph name={icon} size="sm" />
             {children}
         </span>
     );
@@ -30,28 +45,33 @@ function Pill({ tone, children }: { tone: 'ok' | 'warn' | 'bad' | 'idle'; childr
 /** What the socket state means, in words rather than a colour. */
 function describeConnection(state: string, attempt: number, nextDelayMs: number | null): {
     tone: 'ok' | 'warn' | 'bad' | 'idle';
+    icon: 'online' | 'offline' | 'warning' | 'info';
     label: string;
 } {
     switch (state) {
         case 'open':
-            return { tone: 'ok', label: 'connected' };
+            return { tone: 'ok', icon: 'online', label: 'connected' };
         case 'connecting':
-            return { tone: 'idle', label: 'connecting…' };
+            return { tone: 'idle', icon: 'info', label: 'connecting…' };
         case 'reconnecting':
             return {
                 tone: 'warn',
+                icon: 'warning',
                 label: `reconnecting (attempt ${attempt}${nextDelayMs ? `, in ${Math.round(nextDelayMs / 1000)}s` : ''})`,
             };
         case 'rejected':
-            return { tone: 'bad', label: 'the hub refused this connection' };
+            return { tone: 'bad', icon: 'offline', label: 'the hub refused this connection' };
         case 'closed':
-            return { tone: 'bad', label: 'disconnected' };
+            return { tone: 'bad', icon: 'offline', label: 'disconnected' };
         default:
-            return { tone: 'idle', label: 'not connected' };
+            return { tone: 'idle', icon: 'offline', label: 'not connected' };
     }
 }
 
-export function StatusBar() {
+export function StatusBar({ onOpenSessions }: {
+    /** Opens the session drawer, which below `md` is the only way to it. */
+    onOpenSessions: () => void;
+}) {
     const client = useClient();
     const connection = usePanel((state) => state.connection);
     const notice = usePanel((state) => state.notice);
@@ -70,24 +90,34 @@ export function StatusBar() {
     );
 
     return (
-        <header className="border-b border-slate-200 bg-white">
-            <div className="flex items-center gap-3 px-4 py-2">
-                <h1 className="text-sm font-semibold text-slate-900">simplex hub</h1>
-                <Pill tone={described.tone}>{described.label}</Pill>
+        <header className="border-b border-line bg-surface">
+            <div className="flex items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
+                <Tooltip label="Sessions">
+                    <IconButton
+                        label="Open the session list"
+                        data-testid="sessions-toggle"
+                        onClick={onOpenSessions}
+                        className="md:hidden"
+                    >
+                        <Glyph name="sessions" />
+                    </IconButton>
+                </Tooltip>
+                <h1 className="hidden text-sm font-semibold text-ink sm:inline">simplex hub</h1>
+                <Pill tone={described.tone} icon={described.icon}>{described.label}</Pill>
                 {hub && (
-                    <span className="text-xs text-slate-500">
+                    <span className="hidden truncate text-xs text-ink-muted lg:inline">
                         {hub.name} {hub.version} · panel protocol v{hub.protocol.version}
                         {epoch ? ` · transcript ${epoch.slice(0, 8)}` : ''}
                     </span>
                 )}
                 <span className="flex-1" />
                 {connection.ignoredFrames > 0 && (
-                    <span className="text-xs text-slate-500">
+                    <span className="hidden text-xs text-ink-muted sm:inline">
                         {connection.ignoredFrames} message(s) from a newer hub were ignored
                     </span>
                 )}
                 <label
-                    className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-600"
+                    className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-ink-muted"
                     title="show the protocol's own events, in the order they arrived"
                 >
                     <input
@@ -95,10 +125,11 @@ export function StatusBar() {
                         data-testid="details-toggle"
                         checked={showDetails}
                         onChange={(event) => toggleDetails()}
-                        className="h-3.5 w-3.5 accent-slate-700"
+                        className="h-3.5 w-3.5 accent-interactive"
                     />
-                    technical details
+                    <span className="hidden sm:inline">technical details</span>
                 </label>
+                <ThemeToggle />
             </div>
 
             {authRequired && (
@@ -131,18 +162,20 @@ function Banner({ tone, onDismiss, children }: {
     children: ReactNode;
 }) {
     const tones = {
-        bad: 'bg-rose-50 text-rose-800 border-rose-200',
-        warn: 'bg-amber-50 text-amber-900 border-amber-200',
+        bad: 'bg-danger-soft text-danger border-danger-line',
+        warn: 'bg-warn-soft text-warn border-warn-line',
     } as const;
     return (
-        <div className={`flex items-start gap-2 border-t px-4 py-2 text-xs ${tones[tone]}`}
-            role="alert">
+        <div className={`flex animate-enter items-start gap-2 border-t px-4 py-2 text-xs
+            ${tones[tone]}`} role="alert">
+            <Glyph name={tone === 'bad' ? 'error' : 'warning'} className="mt-0.5" />
             <span className="flex-1">{children}</span>
             <button
                 type="button"
                 onClick={onDismiss}
+                aria-label="dismiss this message"
                 className="rounded px-1 font-medium underline-offset-2 hover:underline
-                    focus:outline-2 focus:outline-offset-1"
+                    focus-visible:outline-2 focus-visible:outline-offset-1"
             >
                 dismiss
             </button>
@@ -154,7 +187,7 @@ function Banner({ tone, onDismiss, children }: {
 function TokenPrompt({ onSubmit }: { onSubmit: (value: string) => void }) {
     return (
         <form
-            className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-4 py-2"
+            className="flex items-center gap-2 border-t border-line bg-sunken px-4 py-2"
             onSubmit={(event) => {
                 event.preventDefault();
                 const field = event.currentTarget.elements.namedItem('token');
@@ -165,7 +198,7 @@ function TokenPrompt({ onSubmit }: { onSubmit: (value: string) => void }) {
                 onSubmit(value);
             }}
         >
-            <label className="text-xs font-medium text-slate-700" htmlFor="panel-token">
+            <label className="text-xs font-medium text-ink" htmlFor="panel-token">
                 panel token
             </label>
             <input
@@ -173,18 +206,18 @@ function TokenPrompt({ onSubmit }: { onSubmit: (value: string) => void }) {
                 name="token"
                 type="password"
                 autoComplete="off"
-                className="w-64 rounded border border-slate-300 px-2 py-1 font-mono text-xs
-                    focus:border-slate-500 focus:outline-none"
+                className="w-64 rounded border border-line-strong px-2 py-1 font-mono text-xs
+                    focus:border-line-strong focus:outline-none"
                 placeholder="paste the token from the hub's output"
             />
             <button
                 type="submit"
-                className="rounded bg-slate-900 px-2.5 py-1 text-xs font-medium text-white
-                    hover:bg-slate-700"
+                className="rounded bg-accent px-2.5 py-1 text-xs font-medium text-accent-ink
+                    hover:bg-accent-hover"
             >
                 use token
             </button>
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-ink-muted">
                 The hub prints one on startup when it is not bound to loopback only.
             </span>
         </form>

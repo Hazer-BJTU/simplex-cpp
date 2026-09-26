@@ -8,64 +8,9 @@
  * a function, it is a property of the page.
  */
 import { expect, test } from '@playwright/test';
-import { STUB, emit, modelResponse, open, setSessions } from './harness.ts';
-
-/** A session description with a running worker, for header-state tests. */
-function runningSession(id: string) {
-    return {
-        session_id: id,
-        created_at: '2026-01-01T00:00:00.000Z',
-        spec: {},
-        connected: true,
-        identity: { state: 'live', worker_id: 'stub-worker', since: null },
-        stats: { events: 0, gaps: 0, duplicates: 0, protocolErrors: 0, incarnations: 1 },
-        last_run_id: '',
-        last_event_at: null,
-        last_event: null,
-        confirmations: [],
-        process: {
-            state: 'running',
-            pid: 4242,
-            started_at: '2026-01-01T00:00:00.000Z',
-            exited_at: null,
-            exit_code: null,
-            signal: null,
-            error: null,
-            stop_requested: false,
-            command: 'simplex_worker',
-            args: [],
-            cwd: '/tmp',
-            process_group_killed: false,
-            log_path: null,
-            log_lines: 0,
-            log_dropped: 0,
-        },
-        requests: [],
-    };
-}
-
-/** A session whose worker has exited and gone away: the only deletable state. */
-function stoppedSession(id: string) {
-    return {
-        ...runningSession(id),
-        connected: false,
-        identity: { state: 'stale', worker_id: 'stub-worker', since: null },
-        process: {
-            ...runningSession(id).process,
-            state: 'exited',
-            exited_at: '2026-01-01T00:00:05.000Z',
-            exit_code: 0,
-        },
-    };
-}
-
-/** Put the stub's one session into a running state. */
-async function withSession(
-    page: import('@playwright/test').Page,
-    session: unknown,
-): Promise<void> {
-    await page.request.post(`${STUB}/__stub/sessions`, { data: { sessions: [session] } });
-}
+import {
+    STUB, emit, modelResponse, open, runningSession, setSessions, stoppedSession, withSession,
+} from './harness.ts';
 
 async function withRunningSession(page: import('@playwright/test').Page): Promise<void> {
     await withSession(page, runningSession('demo'));

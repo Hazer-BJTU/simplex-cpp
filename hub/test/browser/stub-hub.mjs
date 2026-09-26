@@ -64,6 +64,17 @@ const panels = new Set();
 /** Everything panels sent, so a test can assert what the panel asked for. */
 const received = [];
 
+/**
+ * What arrived by REST.
+ *
+ * Supervisor actions (`start`/`stop`/`restart`/`force-kill`) are the one thing
+ * the panel does *not* send over its socket — `client.workerAction` goes through
+ * `POST /api/sessions/:id/<action>` — so `received` never sees them. Keeping the
+ * two logs apart is what makes "the button sent nothing" distinguishable from
+ * "the button sent the wrong thing".
+ */
+const rest = [];
+
 /** How long a snapshot answer takes; a test sets it to create a race. */
 let payloadDelay = 0;
 
@@ -179,6 +190,7 @@ const server = createServer((req, res) => {
                     sequence = 0;
                     transcripts.clear();
                     received.length = 0;
+                    rest.length = 0;
                     epoch = 'stub-epoch-1';
                     settings = { force_kill_process_group: false };
                     down = false;
@@ -291,6 +303,10 @@ const server = createServer((req, res) => {
                     json(res, 200, { received });
                     return;
                 }
+                case '/__stub/actions': {
+                    json(res, 200, { actions: rest });
+                    return;
+                }
                 case '/__stub/decisions': {
                     // Confirmations the panel sent. The stub deliberately never
                     // answers them, which is what a refused or lost decision
@@ -341,6 +357,23 @@ const server = createServer((req, res) => {
         });
         return;
     }
+    // Supervisor actions. The real hub answers `SupervisorResult` and this does
+    // the same, including the refusal: a session with no such worker.
+    const supervisor = /^\/api\/sessions\/([^/]+)\/(start|stop|restart|force-kill)$/.exec(url.pathname);
+    if (supervisor) {
+        void (async () => {
+            const id = decodeURIComponent(supervisor[1]);
+            const action = supervisor[2];
+            const payload = await body(req);
+            rest.push({ session: id, action, payload });
+            const known = sessions.some((session) => session.session_id === id);
+            json(res, known ? 200 : 404, known
+                ? { ok: true, pid: action === 'start' ? 4242 : undefined }
+                : { ok: false, error: 'no such session' });
+        })().catch((error) => json(res, 500, { error: String(error) }));
+        return;
+    }
+
     const match = /^\/api\/sessions\/([^/]+)$/.exec(url.pathname);
     if (match) {
         json(res, 200, { session: describe(decodeURIComponent(match[1])) });

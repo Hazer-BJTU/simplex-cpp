@@ -29,6 +29,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ConfirmationPrompt } from '../../../shared/protocol.ts';
 import { usePanel } from '../state/usePanel.ts';
 import { Badge, Button } from '../ui/Button.tsx';
+import { Glyph } from '../ui/icons.tsx';
 import { Dialog, DialogButton, DialogContent } from '../ui/overlays.tsx';
 import { useClient } from './ClientContext.tsx';
 import { compactJson } from './content.ts';
@@ -103,13 +104,14 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
             <div
                 data-testid="approval-banner"
                 data-confirmation={prompt.confirmation_id}
-                className="flex flex-wrap items-center gap-2 rounded border border-amber-300
-                    bg-amber-50 px-2 py-1 text-xs text-amber-900"
+                className="flex flex-wrap items-center gap-2 rounded border border-warn-line
+                    bg-warn-soft px-2 py-1 text-xs text-warn"
             >
+                <Glyph name="approval" />
                 <span className="font-semibold">approval required</span>
                 <span className="font-mono">{prompt.session_id}</span>
                 <span className="font-mono font-medium">{prompt.call?.name ?? '(unnamed)'}</span>
-                <span className="max-w-96 truncate font-mono text-[11px] text-amber-800">
+                <span className="max-w-96 truncate font-mono text-xs text-warn">
                     {summary}
                 </span>
                 {!prompt.verified && (
@@ -140,7 +142,7 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                 }}
             >
                 <DialogContent
-                    focus="none"
+                    focus="self"
                     title={`${prompt.call?.name ?? 'A tool call'} needs approval`}
                     description={`session ${prompt.session_id} · run ${prompt.run_id}`}
                     footer={
@@ -155,9 +157,10 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                         </>
                     }
                 >
-                    {/* Radix focuses the first tabbable element unless told not
-                        to, which here would arm a decision the operator has not
-                        made. Nothing is focused, so Enter does nothing. */}
+                    {/* The dialog container takes focus rather than its first
+                        button: nothing is armed, so Enter cannot decide, and the
+                        prompt is still announced because focus is inside the
+                        labelled modal. */}
                     <ApprovalBody
                         prompt={prompt}
                         summary={summary}
@@ -179,28 +182,28 @@ function ApprovalBody({ prompt, summary, waiting, error }: {
 }) {
     return (
         <div className="space-y-2">
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-slate-50
-                px-2 py-1 font-mono text-[12px] text-slate-800">
+            <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-sunken
+                px-2 py-1 font-mono text-xs text-ink">
                 {summary}
             </pre>
 
-            <details className="text-[11px] text-slate-500">
+            <details className="text-xs text-ink-muted">
                 <summary className="cursor-pointer select-none">arguments as the worker sent them</summary>
                 <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded
-                    bg-slate-50 px-2 py-1 font-mono text-slate-700">
+                    bg-sunken px-2 py-1 font-mono text-ink">
                     {JSON.stringify(prompt.call?.arguments ?? {}, null, 2)}
                 </pre>
             </details>
 
-            <dl className="grid grid-cols-[8rem_1fr] gap-x-2 text-[11px]">
-                <dt className="text-slate-400">security</dt>
-                <dd className="font-mono text-slate-700">{prompt.call?.security ?? '(none reported)'}</dd>
-                <dt className="text-slate-400">worker identity</dt>
-                <dd className={prompt.verified ? 'text-slate-700' : 'text-rose-700'}>
+            <dl className="grid grid-cols-[8rem_1fr] gap-x-2 text-xs">
+                <dt className="text-ink-faint">security</dt>
+                <dd className="font-mono text-ink">{prompt.call?.security ?? '(none reported)'}</dd>
+                <dt className="text-ink-faint">worker identity</dt>
+                <dd className={prompt.verified ? 'text-ink' : 'text-danger'}>
                     {prompt.identity_state}{prompt.verified ? '' : ' — the hub could not verify this worker'}
                 </dd>
-                <dt className="text-slate-400">deadline</dt>
-                <dd className="text-slate-700">
+                <dt className="text-ink-faint">deadline</dt>
+                <dd className="text-ink">
                     {prompt.deadline_at
                         ? new Date(prompt.deadline_at).toLocaleTimeString()
                         : 'none reported'}
@@ -208,12 +211,12 @@ function ApprovalBody({ prompt, summary, waiting, error }: {
             </dl>
 
             {waiting && (
-                <p className="text-[11px] text-amber-800">
+                <p className="text-xs text-warn">
                     sent — waiting for the hub to confirm the decision. This is information, not
                     a lock: the buttons stay available, so a refusal can simply be retried.
                 </p>
             )}
-            {error && <p className="text-[11px] text-rose-700">{error}</p>}
+            {error && <p className="text-xs text-danger">{error}</p>}
         </div>
     );
 }
@@ -254,8 +257,17 @@ export function Approvals() {
     return (
         <section
             aria-label="pending approvals"
-            className="space-y-1 border-b border-amber-200 bg-amber-50/60 px-4 py-2"
+            data-testid="approvals"
+            className="animate-enter space-y-1 border-b border-warn-line bg-warn-soft/60 px-3
+                py-2 sm:px-4"
         >
+            {/* One line for the count rather than a live region around the whole
+                section: the prompt bodies change as decisions are sent, and a
+                screen reader should hear "2 approvals waiting" once, not every
+                keystroke of a re-render. */}
+            <p role="status" aria-atomic="true" className="sr-only">
+                {prompts.length} approval{prompts.length === 1 ? '' : 's'} waiting for a decision
+            </p>
             {prompts.map((prompt) => (
                 <Approval
                     key={prompt.confirmation_id}
@@ -273,14 +285,14 @@ export function Approvals() {
                 />
             ))}
             {deferred.size > 0 && (
-                <p className="text-[11px] text-amber-800">
+                <p className="text-xs text-warn">
                     {deferred.size} prompt(s) deferred. They stay here until answered or until the
                     worker's own deadline passes.
                 </p>
             )}
             <button
                 type="button"
-                className="text-[11px] text-amber-900 underline-offset-2 hover:underline"
+                className="text-xs text-warn underline-offset-2 hover:underline"
                 onClick={() => setDeferred(new Set(prompts.map((p) => p.confirmation_id)))}
             >
                 defer all

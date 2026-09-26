@@ -28,6 +28,7 @@ import {
 import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { Glyph } from '../ui/icons.tsx';
 import { fenceFor } from './content.ts';
 
 /** Copy text to the clipboard, reporting whether it worked. */
@@ -42,14 +43,27 @@ async function copyText(text: string): Promise<boolean> {
     }
 }
 
-/** A copy control that reports what actually happened. */
+/**
+ * A copy control that reports what actually happened.
+ *
+ * The three outcomes are three words and three glyphs, not a colour: "copied"
+ * and "clipboard blocked" are different facts and a tint would not distinguish
+ * them for everyone reading. The reset timer only exists to undo the *claim*,
+ * never to undo the copy.
+ */
 export function CopyButton({ text, label }: { text: () => string; label: string }) {
     const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle');
+    const shown = state === 'done' ? 'copied' : state === 'failed' ? 'clipboard blocked' : label;
     return (
         <button
             type="button"
-            className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-200
-                hover:text-slate-800"
+            data-testid="copy-button"
+            data-copy-state={state}
+            aria-label={`copy to clipboard`}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs
+                text-ink-muted transition-colors hover:bg-subtle hover:text-ink
+                focus-visible:outline-2 focus-visible:outline-offset-1
+                focus-visible:outline-interactive"
             onClick={() => {
                 void copyText(text()).then((ok) => {
                     setState(ok ? 'done' : 'failed');
@@ -57,7 +71,11 @@ export function CopyButton({ text, label }: { text: () => string; label: string 
                 });
             }}
         >
-            {state === 'done' ? 'copied' : state === 'failed' ? 'clipboard blocked' : label}
+            <Glyph name={state === 'done' ? 'copied' : state === 'failed' ? 'error' : 'copy'} size="sm" />
+            {/* A live region announces the outcome; the button's own label does
+                not change, because a control whose name changes under the
+                pointer is a control you cannot aim at twice. */}
+            <span aria-live="polite">{shown}</span>
         </button>
     );
 }
@@ -83,13 +101,13 @@ function CodeBlock({ children, node: _node, ...rest }: {
     const label = language || (/\bhljs\b/.test(className) ? 'auto-detected' : 'text');
 
     return (
-        <div className="group relative my-2 overflow-hidden rounded border border-slate-200">
-            <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-2 py-0.5">
-                <span className="font-mono text-[11px] text-slate-500">{label}</span>
+        <div className="group relative my-2 overflow-hidden rounded border border-line">
+            <div className="flex items-center gap-2 border-b border-line bg-sunken px-2 py-0.5">
+                <span className="font-mono text-xs text-ink-muted">{label}</span>
                 <span className="flex-1" />
                 <CopyButton label="copy" text={() => ref.current?.textContent ?? ''} />
             </div>
-            <pre ref={ref} {...rest} className="overflow-x-auto bg-slate-50/50 p-2 text-[12px]">
+            <pre ref={ref} {...rest} className="overflow-x-auto bg-sunken/50 p-2 text-xs">
                 {children}
             </pre>
         </div>
@@ -110,9 +128,9 @@ function Link({ href, children, node: _node, ...rest }: {
 } & ComponentPropsWithoutRef<'a'> & ExtraProps) {
     if (!href || !/^https?:\/\//i.test(href)) {
         return (
-            <span className="text-slate-700">
+            <span className="text-ink">
                 {children}
-                {href && <span className="ml-1 text-[11px] text-slate-400">({href} — not opened)</span>}
+                {href && <span className="ml-1 text-xs text-ink-faint">({href} — not opened)</span>}
             </span>
         );
     }
@@ -122,7 +140,7 @@ function Link({ href, children, node: _node, ...rest }: {
             href={href}
             target="_blank"
             rel="noreferrer noopener"
-            className="text-sky-700 underline underline-offset-2 hover:text-sky-900"
+            className="text-info underline underline-offset-2 hover:text-info"
         >
             {children}
         </a>

@@ -19,12 +19,13 @@
  * groups the same facts so that "is it running" and "why did it stop" are
  * answerable at a glance.
  */
-import { RefreshCw } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { ProcessDescription, SessionDescription } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { statsOf } from '../state/view.ts';
 import { Badge, Button, IconButton } from '../ui/Button.tsx';
+import { Glyph } from '../ui/icons.tsx';
+import { EmptyState, LoadingLines } from '../ui/States.tsx';
 import { Tabs, TabsList, TabsPanel, TabsTrigger, Tooltip } from '../ui/overlays.tsx';
 import type { InspectorTab } from '../state/store.ts';
 import { prettyJson } from './content.ts';
@@ -33,9 +34,9 @@ import { useClient } from './ClientContext.tsx';
 /** One key/value row. */
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
     return (
-        <div className="flex gap-2 py-0.5 text-[11px]">
-            <span className="w-32 shrink-0 text-slate-400">{label}</span>
-            <span className="min-w-0 flex-1 break-words font-mono text-slate-700">{children}</span>
+        <div className="flex gap-2 py-0.5 text-xs">
+            <span className="w-32 shrink-0 text-ink-faint">{label}</span>
+            <span className="min-w-0 flex-1 break-words font-mono text-ink">{children}</span>
         </div>
     );
 }
@@ -44,7 +45,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
     return (
         <section className="mb-3">
-            <h3 className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">
                 {title}
             </h3>
             {children}
@@ -67,10 +68,11 @@ function RunPane({ sessionId }: { sessionId: string }) {
 
     if (!status) {
         return (
-            <p className="p-2 text-[11px] text-slate-500">
-                No status snapshot yet. The worker sends one when it starts and whenever
-                Status is asked for.
-            </p>
+            <EmptyState
+                icon="status"
+                title="No status snapshot yet"
+                detail="The worker sends one when it starts, and whenever Status is asked for."
+            />
         );
     }
 
@@ -94,13 +96,13 @@ function RunPane({ sessionId }: { sessionId: string }) {
             <Section title="storage">
                 <Row label="storage failed">
                     {status.storage_failed === true
-                        ? <span className="text-rose-700">yes — further saves are suppressed</span>
+                        ? <span className="text-danger">yes — further saves are suppressed</span>
                         : 'no'}
                 </Row>
                 <Row label="rejected payloads">{String(status.rejected_payloads ?? 0)}</Row>
                 {loop && loop.error !== '' && loop.error !== undefined && (
                     <Row label="loop error">
-                        <span className="text-rose-700">{String(loop.error)}</span>
+                        <span className="text-danger">{String(loop.error)}</span>
                     </Row>
                 )}
             </Section>
@@ -122,14 +124,14 @@ function RunPane({ sessionId }: { sessionId: string }) {
 
             <button
                 type="button"
-                className="text-[11px] text-slate-400 hover:text-slate-700"
+                className="text-xs text-ink-faint hover:text-ink"
                 onClick={() => setShowRaw((value) => !value)}
             >
                 {showRaw ? 'hide raw status' : 'raw status'}
             </button>
             {showRaw && (
                 <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded
-                    bg-slate-50 p-2 font-mono text-[11px] text-slate-700">
+                    bg-sunken p-2 font-mono text-xs text-ink">
                     {prettyJson(status)}
                 </pre>
             )}
@@ -142,7 +144,7 @@ function ProcessPane({ session }: { session: SessionDescription }) {
     const process: ProcessDescription | null = session.process;
     if (!process) {
         return (
-            <p className="p-2 text-[11px] text-slate-500">
+            <p className="p-2 text-xs text-ink-muted">
                 No process has been started for this session by this hub. A worker started by a
                 previous hub run is adopted, not restarted, so it would appear here.
             </p>
@@ -163,7 +165,7 @@ function ProcessPane({ session }: { session: SessionDescription }) {
                 {exited && <Row label="exit code">{process.exit_code ?? '—'}</Row>}
                 {process.signal && <Row label="signal">{process.signal}</Row>}
                 {process.error && (
-                    <Row label="error"><span className="text-rose-700">{process.error}</span></Row>
+                    <Row label="error"><span className="text-danger">{process.error}</span></Row>
                 )}
                 <Row label="stop requested">{process.stop_requested ? 'yes' : 'no'}</Row>
                 <Row label="process group killed">
@@ -191,14 +193,19 @@ function ProcessPane({ session }: { session: SessionDescription }) {
 /** The captured worker output. */
 function LogsPane({ sessionId }: { sessionId: string }) {
     const client = useClient();
-    const logs = useView(sessionId)?.logs ?? { lines: [], dropped: 0, logPath: null };
+    // `undefined` means no log frame has arrived; an empty array means the hub
+    // sent one and the worker has said nothing yet. Those are different facts
+    // and the pane says which.
+    const logs = useView(sessionId)?.logs;
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="flex shrink-0 items-center gap-2 px-2 py-1 text-[11px] text-slate-500">
-                <span>{logs.lines.length} line(s)</span>
-                {logs.dropped > 0 && <span className="text-amber-700">{logs.dropped} dropped</span>}
-                {logs.logPath && (
-                    <span className="truncate font-mono text-slate-400">{logs.logPath}</span>
+            <div className="flex shrink-0 items-center gap-2 px-2 py-1 text-xs text-ink-muted">
+                <span>{logs ? `${logs.lines.length} line(s)` : 'not loaded yet'}</span>
+                {logs && logs.dropped > 0 && (
+                    <span className="text-warn">{logs.dropped} dropped</span>
+                )}
+                {logs?.logPath && (
+                    <span className="truncate font-mono text-ink-faint">{logs.logPath}</span>
                 )}
                 <span className="flex-1" />
                 <Tooltip label="Ask the hub for the current tail">
@@ -206,16 +213,20 @@ function LogsPane({ sessionId }: { sessionId: string }) {
                         label="Refresh logs"
                         onClick={() => client.refreshLogs(sessionId)}
                     >
-                        <RefreshCw aria-hidden className="h-3.5 w-3.5" />
+                        <Glyph name="refresh" />
                     </IconButton>
                 </Tooltip>
             </div>
-            <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all px-2 pb-2
-                font-mono text-[11px] text-slate-700">
-                {logs.lines.length === 0
-                    ? 'No captured output. The hub keeps a bounded tail in memory; the file above has all of it.'
-                    : logs.lines.join('\n')}
-            </pre>
+            {logs ? (
+                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all px-2
+                    pb-2 font-mono text-xs text-ink">
+                    {logs.lines.length === 0
+                        ? 'No captured output. The hub keeps a bounded tail in memory; the file above has all of it.'
+                        : logs.lines.join('\n')}
+                </pre>
+            ) : (
+                <LoadingLines label="loading the worker's output" lines={6} className="px-2" />
+            )}
         </div>
     );
 }
@@ -231,16 +242,16 @@ function SnapshotPane({ sessionId }: { sessionId: string }) {
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="flex shrink-0 items-center gap-2 px-2 py-1 text-[11px] text-slate-500">
+            <div className="flex shrink-0 items-center gap-2 px-2 py-1 text-xs text-ink-muted">
                 <Button
-                    icon={<RefreshCw aria-hidden className="h-3 w-3" />}
+                    icon={<Glyph name="refresh" size="sm" />}
                     disabled={mine?.loading === true}
                     onClick={() => { void client.loadSnapshot(sessionId); }}
                 >
                     {mine?.loading ? 'loading…' : 'Load snapshot'}
                 </Button>
                 {view?.state_error && (
-                    <span className="text-rose-700">state.json could not be parsed: {view.state_error}</span>
+                    <span className="text-danger">state.json could not be parsed: {view.state_error}</span>
                 )}
                 <span className="flex-1" />
                 {view?.readable && (
@@ -251,29 +262,30 @@ function SnapshotPane({ sessionId }: { sessionId: string }) {
             </div>
 
             <div className="min-h-0 flex-1 overflow-auto px-2 pb-2">
-                {mine?.error && <p className="text-[11px] text-rose-700">{mine.error}</p>}
+                {mine?.error && <p className="text-xs text-danger">{mine.error}</p>}
                 {!mine && (
-                    <p className="text-[11px] text-slate-500">
+                    <p className="text-xs text-ink-muted">
                         The worker's own persisted state, read from the hub's data directory and
                         never written by the panel.
                     </p>
                 )}
+                {mine?.loading && <LoadingLines label="reading the worker's persisted state" lines={5} />}
                 {mine && !view && !mine.error && !mine.loading && (
-                    <p className="text-[11px] text-slate-500">Nothing loaded yet.</p>
+                    <p className="text-xs text-ink-muted">Nothing loaded yet.</p>
                 )}
                 {view && showReadable && (
-                    <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-slate-700">
+                    <pre className="whitespace-pre-wrap break-words font-mono text-xs text-ink">
                         {view.readable ?? '(no readable.md was written)'}
                     </pre>
                 )}
                 {view && !showReadable && (
                     <>
-                        <p className="mb-1 text-[11px] text-slate-500">
+                        <p className="mb-1 text-xs text-ink-muted">
                             {Object.keys(view.files).length === 0
                                 ? 'No snapshot files exist for this session yet.'
                                 : `files: ${Object.values(view.files).join(', ')}`}
                         </p>
-                        <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-slate-700">
+                        <pre className="whitespace-pre-wrap break-all font-mono text-xs text-ink">
                             {view.state === null
                                 ? '(no state.json)'
                                 : prettyJson(view.state)}
@@ -297,13 +309,24 @@ export function Inspector() {
     if (!open || !selected || !session) return null;
 
     return (
-        <aside
-            data-testid="inspector"
-            aria-label="context drawer"
-            className="flex w-96 shrink-0 flex-col border-l border-slate-200 bg-white"
-        >
+        <>
+            {/* Below `md` the drawer floats and needs a way out that is not a
+                precise click on its own Close button. */}
+            <button
+                type="button"
+                aria-label="close the context drawer"
+                onClick={() => setOpen(false)}
+                className="fixed inset-0 z-30 animate-fade bg-scrim md:hidden"
+            />
+            <aside
+                data-testid="inspector"
+                aria-label="context drawer"
+                className="fixed inset-y-0 right-0 z-40 flex w-[min(24rem,100vw)] animate-drawer
+                    flex-col border-l border-line bg-surface md:static md:z-auto md:w-96
+                    md:animate-none"
+            >
             <div className="flex items-center gap-1 px-2 pt-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
                     context
                 </span>
                 <span className="flex-1" />
@@ -327,7 +350,8 @@ export function Inspector() {
                 <TabsPanel value="process"><ProcessPane session={session} /></TabsPanel>
                 <TabsPanel value="logs"><LogsPane sessionId={selected} /></TabsPanel>
                 <TabsPanel value="snapshot"><SnapshotPane sessionId={selected} /></TabsPanel>
-            </Tabs>
-        </aside>
+                </Tabs>
+            </aside>
+        </>
     );
 }
