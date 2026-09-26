@@ -3,7 +3,7 @@
  *
  * The old panel rendered a call as `JSON.stringify(arguments, null, 2)` and a
  * result as raw text, which is why a `run_command` read as
- * `{"command": "…"}` and its output as a wall of punctuation. Three things
+ * `{"command": "…"}` and its output as a wall of punctuation. Four things
  * change that here:
  *
  * - **A command reads as a command.** When the arguments carry a `command`
@@ -16,6 +16,8 @@
  * - **Status is a state, not a colour.** Pending approval, running, ok, failed,
  *   skipped and "the run ended without a result" are five different things, and
  *   the card spells out which one it is.
+ * - **Details are deliberate.** A short call summary is always visible; the
+ *   complete arguments, output, and timing appear only when opened.
  */
 import { useState } from 'react';
 import { Glyph, type GlyphName } from '../ui/icons.tsx';
@@ -26,6 +28,23 @@ import type { OutputBlock, OutputDocument } from './toolOutput.ts';
 
 /** How long a result may be before it is folded away. */
 const COLLAPSED_CHARS = 1200;
+const SUMMARY_CHARS = 160;
+
+/** A bounded, single-line hint; full values remain available in the details. */
+function callSummary(args: unknown): string {
+    if (typeof args !== 'object' || args === null || Array.isArray(args)) return '';
+    const record = args as Record<string, unknown>;
+    const key = ['command', 'path', 'file_path', 'url', 'query']
+        .find((candidate) => typeof record[candidate] === 'string');
+    if (key) {
+        const value = String(record[key]);
+        const firstLine = value.split(/\r?\n/, 1)[0] ?? '';
+        return firstLine.length > SUMMARY_CHARS || firstLine.length < value.length
+            ? `${firstLine.slice(0, SUMMARY_CHARS)}…`
+            : firstLine;
+    }
+    return Object.keys(record).join(', ');
+}
 
 /**
  * How a status reads, how it is coloured, and which glyph it carries.
@@ -107,7 +126,7 @@ function Block({ block }: { block: OutputBlock }) {
                 )}
             </div>
             {open && block.text && (
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words px-2 pb-1.5
+                <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words px-2 pb-1.5
                     font-mono text-xs text-ink">
                     {block.text}
                 </pre>
@@ -137,15 +156,8 @@ function Result({ call }: { call: ToolCall }) {
     const result = call.result;
     if (!result) return null;
 
-    const failed = call.status === 'failed';
     return (
         <div className="mt-1 space-y-1">
-            {failed && result.error && (
-                <p className="rounded border-l-2 border-danger-line bg-danger-soft px-2 py-1 text-xs text-danger">
-                    <span className="font-medium">{result.error.stage}</span>
-                    {result.error.message ? ` — ${result.error.message}` : ''}
-                </p>
-            )}
             {call.status === 'skipped' && (
                 <p className="px-2 text-xs text-ink-muted">
                     the loop did not dispatch this call — not an execution, and not a failure
@@ -163,7 +175,7 @@ function Result({ call }: { call: ToolCall }) {
                         <Block key={block.name} block={block} />
                     ))}
                     {call.output.document.rest.length > 0 && (
-                        <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded
+                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded
                             bg-sunken px-2 py-1 font-mono text-xs text-ink">
                             {call.output.document.rest.join('\n')}
                         </pre>
@@ -172,14 +184,14 @@ function Result({ call }: { call: ToolCall }) {
             )}
 
             {call.output?.kind === 'text' && !raw && result.text !== '' && (
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded bg-sunken
+                <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-sunken
                     px-2 py-1 font-mono text-xs text-ink">
                     {result.text}
                 </pre>
             )}
 
             {raw && (
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded bg-sunken
+                <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-sunken
                     px-2 py-1 font-mono text-xs text-ink">
                     {result.text}
                 </pre>
@@ -217,6 +229,7 @@ export function ToolCard({ call }: { call: ToolCall }) {
     const split = splitCommand(call.args);
     const status = STATUS[call.status];
     const hasArgs = call.args !== undefined && call.args !== null;
+    const summary = callSummary(call.args);
 
     return (
         <article
@@ -235,37 +248,12 @@ export function ToolCard({ call }: { call: ToolCall }) {
                     <Glyph name={status.icon} size="sm" />
                     {status.label}
                 </span>
-                {call.security && (
-                    <span
-                        className="rounded bg-subtle px-1.5 py-0.5 text-xs text-ink-muted"
-                        title={call.result
-                            ? 'the classification the host settled on before dispatch'
-                            : 'the classification the model proposed; the host re-evaluates it before dispatch'}
-                    >
-                        {call.security}
-                    </span>
-                )}
-                {call.scheduling && (
-                    <span className="text-xs text-ink-faint">{call.scheduling}</span>
-                )}
-                <span className="flex-1" />
-                {call.id && (
-                    <span className="font-mono text-xs text-ink-faint">{call.id}</span>
-                )}
             </header>
 
-            {split ? (
-                <div className="mt-1">
-                    <MarkdownBlock code={split.command} language="bash" />
-                    {split.rest !== null && (
-                        <CallArguments value={split.rest} />
-                    )}
-                </div>
-            ) : hasArgs && (
-                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-sunken
-                    px-2 py-1 font-mono text-xs text-ink">
-                    {prettyJson(call.args)}
-                </pre>
+            {summary && (
+                <p className="mt-1 truncate font-mono text-xs text-ink-muted" title={summary}>
+                    {summary}
+                </p>
             )}
 
             {call.status === 'pending' && call.prompt && (
@@ -274,23 +262,50 @@ export function ToolCard({ call }: { call: ToolCall }) {
                 </p>
             )}
 
-            <Result call={call} />
+            {call.status === 'failed' && call.result?.error && (
+                <p className="mt-1 break-words text-xs text-danger">
+                    {call.result.error.stage}
+                    {call.result.error.message ? ` — ${call.result.error.message}` : ''}
+                </p>
+            )}
 
-            <div className="mt-1">
-                <button
-                    type="button"
-                    className="text-xs text-ink-faint hover:text-ink"
-                    onClick={() => setShowArgs((value) => !value)}
-                >
-                    {showArgs ? 'hide raw call' : 'raw call'}
-                </button>
-                {showArgs && (
-                    <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-sunken
-                        px-2 py-1 font-mono text-xs text-ink">
-                        {prettyJson(call.args ?? {})}
-                    </pre>
-                )}
-            </div>
+            <details data-testid="tool-details" className="mt-1 min-w-0 text-xs">
+                <summary className="w-fit cursor-pointer select-none text-ink-muted hover:text-ink">
+                    Call and result details
+                </summary>
+                <div className="mt-2 min-w-0 space-y-2 border-t border-line pt-2">
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-ink-faint">
+                        {call.security && <span>security: {call.security}</span>}
+                        {call.scheduling && <span>scheduling: {call.scheduling}</span>}
+                        {call.id && <span className="font-mono">id: {call.id}</span>}
+                    </div>
+                    {split ? (
+                        <div>
+                            <MarkdownBlock code={split.command} language="bash" />
+                            {split.rest !== null && <CallArguments value={split.rest} />}
+                        </div>
+                    ) : hasArgs && (
+                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded
+                            bg-sunken px-2 py-1 font-mono text-ink">
+                            {prettyJson(call.args)}
+                        </pre>
+                    )}
+                    <Result call={call} />
+                    <button
+                        type="button"
+                        className="text-ink-faint hover:text-ink"
+                        onClick={() => setShowArgs((value) => !value)}
+                    >
+                        {showArgs ? 'hide raw call' : 'raw call'}
+                    </button>
+                    {showArgs && (
+                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded
+                            bg-sunken px-2 py-1 font-mono text-ink">
+                            {prettyJson(call.args ?? {})}
+                        </pre>
+                    )}
+                </div>
+            </details>
         </article>
     );
 }
@@ -302,7 +317,7 @@ function CallArguments({ value }: { value: unknown }) {
     return (
         <details className="text-xs text-ink-muted">
             <summary className="cursor-pointer select-none">other arguments</summary>
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-sunken
+            <pre className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-all rounded bg-sunken
                 px-2 py-1 font-mono text-ink">
                 {text}
             </pre>

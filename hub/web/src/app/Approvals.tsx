@@ -182,7 +182,7 @@ function ApprovalBody({ prompt, summary, waiting, error }: {
 }) {
     return (
         <div className="space-y-2">
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-sunken
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-sunken
                 px-2 py-1 font-mono text-xs text-ink">
                 {summary}
             </pre>

@@ -135,21 +135,24 @@ export function DialogContent({
                         surface.current?.focus();
                     }
                 }}
-                className={'fixed left-1/2 top-1/2 z-50 w-[min(32rem,calc(100vw-2rem))] '
-                    + '-translate-x-1/2 -translate-y-1/2 animate-pop rounded-lg '
-                    + 'border border-line bg-raised p-4 shadow-xl focus:outline-none'}
+                className={'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] '
+                    + 'w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 '
+                    + 'flex-col animate-pop rounded-lg border border-line bg-raised p-4 '
+                    + 'shadow-xl focus:outline-none'}
             >
-                <DialogPrimitive.Title className="text-sm font-semibold text-ink">
+                <DialogPrimitive.Title className="shrink-0 break-words text-sm font-semibold text-ink">
                     {title}
                 </DialogPrimitive.Title>
                 {description && (
-                    <DialogPrimitive.Description className="mt-1 text-xs text-ink-muted">
+                    <DialogPrimitive.Description className="mt-1 shrink-0 break-words text-xs text-ink-muted">
                         {description}
                     </DialogPrimitive.Description>
                 )}
-                <div className="mt-3 text-sm text-ink">{children}</div>
+                <div data-testid="dialog-body" className="mt-3 min-h-0 overflow-y-auto text-sm text-ink">
+                    {children}
+                </div>
                 {footer && (
-                    <div className="mt-4 flex items-center justify-end gap-2">{footer}</div>
+                    <div className="mt-4 flex shrink-0 items-center justify-end gap-2">{footer}</div>
                 )}
             </DialogPrimitive.Content>
         </DialogPrimitive.Portal>

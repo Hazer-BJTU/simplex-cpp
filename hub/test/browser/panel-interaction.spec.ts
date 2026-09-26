@@ -157,6 +157,46 @@ test('a decision the hub never answers leaves a usable button (D18)', async ({ p
     expect((await decisions.json()).decisions).toHaveLength(2);
 });
 
+for (const [kind, args] of [
+    ['command', { command: 'echo '.repeat(3000) }],
+    ['edit', { path: '/tmp/example.cpp', old_str: 'old\n'.repeat(2000), new_str: 'new\n'.repeat(2000) }],
+] as const) {
+    test(`a long ${kind} approval stays inside the viewport with reachable decisions`, async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 420 });
+        await open(page);
+        await page.getByRole('button', { name: 'Open the session list' }).click();
+        await page.getByTestId('session-row').click();
+        await page.request.post(`${STUB}/__stub/confirm`, {
+            data: {
+                session: 'demo', confirmation_id: `long-${kind}`,
+                call: { name: kind === 'command' ? 'run_command' : 'str_replace_edit', arguments: args },
+            },
+        });
+
+        const dialog = page.getByRole('dialog');
+        await expect(dialog).toBeVisible();
+        if (kind === 'edit') {
+            await dialog.getByText('arguments as the worker sent them').click();
+        }
+        const bounds = await dialog.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const summary = (node.querySelector('details[open] pre')
+                ?? node.querySelector('pre')) as HTMLElement;
+            return {
+                top: box.top, bottom: box.bottom,
+                viewportHeight: window.innerHeight,
+                summaryScrolls: summary.scrollHeight > summary.clientHeight,
+            };
+        });
+        expect(bounds.top).toBeGreaterThanOrEqual(0);
+        expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight);
+        expect(bounds.summaryScrolls).toBe(true);
+        await expect(dialog.getByRole('button', { name: 'Approve' })).toBeInViewport();
+        await dialog.getByRole('button', { name: 'Later' }).click();
+        await expect(dialog).toHaveCount(0);
+    });
+}
+
 test('the confirmation mode belongs to one session (D15)', async ({ page }) => {
     await page.request.post(`${STUB}/__stub/reset`);
     await setSessions(page, ['first', 'second']);

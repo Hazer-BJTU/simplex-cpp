@@ -106,7 +106,7 @@ test('hides protocol events until technical details are asked for', async ({ pag
         .not.toHaveAttribute('open', '');
 });
 
-test('shows a tool call as a command and its result as streams', async ({ page }) => {
+test('reveals a tool call and its streams on demand', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
 
@@ -123,12 +123,18 @@ test('shows a tool call as a command and its result as streams', async ({ page }
     await expect(card).toHaveAttribute('data-tool', 'run_command');
     await expect(card).toHaveAttribute('data-status', 'ok');
 
-    // The command reads as a command: highlighted, labelled, copyable.
+    const details = card.getByTestId('tool-details');
+    await expect(details).not.toHaveAttribute('open', '');
+    await expect(card.locator('p[title="echo hello"]')).toBeVisible();
+    await expect(card.getByText('stdout', { exact: true })).toBeHidden();
+    await details.locator('summary').first().click();
+
+    // The expanded command is highlighted, labelled, and copyable.
     await expect(card.getByText('bash', { exact: true })).toBeVisible();
     await expect(card).toContainText('echo hello');
     // The rest of the arguments are folded away rather than shown as the
     // argument blob the command would otherwise be buried in.
-    await expect(card.locator('details').first()).not.toHaveAttribute('open', '');
+    await expect(card.getByText('other arguments').locator('..')).not.toHaveAttribute('open', '');
     await expect(card.getByText('other arguments')).toBeVisible();
 
     // The result is read for structure: named streams, not one text blob.
@@ -140,6 +146,25 @@ test('shows a tool call as a command and its result as streams', async ({ page }
     // The reported fields are labelled, and labelled as the tool's own report.
     await expect(card).toContainText('exit_code');
     await expect(card).toContainText('0');
+
+    await details.locator('summary').first().click();
+    await expect(card.getByText('stdout', { exact: true })).toBeHidden();
+});
+
+test('keeps a long edit argument out of the collapsed tool card', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+
+    const replacement = 'replacement-marker-'.repeat(400);
+    await emit(page, 'tool_calls', [call('edit-1', 'str_replace_edit', {
+        path: '/tmp/example.cpp', old_str: 'old text', new_str: replacement,
+    })]);
+
+    const card = page.getByTestId('tool-card');
+    await expect(card).toContainText('/tmp/example.cpp');
+    expect(await card.innerText()).not.toContain(replacement);
+    await card.getByTestId('tool-details').locator('summary').first().click();
+    expect(await card.innerText()).toContain(replacement);
 });
 
 test('draws one card for a batch the response and the event both describe', async ({ page }) => {
