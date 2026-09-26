@@ -1,18 +1,18 @@
 /**
  * @file panel asset integrity.
  *
- * The panel has no build step: `hub/web` is served as-is. Nothing compiles it,
- * so nothing catches a renamed file, a typo in a module path, or a syntax error
- * until a browser console shows it — and on a headless CI run there is no
- * browser unless the end-to-end job provides one (see test/e2e/panel.test.js).
+ * Two panels live here during the rewrite. `web/js` and `web/css` have no build
+ * step and are served as-is, so nothing compiles them; `web/src` is TypeScript
+ * that Vite bundles, so the compiler catches more of it but the bundle is what
+ * actually runs. These checks cover the gap in both directions, and they run on
+ * every Node version in the matrix:
  *
- * These checks are the cheap half of that gap, and they run on every Node
- * version in the matrix:
  *   - every local asset index.html references exists,
- *   - every panel module parses as an ES module,
- *   - every relative import resolves to a file that exists,
+ *   - every legacy panel module parses as an ES module,
+ *   - every relative import in the legacy panel resolves to a file that exists,
  *   - both theme token sets are still declared,
- *   - nothing writes markup as HTML, because model and tool output is untrusted.
+ *   - nothing writes markup as HTML, because model and tool output is untrusted,
+ *   - and the markdown renderer does not re-enable inline HTML.
  *
  * None of this proves the panel works. It proves the files it needs are there
  * and are syntactically loadable, which is the part a browser test would
@@ -47,6 +47,55 @@ function walk(directory) {
         else found.push(path);
     }
     return found;
+}
+
+/**
+ * Source with comments removed.
+ *
+ * The scans below look for tokens a panel must not use, and a comment that
+ * explains *why* one is forbidden contains it too. Reading code rather than
+ * prose is what keeps the rule writable down as well as up.
+ *
+ * Strings are tracked so a quote inside a comment does not desynchronise the
+ * scan. The result is not a parser and does not need to be: the behavioural
+ * check is `never turns model output into markup` in the browser suite, and
+ * this is the cheap static backstop beside it.
+ */
+function stripComments(source) {
+    let out = '';
+    let quote = '';
+    for (let index = 0; index < source.length; index += 1) {
+        const char = source[index];
+        const next = source[index + 1];
+        if (quote) {
+            out += char;
+            if (char === '\\') {
+                out += next ?? '';
+                index += 1;
+            } else if (char === quote) {
+                quote = '';
+            }
+            continue;
+        }
+        if (char === '"' || char === "'" || char === '`') {
+            quote = char;
+            out += char;
+            continue;
+        }
+        if (char === '/' && next === '*') {
+            const end = source.indexOf('*/', index + 2);
+            index = end === -1 ? source.length : end + 1;
+            continue;
+        }
+        if (char === '/' && next === '/') {
+            const end = source.indexOf('\n', index);
+            index = end === -1 ? source.length : end;
+            out += '\n';
+            continue;
+        }
+        out += char;
+    }
+    return out;
 }
 
 /** Relative specifiers imported or re-exported by one module. */
@@ -122,14 +171,31 @@ describe('panel assets', () => {
     it('never writes panel markup as HTML', () => {
         // Model output, tool output, log lines and session ids are all
         // untrusted; a single innerHTML would turn any of them into script.
+        // `dangerouslySetInnerHTML` is the same hole with a React name on it,
+        // and it is the one a markdown renderer is most likely to reach for.
         const offenders = [];
         for (const path of walk(webRoot)) {
-            const source = readFileSync(path, 'utf8');
+            const source = stripComments(readFileSync(path, 'utf8'));
             for (const pattern of [/\.innerHTML\b/, /\.outerHTML\b/, /insertAdjacentHTML\b/,
-                /document\.write\b/, /\beval\s*\(/, /new Function\s*\(/]) {
+                /dangerouslySetInnerHTML/, /document\.write\b/, /\beval\s*\(/,
+                /new Function\s*\(/]) {
                 if (pattern.test(source)) offenders.push(`${path.slice(hubRoot.length + 1)}: ${pattern}`);
             }
         }
         assert.deepEqual(offenders, []);
+    });
+
+    it('does not let the markdown renderer parse inline HTML', () => {
+        // `react-markdown` is safe by construction — it builds elements, not
+        // markup — but only while `rehype-raw` is absent. Adding that plugin is
+        // a one-line change that would turn every `<img onerror=…>` a model
+        // emits into a real element, so it is a change that has to be argued
+        // for rather than made by accident.
+        const newPanel = join(webRoot, 'src');
+        const offenders = walk(newPanel)
+            .filter((path) => /rehype-raw|rehypeRaw/.test(stripComments(readFileSync(path, 'utf8'))))
+            .map((path) => path.slice(hubRoot.length + 1));
+        assert.deepEqual(offenders, [],
+            'a raw-HTML plugin is installed, so model output can become markup again');
     });
 });
