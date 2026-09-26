@@ -65,11 +65,14 @@ export default defineConfig({
         {
             // The build runs as part of the server command so a stale `dist` can
             // never be what the browser loads.
-            command: `npm run build && npx vite preview --port ${PREVIEW_PORT} --strictPort`,
+            // Probe and server must use the same address. On some runners
+            // localhost resolves to ::1, while the probe uses 127.0.0.1.
+            command: `npm run build && npx vite preview --host 127.0.0.1 `
+                + `--port ${PREVIEW_PORT} --strictPort`,
             url: `http://127.0.0.1:${PREVIEW_PORT}/`,
             reuseExistingServer: !process.env.CI,
             timeout: 120_000,
-            stdout: 'ignore',
+            stdout: 'pipe',
             stderr: 'pipe',
             env: { SIMPLEX_HUB_ORIGIN: `http://127.0.0.1:${STUB_PORT}` },
         },
