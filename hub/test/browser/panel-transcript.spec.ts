@@ -123,6 +123,31 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
     }
     expect(controls[1]!.y).toBe(controls[0]!.y);
     expect(controls[2]!.y).toBe(controls[0]!.y);
+    const contents = await Promise.all([attach, confirmation, send].map((button) =>
+        button.evaluate((node) => {
+            const icon = node.querySelector('svg')!.getBoundingClientRect();
+            const label = node.querySelector('span')!.getBoundingClientRect();
+            return { iconY: icon.y, iconHeight: icon.height,
+                labelY: label.y, labelHeight: label.height };
+        })));
+    for (const content of contents) {
+        expect(content.iconY).toBe(contents[0]!.iconY);
+        expect(content.iconHeight).toBe(contents[0]!.iconHeight);
+        expect(content.labelY).toBe(contents[0]!.labelY);
+        expect(content.labelHeight).toBe(contents[0]!.labelHeight);
+    }
+    const card = message.locator('xpath=..');
+    const neutralFocus = await card.evaluate((node) => {
+        const sample = document.createElement('div');
+        sample.style.borderColor = 'var(--ink-muted)';
+        document.body.append(sample);
+        const colour = getComputedStyle(sample).borderColor;
+        sample.remove();
+        return colour;
+    });
+    await message.focus();
+    expect(await card.evaluate((node) => getComputedStyle(node).borderColor)).toBe(neutralFocus);
+    expect(await message.evaluate((node) => getComputedStyle(node).outlineStyle)).toBe('none');
     const backgrounds = await page.evaluate(() => ({
         transcript: getComputedStyle(document.querySelector('[data-testid="transcript"]')!).backgroundColor,
         composer: getComputedStyle(document.querySelector('textarea[aria-label="message"]')!.closest('form')!).backgroundColor,

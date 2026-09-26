@@ -257,6 +257,13 @@ body {
     border-radius: 2px;
 }
 
+/* These text fields show focus through their neutral border instead. A second
+   blue outline around the composer or creation dialog competes with the text. */
+.composer-input:focus-visible,
+.session-id-input:focus-visible {
+    outline: none;
+}
+
 /* A disabled control should not offer a focus ring it cannot honour. */
 :disabled,
 [aria-disabled="true"] {

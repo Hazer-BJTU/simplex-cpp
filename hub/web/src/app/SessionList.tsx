@@ -18,9 +18,9 @@ import { useState, type FormEvent } from 'react';
 import type { SessionDescription } from '../../../shared/protocol.ts';
 import { usePanel, useView } from '../state/usePanel.ts';
 import { statsOf } from '../state/view.ts';
-import { IconButton } from '../ui/Button.tsx';
+import { Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
-import { Tooltip } from '../ui/overlays.tsx';
+import { Dialog, DialogContent, Tooltip } from '../ui/overlays.tsx';
 import { useClient } from './ClientContext.tsx';
 
 /** What a session's worker process is doing. */
@@ -186,12 +186,12 @@ export function SessionList({ open, onClose }: {
                             <Glyph name="refresh" />
                         </IconButton>
                     </Tooltip>
-                    <Tooltip label={creating ? 'Cancel' : 'Create a session'}>
+                    <Tooltip label="Create a session">
                         <IconButton
-                            label={creating ? 'Cancel creating a session' : 'Create a session'}
-                            onClick={() => { setCreating((value) => !value); setError(''); }}
+                            label="Create a session"
+                            onClick={() => { setCreating(true); setError(''); }}
                         >
-                            <Glyph name={creating ? 'close' : 'new-session'} />
+                            <Glyph name="new-session" />
                         </IconButton>
                     </Tooltip>
                     <IconButton
@@ -202,35 +202,6 @@ export function SessionList({ open, onClose }: {
                         <Glyph name="close" />
                     </IconButton>
                 </div>
-
-                {creating && (
-                    <form
-                        onSubmit={(event) => { void create(event); }}
-                        className="animate-enter px-3 pb-2"
-                    >
-                        <input
-                            name="session"
-                            autoFocus
-                            aria-label="new session id"
-                            placeholder="session-id"
-                            pattern="[A-Za-z0-9_-]{1,128}"
-                            title="1-128 characters of letters, digits, underscore or dash"
-                            className="w-full rounded border border-line-strong bg-surface px-2 py-1
-                                font-mono text-xs focus-visible:border-interactive"
-                        />
-                        <button
-                            type="submit"
-                            className="mt-1 w-full rounded bg-accent px-2 py-1 text-xs font-medium
-                                text-accent-ink transition-colors hover:bg-accent-hover
-                                focus-visible:outline-2 focus-visible:outline-offset-1
-                                focus-visible:outline-interactive"
-                        >
-                            create
-                        </button>
-                    </form>
-                )}
-
-                {error && <p role="alert" className="px-3 pb-2 text-xs text-danger">{error}</p>}
 
                 {ordered.length === 0 ? (
                     <div className="px-4 py-6 text-center" data-testid="sessions-empty">
@@ -268,6 +239,45 @@ export function SessionList({ open, onClose }: {
                     The hub has no delivery acknowledgement: <em>sent</em> is not <em>executed</em>.
                 </p>
             </aside>
+            <Dialog open={creating} onOpenChange={(value) => {
+                setCreating(value);
+                if (!value) setError('');
+            }}>
+                <DialogContent
+                    title="Create a session"
+                    description="Choose an ID for a new conversation. You can start its worker afterward."
+                >
+                    <form onSubmit={(event) => { void create(event); }} className="space-y-4">
+                        <div>
+                            <label htmlFor="new-session-id" className="block text-sm font-medium text-ink">
+                                Session ID
+                            </label>
+                            <input
+                                id="new-session-id"
+                                name="session"
+                                autoFocus
+                                aria-label="new session id"
+                                placeholder="e.g. project-notes"
+                                pattern="[A-Za-z0-9_-]{1,128}"
+                                maxLength={128}
+                                required
+                                title="1-128 characters of letters, digits, underscore or dash"
+                                className="session-id-input mt-2 h-10 w-full rounded-md border border-line-strong
+                                    bg-surface px-3 font-mono text-sm text-ink
+                                    focus:border-ink-muted focus:outline-none"
+                            />
+                            <p className="mt-2 text-xs text-ink-muted">
+                                Use letters, numbers, hyphens, or underscores.
+                            </p>
+                        </div>
+                        {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+                        <div className="flex justify-end gap-2 border-t border-line pt-4">
+                            <Button onClick={() => setCreating(false)} size="md">Cancel</Button>
+                            <Button type="submit" variant="primary" size="md">Create session</Button>
+                        </div>
+                    </form>
+                </DialogContent>
+            </Dialog>
         </>
     );
 }
