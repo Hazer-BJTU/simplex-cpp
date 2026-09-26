@@ -92,6 +92,69 @@ The mock scenarios are selected by model name:
 | `mock-slow` | wait before replying, for cancellation testing |
 | `mock-error` | fail the request |
 
+## Workers in a container
+
+The hub can run on the host and put every worker in a container, with the worker
+connecting back over the Docker bridge. Nothing about the protocol changes: the
+worker dials the hub, so the only thing that has to be right is *which address it
+is told to dial*.
+
+`hub.config.docker-worker.jsonc` is a working example. The short version:
+
+```sh
+npm run build
+docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .   # once, ~10 min
+node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --mock \
+    --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
+# then: http://127.0.0.1:8800/?token=dev
+```
+
+Three things make it work, and each is a way to get it wrong:
+
+1. **`worker.connectHost`.** The hub writes its own address into every worker's
+   configuration. With `--listen 0.0.0.0` that address would be `0.0.0.0` —
+   which a worker reads as "myself" — so the hub substitutes loopback for a
+   wildcard bind, and loopback is exactly what a container cannot use. Setting
+   `connectHost` to the bridge address (`172.17.0.1`) is what replaces it. The
+   mock provider is advertised at the same address, because the worker is what
+   connects to it.
+2. **`launcher.kind: "command"`.** The hub's extension point for "start a worker
+   some other way". The template is expanded per session, so `docker run` gets
+   the generated config path, the session id and the data directory without the
+   hub knowing anything about Docker.
+3. **The mounts.** The generated `config.yaml`, the session's snapshot and the
+   captured log are all named by *absolute host paths* — so the data directory
+   is mounted at the same path inside the container, and `promptsDir` is mounted
+   the same way rather than pointed at the image's own copy. Overriding
+   `promptsDir` to the image's path looks tidier and does not work: the mount
+   would then name a host directory that does not exist, and Docker helpfully
+   creates an empty one.
+
+`--user {uid}:{gid}` is in the template for a reason that only shows up
+afterwards: an image runs as root, so the worker writes `state.json` and
+`session.lock` into the mounted data directory as root, and the operator who
+owns that directory cannot delete them. The two placeholders are the invoking
+user; on a platform that has no uid to report, a template that asks for one is
+refused at spawn time rather than passed to Docker as `--user :`.
+
+To see that the isolation is real rather than assumed, the example config asks
+the mock for `hostname; id -u; cat /etc/hostname`. The tool card then shows the
+container's hostname, uid 0 and its own PID namespace — from a session whose hub
+is an ordinary process on the host:
+
+```
+command   hostname; id -u; cat /etc/hostname
+pid       10
+stdout    66485abf0d8d          ← the container
+          0
+          66485abf0d8d
+```
+
+`--rm` means stopping the session removes the container, which is why the
+`docker ps` output is empty the moment the run finishes. For Docker Desktop,
+use `host.docker.internal` as `connectHost` and add
+`--add-host=host.docker.internal:host-gateway` to the command template.
+
 ## Configuration
 
 Copy [`hub.config.example.jsonc`](hub.config.example.jsonc) to

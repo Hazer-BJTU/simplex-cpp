@@ -130,8 +130,18 @@ export class MockProvider {
         this.failures = [];
     }
 
-    /** Bind the listener and record the resolved base URL. */
-    async start({ host = '127.0.0.1', port = 0 }: Partial<MockAddress> = {}): Promise<string> {
+    /**
+     * Bind the listener and record the resolved base URL.
+     *
+     * `advertiseHost` exists because those are two different questions. A hub
+     * that puts workers in containers binds this on every interface and hands
+     * them its bridge address, and a base URL of `0.0.0.0` is not something a
+     * worker can connect to.
+     */
+    async start(
+        { host = '127.0.0.1', port = 0 }: Partial<MockAddress> = {},
+        { advertiseHost }: { advertiseHost?: string } = {},
+    ): Promise<string> {
         this.server = createServer((req, res) => {
             void this.handle(req, res).catch((error: Error) => {
                 this.failures.push(error);
@@ -154,7 +164,8 @@ export class MockProvider {
         if (address === null || typeof address === 'string') {
             throw new Error('mock provider has no bound port');
         }
-        this.baseUrl = `http://${host}:${address.port}`;
+        const advertised = advertiseHost && advertiseHost.length > 0 ? advertiseHost : host;
+        this.baseUrl = `http://${advertised.includes(':') ? `[${advertised}]` : advertised}:${address.port}`;
         this.log.info(`mock provider listening at ${this.baseUrl}`);
         return this.baseUrl;
     }

@@ -56,6 +56,16 @@ export interface HubConfig {
         bin: string;
         args: string[];
         threads: number;
+        /**
+         * Host the hub advertises to workers, when it is not the one it bound.
+         *
+         * A hub that listens on `0.0.0.0` cannot advertise that address — a
+         * worker would try to connect to itself — so the default has always been
+         * "loopback for a wildcard bind", which is wrong the moment a worker is
+         * not on this machine. This is the address to use instead: a bridge
+         * address (`172.17.0.1`) for a container, a LAN name for a fleet.
+         */
+        connectHost: string;
         promptsDir: string;
         systemPromptFile: string;
         maxExchanges: number;
@@ -88,6 +98,8 @@ export interface HubConfig {
         profile: string;
         scenario: Scenario;
         slowMs: number;
+        /** The command `auto` proposes; empty uses the provider's default. */
+        toolCommand: string;
     };
     limits: {
         transcriptEvents: number;
@@ -116,6 +128,9 @@ export function defaultConfig(): HubConfig {
             bin: '../build/bin/simplex_worker',
             args: [],
             threads: 1,
+            // Empty means "derive it from the listener": loopback, or the host
+            // it is bound to.
+            connectHost: '',
             promptsDir: '../build/bin/prompts',
             systemPromptFile: 'coding_agent.yaml',
             maxExchanges: 512,
@@ -187,6 +202,11 @@ export function defaultConfig(): HubConfig {
             scenario: 'auto',
             // Delay used by the "slow" scenario, in milliseconds.
             slowMs: 1500,
+            // The command the `auto` scenario proposes. Its default writes to
+            // the working directory; overriding it with something like
+            // `hostname` is how a containerised worker demo shows *where* the
+            // tool ran rather than asserting that it did.
+            toolCommand: '',
         },
         limits: {
             // In-memory budgets per session: an entry count plus a byte ceiling,
@@ -393,6 +413,12 @@ export function validateConfig(config: HubConfig): HubConfig {
         'worker.args must contain only strings');
     check(Number.isInteger(worker.threads) && worker.threads >= 1,
         'worker.threads must be a positive integer');
+    check(typeof worker.connectHost === 'string', 'worker.connectHost must be a string');
+    // A bare host, because it is pasted into a URL next to a port. Accepting
+    // `http://host` here would produce `ws://http://host:8800/...` two layers
+    // down, which is a confusing way to learn about a typo.
+    check(worker.connectHost === '' || !/[/:?#\s]/.test(worker.connectHost),
+        'worker.connectHost must be a bare host or address, without a scheme, port or path');
     check(Number.isInteger(worker.maxExchanges) && worker.maxExchanges > 0,
         'worker.maxExchanges must be a positive integer');
     check(Number.isInteger(worker.eventCapacity) && worker.eventCapacity > 0,
@@ -442,6 +468,10 @@ export function validateConfig(config: HubConfig): HubConfig {
         `mock.scenario must be one of ${SCENARIOS.join(', ')}`);
     check(Number.isInteger(config.mock?.slowMs) && config.mock.slowMs >= 0,
         'mock.slowMs must be a nonnegative integer');
+    check(typeof config.mock?.toolCommand === 'string',
+        'mock.toolCommand must be a string');
+    check(config.mock.toolCommand === '' || config.mock.toolCommand.trim().length > 0,
+        'mock.toolCommand must not be blank; leave it empty to use the default');
     if (config.mock.enabled) {
         check(typeof config.providerProfiles[config.mock.profile] === 'object',
             `mock.profile "${config.mock.profile}" is not a configured provider profile`);

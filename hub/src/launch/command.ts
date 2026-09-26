@@ -13,6 +13,10 @@ export const PLACEHOLDERS = [
     'session', 'config', 'data_dir', 'session_dir',
     'endpoint', 'confirm_endpoint', 'token',
     'threads', 'worker_bin', 'prompts_dir',
+    // The invoking user, for a launcher that runs a container: a worker that
+    // writes into a mounted host directory should do it as its owner, or the
+    // operator cannot clean up after it without help.
+    'uid', 'gid',
 ] as const;
 
 /** One placeholder name. */
@@ -40,7 +44,19 @@ export function expandTemplate(text: string, values: PlaceholderValues): string 
 export function buildCommandInvocation({
     config, sessionId, spec, configPath, sessionDir, endpoints, token,
 }: LauncherInput): LauncherInvocation {
+    // Windows has no uid to report, and `--user :` is a worse error than this
+    // one. Only a template that asks for it is refused.
+    const uid = typeof process.getuid === 'function' ? String(process.getuid()) : null;
+    const gid = typeof process.getgid === 'function' ? String(process.getgid()) : null;
+    const template = [...config.launcher.command, ...config.launcher.args];
+    if ((uid === null || gid === null)
+        && template.some((part) => /\{(?:uid|gid)\}/.test(part))) {
+        throw new Error('the launcher template uses {uid}/{gid}, which this platform'
+            + ' does not report; drop them or run the hub on a POSIX host');
+    }
     const values: PlaceholderValues = {
+        uid: uid ?? '',
+        gid: gid ?? '',
         session: sessionId,
         config: configPath,
         data_dir: config.dataDir,
@@ -52,9 +68,9 @@ export function buildCommandInvocation({
         worker_bin: config.worker.bin,
         prompts_dir: config.worker.promptsDir,
     };
-    const template = config.launcher.command.map((part) => expandTemplate(part, values));
+    const expanded = config.launcher.command.map((part) => expandTemplate(part, values));
     const extra = config.launcher.args.map((part) => expandTemplate(part, values));
-    const [command, ...rest] = template;
+    const [command, ...rest] = expanded;
     return {
         // Configuration validation refuses an empty command template, so the
         // first element exists; the fallback keeps the type honest without a

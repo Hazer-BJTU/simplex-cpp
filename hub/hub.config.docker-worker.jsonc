@@ -1,0 +1,83 @@
+// Hub on the host, every worker in a container.
+//
+//   npm run build                                     # the panel, once
+//   docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .   # once
+//   node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --mock \
+//       --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
+//
+// then open http://127.0.0.1:8800/?token=dev and create a session with the
+// `mock` profile. The hub is an ordinary host process; each worker is a
+// `docker run` that connects back over the bridge. See README.md,
+// "Workers in a container", for what each line below is doing.
+{
+    "worker": {
+        // The address the hub writes into the worker's configuration. It must
+        // be reachable *from inside the container*, which loopback is not:
+        // `172.17.0.1` is the host on Docker's default bridge. On Docker
+        // Desktop use `host.docker.internal` instead and add
+        // `"--add-host=host.docker.internal:host-gateway"` to the command below.
+        "connectHost": "172.17.0.1",
+
+        // `promptsDir` is deliberately left at its host default. The generated
+        // configuration names that host path, and the mount below puts the
+        // same directory at the same absolute path inside the container — so
+        // one value is correct on both sides. Overriding it with the image's
+        // own `/src/build/bin/prompts` looks tidier and does not work: the
+        // mount would then name a host directory that does not exist, and
+        // Docker answers an empty one.
+        // The worker runs as the container's only process, so a workspace is
+        // whatever the image provides; nothing is mounted over it unless you
+        // add a volume for it.
+        "environment": {
+            "workspace": "/workspace",
+            "platform": "linux",
+            "software": ["bash", "coreutils"]
+        }
+    },
+
+    "launcher": {
+        "kind": "command",
+        // Placeholders: {session} {config} {data_dir} {session_dir}
+        // {prompts_dir} {worker_bin} {endpoint} {confirm_endpoint} {token}
+        // {threads}
+        "command": [
+            "docker", "run", "--rm", "--init",
+            "--name", "simplex-worker-{session}",
+            // Run as the invoking user, not as the image's root. Without this
+            // the worker writes root-owned files into the mounted data
+            // directory, and the operator cannot delete them without help —
+            // which is how this line came to exist.
+            "--user", "{uid}:{gid}",
+            // The image's own entrypoint starts the *hub*, and it is mode 711
+            // — executable but not readable, which is enough for a binary and
+            // not for a shell script. Overriding it is what lets a non-root
+            // user run the worker at all.
+            "--entrypoint", "/src/build/bin/simplex_worker",
+            // The generated config, the session's snapshot and the captured
+            // log all live under the data directory, at absolute paths the
+            // configuration names — so mounting it at the same path is what
+            // makes those paths mean the same thing on both sides.
+            "-v", "{data_dir}:{data_dir}",
+            "-v", "{prompts_dir}:{prompts_dir}:ro",
+            // Tools the model asks for run inside the container. Point this at
+            // the directory you want the agent to work in.
+            "-v", "/tmp/simplex-workspace:/workspace",
+            "-w", "{session_dir}",
+            "simplex-hub-test:latest",
+            "--config", "{config}",
+            "--session", "{session}",
+            "--threads", "{threads}"
+        ]
+    },
+
+    "mock": {
+        "enabled": true,
+        // The worker is not on this machine's loopback, so the mock provider
+        // has to listen where the container can reach it. It is advertised at
+        // `worker.connectHost` above.
+        "listen": "0.0.0.0:0",
+        // `hostname` is the point of this file: it makes the tool card say
+        // where the tool ran instead of leaving it to be trusted.
+        "toolCommand": "hostname; id -u; cat /etc/hostname"
+    }
+}

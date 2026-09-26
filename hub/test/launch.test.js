@@ -3,9 +3,13 @@
  * process invocation each launcher kind builds.
  */
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { ConfigError } from '../src/config.ts';
+import { ConfigError, loadConfig } from '../src/config.ts';
+import { hubRoot } from '../src/config.ts';
+import { createHub } from '../src/hub.ts';
 import { buildCommandInvocation, expandTemplate } from '../src/launch/command.ts';
 import { persistenceRoot, renderSessionConfig, sessionDir } from '../src/launch/config-render.ts';
 import { createLauncher } from '../src/launch/launcher.ts';
@@ -126,6 +130,71 @@ describe('renderSessionConfig', () => {
         assert.equal(document.providers.mock.endpoint.auth.scheme, 'none');
     });
 
+    it('advertises the configured host to workers', async () => {
+        // The whole point of `worker.connectHost`: a hub on `0.0.0.0` (or one
+        // behind a bridge) must tell its workers an address that works from
+        // where *they* are, and the loopback default is wrong there.
+        //
+        // Asserted through the document a worker is actually handed, not
+        // through an internal accessor: the generated `config.yaml` is the
+        // contract, and it is what a container would read.
+        for (const [listen, connectHost, expected] of [
+            ['127.0.0.1', '', '127.0.0.1'],
+            ['0.0.0.0', '', '127.0.0.1'],
+            ['0.0.0.0', '172.17.0.1', '172.17.0.1'],
+        ]) {
+            const { config } = loadConfig({
+                overrides: {
+                    listen: { host: listen, port: 0 },
+                    dataDir: mkdtempSync(join(tmpdir(), 'simplex-hub-host-')),
+                    // A wildcard listener is refused without one, which is the
+                    // hub's own guard rather than this test's business.
+                    panel: { token: 'test-token' },
+                    worker: { connectHost },
+                    // A launcher that does nothing: this test is about the
+                    // configuration the supervisor writes before it spawns.
+                    launcher: { kind: 'command', command: ['/bin/true'] },
+                },
+            });
+            const hub = createHub({ config, log, hubRoot, version: 'test' });
+            await hub.start();
+            try {
+                const session = hub.registry.create('demo', { provider: 'mock' });
+                const started = await hub.supervisor.start(session);
+                assert.equal(started.ok, true, started.error);
+                const document = JSON.parse(
+                    readFileSync(hub.supervisor.configPathFor('demo'), 'utf8'));
+                assert.match(document.client.endpoint,
+                    new RegExp(`^ws://${expected}:\\d+/agent/demo/events\\?token=`),
+                    `listen ${listen} + connectHost "${connectHost}" advertised the wrong host`);
+            } finally {
+                await hub.stop();
+            }
+        }
+    });
+
+    it('advertises the same host to the mock provider', async () => {
+        // The mock is reached by the worker too, so a base URL of 0.0.0.0 would
+        // fail the same way — and only inside the container, which is the
+        // hardest place to notice it.
+        const { config } = loadConfig({
+            overrides: {
+                listen: { host: '127.0.0.1', port: 0 },
+                dataDir: mkdtempSync(join(tmpdir(), 'simplex-hub-mock-')),
+                mock: { enabled: true, listen: '127.0.0.1:0' },
+                worker: { connectHost: '172.17.0.1' },
+            },
+        });
+        const hub = createHub({ config, log, hubRoot, version: 'test' });
+        await hub.start();
+        try {
+            assert.match(hub.mock.baseUrl, /^http:\/\/172\.17\.0\.1:\d+$/,
+                `the mock advertised ${hub.mock.baseUrl}`);
+        } finally {
+            await hub.stop();
+        }
+    });
+
     it('derives per-session directories from the data directory', () => {
         const config = testConfig();
         assert.equal(sessionDir(config, 'demo'), join(config.dataDir, 'workers', 'demo'));
@@ -191,6 +260,26 @@ describe('command launcher', () => {
 
     it('rejects an unknown placeholder instead of passing it through', () => {
         assert.throws(() => expandTemplate('{nope}', { session: 'x' }), /unknown launcher placeholder/);
+    });
+
+    it('passes the invoking user through, for containers', () => {
+        // Without this a container writes root-owned files into whatever host
+        // directory it is given, and the operator needs help to delete them.
+        const spec = normalizeSpec(config, {});
+        const invocation = buildCommandInvocation({
+            config: {
+                ...config,
+                launcher: { ...config.launcher, command: ['docker', 'run', '--user', '{uid}:{gid}'] },
+            },
+            sessionId: 'demo',
+            spec,
+            configPath: '/tmp/workers/demo/config.yaml',
+            sessionDir: '/tmp/workers/demo',
+            endpoints,
+            token: 'sekret',
+        });
+        assert.deepEqual(invocation.args.slice(0, 3),
+            ['run', '--user', `${process.getuid()}:${process.getgid()}`]);
     });
 
     it('uses a configured working directory when given', () => {

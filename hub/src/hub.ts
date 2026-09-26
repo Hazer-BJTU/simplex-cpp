@@ -101,10 +101,22 @@ export function createHub({
     /** Bound address, known only after `start()`. */
     let bound: { host: string; port: number } | null = null;
 
+    /**
+     * The address a worker should use to reach this hub.
+     *
+     * `worker.connectHost` wins when it is set: a hub that listens on every
+     * interface, or behind a bridge, has no way to guess the address that works
+     * from the worker's side, and the loopback default is actively wrong there.
+     */
+    function advertisedHost(): string {
+        if (!bound) throw new Error('the hub is not listening yet');
+        return config.worker.connectHost || connectHostFor(bound.host);
+    }
+
     /** Worker-facing URLs for one session, valid after the listener is bound. */
     function endpointsFor(sessionId: string, token: string): { events: string; confirm: string } {
         if (!bound) throw new Error('the hub is not listening yet');
-        const host = connectHostFor(bound.host);
+        const host = advertisedHost();
         const authority = `${host.includes(':') ? `[${host}]` : host}:${bound.port}`;
         const query = `token=${encodeURIComponent(token)}`;
         return {
@@ -267,8 +279,12 @@ export function createHub({
                     log: log.child('mock'),
                     scenario: config.mock.scenario,
                     slowMs: config.mock.slowMs,
+                    ...(config.mock.toolCommand ? { toolCommand: config.mock.toolCommand } : {}),
                 });
-                await mock.start(parseAddress(config.mock.listen));
+                await mock.start(parseAddress(config.mock.listen),
+                    // The provider is reached by the worker, so it has to be
+                    // advertised at the same address the hub is.
+                    { advertiseHost: config.worker.connectHost });
             }
             const stored = state.load();
             let restored = 0;
