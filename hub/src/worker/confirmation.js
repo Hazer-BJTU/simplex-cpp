@@ -27,7 +27,7 @@
 import { WebSocketServer } from 'ws';
 import { presentedToken, safeEqual } from '../http/auth.ts';
 import { buildConfirmationResponse } from '../protocol/messages.ts';
-import { IDENTITY } from '../state/registry.js';
+import { IDENTITY } from '../state/registry.ts';
 import { isValidSessionId } from '../state/session-id.ts';
 import { truncateReason } from './connection.js';
 
@@ -231,7 +231,7 @@ export class PendingConfirmation {
  * Build the confirmation upgrade route.
  *
  * @param {object} options
- * @param {import('../state/registry.js').SessionRegistry} options.registry
+ * @param {import('../state/registry.ts').SessionRegistry} options.registry
  * @param {object} options.config
  * @param {object} options.log
  * @param {(prompt: PendingConfirmation) => void} [options.onPrompt] verified prompt.

@@ -306,7 +306,7 @@ export class WorkerConnection {
  * Build the worker-facing upgrade route for the hub's HTTP server.
  *
  * @param {object} options
- * @param {import('../state/registry.js').SessionRegistry} options.registry
+ * @param {import('../state/registry.ts').SessionRegistry} options.registry
  * @param {object} options.config
  * @param {object} options.log
  * @param {(envelope: object, connection: WorkerConnection) => void} [options.onEvent]

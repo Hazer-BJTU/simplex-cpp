@@ -20,22 +20,38 @@
  * the process it spawned. See hub/docs/worker-adapter.md.
  */
 import { LAUNCHER_KINDS } from '../config.ts';
+import type { HubConfig } from '../config.ts';
+import type { Logger } from '../log.ts';
 import { buildCommandInvocation } from './command.ts';
 import { buildSimplexWorkerInvocation } from './simplex-worker.ts';
+import type { LauncherInput, LauncherInvocation } from './invocation.ts';
 
 export { LAUNCHER_KINDS };
 
-/**
- * Create the configured launcher.
- *
- * @param {object} options
- * @param {object} options.config hub configuration (already validated).
- * @param {object} options.log hub logger.
- * @returns {{kind: string, ownsConfig: boolean, buildInvocation: Function}}
- */
-export function createLauncher({ config, log }) {
+/** What a launcher is asked for, minus the configuration it already holds. */
+export type InvocationContext = Omit<LauncherInput, 'config'>;
+
+/** The launcher facade the supervisor drives. */
+export interface Launcher {
+    kind: string;
+    /** True when the launcher renders its own worker configuration. */
+    ownsConfig: boolean;
+    /** True when the launcher may outlive the process the hub spawned. */
+    mayDaemonize: boolean;
+    buildInvocation: (context: InvocationContext) => LauncherInvocation;
+}
+
+/** Everything `createLauncher` needs. */
+export interface LauncherOptions {
+    config: HubConfig;
+    /** Accepted for call-site uniformity; the launcher itself does not log. */
+    log?: Logger;
+}
+
+/** Create the configured launcher. */
+export function createLauncher({ config }: LauncherOptions): Launcher {
     const kind = config.launcher.kind;
-    if (!LAUNCHER_KINDS.includes(kind)) {
+    if (!(LAUNCHER_KINDS as readonly string[]).includes(kind)) {
         throw new Error(`unsupported launcher kind "${kind}"`);
     }
     const build = kind === 'command' ? buildCommandInvocation : buildSimplexWorkerInvocation;
@@ -45,17 +61,6 @@ export function createLauncher({ config, log }) {
         ownsConfig: config.launcher.config === 'launcher',
         /** True when the launcher may outlive the process the hub spawned. */
         mayDaemonize: Boolean(config.launcher.pidFile) || kind === 'command',
-        /**
-         * @param {object} context
-         * @param {string} context.sessionId
-         * @param {object} context.spec normalized session spec.
-         * @param {string} context.configPath configuration file the hub wrote.
-         * @param {string} context.sessionDir per-session hub directory.
-         * @param {{events: string, confirm: string}} context.endpoints
-         * @param {string} context.token session access token.
-         * @returns {{command: string, args: string[], cwd: string,
-         *            env: object, pidFile: string|null}}
-         */
-        buildInvocation: (context) => build({ config, log, ...context }),
+        buildInvocation: (context) => build({ config, ...context }),
     };
 }

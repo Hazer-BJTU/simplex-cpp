@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import { ConfigError } from '../src/config.ts';
 import { buildCommandInvocation, expandTemplate } from '../src/launch/command.ts';
 import { persistenceRoot, renderSessionConfig, sessionDir } from '../src/launch/config-render.ts';
-import { createLauncher } from '../src/launch/launcher.js';
+import { createLauncher } from '../src/launch/launcher.ts';
 import { buildSimplexWorkerInvocation } from '../src/launch/simplex-worker.ts';
 import { normalizeSpec } from '../src/launch/spec.ts';
 import { createLogger } from '../src/log.ts';

@@ -9,12 +9,12 @@
 import { randomUUID } from 'node:crypto';
 import { authorizePanel } from './http/auth.ts';
 import { createHttpServer, sendError, sendJson } from './http/server.js';
-import { createLauncher } from './launch/launcher.js';
+import { createLauncher } from './launch/launcher.ts';
 import { MockProvider, parseAddress } from './mock/provider.ts';
 import { WorkerSupervisor } from './launch/supervisor.js';
 import { createPanelApi } from './panel/api.js';
 import { HubState } from './state/persist.ts';
-import { SessionRegistry } from './state/registry.js';
+import { SessionRegistry } from './state/registry.ts';
 import { isValidSessionId } from './state/session-id.ts';
 import { TranscriptStore } from './state/transcript.ts';
 import { createWorkerConfirmationRoute } from './worker/confirmation.js';
