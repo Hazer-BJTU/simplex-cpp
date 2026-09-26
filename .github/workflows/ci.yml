@@ -96,11 +96,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The floor is not decorative: hub/package.json declares >=20.11, and
-        # 20.11 is exactly where import.meta.dirname appeared. Testing only the
+        # The floor is not decorative: hub/package.json declares >=22.18, which
+        # is where TypeScript type stripping became the default. The hub loads
+        # `shared/protocol.ts` directly rather than compiling it, so the floor is
+        # a functional requirement now, not a conservative one. Testing only the
         # newest Node would let a newer API in while the declared floor stayed
         # silently false — the same argument as the glibc and OpenSSL floors.
-        node: ['20.11', '24']
+        node: ['22.18', '24']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -132,22 +134,17 @@ jobs:
         # Covers the protocol adapters, the session registry, the supervisor,
         # the panel API, worker-protocol drift against core/docs, and the
         # panel's own asset integrity.
-        #
-        # On the floor, the one suite that loads a `.ts` module skips itself by
-        # name and reason: type stripping needs Node >= 22.18. That skip is
-        # honest only while nothing under src/ imports shared/ — the moment
-        # something does, this job is the one that will say so.
         working-directory: hub
         run: npm test
 
   # ---------------------------------------------------------------------------
-  # hub-panel — the browser half, which has a different toolchain and a
-  # different Node requirement from the hub itself.
+  # hub-panel — the browser half.
   #
-  # It is a separate job rather than more steps in the matrix above for two
-  # reasons: Vite 8 needs Node >= 20.19 and Vitest 5 needs >= 22.12, both above
-  # the hub's declared floor; and installing a browser needs root, which the
-  # floor job has no business asking for.
+  # It is a separate job rather than more steps in the matrix above for one
+  # reason that still holds: installing a browser needs root, and the floor
+  # matrix has no business asking for it. (The Node requirement that also
+  # justified the split stopped applying when the hub's floor moved to 22.18,
+  # which is above what Vite and Vitest ask for.)
   # ---------------------------------------------------------------------------
   hub-panel:
     runs-on: ubuntu-latest

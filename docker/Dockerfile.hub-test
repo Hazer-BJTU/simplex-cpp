@@ -60,7 +60,7 @@ FROM ${BASE_IMAGE}
 # destabilises the WSL services.
 ARG JOBS=4
 # Pinned, and verified against the release's own SHASUMS256.txt below. AlmaLinux
-# 9's appstream Node is 18, which is below the hub's declared floor (20.11) and
+# 9's appstream Node is 18, which is below the hub's declared floor (22.18) and
 # would make this container a different execution context from CI. The static
 # tarball is the same artifact actions/setup-node installs there.
 ARG NODE_VERSION=24.15.0

@@ -15,10 +15,11 @@ behaviour: it implements the worker side of
 
 ## Requirements
 
-- Node.js 20.11 or newer to *run* the hub (developed on 24). The panel's
-  toolchain asks for more: 22.18 for the shared protocol module, which is
-  TypeScript loaded through Node's type stripping, and 22.12 for Vitest. Those
-  are development-time requirements; `npm start` does not need them.
+- Node.js 22.18 or newer (developed on 24). The floor is a functional
+  requirement rather than a conservative one: the hub loads
+  [`shared/protocol.ts`](shared/protocol.ts) directly through Node's TypeScript
+  type stripping, which became the default in 22.18. Nothing is compiled on the
+  server side.
 - A built worker binary — `build/bin/simplex_worker` plus its `plugins/` and
   `prompts/` directories. Build it with the repository's normal CMake flow.
 - One runtime dependency: [`ws`](https://github.com/websockets/ws). Everything
@@ -216,7 +217,7 @@ ABI fingerprint the C++ jobs depend on.
 
 | Job | Subject | Notes |
 | --- | --- | --- |
-| `hub-test` | the suite and the type checker on the declared Node floor (20.11) and the current release (24) | no C++ tree needed; drives stand-in workers over real WebSockets |
+| `hub-test` | the suite and the type checker on the declared Node floor (22.18) and the current release (24) | no C++ tree needed; drives stand-in workers over real WebSockets |
 | `hub-panel` | the panel build and its browser tests | Node 24 only: Vite and Vitest both require more than the hub's floor, and installing a browser needs root |
 | `hub-e2e` | the hub against the *staged release* worker from `portable-release`, plus the old panel in the runner's Chrome | the first workload that runs a release binary rather than a ctest executable |
 

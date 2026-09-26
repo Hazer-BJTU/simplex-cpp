@@ -14,7 +14,7 @@
 | 前端状态 | **Zustand** | 1KB，selector 订阅避免全量重渲染，可在 WebSocket handler 里直接读写 |
 | Markdown | **react-markdown + remark-gfm + rehype-highlight** | 生成 React 元素树而**不是** HTML 字符串，天然无 XSS |
 | 图标 | **lucide-react** | 按需引入的 SVG 图标，替换当前纯文字按钮 |
-| 后端 | **TypeScript**，`tsc` 产出 `dist/` | 保留 Node 20.11 兼容；开发态用 Node 原生跑 TS，零构建 |
+| 后端 | **TypeScript**，由 Node 直接运行 | `tsc` 只做类型检查、从不产出；`engines` 提到 ≥22.18 换取零构建 |
 | 协议契约 | **`hub/shared/` 共享类型 + 运行时 guard + 能力协商** | hub 与面板同一份定义，扩展时两端不会漂移 |
 | 后端测试 | **Vitest**（断言继续用 `node:assert`） | 直接跑 `.ts`，迁移只需改 `describe/it` 的 import 来源 |
 | 端到端 | **Playwright**（替代自研 CDP helper） | 顺带获得截图与视觉回归能力 |
@@ -225,15 +225,17 @@ B1 与 B2 的共同根因是 `void someAsync()` 这种"发射后不管"的调用
 - 链接协议白名单 + `rel="noreferrer noopener"`（现在 `render.js:245-248` 只对 `http(s)` 建 `<a>`，这个判断保留）。
 - 升级点：`@shikijs/rehype` 可替换，组件层无感。
 
-### 2.5 后端 TypeScript 化：双轨
+### 2.5 后端 TypeScript 化：只有一条轨道
 
 | 场景 | 命令 | 说明 |
 | --- | --- | --- |
-| 开发 | `node --watch src/bin/simplex-hub.ts` | Node ≥22.18 原生 type stripping，**零构建** |
-| 类型检查 | `tsc --noEmit` | CI 必跑 |
-| 生产 / Docker | `tsc` → `node dist/bin/simplex-hub.js` | 部署确定性，`engines` 继续声明 `>=20.11` |
+| 开发 | `node --watch bin/simplex-hub.ts` | Node 原生 type stripping，**零构建** |
+| 类型检查 | `npm run typecheck` | `tsc --noEmit`，CI 必跑 |
+| 生产 / Docker | `node bin/simplex-hub.ts` | 与开发完全同一条路径：产物就是源码 |
 
-代价与约束（写进 `tsconfig` 与编码约定）：Node 原生跑 TS **不能用 `enum`、`namespace`、构造函数参数属性**（用 `as const` 对象 + 联合类型替代，这本来就是更好的写法）；相对导入需带扩展名。
+**决策已定（P1 后）**：`engines` 从 `>=20.11` 提到 **`>=22.18`**，后端因此**不需要构建产物**——不再有 `dist/`，也没有"开发跑源码、生产跑编译产物"的双轨。原方案里的双轨是为保留 Node 20.11 设计的，而 P1 的实测证明那个目标与"共享 TS 契约"不可兼得（详见 §9）。`tsc` 的角色因此收窄为**纯检查器**：它从不产出文件，`noEmit` 常开。
+
+代价与约束（写进 `tsconfig` 与编码约定）：Node 原生跑 TS **不能用 `enum`、`namespace`、构造函数参数属性**（用 `as const` 对象 + 联合类型替代，这本来就是更好的写法）；相对导入需带扩展名。CI 矩阵随之变为 `['22.18', '24']`。
 
 运行时依赖仍然只有 `ws` 一个。
 
@@ -459,7 +461,7 @@ Docker（`docker/Dockerfile.hub-test`）加前端构建步骤；`hub/web/dist` �
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
 | **P0 加固** ✅ 已完成 | B1（HTTP + upgrade 两处畸形 authority）、B2（面板 WS 的 `handleMessage` + supervisor 的 `mkdir`/`writeFile`）、B3（日志流 `error` 监听）、B4（`targetPid` 的 `/proc` 校验）、畸形百分号编码改 400、`bin` 的 `void stop(signal)` 补 catch（并在半途失败时 `process.exit(1)`，否则会挂着继续占端口）、事件扇出**双层**保护、supersede 不再上报虚假断开、config 拒绝未知键、`spec` 在 REST 与 WS 两条创建路径都提前校验、adopt 监控的 `unref` 与 `finish` 清理 | **25 个回归测试**（`test/hardening.test.js`），全套 **196 个测试**加 2 个真实 worker 端到端通过；每条修复都还原验证过测试确实能咬住 |
-| **P1 脚手架** ✅ 已完成 | `tsconfig.json`（后端，`allowJs` 让迁移可以逐个模块进行）+ `web/tsconfig.json`（前端，DOM lib）+ `vite.config.ts` + `playwright.config.ts`；`shared/protocol.ts` 落地并把三份版本字面量钉住；CI 拆出 `hub-panel` job（build + 浏览器测试，Node 24）并给 `hub-test` 加 typecheck；`.gitignore`/`.dockerignore` 加 `dist` | typecheck 通过**并验证过能抓到注入的类型错误**；面板构建产出 `web/dist`；Playwright 2/2 通过；Node 24 上 200 个测试全绿，Node 20.11 上 196 通过 0 失败 |
+| **P1 脚手架** ✅ 已完成 | `tsconfig.json`（后端，`allowJs` 让迁移可以逐个模块进行）+ `web/tsconfig.json`（前端，DOM lib）+ `vite.config.ts` + `playwright.config.ts`；`shared/protocol.ts` 落地并把三份版本字面量钉住；CI 拆出 `hub-panel` job（build + 浏览器测试，Node 24）并给 `hub-test` 加 typecheck；`.gitignore`/`.dockerignore` 加 `dist` | typecheck 通过**并验证过能抓到注入的类型错误**；面板构建产出 `web/dist`；Playwright 2/2 通过；Node 24 上 200 个测试全绿。（P1 刚完成时 Node 20.11 上还是 196 通过 0 失败——靠一个具名 skip；floor 随后按 §9 提到 22.18，该 skip 已删除。） |
 | **P2 协议契约** | 建 `shared/`：类型、guard、能力清单（**从实际配置推导**，不再静态）；三份版本号字面量收敛为一处；hub 接入；补面板协议 drift 测试；**修 A1 的协议侧**（审批广播语义 + 可恢复路径）；**加转录 epoch** 与可选 `hello` 协商 | 行为仅按设计变更；新增契约测试全绿；跨 hub 重启的重放有明确信号而不是静默返回空 |
 | **P3 后端 TS 化** | 逐模块 `.js` → `.ts`，一个提交一个模块；JSDoc 转签名；`tsc --noEmit` 进 CI | 每步 `npm test` + `npm run test:e2e` 全绿，无行为变更 |
 | **P4 前端骨架** | Vite + React 壳：布局、Zustand store（从 `state.js` 平移并修 A2/D23）、socket/REST 客户端、会话列表、可显示事件的最小对话流 | 面板在浏览器里跑通一轮真实会话（mock provider） |
@@ -478,7 +480,7 @@ P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物�
 | --- | --- | --- |
 | **引入构建步骤** | 打破"改完刷新即可"与"无构建部署" | `vite dev` 的 HMR 反而更快；生产走多阶段构建 |
 | **依赖从 1 个变成几十个** | 供应链面、`npm ci` 变慢 | 运行时依赖仍只有 `ws`；前端依赖全是构建期产物；锁文件 + CI 审计 |
-| **Node 20.11 兼容** | 原生跑 TS 需 ≥22.18 | 生产走 `tsc` 产物，`engines` 不变；CI 矩阵维持 `[20.11, 24]` |
+| **Node floor 提升到 22.18** | 放弃 Node 20（2026-04-30 已 EOL）；本机与 CI 都需要 ≥22.18 | 已接受。这是 P1 实测后唯一自洽的选择：见 §9。缓解是 CI 矩阵仍测 floor 本身（`22.18`）而非只测最新版 |
 | **`test/e2e/panel.test.js` 会失效** | 它断言 `#timeline article.card`、`section.run-group`、`#panel-badge`、`#theme-toggle`、Approve 按钮文本 | P4 起用 Playwright + `data-testid` 重写；这是计划内的破坏 |
 | **`panel-assets.test.js` 的安全契约** | markdown 渲染看似与"禁止写 HTML"冲突 | `react-markdown` 不经 `innerHTML`；契约按 §2.4 重写并保留语义 |
 | **重写期间双份前端** | 维护成本 | 时间盒；旧面板冻结，只修安全级 bug |
@@ -495,7 +497,7 @@ P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物�
 
 1. **前端框架**：React 19（默认）／ Vue 3.5 ／ Svelte 5。
 2. **样式方案**：Tailwind v4 + Radix（默认）／ CSS Modules + 自研无头组件。
-3. **后端 TS 运行方式**：`tsc` 产物 + 保留 Node 20.11（默认）／ 全面转向 Node 原生跑 TS，`engines` 提到 ≥22.18。
+3. ~~**后端 TS 运行方式**~~ ✅ **已定：Node 原生跑 TS，`engines` 提到 ≥22.18**。原选项"保留 Node 20.11"经 P1 实测证明与共享 TS 契约不可兼得，理由与证据见 §9。
 4. **Markdown 高亮**：highlight.js（默认，轻）／ Shiki（更好看，体积更大）。
 5. **P0 加固是否先单独合入**：是（默认，建议）／ 与重构一起做。
 6. **协议能力首版范围**：只做 `event-page` + `transcript-delta` 预留（默认）／ 连 `audit-log`、`session-search` 一起实现。
@@ -504,9 +506,9 @@ P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物�
 
 ---
 
-## 9. ⚠️ P2 之前必须决定的一件事：Node floor
+## 9. Node floor：从 20.11 提到 22.18（已决定）
 
-决策点 3 选的是"`tsc` 产物 + 保留 Node 20.11 兼容"。**P1 落地后发现这两件事无法同时成立**，而且这不是推测，是实测：
+决策点 3 原本选的是"`tsc` 产物 + 保留 Node 20.11 兼容"。**P1 落地后实测发现这两件事无法同时成立**，于是 floor 提到了 22.18。这一节保留证据，因为它是后端的形状（零构建、无 `dist/`）的依据。
 
 | 事实 | 验证方式 |
 | --- | --- |
@@ -516,28 +518,17 @@ P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物�
 | Vite 8 要求 Node **≥20.19** | 20.11 上 `vite build` 直接崩：`node:util` 没有 `styleText` 导出 |
 | Vitest 5 要求 Node **≥22.12** | 包元数据 |
 
-也就是说：`shared/protocol.ts` 已经把 floor 事实上推到了 22.18，只不过**暂时**还没有生产代码依赖它，所以 20.11 的运行时仍然可用。P2 会让 `src/` 导入共享契约——那一刻 20.11 就彻底不可用了。
-
-而且现在 CI 里那条 20.11 job 之所以还是绿的，是因为我给它加了一个**具名的 skip**：
+关键点是第一条与第三、四条的**不对称**：`shared/protocol.ts` 已经把有效 floor 推到 22.18，但因为当时 `src/` 还没导入它，20.11 的运行时仍然能用——CI 里那条 job 之所以是绿的，靠的是一个具名 skip：
 
 ```
 ok 1 - panel protocol constants # SKIP type stripping needs Node >= 22.18; this is 20.11.1
 ```
 
-这个 skip 是诚实的，但它有保质期——P2 一到就失效。
+P2 会让 `src/` 导入共享契约，那一刻 skip 就失效了。而开发工具（Vite/Vitest）**本来就**要求 ≥22.12——保持 20.11 只能保住运行时、保不住工具链。
 
-**两个选项：**
+**曾评估的替代方案**：保持 20.11，让 `tsc` 把 `shared/` 编译成 `shared/*.js` + `.d.ts`，`src/` 导入 `.js`。否决理由：产物要么提交（必然漂移）要么每次构建（"零构建"这个 hub 现存的优势消失），而它换来的只是一个 2026-04-30 已 EOL 的版本；且工具链仍需 ≥22.12，CI 照样要拆两个 job。
 
-| | A. 提升 floor 到 ≥22.18（建议） | B. 保持 20.11，`shared/` 编译成 `.js` |
-| --- | --- | --- |
-| 做法 | `engines` 改 `>=22.18`，CI 矩阵 `['22.18', '24']` | `tsc` 产出 `shared/*.js` + `.d.ts`，`src/` 导入 `.js` |
-| 代价 | 放弃 Node 20（2026-04-30 已 EOL） | 需要构建步骤；产物要么提交（会漂移）要么每次构建；"零构建"这个 hub 现有优势消失 |
-| 开发工具 | 直接满足（Vite 20.19、Vitest 22.12） | 工具链仍需 ≥22.12，所以 CI 还是要拆 |
-| 后端 | 零构建，`node --watch src/*.ts` 直接跑 | 改一行要重新 build |
-
-**建议 A**，理由按重要性排序：Node 20 已经 EOL；开发工具（Vite/Vitest）**已经**要求 ≥22.12，保持 20.11 只能保住运行时、保不住工具链；B 的复杂度要长期背，而它换来的只是一个 EOL 版本的支持。
-
-**在你决定之前，我不会改 `engines` 或 CI 矩阵**——现在两边都是绿的，只是有一条明说了原因的 skip。
+**落地结果**：`engines` = `>=22.18`；CI 矩阵 `['22.18', '24']`；`test/protocol-constants.test.js` 的 skip 守卫**已删除**——floor 现在保证 type stripping，所以该测试无条件运行，将来若有人误动 floor 或矩阵，它会直接失败而不是静默跳过。
 
 ---
 
