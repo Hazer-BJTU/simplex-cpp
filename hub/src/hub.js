@@ -12,7 +12,7 @@ import { createHttpServer, sendError, sendJson } from './http/server.ts';
 import { createLauncher } from './launch/launcher.ts';
 import { MockProvider, parseAddress } from './mock/provider.ts';
 import { WorkerSupervisor } from './launch/supervisor.ts';
-import { createPanelApi } from './panel/api.js';
+import { createPanelApi } from './panel/api.ts';
 import { HubState } from './state/persist.ts';
 import { SessionRegistry } from './state/registry.ts';
 import { isValidSessionId } from './state/session-id.ts';

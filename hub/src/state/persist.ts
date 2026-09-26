@@ -39,7 +39,8 @@ export interface StoredProcess {
 export interface StoredSession {
     id: string;
     token: string;
-    spec: Record<string, unknown>;
+    /** Written verbatim: a spec the hub has not normalized yet is still stored. */
+    spec: object;
     created_at: string;
     process: StoredProcess | null;
 }
@@ -71,8 +72,8 @@ export interface PersistableProcess {
     command: string;
     args: string[];
     cwd: string;
-    pidFile?: string | null;
-    logPath?: string | null;
+    pidFile?: string | null | undefined;
+    logPath?: string | null | undefined;
     state: string;
 }
 
@@ -80,9 +81,11 @@ export interface PersistableProcess {
 export interface PersistableSession {
     id: string;
     token: string;
-    spec?: Record<string, unknown>;
+    /** Whatever the session was launched with; `object` because both a raw spec
+     * and a normalized one reach here. */
+    spec?: object | undefined;
     createdAt: string;
-    process?: PersistableProcess | null;
+    process?: PersistableProcess | null | undefined;
 }
 
 /** Everything `HubState` needs. */

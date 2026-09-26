@@ -26,7 +26,6 @@ import type { Duplex } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { presentedToken, safeEqual } from '../http/auth.ts';
 import { buildSignal } from '../protocol/messages.ts';
-import type { PayloadEnvelope, SignalEnvelope } from '../protocol/messages.ts';
 import { parseEventEnvelope } from '../protocol/events.ts';
 import type { ParsedEnvelope, UnsignedInteger } from '../protocol/events.ts';
 import { isValidSessionId } from '../state/session-id.ts';
@@ -220,13 +219,20 @@ export class WorkerConnection {
         return { ok: true };
     }
 
-    /** Send a validated payload envelope. */
-    sendPayload(payload: PayloadEnvelope): SendResult {
+    /**
+     * Send a payload envelope.
+     *
+     * Typed as `unknown` because it is also reached through the registry's
+     * `AttachedConnection` slice, where the concrete envelope type is not in
+     * scope; `protocol/messages.ts` is what validates the shape before it gets
+     * here.
+     */
+    sendPayload(payload: unknown): SendResult {
         return this.send(payload);
     }
 
-    /** Send a signal envelope. */
-    sendSignal(signal: SignalEnvelope | { type: string; data: unknown }): SendResult {
+    /** Send a signal envelope; see `sendPayload` for why this is `unknown`. */
+    sendSignal(signal: unknown): SendResult {
         return this.send(signal);
     }
 

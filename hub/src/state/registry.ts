@@ -83,14 +83,38 @@ export interface RegistryEnvelope {
     [field: string]: unknown;
 }
 
-/** The slice of a worker event connection the registry holds. */
+/**
+ * The slice of a worker event connection the hub holds.
+ *
+ * The send methods take `unknown` because this is the low-level channel: what
+ * may be sent is decided by `protocol/messages.ts`, which builds and validates
+ * the envelope before it gets here.
+ */
 export interface AttachedConnection {
     readonly isOpen: boolean;
+    sendPayload(payload: unknown): { ok: boolean; error?: string | undefined };
+    sendSignal(signal: unknown): { ok: boolean; error?: string | undefined };
 }
 
-/** The slice of a supervised process record the registry holds. */
+/**
+ * The slice of a supervised process record the registry holds.
+ *
+ * Wide enough for both readers: the panel needs `describe()`, and persistence
+ * needs the identity fields it writes to `hub.json`. Naming them here rather
+ * than casting at each use is what keeps `ProcessRecord` free to grow fields
+ * this side does not care about.
+ */
 export interface AttachedProcess {
     pid: number | null;
+    pidStartTime: string | null;
+    startedAt: string;
+    command: string;
+    args: string[];
+    cwd: string;
+    state: string;
+    pidFile?: string | null | undefined;
+    logPath?: string | null | undefined;
+    logs?: { dropped: number; size: number; toArray(): string[] } | undefined;
     describe(): ProcessDescription;
 }
 
@@ -98,6 +122,8 @@ export interface AttachedProcess {
 export interface RegisteredPrompt {
     id: string;
     describe(): ConfirmationPrompt;
+    decide(decision: string, reason?: string): { ok: boolean; error?: string | undefined };
+    retire(phase: string, detail: string): boolean;
 }
 
 /** Everything `new Session` needs. */

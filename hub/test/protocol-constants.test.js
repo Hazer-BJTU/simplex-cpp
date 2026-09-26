@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { PANEL_PROTOCOL as HUB_PROTOCOL, CAPABILITIES as HUB_CAPABILITIES } from '../src/hub.js';
-import { PANEL_VERSION as SERVER_PANEL_VERSION } from '../src/panel/api.js';
+import { PANEL_VERSION as SERVER_PANEL_VERSION } from '../src/panel/api.ts';
 import { PANEL_VERSION as WEB_PANEL_VERSION } from '../web/js/api.js';
 import {
     CAPABILITIES as SHARED_CAPABILITIES,

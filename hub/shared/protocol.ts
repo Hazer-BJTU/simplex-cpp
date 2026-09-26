@@ -256,7 +256,8 @@ export interface WorkerEnvelope {
     worker_id: string;
     request_id: string;
     run_id: string;
-    sequence: number | string;
+    /** Null when the worker sent a sequence the hub could not read at all. */
+    sequence: number | string | null;
     data: unknown;
     /** Added by the hub: position in this hub process's transcript. */
     hub_sequence?: number;
@@ -288,7 +289,7 @@ export interface HubMetadata {
     worker_protocol: string;
     capabilities: Capability[];
     /** Absent from a hub older than this field; see `TranscriptEpoch`. */
-    transcript_epoch?: TranscriptEpoch;
+    transcript_epoch?: TranscriptEpoch | undefined;
     listen: { host: string; port: number };
     launcher: { kind: string; owns_config: boolean };
     provider_profiles: string[];
@@ -360,17 +361,29 @@ export interface AcceptedMessage {
     request_id?: string;
     /** Present for `signal`. */
     operation?: string;
-    /** Present for `worker`: the supervisor's own result. */
+    /** Present for `confirmation`. */
+    confirmation_id?: string;
+    /** Present for `worker`: the supervisor's own result, passed through. */
     result?: { ok: boolean; how?: string; forced?: boolean; pid?: number; error?: string };
 }
 
-/** What the hub sends when a message was refused. */
+/**
+ * What the hub sends when a message was refused.
+ *
+ * An error that answers a specific command echoes enough of it to say which:
+ * `action` names the command, `session` the target, and `result` carries the
+ * supervisor's own explanation when there is one.
+ */
 export interface ErrorMessage {
     v?: number;
     type: 'error';
     error: ErrorCode | string;
     message: string;
     request?: unknown;
+    action?: string;
+    session?: SessionId;
+    confirmation_id?: string;
+    result?: unknown;
 }
 
 /** Everything the hub may send. */
@@ -393,7 +406,7 @@ export type HubMessage =
         logs: string[];
         latest: number;
         /** Echoed so a client can detect that its cursor predates a restart. */
-        transcript_epoch?: TranscriptEpoch;
+        transcript_epoch?: TranscriptEpoch | undefined;
     }
     | { v?: number; type: 'created'; session: SessionDescription }
     | { v?: number; type: 'event'; session: SessionId; hub_seq: number; envelope: WorkerEnvelope }

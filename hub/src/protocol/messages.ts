@@ -215,8 +215,8 @@ export function buildPayload({
 /** What `buildSignal` accepts. */
 export interface SignalInput {
     operation: SignalOperation;
-    /** Required for `cancel`. */
-    runId?: string;
+    /** Required for `cancel`; absent for every other operation. */
+    runId?: string | undefined;
 }
 
 /** Build a `signal` envelope. */
