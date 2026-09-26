@@ -109,8 +109,15 @@ RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
 # ---- Hub --------------------------------------------------------------------
 # `npm ci` from the committed lockfile: the hub's one runtime dependency (ws) is
 # resolved by integrity hash rather than by whatever the registry serves.
+#
+# `npm run build` is not optional any more: the hub serves `web/dist`, and a
+# `dist` left out of the context (see .dockerignore) means a panel that answers
+# 503 with the command that would have built it. Building here — rather than
+# copying a `dist` in — is what keeps the image's panel and its source the same
+# commit.
 RUN cd /src/hub \
     && npm ci --no-audit --no-fund --ignore-scripts \
+    && npm run build \
     && if [ "${RUN_TESTS}" = "1" ]; then npm test; fi
 
 # A workspace the worker's environment hint points at, so a mounted directory

@@ -183,6 +183,26 @@ jobs:
         working-directory: hub
         run: npx playwright test
 
+      - name: The hub serves the built panel
+        # The browser tests load the bundle through `vite preview`, so they
+        # cannot notice a hub whose static root and build output disagree. This
+        # is the deployment path itself: start the hub, ask it for `/`, and
+        # require the real document back.
+        working-directory: hub
+        run: |
+          node bin/simplex-hub.ts --listen 127.0.0.1:8811 \
+            --data-dir "${RUNNER_TEMP}/hub-data" > "${RUNNER_TEMP}/hub.log" 2>&1 &
+          hub=$!
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:8811/ > "${RUNNER_TEMP}/panel.html"; then break; fi
+            sleep 0.2
+          done
+          kill "$hub" || true
+          cat "${RUNNER_TEMP}/hub.log"
+          grep -q '<div id="root">' "${RUNNER_TEMP}/panel.html"
+          grep -q '/assets/' "${RUNNER_TEMP}/panel.html"
+          ls web/dist/assets/*.js > /dev/null
+
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
