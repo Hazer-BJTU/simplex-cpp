@@ -229,6 +229,13 @@ rather than dangerous.
 as received). Unknown event names are forwarded exactly like known ones; the
 panel decides how to render them.
 
+**Open confirmations are read from the session description**, not from a field
+on `subscribed`. `SessionDescription.confirmations` is the authoritative list of
+what is open at the moment the description was built, and it arrives in
+`welcome`, in `sessions`, in `session`, and in `subscribed`'s `session`. A client
+that instead waited for a `confirmations` array on `subscribed` would show
+nothing after a reload, because no such field has ever been sent.
+
 Live messages are only sent for sessions a client has subscribed to, with one
 deliberate exception: `confirmation`. An approval is the one message that must
 not be missed, so it reaches every connected panel regardless of subscription.

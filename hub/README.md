@@ -187,7 +187,7 @@ read it; nothing can replace, edit, or reset it.
 ## Tests
 
 ```sh
-npm run typecheck   # tsc over the server, the shared protocol, and the panel
+npm run typecheck   # tsc over the server, the shared protocol, the panel, the browser tests
 npm test            # unit and integration tests, no build required
 npm run build       # bundle the new panel into web/dist
 npx playwright test # the panel in a browser Playwright brings with it
@@ -196,17 +196,38 @@ npm run test:e2e    # end-to-end against build/bin/simplex_worker (skipped if ab
 
 The end-to-end tests drive the real binary through the hub and the offline mock:
 a full loop with a real tool call and confirmation, a crashed hub whose worker is
-adopted by the next hub, and the panel itself in headless Chrome (the browser
+adopted by the next hub, and the old panel itself in headless Chrome (the browser
 check skips when none is installed; set `PANEL_REQUIRE_BROWSER=1` to make that a
-failure, and `CHROME_BIN` to choose one). Set `SIMLEX_WORKER_BIN` to test a
-different build. That Chrome check is the panel being replaced: it drives the
-old DOM through a hand-written CDP client, and the Playwright suite is what
-takes over as the new panel lands.
+failure, and `CHROME_BIN` to choose one). Set `SIMPLEX_WORKER_BIN` to test a
+different build.
 
 Two panels coexist while the rewrite is in progress. `web/index.html` is the
 panel you get today; `web/app.html` is the new one, built from `web/src` into
 `web/dist` and not yet served by the hub. `npm run dev:panel` runs Vite against
-a hub on `127.0.0.1:8800` when you want to iterate on it with hot reload.
+a hub on `127.0.0.1:8800` when you want to iterate on it with hot reload, and
+the same proxy is configured for `vite preview`, which is what the browser tests
+load.
+
+The panel's browser tests run against `test/browser/stub-hub.mjs`, a server that
+speaks the panel protocol and can be told to emit an event, raise a confirmation
+or restart with a new transcript epoch — none of which a real hub can be asked
+to do on cue. It is deliberately not a mock of the hub's logic: ordering,
+replay cursors and epochs are real, because those are what the tests are about.
+It does repeat one piece of the hub on purpose: the `Origin`/`Host` check on the
+panel upgrade, so that a proxy misconfiguration fails here rather than only
+against the real thing.
+
+To check the panel against a real hub and a real worker:
+
+```sh
+node bin/simplex-hub.ts --mock --listen 127.0.0.1:8899 --data-dir /tmp/hub-check
+SIMPLEX_HUB_ORIGIN=http://127.0.0.1:8899 npx vite preview --port 4174 --strictPort
+SIMPLEX_HUB_ORIGIN=http://127.0.0.1:8899 npm run check:panel
+```
+
+That creates a session, starts its worker, sends a message, answers the tool
+approval the mock provider asks for, and prints the transcript the panel
+rendered next to the hub's own counters.
 
 ### Continuous integration
 
@@ -236,6 +257,12 @@ Between them they also assert things a reader might otherwise assume:
   writes markup as HTML.
 - **The panel in a browser.** `npx playwright test` builds the new panel, serves
   it, loads it in the browser Playwright installs, and fails on a console error.
+- **The panel's own store.** `test/panel-store.test.js` covers the behaviours
+  the rewrite deliberately changed — a replayed transcript is merged rather than
+  substituted, a session list never deletes what it omits, a new transcript
+  epoch resets the cursor, a log tail replaces rather than appends, and a
+  refused input goes back to the composer. It needs no browser because the
+  store is the vanilla Zustand store: no React, no DOM.
 
 Not covered by CI: a real provider (the offline mock stands in), `wss` and
 reverse-proxy behaviour, long-running sessions, and operating systems other than

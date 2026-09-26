@@ -145,6 +145,12 @@ jobs:
   # matrix has no business asking for it. (The Node requirement that also
   # justified the split stopped applying when the hub's floor moved to 22.18,
   # which is above what Vite and Vitest ask for.)
+  #
+  # No C++ tree is needed: the browser tests drive `test/browser/stub-hub.mjs`,
+  # a server that speaks the panel protocol and can be told to emit an event,
+  # raise a confirmation, or restart with a new transcript epoch — none of which
+  # a real hub can be asked to do on cue. `npm run check:panel` is the check
+  # that does use a real worker, and it is run by hand.
   # ---------------------------------------------------------------------------
   hub-panel:
     runs-on: ubuntu-latest

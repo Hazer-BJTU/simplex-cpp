@@ -267,6 +267,8 @@ B1 与 B2 的共同根因是 `void someAsync()` 这种"发射后不管"的调用
 
 **修正（P1 实施后的结论）**：原计划把后端测试也迁到 Vitest，理由是"直接跑 `.ts`"。实际验证后发现 **`node --test` 本身就能直接跑 `.ts`**（Node 原生 type stripping，P1 已实测 `.js` 导入 `.ts` 成功），所以迁移 196 个已经稳定运行的测试没有收益，只有风险：Vitest 的 worker 模型对这些"起真实进程、开真实 socket"的集成测试并不天然更合适，而且 Vitest 5 要求 Node ≥22.12，会在 CI 的 floor job 上引入额外约束。**因此后端留在 `node:test`，Vitest 只用于将来需要 jsdom 的 React 组件测试。**
 
+**P4 追加**：连"将来"也未必到来。P4 把前端 store 写成 **vanilla Zustand**（`zustand/vanilla`，React 绑定单独放在 `web/src/state/usePanel.ts`），于是 A2/D19/D20/D23 这些规则用 `node --test` 就测得了，不需要 jsdom；组件行为则由 Playwright 在**真实浏览器**里验证，比 jsdom 更真。所以 `vitest` 目前**仍是一个没有任何脚本使用的 devDependency**。留着它的理由是"下一个真正需要隔离 DOM 的组件测试不必重新决策"，但这是明确的取舍而不是疏忽——若确认不需要，删掉它只是 `package.json` 的一行。
+
 现有测试的**长处**值得保留：worker 协议 drift（解析 `core/docs/worker-protocol.md`）、确认身份判定（fail-closed）、pid 复用的 fail-closed 采纳、协议优先停止、重放游标语义、未知事件容错、四条鉴权边界、静态路径封闭、"不注入 HTML"。这些不变量在重构中一条都不能丢。
 
 **当前的空白**（重构要顺带补上）：`bin/` 的 CLI 在 P0 前完全无测试（**两条崩溃路径都在它的可达范围内**）；面板协议没有 drift 测试；并发 start/restart；采纳监控的清理；关闭后转录重开；日志流错误路径；pid 文件陈旧；面板 4 MiB 边界；`hub.stop()` 重入；跨 hub 重启的重放。
@@ -362,11 +364,11 @@ Docker（`docker/Dockerfile.hub-test`）加前端构建步骤；`hub/web/dist` �
 | 扩展机制 | 当初的现状 | 实际做法 |
 | --- | --- | --- |
 | 消息类型 | 两端各写一份字符串字面量（`src/panel/api.js` 与 `web/js/app.js` 各一个 switch） | ✅ `shared/protocol.ts` 定义 `PanelMessage` / `HubMessage` 两个 discriminated union（13 + 16 种），并导出 `PANEL_MESSAGE_TYPES` / `HUB_MESSAGE_TYPES` 供 drift 测试比对。**注意**：`.js` 消费端在 P3 之前拿不到类型检查，所以"编译期抓住 `action === 'worker'` 死分支"这件事要等 P3 才兑现——P2 兑现的是运行时 guard 与 drift 测试 |
-| 能力协商 | `capabilities: string[]` 已下发，但前端零消费，且是静态常量 | ◐ 能力清单移到 `shared/`、加了 `Capability` 联合、meta 每次返回**独立副本**（此前按引用返回同一数组，一个调用方可以替所有人改掉它）。**但没有做成"从配置推导"**：实际检查后发现没有配置相关的能力——`supervisor` 的意思是"这个 hub 会启动并给 worker 进程发信号"，与哪个 launcher 渲染配置无关，而 launcher 的差异已经由 `launcher.owns_config` 单独报告。从配置推导这个列表会是对空集的抽象。前端消费在 P4 |
+| 能力协商 | `capabilities: string[]` 已下发，但前端零消费，且是静态常量 | ◐ 能力清单移到 `shared/`、加了 `Capability` 联合、meta 每次返回**独立副本**（此前按引用返回同一数组，一个调用方可以替所有人改掉它）。**但没有做成"从配置推导"**：实际检查后发现没有配置相关的能力——`supervisor` 的意思是"这个 hub 会启动并给 worker 进程发信号"，与哪个 launcher 渲染配置无关，而 launcher 的差异已经由 `launcher.owns_config` 单独报告。从配置推导这个列表会是对空集的抽象。✅ **P4 起前端真的消费它了**：`subscribe` 的游标是否带上取决于 `transcript-replay`（hub 没声明这条能力时，`since` 对它没有承诺过的含义，面板就从 0 要全量）|
 | 能力版本 | 无 | ⏸ **未做**，见下方"推迟的两件事" |
 | 审批的可见性语义 | **隐式**：只有订阅者收得到（A1 的根因） | ✅ `confirmation` 广播给所有客户端；`hub-protocol.md` 明写它是"仅订阅者"规则的唯一例外；新增能力项 `global-confirmations`。**这一处修复让旧面板立刻受益，无需改前端** |
-| 重放语义 | `subscribed` 的 delta/full 语义未写明，客户端当成 full（A2 的根因） | ◐ 协议侧写明 `transcript` 是 `since` 之后的增量（文档 + epoch 一起）；客户端**合并而非替换**是 P4 的事 |
-| **转录代际（epoch）** | **完全缺失**：`hub_sequence` 每个 hub 进程从 1 重来（`transcript.js:36`），重启前的 cursor 会静默返回空转录 | ✅ `meta` / `welcome` / `subscribed` 都带 `transcript_epoch`（每进程一个 UUID）；新增能力项 `transcript-epoch`。客户端消费在 P4。**这是 A2 的第二个根因，且比 A2 更隐蔽** |
+| 重放语义 | `subscribed` 的 delta/full 语义未写明，客户端当成 full（A2 的根因） | ✅ 协议侧写明 `transcript` 是 `since` 之后的增量；P4 的 store **按 `hub_sequence` 去重合并**，回归测试与浏览器测试都还原验证过会咬住 |
+| **转录代际（epoch）** | **完全缺失**：`hub_sequence` 每个 hub 进程从 1 重来（`transcript.js:36`），重启前的 cursor 会静默返回空转录 | ✅ `meta` / `welcome` / `subscribed` 都带 `transcript_epoch`（每进程一个 UUID）；新增能力项 `transcript-epoch`。**这是 A2 的第二个根因，且比 A2 更隐蔽**。✅ P4 在 `welcome` 与 `subscribed` 两处对账：epoch 变了就重置游标、保留已读历史、加一条说明并重新要全量；hub 太老不报 epoch 时，用 `latest` 倒退作为兜底信号 |
 | **客户端 hello / 协商** | 无。`welcome` 是单向的，客户端无法声明自己是 v2，也无法询问"你支持 X 吗" | ⏸ **推迟**，见下方 |
 | 未知消息类型的反馈 | 静默丢弃，只写 debug 日志（`api.js:596-598`） | ✅ 保持"忽略"语义不变，但 `checkEnvelope` 把"未知类型"与"信封损坏"**分成两种结果**，调用方因此能分别对待；hub 侧仍是记 debug 并忽略 |
 | 结构演进 | 未知字段保留 | ✅ 契约里可能缺席的字段标 `?`（如 `transcript_epoch`、`log_path`）；`WorkerEnvelope` 保留索引签名，因为 worker 事件本就允许任意字段 |
@@ -380,8 +382,6 @@ Docker（`docker/Dockerfile.hub-test`）加前端构建步骤；`hub/web/dist` �
 - **未知类型的可选应答**（`unsupported_capability`）。同样取决于 `hello` 是否存在：没有协商，hub 无法知道对端是否承受得起一条新错误消息，静默忽略仍是更安全的默认。
 
 这两条都不是被遗忘，而是被**明确排在触发条件之后**。
-| Worker 事件透传 | 已 verbatim 转发 + `known`/`issues`/`raw` | **保持不变**——这是最重要的一条：core 新增事件名时面板天然能收到，不需要协议升级 |
-| 契约测试 | 只有 worker 协议的 drift 测试 | 面板协议加 drift 测试，并做**双向量**校验：真实跑一遍 hub，抓所有出站消息，逐条用 `guards.ts` 验证 |
 
 ### 4.3 版本策略（写进文档与 `protocol.ts` 注释）
 
@@ -400,6 +400,7 @@ P2 落地后的状态：
 5. **`transcript-delta`**：显式声明增量重放语义。P2 把语义写进了文档，但没有单列能力项——`transcript-replay` 已经表达了"支持按游标重放"，再拆一个只会让客户端多检查一次。
 6. **`audit-log`**：审批决策的追加日志——现在是 toast，无留痕。**安全相关，建议早做**，但不在 P2 范围内。
 7. **`multi-client`**：显式声明多面板协同。协议本就支持，且 A1 的修复让"多个面板同时接审批"成为现实——但现在还没有客户端**依赖**这个声明，所以暂时不加。
+8. **worker 回传已准入输入的文本**（不在 hub 协议里，属于 core）。见 §6.1 的 N3：这是面板唯一**无法**在现有协议下做对的事——刷新之后，操作者看不到自己说过什么。**触发条件**：本次任务明确要求"不动 C++、不改 worker 协议"，所以推迟；一旦允许动 core，最小改动是在 `input_admitted` 的 `data` 里回带被准入的内容（而不是新增事件），因为该事件本就与那次输入一一对应。在那之前，前端只做一件事：把"这里本该有内容"如实写出来，而不是留白。
 
 ---
 
@@ -483,13 +484,31 @@ P2 落地后的状态：
 | **P1 脚手架** ✅ 已完成 | `tsconfig.json`（后端，`allowJs` 让迁移可以逐个模块进行）+ `web/tsconfig.json`（前端，DOM lib）+ `vite.config.ts` + `playwright.config.ts`；`shared/protocol.ts` 落地并把三份版本字面量钉住；CI 拆出 `hub-panel` job（build + 浏览器测试，Node 24）并给 `hub-test` 加 typecheck；`.gitignore`/`.dockerignore` 加 `dist` | typecheck 通过**并验证过能抓到注入的类型错误**；面板构建产出 `web/dist`；Playwright 2/2 通过；Node 24 上 200 个测试全绿。（P1 刚完成时 Node 20.11 上还是 196 通过 0 失败——靠一个具名 skip；floor 随后按 §9 提到 22.18，该 skip 已删除。） |
 | **P2 协议契约** ✅ 已完成 | `shared/protocol.ts` 扩成完整契约：13 种面板消息 + 16 种 hub 消息的联合类型、实体接口、错误码、能力清单；`shared/guards.ts` 提供两端共用的信封校验；hub 与面板的版本常量收敛到 shared（旧面板那份保留并加守卫，理由见下）；**A1 修复：审批广播给所有客户端**；新增 `transcript_epoch`；新增面板协议 drift 测试。**与计划的偏差**：能力清单没有做成"从配置推导"（没有配置相关的能力，见下）；可选的 `hello` 协商**推迟**，理由见下 | 222 个测试 + 2 个真实 worker 端到端通过；A1 与 epoch 各有回归测试，两者都还原验证过；浏览器端确认：看着 session A 时，session B 的审批弹窗确实会出现 |
 | **P3 后端 TS 化** ✅ 已完成 | 全部 22 个模块 `.js` → `.ts`，按依赖图从叶子到根分批（每个提交只改 import 说明符，逐条核对过）；新增 `@types/ws`；`tsconfig` 收紧了 `allowJs`/`checkJs` | 每一步 `npm test` 222 全绿；真实 worker 的端到端在每次触及 supervisor 的批次后都跑；`src`/`bin`/`shared` 下已无 `.js` |
-| **P4 前端骨架** | Vite + React 壳：布局、Zustand store（从 `state.js` 平移并修 A2/D23）、socket/REST 客户端、会话列表、可显示事件的最小对话流 | 面板在浏览器里跑通一轮真实会话（mock provider） |
+| **P4 前端骨架** ✅ 已完成 | Vite + React 壳：布局、Zustand store（从 `state.js` 平移并修 A2/D23）、socket/REST 客户端、会话列表、可显示事件的最小对话流 | 23 个 store 回归测试 + **6 个浏览器测试**（新增 `test/browser/stub-hub.mjs`，可被脚本化地 emit / confirm / restart）+ 真实 hub 与真实 worker 的 `npm run check:panel`。四条主修复（A2 合并、D23 合并、epoch 重置、D20 日志尾部）都**还原验证过测试会失败**，A2 在浏览器里也单独还原验证过。P4 期间新发现三个问题，见 §6.1 |
 | **P5 对话流** | markdown、高亮、工具卡片、run 分组、窗口化、滚动行为、技术细节开关 | 达到 §5 目标 |
 | **P6 交互重构** | 会话头层次化、溢出菜单、危险确认对话框、composer、Inspector 抽屉、命令面板、per-session 确认模式 | §1.2 的 D 组缺陷全部关闭 |
 | **P7 打磨** | 图标、动效、主题、响应式、a11y 审计、空状态/骨架屏 | 键盘可完成全流程；窄屏可用 |
 | **P8 收尾** | 删除 `web/js`、`web/css`；更新 `hub/README.md`、`hub-protocol.md`；Playwright 取代 CDP helper | 文档与实现一致 |
 
 P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物与旧静态文件并存，按开关切换），P8 再删。
+
+### 6.1 P4 期间新发现的三个问题
+
+都不是计划里写过的，是写前端时才暴露出来的。
+
+**N1 · `subscribed` 从来没有 `confirmations` 字段，而旧面板一直在读它。**
+`web/js/state.js:352-356` 遍历 `message.confirmations` 来恢复审批弹窗，但 hub 的 `subscribed` 从来只发 `session / transcript / logs / latest / transcript_epoch`（`src/panel/api.ts:601-615`）。所以那段代码是死的：**刷新页面后，一个仍然开着的审批在界面上不存在**，直到某条后续帧碰巧提到它——而按 A1 修复前的语义，"某条后续帧"不会再来了，于是工具调用只能等到 deadline 被自动拒绝。
+恰好 `SessionDescription.confirmations` 本来就是权威来源，所以 P4 直接改从会话描述里取（`welcome` 与 `subscribed` 两处）。这也是 A1 修复真正被消费的地方：现在**看着 session A，session B 的审批会出现在屏幕上并且答得了**，浏览器测试 `an approval for a session the panel is not watching still arrives (A1)` 覆盖了这条。
+
+**N2 · hub 的面板 upgrade 会校验 `Origin` 与 `Host` 一致，而 Vite 代理的 `changeOrigin: true` 恰好会踩中它。**
+`src/panel/api.ts:820-837` 拒绝 origin 与 host 不符的面板 upgrade——这是防跨站 WebSocket 劫持的正确做法（本机 loopback 上的 hub 不该被任意网页驱动）。但 `changeOrigin: true` 会把 `Host` 改写成目标地址，于是**每一次经代理的 upgrade 都长得和攻击一模一样**，hub 回 403，浏览器测试全挂在"connect 不上"。
+修法不是放宽 hub，而是代理不改写 `Host`（`vite.config.ts` 的 `hubProxy`）。同时给 `stub-hub.mjs` 加了同一条校验：一个不检查 `Origin` 的桩服务会让这个错误只在真实 hub 上出现，那正是"测试通过、产品失败"的形状。
+
+**N3 · 操作者自己发的消息，worker 协议不回传。**
+`input_admitted` 与 `input_committed` 的 `data` 都是 `{}`（`core/docs/worker-protocol.md` 的事件表），模型侧的 `model_response` 也不含用户消息。所以**面板是这段话唯一存在的地方**：P4 因此加了一个 outbox 项，按面板自己生成的 `request_id` 与 `input_admitted` 对上；刷新之后它就没有了，重放里只剩一条"用户输入——worker 协议不报告其文本"的占位。这不是前端能修的，也不该假装能修。
+
+**N4（小）· `tool_calls` 与 `model_response.invokes` 是同一批调用的两份表示。**
+一次 `run_command` 会在时间线上出现两张卡。旧面板也是两张，是"输出乱"的一部分。P5 做工具卡片时一并处理——需要小心的是两者**允许不同**（`tool_calls` 是 dispatch 前的提议，`model_response.invokes` 是消息的一部分），所以不能简单按 id 去重了事。
 
 ---
 
@@ -500,7 +519,7 @@ P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物�
 | **引入构建步骤** | 打破"改完刷新即可"与"无构建部署" | `vite dev` 的 HMR 反而更快；生产走多阶段构建 |
 | **依赖从 1 个变成几十个** | 供应链面、`npm ci` 变慢 | 运行时依赖仍只有 `ws`；前端依赖全是构建期产物；锁文件 + CI 审计 |
 | **Node floor 提升到 22.18** | 放弃 Node 20（2026-04-30 已 EOL）；本机与 CI 都需要 ≥22.18 | 已接受。这是 P1 实测后唯一自洽的选择：见 §9。缓解是 CI 矩阵仍测 floor 本身（`22.18`）而非只测最新版 |
-| **`test/e2e/panel.test.js` 会失效** | 它断言 `#timeline article.card`、`section.run-group`、`#panel-badge`、`#theme-toggle`、Approve 按钮文本 | P4 起用 Playwright + `data-testid` 重写；这是计划内的破坏 |
+| **`test/e2e/panel.test.js` 会失效** | 它断言 `#timeline article.card`、`section.run-group`、`#panel-badge`、`#theme-toggle`、Approve 按钮文本 | ⏸ **没有按计划在 P4 失效**：旧面板这一阶段一个字节都没改（新面板走 `app.html` 与 `preview` 代理，两者互不干扰），所以它仍然全绿，`npm run test:e2e` 3/3。真正删除它的时机是 P8 删 `web/js` 时——**比计划更好，而不是更差**：迁移期间旧面板继续可用且有测试守着 |
 | **`panel-assets.test.js` 的安全契约** | markdown 渲染看似与"禁止写 HTML"冲突 | `react-markdown` 不经 `innerHTML`；契约按 §2.4 重写并保留语义 |
 | **重写期间双份前端** | 维护成本 | 时间盒；旧面板冻结，只修安全级 bug |
 | **P0 加固与重构并行** | 两处改动互相冲突 | P0 先合入并单独发布；P3 的 TS 化以加固后的代码为基线 |
