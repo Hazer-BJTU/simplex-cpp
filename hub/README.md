@@ -201,13 +201,24 @@ check skips when none is installed; set `PANEL_REQUIRE_BROWSER=1` to make that a
 failure, and `CHROME_BIN` to choose one). Set `SIMPLEX_WORKER_BIN` to test a
 different build.
 
+Overlays — menus, dialogs, popovers, tooltips, tabs — are Radix primitives, and
+the reason is specific rather than fashionable: the old panel hand-wrote a focus
+trap and a document-level key handler, and four of its interaction defects came
+out of that one piece of code (a dialog whose initial focus landed on "hide", a
+minimised dialog that reopened itself, buttons disabled forever after a failed
+decision, and a trap spanning a stack of coexisting modal dialogs). Radix
+supplies that machinery correctly, and the wrappers in `web/src/ui` exist so the
+panel has one place where a menu looks like a menu.
+
 The panel renders model output as markdown through `react-markdown`, which
 builds elements rather than markup — so "show the model's markdown" and "never
 write panel markup as HTML" are the same code path, not a trade. Inline HTML is
 deliberately not parsed. Syntax highlighting is `rehype-highlight` over
 highlight.js's *common* language set, which is a fixed ~50 kB gzipped of the
 bundle and cannot be trimmed by configuration, because the plugin imports that
-set statically.
+set statically. Radix and lucide together add about 42 kB gzipped on top of
+that. The whole panel is ~230 kB gzipped, which for a tool that runs on loopback
+is not a constraint anyone is paying for.
 
 Two panels coexist while the rewrite is in progress. `web/index.html` is the
 panel you get today; `web/app.html` is the new one, built from `web/src` into
@@ -265,6 +276,9 @@ Between them they also assert things a reader might otherwise assume:
   writes markup as HTML.
 - **The panel in a browser.** `npx playwright test` builds the new panel, serves
   it, loads it in the browser Playwright installs, and fails on a console error.
+  The interaction suite is the one that matters most for review: each of its
+  tests closes a numbered defect from the plan, and most are written so that
+  they fail against the behaviour the old panel had.
 - **The panel's own store.** `test/panel-store.test.js` covers the behaviours
   the rewrite deliberately changed — a replayed transcript is merged rather than
   substituted, a session list never deletes what it omits, a new transcript
@@ -277,6 +291,11 @@ Between them they also assert things a reader might otherwise assume:
   of a tool result's prose. Its fixtures use the payload shape a real session
   produced, not the shape the protocol document describes — the two differ for
   tool results, and reading only the documented one shows no output at all.
+- **What the command palette offers.** `test/panel-palette.test.js` checks the
+  entries as a function of the store's shape — no "cancel the run" when no run
+  is active, no per-session entries when no session is selected — because the
+  offer is the interesting part, and a command that exists and then refuses is
+  worse than one that is not there.
 - **No markup from untrusted text.** `test/panel-assets.test.js` scans both
   panels for `innerHTML` and its relatives, `dangerouslySetInnerHTML` included,
   and fails if a raw-HTML plugin is added to the markdown renderer. The

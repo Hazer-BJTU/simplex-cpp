@@ -492,7 +492,7 @@ P2 落地后的状态：
 | **P3 后端 TS 化** ✅ 已完成 | 全部 22 个模块 `.js` → `.ts`，按依赖图从叶子到根分批（每个提交只改 import 说明符，逐条核对过）；新增 `@types/ws`；`tsconfig` 收紧了 `allowJs`/`checkJs` | 每一步 `npm test` 222 全绿；真实 worker 的端到端在每次触及 supervisor 的批次后都跑；`src`/`bin`/`shared` 下已无 `.js` |
 | **P4 前端骨架** ✅ 已完成 | Vite + React 壳：布局、Zustand store（从 `state.js` 平移并修 A2/D23）、socket/REST 客户端、会话列表、可显示事件的最小对话流 | 23 个 store 回归测试 + **6 个浏览器测试**（新增 `test/browser/stub-hub.mjs`，可被脚本化地 emit / confirm / restart）+ 真实 hub 与真实 worker 的 `npm run check:panel`。四条主修复（A2 合并、D23 合并、epoch 重置、D20 日志尾部）都**还原验证过测试会失败**，A2 在浏览器里也单独还原验证过。P4 期间新发现三个问题，见 §6.1 |
 | **P5 对话流** ✅ 已完成 | markdown + GFM（react-markdown，不经 HTML）、代码高亮与复制、工具卡片（命令当命令读、结果按结构读）、run 分组与窗口化、技术细节开关、长消息与长输出折叠 | 20 个纯函数测试（`test/panel-transcript.test.js`）+ 9 个新浏览器测试（共 15 个）+ 真实 hub/worker 全流程。**§5.3 有三条按字面做不到**，改成如实呈现，见 §6.2；另外发现 P4 的移植丢掉了一处**旧面板本来知道的事**（N5） |
-| **P6 交互重构** | 会话头层次化、溢出菜单、危险确认对话框、composer、Inspector 抽屉、命令面板、per-session 确认模式 | §1.2 的 D 组缺陷全部关闭 |
+| **P6 交互重构** ✅ 已完成 | 会话头层次化、溢出菜单、危险确认对话框、composer、Inspector 抽屉、命令面板、per-session 确认模式 | **§1.2 的 D 组 15 项全部关闭**，逐条对应见下方 §6.2 表。10 个新的纯函数测试（`test/panel-palette.test.js`）+ 12 个新的浏览器测试（共 30 个）+ 真实 hub/worker 全流程无 console error |
 | **P7 打磨** | 图标、动效、主题、响应式、a11y 审计、空状态/骨架屏 | 键盘可完成全流程；窄屏可用 |
 | **P8 收尾** | 删除 `web/js`、`web/css`；更新 `hub/README.md`、`hub-protocol.md`；Playwright 取代 CDP helper | 文档与实现一致 |
 
@@ -516,7 +516,36 @@ P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物�
 **N4（小）· `tool_calls` 与 `model_response.invokes` 是同一批调用的两份表示。**
 一次 `run_command` 会在时间线上出现两张卡。旧面板也是两张，是"输出乱"的一部分。**P5 已修**：按 call id 合并成一张卡，只按 id——因为两者**允许不同**（`tool_calls` 是 dispatch 前的提议，`model_response.invokes` 是消息的一部分），只出现在一边的调用仍然单独成卡而不是被丢掉。回归测试 `draws one card for a batch the response and the event both describe`（单元 + 浏览器各一条）。
 
-### 6.2 P5 期间新发现的三个问题
+### 6.2 P6：D 组缺陷逐条关闭
+
+验收条件是"§1.2 的 D 组缺陷全部关闭"，所以逐条列出**关闭机制**，而不是只写"已修复"。
+标 P4/P5 的表示在前面阶段已经关闭。
+
+| # | 缺陷 | 关闭方式 |
+| --- | --- | --- |
+| 15 | `confirmation.mode` 跨会话泄漏（安全） | 模式存在 store 的 `confirmMode: Map<sessionId, mode>` 里，随每条消息的 `options.confirmation.mode` 发送；非默认值时**常驻徽章**显示。浏览器测试：会话 A 设 approve → 切到 B → B 仍是 ask，且发出的消息里带的是 `ask` |
+| 16 | 审批弹窗初始焦点在 "hide" 上 | 弹窗以 `focus="none"` 打开（`onOpenAutoFocus` 阻止默认），**没有任何按钮被武装**。测试：打开后按 Enter，弹窗仍在，且 hub 没收到任何决策 |
+| 17 | 最小化的弹窗会自己弹回来 | 关闭即"推迟"，记在 `deferred` 集合里，不会因重渲染重新打开；横幅保留、一键可回。测试：Later → 推一条事件（即一次重渲染）→ 仍然关着 → Review 能打开 |
+| 18 | 决策失败后按钮永久禁用 | **决策按钮从不 disabled**：组件只在 hub 仍把 prompt 列为 open 时存在，所以点击只能是重发。测试：点两次 Approve，hub 收到两条决策 |
+| 19 | 输入框乐观清空、无回滚 | ✅ P4：store 把文本交还 composer |
+| 20 | 日志面板每次 Refresh 翻倍 | ✅ P4：`logs` 是环形缓冲的尾部，替换而非拼接 |
+| 21 | 未保存的选项被状态事件冲掉 | ✅ 结构上：Inspector 是 React 条件渲染，选项（tab、快照开关）在 state 里，事件不再重建 DOM |
+| 22 | DOM 无限增长 | ✅ P5：窗口化（只展开最近 3 轮）+ 有界转录 |
+| 23 | 会话列表竞态 | ✅ P4：刷新列表只合并，`welcome` 才替换 |
+| 24 | 滚动被强制拉到底 | ✅ P4/P5：只在读者本来就在底部时跟随 |
+| 25 | `Load snapshot` 竞态 | 快照带 `sessionId`，store 丢弃不属于当前会话的回包。测试：延迟 1.5s 的请求 + 中途切会话 → 旧会话的状态不出现 |
+| 26 | `?session=` 只读不写 | ✅ P4：选中即写回地址栏（命令面板测试顺带验证） |
+| 27 | 危险操作依赖 `window.confirm()`，且 force-kill 文案无视配置 | 自绘对话框；文案**按 `force_kill_process_group` 实际值**分叉。测试：两种配置下文案不同，且整个过程浏览器原生 dialog 事件为零 |
+| 28 | 死代码 / 死协议面 | `ping` 现在**会发**（命令面板的 "Ping the hub"，显示往返毫秒）；`status_snapshot` 已经是"reload transcript"的实现；`rest.events` 成为**socket 断开时的 HTTP 回退**（测试把 hub 停掉再 reload，证明走的是 REST）；没有读者的 `rest.session` 删掉了 |
+| 29 | 1 秒倒计时 ticker 永不清理 | ✅ 结构上：新面板没有任何 `setInterval`；审批显示的是 deadline 时刻而不是倒计时 |
+
+其中三条值得单独说，因为它们是**在修的过程中发现"修法本身又会变成同一个缺陷"**：
+
+- **18 的第一次实现就是错的**。最初写的是"已发送 → 禁用按钮，等 hub 回答"。但 hub 如果永远不回答（决策丢失），按钮就永远禁用——和 D18 一模一样，只是安静一点。改成**从不禁用**之后，这个类别整体消失：一个只能重发的按钮不会卡住。
+- **`stats()` 这个 store 方法是个陷阱，而且咬了两次。** P4 就发现"返回新对象的方法不能当 selector 用"并写了注释，P6 写 Inspector 时**又**用它当 selector，React 直接 185 崩掉。第二次之后处理方式变了：不复述规则，而是**把方法删掉**（改成 `statsFor(state, id)` 自由函数），组件只能走 `useView` + `statsOf`。规则可以忘，不存在的 API 忘不掉。
+- **桩服务不能靠 `page.route` 断网。** WebSocket upgrade 不是 Playwright 路由拦截的 HTTP 请求，所以"D28 的 HTTP 回退"这条测试一开始是**假通过**的——转录本来就在屏幕上。给桩服务加了 `/__stub/down`（拒绝 upgrade 并关闭现有连接），并让断言检查 `/events` 请求真的发出过。测试通过得容易时，值得问一句它到底证明了什么。
+
+### 6.3 P5 期间新发现的三个问题
 
 **N5 · `tool_results` 的条目不是文档写的 Result object，而 P4 的移植把这件事忘了。**
 `core/docs/worker-protocol.md` 的"Result object"一节写的是 `{query, output, extras}`，但实测（真实 worker 的原始载荷）是 `{content, invoke_return: {query, output}, role, type}`——一个 `invoke_return` **工具消息**，provenance 嵌在 `invoke_return` 里。
