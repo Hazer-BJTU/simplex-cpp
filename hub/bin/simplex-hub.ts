@@ -10,8 +10,11 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigError, hubRoot, loadConfig } from '../src/config.ts';
-import { createHub } from '../src/hub.js';
+import type { DeepPartial, HubConfig } from '../src/config.ts';
+import { createHub } from '../src/hub.ts';
+import type { Hub } from '../src/hub.ts';
 import { createLogger, isLogLevel } from '../src/log.ts';
+import type { Logger } from '../src/log.ts';
 
 const USAGE = `Usage: simplex-hub [options]
 
@@ -46,26 +49,45 @@ function packageVersion() {
 }
 
 /** Parse `host:port`, accepting bracketed IPv6 hosts. */
-export function parseListen(text) {
-    const trimmed = text.trim();
+export function parseListen(text: string): { host: string; port: number } {
+    const trimmed = String(text).trim();
     const match = /^(?:\[(?<v6>[^\]]+)\]|(?<host>[^:]*)):(?<port>\d+)$/.exec(trimmed);
     if (!match) throw new ConfigError(`--listen expects host:port, got "${text}"`);
-    const port = Number.parseInt(match.groups.port, 10);
+    const port = Number.parseInt(match.groups?.port as string, 10);
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
-        throw new ConfigError(`--listen port out of range: ${match.groups.port}`);
+        throw new ConfigError(`--listen port out of range: ${String(match.groups?.port)}`);
     }
-    const host = match.groups.v6 ?? match.groups.host;
+    const host = match.groups?.v6 ?? match.groups?.host;
     if (!host) throw new ConfigError(`--listen needs an explicit host, got "${text}"`);
-    return { host, port };
+    return { host: host as string, port };
+}
+
+/** Command-line run options, as opposed to configuration overrides. */
+export interface RunOptions {
+    help: boolean;
+    version: boolean;
+    verbose: boolean;
+    logLevel: string | null;
+    mock: boolean | null;
+    /** Set by `--config`; assigned after the literal, hence optional. */
+    config?: string | undefined;
+}
+
+/** What `parseArguments` produces. */
+export interface ParsedArguments {
+    overrides: DeepPartial<HubConfig>;
+    run: RunOptions;
 }
 
 /** Parse process arguments into configuration overrides plus run options. */
-export function parseArguments(argv) {
-    const overrides = {};
-    const run = { help: false, version: false, verbose: false, logLevel: null, mock: null };
-    const need = (index, flag) => {
+export function parseArguments(argv: string[]): ParsedArguments {
+    const overrides: DeepPartial<HubConfig> = {};
+    const run: RunOptions = {
+        help: false, version: false, verbose: false, logLevel: null, mock: null,
+    };
+    const need = (index: number, flag: string): string => {
         if (index + 1 >= argv.length) throw new ConfigError(`${flag} requires a value`);
-        return argv[index + 1];
+        return argv[index + 1] as string;
     };
     for (let index = 0; index < argv.length; index += 1) {
         const flag = argv[index];
@@ -102,7 +124,9 @@ export function parseArguments(argv) {
 }
 
 /** Start the hub and keep it running until a signal arrives. */
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<
+    number | { hub: Hub; address: Awaited<ReturnType<Hub['start']>>; stop: (signal: string) => Promise<void> }
+> {
     const { overrides, run } = parseArguments(argv);
     if (run.help) {
         process.stdout.write(USAGE);
@@ -112,7 +136,7 @@ export async function main(argv = process.argv.slice(2)) {
         process.stdout.write(`${packageVersion()}\n`);
         return 0;
     }
-    const level = run.logLevel ?? (run.verbose ? 'debug' : 'info');
+    const level: string = run.logLevel ?? (run.verbose ? 'debug' : 'info');
     const log = createLogger({ level });
     const { config, file } = loadConfig({ file: run.config, overrides });
     log.info(file ? `configuration: ${file}` : 'configuration: built-in defaults');
@@ -123,7 +147,7 @@ export async function main(argv = process.argv.slice(2)) {
     log.info(`panel: ${address.url}`);
 
     let stopping = false;
-    const stop = async (signal) => {
+    const stop = async (signal: string): Promise<void> => {
         if (stopping) return;
         stopping = true;
         log.info(`received ${signal}; shutting down`);
@@ -133,8 +157,8 @@ export async function main(argv = process.argv.slice(2)) {
     // stack trace instead of an exit code. Report it and leave deliberately:
     // a half-finished shutdown has already skipped the listener teardown, so
     // the process would otherwise sit there holding the port.
-    const onSignal = (signal) => {
-        stop(signal).catch((error) => {
+    const onSignal = (signal: string): void => {
+        stop(signal).catch((error: Error) => {
             log.error(`shutdown failed: ${error.message}`);
             process.exit(1);
         });
@@ -148,7 +172,7 @@ export async function main(argv = process.argv.slice(2)) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
     main().then((result) => {
         if (typeof result === 'number') process.exitCode = result;
-    }).catch((error) => {
+    }).catch((error: Error) => {
         process.stderr.write(`simplex-hub: ${error.message}\n`);
         if (!(error instanceof ConfigError)) process.stderr.write(`${error.stack}\n`);
         process.exitCode = 1;

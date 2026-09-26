@@ -5,7 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hubRoot, loadConfig } from '../../src/config.ts';
-import { createHub } from '../../src/hub.js';
+import { createHub } from '../../src/hub.ts';
 import { createLogger } from '../../src/log.ts';
 
 /** Logger level for tests: silent unless HUB_TEST_LOG names one. */

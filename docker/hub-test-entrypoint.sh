@@ -55,7 +55,7 @@ Everything a session executes runs inside this container.
 
 EOF
 
-exec node /src/hub/bin/simplex-hub.js \
+exec node /src/hub/bin/simplex-hub.ts \
     --config /etc/simplex-hub/hub.config.jsonc \
     --listen "0.0.0.0:${PORT}" \
     --panel-token "${TOKEN}" \

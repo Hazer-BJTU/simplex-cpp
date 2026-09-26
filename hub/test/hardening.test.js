@@ -404,7 +404,7 @@ describe('P0 hardening', () => {
         // nothing about a failed shutdown.
         it('exits zero on SIGTERM instead of dying on a rejection', async () => {
             const child = spawn(process.execPath, [
-                join(hubRoot, 'bin', 'simplex-hub.js'),
+                join(hubRoot, 'bin', 'simplex-hub.ts'),
                 '--listen', '127.0.0.1:0',
                 '--data-dir', mkdtempSync(join(tmpdir(), 'simplex-hub-signal-')),
             ], { stdio: ['ignore', 'pipe', 'pipe'] });

@@ -19,7 +19,7 @@
 | 后端测试 | **Vitest**（断言继续用 `node:assert`） | 直接跑 `.ts`，迁移只需改 `describe/it` 的 import 来源 |
 | 端到端 | **Playwright**（替代自研 CDP helper） | 顺带获得截图与视觉回归能力 |
 | 开发态 | `node --watch src/bin/simplex-hub.ts` + `vite dev` | 保持"改完即跑"，并首次获得 HMR |
-| 生产态 | `tsc` → `node dist/bin/simplex-hub.js` | 部署确定性，不绑死 Node 版本 |
+| 生产态 | `node bin/simplex-hub.ts` | 与开发同一条路径：产物就是源码 |
 
 **一个前置建议**：审计过程中实测复现了若干**后端 P0 缺陷，其中一个是远程未认证的进程崩溃**（§1.1）。这些与前端重构无关，但会让 hub 在重写期间随时挂掉。建议先做一个**独立的纯修复提交（P0 加固）**，不涉及架构变更，与后续重构解耦。
 

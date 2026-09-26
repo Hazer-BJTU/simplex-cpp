@@ -477,7 +477,7 @@ export type DeepPartial<T> = {
 /** What `loadConfig` accepts. */
 export interface LoadConfigOptions {
     /** Configuration path; when omitted, an existing config beside the package is used. */
-    file?: string;
+    file?: string | undefined;
     /** Command-line overrides, already shaped like the configuration. */
     overrides?: DeepPartial<HubConfig>;
     /** Directory for override path resolution; defaults to the process cwd. */

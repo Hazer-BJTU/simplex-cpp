@@ -9,11 +9,11 @@
     "node": ">=22.18"
   },
   "bin": {
-    "simplex-hub": "./bin/simplex-hub.js"
+    "simplex-hub": "./bin/simplex-hub.ts"
   },
   "scripts": {
-    "start": "node bin/simplex-hub.js",
-    "dev": "node --watch bin/simplex-hub.js",
+    "start": "node bin/simplex-hub.ts",
+    "dev": "node --watch bin/simplex-hub.ts",
     "dev:panel": "vite",
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",

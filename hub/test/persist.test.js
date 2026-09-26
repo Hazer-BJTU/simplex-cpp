@@ -11,7 +11,7 @@ import { HubState, STATE_VERSION } from '../src/state/persist.ts';
 import { PROCESS_STATE, readProcessStartTime } from '../src/launch/supervisor.ts';
 import { createLogger } from '../src/log.ts';
 import { loadConfig } from '../src/config.ts';
-import { createHub } from '../src/hub.js';
+import { createHub } from '../src/hub.ts';
 import { hubRoot } from '../src/config.ts';
 import { until } from './helpers/worker.js';
 

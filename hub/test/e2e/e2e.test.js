@@ -48,7 +48,7 @@ function freePort() {
 /** Start a hub as a child process and wait until it answers. */
 async function startHubProcess({ port, dataDir, mock = true }) {
     const args = [
-        join(hubRoot, 'bin', 'simplex-hub.js'),
+        join(hubRoot, 'bin', 'simplex-hub.ts'),
         '--listen', `127.0.0.1:${port}`,
         '--data-dir', dataDir,
         '--worker-bin', WORKER_BIN,

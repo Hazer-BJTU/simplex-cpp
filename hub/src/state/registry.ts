@@ -412,10 +412,13 @@ export class NotFoundError extends Error {
     }
 }
 
-/** The slice of hub configuration the registry reads. */
-export interface RegistryConfig {
-    [key: string]: unknown;
-}
+/**
+ * The slice of hub configuration the registry reads.
+ *
+ * Nothing: the registry holds the configuration only so a caller can reach it
+ * through the session, and `object` says that without pretending to a shape.
+ */
+export type RegistryConfig = object;
 
 /** Everything `SessionRegistry` needs. */
 export interface RegistryOptions {

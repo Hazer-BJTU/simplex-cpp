@@ -1,7 +1,7 @@
 {
     // Backend type checking. The hub runs TypeScript directly on Node (type
     // stripping, Node >= 22.18), so `tsc` is a checker, not a builder: it never
-    // emits, and `npm start` runs `bin/simplex-hub.js` — or a future `.ts` —
+    // emits, and `npm start` runs `bin/simplex-hub.ts` — or a future `.ts` —
     // as written.
     //
     // `allowJs` is what makes the migration incremental: the modules that are
