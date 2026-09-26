@@ -6,6 +6,7 @@
  * this file is the map of what the hub currently implements — and the only
  * place that knows the whole object graph.
  */
+import { randomUUID } from 'node:crypto';
 import { authorizePanel } from './http/auth.js';
 import { createHttpServer, sendError, sendJson } from './http/server.js';
 import { createLauncher } from './launch/launcher.js';
@@ -18,18 +19,12 @@ import { isValidSessionId } from './state/session-id.js';
 import { TranscriptStore } from './state/transcript.js';
 import { createWorkerConfirmationRoute } from './worker/confirmation.js';
 import { createWorkerEventRoute } from './worker/connection.js';
+import { CAPABILITIES, PANEL_PROTOCOL } from '../shared/protocol.ts';
 
-/** Protocol name/version announced by `/api/meta`. */
-export const PANEL_PROTOCOL = { name: 'simplex-hub-panel', version: 1 };
-
-/** Capabilities reported by `/api/meta`; extended as roles are implemented. */
-export const CAPABILITIES = [
-    'worker-events',
-    'confirmations',
-    'supervisor',
-    'transcript-replay',
-    'snapshot-view',
-];
+// Re-exported so a consumer of the hub does not have to reach into the shared
+// module for the two constants it is most likely to want. The definitions live
+// in `shared/protocol.ts`, which is the point: one place, both ends.
+export { CAPABILITIES, PANEL_PROTOCOL };
 
 /**
  * Host a worker should connect back to.
@@ -74,6 +69,16 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extr
         };
     }
 
+    /**
+     * Identifies this hub process's transcript.
+     *
+     * `hub_sequence` counts the envelopes *this* process received, so it starts
+     * again at 1 after a restart. A replay cursor taken before one would then
+     * silently return an empty transcript — indistinguishable from an idle
+     * session. Publishing an epoch is what lets a client tell the two apart.
+     */
+    const transcriptEpoch = randomUUID();
+
     /** Metadata shared by `/api/meta` and the panel's `welcome` message. */
     function meta() {
         return {
@@ -81,7 +86,10 @@ export function createHub({ config, log, hubRoot, version = '0.0.0', hooks: extr
             version,
             protocol: PANEL_PROTOCOL,
             worker_protocol: 'core/docs/worker-protocol.md',
-            capabilities: CAPABILITIES,
+            // A copy per response: the list is a module constant, and handing
+            // the same array to every caller lets one of them mutate it for all.
+            capabilities: [...CAPABILITIES],
+            transcript_epoch: transcriptEpoch,
             // The bound address once listening, so a client is not told the
             // configured port when the configuration asked for 0.
             listen: bound

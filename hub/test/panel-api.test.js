@@ -371,6 +371,105 @@ describe('panel API', () => {
         socket.send({ v: 1, type: 'ping' });
         await socket.waitFor((message) => message.type === 'pong');
     });
+
+    it('delivers a confirmation to a client watching a different session', async () => {
+        // The defect this pins: prompts were broadcast only to the subscribers
+        // of their own session. An operator looking at another session saw a
+        // count in the list and nothing else, could not answer, and the worker's
+        // deadline denied the call. An approval must not be missable.
+        const watched = ctx.hub.registry.create('a1-watched');
+        const subject = ctx.hub.registry.create('a1-subject');
+        await identify(subject, 'a1-worker');
+
+        const socket = await panel();
+        socket.send({ v: 1, type: 'subscribe', session: watched.id });
+        await socket.waitFor((message) => message.type === 'subscribed'
+            && message.session.session_id === watched.id);
+
+        const confirmation = await connectWorker(
+            `${ctx.wsBase}/agent/${subject.id}/confirm?token=${subject.token}`);
+        sockets.push(confirmation);
+        confirmation.send({
+            type: 'confirmation_request',
+            data: {
+                worker_id: 'a1-worker',
+                session_id: subject.id,
+                run_id: 'run-a1',
+                confirmation_id: 'c-a1',
+                call: { name: 'run_command', arguments: { command: 'echo hi' } },
+            },
+        });
+
+        const prompt = await socket.waitFor(
+            (message) => message.type === 'confirmation' && message.open === true,
+            { label: 'a confirmation for a session this client never subscribed to' });
+        assert.equal(prompt.session, subject.id);
+        assert.equal(prompt.confirmation.confirmation_id, 'c-a1');
+
+        // Seeing it is only half of it; answering from here is the behaviour the
+        // defect removed.
+        socket.send({
+            v: 1, type: 'confirmation', session: subject.id,
+            confirmation_id: 'c-a1', decision: 'approved', reason: 'reviewed',
+        });
+        const response = await confirmation.waitFor(
+            (message) => message.type === 'confirmation_response');
+        assert.equal(response.data.decision, 'approved');
+        await confirmation.close();
+    });
+
+    it('reports one transcript epoch for the whole hub process', async () => {
+        const meta = await api('/api/meta');
+        const epoch = meta.body.transcript_epoch;
+        assert.equal(typeof epoch, 'string', 'meta carries no transcript_epoch');
+        assert.ok(epoch.length > 0);
+
+        // Announced as a capability, so a client can check before relying on it.
+        assert.ok(meta.body.capabilities.includes('transcript-epoch'));
+
+        const socket = await panel();
+        const welcome = socket.messages.find((message) => message.type === 'welcome');
+        assert.equal(welcome.hub.transcript_epoch, epoch, 'welcome disagrees with meta');
+
+        const session = ctx.hub.registry.create('epoch-session');
+        socket.send({ v: 1, type: 'subscribe', session: session.id });
+        const subscribed = await socket.waitFor((message) => message.type === 'subscribed'
+            && message.session.session_id === session.id);
+        assert.equal(subscribed.transcript_epoch, epoch,
+            'subscribed disagrees with meta, so a client cannot detect a stale cursor');
+
+        // It identifies the process, not the connection.
+        const second = await panel();
+        assert.equal(second.messages.find((m) => m.type === 'welcome').hub.transcript_epoch, epoch);
+    });
+
+    it('gives a second hub process a different epoch', async () => {
+        // The reason the epoch exists: `hub_sequence` restarts at 1 with each
+        // process, so a cursor from the first hub must not look valid to the
+        // second one.
+        const first = await api('/api/meta');
+        const other = await startTestHub();
+        try {
+            const response = await fetch(`${other.base}/api/meta`);
+            const body = await response.json();
+            assert.notEqual(body.transcript_epoch, first.body.transcript_epoch,
+                'two hub processes report the same epoch');
+        } finally {
+            await other.hub.stop();
+        }
+    });
+
+    it('advertises its capabilities and lists them per response', async () => {
+        const first = await api('/api/meta');
+        assert.ok(first.body.capabilities.length > 0);
+
+        // Each response gets its own array: handing the same one to every caller
+        // lets one of them mutate it for everybody.
+        first.body.capabilities.push('invented');
+        const second = await api('/api/meta');
+        assert.ok(!second.body.capabilities.includes('invented'),
+            'a capability list was shared between responses');
+    });
 });
 
 describe('panel trust boundary', () => {

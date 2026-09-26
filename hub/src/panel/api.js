@@ -22,9 +22,13 @@ import { persistenceRoot } from '../launch/config-render.js';
 import { normalizeSpec } from '../launch/spec.js';
 import { buildPayload, buildSignal, newRequestId } from '../protocol/messages.js';
 import { isValidSessionId } from '../state/session-id.js';
+import { checkEnvelope } from '../../shared/guards.ts';
+import { PANEL_VERSION, SESSIONLESS_MESSAGE_TYPES } from '../../shared/protocol.ts';
 
-/** Panel protocol version announced in every message. */
-export const PANEL_VERSION = 1;
+// The version lives in `shared/protocol.ts` so the hub and the panel cannot
+// disagree about it. Re-exported because this module is where a reader expects
+// to find it, and because that is the name every message is stamped with.
+export { PANEL_VERSION };
 
 /** Largest on-disk artifact the snapshot viewer will read. */
 const SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024;
@@ -127,8 +131,20 @@ export function createPanelApi({
             });
         },
 
+        /**
+         * A confirmation goes to *every* client, not only the subscribers of its
+         * session.
+         *
+         * This was subscription-scoped, and that made an approval impossible to
+         * answer whenever the operator happened to be looking at another
+         * session: the prompt was broadcast to a set the client was not in, so
+         * the only trace of it was a count badge, and the worker's own deadline
+         * denied it. An approval is the one thing that must not be missed, and
+         * every client on this socket already shares the panel token, so
+         * widening the audience grants no authority that was not already there.
+         */
         onPrompt: (prompt) => {
-            broadcastToSession(prompt.session.id, {
+            broadcast({
                 type: 'confirmation',
                 session: prompt.session.id,
                 open: true,
@@ -138,7 +154,7 @@ export function createPanelApi({
         },
 
         onPromptSettled: (prompt, outcome) => {
-            broadcastToSession(prompt.session.id, {
+            broadcast({
                 type: 'confirmation',
                 session: prompt.session.id,
                 open: false,
@@ -440,31 +456,26 @@ export function createPanelApi({
 
     /** Handle one panel message. */
     async function handleMessage(client, raw) {
-        let message;
-        try {
-            message = JSON.parse(raw.toString('utf8'));
-        } catch (error) {
-            send(client, { type: 'error', error: 'bad_json', message: error.message });
+        // The envelope check is shared with the panel (`shared/guards.ts`): the
+        // same code decides what a valid frame is at both ends, so a message the
+        // hub refuses is one the panel never meant to send.
+        const check = checkEnvelope(raw.toString('utf8'));
+        if (check.kind === 'rejected') {
+            send(client, { type: 'error', error: check.code, message: check.detail });
             return;
         }
-        if (typeof message !== 'object' || message === null) {
-            send(client, { type: 'error', error: 'bad_message', message: 'expected a JSON object' });
+        if (check.kind === 'unknown_type') {
+            // Forward compatibility: a newer panel may send a type this hub does
+            // not know, and being ignored is the documented outcome.
+            log.debug(`ignoring unknown panel message type "${check.type}"`);
             return;
         }
-        if (message.v !== undefined && message.v !== PANEL_VERSION) {
-            send(client, {
-                type: 'error',
-                error: 'unsupported_version',
-                message: `this hub speaks panel protocol version ${PANEL_VERSION}`,
-                request: message,
-            });
-            return;
-        }
+        const message = check.message;
         const type = message.type;
         const sessionId = message.session;
         const session = sessionId === undefined ? null : registry.get(sessionId);
 
-        const needsSession = !['ping', 'list_sessions', 'create_session', 'subscribe'].includes(type);
+        const needsSession = !SESSIONLESS_MESSAGE_TYPES.includes(type);
         if (needsSession && !session) {
             send(client, {
                 type: 'error',
@@ -499,6 +510,11 @@ export function createPanelApi({
                     transcript: transcripts.get(session.id).since(Number(message.since) || 0),
                     logs: supervisor.logs(session, { limit: LOG_TAIL_DEFAULT }),
                     latest: transcripts.get(session.id).sequence,
+                    // Echoed so a client can tell "nothing new" apart from "your
+                    // cursor predates a restart, and this hub's sequence started
+                    // over". Without it the second case looks exactly like the
+                    // first and the transcript just appears empty.
+                    transcript_epoch: meta().transcript_epoch,
                 });
                 return;
             }

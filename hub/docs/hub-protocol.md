@@ -28,6 +28,28 @@ values inside existing enums. Removing or reinterpreting a field needs a version
 bump. `GET /api/meta` reports `protocol.version` and a `capabilities` list so a
 client can check for a feature instead of guessing.
 
+### Capabilities
+
+| Capability | Meaning |
+| --- | --- |
+| `worker-events` | worker envelopes are forwarded, unknown event names included |
+| `confirmations` | tool confirmations are surfaced and can be answered |
+| `supervisor` | worker processes can be started, stopped, and force-killed |
+| `transcript-replay` | `subscribed` replays the transcript after a cursor |
+| `snapshot-view` | the worker's persisted snapshot can be read, never written |
+| `transcript-epoch` | `transcript_epoch` is reported, so a stale cursor is detectable |
+| `global-confirmations` | confirmations reach every client, not only subscribers |
+
+These describe the hub **build**, not its configuration. `supervisor` means
+"this hub starts and signals worker processes", which stays true whichever
+launcher renders the configuration; the launcher's own difference is reported
+separately as `launcher.owns_config`. A capability that varied with
+configuration would be a different kind of list, and nothing in this one does.
+
+`shared/protocol.ts` is the machine-readable copy, and
+`test/panel-protocol-drift.test.js` fails when this table and that module
+disagree.
+
 ### Authentication
 
 Panel authentication is a single optional shared token (`panel.token`):
@@ -189,10 +211,10 @@ rather than dangerous.
 | `sessions` | `sessions` | full list, on request |
 | `session` | `session` | one session changed |
 | `session_removed` | `session` | deleted |
-| `subscribed` | `session`, `transcript`, `logs`, `latest` | subscription accepted, with replay |
+| `subscribed` | `session`, `transcript`, `logs`, `latest`, `transcript_epoch` | subscription accepted, with replay |
 | `created` | `session` | session created by this client |
 | `event` | `session`, `hub_seq`, `envelope` | one worker event, verbatim |
-| `confirmation` | `session`, `open`, `confirmation`, and `outcome` when closing | prompt opened or retired/answered |
+| `confirmation` | `session`, `open`, `confirmation`, and `outcome` when closing | prompt opened or retired/answered; sent to **every** connected panel, not only subscribers of that session |
 | `process` | `session`, `process` | worker process state changed |
 | `connection` | `session`, `connected`, `identity` | event connection opened or closed |
 | `request` | `session`, `request` | payload outcome changed |
@@ -207,8 +229,32 @@ rather than dangerous.
 as received). Unknown event names are forwarded exactly like known ones; the
 panel decides how to render them.
 
-Live messages are only sent for sessions a client has subscribed to. Session
-list updates (`session`, `session_removed`) go to every connected client.
+Live messages are only sent for sessions a client has subscribed to, with one
+deliberate exception: `confirmation`. An approval is the one message that must
+not be missed, so it reaches every connected panel regardless of subscription.
+Scoping it to subscribers made a prompt unanswerable whenever the operator
+happened to be looking at another session — the only trace of it was a count in
+the session list, and the worker's own deadline denied it. Every client on this
+socket already shares the panel token, so widening the audience grants no
+authority that was not already there.
+
+Session list updates (`session`, `session_removed`) go to every connected
+client.
+
+### Replay cursors and the transcript epoch
+
+`hub_sequence` counts envelopes received by *this hub process*, so it starts
+again at 1 after the hub restarts. A client that resumes with `since=<n>`
+captured before a restart would therefore receive an empty transcript, which is
+indistinguishable from a session that has been idle — a silent failure that
+looks like normal operation.
+
+`transcript_epoch` is what makes the two distinguishable. `/api/meta`, `welcome`
+(`hub.transcript_epoch`), and every `subscribed` reply carry it. When it differs
+from the value a client last saw, the client discards its cursor and asks for the
+transcript from the beginning (`since` omitted or `0`). The value is a fresh
+identifier per hub process and has no other meaning; clients must treat it as
+opaque.
 
 ### Error codes
 
@@ -227,6 +273,7 @@ list updates (`session`, `session_removed`) go to every connected client.
 | `confirmation_rejected` | the decision was refused (already answered, or identity unverified) |
 | `worker_action_failed` | the launcher or supervisor refused the action; `result.error` explains |
 | `binary_not_supported` | panel messages must be text |
+| `internal_error` | the hub failed to process the message; it is still serving |
 
 ## Trust boundary
 

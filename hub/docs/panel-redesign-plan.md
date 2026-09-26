@@ -87,7 +87,7 @@ B1 与 B2 的共同根因是 `void someAsync()` 这种"发射后不管"的调用
 
 #### A. 灾难级：三个功能性缺陷
 
-**A1 · 未选中会话的审批提示无法回答（最严重）**
+**A1 · 未选中会话的审批提示无法回答（最严重）** ✅ **P2 已修（协议侧）**
 
 面板一次只订阅一个会话（`app.js:446-457`：切会话时 `unsubscribe` 旧的、`subscribe` 新的），而 hub 的审批提示只广播给**该会话的订阅者**（`src/panel/api.js:130-135` `broadcastToSession`）。于是：
 
@@ -96,6 +96,12 @@ B1 与 B2 的共同根因是 `void someAsync()` 这种"发射后不管"的调用
 - 结果：操作者只看到侧栏一个 `1 confirmation(s)` 计数徽章（`app.js:626-627`），**没有任何办法打开并批准它**，直到 worker 自己的截止时间把它自动拒绝。
 
 **这是"交互 bug"里代价最高的一个：它会静默地让工具调用失败。**
+
+**修法**：`confirmation` 改为广播给**所有**已连接客户端，不再限于订阅者（`onPrompt` / `onPromptSettled`）。理由是审批是唯一"错过就失败"的消息，而同一 socket 上的每个客户端本来就共享同一把面板 token，扩大受众不授予任何新权限。这一处改动让**旧面板也立刻受益**——它收到 `confirmation` 就无条件弹窗，所以无需改前端。
+
+回归测试 `panel-api.test.js` 的 "delivers a confirmation to a client watching a different session" 验证了"看得见"和"答得了"两半；还原成订阅范围后该测试失败，失败信息里能看到未订阅客户端收到的三帧（`welcome`、`subscribed`、以及带 prompt 的 `session`）**唯独没有 `confirmation`**——即缺陷的确切形状。
+
+协议里同时把这条语义写清楚了：`hub-protocol.md` 明说 `confirmation` 是"仅订阅者"规则的**唯一例外**，并新增能力项 `global-confirmations` 供客户端检查。
 
 **A2 · 每次面板 socket 重连都会清空可见转录**
 
@@ -351,18 +357,29 @@ Docker（`docker/Dockerfile.hub-test`）加前端构建步骤；`hub/web/dist` �
 
 ### 4.2 把已有的接缝真正用起来
 
-| 扩展机制 | 现状 | 改造 |
+下表在 P2 完成后重写过一遍：左列是当初的判断，右列是**实际落地的**，包括两处与计划不同的决定。
+
+| 扩展机制 | 当初的现状 | 实际做法 |
 | --- | --- | --- |
-| 消息类型 | 两端各写一份字符串字面量（`src/panel/api.js` 与 `web/js/app.js` 各一个 switch） | `shared/protocol.ts` 定义 `PanelToHub` / `HubToPanel` 两个 discriminated union，两端 switch 由 TS 穷尽性检查——**D-19 那个 `action === 'worker'` 的死分支会被编译器直接抓到** |
-| 能力协商 | `capabilities: string[]` 已下发，但前端零消费，且是静态常量 | 定义 `Capability` 联合；**从实际配置推导**（`launcher.config: 'launcher'` 时不再宣告 `supervisor`）；前端 `useCapability()` 门控 UI |
-| 能力版本 | 无 | 增加并保留 `features: Record<Capability, number>`（additive），`capabilities` 数组继续下发以兼容旧客户端 |
-| 审批的可见性语义 | **隐式**：只有订阅者收得到（A1 的根因） | 在协议里**显式**声明"审批是全局面板关注的对象"：`confirmation` 消息广播给所有客户端（而非仅订阅者），并让 `subscribe` 的响应/`session.confirmations` 成为可恢复路径 |
-| 重放语义 | `subscribed` 的 delta/full 语义未写明，客户端当成 full（A2 的根因） | 协议里写明 `transcript` 是 `since` 之后的增量；客户端按 `hub_sequence` **合并**；新增 `transcript-delta` 能力标记 |
-| **转录代际（epoch）** | **完全缺失**：`hub_sequence` 每个 hub 进程从 1 重来（`transcript.js:36`），重启前的 cursor 会静默返回空转录 | `welcome`/`meta` 增加 `transcript_epoch`；`subscribed` 回显它。客户端发现 epoch 变化就丢弃 cursor、请求全量。**这是 A2 的第二个根因，且比 A2 更隐蔽** |
-| **客户端 hello / 协商** | 无。`welcome` 是单向的，客户端无法声明自己是 v2，也无法询问"你支持 X 吗" | 增加可选的 `hello`（含 `protocol`、`features`），hub 用 `welcome` 回应协商结果；不复用 `v` 字段以免破坏旧客户端 |
-| 未知消息类型的反馈 | 静默丢弃，只写 debug 日志（`api.js:596-598`） | 保持"忽略"以免破坏旧语义，但增加 `unsupported_capability` / `unsupported_type` 的**可选**应答，由 `hello` 协商决定是否发送 |
-| 结构演进 | 未知字段保留 | 契约里未来可能新增的字段全部标 `?`；面板对缺字段容错 |
-| 入站校验 | hub 端逐 case 手写 | `shared/guards.ts` 统一校验；未知 `requires` 能力回新错误码 `unsupported_capability`；现有 `bad_message`/`unsupported_version` 语义不变 |
+| 消息类型 | 两端各写一份字符串字面量（`src/panel/api.js` 与 `web/js/app.js` 各一个 switch） | ✅ `shared/protocol.ts` 定义 `PanelMessage` / `HubMessage` 两个 discriminated union（13 + 16 种），并导出 `PANEL_MESSAGE_TYPES` / `HUB_MESSAGE_TYPES` 供 drift 测试比对。**注意**：`.js` 消费端在 P3 之前拿不到类型检查，所以"编译期抓住 `action === 'worker'` 死分支"这件事要等 P3 才兑现——P2 兑现的是运行时 guard 与 drift 测试 |
+| 能力协商 | `capabilities: string[]` 已下发，但前端零消费，且是静态常量 | ◐ 能力清单移到 `shared/`、加了 `Capability` 联合、meta 每次返回**独立副本**（此前按引用返回同一数组，一个调用方可以替所有人改掉它）。**但没有做成"从配置推导"**：实际检查后发现没有配置相关的能力——`supervisor` 的意思是"这个 hub 会启动并给 worker 进程发信号"，与哪个 launcher 渲染配置无关，而 launcher 的差异已经由 `launcher.owns_config` 单独报告。从配置推导这个列表会是对空集的抽象。前端消费在 P4 |
+| 能力版本 | 无 | ⏸ **未做**，见下方"推迟的两件事" |
+| 审批的可见性语义 | **隐式**：只有订阅者收得到（A1 的根因） | ✅ `confirmation` 广播给所有客户端；`hub-protocol.md` 明写它是"仅订阅者"规则的唯一例外；新增能力项 `global-confirmations`。**这一处修复让旧面板立刻受益，无需改前端** |
+| 重放语义 | `subscribed` 的 delta/full 语义未写明，客户端当成 full（A2 的根因） | ◐ 协议侧写明 `transcript` 是 `since` 之后的增量（文档 + epoch 一起）；客户端**合并而非替换**是 P4 的事 |
+| **转录代际（epoch）** | **完全缺失**：`hub_sequence` 每个 hub 进程从 1 重来（`transcript.js:36`），重启前的 cursor 会静默返回空转录 | ✅ `meta` / `welcome` / `subscribed` 都带 `transcript_epoch`（每进程一个 UUID）；新增能力项 `transcript-epoch`。客户端消费在 P4。**这是 A2 的第二个根因，且比 A2 更隐蔽** |
+| **客户端 hello / 协商** | 无。`welcome` 是单向的，客户端无法声明自己是 v2，也无法询问"你支持 X 吗" | ⏸ **推迟**，见下方 |
+| 未知消息类型的反馈 | 静默丢弃，只写 debug 日志（`api.js:596-598`） | ✅ 保持"忽略"语义不变，但 `checkEnvelope` 把"未知类型"与"信封损坏"**分成两种结果**，调用方因此能分别对待；hub 侧仍是记 debug 并忽略 |
+| 结构演进 | 未知字段保留 | ✅ 契约里可能缺席的字段标 `?`（如 `transcript_epoch`、`log_path`）；`WorkerEnvelope` 保留索引签名，因为 worker 事件本就允许任意字段 |
+| 入站校验 | hub 端逐 case 手写 | ✅ `shared/guards.ts` 的信封校验两端共用；**只做信封**（解析、对象、版本、类型），消息体的校验留在 hub，因为那依赖 hub 状态而浏览器里没有 |
+| Worker 事件透传 | 已 verbatim 转发 + `known`/`issues`/`raw` | ✅ **刻意保持不变**——这是最重要的一条：core 新增事件名时面板天然能收到，不需要协议升级 |
+| 契约测试 | 只有 worker 协议的 drift 测试 | ✅ `test/panel-protocol-drift.test.js` 解析 `hub-protocol.md`，比对**三张表**：面板消息类型、hub 消息类型、错误码，外加能力清单与两条语义断言 |
+
+#### 推迟的两件事（以及触发条件）
+
+- **`hello` 协商与能力版本 `features`**。它们的价值是"客户端声明自己是 v2，hub 据此降级输出"。但现在只有一个版本，加了也不会被消费——那就是死代码。**触发条件**：出现第一个必须破坏兼容的改动（协议升到 v2）时，同时引入 `hello` 与 `features`，并用 WebSocket 子协议（`Sec-WebSocket-Protocol`）而不是消息体来声明版本，因为那在握手阶段就能拒绝，而不是先升级再报错。
+- **未知类型的可选应答**（`unsupported_capability`）。同样取决于 `hello` 是否存在：没有协商，hub 无法知道对端是否承受得起一条新错误消息，静默忽略仍是更安全的默认。
+
+这两条都不是被遗忘，而是被**明确排在触发条件之后**。
 | Worker 事件透传 | 已 verbatim 转发 + `known`/`issues`/`raw` | **保持不变**——这是最重要的一条：core 新增事件名时面板天然能收到，不需要协议升级 |
 | 契约测试 | 只有 worker 协议的 drift 测试 | 面板协议加 drift 测试，并做**双向量**校验：真实跑一遍 hub，抓所有出站消息，逐条用 `guards.ts` 验证 |
 
@@ -374,13 +391,15 @@ Docker（`docker/Dockerfile.hub-test`）加前端构建步骤；`hub/web/dist` �
 
 ### 4.4 建议补齐的协议能力（均 additive）
 
-按价值排序，前两项建议首版带上：
+P2 落地后的状态：
 
-1. **`event-page`**：`GET /api/sessions/:id/events` 已有 `since`/`limit`，但面板一次拿全量；加游标分页能力。
-2. **`session-search`**：跨会话搜索转录（hub 已有 JSONL 文件，成本低）。
-3. **`transcript-delta`**：显式声明增量重放语义（A2 的协议侧治本）。
-4. **`audit-log`**：审批决策的追加日志——现在是 toast，无留痕。安全相关，值得早做。
-5. **`multi-client`**：显式声明多面板协同（协议已支持，只是没声明）。
+1. **`transcript-epoch`** ✅ **已实现**——它原本排在后面，但它是 A2 的第二个根因（跨重启的重放静默返回空），不做的话前端重写时会再踩一次。已加进能力清单与文档。
+2. **`global-confirmations`** ✅ **已实现**——A1 的修复本身就是一条协议语义，所以它值得一个能力名，让客户端能检查而不是假设。
+3. **`event-page`**：`GET /api/sessions/:id/events` 已有 `since`/`limit`，但面板一次拿全量；加游标分页能力。P4 前端需要它时再做。
+4. **`session-search`**：跨会话搜索转录（hub 已有 JSONL 文件，成本低）。未做。
+5. **`transcript-delta`**：显式声明增量重放语义。P2 把语义写进了文档，但没有单列能力项——`transcript-replay` 已经表达了"支持按游标重放"，再拆一个只会让客户端多检查一次。
+6. **`audit-log`**：审批决策的追加日志——现在是 toast，无留痕。**安全相关，建议早做**，但不在 P2 范围内。
+7. **`multi-client`**：显式声明多面板协同。协议本就支持，且 A1 的修复让"多个面板同时接审批"成为现实——但现在还没有客户端**依赖**这个声明，所以暂时不加。
 
 ---
 
@@ -462,7 +481,7 @@ Docker（`docker/Dockerfile.hub-test`）加前端构建步骤；`hub/web/dist` �
 | --- | --- | --- |
 | **P0 加固** ✅ 已完成 | B1（HTTP + upgrade 两处畸形 authority）、B2（面板 WS 的 `handleMessage` + supervisor 的 `mkdir`/`writeFile`）、B3（日志流 `error` 监听）、B4（`targetPid` 的 `/proc` 校验）、畸形百分号编码改 400、`bin` 的 `void stop(signal)` 补 catch（并在半途失败时 `process.exit(1)`，否则会挂着继续占端口）、事件扇出**双层**保护、supersede 不再上报虚假断开、config 拒绝未知键、`spec` 在 REST 与 WS 两条创建路径都提前校验、adopt 监控的 `unref` 与 `finish` 清理 | **25 个回归测试**（`test/hardening.test.js`），全套 **196 个测试**加 2 个真实 worker 端到端通过；每条修复都还原验证过测试确实能咬住 |
 | **P1 脚手架** ✅ 已完成 | `tsconfig.json`（后端，`allowJs` 让迁移可以逐个模块进行）+ `web/tsconfig.json`（前端，DOM lib）+ `vite.config.ts` + `playwright.config.ts`；`shared/protocol.ts` 落地并把三份版本字面量钉住；CI 拆出 `hub-panel` job（build + 浏览器测试，Node 24）并给 `hub-test` 加 typecheck；`.gitignore`/`.dockerignore` 加 `dist` | typecheck 通过**并验证过能抓到注入的类型错误**；面板构建产出 `web/dist`；Playwright 2/2 通过；Node 24 上 200 个测试全绿。（P1 刚完成时 Node 20.11 上还是 196 通过 0 失败——靠一个具名 skip；floor 随后按 §9 提到 22.18，该 skip 已删除。） |
-| **P2 协议契约** | 建 `shared/`：类型、guard、能力清单（**从实际配置推导**，不再静态）；三份版本号字面量收敛为一处；hub 接入；补面板协议 drift 测试；**修 A1 的协议侧**（审批广播语义 + 可恢复路径）；**加转录 epoch** 与可选 `hello` 协商 | 行为仅按设计变更；新增契约测试全绿；跨 hub 重启的重放有明确信号而不是静默返回空 |
+| **P2 协议契约** ✅ 已完成 | `shared/protocol.ts` 扩成完整契约：13 种面板消息 + 16 种 hub 消息的联合类型、实体接口、错误码、能力清单；`shared/guards.ts` 提供两端共用的信封校验；hub 与面板的版本常量收敛到 shared（旧面板那份保留并加守卫，理由见下）；**A1 修复：审批广播给所有客户端**；新增 `transcript_epoch`；新增面板协议 drift 测试。**与计划的偏差**：能力清单没有做成"从配置推导"（没有配置相关的能力，见下）；可选的 `hello` 协商**推迟**，理由见下 | 222 个测试 + 2 个真实 worker 端到端通过；A1 与 epoch 各有回归测试，两者都还原验证过；浏览器端确认：看着 session A 时，session B 的审批弹窗确实会出现 |
 | **P3 后端 TS 化** | 逐模块 `.js` → `.ts`，一个提交一个模块；JSDoc 转签名；`tsc --noEmit` 进 CI | 每步 `npm test` + `npm run test:e2e` 全绿，无行为变更 |
 | **P4 前端骨架** | Vite + React 壳：布局、Zustand store（从 `state.js` 平移并修 A2/D23）、socket/REST 客户端、会话列表、可显示事件的最小对话流 | 面板在浏览器里跑通一轮真实会话（mock provider） |
 | **P5 对话流** | markdown、高亮、工具卡片、run 分组、窗口化、滚动行为、技术细节开关 | 达到 §5 目标 |
