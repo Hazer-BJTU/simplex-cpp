@@ -297,6 +297,84 @@ export interface HubMetadata {
     mock: { enabled: boolean };
 }
 
+// --------------------------------------------------------------- JSON API --
+
+/**
+ * The REST responses, from `docs/hub-protocol.md` §"JSON API".
+ *
+ * They live here rather than in the browser bundle because they are the same
+ * contract as the socket messages above, just delivered over HTTP: the panel
+ * reads them, and a test can compare them to the prose table without a browser.
+ * The hub builds these bodies inline and is not obliged to import them — the
+ * drift test is what keeps the two ends honest.
+ */
+
+/** `GET /api/sessions` */
+export interface SessionListResponse {
+    sessions: SessionDescription[];
+}
+
+/** `POST /api/sessions`, `GET /api/sessions/:id` */
+export interface SessionResponse {
+    session: SessionDescription;
+}
+
+/** `DELETE /api/sessions/:id` */
+export interface RemovedResponse {
+    removed: SessionId;
+}
+
+/**
+ * What the process supervisor reports back through start/stop/restart/force-kill.
+ *
+ * `ok: false` is a normal answer here, not a transport failure: "a worker is
+ * already running" arrives as HTTP 409 with a well-formed body, which is why
+ * the panel reads `error` rather than catching.
+ */
+export interface SupervisorResult {
+    ok: boolean;
+    pid?: number | undefined;
+    error?: string | undefined;
+    /** The spec that was actually rendered; absent when none was read. */
+    config?: unknown;
+    /** `stop`/`force-kill`: how the process ended. */
+    how?: string | undefined;
+    forced?: boolean | undefined;
+}
+
+/** `GET /api/sessions/:id/events?since=&limit=` */
+export interface EventsResponse {
+    session: SessionId;
+    since: number;
+    /** Highest `hub_sequence` this hub process holds. */
+    latest: number;
+    events: WorkerEnvelope[];
+}
+
+/** `GET /api/sessions/:id/logs?limit=` */
+export interface LogsResponse {
+    session: SessionId;
+    lines: string[];
+    dropped: number;
+    log_path: string | null;
+}
+
+/** `GET /api/sessions/:id/snapshot` — the worker's own persisted state, read-only. */
+export interface SnapshotView {
+    session_id: SessionId;
+    state: unknown;
+    readable: string | null;
+    files: Record<string, string>;
+    state_error?: string | undefined;
+}
+
+/** The body every failing REST call carries. */
+export interface ApiErrorBody {
+    error: ErrorCode | string;
+    message: string;
+    details?: unknown;
+}
+
 // --------------------------------------------------- panel -> hub messages --
 
 /** Everything a panel may send. `v` is optional and defaults to 1. */

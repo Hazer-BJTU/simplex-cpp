@@ -8,7 +8,12 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { checkEnvelope, isPanelMessageType } from '../shared/guards.ts';
+import {
+    checkEnvelope,
+    checkHubEnvelope,
+    isHubMessageType,
+    isPanelMessageType,
+} from '../shared/guards.ts';
 import {
     CAPABILITIES,
     ERROR_CODES,
@@ -100,5 +105,41 @@ describe('panel protocol vocabulary', () => {
         // reads it, and each one corresponds to behaviour added alongside it.
         assert.ok(CAPABILITIES.includes('transcript-epoch'));
         assert.ok(CAPABILITIES.includes('global-confirmations'));
+    });
+});
+
+describe('hub envelope guard', () => {
+    it('accepts a known message and reports its type', () => {
+        const check = checkHubEnvelope(JSON.stringify({
+            v: PANEL_VERSION, type: 'welcome', hub: {}, sessions: [], subscriptions: [],
+        }));
+        assert.equal(check.kind, 'ok');
+        assert.equal(check.message.type, 'welcome');
+    });
+
+    it('reports an unknown type rather than rejecting the frame', () => {
+        // Forward compatibility runs the other way too: this panel must ignore a
+        // message from a newer hub, not treat it as a broken connection.
+        const check = checkHubEnvelope(JSON.stringify({ type: 'invented_by_a_newer_hub' }));
+        assert.equal(check.kind, 'unknown_type');
+        assert.equal(check.type, 'invented_by_a_newer_hub');
+    });
+
+    it('names both versions when the hub speaks a different one', () => {
+        const check = checkHubEnvelope(JSON.stringify({ v: PANEL_VERSION + 1, type: 'pong' }));
+        assert.equal(check.kind, 'rejected');
+        assert.equal(check.code, 'unsupported_version');
+        assert.match(check.detail, new RegExp(`version ${PANEL_VERSION + 1}`));
+        assert.match(check.detail, new RegExp(`this panel speaks ${PANEL_VERSION}`));
+    });
+
+    it('recognises exactly the hub types the protocol lists', () => {
+        for (const type of HUB_MESSAGE_TYPES) {
+            assert.ok(isHubMessageType(type), `${type} is listed but not recognised`);
+        }
+        assert.equal(isHubMessageType('invented'), false);
+        // A panel message is not a hub message, however well-formed it is.
+        assert.equal(isHubMessageType('subscribe'), false);
+        assert.equal(isPanelMessageType('welcome'), false);
     });
 });
