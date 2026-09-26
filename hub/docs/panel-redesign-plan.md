@@ -493,7 +493,7 @@ P2 落地后的状态：
 | **P4 前端骨架** ✅ 已完成 | Vite + React 壳：布局、Zustand store（从 `state.js` 平移并修 A2/D23）、socket/REST 客户端、会话列表、可显示事件的最小对话流 | 23 个 store 回归测试 + **6 个浏览器测试**（新增 `test/browser/stub-hub.mjs`，可被脚本化地 emit / confirm / restart）+ 真实 hub 与真实 worker 的 `npm run check:panel`。四条主修复（A2 合并、D23 合并、epoch 重置、D20 日志尾部）都**还原验证过测试会失败**，A2 在浏览器里也单独还原验证过。P4 期间新发现三个问题，见 §6.1 |
 | **P5 对话流** ✅ 已完成 | markdown + GFM（react-markdown，不经 HTML）、代码高亮与复制、工具卡片（命令当命令读、结果按结构读）、run 分组与窗口化、技术细节开关、长消息与长输出折叠 | 20 个纯函数测试（`test/panel-transcript.test.js`）+ 9 个新浏览器测试（共 15 个）+ 真实 hub/worker 全流程。**§5.3 有三条按字面做不到**，改成如实呈现，见 §6.2；另外发现 P4 的移植丢掉了一处**旧面板本来知道的事**（N5） |
 | **P6 交互重构** ✅ 已完成 | 会话头层次化、溢出菜单、危险确认对话框、composer、Inspector 抽屉、命令面板、per-session 确认模式 | **§1.2 的 D 组 15 项全部关闭**，逐条对应见下方 §6.2 表。10 个新的纯函数测试（`test/panel-palette.test.js`）+ 12 个新的浏览器测试（共 30 个）+ 真实 hub/worker 全流程无 console error |
-| **P7 打磨** | 图标、动效、主题、响应式、a11y 审计、空状态/骨架屏 | 键盘可完成全流程；窄屏可用 |
+| **P7 打磨** ✅ 已完成 | 语义 token 层（OKLCH，明暗两套）+ Tailwind 自带调色板整体关闭；light/dark/system 三态主题，首屏前置脚本消除闪白；单一图标模块（一个含义一个图标、三档尺寸、统一线宽）；动效 token + 单一 `prefers-reduced-motion` 收口；`md` 以下两侧栏改为抽屉；骨架屏与空状态；a11y 专项（对话框聚焦自身而非首个按钮、审批 live region、焦点环、状态不只靠颜色） | **键盘可完成全流程**（选择会话 → 启动 worker → 发送消息，全程只用 `page.keyboard`）；**390px 可用**（无横向滚动、抽屉可开可关、composer 可发）；对比度**实测**而非声称：浅色 17.8/17.8/6.5/4.8:1，深色 14.7/14.7/8.0/4.7:1。P7 发现两个类型检查与构建都看不见的缺陷，见 §6.4 |
 | **P8 收尾** | 删除 `web/js`、`web/css`；更新 `hub/README.md`、`hub-protocol.md`；Playwright 取代 CDP helper | 文档与实现一致 |
 
 P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物与旧静态文件并存，按开关切换），P8 再删。
@@ -544,6 +544,38 @@ P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物�
 - **18 的第一次实现就是错的**。最初写的是"已发送 → 禁用按钮，等 hub 回答"。但 hub 如果永远不回答（决策丢失），按钮就永远禁用——和 D18 一模一样，只是安静一点。改成**从不禁用**之后，这个类别整体消失：一个只能重发的按钮不会卡住。
 - **`stats()` 这个 store 方法是个陷阱，而且咬了两次。** P4 就发现"返回新对象的方法不能当 selector 用"并写了注释，P6 写 Inspector 时**又**用它当 selector，React 直接 185 崩掉。第二次之后处理方式变了：不复述规则，而是**把方法删掉**（改成 `statsFor(state, id)` 自由函数），组件只能走 `useView` + `statsOf`。规则可以忘，不存在的 API 忘不掉。
 - **桩服务不能靠 `page.route` 断网。** WebSocket upgrade 不是 Playwright 路由拦截的 HTTP 请求，所以"D28 的 HTTP 回退"这条测试一开始是**假通过**的——转录本来就在屏幕上。给桩服务加了 `/__stub/down`（拒绝 upgrade 并关闭现有连接），并让断言检查 `/events` 请求真的发出过。测试通过得容易时，值得问一句它到底证明了什么。
+
+### 6.4 P7 期间新发现的两个缺陷（都是"看起来正常"的那种）
+
+两条都是**类型检查通过、构建通过、浏览器行为测试通过**，只有截图才看得出来的缺陷。记在这里是因为它们的形状相同：
+失败的样子不是报错，而是"少了一点东西"。
+
+**N8 · JSX 属性写成字符串拼接，等于把后半行当成类名文本。**
+`overlays.tsx` 的对话框写的是：
+
+```jsx
+className="fixed left-1/2 top-1/2 z-50 w-[min(32rem,calc(100vw-2rem))] `
+    + `-translate-x-1/2 -translate-y-1/2 rounded-lg border border-line `
+    + `bg-surface p-4 shadow-xl focus:outline-none"
+```
+
+JSX 里 `attr="a" + \`b\`` **不是拼接**：属性值在第二个引号处结束，后面的内容（连反引号、换行、加号一起）被当成字符串的一部分。
+所以这个对话框从 P4 起就只有一个真实类名列表，`-translate-x-1/2`（水平居中）、`bg-*`（背景）、`p-4`、`shadow-xl` 全部没生效——
+它是一个没有背景、向右偏移的对话框。P5 已经在 `Markdown.tsx` 撞见过同一个语法并修好，但没有回头搜一遍。
+现在 `panel-theme.test.js` 直接扫这个形状（`="…\`" 后跟行首 `+`），并且浏览器测试量了对话框的实际几何与背景色。
+
+**N9 · `@theme` 块内 `--color-*: initial` 写在自定义 token 之后，会把它们一起清掉。**
+`--color-*: initial` 是"关掉 Tailwind 自带调色板"，但同一个 `@theme` 块内**按顺序处理**，写在面板 token 后面就把面板 token 也清了。
+后果是构建产物里**一个颜色工具类都没有**（`.bg-surface`、`.text-ink`、`.border-line` 全部缺失）。
+而它看起来是正常的：`body` 上有 `background: var(--app)` 与 `color: var(--ink)`，深色主题照样"生效"，
+所有面板、卡片、对话框只是**静默透明**。修法是把 `--color-*: initial` 拆进前一个独立的 `@theme` 块；
+`panel-theme.test.js` 断言两者不在同一个块里。
+
+两个缺陷都做了还原验证：把代码改回缺陷形态，对应测试确实失败。
+
+**对比度是量出来的**。`panel-contrast.spec.ts` 在渲染后的页面上取计算色（用浏览器自己的颜色解析器把 `oklch(...)` 过一遍 canvas），
+按 WCAG 公式算比值，明暗两套主题各跑一遍，顺带审计结构性可访问性（每个控件有无障碍名、landmark、标题层级不跳级、图标要么 `aria-hidden` 要么有名字）。
+第一次跑就抓到 `--ink-faint` 在浅色下只有 3.65:1（12px 文本要求 4.5:1），于是改的是 token 而不是阈值。
 
 ### 6.3 P5 期间新发现的三个问题
 
