@@ -99,6 +99,7 @@ Most messages embed this object, produced by `Session.describe()`:
     "env": {}, "extraArgs": []
   },
   "connected": true,
+  "worker_capabilities": ["session-history"],
   "identity": {"state": "live", "worker_id": "204d23ea-...", "since": "..."},
   "stats": {"events": 12, "gaps": 0, "duplicates": 0, "protocolErrors": 0, "incarnations": 0},
   "last_run_id": "fd473c9f-...",
@@ -173,8 +174,8 @@ Errors are `{"error": "<code>", "message": "<human readable>"}` with a 4xx
 status. `error` codes are stable; `message` is not.
 
 `events` returns the hub's retained transcript in `hub_sequence` order.
-`hub_sequence` counts envelopes received by *this hub process*, which is what a
-client resumes from. `latest` is the current end of the transcript.
+`hub_sequence` counts retained transcript envelopes in *this hub process*,
+which is what a client resumes from. `latest` is the current end of the transcript.
 
 `snapshot` reads the worker's own files
 (`<persistence.directory>/<session>/state.json` and `readable.md`) without
@@ -277,7 +278,7 @@ client.
 
 ### Replay cursors and the transcript epoch
 
-`hub_sequence` counts envelopes received by *this hub process*, so it starts
+`hub_sequence` counts retained transcript envelopes in *this hub process*, so it starts
 again at 1 after the hub restarts. A client that resumes with `since=<n>`
 captured before a restart would therefore receive an empty transcript, which is
 indistinguishable from a session that has been idle — a silent failure that

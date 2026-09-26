@@ -306,7 +306,7 @@ export interface WorkerEnvelope {
 /**
  * Identifies one hub process's transcript.
  *
- * `hub_sequence` counts envelopes received by *this* hub process, so it restarts
+ * `hub_sequence` counts retained transcript envelopes in *this* hub process, so it restarts
  * at 1 after a restart. A cursor captured before one would silently return
  * nothing at all, which looks exactly like an idle session. The epoch turns that
  * silence into a signal: when it changes, a client discards its cursor and asks

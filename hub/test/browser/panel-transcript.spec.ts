@@ -163,6 +163,34 @@ test('reload recovers history after the capability event leaves replay', async (
     await expect(page.getByTestId('history-turn')).toContainText('retained by worker');
 });
 
+test('the same worker reconnect refreshes history after its new status', async ({ page }) => {
+    await open(page);
+    const turn = (raw: string) => ({ index: 0,
+        user: [{ type: 'text', raw }], steps: [], omitted_steps: 0 });
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true, historyTurns: [turn('before disconnect')],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toContainText('before disconnect');
+    const queries = async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history').length;
+    };
+    await expect.poll(queries).toBe(1);
+
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyTurns: [turn('changed while disconnected')],
+    } });
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
+    await expect.poll(queries).toBe(1);
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await expect.poll(queries).toBe(2);
+    await expect(page.getByTestId('history-turn')).toContainText('changed while disconnected');
+});
+
 test('completed live runs do not re-fetch the whole worker history', async ({ page }) => {
     await open(page);
     await page.request.post(`${STUB}/__stub/settings`, { data: {
@@ -258,6 +286,59 @@ test('revision change restarts pagination and a bad restart ends loading', async
     const queries = (await received.json()).received.filter(
         (message: { type: string }) => message.type === 'history');
     expect(queries.map((query: { start: number }) => query.start)).toEqual([0, 1, 0]);
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
+});
+
+test('a pruned history cursor restarts from zero when the revision changes', async ({ page }) => {
+    await open(page);
+    const turn = (index: number, raw: string) => ({ index,
+        user: [{ type: 'text', raw }], steps: [], omitted_steps: 0 });
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: Array.from({ length: 6 }, (_, index) => turn(index, `old ${index}`)),
+        historyResponses: [
+            { next: 5, total: 6, turns: Array.from({ length: 5 },
+                (_, index) => turn(index, `old ${index}`)) },
+            { revision: 2, start: 3, next: 3, total: 3, turns: [] },
+            { revision: 2, next: 3, total: 3,
+                turns: Array.from({ length: 3 }, (_, index) => turn(index, `new ${index}`)) },
+        ],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toHaveCount(3);
+    await expect(page.getByTestId('history-turn').first()).toContainText('new 0');
+    const received = await page.request.get(`${STUB}/__stub/received`);
+    const queries = (await received.json()).received.filter(
+        (message: { type: string }) => message.type === 'history');
+    expect(queries.map((query: { start: number }) => query.start)).toEqual([0, 5, 0]);
+    await expect(page.getByText('Worker returned an invalid conversation history page.'))
+        .toHaveCount(0);
+});
+
+test('an invalid partial-turn cursor error retries from zero', async ({ page }) => {
+    await open(page);
+    const step = { index: 0, content: [{ type: 'text', raw: 'recovered answer' }],
+        tool_calls: 0 };
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [{ index: 0, user: [], steps: [step], omitted_steps: 0 }],
+        historyResponses: [
+            { next: 0, next_step: 1, total: 1,
+                turns: [{ index: 0, user: [], steps: [step], omitted_steps: 1 }] },
+            { __error: 'history step is outside the selected turn' },
+            { revision: 2 },
+        ],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toContainText('recovered answer');
+    const received = await page.request.get(`${STUB}/__stub/received`);
+    const queries = (await received.json()).received.filter(
+        (message: { type: string }) => message.type === 'history');
+    expect(queries.map((query: { start: number; step: number }) =>
+        [query.start, query.step])).toEqual([[0, 0], [0, 1], [0, 0]]);
     await expect(page.getByTestId('transcript'))
         .not.toContainText('loading conversation history');
 });

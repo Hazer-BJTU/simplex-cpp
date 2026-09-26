@@ -60,6 +60,7 @@ import {
     hubSequenceOf,
     indexEnvelope,
     nextItemId,
+    noteWorkerSequence,
     noteItem,
     prepend,
     statsOf,
@@ -261,6 +262,8 @@ export interface PanelActions {
 
     applySubscribed(message: SubscribedMessage): ApplyEffects;
     applyEvent(message: EventMessage): void;
+    /** Account for a transient worker reply without advancing hub replay. */
+    noteTransientWorkerEvent(sessionId: SessionId, envelope: WorkerEnvelope): void;
     beginHistory(sessionId: SessionId): void;
     endHistory(sessionId: SessionId): void;
     /** Commit one already validated page; false means it did not fit the current load. */
@@ -870,6 +873,10 @@ export function createPanelStore() {
                 const advanced = seq !== null ? { ...view, lastSeq: seq } : view;
                 return foldEnvelope(advanced, envelope);
             }));
+        },
+
+        noteTransientWorkerEvent(sessionId, envelope) {
+            set(withView(get(), sessionId, (view) => noteWorkerSequence(view, envelope)));
         },
 
         beginHistory(sessionId) {

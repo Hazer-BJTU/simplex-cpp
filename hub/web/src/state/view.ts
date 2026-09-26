@@ -213,16 +213,21 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
         }
     }
 
-    let lastSequenceByWorker = view.lastSequenceByWorker;
-    let gaps = view.gaps;
-    const workerId = typeof envelope.worker_id === 'string' ? envelope.worker_id : '';
-    if (typeof envelope.sequence === 'number') {
-        const previous = lastSequenceByWorker[workerId];
-        if (typeof previous === 'number' && envelope.sequence !== previous + 1) gaps += 1;
-        lastSequenceByWorker = { ...lastSequenceByWorker, [workerId]: envelope.sequence };
-    }
+    return noteWorkerSequence({ ...view, latestEvents, lastRunId, runActive }, envelope);
+}
 
-    return { ...view, latestEvents, lastRunId, runActive, lastSequenceByWorker, gaps };
+/** Account for a received worker envelope without retaining it as transcript. */
+export function noteWorkerSequence(view: ViewState, envelope: WorkerEnvelope): ViewState {
+    const workerId = typeof envelope.worker_id === 'string' ? envelope.worker_id : '';
+    const sequence = envelope.sequence;
+    if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence)) return view;
+    const previous = view.lastSequenceByWorker[workerId];
+    if (typeof previous === 'number' && sequence <= previous) return view;
+    return {
+        ...view,
+        lastSequenceByWorker: { ...view.lastSequenceByWorker, [workerId]: sequence },
+        gaps: view.gaps + (typeof previous === 'number' && sequence > previous + 1 ? 1 : 0),
+    };
 }
 
 /** Trim a view's transcript, keeping the request index consistent. */

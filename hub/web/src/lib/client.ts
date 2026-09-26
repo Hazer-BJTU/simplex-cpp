@@ -191,11 +191,25 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         revision: number | null; retries: number;
     }>();
     const subscribedSessions = new Set<SessionId>();
+    /** A new event connection can miss events even when its worker ID is unchanged. */
+    const historyNeedsRecovery = new Set<SessionId>();
 
     function failHistory(sessionId: SessionId, detail: string): void {
         historyRequests.delete(sessionId);
         store.getState().endHistory(sessionId);
         store.getState().setNotice('error', 'history_protocol', detail);
+    }
+
+    /** Discard a stale cursor and retry within the same bounded revision budget. */
+    function restartHistory(sessionId: SessionId, retries: number): void {
+        if (retries >= 3) {
+            failHistory(sessionId,
+                'Conversation changed during history loading; refresh after the run settles.');
+            return;
+        }
+        if (!requestHistory(sessionId, 0, 0, null, retries + 1)) {
+            failHistory(sessionId, 'Could not restart conversation history loading.');
+        }
     }
 
     /** Use the hub's current-worker capability snapshot, not bounded replay. */
@@ -234,6 +248,9 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 }
                 historyRequests.clear();
                 subscribedSessions.clear();
+                if (store.getState().selected) {
+                    historyNeedsRecovery.add(store.getState().selected!);
+                }
                 store.getState().applyWelcome(message);
                 // Subscribing after `applyWelcome` is what makes a restarted
                 // hub replay from the start: the epoch reset happens there.
@@ -263,8 +280,9 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 if (store.getState().selected === message.session.session_id
                     && subscribedSessions.has(message.session.session_id)
                     && !historyRequests.has(message.session.session_id)
-                    && store.getState().views.get(message.session.session_id)?.historyWorker
-                        !== message.session.identity.worker_id) {
+                    && (historyNeedsRecovery.has(message.session.session_id)
+                        || store.getState().views.get(message.session.session_id)?.historyWorker
+                            !== message.session.identity.worker_id)) {
                     requestHistory(message.session.session_id);
                 }
                 return;
@@ -276,6 +294,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'session_removed': {
                 subscribedSessions.delete(message.session);
+                historyNeedsRecovery.delete(message.session);
                 const wasSelected = store.getState().selected === message.session;
                 store.getState().removeSession(message.session);
                 if (wasSelected) writeSessionToUrl(null, loc, hist);
@@ -286,6 +305,8 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 // retained hub sequence of their own.
                 if (message.envelope.event !== 'history') {
                     store.getState().applyEvent(message);
+                } else {
+                    store.getState().noteTransientWorkerEvent(message.session, message.envelope);
                 }
                 if (message.envelope.event === 'history') {
                     const pending = historyRequests.get(message.session);
@@ -298,26 +319,22 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                     }
                     if (pending && pending.id === raw?.request_id) {
                         const page = parseHistoryPage(raw);
-                        if (!page || page.start !== pending.start || page.step !== pending.step
+                        if (!page) {
+                            failHistory(message.session,
+                                'Worker returned an invalid conversation history page.');
+                            return;
+                        }
+                        if (pending.revision !== null && page.revision !== pending.revision) {
+                            restartHistory(message.session, pending.retries);
+                            return;
+                        }
+                        if (page.start !== pending.start || page.step !== pending.step
                             || (page.next < page.total || page.next_step > 0)
                                 && (page.next < pending.start
                                     || page.next === pending.start
                                         && page.next_step <= pending.step)) {
                             failHistory(message.session,
                                 'Worker returned an invalid conversation history page.');
-                            return;
-                        }
-                        if (pending.revision !== null && page.revision !== pending.revision) {
-                            if (pending.retries < 3) {
-                                if (!requestHistory(message.session, 0, 0, null,
-                                    pending.retries + 1)) {
-                                    failHistory(message.session,
-                                        'Could not restart conversation history loading.');
-                                }
-                            } else {
-                                failHistory(message.session,
-                                    'Conversation changed during history loading; refresh after the run settles.');
-                            }
                             return;
                         }
                         if (!store.getState().applyHistoryPage(message.session,
@@ -334,13 +351,23 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                             }
                         } else {
                             historyRequests.delete(message.session);
+                            historyNeedsRecovery.delete(message.session);
                         }
                     }
                 } else if (message.envelope.event === 'history_error') {
-                    const data = message.envelope.data as { request_id?: unknown } | null;
-                    if (historyRequests.get(message.session)?.id === data?.request_id) {
-                        historyRequests.delete(message.session);
-                        store.getState().endHistory(message.session);
+                    const data = message.envelope.data as {
+                        request_id?: unknown; message?: unknown;
+                    } | null;
+                    const pending = historyRequests.get(message.session);
+                    if (pending && pending.id === data?.request_id) {
+                        if (pending.revision !== null
+                            && (pending.start > 0 || pending.step > 0)) {
+                            restartHistory(message.session, pending.retries);
+                        } else {
+                            failHistory(message.session,
+                                typeof data?.message === 'string'
+                                    ? data.message : 'Worker rejected the history query.');
+                        }
                     }
                 }
                 return;
@@ -355,9 +382,8 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'connection':
                 store.getState().applyConnection(message);
-                if (message.connected && store.getState().selected === message.session) {
-                    requestHistory(message.session);
-                } else if (!message.connected) {
+                historyNeedsRecovery.add(message.session);
+                if (!message.connected) {
                     historyRequests.delete(message.session);
                     store.getState().endHistory(message.session);
                 }

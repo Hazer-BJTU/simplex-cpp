@@ -95,6 +95,34 @@ function notes(store, id = 'demo') {
 }
 
 describe('worker-backed display history', () => {
+    it('counts transient pages in worker sequence without advancing hub replay', () => {
+        const store = createPanelStore();
+        store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 1,
+            envelope: envelope(1, 'status') });
+        store.getState().noteTransientWorkerEvent('demo', envelope(1, 'history', {
+            sequence: 2,
+        }));
+        store.getState().noteTransientWorkerEvent('demo', envelope(1, 'history', {
+            sequence: 3,
+        }));
+        store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 2,
+            envelope: envelope(2, 'model_response', { sequence: 4 }) });
+        let view = store.getState().view('demo');
+        assert.equal(view.lastSeq, 2);
+        assert.equal(view.lastSequenceByWorker['worker-1'], 4);
+        assert.equal(view.gaps, 0);
+        assert.equal(events(store).length, 2);
+
+        store.getState().noteTransientWorkerEvent('demo', envelope(2, 'history', {
+            sequence: 3,
+        }));
+        store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 3,
+            envelope: envelope(3, 'model_response', { sequence: 7 }) });
+        view = store.getState().view('demo');
+        assert.equal(view.lastSequenceByWorker['worker-1'], 7);
+        assert.equal(view.gaps, 1, 'a real worker-sequence jump was hidden');
+    });
+
     it('rejects malformed page identity, counters, and step progression', () => {
         const valid = { request_id: 'h-1', revision: 1, start: 0, step: 0,
             next: 1, next_step: 0, total: 1,

@@ -225,6 +225,26 @@ const server = createServer((req, res) => {
                     json(res, 200, { ok: true });
                     return;
                 }
+                case '/__stub/connection': {
+                    const session = sessionOf(payload.session ?? 'demo');
+                    if (!session) {
+                        json(res, 404, { error: 'unknown_session' });
+                        return;
+                    }
+                    session.connected = Boolean(payload.connected);
+                    session.worker_capabilities = null;
+                    const identity = {
+                        ...session.identity,
+                        state: session.connected ? 'live' : 'stale',
+                        worker_id: session.connected ? 'stub-worker' : null,
+                    };
+                    session.identity = identity;
+                    broadcast({ type: 'connection', session: session.session_id,
+                        connected: session.connected, identity });
+                    broadcast({ type: 'session', session });
+                    json(res, 200, { ok: true });
+                    return;
+                }
                 case '/__stub/emit': {
                     const envelope = append(
                         payload.session ?? 'demo', payload.event ?? 'model_response',
@@ -502,7 +522,10 @@ function handle(ws, message) {
             const limit = message.limit ?? 10;
             const response = settings.historyResponses?.[historyResponseIndex] ?? {};
             historyResponseIndex += 1;
-            const envelope = append(message.session, 'history', {
+            const { __error, ...pageOverrides } = response;
+            const envelope = __error ? append(message.session, 'history_error', {
+                request_id: message.request_id, message: __error,
+            }) : append(message.session, 'history', {
                 request_id: message.request_id,
                 start,
                 step,
@@ -511,7 +534,7 @@ function handle(ws, message) {
                 revision: 1,
                 total: turns.length,
                 turns: turns.slice(start, start + limit),
-                ...response,
+                ...pageOverrides,
             });
             send(ws, { type: 'accepted', action: 'history', session: message.session,
                 request_id: message.request_id });
