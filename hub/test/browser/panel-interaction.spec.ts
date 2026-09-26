@@ -88,6 +88,11 @@ test('new-session form opens as a centered dialog with grouped actions', async (
     await page.getByRole('button', { name: 'Create a session' }).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
+    // The entrance animation scales the whole dialog. Measure its buttons
+    // after it settles so separate boundingBox calls use the same geometry.
+    await dialog.evaluate(async (node) => {
+        await Promise.all(node.getAnimations().map((animation) => animation.finished));
+    });
     const input = dialog.getByRole('textbox', { name: 'new session id' });
     await expect(input).toBeFocused();
     expect(await input.evaluate((node) => getComputedStyle(node).outlineStyle)).toBe('none');
