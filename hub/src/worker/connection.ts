@@ -21,10 +21,19 @@
  * the worker's own session lock.
  */
 import { WebSocketServer } from 'ws';
+import type { RawData, WebSocket } from 'ws';
+import type { Duplex } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
 import { presentedToken, safeEqual } from '../http/auth.ts';
 import { buildSignal } from '../protocol/messages.ts';
+import type { PayloadEnvelope, SignalEnvelope } from '../protocol/messages.ts';
 import { parseEventEnvelope } from '../protocol/events.ts';
+import type { ParsedEnvelope, UnsignedInteger } from '../protocol/events.ts';
 import { isValidSessionId } from '../state/session-id.ts';
+import type { Session, SessionRegistry } from '../state/registry.ts';
+import type { HubConfig } from '../config.ts';
+import type { Logger } from '../log.ts';
+import type { UpgradeContext, UpgradeHandler } from '../http/server.ts';
 
 /** Upgrade path pattern for the persistent event connection. */
 const EVENTS_ROUTE = /^\/agent\/([^/]+)\/events$/;
@@ -41,11 +50,52 @@ export const CLOSE_SUPERSEDED = 4001;
 /** Longest reason string a WebSocket close frame can carry. */
 const MAX_CLOSE_REASON_BYTES = 123;
 
+/** The outcome of trying to write to a worker socket. */
+export type SendResult = { ok: true } | { ok: false; error: string };
+
+/** One recorded protocol error. */
+export interface ProtocolErrorRecord {
+    at: string;
+    message: string;
+    fatal: boolean;
+}
+
+/**
+ * A parsed envelope after the hub has annotated it.
+ *
+ * The hub adds its own sequence number, a receive timestamp, the validation
+ * issues it found, and a note about the connection; the panel renders all four.
+ */
+export interface ForwardedEnvelope extends ParsedEnvelope {
+    hub_sequence?: number;
+    received_at?: string;
+    issues?: string[];
+    connection?: { opened_at: string; protocol_errors: number };
+    /**
+     * Any further field the worker sent. The registry stores envelopes by what
+     * they are rather than by a fixed shape, and `raw` already keeps the
+     * original document, so this is where an extension field lives.
+     */
+    [field: string]: unknown;
+}
+
+/** What `describe()` reports about one connection. */
+export interface ConnectionDescription {
+    opened_at: string;
+    closed_at: string | null;
+    open: boolean;
+    close_reason: string | null;
+    last_event_at: string | null;
+    last_sequence: number | string | null;
+    sent: number;
+    protocol_errors: number;
+    worker_id: string | null;
+}
+
 /**
  * Shorten a reason to what a WebSocket close frame can carry.
- * @param {string} reason
  */
-export function truncateReason(reason) {
+export function truncateReason(reason: string): string {
     const bytes = Buffer.from(reason, 'utf8');
     return bytes.length <= MAX_CLOSE_REASON_BYTES
         ? reason
@@ -53,9 +103,19 @@ export function truncateReason(reason) {
 }
 
 /** Write a plain HTTP rejection on a socket that never became a WebSocket. */
-function rejectUpgrade(socket, status, text) {
+function rejectUpgrade(socket: Duplex, status: number, text: string): void {
     socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     socket.destroy();
+}
+
+/** Everything `new WorkerConnection` needs. */
+export interface WorkerConnectionOptions {
+    ws: WebSocket;
+    session: Session;
+    config: HubConfig;
+    log: Logger;
+    onEvent?: ((envelope: ForwardedEnvelope, connection: WorkerConnection) => void) | undefined;
+    onClosed?: ((connection: WorkerConnection) => void) | undefined;
 }
 
 /**
@@ -65,7 +125,25 @@ function rejectUpgrade(socket, status, text) {
  * sender used by the panel and by the supervisor's graceful stop.
  */
 export class WorkerConnection {
-    constructor({ ws, session, config, log, onEvent, onClosed }) {
+    readonly ws: WebSocket;
+    readonly session: Session;
+    readonly config: HubConfig;
+    readonly log: Logger;
+    onEvent: ((envelope: ForwardedEnvelope, connection: WorkerConnection) => void) | undefined;
+    onClosed: ((connection: WorkerConnection) => void) | undefined;
+    readonly openedAt: string;
+    closedAt: string | null;
+    closeReason: string | null;
+    lastSequence: bigint | null;
+    sequenceDisplay: number | string | null;
+    lastEventAt: string | null;
+    lastError: string | null;
+    sent: number;
+    readonly protocolErrors: ProtocolErrorRecord[];
+    alive: boolean;
+    pingTimer: NodeJS.Timeout | null;
+
+    constructor({ ws, session, config, log, onEvent, onClosed }: WorkerConnectionOptions) {
         this.ws = ws;
         this.session = session;
         this.config = config;
@@ -84,9 +162,9 @@ export class WorkerConnection {
         this.alive = true;
         this.pingTimer = null;
 
-        ws.on('message', (data, isBinary) => this.onMessage(data, isBinary));
-        ws.on('close', (code, reason) => this.onClose(code, reason));
-        ws.on('error', (error) => this.onError(error));
+        ws.on('message', (data: RawData, isBinary: boolean) => this.onMessage(data, isBinary));
+        ws.on('close', (code: number, reason: Buffer) => this.onClose(code, reason));
+        ws.on('error', (error: Error) => this.onError(error));
         ws.on('pong', () => { this.alive = true; });
         this.startPing();
         // Protocol requirement: a reconnect must not wait for `ready`.
@@ -94,12 +172,12 @@ export class WorkerConnection {
     }
 
     /** True while the socket can still carry messages. */
-    get isOpen() {
+    get isOpen(): boolean {
         return this.ws.readyState === this.ws.OPEN;
     }
 
     /** Serializable description for the panel. */
-    describe() {
+    describe(): ConnectionDescription {
         return {
             opened_at: this.openedAt,
             closed_at: this.closedAt,
@@ -119,22 +197,21 @@ export class WorkerConnection {
      * A successful send means the message entered this socket's buffer. The
      * worker protocol has no delivery acknowledgement, so the panel must still
      * treat the outcome as unknown until admission is observed.
-     *
-     * @returns {{ok: true}|{ok: false, error: string}}
      */
-    send(message) {
+    send(message: unknown): SendResult {
         if (!this.isOpen) return { ok: false, error: 'worker is not connected' };
         if (this.ws.bufferedAmount > MAX_BUFFERED_BYTES) {
             return { ok: false, error: 'worker connection is congested; message not sent' };
         }
-        let text;
+        let text: string;
         try {
             text = JSON.stringify(message);
         } catch (cause) {
-            return { ok: false, error: `message is not serializable: ${cause.message}` };
+            const message_ = cause instanceof Error ? cause.message : String(cause);
+            return { ok: false, error: `message is not serializable: ${message_}` };
         }
         this.sent += 1;
-        this.ws.send(text, (error) => {
+        this.ws.send(text, (error?: Error) => {
             if (error) {
                 this.lastError = error.message;
                 this.log.warn(`send to ${this.session.id} failed: ${error.message}`);
@@ -144,40 +221,41 @@ export class WorkerConnection {
     }
 
     /** Send a validated payload envelope. */
-    sendPayload(payload) {
+    sendPayload(payload: PayloadEnvelope): SendResult {
         return this.send(payload);
     }
 
     /** Send a signal envelope. */
-    sendSignal(signal) {
+    sendSignal(signal: SignalEnvelope | { type: string; data: unknown }): SendResult {
         return this.send(signal);
     }
 
     /** Ask the worker to shut down (no acknowledgement exists). */
-    requestShutdown() {
+    requestShutdown(): SendResult {
         return this.sendSignal(buildSignal({ operation: 'shutdown' }));
     }
 
     /** Close the socket, starting a normal close handshake. */
-    close(code = 1000, reason = 'hub closing connection') {
+    close(code = 1000, reason = 'hub closing connection'): void {
         if (this.ws.readyState === this.ws.CLOSED) return;
         this.closeReason ??= reason;
         try {
             this.ws.close(code, truncateReason(reason));
         } catch (error) {
-            this.log.debug(`close failed for ${this.session.id}: ${error.message}`);
+            const message = error instanceof Error ? error.message : String(error);
+            this.log.debug(`close failed for ${this.session.id}: ${message}`);
             this.ws.terminate();
         }
     }
 
     /** Drop the socket without a close handshake. */
-    terminate(reason = 'terminated') {
+    terminate(reason = 'terminated'): void {
         this.closeReason ??= reason;
         this.ws.terminate();
     }
 
     /** Keep the connection honest: a half-open socket must not look alive. */
-    startPing() {
+    startPing(): void {
         const interval = this.config.limits.pingIntervalMs;
         if (!interval) return;
         this.pingTimer = setInterval(() => {
@@ -191,14 +269,15 @@ export class WorkerConnection {
             try {
                 this.ws.ping();
             } catch (error) {
-                this.log.debug(`ping failed for ${this.session.id}: ${error.message}`);
+                const message = error instanceof Error ? error.message : String(error);
+                this.log.debug(`ping failed for ${this.session.id}: ${message}`);
             }
         }, interval);
         this.pingTimer.unref?.();
     }
 
     /** Handle one inbound text message. */
-    onMessage(data, isBinary) {
+    onMessage(data: RawData, isBinary: boolean): void {
         if (isBinary) {
             this.noteProtocolError('binary worker message');
             return;
@@ -225,16 +304,19 @@ export class WorkerConnection {
         }
         this.trackSequence(sequence);
 
-        envelope.received_at = new Date().toISOString();
-        envelope.hub_sequence = this.session.stats.events + 1;
-        envelope.issues = issues;
-        envelope.connection = { opened_at: this.openedAt, protocol_errors: this.protocolErrors.length };
-        this.lastEventAt = envelope.received_at;
-        this.session.noteEnvelope(envelope);
-        if (!envelope.known) {
-            this.log.debug(`session ${this.session.id}: unknown event "${envelope.event}"`);
+        const forwarded: ForwardedEnvelope = {
+            ...envelope,
+            received_at: new Date().toISOString(),
+            hub_sequence: this.session.stats.events + 1,
+            issues,
+            connection: { opened_at: this.openedAt, protocol_errors: this.protocolErrors.length },
+        };
+        this.lastEventAt = forwarded.received_at as string;
+        this.session.noteEnvelope(forwarded);
+        if (!forwarded.known) {
+            this.log.debug(`session ${this.session.id}: unknown event "${forwarded.event}"`);
         }
-        this.emit(envelope);
+        this.emit(forwarded);
     }
 
     /**
@@ -245,16 +327,17 @@ export class WorkerConnection {
      * The envelope is already recorded by the time this is called; losing the
      * observer's reaction is strictly better than losing the hub.
      */
-    emit(envelope) {
+    emit(envelope: ForwardedEnvelope): void {
         try {
             this.onEvent?.(envelope, this);
         } catch (error) {
-            this.log.error(`session ${this.session.id}: event observer failed: ${error.message}`, error);
+            const message = error instanceof Error ? error.message : String(error);
+            this.log.error(`session ${this.session.id}: event observer failed: ${message}`, error);
         }
     }
 
     /** Update gap/duplicate counters from an event's sequence number. */
-    trackSequence(sequence) {
+    trackSequence(sequence: UnsignedInteger): void {
         if (!sequence || sequence.value === null) return;
         this.sequenceDisplay = sequence.display;
         const value = sequence.value;
@@ -274,7 +357,7 @@ export class WorkerConnection {
     }
 
     /** Record a protocol error; repeated failures end the connection. */
-    noteProtocolError(message, { fatal = true } = {}) {
+    noteProtocolError(message: string, { fatal = true }: { fatal?: boolean } = {}): void {
         this.session.stats.protocolErrors += 1;
         this.protocolErrors.push({ at: new Date().toISOString(), message, fatal });
         this.log.warn(`session ${this.session.id}: protocol error: ${message}`);
@@ -284,14 +367,14 @@ export class WorkerConnection {
     }
 
     /** Socket error: logged, the close handler does the bookkeeping. */
-    onError(error) {
+    onError(error: Error): void {
         this.lastError = error.message;
         this.log.debug(`session ${this.session.id}: socket error: ${error.message}`);
     }
 
     /** Socket closed: detach from the session and tell the hub. */
-    onClose(code, reasonBuffer) {
-        clearInterval(this.pingTimer);
+    onClose(code: number, reasonBuffer: Buffer): void {
+        if (this.pingTimer) clearInterval(this.pingTimer);
         this.pingTimer = null;
         this.closedAt = new Date().toISOString();
         const reason = reasonBuffer?.length ? reasonBuffer.toString('utf8') : '';
@@ -302,25 +385,33 @@ export class WorkerConnection {
     }
 }
 
+/** Everything `createWorkerEventRoute` needs. */
+export interface WorkerEventRouteOptions {
+    registry: SessionRegistry;
+    config: HubConfig;
+    log: Logger;
+    onEvent?: (envelope: ForwardedEnvelope, connection: WorkerConnection) => void;
+    onConnectionChange?: (session: Session, connection: WorkerConnection | null) => void;
+}
+
+/** The worker event route, as a WebSocket upgrade handler. */
+export interface WorkerEventRoute extends UpgradeHandler {
+    close(): void;
+}
+
 /**
  * Build the worker-facing upgrade route for the hub's HTTP server.
- *
- * @param {object} options
- * @param {import('../state/registry.ts').SessionRegistry} options.registry
- * @param {object} options.config
- * @param {object} options.log
- * @param {(envelope: object, connection: WorkerConnection) => void} [options.onEvent]
- * @param {(session: object, connection: WorkerConnection|null) => void} [options.onConnectionChange]
- * @returns {{match: Function, handle: Function, close: Function}}
  */
-export function createWorkerEventRoute({ registry, config, log, onEvent, onConnectionChange }) {
+export function createWorkerEventRoute({
+    registry, config, log, onEvent, onConnectionChange,
+}: WorkerEventRouteOptions): WorkerEventRoute {
     const wss = new WebSocketServer({
         noServer: true,
         maxPayload: config.limits.maxMessageBytes,
         perMessageDeflate: false,
     });
 
-    function accept(ws, session) {
+    function accept(ws: WebSocket, session: Session): void {
         const connection = new WorkerConnection({
             ws,
             session,
@@ -338,28 +429,29 @@ export function createWorkerEventRoute({ registry, config, log, onEvent, onConne
         const { previous, replaced } = session.attach(connection);
         if (replaced && previous) {
             log.warn(`session ${session.id}: replacing an existing event connection`);
-            previous.close(CLOSE_SUPERSEDED, 'superseded by a newer worker connection');
+            (previous as WorkerConnection).close(
+                CLOSE_SUPERSEDED, 'superseded by a newer worker connection');
         }
         log.info(`session ${session.id}: event connection open`);
         onConnectionChange?.(session, connection);
     }
 
     return {
-        match(req, url) {
+        match(req: IncomingMessage, url: URL): Record<string, unknown> | null {
             if (req.method !== 'GET') return null;
             const matched = EVENTS_ROUTE.exec(url.pathname);
             if (!matched) return null;
             try {
-                return { session: decodeURIComponent(matched[1]) };
+                return { session: decodeURIComponent(matched[1] as string) };
             } catch {
                 return null;
             }
         },
 
-        handle({ req, socket, head, url, params }) {
+        handle({ req, socket, head, url, params }: UpgradeContext): void {
             const sessionId = params.session;
             if (!isValidSessionId(sessionId)) {
-                log.warn(`rejected event upgrade: invalid session id "${sessionId}"`);
+                log.warn(`rejected event upgrade: invalid session id "${String(sessionId)}"`);
                 rejectUpgrade(socket, 404, 'Not Found');
                 return;
             }
@@ -377,7 +469,7 @@ export function createWorkerEventRoute({ registry, config, log, onEvent, onConne
             wss.handleUpgrade(req, socket, head, (ws) => accept(ws, session));
         },
 
-        close() {
+        close(): void {
             for (const client of wss.clients) {
                 try {
                     client.close(1001, 'hub shutting down');

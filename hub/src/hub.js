@@ -18,7 +18,7 @@ import { SessionRegistry } from './state/registry.ts';
 import { isValidSessionId } from './state/session-id.ts';
 import { TranscriptStore } from './state/transcript.ts';
 import { createWorkerConfirmationRoute } from './worker/confirmation.js';
-import { createWorkerEventRoute } from './worker/connection.js';
+import { createWorkerEventRoute } from './worker/connection.ts';
 import { CAPABILITIES, PANEL_PROTOCOL } from '../shared/protocol.ts';
 
 // Re-exported so a consumer of the hub does not have to reach into the shared

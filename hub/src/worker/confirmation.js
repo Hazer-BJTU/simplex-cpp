@@ -29,7 +29,7 @@ import { presentedToken, safeEqual } from '../http/auth.ts';
 import { buildConfirmationResponse } from '../protocol/messages.ts';
 import { IDENTITY } from '../state/registry.ts';
 import { isValidSessionId } from '../state/session-id.ts';
-import { truncateReason } from './connection.js';
+import { truncateReason } from './connection.ts';
 
 /** Upgrade path pattern for a one-shot confirmation connection. */
 const CONFIRM_ROUTE = /^\/agent\/([^/]+)\/confirm$/;

@@ -117,10 +117,18 @@ export interface SessionOptions {
  */
 export class Session {
     readonly id: string;
-    readonly token: string;
+    /**
+     * The session's access token.
+     *
+     * Not readonly: restoring from `hub.json` replaces the freshly generated
+     * token with the stored one, because a worker that is still running would
+     * otherwise be locked out by its own hub.
+     */
+    token: string;
     spec: SessionSpec;
     readonly log: Logger | undefined;
-    readonly createdAt: string;
+    /** Also replaced on restore, so the panel keeps the original creation time. */
+    createdAt: string;
 
     /** Currently attached event connection, or null. */
     connection: AttachedConnection | null;
