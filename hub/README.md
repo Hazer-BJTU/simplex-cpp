@@ -281,6 +281,30 @@ process records from `hub.json`, adopts a worker whose pid *and* `/proc` start
 time still match, and marks anything else as unattached. Nothing is signalled on
 a pid alone.
 
+The panel composer has **Message** and **Command** modes. Use `Alt + Enter` to
+switch modes. Message mode sends text and attached
+references only while a worker is connected. During an active run, its Send
+button becomes **Cancel run**; an unsent draft stays in the composer for later.
+Command mode accepts command names without a `/` prefix: type a name prefix,
+use `Tab` to complete it, and press `Enter` to run it. Executing a command
+leaves the composer in Command mode. Switching modes keeps an
+unsent message draft. **Refresh conversation** recovers the hub's retained event
+transcript
+and asks a connected worker for its simplified conversation history. If the
+worker is offline, the hub transcript can still refresh; worker history will
+be requested after reconnection. The command does not send a user message.
+**Continue run** is always listed in Command mode. It is available when a worker
+is connected and no run is active; it asks the worker to continue from its
+current internal state without sending a new message, and keeps the draft.
+The worker requires an existing conversation turn and reports an error if there
+is none. The panel shows the continued run without a user-message bubble.
+When a run fails, its transcript shows a visible failure notice with technical
+details available on demand. A model-request failure suggests **Continue run**
+only while it remains the latest run of the same connected worker and the
+worker reported that its settled state permits continuation. Older failures
+keep their historical outcome without a stale retry instruction;
+older workers without that classification receive general failure wording.
+
 ## Files on disk
 
 ```

@@ -24,7 +24,7 @@ export type PaletteAction =
         readonly session: SessionId;
         readonly operation: 'status' | 'options' | 'cancel';
     }
-    | { readonly kind: 'reload-transcript'; readonly session: SessionId }
+    | { readonly kind: 'refresh-conversation'; readonly session: SessionId }
     | { readonly kind: 'inspector'; readonly open: boolean; readonly tab?: InspectorTab | undefined }
     | { readonly kind: 'toggle-details' }
     | { readonly kind: 'ping' };
@@ -113,11 +113,11 @@ export function buildCommands(input: PaletteInput): CommandSpec[] {
             });
         }
         commands.push({
-            id: 'transcript:reload',
+            id: 'conversation:refresh',
             group: 'view',
-            label: 'Reload this transcript from the hub',
+            label: 'Refresh conversation',
             hint: selected,
-            action: { kind: 'reload-transcript', session: selected },
+            action: { kind: 'refresh-conversation', session: selected },
         });
         for (const tab of ['run', 'process', 'logs', 'snapshot'] as InspectorTab[]) {
             commands.push({

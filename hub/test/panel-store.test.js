@@ -426,7 +426,7 @@ describe('panel store: a refused input is handed back (D19)', () => {
         const item = store.getState().items('demo')[0];
         assert.equal(item.kind, 'outbox');
         assert.equal(item.state, 'admitted');
-        // The worker protocol sends `input_admitted` with an empty payload, so
+        // The worker's `input_admitted` omits user content, so
         // this item is the only place the operator's own words exist.
         assert.equal(item.parts[0].raw, 'hello');
     });

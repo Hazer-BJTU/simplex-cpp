@@ -483,6 +483,10 @@ boost::asio::awaitable<RunResult> run(
                     result.status = RunStatus::Cancelled;
                     break;
                 }
+                result.failure_stage = RunFailureStage::ModelRequest;
+                throw;
+            } catch (...) {
+                result.failure_stage = RunFailureStage::ModelRequest;
                 throw;
             }
             if (response.type != Kind::ModelResponse || response.invoke_return) {

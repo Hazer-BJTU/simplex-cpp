@@ -96,8 +96,8 @@ export function CommandPalette() {
             case 'signal':
                 client.sendSignal(action.session, action.operation);
                 return;
-            case 'reload-transcript':
-                client.reloadTranscript(action.session);
+            case 'refresh-conversation':
+                client.refreshConversation(action.session);
                 return;
             case 'inspector':
                 if (action.tab) setInspectorTab(action.tab);

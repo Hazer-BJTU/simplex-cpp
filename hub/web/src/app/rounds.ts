@@ -24,7 +24,7 @@
  * - **A success flag.** The protocol has none: a result is a failure only when
  *   the tool framework annotated one, and "not executed" is a third state.
  */
-import type { ConfirmationPrompt, WorkerEnvelope } from '../../../shared/protocol.ts';
+import type { ConfirmationPrompt, RequestRecord, WorkerEnvelope } from '../../../shared/protocol.ts';
 import type {
     EventItem,
     NoteItem,
@@ -101,6 +101,13 @@ export interface Problem {
     readonly tone: 'warn' | 'error';
 }
 
+/** Settled run failure, with optional classification from newer workers. */
+export interface RunFailure {
+    readonly stage: 'model_request' | 'other';
+    readonly canContinue: boolean;
+    readonly error: string;
+}
+
 /**
  * The order things happened in, within one round.
  *
@@ -127,6 +134,8 @@ export interface Round {
     readonly input: OutboxItem | null;
     /** An admission replayed from the hub, whose text the protocol does not carry. */
     readonly admitted: EventItem | null;
+    /** A continuation uses the worker's state and has no user message. */
+    readonly continued: boolean;
     readonly assistant: readonly AssistantBlock[];
     readonly calls: readonly ToolCall[];
     readonly problems: readonly Problem[];
@@ -138,6 +147,7 @@ export interface Round {
     readonly requests: readonly RequestItem[];
     /** `run_finished`'s status, or `''` while the run is still open. */
     readonly status: string;
+    readonly failure: RunFailure | null;
     readonly exchanges: number | null;
     readonly tokens: number | null;
     /** Wall clock from the round's first envelope to its last. */
@@ -168,6 +178,7 @@ interface Draft {
     kind: 'prelude' | 'run';
     input: OutboxItem | null;
     admitted: EventItem | null;
+    continued: boolean;
     assistant: AssistantBlock[];
     calls: ToolCall[];
     problems: Problem[];
@@ -176,6 +187,7 @@ interface Draft {
     notes: NoteItem[];
     requests: RequestItem[];
     status: string;
+    failure: RunFailure | null;
     exchanges: number | null;
     tokens: number | null;
     firstAt: number | null;
@@ -195,6 +207,7 @@ function newDraft(key: string, index: number, kind: 'prelude' | 'run'): Draft {
         kind,
         input: null,
         admitted: null,
+        continued: false,
         assistant: [],
         calls: [],
         problems: [],
@@ -203,6 +216,7 @@ function newDraft(key: string, index: number, kind: 'prelude' | 'run'): Draft {
         notes: [],
         requests: [],
         status: '',
+        failure: null,
         exchanges: null,
         tokens: null,
         firstAt: null,
@@ -362,7 +376,21 @@ function track(draft: Draft, envelope: WorkerEnvelope): void {
 export function buildRounds(
     items: readonly TranscriptItem[],
     confirmations: ReadonlyMap<string, ConfirmationPrompt>,
+    requests: ReadonlyMap<string, RequestRecord> = new Map(),
 ): Round[] {
+    // Older workers left admission data empty. Their request records can help
+    // while retained, but newer replayable admission events take precedence.
+    const continuationIds = new Set<string>();
+    for (const request of requests.values()) {
+        if (request.operation === 'continue') continuationIds.add(request.request_id);
+    }
+    for (const item of items) {
+        if (item.kind === 'outbox' && item.operation === 'continue') {
+            continuationIds.add(item.requestId);
+        } else if (item.kind === 'request' && item.request.operation === 'continue') {
+            continuationIds.add(item.request.request_id);
+        }
+    }
     const byId = new Map<string, ConfirmationPrompt>();
     const byName = new Map<string, ConfirmationPrompt>();
     const prompts: Prompts = { byId, byName };
@@ -378,6 +406,7 @@ export function buildRounds(
 
     const hasContent = (draft: Draft): boolean => draft.input !== null
         || draft.admitted !== null
+        || draft.continued
         || draft.assistant.length > 0
         || draft.calls.length > 0
         || draft.protocol.length > 0
@@ -403,11 +432,14 @@ export function buildRounds(
 
     for (const item of items) {
         if (item.kind === 'outbox') {
-            // The panel's own message arrives before the wire reports its
-            // admission, so an outbox item opens the turn.
-            if (current.kind === 'run' && (current.input || current.admitted)) startRun();
+            // A continuation still opens a run, but has no user message to
+            // render. Its request ID remains in the outbox for admission and
+            // refusal bookkeeping until the worker answers.
+            if (current.kind === 'run'
+                && (current.input || current.admitted || current.continued)) startRun();
             else ensureRun();
-            current.input = item;
+            if (item.operation === 'continue') current.continued = true;
+            else current.input = item;
             continue;
         }
 
@@ -428,7 +460,13 @@ export function buildRounds(
         if (name === 'input_admitted') {
             // A second admission while a run already holds one is a new turn.
             if (current.kind !== 'run' || current.admitted !== null) startRun();
-            if (current.input === null) current.admitted = item;
+            const operation = str(obj(envelope.data)?.operation);
+            if (operation === 'continue'
+                || (!operation && continuationIds.has(envelope.request_id))) {
+                current.continued = true;
+            } else if (current.input === null) {
+                current.admitted = item;
+            }
             current.open = true;
             track(current, envelope);
             current.protocol.push(item);
@@ -451,6 +489,14 @@ export function buildRounds(
             const summary = obj(envelope.data) ?? {};
             const run = ensureRun();
             run.status = str(summary.status) || 'finished';
+            if (run.status === 'failed') {
+                const failure = obj(summary.failure) ?? {};
+                run.failure = {
+                    stage: failure.stage === 'model_request' ? 'model_request' : 'other',
+                    canContinue: failure.can_continue === true,
+                    error: str(summary.error),
+                };
+            }
             run.exchanges = typeof summary.exchanges === 'number' ? summary.exchanges : null;
             track(run, envelope);
             run.protocol.push(item);
@@ -581,6 +627,7 @@ export function buildRounds(
         kind: draft.kind,
         input: draft.input,
         admitted: draft.admitted,
+        continued: draft.continued,
         assistant: draft.assistant,
         calls: draft.calls,
         problems: draft.problems,
@@ -589,6 +636,7 @@ export function buildRounds(
         notes: draft.notes,
         requests: draft.requests,
         status: draft.status,
+        failure: draft.failure,
         exchanges: draft.exchanges,
         tokens: draft.tokens,
         wallMs: draft.firstAt !== null && draft.lastAt !== null

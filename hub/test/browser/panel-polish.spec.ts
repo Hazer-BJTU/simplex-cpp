@@ -154,9 +154,6 @@ test.describe('the keyboard', () => {
     test('reaches every control in the header without a mouse', async ({ page }) => {
         await open(page);
         await page.locator('[data-testid="session-row"][data-session="demo"]').click();
-        // Cancel only becomes usable once a run is active, and a disabled
-        // button is not in the tab order — so start one.
-        await emit(page, 'run_started', {});
         // Every control in the header is a real button with an accessible name,
         // so each one is reachable and each one can say what it does. The list
         // is in DOM order, because Tab only goes forwards.
@@ -164,7 +161,6 @@ test.describe('the keyboard', () => {
             '[data-testid="session-primary-action"]',
             'button[aria-label="Status"]',
             'button[aria-label="Options"]',
-            'button[aria-label="Cancel"]',
             'button[aria-label="Show inspector"]',
             'button[aria-label="More actions"]',
         ]) {
@@ -219,12 +215,10 @@ test.describe('a narrow screen', () => {
             .some((message) => message.type === 'input')).toBe(true);
 
         await emit(page, 'run_started', {});
-        const continueBox = await page.getByRole('button', { name: 'Continue' }).boundingBox();
-        const sendBox = await page.getByRole('button', { name: 'Send' }).boundingBox();
-        expect(continueBox).not.toBeNull();
-        expect(sendBox).not.toBeNull();
-        expect(Math.abs((continueBox?.y ?? 0) - (sendBox?.y ?? 0)))
-            .toBeLessThan(4);
+        const cancelBox = await page.getByRole('button', { name: 'Cancel run' }).boundingBox();
+        expect(cancelBox).not.toBeNull();
+        expect(cancelBox!.x + cancelBox!.width).toBeLessThanOrEqual(390);
+        await expect(page.getByRole('button', { name: 'Continue' })).toHaveCount(0);
     });
 
     test('closes the drawer with Escape', async ({ page }) => {

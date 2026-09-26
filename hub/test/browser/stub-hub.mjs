@@ -506,9 +506,10 @@ function handle(ws, message) {
             send(ws, {
                 type: 'accepted', action: 'input', session: message.session, request_id: requestId,
             });
-            // The worker's admission, with the empty payload the real protocol
-            // defines for this event.
-            const envelope = append(message.session, 'input_admitted', {}, { request_id: requestId });
+            // Admission carries the operation so replay can distinguish a
+            // continuation even after the request record has been pruned.
+            const envelope = append(message.session, 'input_admitted',
+                { operation: message.operation ?? 'message' }, { request_id: requestId });
             broadcast({
                 type: 'event', session: message.session,
                 hub_seq: envelope.hub_sequence, envelope,

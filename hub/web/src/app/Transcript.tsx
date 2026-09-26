@@ -24,7 +24,13 @@ import {
     useRef,
     useState,
 } from 'react';
-import type { ContentPart, ConfirmationPrompt, HistoryTurn, WorkerEnvelope } from '../../../shared/protocol.ts';
+import type {
+    ContentPart,
+    ConfirmationPrompt,
+    HistoryTurn,
+    RequestRecord,
+    WorkerEnvelope,
+} from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { statsOf, type NoteItem, type OutboxItem, type TranscriptItem } from '../state/view.ts';
 import { useClient } from './ClientContext.tsx';
@@ -33,7 +39,14 @@ import { Glyph } from '../ui/icons.tsx';
 import { Markdown } from './Markdown.tsx';
 import { ToolCard } from './ToolCard.tsx';
 import { clockOf, contentText, formatDuration, prettyJson, str } from './content.ts';
-import { buildRounds, type AssistantBlock, type Problem, type Round, type ToolCall } from './rounds.ts';
+import {
+    buildRounds,
+    type AssistantBlock,
+    type Problem,
+    type Round,
+    type RunFailure,
+    type ToolCall,
+} from './rounds.ts';
 
 /** How close to the bottom still counts as "following the end". */
 const STICK_THRESHOLD_PX = 48;
@@ -46,6 +59,7 @@ const LONG_MESSAGE_CHARS = 600;
 
 const EMPTY_ITEMS: readonly TranscriptItem[] = [];
 const EMPTY_PROMPTS: ReadonlyMap<string, ConfirmationPrompt> = new Map();
+const EMPTY_REQUESTS: ReadonlyMap<string, RequestRecord> = new Map();
 
 /**
  * Describe the last visible phase of an active run. The worker sends complete
@@ -152,6 +166,36 @@ function ProblemLine({ problem }: { problem: Problem }) {
         <div data-testid="transcript-problem" className={`rounded border-l-2 px-2 py-1 ${tone}`}>
             <p className="text-xs font-medium">{problem.label}</p>
             <p className="text-xs">{problem.text}</p>
+        </div>
+    );
+}
+
+/** Visible run failure; raw provider diagnostics stay available on demand. */
+function RunFailureNotice({ failure, actionable }: {
+    failure: RunFailure;
+    actionable: boolean;
+}) {
+    const model = failure.stage === 'model_request';
+    let guidance = 'Inspect the error and worker state before trying again.';
+    if (model && actionable) {
+        guidance = 'The worker kept the conversation state. Use Continue run in Command mode to try again.';
+    } else if (failure.canContinue) {
+        guidance = 'The worker reported that this run could be continued when it settled.';
+        if (!model) guidance += ' Inspect the technical details.';
+    }
+    return (
+        <div data-testid="run-failure" role="alert"
+            className="rounded-lg border border-danger-line bg-danger-soft px-3 py-2 text-sm
+                text-danger">
+            <p className="font-medium">{model ? 'Model request failed' : 'Run failed'}</p>
+            <p className="mt-1">{guidance}</p>
+            {failure.error && (
+                <details className="mt-2">
+                    <summary className="cursor-pointer text-xs">Technical details</summary>
+                    <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all
+                        rounded border border-danger-line p-2 text-xs">{failure.error}</pre>
+                </details>
+            )}
         </div>
     );
 }
@@ -334,7 +378,7 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
     const hidden = round.protocol.length;
     if (hidden > 0) parts.push(`${hidden} protocol event${hidden === 1 ? '' : 's'}`);
 
-    const preview = round.input
+    const preview = round.continued ? 'continued from worker state' : round.input
         ? round.input.parts.map((part: ContentPart) => part.raw).join(' ').slice(0, 80)
         : round.admitted && historicalInput
             ? historicalInput.user.map(contentText).filter(Boolean).join(' ').slice(0, 80)
@@ -346,8 +390,10 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
             data-testid="round-summary"
             aria-expanded={expanded}
             onClick={onToggle}
-            className="flex w-full items-baseline gap-2 rounded border border-line bg-sunken
-                px-2 py-1 text-left hover:bg-subtle"
+            className={`flex w-full items-baseline gap-2 rounded border px-2 py-1 text-left
+                hover:bg-subtle ${round.failure
+                    ? 'border-danger-line bg-danger-soft'
+                    : 'border-line bg-sunken'}`}
         >
             <span className="text-xs text-ink-faint">{expanded ? '▾' : '▸'}</span>
             <span className="text-xs font-medium text-ink-muted">turn {round.index}</span>
@@ -355,16 +401,19 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
                 <span className="truncate text-xs text-ink-muted">“{preview}”</span>
             )}
             <span className="flex-1" />
-            <span className="shrink-0 text-xs text-ink-faint">{parts.join(' · ')}</span>
+            <span className={`shrink-0 text-xs ${round.failure ? 'text-danger' : 'text-ink-faint'}`}>
+                {parts.join(' · ')}
+            </span>
         </button>
     );
 }
 
 /** Everything in a round, in the order it happened. */
-function RoundBody({ round, historicalInput, showDetails }: {
+function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
     round: Round;
     historicalInput: HistoryTurn | null;
     showDetails: boolean;
+    actionableFailure: boolean;
 }) {
     const calls = useMemo(() => {
         const index = new Map<string, ToolCall>();
@@ -433,6 +482,10 @@ function RoundBody({ round, historicalInput, showDetails }: {
                 if (!envelope || !showDetails) return null;
                 return <ProtocolLine key={entry.key} envelope={envelope} />;
             })}
+
+            {round.failure && (
+                <RunFailureNotice failure={round.failure} actionable={actionableFailure} />
+            )}
         </div>
     );
 }
@@ -445,13 +498,32 @@ export function Transcript() {
     const items = view?.items ?? EMPTY_ITEMS;
     const history = view?.history ?? [];
     const confirmations = view?.confirmations ?? EMPTY_PROMPTS;
+    const requests = view?.requests ?? EMPTY_REQUESTS;
     const dropped = view?.droppedItems ?? 0;
     const showDetails = usePanel((state) => state.showDetails);
 
     const rounds = useMemo(
-        () => buildRounds(items, confirmations),
-        [items, confirmations],
+        () => buildRounds(items, confirmations, requests),
+        [items, confirmations, requests],
     );
+
+    // Failure metadata describes the past. A retry hint is current only while
+    // that failed run is the latest run of the same connected worker.
+    const actionableFailureKey = useMemo(() => {
+        const latestRun = rounds.findLast((round) => round.kind === 'run');
+        if (!latestRun?.failure || latestRun.failure.stage !== 'model_request'
+            || !latestRun.failure.canContinue || view?.runActive) return null;
+        if (!session?.connected || session.identity.state !== 'live') return null;
+        const finished = latestRun.protocol.findLast(
+            (item) => item.envelope.event === 'run_finished',
+        )?.envelope;
+        const worker = session.identity.worker_id;
+        const latestEvent = items.findLast((item) => item.kind === 'event');
+        if (!worker || finished?.worker_id !== worker
+            || (latestEvent?.kind === 'event'
+                && latestEvent.envelope.worker_id !== worker)) return null;
+        return latestRun.key;
+    }, [rounds, session, view?.runActive, items]);
 
     // The worker history is a fallback for turns absent from hub replay. Keep
     // detailed live rounds, including their tool cards, when both sources
@@ -622,7 +694,8 @@ export function Transcript() {
                             <div className={round.kind === 'run' ? 'mt-2' : ''}>
                                 <RoundBody round={round}
                                     historicalInput={historyForRun.get(round.key) ?? null}
-                                    showDetails={showDetails} />
+                                    showDetails={showDetails}
+                                    actionableFailure={round.key === actionableFailureKey} />
                             </div>
                         )}
                         {round.kind === 'run' && !isOpen(round) && (
@@ -656,24 +729,8 @@ export function Transcript() {
                 </button>
             )}
 
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-1.5
-                text-xs text-ink-muted">
-                <button
-                    type="button"
-                    onClick={() => client.reloadTranscript(selected)}
-                    className="rounded px-1 hover:bg-subtle hover:text-ink
-                        focus-visible:outline-2 focus-visible:outline-offset-1
-                        focus-visible:outline-interactive"
-                    title="ask the hub to re-send this session's whole transcript"
-                >
-                    reload transcript
-                </button>
-                <button type="button" onClick={() => client.reloadHistory(selected)}
-                    className="rounded px-1 hover:bg-subtle hover:text-ink"
-                    title="refresh the worker-backed conversation history">
-                    refresh history
-                </button>
-                <span className="flex-1" />
+            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 border-t
+                border-line px-4 py-1.5 text-xs text-ink-muted">
                 <TranscriptStats sessionId={selected} />
             </div>
         </div>

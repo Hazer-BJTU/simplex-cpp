@@ -501,11 +501,11 @@ function foldEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
         );
         next = admitInput(next, requestId, envelope);
         // The panel's own message already stands for this input, and it is the
-        // only place the text exists — `input_admitted` carries an empty
-        // payload. A second row repeating that is noise. The placeholder is for
-        // history this page never sent: after a reload there is no outbox item,
-        // and an admitted input with no visible text would be a hole in the
-        // conversation.
+        // only place the text exists — `input_admitted` carries the operation,
+        // but no user content. A second row repeating that is noise. The
+        // placeholder is for history this page never sent: after a reload there
+        // is no outbox item, and an admitted input with no visible text would
+        // be a hole in the conversation.
         if (mine) return next;
     }
     next = append(next, eventItem(next, envelope));

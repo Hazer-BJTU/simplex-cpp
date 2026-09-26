@@ -75,8 +75,8 @@ export interface NoteItem {
 /**
  * A message the operator sent.
  *
- * The worker protocol reports `input_admitted` with an empty payload — the text
- * of an admitted input is never echoed back. So the panel is the only place the
+ * The worker's `input_admitted` reports the operation, but does not echo the
+ * text of an admitted input. So the panel is the only place the
  * operator's own words exist, and this item is where they are kept: written
  * when the message is sent, marked admitted when the worker confirms it, and
  * removed if the hub refuses it (in which case the composer gets the text back

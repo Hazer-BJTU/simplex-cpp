@@ -323,6 +323,7 @@ BOOST_AUTO_TEST_CASE(model_failure_remains_final_when_a_finish_observer_throws) 
     });
     const auto result = f.run();
     BOOST_CHECK(result.status == loop::RunStatus::Failed);
+    BOOST_CHECK(result.failure_stage == loop::RunFailureStage::ModelRequest);
     BOOST_CHECK(result.error.find("model failure") != std::string::npos);
     BOOST_CHECK(result.error.find("finish failed") == std::string::npos);
     BOOST_CHECK_EQUAL(f.state.loop->error, result.error);

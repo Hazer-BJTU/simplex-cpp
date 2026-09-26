@@ -15,6 +15,7 @@ import {
     modelResponse,
     open,
     playTurn,
+    runningSession,
     toolResult,
 } from './harness.ts';
 
@@ -36,6 +37,89 @@ test('shows an honest activity cue through a live run', async ({ page }) => {
     await expect(activity).toContainText('Processing response');
     await emit(page, 'run_finished', { status: 'completed' });
     await expect(activity).toHaveCount(0);
+});
+
+test('shows a model failure beside its run with guarded retry guidance', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'run_started', {});
+    await emit(page, 'run_finished', {
+        status: 'failed', error: 'HTTP 503 after retries', exchanges: 0,
+        failure: { stage: 'model_request', can_continue: true },
+    });
+
+    const notice = page.getByTestId('run-failure');
+    await expect(notice).toContainText('Model request failed');
+    await expect(notice).toContainText('Continue run');
+    await expect(notice.locator('pre')).not.toBeVisible();
+    await notice.getByText('Technical details').click();
+    await expect(notice.locator('pre')).toContainText('HTTP 503 after retries');
+
+    await emit(page, 'input_admitted', { operation: 'continue' },
+        { request_id: 'req-cont' });
+    await emit(page, 'run_started', {});
+    await emit(page, 'model_response', modelResponse('Recovered answer'));
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 });
+    await expect(page.getByTestId('run-failure').first())
+        .toContainText('could be continued when it settled');
+    await expect(page.getByTestId('run-failure').first()).not.toContainText('Continue run');
+
+    await emit(page, 'run_started', {});
+    await emit(page, 'model_response', modelResponse('Partial answer before failure'));
+    await emit(page, 'run_finished', {
+        status: 'failed', error: 'tool effects require inspection', exchanges: 1,
+        failure: { stage: 'other', can_continue: false },
+    });
+    await expect(page.getByTestId('run-failure').last())
+        .toContainText('Inspect the error and worker state');
+    await expect(page.getByTestId('run-failure').last()).not.toContainText('Continue run');
+    const lastRound = page.getByTestId('round').last();
+    const assistantBeforeFailure = await lastRound.evaluate((node) => {
+        const assistant = node.querySelector('[data-testid="assistant-message"]');
+        const failure = node.querySelector('[data-testid="run-failure"]');
+        return Boolean(assistant && failure
+            && assistant.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    expect(assistantBeforeFailure).toBe(true);
+});
+
+test('replays a continuation without a retained request record', async ({ page }) => {
+    await open(page);
+    await emit(page, 'input_admitted', { operation: 'continue' },
+        { request_id: 'req-pruned' });
+    await emit(page, 'run_started', {}, { request_id: 'req-pruned' });
+    await emit(page, 'model_response', modelResponse('Recovered response'),
+        { request_id: 'req-pruned' });
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 },
+        { request_id: 'req-pruned' });
+    await page.goto('/?session=demo');
+
+    await expect(page.getByTestId('round-summary').last())
+        .toContainText('continued from worker state');
+    await expect(page.getByTestId('admitted-placeholder')).toHaveCount(0);
+    await expect(page.getByTestId('outbox-item')).toHaveCount(0);
+});
+
+test('does not recommend retrying an old failure after a worker replacement', async ({ page }) => {
+    await open(page);
+    await emit(page, 'run_started', {});
+    await emit(page, 'run_finished', {
+        status: 'failed', error: 'HTTP 503',
+        failure: { stage: 'model_request', can_continue: true },
+    });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('run-failure')).toContainText('Continue run');
+
+    await page.request.post(`${STUB}/__stub/sessions`, { data: {
+        sessions: [{
+            ...runningSession('demo'),
+            identity: { state: 'live', worker_id: 'replacement-worker', since: null },
+        }],
+    } });
+    await page.reload();
+    await expect(page.getByTestId('run-failure'))
+        .toContainText('could be continued when it settled');
+    await expect(page.getByTestId('run-failure')).not.toContainText('Continue run');
 });
 
 test('recovers worker history and contains long content on a narrow viewport', async ({ page }) => {
@@ -119,7 +203,9 @@ test('a history refresh keeps detailed tool cards beside the final reply', async
     };
     await expect.poll(historyQueries).toBe(1);
     await expect(page.getByTestId('tool-card')).toHaveCount(1);
-    await page.getByRole('button', { name: 'refresh history' }).click();
+    await page.keyboard.press('Alt+Enter');
+    await page.getByLabel('command input').fill('Refresh');
+    await page.getByLabel('command input').press('Enter');
     await expect(page.getByTestId('restored-user-message'))
         .toContainText('Please run the tool.');
     await expect(page.getByTestId('history-turn')).toHaveCount(0);
@@ -348,14 +434,14 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
     await page.setViewportSize({ width: 320, height: 568 });
     await page.goto('/?session=demo');
     const message = page.getByLabel('message');
-    const composer = message.locator('xpath=ancestor::form[1]');
+    const composer = page.locator('main > form');
     const attach = page.getByRole('button', { name: 'Attach a reference' });
     const confirmation = page.getByRole('button', { name: /confirmation mode:/ });
     const send = page.getByRole('button', { name: 'Send' });
     const initial = await message.boundingBox();
     expect(initial).not.toBeNull();
-    expect(initial!.height).toBeGreaterThanOrEqual(65);
-    expect(initial!.height).toBeLessThan(95);
+    expect(initial!.height).toBeGreaterThanOrEqual(95);
+    expect(initial!.height).toBeLessThanOrEqual(97);
 
     await message.fill('long input '.repeat(180));
     const field = await message.boundingBox();
@@ -405,6 +491,37 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
         (node) => getComputedStyle(node).backgroundColor);
     expect(backgrounds.composer).toBe(conversationBackground);
     expect(await composer.isVisible()).toBe(true);
+
+    const messageHeight = (await composer.boundingBox())!.height;
+    await message.press('Alt+Enter');
+    await expect(page.getByLabel('command input')).toBeFocused();
+    expect((await composer.boundingBox())!.height).toBe(messageHeight);
+    const run = page.getByRole('button', { name: 'Run', exact: true });
+    const runBounds = await run.boundingBox();
+    expect(runBounds).not.toBeNull();
+    expect({
+        x: runBounds!.x,
+        y: runBounds!.y,
+        width: runBounds!.width,
+        height: runBounds!.height,
+    }).toEqual({
+        x: controls[2]!.x,
+        y: controls[2]!.y,
+        width: controls[2]!.width,
+        height: controls[2]!.height,
+    });
+    await expect(page.getByText('Alt + Enter switches modes')).toHaveCount(0);
+    await page.getByLabel('command input').press('Alt+Enter');
+    await expect(page.getByLabel('message')).toBeFocused();
+    expect((await composer.boundingBox())!.height).toBe(messageHeight);
+
+    await emit(page, 'run_started', {});
+    await expect(page.getByRole('button', { name: 'Cancel run' })).toBeVisible();
+    const activeHeight = (await composer.boundingBox())!.height;
+    await page.getByLabel('message').press('Alt+Enter');
+    expect((await composer.boundingBox())!.height).toBe(activeHeight);
+    await page.getByLabel('command input').press('Alt+Enter');
+    expect((await composer.boundingBox())!.height).toBe(activeHeight);
 });
 
 test('keeps the activity text and stops its motion when requested', async ({ page }) => {

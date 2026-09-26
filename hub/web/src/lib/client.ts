@@ -55,6 +55,8 @@ export interface PanelClient {
     reloadTranscript(sessionId: SessionId): void;
     /** Refresh the worker-backed display history. */
     reloadHistory(sessionId: SessionId): boolean;
+    /** Recover the conversation from both the hub and the connected worker. */
+    refreshConversation(sessionId: SessionId): void;
     refreshSessions(): void;
     /**
      * Send a message.
@@ -507,6 +509,14 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             return requestHistory(sessionId);
         },
 
+        refreshConversation(sessionId) {
+            this.reloadTranscript(sessionId);
+            // A disconnected or older worker cannot serve history. The hub
+            // transcript still refreshes, and the next subscription retries
+            // the worker projection when it becomes available.
+            this.reloadHistory(sessionId);
+        },
+
         ping() {
             const at = Date.now();
             const sent = socket.send({ type: 'ping' });
@@ -522,6 +532,9 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         },
 
         sendInput(sessionId, parts, operation = 'message', options) {
+            // A session can exist before its worker starts. Do not create an
+            // outbox entry or send an input frame until a worker is attached.
+            if (!store.getState().sessions.get(sessionId)?.connected) return false;
             const requestId = newRequestId();
             store.getState().beginInput(sessionId, requestId, parts, operation);
             const sent = socket.send({
