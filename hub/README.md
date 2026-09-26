@@ -155,6 +155,54 @@ stdout    66485abf0d8d          ← the container
 use `host.docker.internal` as `connectHost` and add
 `--add-host=host.docker.internal:host-gateway` to the command template.
 
+### With a real model instead of the mock
+
+The same configuration, without `--mock`, talks to `api.deepseek.com`:
+
+```sh
+export DEEPSEEK_API_KEY=sk-...        # the key stays in your shell
+node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --no-mock \
+    --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
+```
+
+then create the session with the `deepseek` profile — from the panel's *new*
+form it would default to that profile anyway, since `deepseek` is the first
+entry in `providerProfiles`:
+
+```sh
+curl -s -X POST http://127.0.0.1:8800/api/sessions \
+  -H 'Authorization: Bearer dev' -H 'content-type: application/json' \
+  -d '{"session":"real","spec":{"provider":"deepseek","model":"deepseek-flash"}}'
+```
+
+The key is forwarded with `-e DEEPSEEK_API_KEY` (no `=value`, so Docker reads it
+from the environment of the process that runs `docker`), and the worker expands
+`${DEEPSEEK_API_KEY}` from *its own* environment — which is the container's.
+When it is missing, that is what you get, and it is worth recognising:
+
+```
+Worker: required credential variable is unset or empty
+```
+
+To check the forwarding on its own, before blaming the API:
+
+```sh
+docker run --rm -e DEEPSEEK_API_KEY --entrypoint sh simplex-hub-test:latest \
+    -c 'test -n "$DEEPSEEK_API_KEY" && echo "the container can see the key"'
+```
+
+Two things to know before reading the result:
+
+- **The model name is this project's alias, not the public one.** The plugin
+  advertises `deepseek-flash` and `deepseek-v4-pro` and enables thinking mode
+  (`llm/README.md`), which is not the `deepseek-chat` the public API reference
+  lists. It is rendered straight into the worker's configuration, so if the
+  endpoint rejects it, change it in the session's spec rather than in code.
+- **A real model is slower in a way the panel is honest about.** There is no
+  token streaming anywhere in this path — the worker carries whole messages — so
+  the reply appears when it is finished. The footer says so rather than
+  animating a spinner that implies otherwise.
+
 ## Configuration
 
 Copy [`hub.config.example.jsonc`](hub.config.example.jsonc) to

@@ -53,6 +53,13 @@
             // not for a shell script. Overriding it is what lets a non-root
             // user run the worker at all.
             "--entrypoint", "/src/build/bin/simplex_worker",
+            // The model credential, forwarded from the hub's own environment.
+            // No `=value`: Docker takes the value from the environment of the
+            // process that runs `docker`, so the key stays in the operator's
+            // shell and out of this file. The rendered worker configuration
+            // refers to `${DEEPSEEK_API_KEY}` and the worker expands it, which
+            // is why the variable has to exist *here* and not only on the host.
+            "-e", "DEEPSEEK_API_KEY",
             // The generated config, the session's snapshot and the captured
             // log all live under the data directory, at absolute paths the
             // configuration names — so mounting it at the same path is what
@@ -69,6 +76,25 @@
             "--threads", "{threads}"
         ]
     },
+
+    // A second profile for a model server on this machine — vLLM, llama.cpp,
+    // Ollama, anything that speaks the OpenAI chat-completions API. The mock
+    // provider below is the same shape, which is why swapping one for the other
+    // is a base_url and a model name:
+    //
+    //   docker run --rm --gpus all -p 8000:8000 vllm/vllm-omni:v0.28.0 \
+    //       --model Qwen/Qwen2.5-3B-Instruct --served-model-name local
+    //
+    // "providerProfiles": {
+    //     "local": {
+    //         "plugin": "deepseek",
+    //         "model": "local",
+    //         "endpoint": { "base_url": "http://172.17.0.1:8000/v1",
+    //                       "auth": { "scheme": "none" } },
+    //         "retry": { "max_attempts": 2, "initial_backoff_ms": 500,
+    //                    "max_backoff_ms": 10000 }
+    //     }
+    // },
 
     "mock": {
         "enabled": true,
