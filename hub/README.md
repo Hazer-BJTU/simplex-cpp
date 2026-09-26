@@ -201,6 +201,14 @@ check skips when none is installed; set `PANEL_REQUIRE_BROWSER=1` to make that a
 failure, and `CHROME_BIN` to choose one). Set `SIMPLEX_WORKER_BIN` to test a
 different build.
 
+The panel renders model output as markdown through `react-markdown`, which
+builds elements rather than markup — so "show the model's markdown" and "never
+write panel markup as HTML" are the same code path, not a trade. Inline HTML is
+deliberately not parsed. Syntax highlighting is `rehype-highlight` over
+highlight.js's *common* language set, which is a fixed ~50 kB gzipped of the
+bundle and cannot be trimmed by configuration, because the plugin imports that
+set statically.
+
 Two panels coexist while the rewrite is in progress. `web/index.html` is the
 panel you get today; `web/app.html` is the new one, built from `web/src` into
 `web/dist` and not yet served by the hub. `npm run dev:panel` runs Vite against
@@ -263,6 +271,18 @@ Between them they also assert things a reader might otherwise assume:
   epoch resets the cursor, a log tail replaces rather than appends, and a
   refused input goes back to the composer. It needs no browser because the
   store is the vanilla Zustand store: no React, no DOM.
+- **The transcript's derivations.** `test/panel-transcript.test.js` covers the
+  two pure modules that read what the worker sent: `rounds.ts`, which decides
+  what belongs to which turn, and `toolOutput.ts`, which reads the structure out
+  of a tool result's prose. Its fixtures use the payload shape a real session
+  produced, not the shape the protocol document describes — the two differ for
+  tool results, and reading only the documented one shows no output at all.
+- **No markup from untrusted text.** `test/panel-assets.test.js` scans both
+  panels for `innerHTML` and its relatives, `dangerouslySetInnerHTML` included,
+  and fails if a raw-HTML plugin is added to the markdown renderer. The
+  behavioural half of the same claim is the browser test that feeds a model
+  response a `<script>` tag and a `javascript:` link and asserts neither becomes
+  an element.
 
 Not covered by CI: a real provider (the offline mock stands in), `wss` and
 reverse-proxy behaviour, long-running sessions, and operating systems other than

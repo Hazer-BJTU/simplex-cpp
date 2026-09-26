@@ -448,9 +448,15 @@ P2 落地后的状态：
 | 助手回复 | **markdown**：标题、列表、表格、引用、GFM 任务列表；代码块带语言标签 + 复制按钮 + 高亮 |
 | `reasoning` | 默认折叠的"思考"区块（现在是 `<details>`，保留思路，改进样式） |
 | 工具调用 | 卡片：图标 + 工具名 + 状态（待确认/执行中/成功/失败）+ 耗时；`run_command` 用 shell 高亮显示命令本身而非 JSON |
+
+> **P5 实测后的修正**：状态做全了（待确认 / 运行中 / ok / failed / 未执行 / 无结果上报，六态而非四态）；"耗时"**没有**做成工具耗时——worker 协议没有 per-tool start/finish 事件（`core/docs/worker-protocol.md` 明说不定义）。卡片显示的是两件可以负责的事：工具自己在输出里报的 `running_milliseconds`（标注为"工具自己报告的"），以及从提议信封到结果信封的墙钟（标注为 proposal → result）。图标留到 P7 的图标体系一起做。 |
 | 工具结果 | stdout/stderr 分流；错误红色左边框；超长折叠 + "展开全部" |
+
+> **P5 实测后的修正**："分流"在协议层面**不存在**——协议原文是"these are not separate transport streams"，进程工具只是把 stdout/stderr 渲染成同一段文本里的具名段落。所以做的是**按结构读那段文本**（`toolOutput.ts` 识别 `[[field]]: value` 与 `name (N bytes):` 两种段落），识别不了就原样显示，并保留"raw output"开关。而生产者自己的头文件写着这些标记"不是机器协议、不是安全边界"，所以这里只把它们当**显示**线索用，不从里面推导成功/失败/安全性。 |
 | 协议事件 | 默认收起为细弱时间线；开关打开后与现状等价（保留 `raw` 折叠块） |
 | run 分组 | 可折叠的"轮次"区块，摘要行显示模型/耗时/token；默认只展开最近 N 轮 |
+
+> **P5 实测后的修正**：摘要行显示的是状态、回复数、工具数、交换数、墙钟、token、以及被折起的协议事件数——**没有模型**：`model_response` 和 `status` 对象都不含模型名，所以"这一轮是哪个模型答的"在协议里无从得知。模型是会话级的，留在会话头。默认展开最近 3 轮。 |
 
 - **窗口化优先于虚拟列表**（理由见 §2.1）。
 - **滚动行为修正**：仅当用户已在底部附近才自动跟随；提供"跳到最新"悬浮按钮。
@@ -485,7 +491,7 @@ P2 落地后的状态：
 | **P2 协议契约** ✅ 已完成 | `shared/protocol.ts` 扩成完整契约：13 种面板消息 + 16 种 hub 消息的联合类型、实体接口、错误码、能力清单；`shared/guards.ts` 提供两端共用的信封校验；hub 与面板的版本常量收敛到 shared（旧面板那份保留并加守卫，理由见下）；**A1 修复：审批广播给所有客户端**；新增 `transcript_epoch`；新增面板协议 drift 测试。**与计划的偏差**：能力清单没有做成"从配置推导"（没有配置相关的能力，见下）；可选的 `hello` 协商**推迟**，理由见下 | 222 个测试 + 2 个真实 worker 端到端通过；A1 与 epoch 各有回归测试，两者都还原验证过；浏览器端确认：看着 session A 时，session B 的审批弹窗确实会出现 |
 | **P3 后端 TS 化** ✅ 已完成 | 全部 22 个模块 `.js` → `.ts`，按依赖图从叶子到根分批（每个提交只改 import 说明符，逐条核对过）；新增 `@types/ws`；`tsconfig` 收紧了 `allowJs`/`checkJs` | 每一步 `npm test` 222 全绿；真实 worker 的端到端在每次触及 supervisor 的批次后都跑；`src`/`bin`/`shared` 下已无 `.js` |
 | **P4 前端骨架** ✅ 已完成 | Vite + React 壳：布局、Zustand store（从 `state.js` 平移并修 A2/D23）、socket/REST 客户端、会话列表、可显示事件的最小对话流 | 23 个 store 回归测试 + **6 个浏览器测试**（新增 `test/browser/stub-hub.mjs`，可被脚本化地 emit / confirm / restart）+ 真实 hub 与真实 worker 的 `npm run check:panel`。四条主修复（A2 合并、D23 合并、epoch 重置、D20 日志尾部）都**还原验证过测试会失败**，A2 在浏览器里也单独还原验证过。P4 期间新发现三个问题，见 §6.1 |
-| **P5 对话流** | markdown、高亮、工具卡片、run 分组、窗口化、滚动行为、技术细节开关 | 达到 §5 目标 |
+| **P5 对话流** ✅ 已完成 | markdown + GFM（react-markdown，不经 HTML）、代码高亮与复制、工具卡片（命令当命令读、结果按结构读）、run 分组与窗口化、技术细节开关、长消息与长输出折叠 | 20 个纯函数测试（`test/panel-transcript.test.js`）+ 9 个新浏览器测试（共 15 个）+ 真实 hub/worker 全流程。**§5.3 有三条按字面做不到**，改成如实呈现，见 §6.2；另外发现 P4 的移植丢掉了一处**旧面板本来知道的事**（N5） |
 | **P6 交互重构** | 会话头层次化、溢出菜单、危险确认对话框、composer、Inspector 抽屉、命令面板、per-session 确认模式 | §1.2 的 D 组缺陷全部关闭 |
 | **P7 打磨** | 图标、动效、主题、响应式、a11y 审计、空状态/骨架屏 | 键盘可完成全流程；窄屏可用 |
 | **P8 收尾** | 删除 `web/js`、`web/css`；更新 `hub/README.md`、`hub-protocol.md`；Playwright 取代 CDP helper | 文档与实现一致 |
@@ -508,7 +514,32 @@ P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物�
 `input_admitted` 与 `input_committed` 的 `data` 都是 `{}`（`core/docs/worker-protocol.md` 的事件表），模型侧的 `model_response` 也不含用户消息。所以**面板是这段话唯一存在的地方**：P4 因此加了一个 outbox 项，按面板自己生成的 `request_id` 与 `input_admitted` 对上；刷新之后它就没有了，重放里只剩一条"用户输入——worker 协议不报告其文本"的占位。这不是前端能修的，也不该假装能修。
 
 **N4（小）· `tool_calls` 与 `model_response.invokes` 是同一批调用的两份表示。**
-一次 `run_command` 会在时间线上出现两张卡。旧面板也是两张，是"输出乱"的一部分。P5 做工具卡片时一并处理——需要小心的是两者**允许不同**（`tool_calls` 是 dispatch 前的提议，`model_response.invokes` 是消息的一部分），所以不能简单按 id 去重了事。
+一次 `run_command` 会在时间线上出现两张卡。旧面板也是两张，是"输出乱"的一部分。**P5 已修**：按 call id 合并成一张卡，只按 id——因为两者**允许不同**（`tool_calls` 是 dispatch 前的提议，`model_response.invokes` 是消息的一部分），只出现在一边的调用仍然单独成卡而不是被丢掉。回归测试 `draws one card for a batch the response and the event both describe`（单元 + 浏览器各一条）。
+
+### 6.2 P5 期间新发现的三个问题
+
+**N5 · `tool_results` 的条目不是文档写的 Result object，而 P4 的移植把这件事忘了。**
+`core/docs/worker-protocol.md` 的"Result object"一节写的是 `{query, output, extras}`，但实测（真实 worker 的原始载荷）是 `{content, invoke_return: {query, output}, role, type}`——一个 `invoke_return` **工具消息**，provenance 嵌在 `invoke_return` 里。
+
+旧面板**知道**这件事，而且在代码里写清楚了（`web/js/render.js:353-362`）：
+
+> The documented shape is a Result object (`{query, output, extras}`). Core currently projects results as tool messages instead (`{content, invoke_return, role, type}`), so both are accepted.
+
+P4 把 `state.js`/`api.js` 移植成了 TypeScript，却**没有移植 `render.js`**——而这条知识只存在于 `render.js`。于是 P4 的工具结果读出来是 `(unnamed call)`、没有参数、没有输出（P4 的截图里就是这样的），当时没注意到，因为 P4 的验收只看了"转录还在不在"。
+
+教训是具体的：**移植时丢掉一条注释，等于丢掉一个已经付过学费的事实**。教训也是可操作的：`content.ts` 现在两种形状都读，并把那句话抄在了函数头上；`test/panel-transcript.test.js` 的夹具用的是**真实载荷**的形状（从一次实跑的 `GET /api/sessions/:id/events` 里抄的），不是文档的形状。
+
+**N6 · 高亮的代价是固定的，而且限制不了。**
+`rehype-highlight` 静态 `import { common } from 'lowlight'`，所以 highlight.js 的 common 语言集**总是**进包：实测 608 KB / 187 KB gzip，去掉整个 rehype-highlight 是 441 KB / 134 KB gzip——即 markdown + 高亮一共约 53 KB gzip，其中高亮约 53 KB 里的大部分。传 `languages: {}` **不会**变小（导入是静态的），所以"只注册常用语言"这个念头在打包层面是无效的，只有自己建 lowlight 实例才做得到。
+
+结论是接受：这是跑在 `127.0.0.1` 的本机工具，§2.1 已经写明体积不是约束，而 187 KB gzip 对任何标准都不算大。数字记在这里，是因为下一个想加依赖的人应该看到它。
+
+**N7 · 工具结果的"字段"和"段落"是显示约定，不是机器协议。**
+生产者自己的头文件（`utils/textformat/include/textformat/document.hpp`）写着：
+
+> The markers distinguish metadata visually without Markdown headings or fences; **they are not a machine protocol or a security boundary.**
+
+所以 `toolOutput.ts` 的定位是**显示启发式**：识别得了就分开画，识别不了就原样显示，永远保留 `raw output`，并且**不从解析结果里推导成功、失败或安全性**——成功/失败只来自 `extras.error` 与 `extras.loop_skipped`，那是协议里真正定义的。这条边界是刻意画的：一个把 `[[exit_code]]: 0` 读成"成功"的面板，会在工具换了输出格式之后安静地开始说谎。
 
 ---
 
