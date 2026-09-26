@@ -21,6 +21,7 @@
 import type {
     ConfirmationPrompt,
     ContentPart,
+    HistoryTurn,
     RequestRecord,
     SessionId,
     TranscriptEpoch,
@@ -88,6 +89,8 @@ export interface OutboxItem {
     readonly parts: readonly ContentPart[];
     readonly operation: string;
     readonly state: 'pending' | 'admitted';
+    readonly admittedSequence?: number;
+    readonly admittedWorker?: string;
 }
 
 /** One line in the transcript. */
@@ -112,6 +115,11 @@ export interface ViewState {
      */
     readonly epoch: TranscriptEpoch | null;
     readonly items: readonly TranscriptItem[];
+    /** Display-only history received from the worker, in turn order. */
+    readonly history: readonly HistoryTurn[];
+    readonly historyLoading: boolean;
+    readonly historySequence: number | null;
+    readonly historyWorker: string | null;
     /** Highest `hub_sequence` seen *in `epoch`*; also the replay cursor. */
     readonly lastSeq: number;
     /** request_id -> the `request` item currently in `items`. */
@@ -140,6 +148,10 @@ export function emptyView(id: SessionId): ViewState {
         id,
         epoch: null,
         items: [],
+        history: [],
+        historyLoading: false,
+        historySequence: null,
+        historyWorker: null,
         lastSeq: 0,
         requestIndex: new Map(),
         requests: new Map(),

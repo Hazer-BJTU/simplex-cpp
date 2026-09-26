@@ -8,6 +8,7 @@
  */
 import { expect, test } from '@playwright/test';
 import {
+    STUB,
     PROCESS_OUTPUT,
     call,
     emit,
@@ -35,6 +36,47 @@ test('shows an honest activity cue through a live run', async ({ page }) => {
     await expect(activity).toContainText('Processing response');
     await emit(page, 'run_finished', { status: 'completed' });
     await expect(activity).toHaveCount(0);
+});
+
+test('recovers worker history and contains long content on a narrow viewport', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [{ index: 0,
+            user: [{ type: 'text', raw: 'earlier user message' }],
+            steps: [{ index: 0, content: [{ type: 'text', raw: 'x'.repeat(1200) }],
+                tool_calls: 2 }], omitted_steps: 0 }],
+    } });
+    await page.setViewportSize({ width: 390, height: 720 });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toHaveCount(1);
+    await expect(page.getByTestId('history-turn')).toContainText('earlier user message');
+    await expect(page.getByTestId('history-turn')).toContainText('2 tool calls');
+    const overflow = await page.getByTestId('transcript').evaluate((node) =>
+        node.scrollWidth > node.clientWidth + 1);
+    expect(overflow).toBe(false);
+    await page.getByLabel('message').fill('a new message after recovery');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByTestId('outbox-item')).toContainText('a new message after recovery');
+    await expect(page.getByTestId('outbox-item')).toHaveAttribute('data-state', 'admitted');
+});
+
+test('collapses older restored turns while keeping them available', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: Array.from({ length: 5 }, (_, index) => ({
+            index, user: [{ type: 'text', raw: `input ${index}` }],
+            steps: [{ index: 0, content: [{ type: 'text', raw: `answer ${index}` }],
+                tool_calls: 0 }], omitted_steps: 0,
+        })),
+    } });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toHaveCount(5);
+    const first = page.getByTestId('history-turn').first();
+    await expect(first.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+    await first.getByRole('button').click();
+    await expect(first).toContainText('answer 0');
 });
 
 test('keeps the activity text and stops its motion when requested', async ({ page }) => {

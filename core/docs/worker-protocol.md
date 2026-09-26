@@ -173,7 +173,7 @@ accepts unknown input types or operations.
 | --- | --- | --- |
 | `session_id` | Worker startup `--session` | 1–128 ASCII letters, digits, `_`, or `-`; selects the persistent session. May survive worker restarts. |
 | `worker_id` | Worker-generated UUID | New for each worker application instance; unchanged by reconnects. |
-| `request_id` | Hub | Nonempty string of at most 128 UTF-8 bytes. Identifies an admitted input within the worker's bounded duplicate window. |
+| `request_id` | Hub | Nonempty string of at most 128 UTF-8 bytes. Identifies an admitted message/continuation within the worker's bounded duplicate window; for `history`, it only correlates a read-only response and is not cached. |
 | `run_id` | Worker-generated UUID | New for each admitted request, including `continue`. Required to target cancellation. |
 | `sequence` | Worker | Unsigned 64-bit event counter, starting at 1 and increasing across reconnects within this worker instance. |
 | `confirmation_id` | Worker-generated UUID | Identifies one confirmation exchange, not a whole run or tool batch. |
@@ -196,6 +196,11 @@ integers with a lossless decoder if they may exceed the safe integer range.
 User requests use `type: "payload"`. They enter a bounded FIFO queue and are
 validated when the current run has finished and the consumer dequeues them.
 Sending while a run is active does not create a concurrent run.
+
+The read-only `history` payload below is the sole exception: IO routes it
+through the control worker, then the application's state executor. It can be
+answered while a model call is suspended; it never enters the agent-loop input
+queue or changes the conversation.
 
 ### Apply options at the next run boundary
 
@@ -348,6 +353,45 @@ For both operations, `role`, `invokes`, `invoke_return`, and `type` inside `data
 are rejected even if their values are null. Other unknown fields are ignored.
 The forbidden inner `type` is distinct from the required envelope `type`.
 
+### Read a display history page
+
+```json
+{"type":"payload","data":{"operation":"history","request_id":"history-1","start":0,"step":0,"limit":10}}
+```
+
+`history` is a read-only query, not an agent invocation. It requires a valid
+`request_id`; `start` defaults to 0 and is a zero-based turn index; `step`
+defaults to 0 and is the first model step within that turn; `limit` defaults
+to 10 and must be 1–10 turns. It does not accept `content`, `text`, `options`,
+or message metadata fields. It neither consumes the model budget nor emits `input_admitted`.
+Invalid queries emit `history_error` with the query ID and a diagnostic.
+
+The `history` event contains `request_id`, `revision`, `start`, `step`, `next`,
+`next_step`, `total`, and `turns`. Continue with the returned `next` and
+`next_step` cursor until `next == total` and `next_step == 0`.
+`revision` increases when the displayed state changes within one
+worker instance; it is not persisted and must be scoped by `worker_id`.
+Each turn contains its index, up to four ordered user content parts, and the
+model steps on this page. A page uses a 256 KiB step budget; a long turn may
+therefore span multiple pages, with no fixed step-count cutoff.
+Each step contains its index, ordered response content, optional reasoning,
+and a tool-call count. `omitted_steps` counts model steps still to be fetched;
+`omitted_user_parts` counts input parts beyond the display limit. Each content
+list includes at most four parts;
+`omitted_parts` on a model step counts its remaining parts.
+Tool arguments, results, system prompt, and the rest of `AgentInputState` are
+never returned. Text parts are limited to 4096 UTF-8 bytes and external
+references to 2048 bytes; `truncated: true` marks clipped values. Binary
+contents carry an empty `raw`, `omitted: true`, and their encoded byte length.
+This is display data, not a restorable snapshot.
+
+Pages reflect state at the time each query runs. Hooks may prune or edit turns
+between pages. If two pages have different `revision` values, discard the
+partial result and restart from `start: 0`. Refresh after a run settles.
+The response event's `sequence` is the display baseline for subsequent live
+events from the same worker. A query can run during an active invocation, but
+it observes only records already committed to in-memory state.
+
 ### Admission and rejection
 
 The worker emits `input_admitted` after host validation and assigning a run ID.
@@ -422,6 +466,8 @@ may occur in nested dataclass records.
 | `ready` | Status object | Startup initialization finished and payload consumption is starting. Emitted once per worker lifetime, not once per WebSocket connection. |
 | `status` | Status object | Snapshot produced by `status` or `cancel`. |
 | `options` | Options object | Available choices and current selections returned in response to the `options` signal. |
+| `history` | Display history page | Read-only response to a `history` payload; not a run event. |
+| `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
 | `input_admitted` | `{}` | Host admitted an input and assigned its run ID. |
 | `input_rejected` | `{ "request_id": any JSON value or null, "message": string }` | Dequeued input failed host validation; no run was started for that input. |
 | `run_started` | `{}` | Loop admitted the invocation. |

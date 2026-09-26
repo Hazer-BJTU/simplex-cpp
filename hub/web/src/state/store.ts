@@ -40,6 +40,7 @@ import type {
     Capability,
     ConfirmationPrompt,
     ContentPart,
+    HistoryPage,
     HubMessage,
     HubMetadata,
     RequestRecord,
@@ -82,6 +83,29 @@ type LogsMessage = Extract<HubMessage, { type: 'logs' }>;
 type SnapshotMessage = Extract<HubMessage, { type: 'snapshot' }>;
 type ErrorMessage = Extract<HubMessage, { type: 'error' }>;
 type AcceptedMessage = Extract<HubMessage, { type: 'accepted' }>;
+
+/** Narrow a worker page before it reaches React's history renderer. */
+function historyPageOf(value: unknown): HistoryPage | null {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+    const page = value as Record<string, unknown>;
+    for (const key of ['start', 'step', 'next', 'next_step', 'total']) {
+        if (!Number.isSafeInteger(page[key]) || (page[key] as number) < 0) return null;
+    }
+    if (!Array.isArray(page.turns) || page.turns.length > 10) return null;
+    for (const turn of page.turns) {
+        if (typeof turn !== 'object' || turn === null || Array.isArray(turn)
+            || !Number.isSafeInteger(turn.index)
+            || !Array.isArray(turn.user) || !Array.isArray(turn.steps)
+            || !Number.isSafeInteger(turn.omitted_steps)) return null;
+        for (const step of turn.steps) {
+            if (typeof step !== 'object' || step === null || Array.isArray(step)
+                || !Number.isSafeInteger(step.index)
+                || !Array.isArray(step.content)
+                || !Number.isSafeInteger(step.tool_calls)) return null;
+        }
+    }
+    return page as unknown as HistoryPage;
+}
 
 /** A note tone, as the transcript renders it. */
 export type { NoteTone };
@@ -260,6 +284,9 @@ export interface PanelActions {
 
     applySubscribed(message: SubscribedMessage): ApplyEffects;
     applyEvent(message: EventMessage): void;
+    beginHistory(sessionId: SessionId): void;
+    endHistory(sessionId: SessionId): void;
+    applyHistoryPage(sessionId: SessionId, envelope: WorkerEnvelope): void;
     applyRequest(message: RequestMessage): void;
     applyConfirmation(message: ConfirmationMessage): void;
     applyProcess(message: ProcessMessage): void;
@@ -416,13 +443,16 @@ function markSeen(view: ViewState, requestId: string): ViewState {
 }
 
 /** Mark a pending message admitted, keeping its text on screen. */
-function admitInput(view: ViewState, requestId: string): ViewState {
+function admitInput(view: ViewState, requestId: string, envelope: WorkerEnvelope): ViewState {
     let changed = false;
     const items = view.items.map((item) => {
         if (item.kind !== 'outbox' || item.requestId !== requestId) return item;
         if (item.state === 'admitted') return item;
         changed = true;
-        return { ...item, state: 'admitted' } as OutboxItem;
+        return { ...item, state: 'admitted',
+            admittedSequence: typeof envelope.sequence === 'number'
+                ? envelope.sequence : undefined,
+            admittedWorker: envelope.worker_id } as OutboxItem;
     });
     const marked = markSeen(view, requestId);
     return changed ? { ...marked, items } : marked;
@@ -471,13 +501,24 @@ function eventItem(view: ViewState, envelope: WorkerEnvelope): TranscriptItem {
 
 /** Bookkeeping shared by the replay and live paths. */
 function foldEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
+    if (envelope.event === 'history') {
+        // History is a transient query reply, never an event card or a cached
+        // latest event containing megabytes of display data.
+        const worker = envelope.worker_id;
+        const sequence = envelope.sequence;
+        return typeof sequence === 'number'
+            ? { ...view, lastSequenceByWorker: {
+                ...view.lastSequenceByWorker, [worker]: sequence,
+            } }
+            : view;
+    }
     let next = indexEnvelope(view, envelope);
     if (envelope.event === 'input_admitted' && typeof envelope.request_id === 'string') {
         const requestId = envelope.request_id;
         const mine = next.items.some(
             (item) => item.kind === 'outbox' && item.requestId === requestId,
         );
-        next = admitInput(next, requestId);
+        next = admitInput(next, requestId, envelope);
         // The panel's own message already stands for this input, and it is the
         // only place the text exists — `input_admitted` carries an empty
         // payload. A second row repeating that is noise. The placeholder is for
@@ -853,6 +894,49 @@ export function createPanelStore() {
             }));
         },
 
+        beginHistory(sessionId) {
+            set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: true })));
+        },
+
+        endHistory(sessionId) {
+            set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: false })));
+        },
+
+        applyHistoryPage(sessionId, envelope) {
+            if (envelope.event !== 'history') return;
+            const page = historyPageOf(envelope.data);
+            if (!page
+                || page.next < page.start || page.next > page.total
+                || page.turns.length === 0 && page.next !== page.total
+                || page.turns.some((turn, index) => turn.index !== page.start + index)) return;
+            set(withView(get(), sessionId, (view) => {
+                const fresh = page.start === 0 && page.step === 0;
+                if (!fresh && view.historyWorker !== envelope.worker_id) return view;
+                let history;
+                if (fresh) {
+                    history = page.turns;
+                } else if (page.start === view.history.length && page.step === 0) {
+                    history = [...view.history, ...page.turns];
+                } else if (page.start === view.history.length - 1
+                    && page.step === view.history[page.start]?.steps.length) {
+                    const previous = view.history[page.start];
+                    if (!previous || page.turns.length === 0) return view;
+                    history = [...view.history.slice(0, -1), {
+                        ...previous,
+                        steps: [...previous.steps, ...page.turns[0]!.steps],
+                        omitted_steps: page.turns[0]!.omitted_steps,
+                    }, ...page.turns.slice(1)];
+                } else {
+                    return view;
+                }
+                const done = page.next === page.total && page.next_step === 0;
+                return { ...view, history, historyLoading: !done,
+                    historyWorker: envelope.worker_id,
+                    historySequence: typeof envelope.sequence === 'number'
+                        ? envelope.sequence : view.historySequence };
+            }));
+        },
+
         applyRequest(message) {
             const { session, request: entry } = message;
             if (typeof session !== 'string' || !entry
@@ -948,6 +1032,10 @@ export function createPanelStore() {
                     epoch: get().epoch,
                     confirmations: view.confirmations,
                     logs: view.logs,
+                    history: view.history,
+                    historyLoading: view.historyLoading,
+                    historySequence: view.historySequence,
+                    historyWorker: view.historyWorker,
                 };
                 let maxSeq = 0;
                 for (const envelope of message.transcript ?? []) {

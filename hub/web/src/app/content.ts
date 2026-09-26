@@ -56,9 +56,11 @@ export function contentText(part: unknown): string {
     if (!value) return part === undefined || part === null ? '' : compactJson(part);
     const type = str(value.type) || 'unknown';
     const raw = typeof value.raw === 'string' ? value.raw : compactJson(value.raw);
-    if (type === 'text') return raw;
-    if (type === 'external_ref') return `external reference (not fetched): ${raw}`;
+    const suffix = value.truncated === true ? '… [truncated for display]' : '';
+    if (type === 'text') return raw + suffix;
+    if (type === 'external_ref') return `external reference (not fetched): ${raw}${suffix}`;
     if (type === 'binary') {
+        if (value.omitted === true) return `binary content omitted (${value.bytes ?? '?'} encoded bytes)`;
         const bytes = Math.floor((raw.length * 3) / 4);
         return `binary content: base64, ≈${bytes} bytes decoded`;
     }

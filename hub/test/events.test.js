@@ -17,7 +17,8 @@ describe('event vocabulary', () => {
     it('covers every event core documents', () => {
         // Mirrors the "Worker events" table in core/docs/worker-protocol.md.
         const documented = [
-            'ready', 'status', 'options', 'input_admitted', 'input_rejected',
+            'ready', 'status', 'options', 'history', 'history_error',
+            'input_admitted', 'input_rejected',
             'run_started', 'input_committed', 'model_response', 'tool_calls',
             'tool_results', 'persisted', 'export_error', 'error', 'run_finished',
         ];

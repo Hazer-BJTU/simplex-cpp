@@ -145,6 +145,21 @@ describe('end to end with the real worker', { skip }, () => {
                 JSON.stringify(finished.envelope.data));
             assert.equal(finished.envelope.data.durable, true);
 
+            panel.send({ v: 1, type: 'history', session: 'e2e-live',
+                request_id: 'e2e-history', start: 0, limit: 10 });
+            const history = await panel.waitFor(
+                (message) => message.type === 'event'
+                    && message.envelope.event === 'history'
+                    && message.envelope.data.request_id === 'e2e-history',
+                { timeout: 30000, label: 'worker-backed history' });
+            assert.equal(history.envelope.data.total, 1);
+            assert.equal(history.envelope.data.turns[0].user[0].raw,
+                'Run the fixture command');
+            assert.ok(history.envelope.data.turns[0].steps.length >= 1);
+            assert.ok(history.envelope.data.turns[0].steps.some(
+                (step) => step.tool_calls > 0));
+            assert.equal(JSON.stringify(history.envelope.data).includes('mock stderr'), false);
+
             // The tool really ran: `run_command` inherits the worker's working
             // directory, which the hub set to the session directory.
             const marker = join(sessionDir(ctx.config, 'e2e-live'), 'mock-tool-marker.txt');

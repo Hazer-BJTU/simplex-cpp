@@ -116,6 +116,7 @@ function meta() {
         capabilities: [
             'worker-events', 'confirmations', 'supervisor', 'transcript-replay',
             'snapshot-view', 'transcript-epoch', 'global-confirmations',
+            ...(settings.historyEnabled ? ['session-history'] : []),
         ],
         transcript_epoch: epoch,
         listen: { host: '127.0.0.1', port: PORT },
@@ -468,6 +469,27 @@ function handle(ws, message) {
                 type: 'event', session: message.session,
                 hub_seq: envelope.hub_sequence, envelope,
             });
+            return;
+        }
+        case 'history': {
+            const turns = settings.historyTurns ?? [];
+            const start = message.start ?? 0;
+            const step = message.step ?? 0;
+            const limit = message.limit ?? 10;
+            const envelope = append(message.session, 'history', {
+                request_id: message.request_id,
+                start,
+                step,
+                next: Math.min(start + limit, turns.length),
+                next_step: 0,
+                revision: 1,
+                total: turns.length,
+                turns: turns.slice(start, start + limit),
+            });
+            send(ws, { type: 'accepted', action: 'history', session: message.session,
+                request_id: message.request_id });
+            broadcast({ type: 'event', session: message.session,
+                hub_seq: envelope.hub_sequence, envelope });
             return;
         }
         default:

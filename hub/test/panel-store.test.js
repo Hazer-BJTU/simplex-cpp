@@ -93,6 +93,55 @@ function notes(store, id = 'demo') {
     return store.getState().items(id).filter((item) => item.kind === 'note');
 }
 
+describe('worker-backed display history', () => {
+    it('assembles pages and keeps query bodies out of the event transcript', () => {
+        const store = createPanelStore();
+        store.getState().beginHistory('demo');
+        const first = envelope(1, 'history', { data: {
+            request_id: 'h-1', revision: 1, start: 0, step: 0,
+            next: 1, next_step: 0, total: 2,
+            turns: [{ index: 0, user: [{ type: 'text', raw: 'old input' }],
+                steps: [], omitted_steps: 0 }],
+        } });
+        store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 1,
+            envelope: first });
+        store.getState().applyHistoryPage('demo', first);
+        assert.equal(store.getState().view('demo').historyLoading, true);
+        assert.equal(events(store).length, 0);
+        const second = envelope(2, 'history', { data: {
+            request_id: 'h-2', revision: 1, start: 1, step: 0,
+            next: 2, next_step: 0, total: 2,
+            turns: [{ index: 1, user: [{ type: 'text', raw: 'new input' }],
+                steps: [], omitted_steps: 0 }],
+        } });
+        store.getState().applyHistoryPage('demo', second);
+        const view = store.getState().view('demo');
+        assert.equal(view.history.length, 2);
+        assert.equal(view.historyLoading, false);
+        assert.equal(view.historySequence, 2);
+    });
+
+    it('joins two pages of one long turn without duplicating its user input', () => {
+        const store = createPanelStore();
+        store.getState().beginHistory('demo');
+        const page = (sequence, step, nextStep, text) => envelope(sequence, 'history', {
+            data: { request_id: `h-${sequence}`, revision: 1, start: 0, step,
+                next: nextStep ? 0 : 1, next_step: nextStep, total: 1,
+                turns: [{ index: 0, user: [{ type: 'text', raw: 'input' }],
+                    steps: [{ index: step, content: [{ type: 'text', raw: text }],
+                        tool_calls: 0 }], omitted_steps: nextStep ? 1 : 0 }],
+            },
+        });
+        store.getState().applyHistoryPage('demo', page(1, 0, 1, 'first'));
+        store.getState().applyHistoryPage('demo', page(2, 1, 0, 'second'));
+        const history = store.getState().view('demo').history;
+        assert.equal(history.length, 1);
+        assert.deepEqual(history[0].steps.map((step) => step.content[0].raw),
+            ['first', 'second']);
+        assert.equal(store.getState().view('demo').historyLoading, false);
+    });
+});
+
 describe('panel store: replay is merged, not substituted (A2)', () => {
     it('keeps the transcript a reconnect did not re-send', () => {
         const store = createPanelStore();

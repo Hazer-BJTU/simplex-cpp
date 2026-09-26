@@ -31,6 +31,17 @@ struct Input {
  * mutates payload.
  */
 Input parse_input(const nlohmann::json& payload);
+/** Validated, read-only history page request. It never starts an agent run. */
+struct HistoryRequest {
+    std::string request_id;
+    std::size_t start = 0;
+    std::size_t step = 0;
+    std::size_t limit = 10;
+};
+HistoryRequest parse_history_request(const nlohmann::json& payload);
+/** Project a bounded display page from the authoritative in-memory turns. */
+nlohmann::json history_page(const model_io::AgentInputState& state,
+                            const HistoryRequest& request);
 /** Generate a process-independent correlation identity; never reuse tool IDs. */
 std::string new_identity();
 } // namespace core

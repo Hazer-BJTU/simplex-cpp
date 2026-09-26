@@ -174,7 +174,31 @@ export function createPanelApi({
     const hooks: PanelHooks = {
         onEvent: (envelope, connection) => {
             const session = connection.session;
-            transcripts.get(session.id).append(envelope);
+            if (envelope.event === 'history') {
+                // Preserve its sequence position for replay cursors without
+                // retaining or logging the potentially large display body.
+                const data = envelope.data as Record<string, unknown> | null;
+                const marker = {
+                    ...envelope,
+                    data: {
+                        request_id: data?.request_id,
+                        revision: data?.revision,
+                        start: data?.start,
+                        step: data?.step,
+                        next: data?.next,
+                        next_step: data?.next_step,
+                        total: data?.total,
+                    },
+                    raw: null,
+                    transient_history: true,
+                    bytes: 0,
+                };
+                marker.bytes = Buffer.byteLength(JSON.stringify(marker), 'utf8');
+                transcripts.get(session.id).append(marker);
+                envelope.hub_sequence = marker.hub_sequence ?? 0;
+            } else {
+                transcripts.get(session.id).append(envelope);
+            }
             if (envelope.event === 'input_admitted') {
                 if (session.noteRequestAdmitted(envelope.request_id)) {
                     broadcastToSession(session.id, {
@@ -365,6 +389,27 @@ export function createPanelApi({
         }
         broadcastToSession(session.id, { type: 'request', session: session.id, request: entry });
         return { ok: true, request_id: payload.data.request_id };
+    }
+
+    /** Read-only history queries have their own panel command and no run admission. */
+    function sendHistory(session: Session, message: {
+        request_id?: string; start?: number; step?: number; limit?: number;
+    }): { ok: true; request_id: string } | SendFailure {
+        const connection = session.connection;
+        if (!connection?.isOpen) return { ok: false, error: 'the worker is not connected' };
+        try {
+            const payload = buildPayload({
+                operation: 'history', requestId: message.request_id ?? newRequestId(),
+                ...(message.start === undefined ? {} : { start: message.start }),
+                ...(message.step === undefined ? {} : { step: message.step }),
+                ...(message.limit === undefined ? {} : { limit: message.limit }),
+            });
+            const sent = connection.sendPayload(payload);
+            return sent.ok ? { ok: true, request_id: payload.data.request_id }
+                : { ok: false, error: sent.error ?? 'the history query was not sent' };
+        } catch (error) {
+            return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
     }
 
     /** Build and send a signal on behalf of the panel. */
@@ -698,6 +743,17 @@ export function createPanelApi({
                     type: 'accepted', action: 'input', session: target.id,
                     request_id: result.request_id,
                 });
+                return;
+            }
+            case 'history': {
+                const result = sendHistory(target, message);
+                if (!result.ok) {
+                    send(client, { type: 'error', error: 'input_not_sent',
+                        message: result.error, request: message });
+                    return;
+                }
+                send(client, { type: 'accepted', action: 'history', session: target.id,
+                    request_id: result.request_id });
                 return;
             }
             case 'signal': {

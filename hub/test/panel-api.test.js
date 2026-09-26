@@ -70,6 +70,38 @@ describe('panel API', () => {
         assert.ok(welcome.sessions.some((entry) => entry.session_id === session.id));
     });
 
+    it('forwards history queries without retaining their large replies', async () => {
+        const session = ctx.hub.registry.create('history-session');
+        const worker = await identify(session, 'history-worker');
+        const socket = await panel();
+        socket.send({ v: 1, type: 'subscribe', session: session.id });
+        await socket.waitFor((message) => message.type === 'subscribed'
+            && message.session.session_id === session.id);
+        socket.send({ v: 1, type: 'history', session: session.id,
+            request_id: 'history-1', start: 0, limit: 10 });
+        const query = await worker.waitFor((message) => message.type === 'payload'
+            && message.data.operation === 'history');
+        assert.equal(query.data.request_id, 'history-1');
+        worker.send(workerEvent({ session: session.id, worker: 'history-worker',
+            sequence: 2, event: 'history', data: { request_id: 'history-1',
+                start: 0, next: 1, total: 1, turns: [{ index: 0, user: [],
+                    steps: [], omitted_steps: 0 }] } }));
+        const reply = await socket.waitFor((message) => message.type === 'event'
+            && message.envelope.event === 'history');
+        assert.equal(reply.envelope.data.turns.length, 1);
+        const marker = ctx.hub.transcripts.get(session.id).toArray()
+            .find((entry) => entry.event === 'history');
+        assert.ok(marker);
+        assert.equal(marker.data.turns, undefined);
+        assert.equal(marker.transient_history, true);
+        const laterPanel = await panel();
+        laterPanel.send({ v: 1, type: 'subscribe', session: session.id, since: 0 });
+        const replay = await laterPanel.waitFor((message) => message.type === 'subscribed'
+            && message.session.session_id === session.id);
+        assert.ok(replay.transcript.some((entry) => entry.event === 'history'
+            && entry.transient_history && !entry.data.turns));
+    });
+
     it('creates, lists, reads, and deletes sessions over REST', async () => {
         const created = await api('/api/sessions', {
             method: 'POST',

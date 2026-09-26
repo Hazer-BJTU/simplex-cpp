@@ -25,6 +25,11 @@ struct SignalEvent {
     nlohmann::json signal;
 };
 
+/** A read-only payload query routed through the control worker. */
+struct PayloadQueryEvent {
+    nlohmann::json payload;
+};
+
 /** Capacities of the two incoming queues. Both must be positive. */
 struct ClientOptions {
     std::size_t payload_capacity = 256;
@@ -134,6 +139,7 @@ private:
     DoneChannel _signal_done;
     std::jthread _signal_thread;
     std::mutex _handler_mutex;
+    eventbus::EventBus& _events;
     SignalHandler _signal_handler;
     std::atomic<bool> _started{false};
 };

@@ -27,6 +27,13 @@ distributes work to one consumer and does not broadcast copies. Only one
 call fails. This package
 does not invoke AgentLoop; the consumer decides when and how to do that.
 
+A payload whose `data.operation` is `history` is a read-only control query.
+It bypasses the normal payload queue and is published as
+`io::PayloadQueryEvent` from the dedicated control worker. The application
+must validate it and post any state read to its state-owning executor. This
+keeps history queries responsive while the normal payload consumer waits for
+a model response; other payload operations retain FIFO admission.
+
 Both incoming queues have configurable positive capacities. Routing uses a
 non-blocking channel send so a full payload queue never holds up the WebSocket
 reader or later signals. A rejected payload is logged and counted by

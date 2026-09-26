@@ -24,7 +24,7 @@ import {
     useRef,
     useState,
 } from 'react';
-import type { ContentPart, ConfirmationPrompt, WorkerEnvelope } from '../../../shared/protocol.ts';
+import type { ContentPart, ConfirmationPrompt, HistoryTurn, WorkerEnvelope } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { statsOf, type NoteItem, type OutboxItem, type TranscriptItem } from '../state/view.ts';
 import { useClient } from './ClientContext.tsx';
@@ -32,7 +32,7 @@ import { EmptyState, LoadingLines } from '../ui/States.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Markdown } from './Markdown.tsx';
 import { ToolCard } from './ToolCard.tsx';
-import { clockOf, formatDuration, prettyJson, str } from './content.ts';
+import { clockOf, contentText, formatDuration, prettyJson, str } from './content.ts';
 import { buildRounds, type AssistantBlock, type Problem, type Round, type ToolCall } from './rounds.ts';
 
 /** How close to the bottom still counts as "following the end". */
@@ -166,9 +166,9 @@ function UserMessage({ item }: { item: OutboxItem }) {
         <article
             data-testid="outbox-item"
             data-state={item.state}
-            className="ml-auto w-fit max-w-[80%] rounded-lg bg-accent px-3 py-2 text-accent-ink"
+            className="ml-auto w-fit max-w-full sm:max-w-[80%] rounded-lg bg-accent px-3 py-2 text-accent-ink"
         >
-            <p className="whitespace-pre-wrap break-words text-sm">{shown}</p>
+            <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">{shown}</p>
             {long && (
                 <button
                     type="button"
@@ -195,6 +195,66 @@ function AdmittedPlaceholder() {
         >
             user input — the worker protocol reports that an input was admitted, not what it said
         </p>
+    );
+}
+
+/** Compact history projection; tool arguments and results never enter it. */
+function HistoryRound({ turn, open, onToggle }: {
+    turn: HistoryTurn; open: boolean; onToggle: () => void;
+}) {
+    const user = turn.user.map(contentText).filter(Boolean).join('\n\n');
+    const calls = turn.steps.reduce((count, step) => count + step.tool_calls, 0);
+    return (
+        <section data-testid="history-turn" className="min-w-0 space-y-3 rounded-lg border
+            border-line bg-raised px-3 py-3">
+            <button type="button" onClick={onToggle}
+                aria-expanded={open}
+                className="w-full min-w-0 break-words [overflow-wrap:anywhere] text-left
+                    text-xs text-ink-muted hover:text-ink">
+                turn {turn.index + 1} · {user.slice(0, 100) || '(empty input)'}
+                {user.length > 100 ? '…' : ''}
+            </button>
+            {open && <div className="min-w-0 space-y-3">
+                <div className="ml-auto w-fit max-w-full rounded-lg bg-accent px-3 py-2 text-accent-ink">
+                    <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
+                        {user || '(empty input)'}
+                    </p>
+                </div>
+                {turn.steps.map((step) => {
+                    const answer = step.content.map(contentText).filter(Boolean).join('\n\n');
+                    return (
+                        <div key={step.index} className="min-w-0 space-y-1">
+                            {step.reasoning?.raw && (
+                                <details className="min-w-0 rounded border border-line bg-sunken px-2 py-1">
+                                    <summary className="cursor-pointer text-xs text-ink-muted">reasoning</summary>
+                                    <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-xs">
+                                        {step.reasoning.raw}
+                                    </p>
+                                </details>
+                            )}
+                            {answer && <div className="min-w-0 break-words [overflow-wrap:anywhere] text-sm">
+                                <Markdown>{answer}</Markdown>
+                            </div>}
+                            {(step.omitted_parts ?? 0) > 0 && <p className="text-xs text-ink-muted">
+                                {step.omitted_parts} response parts omitted
+                            </p>}
+                            {step.tool_calls > 0 && <p className="text-xs text-ink-muted">
+                                {step.tool_calls} tool call{step.tool_calls === 1 ? '' : 's'}
+                            </p>}
+                        </div>
+                    );
+                })}
+                {turn.omitted_steps > 0 && <p className="text-xs text-ink-muted">
+                    loading {turn.omitted_steps} more model steps…
+                </p>}
+                {(turn.omitted_user_parts ?? 0) > 0 && <p className="text-xs text-ink-muted">
+                    {turn.omitted_user_parts} input part{turn.omitted_user_parts === 1 ? '' : 's'} omitted
+                </p>}
+                {calls > 0 && <p className="text-xs text-ink-muted">
+                    {calls} tool call{calls === 1 ? '' : 's'} in this turn
+                </p>}
+            </div>}
+        </section>
     );
 }
 
@@ -361,19 +421,43 @@ export function Transcript() {
     const session = useSession(selected);
     const view = useView(selected);
     const items = view?.items ?? EMPTY_ITEMS;
+    const history = view?.history ?? [];
     const confirmations = view?.confirmations ?? EMPTY_PROMPTS;
     const dropped = view?.droppedItems ?? 0;
     const showDetails = usePanel((state) => state.showDetails);
 
+    const displayItems = useMemo(() => {
+        const baseline = view?.historySequence;
+        if (baseline === null || baseline === undefined) return items;
+        return items.filter((item) => {
+            if (item.kind === 'event') {
+                if (item.envelope.worker_id !== view?.historyWorker) return false;
+                return typeof item.envelope.sequence === 'number'
+                    && item.envelope.sequence > baseline;
+            }
+            if (item.kind === 'outbox') {
+                if (item.state === 'pending') return true;
+                if (item.admittedWorker !== view?.historyWorker) return true;
+                return item.admittedSequence === undefined
+                    || item.admittedSequence > baseline;
+            }
+            if (item.kind === 'request') return item.request.state === 'sent'
+                || item.request.state === 'unknown';
+            return true;
+        });
+    }, [items, view?.historySequence, view?.historyWorker]);
+
     const rounds = useMemo(
-        () => buildRounds(items, confirmations),
-        [items, confirmations],
+        () => buildRounds(displayItems, confirmations),
+        [displayItems, confirmations],
     );
 
     // Which turns the reader has opened or closed by hand. Absent means the
     // default: the most recent few are open.
     const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(new Map());
     useEffect(() => setToggled(new Map()), [selected]);
+    const [historyToggled, setHistoryToggled] = useState<ReadonlyMap<number, boolean>>(new Map());
+    useEffect(() => setHistoryToggled(new Map()), [selected]);
 
     const openByDefault = useMemo(() => {
         const runs = rounds.filter((round) => round.kind === 'run');
@@ -432,7 +516,7 @@ export function Transcript() {
         // content above the fold: without it, turning technical details on
         // while reading the end leaves the view adrift and offers a "jump to
         // latest" button to a reader who never left.
-    }, [items, following, showDetails]);
+    }, [items, history, following, showDetails]);
 
     const jumpToLatest = useCallback(() => {
         const node = scroller.current;
@@ -466,12 +550,25 @@ export function Transcript() {
                     </p>
                 )}
 
+                {view?.historyLoading && (
+                    <p className="text-xs text-ink-muted">loading conversation history…</p>
+                )}
+                {history.map((turn, index) => <HistoryRound key={turn.index} turn={turn}
+                    open={historyToggled.get(turn.index) ?? index >= history.length - OPEN_ROUNDS}
+                    onToggle={() => setHistoryToggled((current) => {
+                        const next = new Map(current);
+                        const currentOpen = current.get(turn.index)
+                            ?? index >= history.length - OPEN_ROUNDS;
+                        next.set(turn.index, !currentOpen);
+                        return next;
+                    })} />)}
+
                 {!view ? (
                     /* No `subscribed` frame yet: the transcript is on its way,
                        and saying "nothing yet" here would be a claim the panel
                        cannot support. */
                     <LoadingLines label="waiting for this session's transcript" lines={4} />
-                ) : rounds.length === 0 ? (
+                ) : rounds.length === 0 && history.length === 0 && !view.historyLoading ? (
                     <EmptyState
                         icon="empty-session"
                         title="Nothing in this transcript yet"
@@ -529,7 +626,7 @@ export function Transcript() {
                 </button>
             )}
 
-            <div className="flex items-center gap-3 border-t border-line px-4 py-1.5
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-1.5
                 text-xs text-ink-muted">
                 <button
                     type="button"
@@ -540,6 +637,11 @@ export function Transcript() {
                     title="ask the hub to re-send this session's whole transcript"
                 >
                     reload transcript
+                </button>
+                <button type="button" onClick={() => client.reloadHistory(selected)}
+                    className="rounded px-1 hover:bg-subtle hover:text-ink"
+                    title="refresh the worker-backed conversation history">
+                    refresh history
                 </button>
                 <span className="flex-1" />
                 <TranscriptStats sessionId={selected} />

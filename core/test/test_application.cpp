@@ -49,7 +49,8 @@ struct Scratch {
     ~Scratch() { std::error_code ignored; std::filesystem::remove_all(root, ignored); }
 };
 
-enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop, ProtocolFailure };
+enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
+                  ProtocolFailure, History };
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
 void scenario(Mode mode) {
@@ -91,10 +92,12 @@ sections:
     }
     auto model = std::make_shared<Model>(io.get_executor());
     if (mode == Mode::Cancel || mode == Mode::Stop) model->delay = std::chrono::seconds(10);
+    if (mode == Mode::History) model->delay = std::chrono::milliseconds(500);
     core::Application app(io.get_executor(), config, "test", model);
     int completed = 0;
     int rejected = 0;
     bool cancelled = false;
+    bool history_during_run = false;
     auto peer = [&]() -> asio::awaitable<void> {
         beast::websocket::stream<asio::ip::tcp::socket> socket(
             co_await acceptor.async_accept(asio::use_awaitable));
@@ -139,10 +142,28 @@ sections:
                     stopper.join();
                     continue;
                 }
+                if (mode == Mode::History) continue;
                 Json signal = {{"type", "signal"}, {"data", {
                     {"operation", "cancel"}, {"run_id", mode == Mode::Cancel
                         ? event.at("run_id").get<std::string>() : "stale-run"}}}};
                 co_await send(signal);
+            } else if (name == "input_committed" && mode == Mode::History) {
+                // Wait for the scripted model to enter its suspended wait;
+                // the assertion is about that interval, not about scheduling
+                // luck between InputCommitted and converse().
+                for (int attempt = 0; attempt < 100 && model->active.load() == 0;
+                     ++attempt) {
+                    asio::steady_timer wait(co_await asio::this_coro::executor,
+                                            std::chrono::milliseconds(5));
+                    co_await wait.async_wait(asio::use_awaitable);
+                }
+                BOOST_REQUIRE(model->active.load() == 1);
+                co_await send(Json{{"type", "payload"}, {"data", {
+                    {"operation", "history"}, {"request_id", "during-model"},
+                    {"start", 0}, {"limit", 10}}}});
+            } else if (name == "history" && mode == Mode::History) {
+                BOOST_TEST(event.at("data").at("turns")[0]["user"][0]["raw"] == "hello");
+                history_during_run = completed == 0 && model->active.load() == 1;
             } else if (name == "run_finished") {
                 ++completed;
                 cancelled = event["data"]["status"] == "cancelled";
@@ -214,6 +235,9 @@ sections:
                 [](const auto& section) { return section.name.starts_with("skill."); }));
             BOOST_TEST(!state.meta.created_at.empty());
             BOOST_TEST(!state.meta.updated_at.empty());
+        } else if (mode == Mode::History) {
+            BOOST_TEST(history_during_run);
+            BOOST_TEST(completed == 1);
         } else if (mode == Mode::Cancel || mode == Mode::Stop) {
             if (mode == Mode::Cancel) BOOST_TEST(cancelled);
             const auto state = load::load_state(config.storage / "test/state.json");
@@ -268,6 +292,7 @@ BOOST_AUTO_TEST_CASE(cross_thread_stop_drains_active_model) { scenario(Mode::Sto
 BOOST_AUTO_TEST_CASE(event_overflow_stops_worker) { scenario(Mode::Overflow); }
 BOOST_AUTO_TEST_CASE(required_snapshot_failure_stops_admission) { scenario(Mode::StorageFailure); }
 BOOST_AUTO_TEST_CASE(blocked_restore_never_executes_model) { scenario(Mode::Blocked); }
+BOOST_AUTO_TEST_CASE(history_query_is_answered_while_model_is_pending) { scenario(Mode::History); }
 
 BOOST_AUTO_TEST_CASE(protocol_failure_survives_payload_queue_shutdown) { scenario(Mode::ProtocolFailure); }
 

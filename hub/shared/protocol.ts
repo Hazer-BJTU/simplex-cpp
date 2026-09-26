@@ -75,6 +75,8 @@ export const CAPABILITIES = [
      * session the operator is not looking at.
      */
     'global-confirmations',
+    /** Worker-backed, display-only conversation history queries. */
+    'session-history',
 ] as const;
 
 /** One advertised capability. */
@@ -116,6 +118,32 @@ export interface ContentPart {
     type: 'text' | 'binary' | 'external_ref' | string;
     raw: string;
     extras?: unknown;
+}
+
+/** Bounded display projection, never a restorable worker snapshot. */
+export interface HistoryTurn {
+    index: number;
+    user: ContentPart[];
+    steps: {
+        index: number;
+        content: ContentPart[];
+        reasoning?: ContentPart;
+        tool_calls: number;
+        omitted_parts?: number;
+    }[];
+    omitted_steps: number;
+    omitted_user_parts?: number;
+}
+
+export interface HistoryPage {
+    request_id: string;
+    revision: number;
+    start: number;
+    step: number;
+    next: number;
+    next_step: number;
+    total: number;
+    turns: HistoryTurn[];
 }
 
 /** Payload options; `confirmation.mode` is the one that carries authority. */
@@ -244,7 +272,8 @@ export interface SessionDescription {
 }
 
 /**
- * A worker envelope, forwarded verbatim.
+ * A worker envelope. Live replies are forwarded verbatim; replayed history
+ * replies contain only a small cursor marker.
  *
  * `event` and `data` are deliberately open: core may add an event name at any
  * time, and a hub that rejected an unfamiliar one would disconnect a worker for
@@ -410,6 +439,8 @@ export type PanelMessage =
         operation: 'status' | 'options' | 'cancel' | 'shutdown';
         run_id?: string;
     }
+    | { v?: number; type: 'history'; session: SessionId; request_id?: string;
+        start?: number; step?: number; limit?: number }
     | {
         v?: number;
         type: 'confirmation';
@@ -526,7 +557,7 @@ export type HubMessageType = HubMessage['type'];
 /** Every panel message `type`, in the order `docs/hub-protocol.md` lists them. */
 export const PANEL_MESSAGE_TYPES = [
     'ping', 'list_sessions', 'subscribe', 'unsubscribe', 'create_session',
-    'delete_session', 'worker', 'input', 'signal', 'confirmation', 'logs',
+    'delete_session', 'worker', 'input', 'history', 'signal', 'confirmation', 'logs',
     'status_snapshot',
 ] as const satisfies readonly PanelMessageType[];
 

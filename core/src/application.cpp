@@ -169,6 +169,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     bool run_saved = false;
     std::exception_ptr failure;
     std::uint64_t sequence = 0;
+    std::uint64_t history_revision = 0;
 
     /** Close security admission before requesting loop cancellation. */
     void cancel(const std::string& expected = {}) {
@@ -375,9 +376,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             emit("run_started");
         }));
         subscriptions.emplace_back(events.subscribe<loop::InputCommitted>([this](const auto&) {
+            ++history_revision;
             emit("input_committed");
         }));
         subscriptions.emplace_back(events.subscribe<loop::ModelCommitted>([this](const auto& event) {
+            ++history_revision;
             emit("model_response", event.state.turns.back().agent_loop_step.back().model_response);
         }));
         subscriptions.emplace_back(events.subscribe<loop::BeforeToolBatch>([this](const auto& event) {
@@ -400,6 +403,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }));
         subscriptions.emplace_back(events.subscribe<loop::EditOnRunFinished>([](const auto& event) {
             event.state.meta.updated_at = timestamp();
+        }));
+        subscriptions.emplace_back(events.subscribe<loop::StepFinished>([this](const auto&) {
+            ++history_revision;
+        }));
+        subscriptions.emplace_back(events.subscribe<loop::RunFinished>([this](const auto&) {
+            ++history_revision;
         }));
         subscriptions.emplace_back(events.subscribe<loop::StepFinished>([this](const auto&) {
             if (config.save_step) save(SaveBoundary::StepFinished);
@@ -435,6 +444,24 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 });
             }
         }));
+        subscriptions.emplace_back(events.subscribe<io::PayloadQueryEvent>(
+            [weak = weak_from_this()](const io::PayloadQueryEvent& event) {
+                if (auto self = weak.lock()) {
+                    asio::post(self->strand, [self, payload = event.payload] {
+                        try {
+                            const auto request = parse_history_request(payload);
+                            auto page = history_page(self->state, request);
+                            page["revision"] = self->history_revision;
+                            self->emit("history", std::move(page));
+                        } catch (const std::exception& error) {
+                            self->emit("history_error", {
+                                {"request_id", payload.is_object()
+                                    ? payload.value("request_id", Json()) : Json()},
+                                {"message", error.what()}});
+                        }
+                    });
+                }
+            }));
     }
 
     /** One writer drains owned event values without borrowing live state. */

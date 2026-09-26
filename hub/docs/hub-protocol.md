@@ -45,6 +45,7 @@ client can check for a feature instead of guessing.
 | `snapshot-view` | the worker's persisted snapshot can be read, never written |
 | `transcript-epoch` | `transcript_epoch` is reported, so a stale cursor is detectable |
 | `global-confirmations` | confirmations reach every client, not only subscribers |
+| `session-history` | panel can query a worker's simplified conversation history |
 
 These describe the hub **build**, not its configuration. `supervisor` means
 "this hub starts and signals worker processes", which stays true whichever
@@ -193,6 +194,7 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 | `delete_session` | `session` | answers with `session_removed`; refused while busy |
 | `worker` | `session`, `action`: `start`\|`stop`\|`restart`\|`force-kill`, optional `spec` | answers with `accepted` (carrying the result) or `worker_action_failed` |
 | `input` | `session`, `content`, optional `operation`, `request_id`, `options` | validates, sends a payload, answers with `accepted` and `request_id` |
+| `history` | `session`, optional `request_id`, `start`, `step`, `limit` | sends a read-only worker history payload; response arrives as a `history` worker event |
 | `signal` | `session`, `operation`: `status`\|`options`\|`cancel`\|`shutdown`, optional `run_id` | answers with `accepted` or `signal_not_sent` |
 | `confirmation` | `session`, `confirmation_id`, `decision`, optional `reason` | answers with `accepted` or `confirmation_rejected` |
 | `logs` | `session`, optional `limit` | answers with up to 2000 captured worker lines |
@@ -208,6 +210,18 @@ authoritative and its rejection is surfaced unchanged.
 `signal` with `operation: "cancel"` defaults `run_id` to the most recently
 observed one. A stale id is ignored by the worker, so the default is convenient
 rather than dangerous.
+
+`history` pages are a bounded display projection of the worker's in-memory
+`UserLoopStep` turns. The browser requests pages in order when it subscribes
+and refreshes after `run_finished`; it restarts pagination if the worker's
+history revision changes between pages. The hub forwards each full response
+live, but retains only a small cursor marker in its transcript and JSONL log.
+The marker has `transient_history: true` and omits `turns` and the raw document;
+it preserves sequence positions for replay without duplicating conversation
+content in hub storage.
+The authoritative restorable history remains the worker's `state.json`.
+An offline worker cannot answer a live history query; the panel keeps its last
+displayed page and offers a refresh after reconnection.
 
 ### Hub to client
 
@@ -234,6 +248,10 @@ rather than dangerous.
 `hub_sequence`, `received_at`, `known`, `issues`, `raw` (the untouched document
 as received). Unknown event names are forwarded exactly like known ones; the
 panel decides how to render them.
+The sole replay exception is a `history` response: live subscribers receive its
+full envelope, while replay contains the small `transient_history` marker
+described above. A replay marker cannot reconstruct a history page; clients
+must issue a fresh `history` query.
 
 **Open confirmations are read from the session description**, not from a field
 on `subscribed`. `SessionDescription.confirmations` is the authoritative list of

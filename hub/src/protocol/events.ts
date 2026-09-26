@@ -34,6 +34,8 @@ export const EVENT_TABLE = {
     ready: { tone: 'info', note: 'worker startup finished' },
     status: { tone: 'info', note: 'state snapshot', snapshot: true },
     options: { tone: 'info', note: 'available choices and selections', snapshot: true },
+    history: { tone: 'info', note: 'simplified conversation history page' },
+    history_error: { tone: 'warn', note: 'history query failed' },
     input_admitted: { tone: 'info', note: 'host admitted an input', run: true },
     input_rejected: { tone: 'warn', note: 'dequeued input failed validation' },
     run_started: { tone: 'info', note: 'loop admitted the invocation', run: true },

@@ -52,6 +52,8 @@ export interface PanelClient {
     subscribe(sessionId: SessionId, since?: number): void;
     /** Ask the hub to re-send a session's whole transcript, replacing what is held. */
     reloadTranscript(sessionId: SessionId): void;
+    /** Refresh the worker-backed display history. */
+    reloadHistory(sessionId: SessionId): boolean;
     refreshSessions(): void;
     /**
      * Send a message.
@@ -183,6 +185,26 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         socket.send({ type: 'subscribe', session: sessionId, since: cursor });
     }
 
+    const historyRequests = new Map<SessionId, {
+        id: string; start: number; step: number;
+        revision: number | null; retries: number;
+    }>();
+
+    function requestHistory(sessionId: SessionId, start = 0, step = 0,
+        revision: number | null = null, retries = 0): boolean {
+        if (!store.getState().hasCapability('session-history')) return false;
+        const requestId = newRequestId();
+        const sent = socket.send({ type: 'history', session: sessionId,
+            request_id: requestId, start, step, limit: 10 });
+        if (sent) {
+            historyRequests.set(sessionId, {
+                id: requestId, start, step, revision, retries,
+            });
+            if (start === 0 && step === 0) store.getState().beginHistory(sessionId);
+        }
+        return sent;
+    }
+
     /** When the outstanding heartbeat was sent, so its reply can be timed. */
     let pendingPing = 0;
 
@@ -200,6 +222,8 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 const effects = store.getState().applySubscribed(message);
                 if (effects.resubscribe) {
                     subscribe(effects.resubscribe.session, effects.resubscribe.since);
+                } else if (message.session.connected) {
+                    requestHistory(message.session.session_id);
                 }
                 return;
             }
@@ -225,6 +249,61 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             }
             case 'event':
                 store.getState().applyEvent(message);
+                if (message.envelope.event === 'history') {
+                    const page = message.envelope.data as {
+                        request_id?: unknown; next?: unknown; next_step?: unknown;
+                        total?: unknown;
+                        revision?: unknown;
+                    } | null;
+                    const pending = historyRequests.get(message.session);
+                    if (page && pending && pending.id === page.request_id) {
+                        const nextStep = typeof page.next_step === 'number'
+                            ? page.next_step : 0;
+                        if (typeof page.next !== 'number'
+                            || typeof page.total !== 'number'
+                            || typeof page.next_step !== 'number'
+                            || page.next < pending.start
+                            || page.next === pending.start && nextStep <= pending.step
+                                && page.next < page.total) {
+                            historyRequests.delete(message.session);
+                            store.getState().endHistory(message.session);
+                            store.getState().setNotice('error', 'history_cursor',
+                                'Worker returned a history page without a progressing cursor.');
+                            return;
+                        }
+                        if (pending.revision !== null && page.revision !== pending.revision) {
+                            if (pending.retries < 3) {
+                                requestHistory(message.session, 0, 0, null, pending.retries + 1);
+                            } else {
+                                historyRequests.delete(message.session);
+                                store.getState().endHistory(message.session);
+                                store.getState().setNotice('warn', 'history_changed',
+                                    'Conversation changed during history loading; refresh after the run settles.');
+                            }
+                            return;
+                        }
+                        store.getState().applyHistoryPage(message.session, message.envelope);
+                        if (typeof page.next === 'number' && typeof page.total === 'number'
+                            && (page.next < page.total
+                                || typeof page.next_step === 'number' && page.next_step > 0)) {
+                            requestHistory(message.session, page.next,
+                                nextStep,
+                                typeof page.revision === 'number' ? page.revision : null,
+                                pending.retries);
+                        } else {
+                            historyRequests.delete(message.session);
+                        }
+                    }
+                } else if (message.envelope.event === 'run_finished'
+                    && store.getState().selected === message.session) {
+                    requestHistory(message.session);
+                } else if (message.envelope.event === 'history_error') {
+                    const data = message.envelope.data as { request_id?: unknown } | null;
+                    if (historyRequests.get(message.session)?.id === data?.request_id) {
+                        historyRequests.delete(message.session);
+                        store.getState().endHistory(message.session);
+                    }
+                }
                 return;
             case 'request':
                 store.getState().applyRequest(message);
@@ -237,6 +316,12 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'connection':
                 store.getState().applyConnection(message);
+                if (message.connected && store.getState().selected === message.session) {
+                    requestHistory(message.session);
+                } else if (!message.connected) {
+                    historyRequests.delete(message.session);
+                    store.getState().endHistory(message.session);
+                }
                 return;
             case 'logs':
                 store.getState().applyLogs(message);
@@ -249,6 +334,14 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'error':
                 store.getState().applyError(message);
+                if (typeof message.request === 'object' && message.request !== null
+                    && (message.request as { type?: unknown }).type === 'history') {
+                    const session = (message.request as { session?: unknown }).session;
+                    if (typeof session === 'string') {
+                        historyRequests.delete(session);
+                        store.getState().endHistory(session);
+                    }
+                }
                 return;
             case 'pong':
                 store.getState().finishPing(pendingPing, Date.now());
@@ -338,6 +431,10 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                         : error instanceof Error ? error.message : String(error);
                     store.getState().setNotice('error', 'transcript_unavailable', detail);
                 });
+        },
+
+        reloadHistory(sessionId) {
+            return requestHistory(sessionId);
         },
 
         ping() {
