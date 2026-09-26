@@ -15,6 +15,7 @@ import {
     modelResponse,
     open,
     playTurn,
+    runningSession,
     toolResult,
 } from './harness.ts';
 
@@ -54,7 +55,17 @@ test('shows a model failure beside its run with guarded retry guidance', async (
     await notice.getByText('Technical details').click();
     await expect(notice.locator('pre')).toContainText('HTTP 503 after retries');
 
+    await emit(page, 'input_admitted', { operation: 'continue' },
+        { request_id: 'req-cont' });
     await emit(page, 'run_started', {});
+    await emit(page, 'model_response', modelResponse('Recovered answer'));
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 });
+    await expect(page.getByTestId('run-failure').first())
+        .toContainText('could be continued when it settled');
+    await expect(page.getByTestId('run-failure').first()).not.toContainText('Continue run');
+
+    await emit(page, 'run_started', {});
+    await emit(page, 'model_response', modelResponse('Partial answer before failure'));
     await emit(page, 'run_finished', {
         status: 'failed', error: 'tool effects require inspection', exchanges: 1,
         failure: { stage: 'other', can_continue: false },
@@ -62,6 +73,53 @@ test('shows a model failure beside its run with guarded retry guidance', async (
     await expect(page.getByTestId('run-failure').last())
         .toContainText('Inspect the error and worker state');
     await expect(page.getByTestId('run-failure').last()).not.toContainText('Continue run');
+    const lastRound = page.getByTestId('round').last();
+    const assistantBeforeFailure = await lastRound.evaluate((node) => {
+        const assistant = node.querySelector('[data-testid="assistant-message"]');
+        const failure = node.querySelector('[data-testid="run-failure"]');
+        return Boolean(assistant && failure
+            && assistant.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    expect(assistantBeforeFailure).toBe(true);
+});
+
+test('replays a continuation without a retained request record', async ({ page }) => {
+    await open(page);
+    await emit(page, 'input_admitted', { operation: 'continue' },
+        { request_id: 'req-pruned' });
+    await emit(page, 'run_started', {}, { request_id: 'req-pruned' });
+    await emit(page, 'model_response', modelResponse('Recovered response'),
+        { request_id: 'req-pruned' });
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 },
+        { request_id: 'req-pruned' });
+    await page.goto('/?session=demo');
+
+    await expect(page.getByTestId('round-summary').last())
+        .toContainText('continued from worker state');
+    await expect(page.getByTestId('admitted-placeholder')).toHaveCount(0);
+    await expect(page.getByTestId('outbox-item')).toHaveCount(0);
+});
+
+test('does not recommend retrying an old failure after a worker replacement', async ({ page }) => {
+    await open(page);
+    await emit(page, 'run_started', {});
+    await emit(page, 'run_finished', {
+        status: 'failed', error: 'HTTP 503',
+        failure: { stage: 'model_request', can_continue: true },
+    });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('run-failure')).toContainText('Continue run');
+
+    await page.request.post(`${STUB}/__stub/sessions`, { data: {
+        sessions: [{
+            ...runningSession('demo'),
+            identity: { state: 'live', worker_id: 'replacement-worker', since: null },
+        }],
+    } });
+    await page.reload();
+    await expect(page.getByTestId('run-failure'))
+        .toContainText('could be continued when it settled');
+    await expect(page.getByTestId('run-failure')).not.toContainText('Continue run');
 });
 
 test('recovers worker history and contains long content on a narrow viewport', async ({ page }) => {

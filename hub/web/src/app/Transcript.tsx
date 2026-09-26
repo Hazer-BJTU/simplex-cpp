@@ -171,20 +171,24 @@ function ProblemLine({ problem }: { problem: Problem }) {
 }
 
 /** Visible run failure; raw provider diagnostics stay available on demand. */
-function RunFailureNotice({ failure }: { failure: RunFailure }) {
+function RunFailureNotice({ failure, actionable }: {
+    failure: RunFailure;
+    actionable: boolean;
+}) {
     const model = failure.stage === 'model_request';
+    let guidance = 'Inspect the error and worker state before trying again.';
+    if (model && actionable) {
+        guidance = 'The worker kept the conversation state. Use Continue run in Command mode to try again.';
+    } else if (failure.canContinue) {
+        guidance = 'The worker reported that this run could be continued when it settled.';
+        if (!model) guidance += ' Inspect the technical details.';
+    }
     return (
         <div data-testid="run-failure" role="alert"
             className="rounded-lg border border-danger-line bg-danger-soft px-3 py-2 text-sm
                 text-danger">
             <p className="font-medium">{model ? 'Model request failed' : 'Run failed'}</p>
-            <p className="mt-1">
-                {model && failure.canContinue
-                    ? 'The worker kept the conversation state. Use Continue run in Command mode to try again.'
-                    : failure.canContinue
-                        ? 'The worker kept the conversation state. Inspect the error before continuing.'
-                        : 'Inspect the error and worker state before trying again.'}
-            </p>
+            <p className="mt-1">{guidance}</p>
             {failure.error && (
                 <details className="mt-2">
                     <summary className="cursor-pointer text-xs">Technical details</summary>
@@ -405,10 +409,11 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
 }
 
 /** Everything in a round, in the order it happened. */
-function RoundBody({ round, historicalInput, showDetails }: {
+function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
     round: Round;
     historicalInput: HistoryTurn | null;
     showDetails: boolean;
+    actionableFailure: boolean;
 }) {
     const calls = useMemo(() => {
         const index = new Map<string, ToolCall>();
@@ -450,8 +455,6 @@ function RoundBody({ round, historicalInput, showDetails }: {
                 <AdmittedPlaceholder />
             ) : null}
 
-            {round.failure && <RunFailureNotice failure={round.failure} />}
-
             {round.timeline.map((entry) => {
                 if (entry.kind === 'assistant') {
                     const block = assistant.get(entry.key);
@@ -479,6 +482,10 @@ function RoundBody({ round, historicalInput, showDetails }: {
                 if (!envelope || !showDetails) return null;
                 return <ProtocolLine key={entry.key} envelope={envelope} />;
             })}
+
+            {round.failure && (
+                <RunFailureNotice failure={round.failure} actionable={actionableFailure} />
+            )}
         </div>
     );
 }
@@ -499,6 +506,24 @@ export function Transcript() {
         () => buildRounds(items, confirmations, requests),
         [items, confirmations, requests],
     );
+
+    // Failure metadata describes the past. A retry hint is current only while
+    // that failed run is the latest run of the same connected worker.
+    const actionableFailureKey = useMemo(() => {
+        const latestRun = rounds.findLast((round) => round.kind === 'run');
+        if (!latestRun?.failure || latestRun.failure.stage !== 'model_request'
+            || !latestRun.failure.canContinue || view?.runActive) return null;
+        if (!session?.connected || session.identity.state !== 'live') return null;
+        const finished = latestRun.protocol.findLast(
+            (item) => item.envelope.event === 'run_finished',
+        )?.envelope;
+        const worker = session.identity.worker_id;
+        const latestEvent = items.findLast((item) => item.kind === 'event');
+        if (!worker || finished?.worker_id !== worker
+            || (latestEvent?.kind === 'event'
+                && latestEvent.envelope.worker_id !== worker)) return null;
+        return latestRun.key;
+    }, [rounds, session, view?.runActive, items]);
 
     // The worker history is a fallback for turns absent from hub replay. Keep
     // detailed live rounds, including their tool cards, when both sources
@@ -669,7 +694,8 @@ export function Transcript() {
                             <div className={round.kind === 'run' ? 'mt-2' : ''}>
                                 <RoundBody round={round}
                                     historicalInput={historyForRun.get(round.key) ?? null}
-                                    showDetails={showDetails} />
+                                    showDetails={showDetails}
+                                    actionableFailure={round.key === actionableFailureKey} />
                             </div>
                         )}
                         {round.kind === 'run' && !isOpen(round) && (

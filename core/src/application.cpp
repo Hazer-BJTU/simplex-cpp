@@ -543,7 +543,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             active = true;
             state.meta.updated_at = timestamp();
             run_saved = false;
-            emit("input_admitted");
+            emit("input_admitted", {{"operation", input->has_message
+                ? "message" : "continue"}});
             loop::RunResult result;
             try {
                 result = co_await loop::run(*model, registry, events, strand, state,

@@ -300,7 +300,9 @@ The worker requires an existing conversation turn and reports an error if there
 is none. The panel shows the continued run without a user-message bubble.
 When a run fails, its transcript shows a visible failure notice with technical
 details available on demand. A model-request failure suggests **Continue run**
-only when the worker reports that the settled state permits continuation;
+only while it remains the latest run of the same connected worker and the
+worker reported that its settled state permits continuation. Older failures
+keep their historical outcome without a stale retry instruction;
 older workers without that classification receive general failure wording.
 
 ## Files on disk

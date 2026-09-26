@@ -140,6 +140,10 @@ sections:
                     input["data"]["request_id"] = "two";
                     co_await send(input);
                 }
+            } else if (name == "input_admitted") {
+                BOOST_TEST(event.at("data").at("operation") ==
+                    (mode == Mode::ModelFailure && completed == 1
+                        ? "continue" : "message"));
             } else if (name == "run_started") {
                 if (mode == Mode::Stop) {
                     std::thread stopper([&] { app.stop(); });

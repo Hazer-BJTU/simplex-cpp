@@ -378,8 +378,8 @@ export function buildRounds(
     confirmations: ReadonlyMap<string, ConfirmationPrompt>,
     requests: ReadonlyMap<string, RequestRecord> = new Map(),
 ): Round[] {
-    // Request records survive panel reloads, while the worker's admission
-    // event does not say whether it admitted a message or a continuation.
+    // Older workers left admission data empty. Their request records can help
+    // while retained, but newer replayable admission events take precedence.
     const continuationIds = new Set<string>();
     for (const request of requests.values()) {
         if (request.operation === 'continue') continuationIds.add(request.request_id);
@@ -460,8 +460,13 @@ export function buildRounds(
         if (name === 'input_admitted') {
             // A second admission while a run already holds one is a new turn.
             if (current.kind !== 'run' || current.admitted !== null) startRun();
-            if (continuationIds.has(envelope.request_id)) current.continued = true;
-            else if (current.input === null) current.admitted = item;
+            const operation = str(obj(envelope.data)?.operation);
+            if (operation === 'continue'
+                || (!operation && continuationIds.has(envelope.request_id))) {
+                current.continued = true;
+            } else if (current.input === null) {
+                current.admitted = item;
+            }
             current.open = true;
             track(current, envelope);
             current.protocol.push(item);

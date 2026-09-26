@@ -468,7 +468,7 @@ may occur in nested dataclass records.
 | `options` | Options object | Available choices and current selections returned in response to the `options` signal. |
 | `history` | Display history page | Read-only response to a `history` payload; not a run event. |
 | `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
-| `input_admitted` | `{}` | Host admitted an input and assigned its run ID. |
+| `input_admitted` | `{ "operation": "message" | "continue" }` | Host admitted an input and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
 | `input_rejected` | `{ "request_id": any JSON value or null, "message": string }` | Dequeued input failed host validation; no run was started for that input. |
 | `run_started` | `{}` | Loop admitted the invocation. |
 | `input_committed` | `{}` | New user input was integrated in memory. |

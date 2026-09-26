@@ -193,6 +193,22 @@ describe('rounds', () => {
         assert.equal(buildRounds(items, noPrompts).at(-1).admitted?.id, 'e1');
     });
 
+    it('reconstructs a continuation from admission after its request record is pruned', () => {
+        const items = [
+            event('e1', 'input_admitted', { operation: 'continue' },
+                { request_id: 'req-pruned' }),
+            event('e2', 'run_started', {}, { request_id: 'req-pruned' }),
+            response('e3', 'continued', null, { request_id: 'req-pruned' }),
+            event('e4', 'run_finished', { status: 'completed' },
+                { request_id: 'req-pruned' }),
+        ];
+        const run = buildRounds(items, noPrompts, new Map()).at(-1);
+        assert.equal(run.continued, true);
+        assert.equal(run.input, null);
+        assert.equal(run.admitted, null);
+        assert.equal(run.assistant[0].text, 'continued');
+    });
+
     it('groups one turn into a single round', () => {
         const items = [
             event('e1', 'ready', {}),
