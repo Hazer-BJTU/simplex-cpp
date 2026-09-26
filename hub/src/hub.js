@@ -8,7 +8,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { authorizePanel } from './http/auth.ts';
-import { createHttpServer, sendError, sendJson } from './http/server.js';
+import { createHttpServer, sendError, sendJson } from './http/server.ts';
 import { createLauncher } from './launch/launcher.ts';
 import { MockProvider, parseAddress } from './mock/provider.ts';
 import { WorkerSupervisor } from './launch/supervisor.js';

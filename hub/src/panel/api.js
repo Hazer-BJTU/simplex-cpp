@@ -17,7 +17,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { authorizePanel, presentedToken, safeEqual } from '../http/auth.ts';
-import { readJsonBody, sendError, sendJson } from '../http/server.js';
+import { readJsonBody, sendError, sendJson } from '../http/server.ts';
 import { persistenceRoot } from '../launch/config-render.ts';
 import { normalizeSpec } from '../launch/spec.ts';
 import { buildPayload, buildSignal, newRequestId } from '../protocol/messages.ts';
