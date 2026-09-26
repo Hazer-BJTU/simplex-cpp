@@ -27,7 +27,7 @@ import type { ConfirmMode } from '../state/store.ts';
 import { useClient } from './ClientContext.tsx';
 
 /** How tall the textarea may grow before it scrolls instead. */
-const MAX_HEIGHT_PX = 144;
+const MAX_HEIGHT_PX = 192;
 
 /** One removable part the operator attached. */
 interface Reference {
@@ -183,7 +183,7 @@ export function Composer() {
                 <textarea
                     ref={box}
                     value={draft}
-                    rows={1}
+                    rows={3}
                     aria-label="message"
                     onChange={(event) => setDraft(event.target.value)}
                     onKeyDown={(event) => {

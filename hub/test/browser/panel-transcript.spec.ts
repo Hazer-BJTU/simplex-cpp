@@ -81,6 +81,52 @@ test('collapses older restored turns while keeping them available', async ({ pag
     await expect(first).toContainText('answer 0');
 });
 
+test('a history refresh keeps detailed tool cards beside the final reply', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true, historyTurns: [],
+    } });
+    await emit(page, 'ready', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect.poll(async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history').length;
+    }).toBe(1);
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
+    await emit(page, 'input_admitted', {}, { request_id: 'req-tools' });
+    await emit(page, 'run_started', {});
+    await emit(page, 'input_committed', {});
+    await emit(page, 'model_response', modelResponse(''));
+    await emit(page, 'tool_calls', [call('tool-1', 'run_command', { command: 'echo hello' })]);
+    await emit(page, 'tool_results', [toolResult('tool-1', 'run_command', PROCESS_OUTPUT)]);
+    await emit(page, 'model_response', modelResponse('Final answer after the tool.'));
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyTurns: [{ index: 0,
+            user: [{ type: 'text', raw: 'Please run the tool.' }],
+            steps: [
+                { index: 0, content: [], tool_calls: 1 },
+                { index: 1, content: [{ type: 'text', raw: 'Final answer after the tool.' }],
+                    tool_calls: 0 },
+            ], omitted_steps: 0 }],
+    } });
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 2 });
+    await expect(page.getByTestId('restored-user-message'))
+        .toContainText('Please run the tool.');
+    await expect(page.getByTestId('history-turn')).toHaveCount(0);
+    await expect(page.getByTestId('tool-card')).toHaveCount(1);
+    await expect(page.getByTestId('tool-card')).toHaveAttribute('data-status', 'ok');
+    await expect(page.getByTestId('assistant-message').last())
+        .toContainText('Final answer after the tool.');
+
+    await page.reload();
+    await expect(page.getByTestId('restored-user-message'))
+        .toContainText('Please run the tool.');
+    await expect(page.getByTestId('history-turn')).toHaveCount(0);
+    await expect(page.getByTestId('tool-card')).toHaveCount(1);
+});
+
 test('waits for worker history support before querying an older worker', async ({ page }) => {
     await open(page);
     await page.request.post(`${STUB}/__stub/settings`, { data: { historyEnabled: true } });
@@ -107,14 +153,15 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
     const send = page.getByRole('button', { name: 'Send' });
     const initial = await message.boundingBox();
     expect(initial).not.toBeNull();
-    expect(initial!.height).toBeLessThan(50);
+    expect(initial!.height).toBeGreaterThanOrEqual(65);
+    expect(initial!.height).toBeLessThan(95);
 
     await message.fill('long input '.repeat(180));
     const field = await message.boundingBox();
     const controls = await Promise.all([attach.boundingBox(), confirmation.boundingBox(),
         send.boundingBox()]);
     expect(field).not.toBeNull();
-    expect(field!.height).toBeLessThanOrEqual(145);
+    expect(field!.height).toBeLessThanOrEqual(193);
     for (const control of controls) {
         expect(control).not.toBeNull();
         expect(control!.y).toBeGreaterThanOrEqual(field!.y + field!.height);

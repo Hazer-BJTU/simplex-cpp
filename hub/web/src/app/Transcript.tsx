@@ -198,6 +198,19 @@ function AdmittedPlaceholder() {
     );
 }
 
+/** Recover the user's text for a detailed run replayed from hub events. */
+function RestoredUserMessage({ turn }: { turn: HistoryTurn }) {
+    const text = turn.user.map(contentText).filter(Boolean).join('\n\n');
+    return (
+        <article data-testid="restored-user-message" className="ml-auto w-fit max-w-full
+            rounded-lg bg-accent px-3 py-2 text-accent-ink">
+            <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
+                {text || '(empty input)'}
+            </p>
+        </article>
+    );
+}
+
 /** Compact history projection; tool arguments and results never enter it. */
 function HistoryRound({ turn, open, onToggle }: {
     turn: HistoryTurn; open: boolean; onToggle: () => void;
@@ -300,8 +313,9 @@ function AssistantMessage({ block, calls }: {
 }
 
 /** The one-line summary a folded turn shows. */
-function RoundSummary({ round, expanded, onToggle }: {
+function RoundSummary({ round, historicalInput, expanded, onToggle }: {
     round: Round;
+    historicalInput: HistoryTurn | null;
     expanded: boolean;
     onToggle: () => void;
 }) {
@@ -322,7 +336,9 @@ function RoundSummary({ round, expanded, onToggle }: {
 
     const preview = round.input
         ? round.input.parts.map((part: ContentPart) => part.raw).join(' ').slice(0, 80)
-        : round.admitted ? '(input replayed without its text)' : '';
+        : round.admitted && historicalInput
+            ? historicalInput.user.map(contentText).filter(Boolean).join(' ').slice(0, 80)
+            : round.admitted ? '(input replayed without its text)' : '';
 
     return (
         <button
@@ -345,7 +361,11 @@ function RoundSummary({ round, expanded, onToggle }: {
 }
 
 /** Everything in a round, in the order it happened. */
-function RoundBody({ round, showDetails }: { round: Round; showDetails: boolean }) {
+function RoundBody({ round, historicalInput, showDetails }: {
+    round: Round;
+    historicalInput: HistoryTurn | null;
+    showDetails: boolean;
+}) {
     const calls = useMemo(() => {
         const index = new Map<string, ToolCall>();
         for (const call of round.calls) index.set(call.key, call);
@@ -380,6 +400,8 @@ function RoundBody({ round, showDetails }: { round: Round; showDetails: boolean 
         <div className="space-y-2">
             {round.input ? (
                 <UserMessage item={round.input} />
+            ) : round.admitted && historicalInput ? (
+                <RestoredUserMessage turn={historicalInput} />
             ) : round.admitted ? (
                 <AdmittedPlaceholder />
             ) : null}
@@ -426,31 +448,36 @@ export function Transcript() {
     const dropped = view?.droppedItems ?? 0;
     const showDetails = usePanel((state) => state.showDetails);
 
-    const displayItems = useMemo(() => {
-        const baseline = view?.historySequence;
-        if (baseline === null || baseline === undefined) return items;
-        return items.filter((item) => {
-            if (item.kind === 'event') {
-                if (item.envelope.worker_id !== view?.historyWorker) return false;
-                return typeof item.envelope.sequence === 'number'
-                    && item.envelope.sequence > baseline;
-            }
-            if (item.kind === 'outbox') {
-                if (item.state === 'pending') return true;
-                if (item.admittedWorker !== view?.historyWorker) return true;
-                return item.admittedSequence === undefined
-                    || item.admittedSequence > baseline;
-            }
-            if (item.kind === 'request') return item.request.state === 'sent'
-                || item.request.state === 'unknown';
-            return true;
-        });
-    }, [items, view?.historySequence, view?.historyWorker]);
-
     const rounds = useMemo(
-        () => buildRounds(displayItems, confirmations),
-        [displayItems, confirmations],
+        () => buildRounds(items, confirmations),
+        [items, confirmations],
     );
+
+    // The worker history is a fallback for turns absent from hub replay. Keep
+    // detailed live rounds, including their tool cards, when both sources
+    // describe the same committed input. The projection supplies the missing
+    // user text for an admitted input replayed without its panel outbox.
+    const { olderHistory, historyForRun } = useMemo(() => {
+        const mapped = new Map<string, HistoryTurn>();
+        const baseline = view?.historySequence;
+        const worker = view?.historyWorker;
+        if (view?.historyLoading || baseline === null || baseline === undefined || !worker) {
+            return { olderHistory: history, historyForRun: mapped };
+        }
+        const detailed = rounds.filter((round) => round.kind === 'run'
+            && round.protocol.some((item) => item.envelope.event === 'input_committed'
+                && item.envelope.worker_id === worker
+                && typeof item.envelope.sequence === 'number'
+                && item.envelope.sequence <= baseline));
+        const count = Math.min(detailed.length, history.length);
+        const older = history.slice(0, history.length - count);
+        if (count > 0) {
+            detailed.slice(-count).forEach((round, index) => {
+                mapped.set(round.key, history[older.length + index]!);
+            });
+        }
+        return { olderHistory: older, historyForRun: mapped };
+    }, [history, rounds, view?.historyLoading, view?.historySequence, view?.historyWorker]);
 
     // Which turns the reader has opened or closed by hand. Absent means the
     // default: the most recent few are open.
@@ -553,12 +580,12 @@ export function Transcript() {
                 {view?.historyLoading && (
                     <p className="text-xs text-ink-muted">loading conversation history…</p>
                 )}
-                {history.map((turn, index) => <HistoryRound key={turn.index} turn={turn}
-                    open={historyToggled.get(turn.index) ?? index >= history.length - OPEN_ROUNDS}
+                {olderHistory.map((turn, index) => <HistoryRound key={turn.index} turn={turn}
+                    open={historyToggled.get(turn.index) ?? index >= olderHistory.length - OPEN_ROUNDS}
                     onToggle={() => setHistoryToggled((current) => {
                         const next = new Map(current);
                         const currentOpen = current.get(turn.index)
-                            ?? index >= history.length - OPEN_ROUNDS;
+                            ?? index >= olderHistory.length - OPEN_ROUNDS;
                         next.set(turn.index, !currentOpen);
                         return next;
                     })} />)}
@@ -568,7 +595,7 @@ export function Transcript() {
                        and saying "nothing yet" here would be a claim the panel
                        cannot support. */
                     <LoadingLines label="waiting for this session's transcript" lines={4} />
-                ) : rounds.length === 0 && history.length === 0 && !view.historyLoading ? (
+                ) : rounds.length === 0 && olderHistory.length === 0 && !view.historyLoading ? (
                     <EmptyState
                         icon="empty-session"
                         title="Nothing in this transcript yet"
@@ -586,13 +613,16 @@ export function Transcript() {
                         {round.kind === 'run' && (
                             <RoundSummary
                                 round={round}
+                                historicalInput={historyForRun.get(round.key) ?? null}
                                 expanded={isOpen(round)}
                                 onToggle={() => toggle(round)}
                             />
                         )}
                         {(round.kind === 'prelude' || isOpen(round)) && (
                             <div className={round.kind === 'run' ? 'mt-2' : ''}>
-                                <RoundBody round={round} showDetails={showDetails} />
+                                <RoundBody round={round}
+                                    historicalInput={historyForRun.get(round.key) ?? null}
+                                    showDetails={showDetails} />
                             </div>
                         )}
                         {round.kind === 'run' && !isOpen(round) && (
