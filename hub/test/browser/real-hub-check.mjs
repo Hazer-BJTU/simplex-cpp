@@ -85,7 +85,7 @@ await approval.getByRole('button', { name: 'Approve' }).click();
 await page.getByTestId('approval').waitFor({ state: 'detached', timeout: 30_000 });
 console.log('approval settled');
 
-await page.getByTestId('transcript-event').filter({ hasText: 'run_command' }).last()
+await page.getByTestId('tool-card').filter({ hasText: 'run_command' }).last()
     .waitFor({ timeout: 30_000 });
 await page.waitForTimeout(3000);
 
@@ -98,7 +98,7 @@ await page.screenshot({ path: `${SHOTS}/p4-real-hub.png` });
 // A reload is the harshest test of the replay path: a fresh page, an empty
 // store, and a cursor of zero against a hub that already has history.
 await page.reload();
-await page.getByTestId('transcript-event').first().waitFor({ timeout: 20_000 });
+await page.getByTestId('tool-card').first().waitFor({ timeout: 20_000 });
 console.log('--- after a reload ---');
 console.log(await page.getByTestId('transcript-stats').innerText());
 

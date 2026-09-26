@@ -62,6 +62,8 @@ export function StatusBar() {
     // them here never causes a re-render.
     const clearRefusal = usePanel((state) => state.clearRefusal);
     const dismissNotice = usePanel((state) => state.dismissNotice);
+    const showDetails = usePanel((state) => state.showDetails);
+    const toggleDetails = usePanel((state) => state.toggleDetails);
 
     const described = describeConnection(
         connection.state, connection.attempt, connection.nextDelayMs,
@@ -84,6 +86,19 @@ export function StatusBar() {
                         {connection.ignoredFrames} message(s) from a newer hub were ignored
                     </span>
                 )}
+                <label
+                    className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-600"
+                    title="show the protocol's own events, in the order they arrived"
+                >
+                    <input
+                        type="checkbox"
+                        data-testid="details-toggle"
+                        checked={showDetails}
+                        onChange={(event) => toggleDetails()}
+                        className="h-3.5 w-3.5 accent-slate-700"
+                    />
+                    technical details
+                </label>
             </div>
 
             {authRequired && (

@@ -26,3 +26,171 @@ body {
     margin: 0;
     font-family: var(--font-sans);
 }
+
+/*
+ * Markdown.
+ *
+ * Tailwind's preflight removes the browser's own heading and list styling, which
+ * is right for a component library and wrong for a document: a model's reply is
+ * a document. These rules restore the reading rhythm inside `.md` only, so a
+ * heading in a response looks like a heading without every `<ul>` in the panel
+ * growing bullets.
+ */
+.md {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--color-slate-800);
+    overflow-wrap: anywhere;
+}
+
+.md > * + * {
+    margin-top: 0.6em;
+}
+
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--color-slate-900);
+}
+
+.md h1 { font-size: 1.35em; }
+.md h2 { font-size: 1.2em; }
+.md h3 { font-size: 1.08em; }
+.md h4,
+.md h5,
+.md h6 { font-size: 1em; }
+
+.md ul,
+.md ol {
+    padding-left: 1.4em;
+}
+
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li + li { margin-top: 0.15em; }
+.md li > ul,
+.md li > ol { margin-top: 0.15em; }
+
+/* A GFM task list draws its own checkbox, so the bullet would be a second one. */
+.md li:has(> input[type="checkbox"]) {
+    list-style: none;
+    margin-left: -1.2em;
+}
+
+.md blockquote {
+    border-left: 3px solid var(--color-slate-300);
+    padding-left: 0.75em;
+    color: var(--color-slate-600);
+}
+
+.md hr {
+    border: 0;
+    border-top: 1px solid var(--color-slate-200);
+}
+
+.md :not(pre) > code {
+    background: var(--color-slate-100);
+    border-radius: 3px;
+    padding: 0.1em 0.3em;
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+}
+
+.md table {
+    border-collapse: collapse;
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+}
+
+.md th,
+.md td {
+    border: 1px solid var(--color-slate-200);
+    padding: 0.25em 0.5em;
+    text-align: left;
+}
+
+.md th {
+    background: var(--color-slate-50);
+    font-weight: 600;
+}
+
+.md del { color: var(--color-slate-500); }
+
+/*
+ * Code highlighting.
+ *
+ * `rehype-highlight` marks tokens with the standard `hljs-*` class names and
+ * this colours them. Written here rather than importing one of highlight.js's
+ * own themes so the palette is the panel's, and so there is no second
+ * stylesheet waiting to drift from the first.
+ */
+.hljs-comment,
+.hljs-quote {
+    color: var(--color-slate-400);
+    font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag,
+.hljs-type,
+.hljs-name,
+.hljs-strong {
+    color: #7c3aed;
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+    color: #047857;
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-link,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+    color: #b45309;
+}
+
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.function_,
+.hljs-built_in,
+.hljs-class .hljs-title {
+    color: #1d4ed8;
+}
+
+.hljs-attr,
+.hljs-property,
+.hljs-selector-class,
+.hljs-selector-id {
+    color: #0e7490;
+}
+
+.hljs-meta,
+.hljs-punctuation,
+.hljs-operator {
+    color: var(--color-slate-500);
+}
+
+.hljs-deletion {
+    color: #b91c1c;
+}
+
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+

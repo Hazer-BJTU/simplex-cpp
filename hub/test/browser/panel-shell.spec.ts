@@ -9,39 +9,20 @@
  * socket, client, store and component is what broke, not any single piece.
  *
  * The hub is `stub-hub.mjs`; it can be told to emit, confirm and restart, which
- * a real hub cannot be asked to do on cue.
+ * a real hub cannot be asked to do on cue. What lands on the page is checked in
+ * `panel-transcript.spec.ts`.
  */
 import { expect, test, type Page } from '@playwright/test';
+import { STUB, emit, modelResponse, open, setSessions } from './harness.ts';
 
-const STUB = `http://127.0.0.1:${process.env.STUB_HUB_PORT ?? 4180}`;
-
-/** Reset the stub, then load the panel. */
-async function open(page: Page, query = ''): Promise<void> {
-    await page.request.post(`${STUB}/__stub/reset`);
-    await page.goto(`/app.html${query}`);
-    await expect(page.getByText('connected', { exact: true })).toBeVisible();
+/** One complete model response with the given text. */
+function answer(text: string) {
+    return modelResponse(text);
 }
 
-/** Emit one envelope through the stub. */
-async function emit(
-    page: Page,
-    event: string,
-    data: unknown,
-    extra: Record<string, unknown> = {},
-): Promise<void> {
-    const response = await page.request.post(`${STUB}/__stub/emit`, {
-        data: { session: 'demo', event, data, extra },
-    });
-    expect(response.ok()).toBe(true);
-}
-
-/** A complete model response, as the worker protocol defines one. */
-function modelResponse(text: string) {
-    return {
-        type: 'model_response',
-        role: 'assistant',
-        content: [{ type: 'text', raw: text }],
-    };
+/** How many assistant messages are on the page. */
+async function answers(page: Page): Promise<number> {
+    return page.getByTestId('assistant-message').count();
 }
 
 test('the shell renders and lists the hub\'s sessions', async ({ page }) => {
@@ -54,8 +35,8 @@ test('the shell renders and lists the hub\'s sessions', async ({ page }) => {
 
 test('selecting a session shows what the hub replays', async ({ page }) => {
     await open(page);
-    await emit(page, 'model_response', modelResponse('replayed history'));
-    await emit(page, 'model_response', modelResponse('and one more'));
+    await emit(page, 'model_response', answer('replayed history'));
+    await emit(page, 'model_response', answer('and one more'));
 
     await page.getByTestId('session-row').click();
 
@@ -65,15 +46,15 @@ test('selecting a session shows what the hub replays', async ({ page }) => {
 
 test('a reconnecting panel keeps the transcript it already had (A2)', async ({ page }) => {
     await open(page);
-    await emit(page, 'model_response', modelResponse('first answer'));
+    await emit(page, 'model_response', answer('first answer'));
     await page.getByTestId('session-row').click();
     await expect(page.getByTestId('transcript')).toContainText('first answer');
 
-    await emit(page, 'model_response', modelResponse('second answer'));
-    await emit(page, 'model_response', modelResponse('third answer'));
+    await emit(page, 'model_response', answer('second answer'));
+    await emit(page, 'model_response', answer('third answer'));
     await expect(page.getByTestId('transcript')).toContainText('third answer');
 
-    const before = await page.getByTestId('transcript-event').count();
+    const before = await answers(page);
     expect(before).toBeGreaterThanOrEqual(3);
 
     // The stub closes every panel socket and comes back with a new transcript
@@ -85,43 +66,21 @@ test('a reconnecting panel keeps the transcript it already had (A2)', async ({ p
 
     // The new hub process has nothing to replay, so everything on screen is
     // what the panel kept. This is the assertion A2 is about.
-    const after = await page.getByTestId('transcript-event').count();
-    expect(after, 'the transcript was cleared by the reconnect').toBeGreaterThanOrEqual(before);
+    expect(await answers(page), 'the transcript was cleared by the reconnect')
+        .toBeGreaterThanOrEqual(before);
     await expect(page.getByTestId('transcript')).toContainText('first answer');
-    await expect(page.getByTestId('transcript')).toContainText('second answer');
     await expect(page.getByTestId('transcript')).toContainText('third answer');
 
     // And the new process's numbering does not collide with the old one's: the
     // envelope it sends is numbered 1 again, and both are on screen.
-    await emit(page, 'model_response', modelResponse('after the restart'));
+    await emit(page, 'model_response', answer('after the restart'));
     await expect(page.getByTestId('transcript')).toContainText('after the restart');
     await expect(page.getByTestId('transcript')).toContainText('first answer');
 });
 
 test('an approval for a session the panel is not watching still arrives (A1)', async ({ page }) => {
     await page.request.post(`${STUB}/__stub/reset`);
-    await page.request.post(`${STUB}/__stub/sessions`, {
-        data: {
-            sessions: [
-                {
-                    session_id: 'watched', created_at: '2026-01-01T00:00:00.000Z', spec: {},
-                    connected: true,
-                    identity: { state: 'live', worker_id: 'w', since: null },
-                    stats: { events: 0, gaps: 0, duplicates: 0, protocolErrors: 0, incarnations: 1 },
-                    last_run_id: '', last_event_at: null, last_event: null,
-                    confirmations: [], process: null, requests: [],
-                },
-                {
-                    session_id: 'other', created_at: '2026-01-02T00:00:00.000Z', spec: {},
-                    connected: true,
-                    identity: { state: 'live', worker_id: 'w', since: null },
-                    stats: { events: 0, gaps: 0, duplicates: 0, protocolErrors: 0, incarnations: 1 },
-                    last_run_id: '', last_event_at: null, last_event: null,
-                    confirmations: [], process: null, requests: [],
-                },
-            ],
-        },
-    });
+    await setSessions(page, ['watched', 'other']);
     await page.goto('/app.html');
     await expect(page.getByText('connected', { exact: true })).toBeVisible();
 
@@ -172,9 +131,15 @@ test('the page reports no console errors while loading and using a session', asy
     page.on('pageerror', (error) => errors.push(error.message));
 
     await open(page);
-    await emit(page, 'model_response', modelResponse('hello'));
+    await emit(page, 'input_admitted', {}, { request_id: 'req-1' });
+    await emit(page, 'model_response', answer('# hello\n\nwith a [link](https://example.com)'));
+    await emit(page, 'run_finished', { status: 'completed' });
     await page.getByTestId('session-row').click();
     await expect(page.getByTestId('transcript')).toContainText('hello');
+    // The switch changes what is rendered, so it is part of what must not
+    // produce a console error.
+    await page.getByTestId('details-toggle').check();
+    await expect(page.getByTestId('protocol-line').first()).toBeVisible();
 
     expect(errors).toEqual([]);
 });
