@@ -15,16 +15,20 @@ behaviour: it implements the worker side of
 
 ## Requirements
 
-- Node.js 20.11 or newer (developed on 24).
+- Node.js 20.11 or newer to *run* the hub (developed on 24). The panel's
+  toolchain asks for more: 22.18 for the shared protocol module, which is
+  TypeScript loaded through Node's type stripping, and 22.12 for Vitest. Those
+  are development-time requirements; `npm start` does not need them.
 - A built worker binary — `build/bin/simplex_worker` plus its `plugins/` and
   `prompts/` directories. Build it with the repository's normal CMake flow.
-- One runtime dependency: [`ws`](https://github.com/websockets/ws).
+- One runtime dependency: [`ws`](https://github.com/websockets/ws). Everything
+  else in `package.json` is a development dependency.
 
 ## Quick start
 
 ```sh
 cd hub
-npm install
+npm install          # add --omit=dev to skip the panel's build toolchain
 npm start
 ```
 
@@ -182,28 +186,39 @@ read it; nothing can replace, edit, or reset it.
 ## Tests
 
 ```sh
-npm test          # unit and integration tests, no build required
-npm run test:e2e  # end-to-end against build/bin/simplex_worker (skipped if absent)
+npm run typecheck   # tsc over the server, the shared protocol, and the panel
+npm test            # unit and integration tests, no build required
+npm run build       # bundle the new panel into web/dist
+npx playwright test # the panel in a browser Playwright brings with it
+npm run test:e2e    # end-to-end against build/bin/simplex_worker (skipped if absent)
 ```
 
 The end-to-end tests drive the real binary through the hub and the offline mock:
 a full loop with a real tool call and confirmation, a crashed hub whose worker is
 adopted by the next hub, and the panel itself in headless Chrome (the browser
 check skips when none is installed; set `PANEL_REQUIRE_BROWSER=1` to make that a
-failure, and `CHROME_BIN` to choose one). Set `SIMPLEX_WORKER_BIN` to test a
-different build.
+failure, and `CHROME_BIN` to choose one). Set `SIMLEX_WORKER_BIN` to test a
+different build. That Chrome check is the panel being replaced: it drives the
+old DOM through a hand-written CDP client, and the Playwright suite is what
+takes over as the new panel lands.
+
+Two panels coexist while the rewrite is in progress. `web/index.html` is the
+panel you get today; `web/app.html` is the new one, built from `web/src` into
+`web/dist` and not yet served by the hub. `npm run dev:panel` runs Vite against
+a hub on `127.0.0.1:8800` when you want to iterate on it with hot reload.
 
 ### Continuous integration
 
-Two jobs in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) cover this
-package. Neither uses the C++ build images: those pin a compiler and Boost, carry
+Three jobs in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) cover this
+package. None uses the C++ build images: those pin a compiler and Boost, carry
 no Node, and are digest-pinned, so a Node install there would enter the plugin
 ABI fingerprint the C++ jobs depend on.
 
 | Job | Subject | Notes |
 | --- | --- | --- |
-| `hub-test` | the suite on the declared Node floor (20.11) and the current release (24) | no C++ tree needed; drives stand-in workers over real WebSockets |
-| `hub-e2e` | the hub against the *staged release* worker from `portable-release`, plus the panel in the runner's Chrome | the first workload that runs a release binary rather than a ctest executable |
+| `hub-test` | the suite and the type checker on the declared Node floor (20.11) and the current release (24) | no C++ tree needed; drives stand-in workers over real WebSockets |
+| `hub-panel` | the panel build and its browser tests | Node 24 only: Vite and Vitest both require more than the hub's floor, and installing a browser needs root |
+| `hub-e2e` | the hub against the *staged release* worker from `portable-release`, plus the old panel in the runner's Chrome | the first workload that runs a release binary rather than a ctest executable |
 
 Between them they also assert things a reader might otherwise assume:
 
@@ -211,13 +226,15 @@ Between them they also assert things a reader might otherwise assume:
   `core/docs/worker-protocol.md` and fails when core adds an event, a signal, an
   input operation, or an option category the hub does not know about. A hub that
   silently rendered a new event as "unknown" would otherwise stay green.
-- **Panel integrity.** The panel has no build step, so nothing compiles it.
+- **Protocol constants.** `test/protocol-constants.test.js` fails if the hub's
+  announced version, the version stamped on every panel message, the browser's
+  copy of it, and `shared/protocol.ts` ever disagree.
+- **Panel integrity.** The old panel has no build step, so nothing compiles it.
   `test/panel-assets.test.js` checks that every referenced asset exists, every
   module parses, every import resolves, both theme token sets exist, and nothing
   writes markup as HTML.
-- **The panel in a browser.** `test/e2e/panel.test.js` loads it in headless
-  Chrome, follows a real run, clicks Approve in the confirmation modal, and
-  switches the theme. It is a smoke test, not a UI suite.
+- **The panel in a browser.** `npx playwright test` builds the new panel, serves
+  it, loads it in the browser Playwright installs, and fails on a console error.
 
 Not covered by CI: a real provider (the offline mock stands in), `wss` and
 reverse-proxy behaviour, long-running sessions, and operating systems other than

@@ -112,20 +112,81 @@ jobs:
 
       - name: Install dependencies
         working-directory: hub
-        # npm ci, not install: package-lock.json is committed, so the hub's one
-        # runtime dependency (ws) is resolved by integrity hash rather than by
-        # whatever the registry happens to serve. --ignore-scripts because no
-        # step here needs a lifecycle script. No cache step on purpose: caching
-        # 200 KB would trade a real failure mode for no measurable time.
+        # npm ci, not install: package-lock.json is committed, so every
+        # dependency is resolved by integrity hash rather than by whatever the
+        # registry happens to serve. --ignore-scripts because no step here needs
+        # a lifecycle script; the browser the panel job drives is installed
+        # explicitly there. No cache step on purpose: caching a tree this size
+        # would trade a real failure mode for no measurable time.
         run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Type check
+        # `tsc` runs on the declared floor too: it is a checker, not a builder,
+        # so a type that only holds on a newer Node is a real defect and belongs
+        # here rather than in the panel job. It is also what keeps the modules
+        # that are still `.js` under review while they are migrated.
+        working-directory: hub
+        run: npm run typecheck
 
       - name: Test
         # Covers the protocol adapters, the session registry, the supervisor,
         # the panel API, worker-protocol drift against core/docs, and the
-        # panel's own asset integrity (no build step compiles it, so a renamed
-        # file or a syntax error would otherwise surface only in a browser).
+        # panel's own asset integrity.
+        #
+        # On the floor, the one suite that loads a `.ts` module skips itself by
+        # name and reason: type stripping needs Node >= 22.18. That skip is
+        # honest only while nothing under src/ imports shared/ — the moment
+        # something does, this job is the one that will say so.
         working-directory: hub
         run: npm test
+
+  # ---------------------------------------------------------------------------
+  # hub-panel — the browser half, which has a different toolchain and a
+  # different Node requirement from the hub itself.
+  #
+  # It is a separate job rather than more steps in the matrix above for two
+  # reasons: Vite 8 needs Node >= 20.19 and Vitest 5 needs >= 22.12, both above
+  # the hub's declared floor; and installing a browser needs root, which the
+  # floor job has no business asking for.
+  # ---------------------------------------------------------------------------
+  hub-panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        working-directory: hub
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Build the panel
+        working-directory: hub
+        run: npm run build
+
+      - name: Install the browser
+        # --with-deps because the runner image does not carry libnss3 and
+        # friends — which is exactly what made the hand-rolled CDP check skip
+        # silently on a developer machine instead of failing.
+        working-directory: hub
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        working-directory: hub
+        run: npx playwright test
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: hub/playwright-report/
+          retention-days: 7
 
   # ---------------------------------------------------------------------------
   # portable-release — the SAME tree, built in the portable base image, plus one

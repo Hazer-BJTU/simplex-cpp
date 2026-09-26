@@ -28,10 +28,20 @@ import { hubRoot } from '../src/config.js';
 const webRoot = join(hubRoot, 'web');
 const jsRoot = join(webRoot, 'js');
 
-/** Every file under a directory, recursively. */
+/**
+ * Directories the integrity checks skip.
+ *
+ * `dist` is build output: it contains bundled third-party code, which has its
+ * own opinions about `innerHTML` and is not ours to police. `node_modules` is
+ * the same argument. The sources that produce them are checked instead.
+ */
+const SKIP_DIRECTORIES = new Set(['node_modules', 'dist']);
+
+/** Every file under a directory, recursively, skipping build output. */
 function walk(directory) {
     const found = [];
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isDirectory() && SKIP_DIRECTORIES.has(entry.name)) continue;
         const path = join(directory, entry.name);
         if (entry.isDirectory()) found.push(...walk(path));
         else found.push(path);

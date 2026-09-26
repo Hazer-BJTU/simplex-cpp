@@ -101,13 +101,24 @@ B1 与 B2 的共同根因是 `void someAsync()` 这种"发射后不管"的调用
 
 `selectSession` 订阅时带 `since: lastSeq`（`app.js:456`），hub 只回增量（`src/panel/api.js:466` → `transcript.js:74-77` 的 `hub_sequence > since`），而客户端是**替换**而非合并（`state.js:150-152` `st.items = items;`）。重连（网络抖动、hub 重启、任何 socket close 后的 `welcome` → 强制重新订阅）之后，时间线变成"暂无事件"；同时 `latestEvents`/`runActive`/`lastRunId`/`gaps` 被一并重置（`state.js:155-159`），状态面板和输入区提示也跟着回退。
 
-**A3 · Inspector 的 5 个 tab 全部同时渲染（CSS `hidden` 被覆盖）**
+**A3 · Inspector 切换过的 tab 内容不会消失，只会一直往下堆**
 
-`.ipane { display: flex }`（`app.css:476`）是作者样式，`.modal-root[hidden]`/`.overlay[hidden]` 都专门写了规则，**唯独 `.ipane` 没有**。作者样式表优先于 UA 样式表，因此 `pane.hidden = !active`（`app.js:1025`）完全无效——右侧 5 个面板的内容**全部堆叠在一起**，点 tab 只是在下面再追加一份新渲染的内容。
+`.ipane { display: flex }`（`app.css:476`）是作者样式，而 `.modal-root[hidden]`、`.overlay[hidden]` 都专门为重写了 `display` 的元素补了规则，**唯独 `.ipane` 没有**。作者样式表优先于 UA 样式表，所以 `pane.hidden = !active`（`app.js:1025`）根本不生效。
 
-同一个 bug 也打在确认横幅上：`.confirm-banner { display: flex }`（`app.css:224`）覆盖 `ui.confirmBanner.hidden = true`（`app.js:1281`）。
+表现是**渐进的**，所以第一眼看不出来：`renderInspector()` 只渲染当前 tab 的面板，其余保持空 section，而空 section 没有高度——初次打开时右栏只有 Status 是可见的。但操作者每点一个 tab，那个面板就渲染出内容并**永久留在页面上**。
 
-> 这直接解释了"所有的图标和按钮都堆在一起，错综复杂"的体感——用户看到的是 Status + Options + Process + Logs + Snapshot 五份内容同时挤在 320px 的侧栏里。
+实测（`?session=demo`，依次点过 Options / Process / Logs / Snapshot 之后）：
+
+| 面板 | `hidden` 属性 | 计算 `display` | 高度 |
+| --- | --- | --- | --- |
+| process | `true` | `flex` | **543px** |
+
+也就是说，一个被明确标记为隐藏的面板仍占据半屏。截图里 tab 高亮停在 Snapshot，而右栏从上到下依次是 Status 的表、Options 的 "No options yet"、Process 的 "state running / pid 15227 / …"，Snapshot 自己的内容被挤到视野之外。
+
+> 这直接解释了"所有的图标和按钮都堆在一起，错综复杂"的体感——而且解释了为什么它看起来像"用久了才变乱"。
+
+同一个 bug 也打在确认横幅上：`.confirm-banner { display: flex }`（`app.css:224`）覆盖 `ui.confirmBanner.hidden = true`（`app.js:1281`），所以那个提示条永远占着位置。
+
 > 修复时的坑（务必注意）：`.center` 声明了 5 行 grid（`app.css:63-68`），确认横幅占据第 2 行。天真地隐藏横幅会让 `#pane-chat` 落进 `auto` 行、把 `1fr` 让给输入区。
 
 #### B. 输出呈现
@@ -240,17 +251,19 @@ B1 与 B2 的共同根因是 `void someAsync()` 这种"发射后不管"的调用
 
 | 层 | 现在 | 目标 |
 | --- | --- | --- |
-| 后端单元/集成 | `node:test` + `node:assert`，15 个文件共 ~3056 行 | **Vitest**，断言继续用 `node:assert/strict`，只改 `describe/it` 的 import 来源 |
+| 后端单元/集成 | `node:test` + `node:assert`，15 个文件共 ~3056 行 | **保留 `node:test`**（见下方说明），断言继续用 `node:assert/strict` |
 | 面板资产完整性 | `test/panel-assets.test.js` | 保留并重写：扫描 `web/src/**`，契约升级为"类型检查 + 构建成功 + 无 HTML 注入" |
 | 协议漂移 | 仅 worker 协议 | **扩展到面板协议**：比对 `hub-protocol.md` 的消息表与 `shared/protocol.ts` 的联合类型 |
 | 面板端到端 | 自研 CDP + headless Chrome | **Playwright**：可截图、可视觉回归、自带浏览器管理 |
-| 组件 | 无 | Vitest + Testing Library（store 逻辑、composer、审批流程） |
+| 组件 | 无 | Vitest + jsdom，只覆盖需要 DOM 的组件测试 |
+
+**修正（P1 实施后的结论）**：原计划把后端测试也迁到 Vitest，理由是"直接跑 `.ts`"。实际验证后发现 **`node --test` 本身就能直接跑 `.ts`**（Node 原生 type stripping，P1 已实测 `.js` 导入 `.ts` 成功），所以迁移 196 个已经稳定运行的测试没有收益，只有风险：Vitest 的 worker 模型对这些"起真实进程、开真实 socket"的集成测试并不天然更合适，而且 Vitest 5 要求 Node ≥22.12，会在 CI 的 floor job 上引入额外约束。**因此后端留在 `node:test`，Vitest 只用于将来需要 jsdom 的 React 组件测试。**
 
 现有测试的**长处**值得保留：worker 协议 drift（解析 `core/docs/worker-protocol.md`）、确认身份判定（fail-closed）、pid 复用的 fail-closed 采纳、协议优先停止、重放游标语义、未知事件容错、四条鉴权边界、静态路径封闭、"不注入 HTML"。这些不变量在重构中一条都不能丢。
 
-**当前的空白**（重构要顺带补上）：`bin/` 的 CLI 完全无测试（**两条崩溃路径都在它的可达范围内**）；面板协议没有 drift 测试（没有任何测试解析 `hub/docs/hub-protocol.md`）；并发 start/restart；采纳监控的清理；关闭后转录重开；日志流错误路径；pid 文件陈旧；面板 4 MiB 边界；`hub.stop()` 重入；跨 hub 重启的重放。
+**当前的空白**（重构要顺带补上）：`bin/` 的 CLI 在 P0 前完全无测试（**两条崩溃路径都在它的可达范围内**）；面板协议没有 drift 测试；并发 start/restart；采纳监控的清理；关闭后转录重开；日志流错误路径；pid 文件陈旧；面板 4 MiB 边界；`hub.stop()` 重入；跨 hub 重启的重放。
 
-> 附注：本机 Chrome 因缺 `libnss3`/`libnspr4` 无法启动，现有 `test/e2e/panel.test.js` 在这种环境下会静默跳过。Playwright 自带浏览器可消除这个盲区。
+> 附注：本机 Chrome 因缺 `libnss3`/`libnspr4` 无法启动，现有 `test/e2e/panel.test.js` 在这种环境下会静默跳过——P1 实测确认了这一点。Playwright 自带浏览器可消除这个盲区，但它下载的 chromium **同样缺这几个系统库**，需要 `npx playwright install --with-deps chromium`（要 root）。在拿到 root 之前，本机跑 Playwright 需要 `LD_LIBRARY_PATH` 指向手工解包的库。
 
 ---
 
@@ -446,7 +459,7 @@ Docker（`docker/Dockerfile.hub-test`）加前端构建步骤；`hub/web/dist` �
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
 | **P0 加固** ✅ 已完成 | B1（HTTP + upgrade 两处畸形 authority）、B2（面板 WS 的 `handleMessage` + supervisor 的 `mkdir`/`writeFile`）、B3（日志流 `error` 监听）、B4（`targetPid` 的 `/proc` 校验）、畸形百分号编码改 400、`bin` 的 `void stop(signal)` 补 catch（并在半途失败时 `process.exit(1)`，否则会挂着继续占端口）、事件扇出**双层**保护、supersede 不再上报虚假断开、config 拒绝未知键、`spec` 在 REST 与 WS 两条创建路径都提前校验、adopt 监控的 `unref` 与 `finish` 清理 | **25 个回归测试**（`test/hardening.test.js`），全套 **196 个测试**加 2 个真实 worker 端到端通过；每条修复都还原验证过测试确实能咬住 |
-| **P1 脚手架** | `tsconfig`、Vite、Vitest、Playwright；CI 加 typecheck 与前端构建；`.gitignore`/`.dockerignore` 加 `dist` | 现有 JS 照旧跑；新工具链空转通过 |
+| **P1 脚手架** ✅ 已完成 | `tsconfig.json`（后端，`allowJs` 让迁移可以逐个模块进行）+ `web/tsconfig.json`（前端，DOM lib）+ `vite.config.ts` + `playwright.config.ts`；`shared/protocol.ts` 落地并把三份版本字面量钉住；CI 拆出 `hub-panel` job（build + 浏览器测试，Node 24）并给 `hub-test` 加 typecheck；`.gitignore`/`.dockerignore` 加 `dist` | typecheck 通过**并验证过能抓到注入的类型错误**；面板构建产出 `web/dist`；Playwright 2/2 通过；Node 24 上 200 个测试全绿，Node 20.11 上 196 通过 0 失败 |
 | **P2 协议契约** | 建 `shared/`：类型、guard、能力清单（**从实际配置推导**，不再静态）；三份版本号字面量收敛为一处；hub 接入；补面板协议 drift 测试；**修 A1 的协议侧**（审批广播语义 + 可恢复路径）；**加转录 epoch** 与可选 `hello` 协商 | 行为仅按设计变更；新增契约测试全绿；跨 hub 重启的重放有明确信号而不是静默返回空 |
 | **P3 后端 TS 化** | 逐模块 `.js` → `.ts`，一个提交一个模块；JSDoc 转签名；`tsc --noEmit` 进 CI | 每步 `npm test` + `npm run test:e2e` 全绿，无行为变更 |
 | **P4 前端骨架** | Vite + React 壳：布局、Zustand store（从 `state.js` 平移并修 A2/D23）、socket/REST 客户端、会话列表、可显示事件的最小对话流 | 面板在浏览器里跑通一轮真实会话（mock provider） |
@@ -488,6 +501,43 @@ P4 之前不做视觉改动；P4–P6 期间旧面板保持可用（Vite 产物�
 6. **协议能力首版范围**：只做 `event-page` + `transcript-delta` 预留（默认）／ 连 `audit-log`、`session-search` 一起实现。
 7. **旧面板处理**：P4–P7 并行保留、P8 删除（默认）／ 直接切换，不留双份。
 8. **是否接受"无真流式"**：接受面板侧渐进呈现、C++ 不改（默认）／ 需要真流式则必须改 worker 协议（超出本次范围）。
+
+---
+
+## 9. ⚠️ P2 之前必须决定的一件事：Node floor
+
+决策点 3 选的是"`tsc` 产物 + 保留 Node 20.11 兼容"。**P1 落地后发现这两件事无法同时成立**，而且这不是推测，是实测：
+
+| 事实 | 验证方式 |
+| --- | --- |
+| Node 20.11 **无法加载 `.ts` 文件** | `ERR_UNKNOWN_FILE_EXTENSION: Unknown file extension ".ts" for hub/shared/protocol.ts` |
+| Node 20.11 **仍能运行 hub 本身** | `node bin/simplex-hub.js --version` → `0.1.0`（因为 `src/` 还没有导入 `shared/`） |
+| Node 24 **能直接跑 `.ts`**，且 `.js` 导入 `.ts` 可行 | `test/protocol-constants.test.js` 在 24 上 200 项全绿 |
+| Vite 8 要求 Node **≥20.19** | 20.11 上 `vite build` 直接崩：`node:util` 没有 `styleText` 导出 |
+| Vitest 5 要求 Node **≥22.12** | 包元数据 |
+
+也就是说：`shared/protocol.ts` 已经把 floor 事实上推到了 22.18，只不过**暂时**还没有生产代码依赖它，所以 20.11 的运行时仍然可用。P2 会让 `src/` 导入共享契约——那一刻 20.11 就彻底不可用了。
+
+而且现在 CI 里那条 20.11 job 之所以还是绿的，是因为我给它加了一个**具名的 skip**：
+
+```
+ok 1 - panel protocol constants # SKIP type stripping needs Node >= 22.18; this is 20.11.1
+```
+
+这个 skip 是诚实的，但它有保质期——P2 一到就失效。
+
+**两个选项：**
+
+| | A. 提升 floor 到 ≥22.18（建议） | B. 保持 20.11，`shared/` 编译成 `.js` |
+| --- | --- | --- |
+| 做法 | `engines` 改 `>=22.18`，CI 矩阵 `['22.18', '24']` | `tsc` 产出 `shared/*.js` + `.d.ts`，`src/` 导入 `.js` |
+| 代价 | 放弃 Node 20（2026-04-30 已 EOL） | 需要构建步骤；产物要么提交（会漂移）要么每次构建；"零构建"这个 hub 现有优势消失 |
+| 开发工具 | 直接满足（Vite 20.19、Vitest 22.12） | 工具链仍需 ≥22.12，所以 CI 还是要拆 |
+| 后端 | 零构建，`node --watch src/*.ts` 直接跑 | 改一行要重新 build |
+
+**建议 A**，理由按重要性排序：Node 20 已经 EOL；开发工具（Vite/Vitest）**已经**要求 ≥22.12，保持 20.11 只能保住运行时、保不住工具链；B 的复杂度要长期背，而它换来的只是一个 EOL 版本的支持。
+
+**在你决定之前，我不会改 `engines` 或 CI 矩阵**——现在两边都是绿的，只是有一条明说了原因的 skip。
 
 ---
 

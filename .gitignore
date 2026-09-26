@@ -92,3 +92,9 @@ docs/
 hub/node_modules/
 hub/data/
 .npm-cache/
+# Panel bundle output. Built by `npm run build` from hub/web/src, never edited.
+hub/web/dist/
+# Browser-test artifacts: traces and screenshots are written only on failure and
+# are for the person debugging that run, not for the repository.
+hub/test-results/
+hub/playwright-report/

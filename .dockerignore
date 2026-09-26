@@ -23,3 +23,8 @@ CMakeFiles
 # the host's would put a tree built for the WSL glibc into an AlmaLinux image.
 hub/node_modules
 hub/data
+# The panel bundle is built inside the image from hub/web/src for the same
+# reason: a bundle produced on the host is not the artifact the image's own
+# toolchain would produce.
+hub/web/dist
+.npm-cache

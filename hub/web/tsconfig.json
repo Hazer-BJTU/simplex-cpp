@@ -1,0 +1,30 @@
+{
+    // Panel type checking. A separate project from the server's because the two
+    // have different globals: this one has the DOM and JSX, that one has Node's
+    // built-ins, and merging them would let a browser module reach for `fs`
+    // without a complaint.
+    "compilerOptions": {
+        "target": "ES2023",
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "jsx": "react-jsx",
+        // Vite's own declarations, which is what tells TypeScript that a
+        // side-effect import of a `.css` file is a thing that exists.
+        "types": ["vite/client"],
+
+        "strict": true,
+        "noImplicitOverride": true,
+        "noFallthroughCasesInSwitch": true,
+        "exactOptionalPropertyTypes": true,
+        "noUncheckedIndexedAccess": true,
+
+        "allowImportingTsExtensions": true,
+        "verbatimModuleSyntax": true,
+        "noEmit": true,
+
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true
+    },
+    "include": ["src/**/*.ts", "src/**/*.tsx", "../shared/**/*.ts"]
+}

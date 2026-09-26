@@ -1,0 +1,28 @@
+/*
+ * Panel stylesheet. Tailwind v4 is configured in CSS rather than in a JS config
+ * file: `@theme` declares the design tokens the components consume, so a colour
+ * or a spacing step is added in one place and is immediately usable as a
+ * utility class.
+ *
+ * The old panel's token names (`--bg`, `--text`, `--accent`, …) are not carried
+ * over as-is. They are replaced as the components that used them are replaced,
+ * which is what keeps this file from being a second source of truth during the
+ * migration.
+ */
+@import "tailwindcss";
+
+@theme {
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    font-family: var(--font-sans);
+}
