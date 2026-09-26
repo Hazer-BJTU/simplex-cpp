@@ -12,7 +12,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createPanelStore } from '../web/src/state/store.ts';
+import { createPanelStore, statsFor } from '../web/src/state/store.ts';
 
 /** One worker envelope as the hub forwards it. */
 function envelope(hubSequence, event = 'model_response', extra = {}) {
@@ -115,7 +115,7 @@ describe('panel store: replay is merged, not substituted (A2)', () => {
         store.getState().applySubscribed(subscribed('demo', [envelope(1), envelope(2)]));
 
         assert.equal(events(store).length, 2);
-        assert.equal(store.getState().stats('demo').duplicates, 2);
+        assert.equal(statsFor(store.getState(), 'demo').duplicates, 2);
     });
 
     it('marks a gap when the hub ring no longer reaches back to the cursor', () => {
@@ -136,7 +136,7 @@ describe('panel store: replay is merged, not substituted (A2)', () => {
         assert.equal(warnings.length, 1);
         assert.match(warnings[0].text, /transcript gap/);
         assert.match(warnings[0].text, /resumed at hub_sequence 8/);
-        assert.equal(store.getState().stats('demo').gaps, 1);
+        assert.equal(statsFor(store.getState(), 'demo').gaps, 1);
     });
 
     it('counts a jump in the worker\'s own numbering, which the hub cannot see', () => {
@@ -148,7 +148,7 @@ describe('panel store: replay is merged, not substituted (A2)', () => {
             envelope(2, 'model_response', { sequence: 3 }),
         ]));
 
-        assert.equal(store.getState().stats('demo').gaps, 1);
+        assert.equal(statsFor(store.getState(), 'demo').gaps, 1);
         assert.equal(notes(store).length, 0, 'the hub replayed what it had; nothing was evicted');
     });
 });
