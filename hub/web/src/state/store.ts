@@ -84,29 +84,6 @@ type SnapshotMessage = Extract<HubMessage, { type: 'snapshot' }>;
 type ErrorMessage = Extract<HubMessage, { type: 'error' }>;
 type AcceptedMessage = Extract<HubMessage, { type: 'accepted' }>;
 
-/** Narrow a worker page before it reaches React's history renderer. */
-function historyPageOf(value: unknown): HistoryPage | null {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-    const page = value as Record<string, unknown>;
-    for (const key of ['start', 'step', 'next', 'next_step', 'total']) {
-        if (!Number.isSafeInteger(page[key]) || (page[key] as number) < 0) return null;
-    }
-    if (!Array.isArray(page.turns) || page.turns.length > 10) return null;
-    for (const turn of page.turns) {
-        if (typeof turn !== 'object' || turn === null || Array.isArray(turn)
-            || !Number.isSafeInteger(turn.index)
-            || !Array.isArray(turn.user) || !Array.isArray(turn.steps)
-            || !Number.isSafeInteger(turn.omitted_steps)) return null;
-        for (const step of turn.steps) {
-            if (typeof step !== 'object' || step === null || Array.isArray(step)
-                || !Number.isSafeInteger(step.index)
-                || !Array.isArray(step.content)
-                || !Number.isSafeInteger(step.tool_calls)) return null;
-        }
-    }
-    return page as unknown as HistoryPage;
-}
-
 /** A note tone, as the transcript renders it. */
 export type { NoteTone };
 
@@ -286,7 +263,8 @@ export interface PanelActions {
     applyEvent(message: EventMessage): void;
     beginHistory(sessionId: SessionId): void;
     endHistory(sessionId: SessionId): void;
-    applyHistoryPage(sessionId: SessionId, envelope: WorkerEnvelope): void;
+    /** Commit one already validated page; false means it did not fit the current load. */
+    applyHistoryPage(sessionId: SessionId, envelope: WorkerEnvelope, page: HistoryPage): boolean;
     applyRequest(message: RequestMessage): void;
     applyConfirmation(message: ConfirmationMessage): void;
     applyProcess(message: ProcessMessage): void;
@@ -902,13 +880,9 @@ export function createPanelStore() {
             set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: false })));
         },
 
-        applyHistoryPage(sessionId, envelope) {
-            if (envelope.event !== 'history') return;
-            const page = historyPageOf(envelope.data);
-            if (!page
-                || page.next < page.start || page.next > page.total
-                || page.turns.length === 0 && page.next !== page.total
-                || page.turns.some((turn, index) => turn.index !== page.start + index)) return;
+        applyHistoryPage(sessionId, envelope, page) {
+            if (envelope.event !== 'history') return false;
+            let accepted = false;
             set(withView(get(), sessionId, (view) => {
                 const fresh = page.start === 0 && page.step === 0;
                 if (!fresh && view.historyWorker !== envelope.worker_id) return view;
@@ -929,12 +903,14 @@ export function createPanelStore() {
                 } else {
                     return view;
                 }
+                accepted = true;
                 const done = page.next === page.total && page.next_step === 0;
                 return { ...view, history, historyLoading: !done,
                     historyWorker: envelope.worker_id,
                     historySequence: typeof envelope.sequence === 'number'
                         ? envelope.sequence : view.historySequence };
             }));
+            return accepted;
         },
 
         applyRequest(message) {

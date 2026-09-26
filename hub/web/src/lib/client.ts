@@ -24,6 +24,7 @@ import { panelStore } from '../state/store.ts';
 import { ApiError, createRest, type RestClient, type WorkerAction } from './rest.ts';
 import { createPanelSocket, type PanelSocket } from './socket.ts';
 import { createTokenStore, type HistoryLike, type KeyValueStorage, type LocationLike, type TokenStore } from './token.ts';
+import { parseHistoryPage } from '../state/history.ts';
 
 /** Query parameter carrying the selected session, so a view can be linked to. */
 export const SESSION_PARAM = 'session';
@@ -189,27 +190,26 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         id: string; start: number; step: number;
         revision: number | null; retries: number;
     }>();
+    const subscribedSessions = new Set<SessionId>();
 
-    /** The hub can route queries, but only a worker that advertises them can answer. */
+    function failHistory(sessionId: SessionId, detail: string): void {
+        historyRequests.delete(sessionId);
+        store.getState().endHistory(sessionId);
+        store.getState().setNotice('error', 'history_protocol', detail);
+    }
+
+    /** Use the hub's current-worker capability snapshot, not bounded replay. */
     function workerSupportsHistory(sessionId: SessionId): boolean {
         const state = store.getState();
         const session = state.sessions.get(sessionId);
-        const workerId = session?.identity.worker_id;
-        const events = state.views.get(sessionId)?.latestEvents;
-        if (!session?.connected || !workerId || !events) return false;
-        for (const name of ['status', 'ready']) {
-            const envelope = events[name];
-            if (envelope?.worker_id !== workerId) continue;
-            const data = envelope.data as { capabilities?: unknown } | null;
-            if (Array.isArray(data?.capabilities)
-                && data.capabilities.includes('session-history')) return true;
-        }
-        return false;
+        return Boolean(session?.connected
+            && session.worker_capabilities?.includes('session-history'));
     }
 
     function requestHistory(sessionId: SessionId, start = 0, step = 0,
         revision: number | null = null, retries = 0): boolean {
         if (!store.getState().hasCapability('session-history')
+            || !subscribedSessions.has(sessionId)
             || !workerSupportsHistory(sessionId)) return false;
         const requestId = newRequestId();
         const sent = socket.send({ type: 'history', session: sessionId,
@@ -229,6 +229,11 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
     function handleMessage(message: HubMessage): void {
         switch (message.type) {
             case 'welcome': {
+                for (const sessionId of historyRequests.keys()) {
+                    store.getState().endHistory(sessionId);
+                }
+                historyRequests.clear();
+                subscribedSessions.clear();
                 store.getState().applyWelcome(message);
                 // Subscribing after `applyWelcome` is what makes a restarted
                 // hub replay from the start: the epoch reset happens there.
@@ -240,7 +245,10 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 const effects = store.getState().applySubscribed(message);
                 if (effects.resubscribe) {
                     subscribe(effects.resubscribe.session, effects.resubscribe.since);
-                } else if (message.session.connected) {
+                } else {
+                    subscribedSessions.add(message.session.session_id);
+                }
+                if (!effects.resubscribe && message.session.connected) {
                     requestHistory(message.session.session_id);
                 }
                 return;
@@ -252,6 +260,13 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'session':
                 store.getState().upsertSession(message.session);
+                if (store.getState().selected === message.session.session_id
+                    && subscribedSessions.has(message.session.session_id)
+                    && !historyRequests.has(message.session.session_id)
+                    && store.getState().views.get(message.session.session_id)?.historyWorker
+                        !== message.session.identity.worker_id) {
+                    requestHistory(message.session.session_id);
+                }
                 return;
             case 'created':
                 store.getState().upsertSession(message.session);
@@ -260,68 +275,67 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 subscribe(message.session.session_id);
                 return;
             case 'session_removed': {
+                subscribedSessions.delete(message.session);
                 const wasSelected = store.getState().selected === message.session;
                 store.getState().removeSession(message.session);
                 if (wasSelected) writeSessionToUrl(null, loc, hist);
                 return;
             }
             case 'event':
-                store.getState().applyEvent(message);
-                if ((message.envelope.event === 'ready' || message.envelope.event === 'status')
-                    && store.getState().selected === message.session
-                    && !historyRequests.has(message.session)
-                    && store.getState().views.get(message.session)?.historyWorker
-                        !== message.envelope.worker_id) {
-                    requestHistory(message.session);
+                // History pages are transient control replies and have no
+                // retained hub sequence of their own.
+                if (message.envelope.event !== 'history') {
+                    store.getState().applyEvent(message);
                 }
                 if (message.envelope.event === 'history') {
-                    const page = message.envelope.data as {
-                        request_id?: unknown; next?: unknown; next_step?: unknown;
-                        total?: unknown;
-                        revision?: unknown;
-                    } | null;
                     const pending = historyRequests.get(message.session);
-                    if (page && pending && pending.id === page.request_id) {
-                        const nextStep = typeof page.next_step === 'number'
-                            ? page.next_step : 0;
-                        if (typeof page.next !== 'number'
-                            || typeof page.total !== 'number'
-                            || typeof page.next_step !== 'number'
-                            || page.next < pending.start
-                            || page.next === pending.start && nextStep <= pending.step
-                                && page.next < page.total) {
-                            historyRequests.delete(message.session);
-                            store.getState().endHistory(message.session);
-                            store.getState().setNotice('error', 'history_cursor',
-                                'Worker returned a history page without a progressing cursor.');
+                    const raw = message.envelope.data as { request_id?: unknown } | null;
+                    if (pending && (typeof raw?.request_id !== 'string'
+                        || raw.request_id.length === 0)) {
+                        failHistory(message.session,
+                            'Worker returned a history page without a request ID.');
+                        return;
+                    }
+                    if (pending && pending.id === raw?.request_id) {
+                        const page = parseHistoryPage(raw);
+                        if (!page || page.start !== pending.start || page.step !== pending.step
+                            || (page.next < page.total || page.next_step > 0)
+                                && (page.next < pending.start
+                                    || page.next === pending.start
+                                        && page.next_step <= pending.step)) {
+                            failHistory(message.session,
+                                'Worker returned an invalid conversation history page.');
                             return;
                         }
                         if (pending.revision !== null && page.revision !== pending.revision) {
                             if (pending.retries < 3) {
-                                requestHistory(message.session, 0, 0, null, pending.retries + 1);
+                                if (!requestHistory(message.session, 0, 0, null,
+                                    pending.retries + 1)) {
+                                    failHistory(message.session,
+                                        'Could not restart conversation history loading.');
+                                }
                             } else {
-                                historyRequests.delete(message.session);
-                                store.getState().endHistory(message.session);
-                                store.getState().setNotice('warn', 'history_changed',
+                                failHistory(message.session,
                                     'Conversation changed during history loading; refresh after the run settles.');
                             }
                             return;
                         }
-                        store.getState().applyHistoryPage(message.session, message.envelope);
-                        if (typeof page.next === 'number' && typeof page.total === 'number'
-                            && (page.next < page.total
-                                || typeof page.next_step === 'number' && page.next_step > 0)) {
-                            requestHistory(message.session, page.next,
-                                nextStep,
-                                typeof page.revision === 'number' ? page.revision : null,
-                                pending.retries);
+                        if (!store.getState().applyHistoryPage(message.session,
+                            message.envelope, page)) {
+                            failHistory(message.session,
+                                'Worker returned a history page that did not fit the current load.');
+                            return;
+                        }
+                        if (page.next < page.total || page.next_step > 0) {
+                            if (!requestHistory(message.session, page.next,
+                                page.next_step, page.revision, pending.retries)) {
+                                failHistory(message.session,
+                                    'Could not continue conversation history loading.');
+                            }
                         } else {
                             historyRequests.delete(message.session);
                         }
                     }
-                } else if (message.envelope.event === 'run_finished'
-                    && store.getState().selected === message.session) {
-                    requestHistory(message.session);
                 } else if (message.envelope.event === 'history_error') {
                     const data = message.envelope.data as { request_id?: unknown } | null;
                     if (historyRequests.get(message.session)?.id === data?.request_id) {
@@ -429,7 +443,12 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             if (previous === sessionId) return;
             store.getState().setSelected(sessionId);
             writeSessionToUrl(sessionId, loc, hist);
-            if (previous) socket.send({ type: 'unsubscribe', session: previous });
+            if (previous) {
+                subscribedSessions.delete(previous);
+                historyRequests.delete(previous);
+                store.getState().endHistory(previous);
+                socket.send({ type: 'unsubscribe', session: previous });
+            }
             if (sessionId) subscribe(sessionId);
         },
 

@@ -261,6 +261,8 @@ export interface SessionDescription {
     created_at: string;
     spec: SessionSpec;
     connected: boolean;
+    /** Current worker's advertised capabilities; null until its status is known. */
+    worker_capabilities?: string[] | null;
     identity: SessionIdentity;
     stats: SessionStats;
     last_run_id: string;
@@ -272,8 +274,8 @@ export interface SessionDescription {
 }
 
 /**
- * A worker envelope. Live replies are forwarded verbatim; replayed history
- * replies contain only a small cursor marker.
+ * A worker envelope. History replies are forwarded live but omitted from
+ * replay, so a client recovers them with a fresh query.
  *
  * `event` and `data` are deliberately open: core may add an event name at any
  * time, and a hub that rejected an unfamiliar one would disconnect a worker for

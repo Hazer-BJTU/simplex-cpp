@@ -187,29 +187,14 @@ export function createPanelApi({
         onEvent: (envelope, connection) => {
             const session = connection.session;
             if (envelope.event === 'history') {
-                // Preserve its sequence position for replay cursors without
-                // retaining or logging the potentially large display body.
-                const data = envelope.data as Record<string, unknown> | null;
-                const marker = {
-                    ...envelope,
-                    data: {
-                        request_id: data?.request_id,
-                        revision: data?.revision,
-                        start: data?.start,
-                        step: data?.step,
-                        next: data?.next,
-                        next_step: data?.next_step,
-                        total: data?.total,
-                    },
-                    raw: null,
-                    transient_history: true,
-                    bytes: 0,
-                };
-                marker.bytes = Buffer.byteLength(JSON.stringify(marker), 'utf8');
-                transcripts.get(session.id).append(marker);
-                envelope.hub_sequence = marker.hub_sequence ?? 0;
+                // A history reply is control traffic. Forward it live, but do
+                // not spend retained transcript slots or JSONL space on it.
+                envelope.hub_sequence = transcripts.get(session.id).sequence;
             } else {
                 transcripts.get(session.id).append(envelope);
+            }
+            if (envelope.event === 'ready' || envelope.event === 'status') {
+                broadcastSession(session);
             }
             if (envelope.event === 'input_admitted') {
                 if (session.noteRequestAdmitted(envelope.request_id)) {
@@ -409,6 +394,10 @@ export function createPanelApi({
     }): { ok: true; request_id: string } | SendFailure {
         const connection = session.connection;
         if (!connection?.isOpen) return { ok: false, error: 'the worker is not connected' };
+        if (session.workerCapabilities?.workerId !== session.identity.workerId
+            || !session.workerCapabilities.names.includes('session-history')) {
+            return { ok: false, error: 'the current worker has not advertised session-history' };
+        }
         try {
             const payload = buildPayload({
                 operation: 'history', requestId: message.request_id ?? newRequestId(),

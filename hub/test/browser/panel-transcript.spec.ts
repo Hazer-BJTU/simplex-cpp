@@ -112,6 +112,14 @@ test('a history refresh keeps detailed tool cards beside the final reply', async
             ], omitted_steps: 0 }],
     } });
     await emit(page, 'run_finished', { status: 'completed', exchanges: 2 });
+    const historyQueries = async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history').length;
+    };
+    await expect.poll(historyQueries).toBe(1);
+    await expect(page.getByTestId('tool-card')).toHaveCount(1);
+    await page.getByRole('button', { name: 'refresh history' }).click();
     await expect(page.getByTestId('restored-user-message'))
         .toContainText('Please run the tool.');
     await expect(page.getByTestId('history-turn')).toHaveCount(0);
@@ -140,6 +148,118 @@ test('waits for worker history support before querying an older worker', async (
     await expect.poll(queries).toHaveLength(0);
     await emit(page, 'status', { active: false, capabilities: ['session-history'] });
     await expect.poll(queries).toHaveLength(1);
+});
+
+test('reload recovers history after the capability event leaves replay', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [{ index: 0, user: [{ type: 'text', raw: 'retained by worker' }],
+            steps: [], omitted_steps: 0 }],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.request.post(`${STUB}/__stub/trim-transcript`, { data: { keep: 0 } });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toContainText('retained by worker');
+});
+
+test('completed live runs do not re-fetch the whole worker history', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: Array.from({ length: 25 }, (_, index) => ({
+            index, user: [], steps: [], omitted_steps: 0,
+        })),
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    const queries = async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history').length;
+    };
+    await expect.poll(queries).toBe(3);
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
+    for (let index = 0; index < 3; index += 1) {
+        await emit(page, 'run_started', {}, { run_id: `run-${index}` });
+        await emit(page, 'model_response', modelResponse(`answer ${index}`),
+            { run_id: `run-${index}` });
+        await emit(page, 'run_finished', { status: 'completed' },
+            { run_id: `run-${index}` });
+    }
+    await expect(page.getByTestId('assistant-message')).toHaveCount(3);
+    expect(await queries()).toBe(3);
+});
+
+for (const [name, response] of [
+    ['missing revision', { revision: null }],
+    ['wrong turn index', { turns: [{ index: 1, user: [], steps: [], omitted_steps: 0 }] }],
+    ['wrong step index', { turns: [{ index: 0, user: [], omitted_steps: 0,
+        steps: [{ index: 3, content: [], tool_calls: 0 }] }] }],
+    ['invalid omitted count', { turns: [{ index: 0, user: [], steps: [],
+        omitted_steps: -1 }] }],
+] as const) {
+    test(`a page with ${name} stops pagination without another request`, async ({ page }) => {
+        await open(page);
+        await page.request.post(`${STUB}/__stub/settings`, { data: {
+            historyEnabled: true,
+            historyTurns: [0, 1].map((index) => ({ index, user: [], steps: [],
+                omitted_steps: 0 })),
+            historyResponses: [{ next: 1, total: 2,
+                turns: [{ index: 0, user: [], steps: [], omitted_steps: 0 }],
+                ...response }],
+        } });
+        await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+        await page.goto('/?session=demo');
+        await expect(page.getByText('Worker returned an invalid conversation history page.'))
+            .toBeVisible();
+        const received = await page.request.get(`${STUB}/__stub/received`);
+        expect((await received.json()).received.filter(
+            (message: { type: string }) => message.type === 'history')).toHaveLength(1);
+        await expect(page.getByTestId('transcript'))
+            .not.toContainText('loading conversation history');
+    });
+}
+
+test('a history page without request ID ends the pending load', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [{ index: 0, user: [], steps: [], omitted_steps: 0 }],
+        historyResponses: [{ request_id: null }],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByText('Worker returned a history page without a request ID.'))
+        .toBeVisible();
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
+});
+
+test('revision change restarts pagination and a bad restart ends loading', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [0, 1].map((index) => ({ index, user: [], steps: [],
+            omitted_steps: 0 })),
+        historyResponses: [
+            { next: 1, total: 2,
+                turns: [{ index: 0, user: [], steps: [], omitted_steps: 0 }] },
+            { revision: 2 },
+            { revision: null },
+        ],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByText('Worker returned an invalid conversation history page.'))
+        .toBeVisible();
+    const received = await page.request.get(`${STUB}/__stub/received`);
+    const queries = (await received.json()).received.filter(
+        (message: { type: string }) => message.type === 'history');
+    expect(queries.map((query: { start: number }) => query.start)).toEqual([0, 1, 0]);
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
 });
 
 test('keeps the compact composer controls aligned and inside a narrow viewport', async ({ page }) => {

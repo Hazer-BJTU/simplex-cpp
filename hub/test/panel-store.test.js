@@ -15,6 +15,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createPanelStore, statsFor } from '../web/src/state/store.ts';
+import { parseHistoryPage } from '../web/src/state/history.ts';
 
 /** One worker envelope as the hub forwards it. */
 function envelope(hubSequence, event = 'model_response', extra = {}) {
@@ -94,6 +95,26 @@ function notes(store, id = 'demo') {
 }
 
 describe('worker-backed display history', () => {
+    it('rejects malformed page identity, counters, and step progression', () => {
+        const valid = { request_id: 'h-1', revision: 1, start: 0, step: 0,
+            next: 1, next_step: 0, total: 1,
+            turns: [{ index: 0, user: [], steps: [{ index: 0,
+                content: [], tool_calls: 0, omitted_parts: 0 }], omitted_steps: 0 }] };
+        assert.ok(parseHistoryPage(valid));
+        for (const malformed of [
+            { request_id: '' }, { revision: undefined }, { revision: -1 },
+            { next: 2 }, { step: -1 },
+            { turns: [{ ...valid.turns[0], index: 1 }] },
+            { turns: [{ ...valid.turns[0], omitted_steps: -1 }] },
+            { turns: [{ ...valid.turns[0], steps: [{ ...valid.turns[0].steps[0],
+                index: 2 }] }] },
+            { turns: [{ ...valid.turns[0], steps: [{ ...valid.turns[0].steps[0],
+                omitted_parts: -1 }] }] },
+        ]) {
+            assert.equal(parseHistoryPage({ ...valid, ...malformed }), null);
+        }
+    });
+
     it('assembles pages and keeps query bodies out of the event transcript', () => {
         const store = createPanelStore();
         store.getState().beginHistory('demo');
@@ -105,7 +126,8 @@ describe('worker-backed display history', () => {
         } });
         store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 1,
             envelope: first });
-        store.getState().applyHistoryPage('demo', first);
+        assert.equal(store.getState().applyHistoryPage('demo', first,
+            parseHistoryPage(first.data)), true);
         assert.equal(store.getState().view('demo').historyLoading, true);
         assert.equal(events(store).length, 0);
         const second = envelope(2, 'history', { data: {
@@ -114,7 +136,8 @@ describe('worker-backed display history', () => {
             turns: [{ index: 1, user: [{ type: 'text', raw: 'new input' }],
                 steps: [], omitted_steps: 0 }],
         } });
-        store.getState().applyHistoryPage('demo', second);
+        assert.equal(store.getState().applyHistoryPage('demo', second,
+            parseHistoryPage(second.data)), true);
         const view = store.getState().view('demo');
         assert.equal(view.history.length, 2);
         assert.equal(view.historyLoading, false);
@@ -132,8 +155,12 @@ describe('worker-backed display history', () => {
                         tool_calls: 0 }], omitted_steps: nextStep ? 1 : 0 }],
             },
         });
-        store.getState().applyHistoryPage('demo', page(1, 0, 1, 'first'));
-        store.getState().applyHistoryPage('demo', page(2, 1, 0, 'second'));
+        const first = page(1, 0, 1, 'first');
+        const second = page(2, 1, 0, 'second');
+        assert.equal(store.getState().applyHistoryPage('demo', first,
+            parseHistoryPage(first.data)), true);
+        assert.equal(store.getState().applyHistoryPage('demo', second,
+            parseHistoryPage(second.data)), true);
         const history = store.getState().view('demo').history;
         assert.equal(history.length, 1);
         assert.deepEqual(history[0].steps.map((step) => step.content[0].raw),
