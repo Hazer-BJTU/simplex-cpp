@@ -73,6 +73,7 @@ export interface IconButtonProps extends ComponentPropsWithRef<'button'> {
     /** Required: an icon alone has no accessible name without it. */
     label: string;
     variant?: ButtonVariant;
+    size?: 'sm' | 'md';
     children: ReactNode;
 }
 
@@ -86,6 +87,7 @@ export interface IconButtonProps extends ComponentPropsWithRef<'button'> {
 export function IconButton({
     label,
     variant = 'ghost',
+    size = 'sm',
     className = '',
     children,
     ...rest
@@ -96,7 +98,8 @@ export function IconButton({
             {...rest}
             aria-label={label}
             title={label}
-            className={`inline-flex h-7 w-7 items-center justify-center rounded transition-colors `
+            className={`inline-flex ${size === 'md' ? 'h-9 w-9' : 'h-7 w-7'} `
+                + `items-center justify-center rounded transition-colors `
                 + `disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-1 `
                 + `focus-visible:outline-interactive ${VARIANTS[variant]} ${className}`}
         >

@@ -220,7 +220,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
 
     Json status() const {
         Json value = {{"active", active}, {"stopping", stopping},
-            {"storage_failed", storage_failed}, {"rejected_payloads", client.rejected_payloads()}};
+            {"storage_failed", storage_failed}, {"rejected_payloads", client.rejected_payloads()},
+            {"capabilities", Json::array({"session-history"})}};
         if (state.loop) value["loop"] = *state.loop;
         return value;
     }

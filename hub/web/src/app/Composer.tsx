@@ -27,7 +27,7 @@ import type { ConfirmMode } from '../state/store.ts';
 import { useClient } from './ClientContext.tsx';
 
 /** How tall the textarea may grow before it scrolls instead. */
-const MAX_HEIGHT_PX = 220;
+const MAX_HEIGHT_PX = 144;
 
 /** One removable part the operator attached. */
 interface Reference {
@@ -148,13 +148,13 @@ export function Composer() {
 
     return (
         <form
-            className="shrink-0 border-t border-line bg-sunken px-3 py-3 sm:px-5"
+            className="shrink-0 border-t border-line bg-surface px-3 py-2 sm:px-5"
             onSubmit={(event) => {
                 event.preventDefault();
                 send();
             }}
         >
-            <div className="mx-auto max-w-4xl overflow-hidden rounded-2xl border border-line-strong
+            <div className="mx-auto max-w-4xl rounded-xl border border-line-strong
                 bg-surface shadow-sm transition-colors focus-within:border-interactive">
                 {references.length > 0 && (
                     <ul className="flex flex-wrap gap-1.5 px-4 pt-3">
@@ -183,7 +183,7 @@ export function Composer() {
                 <textarea
                     ref={box}
                     value={draft}
-                    rows={2}
+                    rows={1}
                     aria-label="message"
                     onChange={(event) => setDraft(event.target.value)}
                     onKeyDown={(event) => {
@@ -198,14 +198,14 @@ export function Composer() {
                         }
                     }}
                     placeholder={connected ? 'Message the worker…' : 'No worker is attached to this session'}
-                    className="block min-h-16 w-full resize-none bg-transparent px-4 pb-1 pt-3
-                        text-sm text-ink placeholder:text-ink-faint focus:outline-none"
+                    className="block w-full resize-none overflow-y-auto bg-transparent px-3 pb-1 pt-2
+                        text-sm leading-5 text-ink placeholder:text-ink-faint focus:outline-none"
                 />
 
-                <div className="flex items-center gap-2 px-3 pb-3">
+                <div className="flex flex-wrap items-center gap-2 px-2 pb-2">
                     <Popover open={refOpen} onOpenChange={setRefOpen}>
                         <PopoverTrigger asChild>
-                            <IconButton label="Attach a reference" disabled={!connected}>
+                            <IconButton label="Attach a reference" size="md" disabled={!connected}>
                                 <Glyph name="attach" />
                             </IconButton>
                         </PopoverTrigger>
@@ -255,7 +255,7 @@ export function Composer() {
                             <button
                                 type="button"
                                 aria-label={`confirmation mode: ${mode}`}
-                                className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5
+                                className="inline-flex h-9 items-center gap-1.5 rounded px-2.5
                                     text-xs text-ink-muted hover:bg-subtle hover:text-ink"
                                 title="how the worker should answer tool confirmations for this session"
                             >
@@ -302,7 +302,7 @@ export function Composer() {
                         <Button
                             onClick={() => send('continue')}
                             title="ask the worker to continue the run without a new message"
-                            className="ml-auto"
+                            className="ml-auto h-9"
                         >
                             Continue
                         </Button>
@@ -312,7 +312,7 @@ export function Composer() {
                         variant="primary"
                         size="md"
                         disabled={!canSend}
-                        className={runActive ? '' : 'ml-auto'}
+                        className={`h-9 ${runActive ? '' : 'ml-auto'}`}
                         icon={<Glyph name="send" />}
                     >
                         Send
@@ -320,7 +320,7 @@ export function Composer() {
                 </div>
             </div>
 
-            <div className="mx-auto mt-2 flex max-w-4xl flex-wrap items-center gap-x-3 gap-y-1
+            <div className="mx-auto mt-1 flex max-w-4xl flex-wrap items-center gap-x-3 gap-y-1
                 px-1 text-xs text-ink-muted">
                 {connectionState !== 'open' && (
                     <span className="text-warn">the panel is not connected</span>

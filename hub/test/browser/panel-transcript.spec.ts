@@ -47,6 +47,7 @@ test('recovers worker history and contains long content on a narrow viewport', a
             steps: [{ index: 0, content: [{ type: 'text', raw: 'x'.repeat(1200) }],
                 tool_calls: 2 }], omitted_steps: 0 }],
     } });
+    await emit(page, 'ready', { active: false, capabilities: ['session-history'] });
     await page.setViewportSize({ width: 390, height: 720 });
     await page.goto('/?session=demo');
     await expect(page.getByTestId('history-turn')).toHaveCount(1);
@@ -71,12 +72,66 @@ test('collapses older restored turns while keeping them available', async ({ pag
                 tool_calls: 0 }], omitted_steps: 0,
         })),
     } });
+    await emit(page, 'ready', { active: false, capabilities: ['session-history'] });
     await page.goto('/?session=demo');
     await expect(page.getByTestId('history-turn')).toHaveCount(5);
     const first = page.getByTestId('history-turn').first();
     await expect(first.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
     await first.getByRole('button').click();
     await expect(first).toContainText('answer 0');
+});
+
+test('waits for worker history support before querying an older worker', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: { historyEnabled: true } });
+    await emit(page, 'ready', { active: false });
+    await page.goto('/?session=demo');
+    const queries = async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history');
+    };
+    await expect.poll(queries).toHaveLength(0);
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await expect.poll(queries).toHaveLength(1);
+});
+
+test('keeps the compact composer controls aligned and inside a narrow viewport', async ({ page }) => {
+    await open(page);
+    await page.setViewportSize({ width: 320, height: 568 });
+    await page.goto('/?session=demo');
+    const message = page.getByLabel('message');
+    const composer = message.locator('xpath=ancestor::form[1]');
+    const attach = page.getByRole('button', { name: 'Attach a reference' });
+    const confirmation = page.getByRole('button', { name: /confirmation mode:/ });
+    const send = page.getByRole('button', { name: 'Send' });
+    const initial = await message.boundingBox();
+    expect(initial).not.toBeNull();
+    expect(initial!.height).toBeLessThan(50);
+
+    await message.fill('long input '.repeat(180));
+    const field = await message.boundingBox();
+    const controls = await Promise.all([attach.boundingBox(), confirmation.boundingBox(),
+        send.boundingBox()]);
+    expect(field).not.toBeNull();
+    expect(field!.height).toBeLessThanOrEqual(145);
+    for (const control of controls) {
+        expect(control).not.toBeNull();
+        expect(control!.y).toBeGreaterThanOrEqual(field!.y + field!.height);
+        expect(control!.x + control!.width).toBeLessThanOrEqual(320);
+        expect(control!.height).toBe(controls[0]!.height);
+    }
+    expect(controls[1]!.y).toBe(controls[0]!.y);
+    expect(controls[2]!.y).toBe(controls[0]!.y);
+    const backgrounds = await page.evaluate(() => ({
+        transcript: getComputedStyle(document.querySelector('[data-testid="transcript"]')!).backgroundColor,
+        composer: getComputedStyle(document.querySelector('textarea[aria-label="message"]')!.closest('form')!).backgroundColor,
+    }));
+    // The scroll area inherits its colour from the conversation surface.
+    const conversationBackground = await page.locator('#conversation').evaluate(
+        (node) => getComputedStyle(node).backgroundColor);
+    expect(backgrounds.composer).toBe(conversationBackground);
+    expect(await composer.isVisible()).toBe(true);
 });
 
 test('keeps the activity text and stops its motion when requested', async ({ page }) => {

@@ -584,6 +584,7 @@ the next payload as described under
 | `stopping` | Boolean | Worker shutdown is in progress as observed at this snapshot. |
 | `storage_failed` | Boolean | A required JSON persistence operation failed; further saves are suppressed. |
 | `rejected_payloads` | Nonnegative integer | Cumulative inbound payload-queue overflow count in this IO client lifetime; not semantic input rejections. |
+| `capabilities` | Array of strings | Features supported by this worker process. `session-history` means it accepts read-only `history` payloads. A hub should check this before querying a worker that may be older than the hub. |
 | `loop` | Optional loop-progress object | Present only when conversation state contains loop progress, including restored progress. |
 
 Loop progress always contains the following fields when present:

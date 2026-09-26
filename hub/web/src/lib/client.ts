@@ -190,9 +190,27 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         revision: number | null; retries: number;
     }>();
 
+    /** The hub can route queries, but only a worker that advertises them can answer. */
+    function workerSupportsHistory(sessionId: SessionId): boolean {
+        const state = store.getState();
+        const session = state.sessions.get(sessionId);
+        const workerId = session?.identity.worker_id;
+        const events = state.views.get(sessionId)?.latestEvents;
+        if (!session?.connected || !workerId || !events) return false;
+        for (const name of ['status', 'ready']) {
+            const envelope = events[name];
+            if (envelope?.worker_id !== workerId) continue;
+            const data = envelope.data as { capabilities?: unknown } | null;
+            if (Array.isArray(data?.capabilities)
+                && data.capabilities.includes('session-history')) return true;
+        }
+        return false;
+    }
+
     function requestHistory(sessionId: SessionId, start = 0, step = 0,
         revision: number | null = null, retries = 0): boolean {
-        if (!store.getState().hasCapability('session-history')) return false;
+        if (!store.getState().hasCapability('session-history')
+            || !workerSupportsHistory(sessionId)) return false;
         const requestId = newRequestId();
         const sent = socket.send({ type: 'history', session: sessionId,
             request_id: requestId, start, step, limit: 10 });
@@ -249,6 +267,13 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             }
             case 'event':
                 store.getState().applyEvent(message);
+                if ((message.envelope.event === 'ready' || message.envelope.event === 'status')
+                    && store.getState().selected === message.session
+                    && !historyRequests.has(message.session)
+                    && store.getState().views.get(message.session)?.historyWorker
+                        !== message.envelope.worker_id) {
+                    requestHistory(message.session);
+                }
                 if (message.envelope.event === 'history') {
                     const page = message.envelope.data as {
                         request_id?: unknown; next?: unknown; next_step?: unknown;

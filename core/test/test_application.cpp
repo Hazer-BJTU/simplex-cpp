@@ -114,6 +114,7 @@ sections:
             auto event = Json::parse(beast::buffers_to_string(buffer.data()));
             const auto name = event.at("event").get<std::string>();
             if (name == "ready") {
+                BOOST_TEST(event.at("data").at("capabilities")[0] == "session-history");
                 if (mode == Mode::ProtocolFailure) {
                     socket.binary(true);
                     const std::string binary = "invalid application frame";

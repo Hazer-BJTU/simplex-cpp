@@ -213,7 +213,10 @@ rather than dangerous.
 
 `history` pages are a bounded display projection of the worker's in-memory
 `UserLoopStep` turns. The browser requests pages in order when it subscribes
-and refreshes after `run_finished`; it restarts pagination if the worker's
+and refreshes after `run_finished`, but only after the current worker advertises
+`session-history` in a `ready` or `status` event. The hub's own capability means
+it can route these requests; it does not imply that an older worker can answer.
+The browser restarts pagination if the worker's
 history revision changes between pages. The hub forwards each full response
 live, but retains only a small cursor marker in its transcript and JSONL log.
 The marker has `transient_history: true` and omits `turns` and the raw document;
