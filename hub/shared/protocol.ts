@@ -75,6 +75,8 @@ export const CAPABILITIES = [
      * session the operator is not looking at.
      */
     'global-confirmations',
+    /** Worker-backed, display-only conversation history queries. */
+    'session-history',
 ] as const;
 
 /** One advertised capability. */
@@ -116,6 +118,32 @@ export interface ContentPart {
     type: 'text' | 'binary' | 'external_ref' | string;
     raw: string;
     extras?: unknown;
+}
+
+/** Bounded display projection, never a restorable worker snapshot. */
+export interface HistoryTurn {
+    index: number;
+    user: ContentPart[];
+    steps: {
+        index: number;
+        content: ContentPart[];
+        reasoning?: ContentPart;
+        tool_calls: number;
+        omitted_parts?: number;
+    }[];
+    omitted_steps: number;
+    omitted_user_parts?: number;
+}
+
+export interface HistoryPage {
+    request_id: string;
+    revision: number;
+    start: number;
+    step: number;
+    next: number;
+    next_step: number;
+    total: number;
+    turns: HistoryTurn[];
 }
 
 /** Payload options; `confirmation.mode` is the one that carries authority. */
@@ -233,6 +261,8 @@ export interface SessionDescription {
     created_at: string;
     spec: SessionSpec;
     connected: boolean;
+    /** Current worker's advertised capabilities; null until its status is known. */
+    worker_capabilities?: string[] | null;
     identity: SessionIdentity;
     stats: SessionStats;
     last_run_id: string;
@@ -244,7 +274,8 @@ export interface SessionDescription {
 }
 
 /**
- * A worker envelope, forwarded verbatim.
+ * A worker envelope. History replies are forwarded live but omitted from
+ * replay, so a client recovers them with a fresh query.
  *
  * `event` and `data` are deliberately open: core may add an event name at any
  * time, and a hub that rejected an unfamiliar one would disconnect a worker for
@@ -275,7 +306,7 @@ export interface WorkerEnvelope {
 /**
  * Identifies one hub process's transcript.
  *
- * `hub_sequence` counts envelopes received by *this* hub process, so it restarts
+ * `hub_sequence` counts retained transcript envelopes in *this* hub process, so it restarts
  * at 1 after a restart. A cursor captured before one would silently return
  * nothing at all, which looks exactly like an idle session. The epoch turns that
  * silence into a signal: when it changes, a client discards its cursor and asks
@@ -410,6 +441,8 @@ export type PanelMessage =
         operation: 'status' | 'options' | 'cancel' | 'shutdown';
         run_id?: string;
     }
+    | { v?: number; type: 'history'; session: SessionId; request_id?: string;
+        start?: number; step?: number; limit?: number }
     | {
         v?: number;
         type: 'confirmation';
@@ -526,7 +559,7 @@ export type HubMessageType = HubMessage['type'];
 /** Every panel message `type`, in the order `docs/hub-protocol.md` lists them. */
 export const PANEL_MESSAGE_TYPES = [
     'ping', 'list_sessions', 'subscribe', 'unsubscribe', 'create_session',
-    'delete_session', 'worker', 'input', 'signal', 'confirmation', 'logs',
+    'delete_session', 'worker', 'input', 'history', 'signal', 'confirmation', 'logs',
     'status_snapshot',
 ] as const satisfies readonly PanelMessageType[];
 

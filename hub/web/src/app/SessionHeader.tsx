@@ -130,9 +130,9 @@ function describe(action: Pending['action'], options: { processGroup: boolean })
             return {
                 action,
                 title: 'Delete this session?',
-                body: 'The session, its transcript in this hub, and its place in the hub\'s state'
-                    + ' file are removed. The worker\'s own persisted files under the data directory'
-                    + ' are left where they are. This cannot be undone.',
+                body: 'The session, its conversation snapshot, and its hub event history are'
+                    + ' deleted. Files created by tools in the worker directory are kept.'
+                    + ' This cannot be undone.',
                 confirm: 'Delete',
                 danger: true,
             };

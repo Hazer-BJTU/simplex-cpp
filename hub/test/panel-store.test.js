@@ -15,6 +15,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createPanelStore, statsFor } from '../web/src/state/store.ts';
+import { parseHistoryPage } from '../web/src/state/history.ts';
 
 /** One worker envelope as the hub forwards it. */
 function envelope(hubSequence, event = 'model_response', extra = {}) {
@@ -92,6 +93,109 @@ function events(store, id = 'demo') {
 function notes(store, id = 'demo') {
     return store.getState().items(id).filter((item) => item.kind === 'note');
 }
+
+describe('worker-backed display history', () => {
+    it('counts transient pages in worker sequence without advancing hub replay', () => {
+        const store = createPanelStore();
+        store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 1,
+            envelope: envelope(1, 'status') });
+        store.getState().noteTransientWorkerEvent('demo', envelope(1, 'history', {
+            sequence: 2,
+        }));
+        store.getState().noteTransientWorkerEvent('demo', envelope(1, 'history', {
+            sequence: 3,
+        }));
+        store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 2,
+            envelope: envelope(2, 'model_response', { sequence: 4 }) });
+        let view = store.getState().view('demo');
+        assert.equal(view.lastSeq, 2);
+        assert.equal(view.lastSequenceByWorker['worker-1'], 4);
+        assert.equal(view.gaps, 0);
+        assert.equal(events(store).length, 2);
+
+        store.getState().noteTransientWorkerEvent('demo', envelope(2, 'history', {
+            sequence: 3,
+        }));
+        store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 3,
+            envelope: envelope(3, 'model_response', { sequence: 7 }) });
+        view = store.getState().view('demo');
+        assert.equal(view.lastSequenceByWorker['worker-1'], 7);
+        assert.equal(view.gaps, 1, 'a real worker-sequence jump was hidden');
+    });
+
+    it('rejects malformed page identity, counters, and step progression', () => {
+        const valid = { request_id: 'h-1', revision: 1, start: 0, step: 0,
+            next: 1, next_step: 0, total: 1,
+            turns: [{ index: 0, user: [], steps: [{ index: 0,
+                content: [], tool_calls: 0, omitted_parts: 0 }], omitted_steps: 0 }] };
+        assert.ok(parseHistoryPage(valid));
+        for (const malformed of [
+            { request_id: '' }, { revision: undefined }, { revision: -1 },
+            { next: 2 }, { step: -1 },
+            { turns: [{ ...valid.turns[0], index: 1 }] },
+            { turns: [{ ...valid.turns[0], omitted_steps: -1 }] },
+            { turns: [{ ...valid.turns[0], steps: [{ ...valid.turns[0].steps[0],
+                index: 2 }] }] },
+            { turns: [{ ...valid.turns[0], steps: [{ ...valid.turns[0].steps[0],
+                omitted_parts: -1 }] }] },
+        ]) {
+            assert.equal(parseHistoryPage({ ...valid, ...malformed }), null);
+        }
+    });
+
+    it('assembles pages and keeps query bodies out of the event transcript', () => {
+        const store = createPanelStore();
+        store.getState().beginHistory('demo');
+        const first = envelope(1, 'history', { data: {
+            request_id: 'h-1', revision: 1, start: 0, step: 0,
+            next: 1, next_step: 0, total: 2,
+            turns: [{ index: 0, user: [{ type: 'text', raw: 'old input' }],
+                steps: [], omitted_steps: 0 }],
+        } });
+        store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 1,
+            envelope: first });
+        assert.equal(store.getState().applyHistoryPage('demo', first,
+            parseHistoryPage(first.data)), true);
+        assert.equal(store.getState().view('demo').historyLoading, true);
+        assert.equal(events(store).length, 0);
+        const second = envelope(2, 'history', { data: {
+            request_id: 'h-2', revision: 1, start: 1, step: 0,
+            next: 2, next_step: 0, total: 2,
+            turns: [{ index: 1, user: [{ type: 'text', raw: 'new input' }],
+                steps: [], omitted_steps: 0 }],
+        } });
+        assert.equal(store.getState().applyHistoryPage('demo', second,
+            parseHistoryPage(second.data)), true);
+        const view = store.getState().view('demo');
+        assert.equal(view.history.length, 2);
+        assert.equal(view.historyLoading, false);
+        assert.equal(view.historySequence, 2);
+    });
+
+    it('joins two pages of one long turn without duplicating its user input', () => {
+        const store = createPanelStore();
+        store.getState().beginHistory('demo');
+        const page = (sequence, step, nextStep, text) => envelope(sequence, 'history', {
+            data: { request_id: `h-${sequence}`, revision: 1, start: 0, step,
+                next: nextStep ? 0 : 1, next_step: nextStep, total: 1,
+                turns: [{ index: 0, user: [{ type: 'text', raw: 'input' }],
+                    steps: [{ index: step, content: [{ type: 'text', raw: text }],
+                        tool_calls: 0 }], omitted_steps: nextStep ? 1 : 0 }],
+            },
+        });
+        const first = page(1, 0, 1, 'first');
+        const second = page(2, 1, 0, 'second');
+        assert.equal(store.getState().applyHistoryPage('demo', first,
+            parseHistoryPage(first.data)), true);
+        assert.equal(store.getState().applyHistoryPage('demo', second,
+            parseHistoryPage(second.data)), true);
+        const history = store.getState().view('demo').history;
+        assert.equal(history.length, 1);
+        assert.deepEqual(history[0].steps.map((step) => step.content[0].raw),
+            ['first', 'second']);
+        assert.equal(store.getState().view('demo').historyLoading, false);
+    });
+});
 
 describe('panel store: replay is merged, not substituted (A2)', () => {
     it('keeps the transcript a reconnect did not re-send', () => {

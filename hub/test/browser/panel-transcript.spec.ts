@@ -8,6 +8,7 @@
  */
 import { expect, test } from '@playwright/test';
 import {
+    STUB,
     PROCESS_OUTPUT,
     call,
     emit,
@@ -35,6 +36,375 @@ test('shows an honest activity cue through a live run', async ({ page }) => {
     await expect(activity).toContainText('Processing response');
     await emit(page, 'run_finished', { status: 'completed' });
     await expect(activity).toHaveCount(0);
+});
+
+test('recovers worker history and contains long content on a narrow viewport', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [{ index: 0,
+            user: [{ type: 'text', raw: 'earlier user message' }],
+            steps: [{ index: 0, content: [{ type: 'text', raw: 'x'.repeat(1200) }],
+                tool_calls: 2 }], omitted_steps: 0 }],
+    } });
+    await emit(page, 'ready', { active: false, capabilities: ['session-history'] });
+    await page.setViewportSize({ width: 390, height: 720 });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toHaveCount(1);
+    await expect(page.getByTestId('history-turn')).toContainText('earlier user message');
+    await expect(page.getByTestId('history-turn')).toContainText('2 tool calls');
+    const overflow = await page.getByTestId('transcript').evaluate((node) =>
+        node.scrollWidth > node.clientWidth + 1);
+    expect(overflow).toBe(false);
+    await page.getByLabel('message').fill('a new message after recovery');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByTestId('outbox-item')).toContainText('a new message after recovery');
+    await expect(page.getByTestId('outbox-item')).toHaveAttribute('data-state', 'admitted');
+});
+
+test('collapses older restored turns while keeping them available', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: Array.from({ length: 5 }, (_, index) => ({
+            index, user: [{ type: 'text', raw: `input ${index}` }],
+            steps: [{ index: 0, content: [{ type: 'text', raw: `answer ${index}` }],
+                tool_calls: 0 }], omitted_steps: 0,
+        })),
+    } });
+    await emit(page, 'ready', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toHaveCount(5);
+    const first = page.getByTestId('history-turn').first();
+    await expect(first.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+    await first.getByRole('button').click();
+    await expect(first).toContainText('answer 0');
+});
+
+test('a history refresh keeps detailed tool cards beside the final reply', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true, historyTurns: [],
+    } });
+    await emit(page, 'ready', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect.poll(async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history').length;
+    }).toBe(1);
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
+    await emit(page, 'input_admitted', {}, { request_id: 'req-tools' });
+    await emit(page, 'run_started', {});
+    await emit(page, 'input_committed', {});
+    await emit(page, 'model_response', modelResponse(''));
+    await emit(page, 'tool_calls', [call('tool-1', 'run_command', { command: 'echo hello' })]);
+    await emit(page, 'tool_results', [toolResult('tool-1', 'run_command', PROCESS_OUTPUT)]);
+    await emit(page, 'model_response', modelResponse('Final answer after the tool.'));
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyTurns: [{ index: 0,
+            user: [{ type: 'text', raw: 'Please run the tool.' }],
+            steps: [
+                { index: 0, content: [], tool_calls: 1 },
+                { index: 1, content: [{ type: 'text', raw: 'Final answer after the tool.' }],
+                    tool_calls: 0 },
+            ], omitted_steps: 0 }],
+    } });
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 2 });
+    const historyQueries = async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history').length;
+    };
+    await expect.poll(historyQueries).toBe(1);
+    await expect(page.getByTestId('tool-card')).toHaveCount(1);
+    await page.getByRole('button', { name: 'refresh history' }).click();
+    await expect(page.getByTestId('restored-user-message'))
+        .toContainText('Please run the tool.');
+    await expect(page.getByTestId('history-turn')).toHaveCount(0);
+    await expect(page.getByTestId('tool-card')).toHaveCount(1);
+    await expect(page.getByTestId('tool-card')).toHaveAttribute('data-status', 'ok');
+    await expect(page.getByTestId('assistant-message').last())
+        .toContainText('Final answer after the tool.');
+
+    await page.reload();
+    await expect(page.getByTestId('restored-user-message'))
+        .toContainText('Please run the tool.');
+    await expect(page.getByTestId('history-turn')).toHaveCount(0);
+    await expect(page.getByTestId('tool-card')).toHaveCount(1);
+});
+
+test('waits for worker history support before querying an older worker', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: { historyEnabled: true } });
+    await emit(page, 'ready', { active: false });
+    await page.goto('/?session=demo');
+    const queries = async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history');
+    };
+    await expect.poll(queries).toHaveLength(0);
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await expect.poll(queries).toHaveLength(1);
+});
+
+test('reload recovers history after the capability event leaves replay', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [{ index: 0, user: [{ type: 'text', raw: 'retained by worker' }],
+            steps: [], omitted_steps: 0 }],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.request.post(`${STUB}/__stub/trim-transcript`, { data: { keep: 0 } });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toContainText('retained by worker');
+});
+
+test('the same worker reconnect refreshes history after its new status', async ({ page }) => {
+    await open(page);
+    const turn = (raw: string) => ({ index: 0,
+        user: [{ type: 'text', raw }], steps: [], omitted_steps: 0 });
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true, historyTurns: [turn('before disconnect')],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toContainText('before disconnect');
+    const queries = async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history').length;
+    };
+    await expect.poll(queries).toBe(1);
+
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyTurns: [turn('changed while disconnected')],
+    } });
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
+    await expect.poll(queries).toBe(1);
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await expect.poll(queries).toBe(2);
+    await expect(page.getByTestId('history-turn')).toContainText('changed while disconnected');
+});
+
+test('completed live runs do not re-fetch the whole worker history', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: Array.from({ length: 25 }, (_, index) => ({
+            index, user: [], steps: [], omitted_steps: 0,
+        })),
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    const queries = async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history').length;
+    };
+    await expect.poll(queries).toBe(3);
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
+    for (let index = 0; index < 3; index += 1) {
+        await emit(page, 'run_started', {}, { run_id: `run-${index}` });
+        await emit(page, 'model_response', modelResponse(`answer ${index}`),
+            { run_id: `run-${index}` });
+        await emit(page, 'run_finished', { status: 'completed' },
+            { run_id: `run-${index}` });
+    }
+    await expect(page.getByTestId('assistant-message')).toHaveCount(3);
+    expect(await queries()).toBe(3);
+});
+
+for (const [name, response] of [
+    ['missing revision', { revision: null }],
+    ['wrong turn index', { turns: [{ index: 1, user: [], steps: [], omitted_steps: 0 }] }],
+    ['wrong step index', { turns: [{ index: 0, user: [], omitted_steps: 0,
+        steps: [{ index: 3, content: [], tool_calls: 0 }] }] }],
+    ['invalid omitted count', { turns: [{ index: 0, user: [], steps: [],
+        omitted_steps: -1 }] }],
+] as const) {
+    test(`a page with ${name} stops pagination without another request`, async ({ page }) => {
+        await open(page);
+        await page.request.post(`${STUB}/__stub/settings`, { data: {
+            historyEnabled: true,
+            historyTurns: [0, 1].map((index) => ({ index, user: [], steps: [],
+                omitted_steps: 0 })),
+            historyResponses: [{ next: 1, total: 2,
+                turns: [{ index: 0, user: [], steps: [], omitted_steps: 0 }],
+                ...response }],
+        } });
+        await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+        await page.goto('/?session=demo');
+        await expect(page.getByText('Worker returned an invalid conversation history page.'))
+            .toBeVisible();
+        const received = await page.request.get(`${STUB}/__stub/received`);
+        expect((await received.json()).received.filter(
+            (message: { type: string }) => message.type === 'history')).toHaveLength(1);
+        await expect(page.getByTestId('transcript'))
+            .not.toContainText('loading conversation history');
+    });
+}
+
+test('a history page without request ID ends the pending load', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [{ index: 0, user: [], steps: [], omitted_steps: 0 }],
+        historyResponses: [{ request_id: null }],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByText('Worker returned a history page without a request ID.'))
+        .toBeVisible();
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
+});
+
+test('revision change restarts pagination and a bad restart ends loading', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [0, 1].map((index) => ({ index, user: [], steps: [],
+            omitted_steps: 0 })),
+        historyResponses: [
+            { next: 1, total: 2,
+                turns: [{ index: 0, user: [], steps: [], omitted_steps: 0 }] },
+            { revision: 2 },
+            { revision: null },
+        ],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByText('Worker returned an invalid conversation history page.'))
+        .toBeVisible();
+    const received = await page.request.get(`${STUB}/__stub/received`);
+    const queries = (await received.json()).received.filter(
+        (message: { type: string }) => message.type === 'history');
+    expect(queries.map((query: { start: number }) => query.start)).toEqual([0, 1, 0]);
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
+});
+
+test('a pruned history cursor restarts from zero when the revision changes', async ({ page }) => {
+    await open(page);
+    const turn = (index: number, raw: string) => ({ index,
+        user: [{ type: 'text', raw }], steps: [], omitted_steps: 0 });
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: Array.from({ length: 6 }, (_, index) => turn(index, `old ${index}`)),
+        historyResponses: [
+            { next: 5, total: 6, turns: Array.from({ length: 5 },
+                (_, index) => turn(index, `old ${index}`)) },
+            { revision: 2, start: 3, next: 3, total: 3, turns: [] },
+            { revision: 2, next: 3, total: 3,
+                turns: Array.from({ length: 3 }, (_, index) => turn(index, `new ${index}`)) },
+        ],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toHaveCount(3);
+    await expect(page.getByTestId('history-turn').first()).toContainText('new 0');
+    const received = await page.request.get(`${STUB}/__stub/received`);
+    const queries = (await received.json()).received.filter(
+        (message: { type: string }) => message.type === 'history');
+    expect(queries.map((query: { start: number }) => query.start)).toEqual([0, 5, 0]);
+    await expect(page.getByText('Worker returned an invalid conversation history page.'))
+        .toHaveCount(0);
+});
+
+test('an invalid partial-turn cursor error retries from zero', async ({ page }) => {
+    await open(page);
+    const step = { index: 0, content: [{ type: 'text', raw: 'recovered answer' }],
+        tool_calls: 0 };
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: [{ index: 0, user: [], steps: [step], omitted_steps: 0 }],
+        historyResponses: [
+            { next: 0, next_step: 1, total: 1,
+                turns: [{ index: 0, user: [], steps: [step], omitted_steps: 1 }] },
+            { __error: 'history step is outside the selected turn' },
+            { revision: 2 },
+        ],
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toContainText('recovered answer');
+    const received = await page.request.get(`${STUB}/__stub/received`);
+    const queries = (await received.json()).received.filter(
+        (message: { type: string }) => message.type === 'history');
+    expect(queries.map((query: { start: number; step: number }) =>
+        [query.start, query.step])).toEqual([[0, 0], [0, 1], [0, 0]]);
+    await expect(page.getByTestId('transcript'))
+        .not.toContainText('loading conversation history');
+});
+
+test('keeps the compact composer controls aligned and inside a narrow viewport', async ({ page }) => {
+    await open(page);
+    await page.setViewportSize({ width: 320, height: 568 });
+    await page.goto('/?session=demo');
+    const message = page.getByLabel('message');
+    const composer = message.locator('xpath=ancestor::form[1]');
+    const attach = page.getByRole('button', { name: 'Attach a reference' });
+    const confirmation = page.getByRole('button', { name: /confirmation mode:/ });
+    const send = page.getByRole('button', { name: 'Send' });
+    const initial = await message.boundingBox();
+    expect(initial).not.toBeNull();
+    expect(initial!.height).toBeGreaterThanOrEqual(65);
+    expect(initial!.height).toBeLessThan(95);
+
+    await message.fill('long input '.repeat(180));
+    const field = await message.boundingBox();
+    const controls = await Promise.all([attach.boundingBox(), confirmation.boundingBox(),
+        send.boundingBox()]);
+    expect(field).not.toBeNull();
+    expect(field!.height).toBeLessThanOrEqual(193);
+    for (const control of controls) {
+        expect(control).not.toBeNull();
+        expect(control!.y).toBeGreaterThanOrEqual(field!.y + field!.height);
+        expect(control!.x + control!.width).toBeLessThanOrEqual(320);
+        expect(control!.height).toBe(controls[0]!.height);
+    }
+    expect(controls[1]!.y).toBe(controls[0]!.y);
+    expect(controls[2]!.y).toBe(controls[0]!.y);
+    const contents = await Promise.all([attach, confirmation, send].map((button) =>
+        button.evaluate((node) => {
+            const icon = node.querySelector('svg')!.getBoundingClientRect();
+            const label = node.querySelector('span')!.getBoundingClientRect();
+            return { iconY: icon.y, iconHeight: icon.height,
+                labelY: label.y, labelHeight: label.height };
+        })));
+    for (const content of contents) {
+        expect(content.iconY).toBe(contents[0]!.iconY);
+        expect(content.iconHeight).toBe(contents[0]!.iconHeight);
+        expect(content.labelY).toBe(contents[0]!.labelY);
+        expect(content.labelHeight).toBe(contents[0]!.labelHeight);
+    }
+    const card = message.locator('xpath=..');
+    const neutralFocus = await card.evaluate((node) => {
+        const sample = document.createElement('div');
+        sample.style.borderColor = 'var(--ink-muted)';
+        document.body.append(sample);
+        const colour = getComputedStyle(sample).borderColor;
+        sample.remove();
+        return colour;
+    });
+    await message.focus();
+    expect(await card.evaluate((node) => getComputedStyle(node).borderColor)).toBe(neutralFocus);
+    expect(await message.evaluate((node) => getComputedStyle(node).outlineStyle)).toBe('none');
+    const backgrounds = await page.evaluate(() => ({
+        transcript: getComputedStyle(document.querySelector('[data-testid="transcript"]')!).backgroundColor,
+        composer: getComputedStyle(document.querySelector('textarea[aria-label="message"]')!.closest('form')!).backgroundColor,
+    }));
+    // The scroll area inherits its colour from the conversation surface.
+    const conversationBackground = await page.locator('#conversation').evaluate(
+        (node) => getComputedStyle(node).backgroundColor);
+    expect(backgrounds.composer).toBe(conversationBackground);
+    expect(await composer.isVisible()).toBe(true);
 });
 
 test('keeps the activity text and stops its motion when requested', async ({ page }) => {

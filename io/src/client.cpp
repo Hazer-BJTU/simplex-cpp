@@ -29,6 +29,7 @@ Client::Client(boost::asio::any_io_executor executor,
       _state(std::make_shared<State>(executor, _signal_io.get_executor(),
                                      validate_options(options))),
       _signal_done(executor, 1),
+      _events(events),
       _signal_handler([&events](const nlohmann::json& signal) {
           events.publish(SignalEvent{signal});
       })
@@ -139,7 +140,17 @@ void Client::on_text(std::string message) {
 
     const std::string type = envelope.at("type").get<std::string>();
     nlohmann::json data = std::move(envelope["data"]);
-    if (type == "payload") {
+    if (type == "payload" && data.is_object()
+        && data.value("operation", nlohmann::json()) == "history") {
+        // Queries must remain responsive while the single payload consumer is
+        // suspended in a model call. Retain their envelope kind so the signal
+        // worker can publish a distinct event without invoking signal handlers.
+        if (!_state->signals.try_send(boost::system::error_code{},
+                nlohmann::json{{"type", "payload_query"}, {"data", std::move(data)}})) {
+            if (_state->stopping.load()) return;
+            throw std::runtime_error("IO control queue is full");
+        }
+    } else if (type == "payload") {
         if (!_state->payloads.try_send(boost::system::error_code{},
                                        std::move(data))) {
             if (_state->stopping.load()) return;
@@ -149,7 +160,7 @@ void Client::on_text(std::string message) {
         }
     } else if (type == "signal") {
         if (!_state->signals.try_send(boost::system::error_code{},
-                                      std::move(data))) {
+                nlohmann::json{{"type", "signal"}, {"data", std::move(data)}})) {
             if (_state->stopping.load()) return;
             throw std::runtime_error("IO signal queue is full");
         }
@@ -161,16 +172,21 @@ void Client::on_text(std::string message) {
 boost::asio::awaitable<void> Client::process_signals() {
     for (;;) {
         boost::system::error_code ec;
-        nlohmann::json signal = co_await _state->signals.async_receive(
+        nlohmann::json control = co_await _state->signals.async_receive(
             boost::asio::redirect_error(boost::asio::use_awaitable, ec));
         if (_state->stopping.load() || ec) co_return;
+
+        if (control.at("type") == "payload_query") {
+            _events.publish(PayloadQueryEvent{std::move(control["data"])});
+            continue;
+        }
 
         SignalHandler handler;
         {
             std::lock_guard lock(_handler_mutex);
             handler = _signal_handler;
         }
-        handler(signal);
+        handler(control.at("data"));
     }
 }
 

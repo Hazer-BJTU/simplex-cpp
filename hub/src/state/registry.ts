@@ -163,6 +163,8 @@ export class Session {
     identity: TrackedIdentity;
     stats: RegistryStats;
     latest: LatestEnvelopes;
+    /** Capabilities advertised by the current identified worker, or unknown. */
+    workerCapabilities: { workerId: string; names: readonly string[] } | null;
     /** Last event envelope seen, whatever its name. */
     lastEvent: RegistryEnvelope | null;
     /** Run identifier the hub most recently observed, for cancel targeting. */
@@ -198,6 +200,7 @@ export class Session {
         };
         this.stats = { events: 0, gaps: 0, duplicates: 0, protocolErrors: 0, incarnations: 0 };
         this.latest = { status: null, options: null, run_finished: null };
+        this.workerCapabilities = null;
         this.lastEvent = null;
         this.lastRunId = '';
         this.prompts = new Map();
@@ -217,6 +220,7 @@ export class Session {
     attach(connection: AttachedConnection): { previous: AttachedConnection | null; replaced: boolean } {
         const previous = this.connection;
         this.connection = connection;
+        this.workerCapabilities = null;
         this.lastConnectionAt = new Date().toISOString();
         return { previous, replaced: previous !== null && previous !== connection };
     }
@@ -303,6 +307,7 @@ export class Session {
     noteIdentity(workerId: string, at = new Date().toISOString()): { incarnation: boolean } {
         const previous = this.identity.workerId;
         const incarnation = previous !== null && previous !== workerId;
+        if (previous !== workerId) this.workerCapabilities = null;
         if (incarnation) this.stats.incarnations += 1;
         this.identity = {
             state: IDENTITY.live,
@@ -316,6 +321,7 @@ export class Session {
 
     /** Mark a known identity as no longer backed by an open connection. */
     markStale(): void {
+        this.workerCapabilities = null;
         if (this.identity.state !== IDENTITY.live) return;
         this.identity = {
             state: IDENTITY.stale,
@@ -369,6 +375,18 @@ export class Session {
     noteEnvelope(envelope: RegistryEnvelope): void {
         this.stats.events += 1;
         this.lastEvent = envelope;
+        if (envelope.event === 'ready' || envelope.event === 'status') {
+            const data = envelope.data;
+            const names = typeof data === 'object' && data !== null
+                ? (data as { capabilities?: unknown }).capabilities : null;
+            if (typeof envelope.worker_id === 'string') {
+                this.workerCapabilities = {
+                    workerId: envelope.worker_id,
+                    names: Array.isArray(names) && names.every((name) => typeof name === 'string')
+                        ? names : [],
+                };
+            }
+        }
         if (Object.hasOwn(this.latest, envelope.event)) {
             (this.latest as Record<string, RegistryEnvelope | null>)[envelope.event] = envelope;
         }
@@ -389,6 +407,9 @@ export class Session {
             created_at: this.createdAt,
             spec: this.spec,
             connected: this.connected,
+            worker_capabilities: this.connected
+                && this.workerCapabilities?.workerId === this.identity.workerId
+                ? [...this.workerCapabilities.names] : null,
             identity,
             stats: { ...this.stats },
             last_run_id: this.lastRunId,

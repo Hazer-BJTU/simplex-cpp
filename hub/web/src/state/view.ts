@@ -21,6 +21,7 @@
 import type {
     ConfirmationPrompt,
     ContentPart,
+    HistoryTurn,
     RequestRecord,
     SessionId,
     TranscriptEpoch,
@@ -88,6 +89,8 @@ export interface OutboxItem {
     readonly parts: readonly ContentPart[];
     readonly operation: string;
     readonly state: 'pending' | 'admitted';
+    readonly admittedSequence?: number;
+    readonly admittedWorker?: string;
 }
 
 /** One line in the transcript. */
@@ -112,6 +115,11 @@ export interface ViewState {
      */
     readonly epoch: TranscriptEpoch | null;
     readonly items: readonly TranscriptItem[];
+    /** Display-only history received from the worker, in turn order. */
+    readonly history: readonly HistoryTurn[];
+    readonly historyLoading: boolean;
+    readonly historySequence: number | null;
+    readonly historyWorker: string | null;
     /** Highest `hub_sequence` seen *in `epoch`*; also the replay cursor. */
     readonly lastSeq: number;
     /** request_id -> the `request` item currently in `items`. */
@@ -140,6 +148,10 @@ export function emptyView(id: SessionId): ViewState {
         id,
         epoch: null,
         items: [],
+        history: [],
+        historyLoading: false,
+        historySequence: null,
+        historyWorker: null,
         lastSeq: 0,
         requestIndex: new Map(),
         requests: new Map(),
@@ -201,16 +213,21 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
         }
     }
 
-    let lastSequenceByWorker = view.lastSequenceByWorker;
-    let gaps = view.gaps;
-    const workerId = typeof envelope.worker_id === 'string' ? envelope.worker_id : '';
-    if (typeof envelope.sequence === 'number') {
-        const previous = lastSequenceByWorker[workerId];
-        if (typeof previous === 'number' && envelope.sequence !== previous + 1) gaps += 1;
-        lastSequenceByWorker = { ...lastSequenceByWorker, [workerId]: envelope.sequence };
-    }
+    return noteWorkerSequence({ ...view, latestEvents, lastRunId, runActive }, envelope);
+}
 
-    return { ...view, latestEvents, lastRunId, runActive, lastSequenceByWorker, gaps };
+/** Account for a received worker envelope without retaining it as transcript. */
+export function noteWorkerSequence(view: ViewState, envelope: WorkerEnvelope): ViewState {
+    const workerId = typeof envelope.worker_id === 'string' ? envelope.worker_id : '';
+    const sequence = envelope.sequence;
+    if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence)) return view;
+    const previous = view.lastSequenceByWorker[workerId];
+    if (typeof previous === 'number' && sequence <= previous) return view;
+    return {
+        ...view,
+        lastSequenceByWorker: { ...view.lastSequenceByWorker, [workerId]: sequence },
+        gaps: view.gaps + (typeof previous === 'number' && sequence > previous + 1 ? 1 : 0),
+    };
 }
 
 /** Trim a view's transcript, keeping the request index consistent. */

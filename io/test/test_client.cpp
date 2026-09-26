@@ -120,6 +120,37 @@ BOOST_AUTO_TEST_CASE(json_send_and_both_routes) {
     BOOST_TEST(signal.dump() == nlohmann::json({{"name", "cancel"}}).dump());
 }
 
+BOOST_AUTO_TEST_CASE(history_payload_bypasses_run_input_queue) {
+    loopback_ws::OneShotServer server([&](tcp::socket& socket) {
+        websocket::stream<tcp::socket> ws(std::move(socket));
+        ws.accept();
+        write_json(ws, {{"type", "payload"}, {"data", {
+            {"operation", "history"}, {"request_id", "history-1"}}}});
+        write_json(ws, {{"type", "payload"}, {"data", {
+            {"operation", "message"}, {"request_id", "message-1"}}}});
+    });
+
+    asio::io_context context;
+    eventbus::EventBus bus;
+    io::Client client(context.get_executor(), where(server.wait_listening()), bus);
+    auto subscription = client.subscribe_payload();
+    nlohmann::json payload;
+    nlohmann::json query;
+    std::atomic<int> completed{0};
+    eventbus::EventBus::ScopedSubscription query_subscription{
+        bus.subscribe<io::PayloadQueryEvent>([&](const io::PayloadQueryEvent& event) {
+            query = event.payload;
+            if (completed.fetch_add(1) + 1 == 2) client.stop();
+        })};
+    asio::co_spawn(context, take_one(subscription, payload, completed, client),
+                   asio::detached);
+    auto failure = drive(context, client);
+    server.join();
+    BOOST_CHECK(!failure);
+    BOOST_TEST(query.at("request_id") == "history-1");
+    BOOST_TEST(payload.at("request_id") == "message-1");
+}
+
 BOOST_AUTO_TEST_CASE(slow_signal_handler_does_not_block_payload_route) {
     std::promise<void> handler_started;
     auto started = handler_started.get_future();

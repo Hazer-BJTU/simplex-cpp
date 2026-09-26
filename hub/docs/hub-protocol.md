@@ -45,6 +45,7 @@ client can check for a feature instead of guessing.
 | `snapshot-view` | the worker's persisted snapshot can be read, never written |
 | `transcript-epoch` | `transcript_epoch` is reported, so a stale cursor is detectable |
 | `global-confirmations` | confirmations reach every client, not only subscribers |
+| `session-history` | panel can query a worker's simplified conversation history |
 
 These describe the hub **build**, not its configuration. `supervisor` means
 "this hub starts and signals worker processes", which stays true whichever
@@ -98,6 +99,7 @@ Most messages embed this object, produced by `Session.describe()`:
     "env": {}, "extraArgs": []
   },
   "connected": true,
+  "worker_capabilities": ["session-history"],
   "identity": {"state": "live", "worker_id": "204d23ea-...", "since": "..."},
   "stats": {"events": 12, "gaps": 0, "duplicates": 0, "protocolErrors": 0, "incarnations": 0},
   "last_run_id": "fd473c9f-...",
@@ -159,7 +161,7 @@ confirmation connection existed.
 | `GET /api/sessions` | — | `{sessions: [session...]}` |
 | `POST /api/sessions` | `{session, spec?}` | `201 {session}`; `400 invalid_session`; `409 session_exists` |
 | `GET /api/sessions/:id` | — | `{session}`; `404 unknown_session` |
-| `DELETE /api/sessions/:id` | — | `{removed}`; `409 session_busy` while a worker runs or is connected |
+| `DELETE /api/sessions/:id` | — | `{removed}`; removes the worker snapshot and hub event log, preserving tool-created files under `workers/<session>/`; `409 session_busy` while a worker runs or is connected |
 | `POST /api/sessions/:id/start` | `{spec?}` | `{ok, pid?, config}`; `409` with `{ok:false, error}` |
 | `POST /api/sessions/:id/stop` | — | `{ok, how, forced}` — `how` is `shutdown-signal`, `sigterm`, `sigkill`, `sigkill-process-group`, `already-exited`, or `not-started` |
 | `POST /api/sessions/:id/restart` | `{spec?}` | start result plus `stop` |
@@ -172,8 +174,8 @@ Errors are `{"error": "<code>", "message": "<human readable>"}` with a 4xx
 status. `error` codes are stable; `message` is not.
 
 `events` returns the hub's retained transcript in `hub_sequence` order.
-`hub_sequence` counts envelopes received by *this hub process*, which is what a
-client resumes from. `latest` is the current end of the transcript.
+`hub_sequence` counts retained transcript envelopes in *this hub process*,
+which is what a client resumes from. `latest` is the current end of the transcript.
 
 `snapshot` reads the worker's own files
 (`<persistence.directory>/<session>/state.json` and `readable.md`) without
@@ -190,9 +192,10 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 | `unsubscribe` | `session` | stops live messages for that session |
 | `list_sessions` | — | answers with `sessions` |
 | `create_session` | `session`, optional `spec` | answers with `created`, or `session_exists` / `invalid_session` |
-| `delete_session` | `session` | answers with `session_removed`; refused while busy |
+| `delete_session` | `session` | removes the worker snapshot and hub event log, then answers with `session_removed`; refused while busy |
 | `worker` | `session`, `action`: `start`\|`stop`\|`restart`\|`force-kill`, optional `spec` | answers with `accepted` (carrying the result) or `worker_action_failed` |
 | `input` | `session`, `content`, optional `operation`, `request_id`, `options` | validates, sends a payload, answers with `accepted` and `request_id` |
+| `history` | `session`, optional `request_id`, `start`, `step`, `limit` | if the current worker advertises `session-history`, sends a read-only payload; otherwise returns `input_not_sent`. The response arrives as a transient `history` worker event |
 | `signal` | `session`, `operation`: `status`\|`options`\|`cancel`\|`shutdown`, optional `run_id` | answers with `accepted` or `signal_not_sent` |
 | `confirmation` | `session`, `confirmation_id`, `decision`, optional `reason` | answers with `accepted` or `confirmation_rejected` |
 | `logs` | `session`, optional `limit` | answers with up to 2000 captured worker lines |
@@ -208,6 +211,22 @@ authoritative and its rejection is surfaced unchanged.
 `signal` with `operation: "cancel"` defaults `run_id` to the most recently
 observed one. A stale id is ignored by the worker, so the default is convenient
 rather than dangerous.
+
+`history` pages are a bounded display projection of the worker's in-memory
+`UserLoopStep` turns. The hub accepts a history query only while the current
+worker connection has advertised `session-history` in `ready` or `status`.
+The current worker's capabilities are exposed as `worker_capabilities` in the
+session description (`null` until known); they do not depend on old events
+remaining in the bounded replay transcript. The browser queries on initial
+subscription, worker recovery, or explicit refresh. Ordinary completed runs
+are already visible through their live events and do not trigger a full reload.
+The browser validates each page before committing it or following its cursor,
+and restarts pagination if the revision changes between pages. The hub forwards
+history replies live without retaining them in the transcript or JSONL log;
+they do not consume the normal event budget or advance its replay cursor.
+The authoritative restorable history remains the worker's `state.json`.
+An offline worker cannot answer a live history query; the panel keeps its last
+displayed page and offers a refresh after reconnection.
 
 ### Hub to client
 
@@ -234,6 +253,9 @@ rather than dangerous.
 `hub_sequence`, `received_at`, `known`, `issues`, `raw` (the untouched document
 as received). Unknown event names are forwarded exactly like known ones; the
 panel decides how to render them.
+`history` responses are transient control replies. Live subscribers receive
+their full envelopes, but replay contains no history response. Clients issue a
+fresh `history` query to recover the display projection.
 
 **Open confirmations are read from the session description**, not from a field
 on `subscribed`. `SessionDescription.confirmations` is the authoritative list of
@@ -256,7 +278,7 @@ client.
 
 ### Replay cursors and the transcript epoch
 
-`hub_sequence` counts envelopes received by *this hub process*, so it starts
+`hub_sequence` counts retained transcript envelopes in *this hub process*, so it starts
 again at 1 after the hub restarts. A client that resumes with `since=<n>`
 captured before a restart would therefore receive an empty transcript, which is
 indistinguishable from a session that has been idle — a silent failure that

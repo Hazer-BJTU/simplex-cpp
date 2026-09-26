@@ -295,6 +295,13 @@ a pid alone.
 
 Conversation state lives in the worker's snapshot, not in the hub. The panel can
 read it; nothing can replace, edit, or reset it.
+Deleting an inactive session removes its snapshot directory and hub event log,
+so recreating the same session ID starts with an empty conversation. Files made
+by tools in `workers/<session>/` are retained for the operator to inspect.
+When a worker is connected, the panel also requests a bounded, display-only
+history projection of its turns. This restores the conversation after a panel
+reload or hub restart without copying the worker's full state into hub storage.
+Long turns are paged, and the hub logs only small cursor markers for the replies.
 
 ## Tests
 

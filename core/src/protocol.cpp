@@ -2,6 +2,8 @@
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <stdexcept>
+#include <algorithm>
+#include <limits>
 
 namespace core {
 void validate_session_id(const std::string& id) {
@@ -85,6 +87,120 @@ Input parse_input(const nlohmann::json& payload) {
         input.options = *options;
     }
     return input;
+}
+
+HistoryRequest parse_history_request(const nlohmann::json& payload) {
+    if (!payload.is_object() || payload.value("operation", nlohmann::json()) != "history")
+        throw std::invalid_argument("history request must be an object with operation history");
+    HistoryRequest request;
+    request.request_id = payload.at("request_id").get<std::string>();
+    if (request.request_id.empty() || request.request_id.size() > 128)
+        throw std::invalid_argument("request_id must contain 1..128 bytes");
+    for (const char* field : {"content", "options", "text", "role", "invokes",
+                              "invoke_return", "type"}) {
+        if (!payload.contains(field)) continue;
+        throw std::invalid_argument("history request cannot carry message content, options, or metadata");
+    }
+    const auto index = [&](const char* key, std::size_t fallback) {
+        if (!payload.contains(key)) return fallback;
+        const auto& value = payload.at(key);
+        if (value.is_number_unsigned()) {
+            const auto number = value.get<std::uint64_t>();
+            if (number <= std::numeric_limits<std::size_t>::max())
+                return static_cast<std::size_t>(number);
+        } else if (value.is_number_integer()) {
+            const auto number = value.get<std::int64_t>();
+            if (number >= 0 && static_cast<std::uint64_t>(number)
+                    <= std::numeric_limits<std::size_t>::max())
+                return static_cast<std::size_t>(number);
+        }
+        throw std::invalid_argument(std::string("history ") + key
+            + " must be a nonnegative integer");
+    };
+    request.start = index("start", 0);
+    request.step = index("step", 0);
+    request.limit = index("limit", 10);
+    if (request.limit == 0 || request.limit > 10)
+        throw std::invalid_argument("history limit must be between 1 and 10");
+    return request;
+}
+
+namespace {
+std::string clipped(const std::string& raw, std::size_t maximum) {
+    if (raw.size() <= maximum) return raw;
+    auto end = maximum;
+    while (end > 0 && (static_cast<unsigned char>(raw[end]) & 0xc0) == 0x80) --end;
+    return raw.substr(0, end);
+}
+
+nlohmann::json display_content(const model_io::Content& part) {
+    nlohmann::json value = {{"type", part.type}};
+    if (part.type == model_io::ContentType::Binary) {
+        value["raw"] = "";
+        value["omitted"] = true;
+        value["bytes"] = part.raw.size();
+    } else {
+        const auto maximum = part.type == model_io::ContentType::Text ? 4096u : 2048u;
+        value["raw"] = clipped(part.raw, maximum);
+        if (part.raw.size() > maximum) value["truncated"] = true;
+    }
+    return value;
+}
+
+nlohmann::json display_parts(const std::vector<model_io::Content>& parts) {
+    auto result = nlohmann::json::array();
+    for (std::size_t index = 0; index < std::min<std::size_t>(parts.size(), 4); ++index)
+        result.push_back(display_content(parts[index]));
+    return result;
+}
+} // namespace
+
+nlohmann::json history_page(const model_io::AgentInputState& state,
+                            const HistoryRequest& request) {
+    if (request.start >= state.turns.size() && request.step != 0)
+        throw std::invalid_argument("history step is outside the available turns");
+    auto turns = nlohmann::json::array();
+    const auto start = std::min(request.start, state.turns.size());
+    const auto end = start + std::min(request.limit, state.turns.size() - start);
+    auto next = start;
+    std::size_t next_step = 0;
+    std::size_t page_bytes = 0;
+    for (auto index = start; index < end; ++index) {
+        const auto& turn = state.turns[index];
+        const auto first_step = index == start ? request.step : 0;
+        if (first_step > turn.agent_loop_step.size())
+            throw std::invalid_argument("history step is outside the selected turn");
+        nlohmann::json steps = nlohmann::json::array();
+        std::size_t step_index = first_step;
+        for (; step_index < turn.agent_loop_step.size(); ++step_index) {
+            const auto& response = turn.agent_loop_step[step_index].model_response;
+            nlohmann::json step = {{"index", step_index},
+                {"content", display_parts(response.content)},
+                {"tool_calls", response.invokes ? response.invokes->size() : 0},
+                {"omitted_parts", response.content.size()
+                    - std::min<std::size_t>(response.content.size(), 4)}};
+            if (response.reasoning) step["reasoning"] = display_content(*response.reasoning);
+            const auto bytes = step.dump().size();
+            if (page_bytes + bytes > 256 * 1024 && !steps.empty()) break;
+            page_bytes += bytes;
+            steps.push_back(std::move(step));
+        }
+        turns.push_back({{"index", index}, {"user", display_parts(turn.user_input.content)},
+            {"steps", std::move(steps)},
+            {"omitted_user_parts", turn.user_input.content.size()
+                - std::min<std::size_t>(turn.user_input.content.size(), 4)},
+            {"omitted_steps", turn.agent_loop_step.size() - step_index}});
+        if (step_index < turn.agent_loop_step.size()) {
+            next = index;
+            next_step = step_index;
+            break;
+        }
+        next = index + 1;
+        if (page_bytes >= 256 * 1024) break;
+    }
+    return {{"request_id", request.request_id}, {"start", start},
+        {"step", request.step}, {"next", next}, {"next_step", next_step},
+        {"total", state.turns.size()}, {"turns", std::move(turns)}};
 }
 std::string new_identity() {
     return boost::uuids::to_string(boost::uuids::random_generator()());

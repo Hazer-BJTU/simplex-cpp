@@ -18,7 +18,7 @@ export const CONFIRMATION_MODES = ['ask', 'approve', 'deny'] as const;
 export const SIGNAL_OPERATIONS = ['status', 'options', 'cancel', 'shutdown'] as const;
 
 /** Input operations accepted by the worker. */
-export const INPUT_OPERATIONS = ['message', 'continue'] as const;
+export const INPUT_OPERATIONS = ['message', 'continue', 'history'] as const;
 
 /** One accepted content encoding. */
 export type ContentType = (typeof CONTENT_TYPES)[number];
@@ -53,6 +53,9 @@ export interface PayloadData {
     request_id: string;
     content?: NormalizedContentPart[];
     options?: NormalizedOptions;
+    start?: number;
+    step?: number;
+    limit?: number;
 }
 
 /** A payload envelope, ready to write to a worker socket. */
@@ -174,11 +177,14 @@ export interface PayloadInput {
     /** Required for `message`, refused for `continue`. */
     content?: unknown;
     options?: unknown;
+    start?: number;
+    step?: number;
+    limit?: number;
 }
 
 /** Build a `payload` envelope for a user message or a continuation. */
 export function buildPayload({
-    operation = 'message', requestId, content, options,
+    operation = 'message', requestId, content, options, start, step, limit,
 }: PayloadInput): PayloadEnvelope {
     if (!(INPUT_OPERATIONS as readonly unknown[]).includes(operation)) {
         throw new ProtocolError(`operation must be one of ${INPUT_OPERATIONS.join(', ')}`);
@@ -191,7 +197,29 @@ export function buildPayload({
     }
     const data: PayloadData = { operation, request_id: requestId };
 
-    if (operation === 'continue') {
+    if (operation === 'history') {
+        if (content !== undefined || options !== undefined) {
+            throw new ProtocolError('history must not carry content or options');
+        }
+        if (start !== undefined) {
+            if (!Number.isSafeInteger(start) || start < 0) {
+                throw new ProtocolError('history start must be a nonnegative safe integer');
+            }
+            data.start = start;
+        }
+        if (step !== undefined) {
+            if (!Number.isSafeInteger(step) || step < 0) {
+                throw new ProtocolError('history step must be a nonnegative safe integer');
+            }
+            data.step = step;
+        }
+        if (limit !== undefined) {
+            if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) {
+                throw new ProtocolError('history limit must be between 1 and 10');
+            }
+            data.limit = limit;
+        }
+    } else if (operation === 'continue') {
         if (content !== undefined && content !== null) {
             throw new ProtocolError('continue must not carry content');
         }
@@ -202,8 +230,10 @@ export function buildPayload({
         data.content = content.map((part, index) => normalizeContentPart(part, index));
     }
 
-    const normalized = normalizeOptions(options);
-    if (normalized !== undefined) data.options = normalized;
+    if (operation !== 'history') {
+        const normalized = normalizeOptions(options);
+        if (normalized !== undefined) data.options = normalized;
+    }
     for (const field of FORBIDDEN_DATA_FIELDS) {
         if (Object.hasOwn(data, field)) {
             throw new ProtocolError(`"${field}" is not accepted in payload data`);

@@ -40,6 +40,7 @@ import type {
     Capability,
     ConfirmationPrompt,
     ContentPart,
+    HistoryPage,
     HubMessage,
     HubMetadata,
     RequestRecord,
@@ -59,6 +60,7 @@ import {
     hubSequenceOf,
     indexEnvelope,
     nextItemId,
+    noteWorkerSequence,
     noteItem,
     prepend,
     statsOf,
@@ -260,6 +262,12 @@ export interface PanelActions {
 
     applySubscribed(message: SubscribedMessage): ApplyEffects;
     applyEvent(message: EventMessage): void;
+    /** Account for a transient worker reply without advancing hub replay. */
+    noteTransientWorkerEvent(sessionId: SessionId, envelope: WorkerEnvelope): void;
+    beginHistory(sessionId: SessionId): void;
+    endHistory(sessionId: SessionId): void;
+    /** Commit one already validated page; false means it did not fit the current load. */
+    applyHistoryPage(sessionId: SessionId, envelope: WorkerEnvelope, page: HistoryPage): boolean;
     applyRequest(message: RequestMessage): void;
     applyConfirmation(message: ConfirmationMessage): void;
     applyProcess(message: ProcessMessage): void;
@@ -416,13 +424,16 @@ function markSeen(view: ViewState, requestId: string): ViewState {
 }
 
 /** Mark a pending message admitted, keeping its text on screen. */
-function admitInput(view: ViewState, requestId: string): ViewState {
+function admitInput(view: ViewState, requestId: string, envelope: WorkerEnvelope): ViewState {
     let changed = false;
     const items = view.items.map((item) => {
         if (item.kind !== 'outbox' || item.requestId !== requestId) return item;
         if (item.state === 'admitted') return item;
         changed = true;
-        return { ...item, state: 'admitted' } as OutboxItem;
+        return { ...item, state: 'admitted',
+            admittedSequence: typeof envelope.sequence === 'number'
+                ? envelope.sequence : undefined,
+            admittedWorker: envelope.worker_id } as OutboxItem;
     });
     const marked = markSeen(view, requestId);
     return changed ? { ...marked, items } : marked;
@@ -471,13 +482,24 @@ function eventItem(view: ViewState, envelope: WorkerEnvelope): TranscriptItem {
 
 /** Bookkeeping shared by the replay and live paths. */
 function foldEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
+    if (envelope.event === 'history') {
+        // History is a transient query reply, never an event card or a cached
+        // latest event containing megabytes of display data.
+        const worker = envelope.worker_id;
+        const sequence = envelope.sequence;
+        return typeof sequence === 'number'
+            ? { ...view, lastSequenceByWorker: {
+                ...view.lastSequenceByWorker, [worker]: sequence,
+            } }
+            : view;
+    }
     let next = indexEnvelope(view, envelope);
     if (envelope.event === 'input_admitted' && typeof envelope.request_id === 'string') {
         const requestId = envelope.request_id;
         const mine = next.items.some(
             (item) => item.kind === 'outbox' && item.requestId === requestId,
         );
-        next = admitInput(next, requestId);
+        next = admitInput(next, requestId, envelope);
         // The panel's own message already stands for this input, and it is the
         // only place the text exists — `input_admitted` carries an empty
         // payload. A second row repeating that is noise. The placeholder is for
@@ -853,6 +875,51 @@ export function createPanelStore() {
             }));
         },
 
+        noteTransientWorkerEvent(sessionId, envelope) {
+            set(withView(get(), sessionId, (view) => noteWorkerSequence(view, envelope)));
+        },
+
+        beginHistory(sessionId) {
+            set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: true })));
+        },
+
+        endHistory(sessionId) {
+            set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: false })));
+        },
+
+        applyHistoryPage(sessionId, envelope, page) {
+            if (envelope.event !== 'history') return false;
+            let accepted = false;
+            set(withView(get(), sessionId, (view) => {
+                const fresh = page.start === 0 && page.step === 0;
+                if (!fresh && view.historyWorker !== envelope.worker_id) return view;
+                let history;
+                if (fresh) {
+                    history = page.turns;
+                } else if (page.start === view.history.length && page.step === 0) {
+                    history = [...view.history, ...page.turns];
+                } else if (page.start === view.history.length - 1
+                    && page.step === view.history[page.start]?.steps.length) {
+                    const previous = view.history[page.start];
+                    if (!previous || page.turns.length === 0) return view;
+                    history = [...view.history.slice(0, -1), {
+                        ...previous,
+                        steps: [...previous.steps, ...page.turns[0]!.steps],
+                        omitted_steps: page.turns[0]!.omitted_steps,
+                    }, ...page.turns.slice(1)];
+                } else {
+                    return view;
+                }
+                accepted = true;
+                const done = page.next === page.total && page.next_step === 0;
+                return { ...view, history, historyLoading: !done,
+                    historyWorker: envelope.worker_id,
+                    historySequence: typeof envelope.sequence === 'number'
+                        ? envelope.sequence : view.historySequence };
+            }));
+            return accepted;
+        },
+
         applyRequest(message) {
             const { session, request: entry } = message;
             if (typeof session !== 'string' || !entry
@@ -948,6 +1015,10 @@ export function createPanelStore() {
                     epoch: get().epoch,
                     confirmations: view.confirmations,
                     logs: view.logs,
+                    history: view.history,
+                    historyLoading: view.historyLoading,
+                    historySequence: view.historySequence,
+                    historyWorker: view.historyWorker,
                 };
                 let maxSeq = 0;
                 for (const envelope of message.transcript ?? []) {

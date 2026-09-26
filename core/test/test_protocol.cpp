@@ -160,3 +160,54 @@ BOOST_AUTO_TEST_CASE(payload_options_validate_all_categories_without_mutation) {
         BOOST_TEST(message == before);
     }
 }
+
+BOOST_AUTO_TEST_CASE(history_query_projects_turns_without_tool_data_or_binary_bytes) {
+    const Json query = {{"operation", "history"}, {"request_id", "history-1"},
+        {"start", 0}, {"limit", 1}};
+    const auto request = core::parse_history_request(query);
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content = {
+        {model_io::ContentType::Text, "hello", {}},
+        {model_io::ContentType::Binary, "AAEC", {}}
+    };
+    model_io::AgentLoopStep step;
+    step.model_response.content = {{model_io::ContentType::Text, "answer", {}}};
+    turn.agent_loop_step.push_back(std::move(step));
+    state.turns.push_back(std::move(turn));
+    const auto page = core::history_page(state, request);
+    BOOST_TEST(page.at("request_id") == "history-1");
+    BOOST_TEST(page.at("total") == 1);
+    BOOST_TEST(page.at("next") == 1);
+    BOOST_TEST(page.at("turns")[0]["user"][0]["raw"] == "hello");
+    BOOST_TEST(page.at("turns")[0]["user"][1]["omitted"] == true);
+    BOOST_TEST(page.dump().find("AAEC") == std::string::npos);
+    BOOST_TEST(page.dump().find("system_prompt") == std::string::npos);
+    BOOST_TEST(page.at("turns")[0]["steps"][0]["content"][0]["raw"] == "answer");
+    BOOST_CHECK_THROW(core::parse_history_request({{"operation", "history"},
+        {"request_id", "bad"}, {"options", Json::object()}}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(history_query_pages_within_a_long_turn) {
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content = {{model_io::ContentType::Text, "question", {}}};
+    for (int index = 0; index < 90; ++index) {
+        model_io::AgentLoopStep step;
+        step.model_response.content = {{model_io::ContentType::Text,
+            std::string(4000, 'a'), {}}};
+        turn.agent_loop_step.push_back(std::move(step));
+    }
+    state.turns.push_back(std::move(turn));
+    auto request = core::parse_history_request({{"operation", "history"},
+        {"request_id", "long-turn"}, {"start", 0}, {"limit", 1}});
+    const auto first = core::history_page(state, request);
+    BOOST_TEST(first.at("next") == 0);
+    BOOST_TEST(first.at("next_step") > 0);
+    request.step = first.at("next_step").get<std::size_t>();
+    const auto second = core::history_page(state, request);
+    BOOST_TEST(second.at("next") == 1);
+    BOOST_TEST(second.at("next_step") == 0);
+    BOOST_TEST(first.at("turns")[0]["steps"].size()
+        + second.at("turns")[0]["steps"].size() == 90);
+}

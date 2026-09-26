@@ -74,6 +74,10 @@ documents and their publishing conventions. The `options` signal returns
 available choices and current selections for model and confirmation, plus a
 reserved tools category, in the normal event metadata envelope. Hubs can query
 it after reconnecting; the query does not change settings.
+The `history` payload queries a simplified, paged projection of the current
+in-memory turns. It can be answered during a model wait and does not start a
+run or reveal the full restorable snapshot. The worker protocol specifies its
+cursor and clipping limits.
 
 ## Confirmation and cancellation
 

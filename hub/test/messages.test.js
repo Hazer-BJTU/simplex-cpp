@@ -83,6 +83,16 @@ describe('buildPayload', () => {
         assert.deepEqual(payload.data, { operation: 'continue', request_id: 'req-3' });
     });
 
+    it('builds a bounded read-only history query', () => {
+        assert.deepEqual(buildPayload({ operation: 'history', requestId: 'h-1',
+            start: 10, step: 3, limit: 5 }).data,
+        { operation: 'history', request_id: 'h-1', start: 10, step: 3, limit: 5 });
+        assert.throws(() => buildPayload({ operation: 'history', requestId: 'h-2',
+            content: [{ type: 'text', raw: 'x' }] }), /must not carry/);
+        assert.throws(() => buildPayload({ operation: 'history', requestId: 'h-3',
+            limit: 11 }), /between 1 and 10/);
+    });
+
     it('refuses content on a continuation', () => {
         assert.throws(() => buildPayload({
             operation: 'continue',

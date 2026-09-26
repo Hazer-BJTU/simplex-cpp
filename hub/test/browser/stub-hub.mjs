@@ -30,6 +30,7 @@ let epoch = 'stub-epoch-1';
  * matters: the old panel's force-kill confirmation claimed it unconditionally.
  */
 let settings = { force_kill_process_group: false };
+let historyResponseIndex = 0;
 
 /** One session description, as `describe()` builds it on the real hub. */
 function makeSession(id, createdAt = '2026-01-01T00:00:00.000Z') {
@@ -38,6 +39,7 @@ function makeSession(id, createdAt = '2026-01-01T00:00:00.000Z') {
         created_at: createdAt,
         spec: {},
         connected: true,
+        worker_capabilities: null,
         identity: { state: 'live', worker_id: 'stub-worker', since: null },
         stats: { events: 0, gaps: 0, duplicates: 0, protocolErrors: 0, incarnations: 1 },
         last_run_id: '',
@@ -89,6 +91,7 @@ let down = false;
 
 /** The next hub sequence to hand out. */
 let sequence = 0;
+let workerSequence = 0;
 
 function sessionOf(id) {
     return sessions.find((session) => session.session_id === id) ?? null;
@@ -116,6 +119,7 @@ function meta() {
         capabilities: [
             'worker-events', 'confirmations', 'supervisor', 'transcript-replay',
             'snapshot-view', 'transcript-epoch', 'global-confirmations',
+            ...(settings.historyEnabled ? ['session-history'] : []),
         ],
         transcript_epoch: epoch,
         listen: { host: '127.0.0.1', port: PORT },
@@ -155,7 +159,8 @@ function json(res, status, payload) {
 
 /** Append one envelope and return it with its hub sequence applied. */
 function append(sessionId, event, data, extra = {}) {
-    sequence += 1;
+    workerSequence += 1;
+    if (event !== 'history') sequence += 1;
     const envelope = {
         type: 'event',
         event,
@@ -163,13 +168,20 @@ function append(sessionId, event, data, extra = {}) {
         worker_id: 'stub-worker',
         request_id: extra.request_id ?? 'stub-request',
         run_id: extra.run_id ?? 'stub-run',
-        sequence: extra.sequence ?? sequence,
+        sequence: extra.sequence ?? workerSequence,
         data,
         hub_sequence: sequence,
         received_at: new Date().toISOString(),
         ...extra,
     };
-    transcriptOf(sessionId).push(envelope);
+    if (event !== 'history') transcriptOf(sessionId).push(envelope);
+    if (event === 'ready' || event === 'status') {
+        const session = sessionOf(sessionId);
+        if (session) {
+            session.worker_capabilities = Array.isArray(data?.capabilities)
+                ? data.capabilities : [];
+        }
+    }
     return envelope;
 }
 
@@ -188,11 +200,13 @@ const server = createServer((req, res) => {
             switch (url.pathname) {
                 case '/__stub/reset': {
                     sequence = 0;
+                    workerSequence = 0;
                     transcripts.clear();
                     received.length = 0;
                     rest.length = 0;
                     epoch = 'stub-epoch-1';
                     settings = { force_kill_process_group: false };
+                    historyResponseIndex = 0;
                     down = false;
                     sessions = DEFAULT_SESSIONS.map((session) => ({
                         ...session, confirmations: [], requests: [],
@@ -202,6 +216,32 @@ const server = createServer((req, res) => {
                 }
                 case '/__stub/sessions': {
                     sessions = payload.sessions ?? sessions;
+                    json(res, 200, { ok: true });
+                    return;
+                }
+                case '/__stub/trim-transcript': {
+                    const transcript = transcriptOf(payload.session ?? 'demo');
+                    transcript.splice(0, Math.max(0, transcript.length - (payload.keep ?? 0)));
+                    json(res, 200, { ok: true });
+                    return;
+                }
+                case '/__stub/connection': {
+                    const session = sessionOf(payload.session ?? 'demo');
+                    if (!session) {
+                        json(res, 404, { error: 'unknown_session' });
+                        return;
+                    }
+                    session.connected = Boolean(payload.connected);
+                    session.worker_capabilities = null;
+                    const identity = {
+                        ...session.identity,
+                        state: session.connected ? 'live' : 'stale',
+                        worker_id: session.connected ? 'stub-worker' : null,
+                    };
+                    session.identity = identity;
+                    broadcast({ type: 'connection', session: session.session_id,
+                        connected: session.connected, identity });
+                    broadcast({ type: 'session', session });
                     json(res, 200, { ok: true });
                     return;
                 }
@@ -216,6 +256,9 @@ const server = createServer((req, res) => {
                         hub_seq: envelope.hub_sequence,
                         envelope,
                     });
+                    if (envelope.event === 'ready' || envelope.event === 'status') {
+                        broadcast({ type: 'session', session: describe(envelope.session_id) });
+                    }
                     json(res, 200, envelope);
                     return;
                 }
@@ -278,6 +321,7 @@ const server = createServer((req, res) => {
                     // numbering that starts again at 1.
                     epoch = payload.epoch ?? `stub-epoch-${Date.now()}`;
                     sequence = 0;
+                    workerSequence = 0;
                     transcripts.clear();
                     for (const socket of panels) socket.close();
                     json(res, 200, { ok: true, epoch });
@@ -296,6 +340,7 @@ const server = createServer((req, res) => {
                 }
                 case '/__stub/settings': {
                     settings = { ...settings, ...payload };
+                    if (Object.hasOwn(payload, 'historyResponses')) historyResponseIndex = 0;
                     json(res, 200, settings);
                     return;
                 }
@@ -468,6 +513,33 @@ function handle(ws, message) {
                 type: 'event', session: message.session,
                 hub_seq: envelope.hub_sequence, envelope,
             });
+            return;
+        }
+        case 'history': {
+            const turns = settings.historyTurns ?? [];
+            const start = message.start ?? 0;
+            const step = message.step ?? 0;
+            const limit = message.limit ?? 10;
+            const response = settings.historyResponses?.[historyResponseIndex] ?? {};
+            historyResponseIndex += 1;
+            const { __error, ...pageOverrides } = response;
+            const envelope = __error ? append(message.session, 'history_error', {
+                request_id: message.request_id, message: __error,
+            }) : append(message.session, 'history', {
+                request_id: message.request_id,
+                start,
+                step,
+                next: Math.min(start + limit, turns.length),
+                next_step: 0,
+                revision: 1,
+                total: turns.length,
+                turns: turns.slice(start, start + limit),
+                ...pageOverrides,
+            });
+            send(ws, { type: 'accepted', action: 'history', session: message.session,
+                request_id: message.request_id });
+            broadcast({ type: 'event', session: message.session,
+                hub_seq: envelope.hub_sequence, envelope });
             return;
         }
         default:

@@ -3,7 +3,7 @@
  * request tracking, worker actions, and the trust boundary around all of it.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { persistenceRoot } from '../src/launch/config-render.ts';
@@ -48,12 +48,13 @@ describe('panel API', () => {
     }
 
     /** Connect a worker event socket that identifies itself. */
-    async function identify(session, workerId = 'panel-worker') {
+    async function identify(session, workerId = 'panel-worker', capabilities = []) {
         const worker = await connectWorker(
             `${ctx.wsBase}/agent/${session.id}/events?token=${session.token}`);
         sockets.push(worker);
         worker.send(workerEvent({
-            session: session.id, worker: workerId, sequence: 1, event: 'status', data: { active: false },
+            session: session.id, worker: workerId, sequence: 1, event: 'status',
+            data: { active: false, capabilities },
         }));
         await until(() => session.identity.state === IDENTITY.live, { label: 'live identity' });
         return worker;
@@ -68,6 +69,88 @@ describe('panel API', () => {
         assert.equal(welcome.hub.protocol.version, 1);
         assert.ok(welcome.hub.capabilities.includes('transcript-replay'));
         assert.ok(welcome.sessions.some((entry) => entry.session_id === session.id));
+    });
+
+    it('forwards supported history queries without consuming transcript capacity', async () => {
+        const session = ctx.hub.registry.create('history-session');
+        const worker = await identify(session, 'history-worker', ['session-history']);
+        const socket = await panel();
+        socket.send({ v: 1, type: 'subscribe', session: session.id });
+        await socket.waitFor((message) => message.type === 'subscribed'
+            && message.session.session_id === session.id);
+        socket.send({ v: 1, type: 'history', session: session.id,
+            request_id: 'history-1', start: 0, limit: 10 });
+        const query = await worker.waitFor((message) => message.type === 'payload'
+            && message.data.operation === 'history');
+        assert.equal(query.data.request_id, 'history-1');
+        worker.send(workerEvent({ session: session.id, worker: 'history-worker',
+            sequence: 2, event: 'history', data: { request_id: 'history-1',
+                revision: 1, start: 0, step: 0, next: 1, next_step: 0,
+                total: 1, turns: [{ index: 0, user: [],
+                    steps: [], omitted_steps: 0 }] } }));
+        const reply = await socket.waitFor((message) => message.type === 'event'
+            && message.envelope.event === 'history');
+        assert.equal(reply.envelope.data.turns.length, 1);
+        for (let index = 0; index < 20; index += 1) {
+            worker.send(workerEvent({ session: session.id, worker: 'history-worker',
+                sequence: index + 3, event: 'history', data: {
+                    request_id: `page-${index}`, revision: 1,
+                    start: 0, step: 0, next: 0, next_step: 0, total: 0, turns: [],
+                } }));
+        }
+        await socket.waitFor((message) => message.type === 'event'
+            && message.envelope.data?.request_id === 'page-19');
+        const transcript = ctx.hub.transcripts.get(session.id);
+        assert.equal(transcript.toArray().some((entry) => entry.event === 'history'), false);
+        assert.equal(transcript.size, 1);
+        assert.equal(transcript.sequence, 1);
+        assert.equal(transcript.written, 1);
+        const laterPanel = await panel();
+        laterPanel.send({ v: 1, type: 'subscribe', session: session.id, since: 0 });
+        const replay = await laterPanel.waitFor((message) => message.type === 'subscribed'
+            && message.session.session_id === session.id);
+        assert.equal(replay.transcript.some((entry) => entry.event === 'history'), false);
+    });
+
+    it('refuses history until the current worker advertises support', async () => {
+        const session = ctx.hub.registry.create('history-gate-session');
+        const worker = await connectWorker(
+            `${ctx.wsBase}/agent/${session.id}/events?token=${session.token}`);
+        sockets.push(worker);
+        const socket = await panel();
+        socket.send({ v: 1, type: 'history', session: session.id,
+            request_id: 'before-status' });
+        const unknown = await socket.waitFor((message) => message.type === 'error'
+            && message.request?.request_id === 'before-status');
+        assert.match(unknown.message, /not advertised/);
+        assert.equal(worker.messages.some((message) => message.type === 'payload'), false);
+
+        worker.send(workerEvent({ session: session.id, worker: 'old-worker',
+            sequence: 1, event: 'status', data: { active: false, capabilities: [] } }));
+        await until(() => session.workerCapabilities?.workerId === 'old-worker',
+            { label: 'old worker status' });
+        socket.send({ v: 1, type: 'history', session: session.id,
+            request_id: 'unsupported' });
+        const unsupported = await socket.waitFor((message) => message.type === 'error'
+            && message.request?.request_id === 'unsupported');
+        assert.match(unsupported.message, /not advertised/);
+        assert.equal(worker.messages.some((message) => message.type === 'payload'), false);
+
+        worker.send(workerEvent({ session: session.id, worker: 'old-worker',
+            sequence: 2, event: 'status', data: {
+                active: false, capabilities: ['session-history'],
+            } }));
+        await until(() => session.workerCapabilities?.names.includes('session-history'),
+            { label: 'history capability' });
+        await worker.close();
+        const replacement = await identify(session, 'new-worker');
+        assert.equal(session.describe().worker_capabilities?.includes('session-history'), false);
+        socket.send({ v: 1, type: 'history', session: session.id,
+            request_id: 'new-worker-unsupported' });
+        const replacementError = await socket.waitFor((message) => message.type === 'error'
+            && message.request?.request_id === 'new-worker-unsupported');
+        assert.match(replacementError.message, /not advertised/);
+        assert.equal(replacement.messages.some((message) => message.type === 'payload'), false);
     });
 
     it('creates, lists, reads, and deletes sessions over REST', async () => {
@@ -98,10 +181,40 @@ describe('panel API', () => {
         const missing = await api('/api/sessions/nope');
         assert.equal(missing.status, 404);
 
+        const stateDirectory = join(persistenceRoot(ctx.config), 'rest-created');
+        const statePath = join(stateDirectory, 'state.json');
+        const eventPath = join(ctx.config.dataDir, 'events', 'rest-created.jsonl');
+        mkdirSync(stateDirectory, { recursive: true });
+        mkdirSync(join(ctx.config.dataDir, 'events'), { recursive: true });
+        writeFileSync(statePath, '{"turns":[{"user":"old"}]}');
+        writeFileSync(eventPath, '{"event":"old"}\n');
+
         const removed = await api('/api/sessions/rest-created', { method: 'DELETE' });
         assert.equal(removed.status, 200);
         assert.equal(removed.body.removed, 'rest-created');
         assert.equal(ctx.hub.registry.get('rest-created'), undefined);
+        assert.equal(existsSync(statePath), false);
+        assert.equal(existsSync(eventPath), false);
+
+        const recreated = await api('/api/sessions', {
+            method: 'POST', body: { session: 'rest-created' },
+        });
+        assert.equal(recreated.status, 201);
+        assert.equal(existsSync(statePath), false);
+    });
+
+    it('deletes a session snapshot through the panel socket too', async () => {
+        const session = ctx.hub.registry.create('socket-delete');
+        const stateDirectory = join(persistenceRoot(ctx.config), session.id);
+        const statePath = join(stateDirectory, 'state.json');
+        mkdirSync(stateDirectory, { recursive: true });
+        writeFileSync(statePath, '{"turns":[{"user":"old"}]}');
+        const socket = await panel();
+        socket.send({ v: 1, type: 'delete_session', session: session.id });
+        await socket.waitFor((message) => message.type === 'session_removed'
+            && message.session === session.id);
+        assert.equal(ctx.hub.registry.get(session.id), undefined);
+        assert.equal(existsSync(statePath), false);
     });
 
     it('refuses to delete a session that still has a worker', async () => {

@@ -17,7 +17,7 @@
  * `shared/protocol.ts`, the same module the panel imports, so what this file
  * sends and what the browser expects cannot drift apart without a type error.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import type { RawData, WebSocket } from 'ws';
@@ -167,6 +167,18 @@ export function createPanelApi({
         else onSessionsChanged?.(sessions);
     }
 
+    /** Delete restorable history before forgetting an inactive session ID. */
+    function removeSession(session: Session): void {
+        // A later session with the same ID must start empty. The worker owns
+        // this directory, so only remove it after the worker has stopped.
+        rmSync(join(persistenceRoot(config), session.id), { recursive: true, force: true });
+        transcripts.remove(session.id);
+        rmSync(join(config.dataDir, 'events', `${session.id}.jsonl`), { force: true });
+        registry.remove(session.id);
+        persist({ immediate: true });
+        broadcast({ type: 'session_removed', session: session.id });
+    }
+
     // ---------------------------------------------------------------------
     // Observer hooks
     // ---------------------------------------------------------------------
@@ -174,7 +186,16 @@ export function createPanelApi({
     const hooks: PanelHooks = {
         onEvent: (envelope, connection) => {
             const session = connection.session;
-            transcripts.get(session.id).append(envelope);
+            if (envelope.event === 'history') {
+                // A history reply is control traffic. Forward it live, but do
+                // not spend retained transcript slots or JSONL space on it.
+                envelope.hub_sequence = transcripts.get(session.id).sequence;
+            } else {
+                transcripts.get(session.id).append(envelope);
+            }
+            if (envelope.event === 'ready' || envelope.event === 'status') {
+                broadcastSession(session);
+            }
             if (envelope.event === 'input_admitted') {
                 if (session.noteRequestAdmitted(envelope.request_id)) {
                     broadcastToSession(session.id, {
@@ -367,6 +388,31 @@ export function createPanelApi({
         return { ok: true, request_id: payload.data.request_id };
     }
 
+    /** Read-only history queries have their own panel command and no run admission. */
+    function sendHistory(session: Session, message: {
+        request_id?: string; start?: number; step?: number; limit?: number;
+    }): { ok: true; request_id: string } | SendFailure {
+        const connection = session.connection;
+        if (!connection?.isOpen) return { ok: false, error: 'the worker is not connected' };
+        if (session.workerCapabilities?.workerId !== session.identity.workerId
+            || !session.workerCapabilities.names.includes('session-history')) {
+            return { ok: false, error: 'the current worker has not advertised session-history' };
+        }
+        try {
+            const payload = buildPayload({
+                operation: 'history', requestId: message.request_id ?? newRequestId(),
+                ...(message.start === undefined ? {} : { start: message.start }),
+                ...(message.step === undefined ? {} : { step: message.step }),
+                ...(message.limit === undefined ? {} : { limit: message.limit }),
+            });
+            const sent = connection.sendPayload(payload);
+            return sent.ok ? { ok: true, request_id: payload.data.request_id }
+                : { ok: false, error: sent.error ?? 'the history query was not sent' };
+        } catch (error) {
+            return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+    }
+
     /** Build and send a signal on behalf of the panel. */
     function sendSignal(
         session: Session,
@@ -468,10 +514,13 @@ export function createPanelApi({
                     'stop the worker and disconnect it before deleting the session');
                 return;
             }
-            transcripts.remove(session.id);
-            registry.remove(session.id);
-            persist();
-            broadcast({ type: 'session_removed', session: session.id });
+            try {
+                removeSession(session);
+            } catch (error) {
+                sendError(res, 500, 'session_delete_failed',
+                    error instanceof Error ? error.message : String(error));
+                return;
+            }
             sendJson(res, 200, { removed: session.id });
         },
 
@@ -655,11 +704,17 @@ export function createPanelApi({
                     });
                     return;
                 }
-                transcripts.remove(target.id);
-                registry.remove(target.id);
+                try {
+                    removeSession(target);
+                } catch (error) {
+                    send(client, {
+                        type: 'error', error: 'session_delete_failed',
+                        message: error instanceof Error ? error.message : String(error),
+                        request: message,
+                    });
+                    return;
+                }
                 client.subscriptions.delete(target.id);
-                persist();
-                broadcast({ type: 'session_removed', session: target.id });
                 return;
             }
             case 'worker': {
@@ -698,6 +753,17 @@ export function createPanelApi({
                     type: 'accepted', action: 'input', session: target.id,
                     request_id: result.request_id,
                 });
+                return;
+            }
+            case 'history': {
+                const result = sendHistory(target, message);
+                if (!result.ok) {
+                    send(client, { type: 'error', error: 'input_not_sent',
+                        message: result.error, request: message });
+                    return;
+                }
+                send(client, { type: 'accepted', action: 'history', session: target.id,
+                    request_id: result.request_id });
                 return;
             }
             case 'signal': {

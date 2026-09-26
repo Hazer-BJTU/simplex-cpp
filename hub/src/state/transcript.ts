@@ -3,8 +3,9 @@
  *
  * The worker has no replay cursor and its sequence numbers do not acknowledge
  * delivery, so the hub keeps its own bounded, monotonic view of what it saw:
- * `hub_sequence` counts envelopes received in this hub process, which is what a
- * reconnecting panel resumes from.
+ * `hub_sequence` counts retained conversation envelopes in this hub process,
+ * which is what a reconnecting panel resumes from. Transient history-query
+ * replies are forwarded live without consuming this sequence or its budget.
  *
  * The same stream is appended to a JSONL file. That file is an operator
  * artifact — the authoritative conversation lives in the worker's own

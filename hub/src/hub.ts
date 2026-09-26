@@ -128,7 +128,7 @@ export function createHub({
     /**
      * Identifies this hub process's transcript.
      *
-     * `hub_sequence` counts the envelopes *this* process received, so it starts
+     * `hub_sequence` counts retained envelopes in *this* process, so it starts
      * again at 1 after a restart. A replay cursor taken before one would then
      * silently return an empty transcript — indistinguishable from an idle
      * session. Publishing an epoch is what lets a client tell the two apart.

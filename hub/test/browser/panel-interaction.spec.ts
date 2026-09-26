@@ -83,6 +83,34 @@ test('a dangerous action asks in a dialog, not a browser prompt (D27)', async ({
     expect(dialogs).toEqual([]);
 });
 
+test('new-session form opens as a centered dialog with grouped actions', async ({ page }) => {
+    await open(page);
+    await page.getByRole('button', { name: 'Create a session' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    // The entrance animation scales the whole dialog. Measure its buttons
+    // after it settles so separate boundingBox calls use the same geometry.
+    await dialog.evaluate(async (node) => {
+        await Promise.all(node.getAnimations().map((animation) => animation.finished));
+    });
+    const input = dialog.getByRole('textbox', { name: 'new session id' });
+    await expect(input).toBeFocused();
+    expect(await input.evaluate((node) => getComputedStyle(node).outlineStyle)).toBe('none');
+    const bounds = await dialog.boundingBox();
+    const viewport = page.viewportSize()!;
+    expect(bounds).not.toBeNull();
+    expect(Math.abs(bounds!.x + bounds!.width / 2 - viewport.width / 2)).toBeLessThan(2);
+    expect(Math.abs(bounds!.y + bounds!.height / 2 - viewport.height / 2)).toBeLessThan(2);
+    const cancel = await dialog.getByRole('button', { name: 'Cancel' }).boundingBox();
+    const create = await dialog.getByRole('button', { name: 'Create session' }).boundingBox();
+    expect(cancel).not.toBeNull();
+    expect(create).not.toBeNull();
+    expect(cancel!.y).toBe(create!.y);
+    expect(create!.x).toBeGreaterThan(cancel!.x + cancel!.width);
+    await input.press('Escape');
+    await expect(dialog).toHaveCount(0);
+});
+
 test('an action that cannot run says why (D11)', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
