@@ -102,8 +102,10 @@ is told to dial*.
 `hub.config.docker-worker.jsonc` is a working example. The short version:
 
 ```sh
+# From the repository root:
+docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .
+cd hub
 npm run build
-docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .   # once, ~10 min
 node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --mock \
     --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
 # then: http://127.0.0.1:8800/?token=dev
@@ -131,23 +133,23 @@ Three things make it work, and each is a way to get it wrong:
    would then name a host directory that does not exist, and Docker helpfully
    creates an empty one.
 
-`--user {uid}:{gid}` is in the template for a reason that only shows up
-afterwards: an image runs as root, so the worker writes `state.json` and
-`session.lock` into the mounted data directory as root, and the operator who
-owns that directory cannot delete them. The two placeholders are the invoking
-user; on a platform that has no uid to report, a template that asks for one is
-refused at spawn time rather than passed to Docker as `--user :`.
+The test launcher uses `--user 0:0`: workers and their tools run as root inside
+the container. Each container has its own `/root/workspace`, created by the
+image and selected as both the working directory and the model's workspace
+hint. No host workspace is mounted. Stopping and removing the container discards
+workspace files; session state remains in the mounted session directory.
+Files written there by the worker are root-owned on the host.
 
 To see that the isolation is real rather than assumed, the example config asks
 the mock for `hostname; id -u; cat /etc/hostname`. The tool card then shows the
-container's hostname, the invoking user's UID and its own PID namespace — from
+container's hostname, UID 0 and its own PID namespace — from
 a session whose hub is an ordinary process on the host:
 
 ```
 command   hostname; id -u; cat /etc/hostname
 pid       10
 stdout    66485abf0d8d          ← the container
-          1000
+          0
           66485abf0d8d
 ```
 
