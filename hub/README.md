@@ -573,3 +573,10 @@ Command mode keeps Confirm and Model visible but disabled; existing selections
 still accompany commands that start a run. Alt+Enter changes the mode badge,
 placeholder, and command suggestions without moving the toolbar. The mode badge
 uses distinct colors and a short animation, disabled by reduced-motion settings.
+
+A small usage line above the composer shows only the latest model response's
+prompt tokens, generated tokens, and cache-hit percentage (`cache_hit / prompt`,
+or zero for an empty prompt). Counts use decimal K/M/B units with one fractional
+digit. Responses without cost leave the previous usage visible; counts are not
+accumulated. Per-response and per-turn token details appear only with Technical
+details enabled.

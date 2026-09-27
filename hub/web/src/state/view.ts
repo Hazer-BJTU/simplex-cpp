@@ -18,6 +18,7 @@
  *    either dropped as a duplicate or spliced into the middle of the old
  *    numbering. The view therefore records the epoch its cursor belongs to.
  */
+import { parseTokenUsage, type TokenUsage } from './tokenUsage.ts';
 import type {
     ConfirmationPrompt,
     ContentPart,
@@ -141,6 +142,8 @@ export interface ViewState {
     readonly modelSelection: Readonly<Record<string, unknown>>;
     /** Keep the worker catalog even when transcript entries are pruned or replaced. */
     readonly modelCatalog: WorkerEnvelope | null;
+    /** Most recent response carrying cost; never an accumulated total. */
+    readonly tokenUsage: (TokenUsage & { workerId: string; sequence: number }) | null;
     readonly lastRunId: string;
     readonly gaps: number;
     readonly duplicates: number;
@@ -170,6 +173,7 @@ export function emptyView(id: SessionId): ViewState {
         cancelPending: false,
         modelSelection: {},
         modelCatalog: null,
+        tokenUsage: null,
         lastRunId: '',
         gaps: 0,
         duplicates: 0,
@@ -232,6 +236,13 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
         }
     }
 
+    const cost = name === 'model_response'
+        ? parseTokenUsage((envelope.data as { cost?: unknown } | null)?.cost) : null;
+    const usageSequence = Number(envelope.sequence);
+    const tokenUsage = cost && (view.tokenUsage?.workerId !== envelope.worker_id
+        || usageSequence > view.tokenUsage.sequence)
+        ? { ...cost, workerId: envelope.worker_id, sequence: usageSequence }
+        : view.tokenUsage;
     const cancelPending = view.cancelPending && runActive
         && !(RUN_START_EVENTS.has(name) && lastRunId !== view.lastRunId);
     const modelCatalog = name === 'options'
@@ -240,7 +251,7 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
         ? envelope : view.modelCatalog;
     const modelSelection = modelCatalog !== view.modelCatalog ? {} : view.modelSelection;
     return noteWorkerSequence({
-        ...view, latestEvents, lastRunId, runActive, cancelPending, modelSelection, modelCatalog,
+        ...view, latestEvents, lastRunId, runActive, cancelPending, modelSelection, modelCatalog, tokenUsage,
     }, envelope);
 }
 

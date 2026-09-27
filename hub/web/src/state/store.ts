@@ -1041,6 +1041,7 @@ export function createPanelStore() {
                     historyWorker: view.historyWorker,
                     modelSelection: view.modelSelection,
                     modelCatalog: view.modelCatalog,
+                    tokenUsage: view.tokenUsage,
                 };
                 let maxSeq = 0;
                 for (const envelope of message.transcript ?? []) {

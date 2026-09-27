@@ -320,7 +320,8 @@ function HistoryRound({ turn, open, onToggle }: {
 }
 
 /** One model response: reasoning, markdown, the calls it proposed, and cost. */
-function AssistantMessage({ block, calls }: {
+function AssistantMessage({ block, calls, showDetails }: {
+    showDetails: boolean;
     block: AssistantBlock;
     calls: ReadonlyMap<string, ToolCall>;
 }) {
@@ -333,7 +334,7 @@ function AssistantMessage({ block, calls }: {
             <p className="flex items-baseline gap-2 text-xs text-ink-faint">
                 <span className="font-medium text-ink-muted">assistant</span>
                 {block.clock && <span>{block.clock}</span>}
-                {block.cost && <span>{block.cost}</span>}
+                {showDetails && block.cost && <span>{block.cost}</span>}
             </p>
 
             {block.reasoning && (
@@ -361,7 +362,8 @@ function AssistantMessage({ block, calls }: {
 }
 
 /** The one-line summary a folded turn shows. */
-function RoundSummary({ round, historicalInput, expanded, onToggle }: {
+function RoundSummary({ round, historicalInput, expanded, onToggle, showDetails }: {
+    showDetails: boolean;
     round: Round;
     historicalInput: HistoryTurn | null;
     expanded: boolean;
@@ -378,7 +380,7 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
     }
     if (round.exchanges !== null) parts.push(`${round.exchanges} exchange(s)`);
     if (round.wallMs !== null) parts.push(formatDuration(round.wallMs));
-    if (round.tokens !== null) parts.push(`${round.tokens} tokens`);
+    if (showDetails && round.tokens !== null) parts.push(`${round.tokens} tokens`);
     const hidden = round.protocol.length;
     if (hidden > 0) parts.push(`${hidden} protocol event${hidden === 1 ? '' : 's'}`);
 
@@ -497,7 +499,7 @@ function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
                 if (entry.kind === 'assistant') {
                     const block = assistant.get(entry.key);
                     return block
-                        ? <AssistantMessage key={entry.key} block={block} calls={calls} />
+                        ? <AssistantMessage key={entry.key} block={block} calls={calls} showDetails={showDetails} />
                         : null;
                 }
                 if (entry.kind === 'calls') {
@@ -732,6 +734,7 @@ export function Transcript() {
                                 round={round}
                                 historicalInput={historyForRun.get(round.key) ?? null}
                                 expanded={isOpen(round)}
+                                showDetails={showDetails}
                                 onToggle={() => toggle(round)}
                             />
                         )}

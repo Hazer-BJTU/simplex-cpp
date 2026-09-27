@@ -761,3 +761,32 @@ test('a folded turn still shows what went wrong in it', async ({ page }) => {
         'the storage layer refused the write',
     );
 });
+
+test('latest token usage stays by the composer while per-turn costs require details', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'run_started', {});
+    await emit(page, 'model_response', modelResponse('A reply', {
+        cost: { prompt: 4895, generated: 64, cache_hit: 0 },
+    }));
+    const usage = page.getByLabel('Latest token usage');
+    await expect(usage).toContainText('prompt 4.9K');
+    await expect(usage).toContainText('generated 64.0');
+    await expect(usage).toContainText('cache-rate 0.0%');
+    await expect(usage).not.toContainText('total');
+    await expect(page.getByTestId('transcript')).not.toContainText('prompt 4895');
+    await expect(page.getByTestId('round-summary')).not.toContainText('tokens');
+    await page.getByTestId('details-toggle').check();
+    await expect(page.getByTestId('assistant-message')).toContainText('prompt 4895');
+    await page.getByTestId('details-toggle').uncheck();
+    await emit(page, 'model_response', modelResponse('No usage reported'));
+    await expect(usage).toContainText('prompt 4.9K');
+    await emit(page, 'model_response', modelResponse('Latest response', {
+        cost: { prompt: 1000000, generated: 0, cache_hit: 250000 },
+    }));
+    await expect(usage).toContainText('prompt 1.0M');
+    await expect(usage).toContainText('generated 0.0');
+    await expect(usage).toContainText('cache-rate 25.0%');
+    await page.getByLabel('message', { exact: true }).press('Alt+Enter');
+    await expect(usage).toContainText('prompt 1.0M');
+});
