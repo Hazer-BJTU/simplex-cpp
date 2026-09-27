@@ -83,6 +83,16 @@ export function Composer() {
     const [activeCommand, setActiveCommand] = useState(0);
     const [references, setReferences] = useState<readonly Reference[]>([]);
     const [refOpen, setRefOpen] = useState(false);
+    const [confirmOpen, setConfirmOpen] = useState(false);
+    const [modelOpen, setModelOpen] = useState(false);
+
+    // A mode change closes settings rather than leaving a disabled trigger's
+    // popover interactive above the shared toolbar.
+    useEffect(() => {
+        setRefOpen(false);
+        setConfirmOpen(false);
+        setModelOpen(false);
+    }, [entryMode, selected]);
     const box = useRef<HTMLTextAreaElement>(null);
 
     // Capture Alt+Enter before the textarea's Enter-to-send handler. Dialogs
@@ -223,8 +233,9 @@ export function Composer() {
             <div className="relative mx-auto max-w-4xl rounded-xl border border-line-strong
                 bg-surface shadow-sm focus-within:border-ink-muted">
                 <div className="flex items-center border-b border-line px-2 py-1.5">
-                    <span className="rounded bg-subtle px-2 py-1 text-xs font-medium
-                        capitalize text-ink">
+                    <span key={entryMode} data-testid="composer-mode"
+                        className={`animate-enter rounded px-2 py-1 text-xs font-medium capitalize
+                            ${entryMode === 'message' ? 'bg-info-soft text-info' : 'bg-warn-soft text-warn'}`}>
                         {entryMode} mode
                     </span>
                     <span className="ml-auto text-xs text-ink-faint">Alt + Enter to switch</span>
@@ -241,6 +252,7 @@ export function Composer() {
                                 <button
                                     type="button"
                                     aria-label={`remove reference ${reference.raw}`}
+                                    disabled={entryMode === 'command'}
                                     className="rounded-full p-0.5 hover:bg-line"
                                     onClick={() => setReferences((current) => (
                                         current.filter((item) => item.raw !== reference.raw)
@@ -344,207 +356,179 @@ export function Composer() {
                     </div>
                 )}
 
-                <div className="grid">
-                    <div aria-hidden={entryMode !== 'message'}
-                        inert={entryMode !== 'message'}
-                        className={`col-start-1 row-start-1 flex flex-wrap items-center gap-1 sm:gap-2
-                            px-2 pb-2 ${entryMode === 'message' ? '' : 'invisible'}`}>
-                        <Popover open={refOpen} onOpenChange={setRefOpen}>
-                            <PopoverTrigger asChild>
-                                <Button
-                                    aria-label="Attach a reference"
-                                    variant="ghost"
-                                    size="md"
-                                    // Attachment entry is reserved until the feature is ready.
-                                    disabled
-                                    className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
-                                    icon={<Glyph name="attach" />}
-                                >
-                                    <span>Attach</span>
-                                </Button>
-                            </PopoverTrigger>
-                            <PopoverContent align="start" width="w-80">
-                                <form
-                                    onSubmit={(event) => {
-                                        event.preventDefault();
-                                        const field = event.currentTarget.elements.namedItem('reference');
-                                        if (!(field instanceof HTMLInputElement)) return;
-                                        const value = field.value.trim();
-                                        if (!value) return;
-                                        // A reference is sent as data, not fetched by the panel.
-                                        setReferences((current) => (
-                                            current.some((item) => item.raw === value)
-                                                ? current
-                                                : [...current, { kind: 'external_ref', raw: value }]
-                                        ));
-                                        field.value = '';
-                                        setRefOpen(false);
-                                    }}
-                                >
-                                    <label className="block text-xs font-medium text-ink-muted"
-                                        htmlFor="composer-reference">
-                                        external reference
-                                    </label>
-                                    <input
-                                        id="composer-reference"
-                                        name="reference"
-                                        autoFocus
-                                        placeholder="https://…"
-                                        className="mt-1 w-full rounded border border-line-strong px-2 py-1
-                                            font-mono text-xs focus:border-line-strong focus:outline-none"
-                                    />
-                                    <p className="mt-1 text-xs text-ink-muted">
-                                        Sent to the worker as an <code>external_ref</code> part. The panel
-                                        never fetches it.
-                                    </p>
-                                    <div className="mt-2 flex justify-end">
-                                        <Button type="submit" variant="primary">Attach</Button>
-                                    </div>
-                                </form>
-                            </PopoverContent>
-                        </Popover>
-
-                        <Popover>
-                            <PopoverTrigger asChild>
-                                <Button
-                                    aria-label={`confirmation mode: ${mode}`}
-                                    variant="ghost"
-                                    size="md"
-                                    className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
-                                    icon={<Glyph name="options" />}
-                                    title="how the worker should answer tool confirmations for this session"
-                                >
-                                    <span>Confirm</span>
-                                </Button>
-                            </PopoverTrigger>
-                            <PopoverContent align="start">
-                                <p className="text-xs font-medium text-ink">
-                                    Confirmation mode for <span className="font-mono">{sessionId}</span>
+                <div className="flex flex-wrap items-center gap-1 px-2 pb-2 sm:gap-2">
+                    <Popover open={refOpen} onOpenChange={setRefOpen}>
+                        <PopoverTrigger asChild>
+                            <Button
+                                aria-label="Attach a reference"
+                                variant="ghost"
+                                size="md"
+                                // Attachment entry is reserved until the feature is ready.
+                                disabled
+                                className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
+                                icon={<Glyph name="attach" />}
+                            >
+                                <span>Attach</span>
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="start" width="w-80">
+                            <form
+                                onSubmit={(event) => {
+                                    event.preventDefault();
+                                    const field = event.currentTarget.elements.namedItem('reference');
+                                    if (!(field instanceof HTMLInputElement)) return;
+                                    const value = field.value.trim();
+                                    if (!value) return;
+                                    // A reference is sent as data, not fetched by the panel.
+                                    setReferences((current) => (
+                                        current.some((item) => item.raw === value)
+                                            ? current
+                                            : [...current, { kind: 'external_ref', raw: value }]
+                                    ));
+                                    field.value = '';
+                                    setRefOpen(false);
+                                }}
+                            >
+                                <label className="block text-xs font-medium text-ink-muted"
+                                    htmlFor="composer-reference">
+                                    external reference
+                                </label>
+                                <input
+                                    id="composer-reference"
+                                    name="reference"
+                                    autoFocus
+                                    placeholder="https://…"
+                                    className="mt-1 w-full rounded border border-line-strong px-2 py-1
+                                        font-mono text-xs focus:border-line-strong focus:outline-none"
+                                />
+                                <p className="mt-1 text-xs text-ink-muted">
+                                    Sent to the worker as an <code>external_ref</code> part. The panel
+                                    never fetches it.
                                 </p>
-                                <div className="mt-2 space-y-1">
-                                    {(['ask', 'approve', 'deny'] as const).map((value) => (
-                                        <label
-                                            key={value}
-                                            className="flex cursor-pointer items-start gap-2 rounded p-1
-                                                hover:bg-sunken"
-                                        >
-                                            <input
-                                                type="radio"
-                                                name="confirm-mode"
-                                                value={value}
-                                                checked={mode === value}
-                                                onChange={() => setConfirmMode(sessionId, value)}
-                                                className="mt-0.5 accent-interactive"
-                                            />
-                                            <span>
-                                                <span className="font-mono text-xs text-ink">{value}</span>
-                                                <span className="block text-xs text-ink-muted">
-                                                    {MODES[value].detail}
-                                                </span>
+                                <div className="mt-2 flex justify-end">
+                                    <Button type="submit" variant="primary">Attach</Button>
+                                </div>
+                            </form>
+                        </PopoverContent>
+                    </Popover>
+
+                    <Popover open={confirmOpen} onOpenChange={setConfirmOpen}>
+                        <PopoverTrigger asChild>
+                            <Button
+                                aria-label={`confirmation mode: ${mode}`}
+                                disabled={entryMode === 'command'}
+                                variant="ghost"
+                                size="md"
+                                className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
+                                icon={<Glyph name="options" />}
+                                title="how the worker should answer tool confirmations for this session"
+                            >
+                                <span>Confirm</span>
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="start">
+                            <p className="text-xs font-medium text-ink">
+                                Confirmation mode for <span className="font-mono">{sessionId}</span>
+                            </p>
+                            <div className="mt-2 space-y-1">
+                                {(['ask', 'approve', 'deny'] as const).map((value) => (
+                                    <label
+                                        key={value}
+                                        className="flex cursor-pointer items-start gap-2 rounded p-1
+                                            hover:bg-sunken"
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="confirm-mode"
+                                            value={value}
+                                            checked={mode === value}
+                                            onChange={() => setConfirmMode(sessionId, value)}
+                                            className="mt-0.5 accent-interactive"
+                                        />
+                                        <span>
+                                            <span className="font-mono text-xs text-ink">{value}</span>
+                                            <span className="block text-xs text-ink-muted">
+                                                {MODES[value].detail}
                                             </span>
+                                        </span>
+                                    </label>
+                                ))}
+                            </div>
+                            <p className="mt-2 border-t border-line pt-2 text-xs text-ink-muted">
+                                This choice applies to the next run for this session.
+                            </p>
+                        </PopoverContent>
+                    </Popover>
+
+                    <Popover open={modelOpen} onOpenChange={setModelOpen}>
+                        <PopoverTrigger asChild>
+                            <Button aria-label="Model options" variant="ghost" size="md"
+                                disabled={entryMode === 'command' || !connected || modelFields.length === 0}
+                                className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
+                                icon={<span className="hidden sm:inline-flex"><Glyph name="options" /></span>}>
+                                <span>Model</span>
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="start" width="w-80">
+                            <p className="text-xs font-medium text-ink">Model options</p>
+                            <div className="mt-2 space-y-3">
+                                {modelFields.map((field) => {
+                                    const current = modelChoices[field.name];
+                                    const index = field.options.findIndex((value) =>
+                                        JSON.stringify(value) === JSON.stringify(current));
+                                    return (
+                                        <label key={field.name} className="block text-xs text-ink-muted">
+                                            {field.name}
+                                            <select aria-label={`Model option: ${field.name}`}
+                                                className="mt-1 block w-full rounded border border-line bg-surface p-2 text-ink"
+                                                value={index < 0 ? '' : String(index)}
+                                                onChange={(event) => setModelOption(sessionId,
+                                                    field.name, field.options[Number(event.target.value)])}>
+                                                {index < 0 && <option value="" disabled>
+                                                    {current === undefined ? 'Select an option' : String(current)}
+                                                </option>}
+                                                {field.options.map((value, optionIndex) => (
+                                                    <option key={optionIndex} value={optionIndex}>
+                                                        {typeof value === 'string' ? value : JSON.stringify(value)}
+                                                    </option>
+                                                ))}
+                                            </select>
                                         </label>
-                                    ))}
-                                </div>
-                                <p className="mt-2 border-t border-line pt-2 text-xs text-ink-muted">
-                                    This choice applies to the next run for this session.
-                                </p>
-                            </PopoverContent>
-                        </Popover>
+                                    );
+                                })}
+                            </div>
+                            <p className="mt-3 text-xs text-ink-muted">
+                                These choices apply to the next run, including Continue run and Compact context.
+                            </p>
+                        </PopoverContent>
+                    </Popover>
 
-                        <Popover>
-                            <PopoverTrigger asChild>
-                                <Button aria-label="Model options" variant="ghost" size="md"
-                                    disabled={!connected || modelFields.length === 0}
-                                    className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
-                                    icon={<span className="hidden sm:inline-flex"><Glyph name="options" /></span>}>
-                                    <span>Model</span>
-                                </Button>
-                            </PopoverTrigger>
-                            <PopoverContent align="start" width="w-80">
-                                <p className="text-xs font-medium text-ink">Model options</p>
-                                <div className="mt-2 space-y-3">
-                                    {modelFields.map((field) => {
-                                        const current = modelChoices[field.name];
-                                        const index = field.options.findIndex((value) =>
-                                            JSON.stringify(value) === JSON.stringify(current));
-                                        return (
-                                            <label key={field.name} className="block text-xs text-ink-muted">
-                                                {field.name}
-                                                <select aria-label={`Model option: ${field.name}`}
-                                                    className="mt-1 block w-full rounded border border-line bg-surface p-2 text-ink"
-                                                    value={index < 0 ? '' : String(index)}
-                                                    onChange={(event) => setModelOption(sessionId,
-                                                        field.name, field.options[Number(event.target.value)])}>
-                                                    {index < 0 && <option value="" disabled>
-                                                        {current === undefined ? 'Select an option' : String(current)}
-                                                    </option>}
-                                                    {field.options.map((value, optionIndex) => (
-                                                        <option key={optionIndex} value={optionIndex}>
-                                                            {typeof value === 'string' ? value : JSON.stringify(value)}
-                                                        </option>
-                                                    ))}
-                                                </select>
-                                            </label>
-                                        );
-                                    })}
-                                </div>
-                                <p className="mt-3 text-xs text-ink-muted">
-                                    These choices apply to the next run, including Continue run and Compact context.
-                                </p>
-                            </PopoverContent>
-                        </Popover>
-
-                        <div className="ml-auto flex items-center gap-2">
-                            {runActive ? (
-                                <Button
-                                    variant="danger"
-                                    size="md"
-                                    disabled={!connected || cancelPending}
-                                    aria-busy={cancelPending}
-                                    onClick={() => client.sendSignal(sessionId, 'cancel')}
-                                    title="ask the worker to cancel the active run"
-                                    className="h-9 justify-center leading-5"
-                                    icon={<Glyph name={cancelPending ? 'spinner' : 'cancel'} />}
-                                >
-                                    <span>{cancelPending ? 'Cancelling…' : 'Cancel run'}</span>
-                                </Button>
-                            ) : (
-                                <Button
-                                    type="submit"
-                                    variant="primary"
-                                    size="md"
-                                    disabled={!connected || !canSend}
-                                    className={PRIMARY_ACTION_CLASS}
-                                    icon={<Glyph name="send" />}
-                                >
-                                    <span>Send</span>
-                                </Button>
-                            )}
-                        </div>
-                    </div>
-                    <div aria-hidden={entryMode !== 'command'}
-                        inert={entryMode !== 'command'}
-                        className={`col-start-1 row-start-1 flex items-center justify-end
-                            px-2 pb-2
-                            ${entryMode === 'command' ? '' : 'invisible'}`}>
+                    <div className="ml-auto flex items-center gap-2">
                         {runActive ? (
-                            <Button type="button" variant="danger" size="md"
+                            <Button
+                                variant="danger"
+                                size="md"
                                 disabled={!connected || cancelPending}
                                 aria-busy={cancelPending}
                                 onClick={() => client.sendSignal(sessionId, 'cancel')}
+                                title="ask the worker to cancel the active run"
                                 className="h-9 justify-center leading-5"
-                                icon={<Glyph name={cancelPending ? 'spinner' : 'cancel'} />}>
-                                {cancelPending ? 'Cancelling…' : 'Cancel run'}
+                                icon={<Glyph name={cancelPending ? 'spinner' : 'cancel'} />}
+                            >
+                                <span>{cancelPending ? 'Cancelling…' : 'Cancel run'}</span>
                             </Button>
                         ) : (
-                            <Button type="button" variant="primary" size="md"
-                                disabled={!selectedCommand || selectedUnavailable !== null}
-                                onClick={() => {
-                                    const command = commands[highlighted];
-                                    if (command) runCommand(command);
-                                }}
-                                className={PRIMARY_ACTION_CLASS}>
-                                Run
+                            <Button
+                                type="submit"
+                                variant="primary"
+                                size="md"
+                                disabled={entryMode === 'command'
+                                    ? !selectedCommand || selectedUnavailable !== null
+                                    : !connected || !canSend}
+                                className={PRIMARY_ACTION_CLASS}
+                                icon={<Glyph name="send" />}
+                            >
+                                <span>Send</span>
                             </Button>
                         )}
                     </div>
@@ -570,10 +554,9 @@ export function Composer() {
                 )}
 
                 <span className="flex-1" />
-                <span className="hidden sm:inline">{entryMode === 'command'
-                    ? 'Type a prefix · Tab to complete · Enter to run'
-                    : runActive ? 'Cancel stops this run · draft stays here'
-                        : 'Enter to send · Shift+Enter for a new line'}</span>
+                <span className="hidden sm:inline">{runActive
+                    ? 'Cancel stops this run · draft stays here'
+                    : 'Enter to send'}</span>
             </div>
         </form>
     );

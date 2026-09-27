@@ -566,3 +566,10 @@ they never mutate an active run through a signal. A new worker gets a new cache.
 An explicit `input_rejected` with `code: "invalid_options"` refreshes the options
 and restores the provider's effective selections; ordinary input failures do
 not refresh them. The header no longer exposes Status or Options buttons.
+
+
+Message and Command modes share the same input layout and Send button.
+Command mode keeps Confirm and Model visible but disabled; existing selections
+still accompany commands that start a run. Alt+Enter changes the mode badge,
+placeholder, and command suggestions without moving the toolbar. The mode badge
+uses distinct colors and a short animation, disabled by reduced-motion settings.

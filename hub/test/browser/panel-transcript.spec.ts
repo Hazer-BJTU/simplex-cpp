@@ -496,7 +496,7 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
     await message.press('Alt+Enter');
     await expect(page.getByLabel('command input')).toBeFocused();
     expect((await composer.boundingBox())!.height).toBe(messageHeight);
-    const run = page.getByRole('button', { name: 'Run', exact: true });
+    const run = page.getByRole('button', { name: 'Send', exact: true });
     const runBounds = await run.boundingBox();
     expect(runBounds).not.toBeNull();
     expect({

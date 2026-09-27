@@ -66,3 +66,36 @@ test('a replacement worker cannot reuse the previous worker model menu', async (
     await emit(page, 'options', advertised, { worker_id: 'replacement' });
     await expect(page.getByRole('button', { name: 'Model options' })).toBeEnabled();
 });
+
+test('mode switching keeps the same toolbar and disables message settings', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'options', advertised);
+    const confirm = page.getByRole('button', { name: /^confirmation mode:/ });
+    const model = page.getByRole('button', { name: 'Model options' });
+    const send = page.getByRole('button', { name: 'Send', exact: true });
+    const controls = [page.getByLabel('Attach a reference'), confirm, model, send];
+    const before = await Promise.all(controls.map((control) => control.boundingBox()));
+    const messageColor = await page.getByTestId('composer-mode').evaluate(
+        (node) => getComputedStyle(node).backgroundColor);
+    await send.evaluate((node) => { node.dataset.sharedAction = 'yes'; });
+    await model.click();
+    await expect(page.getByLabel('Model option: model', { exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.getByLabel('message', { exact: true }).press('Alt+Enter');
+    await expect(page.getByLabel('Model option: model', { exact: true })).toHaveCount(0);
+    await expect(confirm).toBeDisabled();
+    await expect(model).toBeDisabled();
+    await expect(send).toHaveAttribute('data-shared-action', 'yes');
+    expect(await Promise.all(controls.map((control) => control.boundingBox()))).toEqual(before);
+    const commandColor = await page.getByTestId('composer-mode').evaluate(
+        (node) => getComputedStyle(node).backgroundColor);
+    expect(commandColor).not.toBe(messageColor);
+    await page.getByLabel('command input').fill('Refresh');
+    await send.click();
+    await expect.poll(async () => (await requests(page, 'status_snapshot')).length).toBe(1);
+    await page.keyboard.press('Alt+Enter');
+    await expect(confirm).toBeEnabled();
+    await expect(model).toBeEnabled();
+    await expect(page.getByTestId('composer-mode')).toHaveText('message mode');
+});
