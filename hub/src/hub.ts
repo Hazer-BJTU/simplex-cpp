@@ -153,7 +153,9 @@ export function createHub({
                 : { host: config.listen.host, port: config.listen.port },
             launcher: {
                 kind: config.launcher.kind,
-                owns_config: config.launcher.config === 'launcher',
+                // Protocol v1 compatibility: hub-owned configuration is now
+                // universal, but older clients still expect this field.
+                owns_config: false,
             },
             provider_profiles: Object.keys(config.providerProfiles),
             force_kill_process_group: config.forceKillProcessGroup,

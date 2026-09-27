@@ -3,15 +3,13 @@
 A Node.js server that runs `simplex_worker` sessions and gives them a browser
 panel.
 
-`simplex_shell` (in `core/example`) is a one-to-one terminal server: one
-operator, one session, approvals typed as UUIDs. The hub is the multi-session
-counterpart — it launches workers, speaks the worker protocol on their behalf,
-collects their events, turns tool confirmations into buttons, and keeps the
-process output around when something goes wrong.
+The hub launches workers, collects their events, displays tool confirmations,
+and retains process output. The old one-to-one terminal server `simplex_shell`
+is deprecated source only and is no longer built or installed.
 
-The hub is an additive component. It changes no C++ code and no client
-behaviour: it implements the worker side of
-[`core/docs/worker-protocol.md`](../core/docs/worker-protocol.md) as written.
+The hub implements the server side of
+[`core/docs/worker-protocol.md`](../core/docs/worker-protocol.md). The worker and
+hub share the direct session-root persistence layout described below.
 
 ## Requirements
 
@@ -22,8 +20,8 @@ behaviour: it implements the worker side of
   server side.
 - A built worker binary — `build/bin/simplex_worker` plus its `plugins/` and
   `prompts/` directories. Build it with the repository's normal CMake flow.
-- One runtime dependency: [`ws`](https://github.com/websockets/ws). Everything
-  else in `package.json` is a development dependency.
+- Runtime dependencies: `ws` for WebSockets and `yaml` for preserving operator
+  configuration and comments. Everything else in `package.json` is a development dependency.
 
 ## Quick start
 
@@ -49,8 +47,8 @@ export DEEPSEEK_API_KEY=sk-...
 
 This is the way to drive the hub by hand. A session can propose arbitrary
 commands through the process tools and, once confirmed, they run wherever the
-worker runs — so the container is there to be the thing that gets deleted, not
-your working directory:
+worker runs. The container limits access to host files unless volumes are
+mounted:
 
 ```sh
 docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .
@@ -63,7 +61,9 @@ and the offline mock provider, so it needs no key and no configuration. Add
 `-e DEEPSEEK_API_KEY=sk-...` to use a real provider as well — a session chooses
 its profile either way — and `-v simplex-hub-data:/data` to keep sessions after
 the container is gone. `docker run -it --rm simplex-hub-test bash` gives a shell
-in the same tree.
+in the same tree. Volumes and bind mounts retain worker-written state on the
+host after the container exits. Treat mounted workspaces and session data as
+persistent, writable data; keep unrelated host files outside those mounts.
 
 The image mounts nothing from the host, runs unprivileged, and publishes the port
 to loopback only. See
@@ -123,10 +123,11 @@ Three things make it work, and each is a way to get it wrong:
    the generated config path, the session id and the data directory without the
    hub knowing anything about Docker.
 3. **The mounts.** The generated `config.yaml`, the session's snapshot and the
-   captured log are all named by *absolute host paths* — so the data directory
-   is mounted at the same path inside the container, and `promptsDir` is mounted
-   the same way rather than pointed at the image's own copy. Overriding
-   `promptsDir` to the image's path looks tidier and does not work: the mount
+   captured log are all named by *absolute host paths*. Only the current
+   session directory is mounted read-write at the same path; `config.yaml` is
+   mounted again as a read-only file, and `promptsDir` is read-only. This keeps
+   tools from rewriting durable launch settings or another session's data.
+   Overriding `promptsDir` to the image's path looks tidier and does not work: the mount
    would then name a host directory that does not exist, and Docker helpfully
    creates an empty one.
 
@@ -139,14 +140,14 @@ refused at spawn time rather than passed to Docker as `--user :`.
 
 To see that the isolation is real rather than assumed, the example config asks
 the mock for `hostname; id -u; cat /etc/hostname`. The tool card then shows the
-container's hostname, uid 0 and its own PID namespace — from a session whose hub
-is an ordinary process on the host:
+container's hostname, the invoking user's UID and its own PID namespace — from
+a session whose hub is an ordinary process on the host:
 
 ```
 command   hostname; id -u; cat /etc/hostname
 pid       10
 stdout    66485abf0d8d          ← the container
-          0
+          1000
           66485abf0d8d
 ```
 
@@ -225,7 +226,6 @@ directory; command-line paths resolve against the working directory.
 | `providerProfiles` | `deepseek`, `mock` | copied into the generated worker configuration; a session picks one by name |
 | `launcher.kind` | `simplex-worker` | `simplex-worker` or `command` |
 | `launcher.command`, `launcher.args` | `[]` | template and extra arguments for the `command` launcher |
-| `launcher.config` | `hub` | who renders the worker configuration: `hub` or `launcher` |
 | `launcher.cwd`, `launcher.pidFile` | `""` | working directory, and the pid file for a launcher that daemonizes |
 | `mock.enabled`, `mock.listen`, `mock.profile`, `mock.scenario` | `false`, `127.0.0.1:0`, `mock`, `auto` | offline provider |
 | `limits.transcriptEvents` | `5000` | envelopes retained per session for panel replay |
@@ -241,9 +241,29 @@ directory; command-line paths resolve against the working directory.
 
 ## Managing workers
 
-The hub renders a complete worker configuration per session into
-`<dataDir>/workers/<session>/config.yaml`, and then runs the configured
-launcher. Two kinds ship:
+On the first start, the hub writes the session configuration to
+`<dataDir>/sessions/<session>/config/config.yaml`. Later starts and restarts reuse
+this file, including hand-written YAML and comments. Hub default changes and
+configuration fields in a later launch spec do not overwrite it. Edit the saved
+file while the worker is stopped to change model, prompt, persistence or other
+worker settings. Launch-only `threads`, `env` and `extraArgs` still come from the
+session spec.
+
+Before each launch the hub refreshes only `persistence.directory` (the direct
+session root), `client.endpoint`, `security.confirmation.endpoint` (including
+session authentication tokens), and the active mock provider's dynamic
+`endpoint.base_url`. Provider credentials and other operator fields remain intact.
+Malformed saved YAML or invalid persistence child paths fail startup without
+replacing the file. Updates are published with an atomic rename.
+The hub owns this configuration for every launcher. A custom launcher must use
+the supplied `{config}` as its authoritative worker configuration. Refreshes
+preserve an existing file's owner, group and permission bits; if the worker runs
+under another UID, the operator must grant it read access. Native workers and
+their tools run with their process's filesystem authority, so a same-UID worker
+can edit this saved configuration. Use a separate UID or a read-only mount when
+worker-side changes must not become durable operator settings.
+
+The hub then runs the configured launcher. Two kinds ship:
 
 - **`simplex-worker`** — `simplex_worker --config <generated> --session <id>
   --threads N`, which is exactly the command line `core/README.md` documents.
@@ -253,8 +273,7 @@ launcher. Two kinds ship:
   "launcher": {
     "kind": "command",
     "command": ["bash", "scripts/simplex-run.sh", "{session}", "--config", "{config}"],
-    "args": ["--endpoint", "{endpoint}", "--token", "{token}"],
-    "config": "hub"
+    "args": ["--endpoint", "{endpoint}", "--token", "{token}"]
   }
   ```
 
@@ -310,22 +329,35 @@ older workers without that classification receive general failure wording.
 ```
 <dataDir>/
   hub.json                        sessions, tokens, process records
-  workers/<session>/config.yaml    generated worker configuration
-  workers/<session>/worker.log     captured worker output (rotated)
-  events/<session>.jsonl           worker events the hub received
-  sessions/<session>/state.json    the worker's own snapshot (authoritative)
-  sessions/<session>/readable.md   optional human-readable copy
-  workers/<session>/.data/memory/<session>/  default compact archives
+  sessions/<session>/
+    config/config.yaml            persistent worker configuration
+    state/state.json              authoritative worker snapshot
+    state/readable.md             optional human-readable copy
+    memory/<ordinal>-<time>-<run>/state.md   compact archives
+    logs/worker.log                captured worker output (rotated)
+    events.jsonl                  worker events the hub received
+    session.lock                  exclusive worker ownership
 ```
 
 Conversation state lives in the worker's snapshot, not in the hub. The panel can
 read it; nothing can replace, edit, or reset it.
-Deleting an inactive session removes its snapshot directory and hub event log,
-so recreating the same session ID starts with an empty conversation. Files made
-by tools in `workers/<session>/` are retained for the operator to inspect.
-Compact archives are also retained when a session is deleted. The current hub
-does not expose compact or clean its archives; the operator owns retention until
-the follow-up hub integration defines limits and cleanup after worker shutdown.
+Deleting an inactive session removes its directory entries, including configuration,
+archives, logs and tool-created files inside it. Recreating the same ID starts
+fresh. State and memory
+subdirectory names may be configured with `persistence.state` and
+`persistence.memory`; both are relative to `persistence.directory`, without any
+additional session-ID suffix. Snapshot inspection follows the saved `state` path.
+Child-path validation rejects absolute paths and lexical `..` traversal, but
+does not resolve symlinks. A symlink within the session can point state or
+memory outside it; these paths are not a filesystem sandbox. The operator must
+trust or constrain workers with filesystem access.
+There is no automatic archive retention policy. The old `workers/`, `events/`,
+and session-ID-appending worker layouts are not migrated or read automatically.
+This is an incompatible layout change: migrate standalone worker configurations
+that previously set a root directory and relied on the worker appending the
+session ID. Set `persistence.directory` to the session's direct root and choose
+relative `persistence.state` and `persistence.memory` directories.
+
 When a worker is connected, the panel also requests a bounded, display-only
 history projection of its turns. This restores the conversation after a panel
 reload or hub restart without copying the worker's full state into hub storage.
@@ -342,7 +374,8 @@ npm run test:e2e    # end-to-end against build/bin/simplex_worker (skipped if ab
 ```
 
 The end-to-end tests drive the real binary through the hub and the offline mock:
-a full loop with a real tool call and confirmation, and a crashed hub whose
+a full loop with a real tool call and confirmation, cancellation while a tool
+confirmation is pending, and a crashed hub whose
 worker is adopted by the next hub. Set `SIMPLEX_WORKER_BIN` to test a different
 build.
 
@@ -492,9 +525,10 @@ the runner's Ubuntu.
 - The hub cannot prove that a payload was admitted, executed, or persisted. It
   shows what it observed and marks the rest unknown, and it never resends
   automatically.
-- The strongest boundary here is the container, not the token: run sessions in
-  `docker/Dockerfile.hub-test` (above) and the worst case is a container you
-  throw away. `run_command` is `require_confirm`, so every command is shown in
+- The strongest boundary here is the container, not the token. An unmounted
+  disposable container can be discarded, but `/data` and workspace mounts
+  survive it and remain writable according to their mount permissions.
+  `run_command` is `require_confirm`, so every command is shown in
   the panel before it runs — but a confirmation is a decision, not a sandbox.
 
 ## Troubleshooting
@@ -506,5 +540,5 @@ the runner's Ubuntu.
 | The worker starts and exits immediately | the provider profile is missing a credential (`DEEPSEEK_API_KEY`), or another worker already owns the session lock |
 | A confirmation is denied with "identity mismatch" | a worker the hub does not know opened a confirmation for that session; check the event connection log |
 | A confirmation is denied after ~15 s | the event connection never identified the worker; check that the event socket reconnected |
-| Log lines are missing in the panel | the in-memory ring is bounded (`limits.logLines`); the full file is `workers/<session>/worker.log` |
+| Log lines are missing in the panel | the in-memory ring is bounded (`limits.logLines`); the full file is `sessions/<session>/logs/worker.log` |
 | The panel returns 401 | `panel.token` is set; supply it with `?token=...` in the URL once |

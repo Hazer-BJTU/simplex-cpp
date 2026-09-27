@@ -3,6 +3,7 @@
 #include "core/application.hpp"
 #include "core/confirmation.hpp"
 #include "load/persistence.hpp"
+#include "fileio/session_lock.hpp"
 #include <boost/beast.hpp>
 #include <boost/asio/use_future.hpp>
 #include <atomic>
@@ -65,7 +66,8 @@ void scenario(Mode mode) {
     config.document = Json::object();
     config.client = load::websocket_endpoint("ws://127.0.0.1:"
         + std::to_string(acceptor.local_endpoint().port()) + "/events");
-    config.storage = scratch.root / "sessions";
+    config.storage = scratch.root / "session";
+    config.state_directory = config.storage / "state";
     const auto prompt_file = scratch.root / "prompt.yaml";
     std::ofstream(prompt_file) << R"(heading_level: 3
 sections:
@@ -82,7 +84,7 @@ sections:
     const auto original_cwd = std::filesystem::current_path();
     config.event_capacity = mode == Mode::Overflow ? 1 : 256;
     if (mode == Mode::StorageFailure) {
-        std::filesystem::create_directories(config.storage / "test/state.json");
+        std::filesystem::create_directories(config.state_directory / "state.json");
         config.restore = false;
     }
     if (mode == Mode::Blocked) {
@@ -90,7 +92,7 @@ sections:
         state.meta.session_id = "test";
         state.loop.emplace();
         state.loop->phase = model_io::LoopPhase::Blocked;
-        load::save_state(config.storage / "test/state.json", state);
+        load::save_state(config.state_directory / "state.json", state);
     }
     auto model = std::make_shared<Model>(io.get_executor());
     if (mode == Mode::ModelFailure) model->fail_model = true;
@@ -215,7 +217,7 @@ sections:
             BOOST_TEST(rejected == 1);
             BOOST_TEST(model->maximum.load() == 1);
             BOOST_TEST(model->calls.load() == 2);
-            const auto state = load::load_state(config.storage / "test/state.json");
+            const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_TEST(state.turns.size() == 2u);
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "read_text"; }));
@@ -260,7 +262,7 @@ sections:
         } else if (mode == Mode::ModelFailure) {
             BOOST_TEST(completed == 2);
             BOOST_TEST(model->calls.load() == 2);
-            const auto state = load::load_state(config.storage / "test/state.json");
+            const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_REQUIRE_EQUAL(state.turns.size(), 1u);
             BOOST_REQUIRE_EQUAL(state.turns[0].agent_loop_step.size(), 1u);
         } else if (mode == Mode::History) {
@@ -268,7 +270,7 @@ sections:
             BOOST_TEST(completed == 1);
         } else if (mode == Mode::Cancel || mode == Mode::Stop) {
             if (mode == Mode::Cancel) BOOST_TEST(cancelled);
-            const auto state = load::load_state(config.storage / "test/state.json");
+            const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_CHECK(state.loop->status == model_io::LoopStatus::Cancelled);
         } else {
             BOOST_TEST(rejected == 1);
@@ -291,7 +293,7 @@ sections:
             auto restart = asio::co_spawn(io, restored.run(stop.get_token()), asio::use_future);
             io.run();
             restart.get();
-            const auto snapshot = load::load_state(config.storage / "test/state.json");
+            const auto snapshot = load::load_state(config.state_directory / "state.json");
             BOOST_TEST(snapshot.turns.size() == 2u);
             const auto& signature = *std::prev(snapshot.system_prompt.end());
             BOOST_TEST(signature.name == "signature.runtime");
@@ -335,8 +337,9 @@ BOOST_AUTO_TEST_CASE(startup_failure_releases_ownership_while_application_surviv
     config.provider = "fixture";
     config.document = Json::object();
     config.client = load::websocket_endpoint("ws://127.0.0.1:1/events");
-    config.storage = scratch.root / "sessions";
-    const auto snapshot = config.storage / "test/state.json";
+    config.storage = scratch.root / "session";
+    config.state_directory = config.storage / "state";
+    const auto snapshot = config.state_directory / "state.json";
     std::filesystem::create_directories(snapshot.parent_path());
     std::ofstream(snapshot) << "invalid json";
     auto model = std::make_shared<Model>(io.get_executor());
@@ -653,4 +656,31 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
                boost::test_tools::per_element());
     BOOST_TEST(model->approvals == std::vector<bool>({false, false, true, true, false}),
                boost::test_tools::per_element());
+}
+
+/** Changing state subdirectories or identity must not bypass root ownership. */
+BOOST_AUTO_TEST_CASE(session_root_lock_is_independent_of_state_path_and_identity) {
+    Scratch scratch;
+    asio::io_context io;
+    load::Configuration config;
+    config.provider = "fixture";
+    config.document = Json::object();
+    config.client = load::websocket_endpoint("ws://127.0.0.1:1/events");
+    config.storage = scratch.root;
+    config.state_directory = scratch.root / "alternate-state";
+    auto model = std::make_shared<Model>(io.get_executor());
+    {
+        fileio::SessionLock owner(scratch.root / "session.lock");
+        core::Application duplicate(io.get_executor(), config, "different-id", model);
+        auto running = asio::co_spawn(io, duplicate.run(), asio::use_future);
+        io.run();
+        BOOST_CHECK_EXCEPTION(running.get(), std::runtime_error,
+            [](const std::runtime_error& error) {
+                return std::string(error.what()).find("exclusive session ownership")
+                    != std::string::npos;
+            });
+        BOOST_CHECK(!std::filesystem::exists(config.state_directory));
+    }
+    BOOST_CHECK_NO_THROW(fileio::SessionLock(scratch.root / "session.lock"));
+    BOOST_CHECK(!std::filesystem::exists(scratch.root / "different-id"));
 }

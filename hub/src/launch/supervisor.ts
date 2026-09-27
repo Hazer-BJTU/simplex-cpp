@@ -20,11 +20,12 @@
  */
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync }
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync }
     from 'node:fs';
 import { join } from 'node:path';
 import { LineSplitter, RingBuffer } from '../util/ring.ts';
-import { renderSessionConfig, sessionDir, workerConfigPath } from './config-render.ts';
+import { sessionDir, workerConfigPath } from './config-render.ts';
+import { prepareSessionConfig } from './config-file.ts';
 import type { NormalizedSpec } from './spec.ts';
 import type { Launcher, InvocationContext } from './launcher.ts';
 import type { LauncherInvocation, WorkerEndpoints } from './invocation.ts';
@@ -328,7 +329,7 @@ export class WorkerSupervisor {
         const configPath = workerConfigPath(this.config, session.id);
         let rendered: { spec: NormalizedSpec; document: unknown };
         try {
-            rendered = renderSessionConfig({
+            rendered = prepareSessionConfig({
                 config: this.config,
                 sessionId: session.id,
                 rawSpec: specSource,
@@ -337,16 +338,7 @@ export class WorkerSupervisor {
             });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            return { ok: false, error: `invalid session spec: ${message}`, config: specSource };
-        }
-        // The path is always written, so an operator can inspect what a
-        // launcher-owned configuration would have contained.
-        try {
-            writeFileSync(configPath, `${JSON.stringify(rendered.document, null, 2)}\n`);
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            return { ok: false, error: `cannot write ${configPath}: ${message}`,
-                config: rendered.spec };
+            return { ok: false, error: `cannot prepare session configuration: ${message}`, config: specSource };
         }
         session.spec = rendered.spec;
 
@@ -366,7 +358,15 @@ export class WorkerSupervisor {
                 config: rendered.spec };
         }
 
-        const logPath = join(directory, 'worker.log');
+        const logDirectory = join(directory, 'logs');
+        try {
+            mkdirSync(logDirectory, { recursive: true });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { ok: false, error: `cannot create ${logDirectory}: ${message}`,
+                config: rendered.spec };
+        }
+        const logPath = join(logDirectory, 'worker.log');
         rotateLog(logPath, this.config.limits);
         const logs = new RingBuffer<string>({
             limit: this.config.limits.logLines,

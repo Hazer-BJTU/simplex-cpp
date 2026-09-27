@@ -52,7 +52,7 @@
             // — executable but not readable, which is enough for a binary and
             // not for a shell script. Overriding it is what lets a non-root
             // user run the worker at all.
-            "--entrypoint", "/src/build/bin/simplex_worker",
+            "--entrypoint", "/src/build/bin/simplex",
             // The model credential, forwarded from the hub's own environment.
             // No `=value`: Docker takes the value from the environment of the
             // process that runs `docker`, so the key stays in the operator's
@@ -60,17 +60,17 @@
             // refers to `${DEEPSEEK_API_KEY}` and the worker expands it, which
             // is why the variable has to exist *here* and not only on the host.
             "-e", "DEEPSEEK_API_KEY",
-            // The generated config, the session's snapshot and the captured
-            // log all live under the data directory, at absolute paths the
-            // configuration names — so mounting it at the same path is what
-            // makes those paths mean the same thing on both sides.
-            "-v", "{data_dir}:{data_dir}",
+            // Expose only this session's data. The hub owns config/config.yaml;
+            // a second file mount prevents worker tools from rewriting it.
+            "-v", "{session_dir}:{session_dir}",
+            "-v", "{config}:{config}:ro",
             "-v", "{prompts_dir}:{prompts_dir}:ro",
             // Tools the model asks for run inside the container. Point this at
             // the directory you want the agent to work in.
             "-v", "/tmp/simplex-workspace:/workspace",
             "-w", "{session_dir}",
             "simplex-hub-test:latest",
+            "run",
             "--config", "{config}",
             "--session", "{session}",
             "--threads", "{threads}"

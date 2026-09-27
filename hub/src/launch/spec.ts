@@ -5,7 +5,10 @@
  * run: which provider profile, how many threads, where its prompt lives, what
  * it should say about its environment, and how it persists state. Defaults come
  * from the hub configuration; a session overrides only what it needs, so a
- * stored session stays readable when the hub's defaults change.
+ * stored session stays readable when the hub's defaults change. Configuration
+ * fields seed the first config/config.yaml only; subsequent starts reuse that
+ * file. Threads, environment variables and extra command arguments remain
+ * launch-time settings.
  */
 import { isAbsolute, join } from 'node:path';
 import { ConfigError } from '../config.ts';

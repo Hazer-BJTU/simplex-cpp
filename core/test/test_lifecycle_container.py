@@ -185,6 +185,8 @@ with tempfile.TemporaryDirectory() as directory:
     path.write_text(json.dumps(config))
 
     def start(session='same', ready=True):
+        config['persistence']['directory'] = str(root / 'sessions' / session)
+        path.write_text(json.dumps(config))
         log = (root / f'worker-{len(workers)}.log').open('w+')
         process = subprocess.Popen([sys.argv[1], '--config', str(path), '--session', session],
                                    stdout=log, stderr=log)
@@ -209,7 +211,7 @@ with tempfile.TemporaryDirectory() as directory:
         first, peer = start()
         result = peer.run('spawn_process', {'executable': '/bin/sh', 'arguments': ['-c', 'printf FIRST'], 'expected_runtime_milliseconds': 1000, 'auto_release': False})
         old = re.search(r'proc_[0-9a-f-]+_\d+', result).group()
-        snapshot = root / 'sessions/same/state.json'
+        snapshot = root / 'sessions/same/state/state.json'
         original = snapshot.read_bytes()
         duplicate, log = start(ready=False)
         assert 'exclusive session ownership' in failed(duplicate, log)
@@ -247,8 +249,8 @@ with tempfile.TemporaryDirectory() as directory:
         shutdown(successor, peer)
 
         # Startup failure releases the lock before a repaired session retries.
-        bad = root / 'sessions/broken'
-        bad.mkdir()
+        bad = root / 'sessions/broken/state'
+        bad.mkdir(parents=True)
         (bad / 'state.json').write_text('invalid json')
         broken, log = start('broken', ready=False)
         failed(broken, log)

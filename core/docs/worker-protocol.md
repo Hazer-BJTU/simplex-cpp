@@ -2,7 +2,7 @@
 
 This is the communication contract implemented by `simplex_worker`. It is
 intended for authors of hubs, gateways, terminal clients, and web interfaces in
-any language. The bundled `simplex_shell` is one example server, not a required
+any language. The deprecated `simplex_shell` source is a historical example, not a required
 implementation or an additional protocol layer.
 
 The worker is always the WebSocket client. One worker process owns one session
@@ -62,7 +62,9 @@ worker:
   system_prompt_file: ./prompts/coding_agent.yaml
 persistence:
   enabled: true
-  directory: ./data/sessions
+  directory: ./data/session
+  state: state
+  memory: memory
   format: json
   restore: if_present
   readable: false
@@ -408,9 +410,9 @@ Invalid requests receive `input_rejected`. A request accepted into the payload
 queue waits for earlier runs to settle, just like `message` and `continue`.
 
 Before model execution, the worker exports the original AgentInputState to a new
-readable Markdown archive under `persistence.memory` (default `./.data/memory`,
-relative to the startup configuration). Each exclusively created archive directory
-is `<session_id>/<20-digit ordinal>-<UTC timestamp>-<run_id>/`, containing `state.md`. Ordinals are derived from existing archives and increase across worker restarts
+readable Markdown archive under `<persistence.directory>/<persistence.memory>`
+(default memory subdirectory `memory`). Each exclusively created archive directory
+is `<20-digit ordinal>-<UTC timestamp>-<run_id>/`, containing `state.md`. Ordinals are derived from existing archives and increase across worker restarts
 and clock changes. Old directories and files are never reused. Failed or cancelled attempts retain their archives;
 export failure can leave an empty directory. Readable exports include all history,
 with the existing JSON-preview clipping and binary omission policy. They are not
@@ -478,11 +480,9 @@ change, and older hubs may surface `compact_finished` as an unknown event.
 
 Archive retention is an explicit prerequisite for the hub/UI rollout. The worker
 currently appends without a count, byte, or age limit and never deletes archives.
-The current hub's session deletion removes its session snapshot and event log,
-but does **not** remove `persistence.memory/<session_id>`; operators own cleanup
-until a managed policy exists. For hub-managed local workers, the follow-up must
-coordinate deletion after worker shutdown, define per-session count and byte
-limits and oldest-first retention, and identify which process performs cleanup.
+The hub deletes the entire managed session directory, including memory archives,
+only after the worker has stopped and disconnected. Automatic per-session count,
+byte and age retention remain separate work before hub/UI compact rollout.
 For externally managed workers, the owner of their storage remains responsible;
 the hub must not assume it can access or delete a remote memory path. Any cleanup
 must leave active and in-progress archives intact and make retention visible to
@@ -1077,12 +1077,18 @@ The final event-queue-to-transport admission attempt is bounded by 500 ms; it is
 not a peer-delivery deadline. The event connection may simply close.
 
 Persistence is local to the worker. JSON snapshots reside at
-`<persistence.directory>/<session_id>/state.json`; optional readable Markdown is
+`<persistence.directory>/<persistence.state>/state.json`; optional readable Markdown is
 `readable.md` in the same directory. There is no protocol operation to download,
 replace, edit, or reset a snapshot. A hub needing those capabilities must provide
 a separate managed integration, not send invented signal operations.
 
-A persistent worker takes an exclusive local session lock before restoration.
+`persistence.directory` is the direct session root; no session ID is appended.
+`persistence.state` and `persistence.memory` default to `state` and `memory`.
+Both must be nonempty relative paths without parent traversal, resolved against
+that root. A relative root resolves against the startup configuration file.
+The old directory layout is not automatically migrated.
+
+A persistent worker takes an exclusive local `session.lock` in the root before restoration.
 Another worker using the same session directory fails startup. This protects
 cooperating workers on the same supported local filesystem, not workers using
 independent disks or a distributed hub's global session namespace.

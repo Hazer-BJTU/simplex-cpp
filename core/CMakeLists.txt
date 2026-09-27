@@ -28,4 +28,15 @@ set_target_properties(simplex_worker PROPERTIES ENABLE_EXPORTS ON)
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
-add_subdirectory(example)
+# Public launcher is relocatable and always lives beside the worker binary.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/simplex"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/simplex"
+    COPYONLY
+    FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                     GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/simplex"
+    DESTINATION bin COMPONENT simplex_cli)
+add_custom_target(simplex DEPENDS simplex_worker)
+
+# core/example/shell_server.cpp is deprecated source only; no build/install target.

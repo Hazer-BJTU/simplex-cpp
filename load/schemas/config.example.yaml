@@ -131,15 +131,18 @@ worker:
 # Pre-dispatch/results checkpoints remain enabled independently of save flags.
 persistence:
   enabled: true
-  # Session identity comes from session state, not this startup configuration.
-  directory: ./data/sessions
+  # Direct session root, relative to this file. No session ID is appended.
+  directory: ./data/session
+  # Snapshot subdirectory, relative to directory.
+  state: state
   # AgentInputState uses its existing dataclass JSON serialization.
   format: json
   # Optional write-only Markdown alongside the authoritative JSON snapshot.
   readable: false
   # Compact always archives the original state here, even when readable is false.
-  # Relative to this configuration file; old archives are never replaced.
-  memory: ./.data/memory
+  # Archive subdirectory, relative to directory; old archives are never replaced.
+  # state and memory must be nonempty relative paths without parent traversal.
+  memory: memory
   # if_present: restore existing state, or start fresh when no file exists.
   # This does not automatically resume loop execution or replay tool calls.
   restore: if_present

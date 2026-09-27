@@ -97,18 +97,16 @@ COPY . .
 # ---- Worker -----------------------------------------------------------------
 # Debug, like Dockerfile.test-context and for the same reason: this image exists
 # for sessions a human drives, where an assertion and a stack frame are worth
-# more than startup time. Only the two servers are built — the hub launches
-# simplex_worker, and simplex_shell is kept because comparing the two servers by
-# hand is exactly the kind of thing this container is for. Debug also means the
+# more than startup time. The simplex target builds the worker and provides the
+# public `simplex run` entry point. Debug also means the
 # worker's own debug logging is on, which the panel's Logs pane is where to read.
 RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
         -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
-    && cmake --build /src/build --target simplex_worker simplex_shell -j"${JOBS}" \
-    && /src/build/bin/simplex_worker --help > /dev/null
+    && cmake --build /src/build --target simplex -j"${JOBS}" \
+    && /src/build/bin/simplex run --help > /dev/null
 
 # ---- Hub --------------------------------------------------------------------
-# `npm ci` from the committed lockfile: the hub's one runtime dependency (ws) is
-# resolved by integrity hash rather than by whatever the registry serves.
+# `npm ci` resolves the hub dependencies from committed integrity hashes.
 #
 # `npm run build` is not optional any more: the hub serves `web/dist`, and a
 # `dist` left out of the context (see .dockerignore) means a panel that answers

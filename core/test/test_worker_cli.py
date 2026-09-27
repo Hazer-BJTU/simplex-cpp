@@ -8,11 +8,12 @@ import sys
 import tempfile
 
 worker = str(pathlib.Path(sys.argv[1]).resolve())
+command = [worker, *sys.argv[2:]]
 
 
 def invoke(*arguments):
     return subprocess.run(
-        [worker, *arguments], capture_output=True, text=True, timeout=10
+        [*command, *arguments], capture_output=True, text=True, timeout=10
     )
 
 
@@ -66,7 +67,7 @@ for count in (1, 4):
         path = pathlib.Path(directory) / "config.yaml"
         path.write_text(json.dumps(config))
         process = subprocess.Popen(
-            [worker, "--config", str(path), "--session", "cli-test",
+            [*command, "--config", str(path), "--session", "cli-test",
              "--threads", str(count)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )

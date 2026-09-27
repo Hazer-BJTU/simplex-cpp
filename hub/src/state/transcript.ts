@@ -15,6 +15,7 @@
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { WriteStream } from 'node:fs';
+import { sessionDir } from '../launch/config-render.ts';
 import { RingBuffer } from '../util/ring.ts';
 import type { Logger } from '../log.ts';
 
@@ -161,7 +162,7 @@ export class TranscriptStore {
                 sessionId,
                 limit: this.config.limits.transcriptEvents,
                 byteLimit: this.config.limits.transcriptBytes,
-                filePath: join(this.config.dataDir, 'events', `${sessionId}.jsonl`),
+                filePath: join(sessionDir(this.config, sessionId), 'events.jsonl'),
             });
             this.transcripts.set(sessionId, transcript);
         }

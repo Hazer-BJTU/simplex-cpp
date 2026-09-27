@@ -88,7 +88,6 @@ export interface HubConfig {
         kind: LauncherKind;
         command: string[];
         args: string[];
-        config: 'hub' | 'launcher';
         cwd: string;
         pidFile: string;
     };
@@ -183,9 +182,6 @@ export function defaultConfig(): HubConfig {
             // `simplex-worker` only: extra arguments appended after the
             // generated --config/--session/--threads.
             args: [],
-            // "hub": the hub renders config.yaml; "launcher": the launcher owns
-            // configuration and only receives session/data-dir endpoints.
-            config: 'hub',
             // Working directory for the spawned command; empty means the
             // per-session directory.
             cwd: '',
@@ -456,8 +452,6 @@ export function validateConfig(config: HubConfig): HubConfig {
     check((Array.isArray(config.launcher.command) && config.launcher.command.length > 0)
         || config.launcher.kind !== 'command',
     'launcher.command must be a nonempty template array for the command launcher');
-    check(['hub', 'launcher'].includes(config.launcher.config),
-        'launcher.config must be "hub" or "launcher"');
     check(typeof config.launcher.cwd === 'string', 'launcher.cwd must be a string');
     check(typeof config.launcher.pidFile === 'string', 'launcher.pidFile must be a string');
     check(config.launcher.pidFile === '' || config.launcher.pidFile.startsWith('/'),

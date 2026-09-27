@@ -9,7 +9,7 @@
  * never be mistaken for the original worker.
  *
  * Conversation history is deliberately absent: that is the worker's snapshot
- * (`<persistence.directory>/<session>/state.json`), and duplicating it here
+ * (`<persistence.directory>/<persistence.state>/state.json`), and duplicating it here
  * would create a second source of truth.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';

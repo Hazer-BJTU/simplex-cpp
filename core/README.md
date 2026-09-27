@@ -2,16 +2,22 @@
 
 One process owns one session, one model, both registries, an IO client and at
 most one active agent loop. simplex_worker assembles all intrinsic components,
-all provider descriptors and configured dynamic components. simplex_shell is
-a separate one-to-one terminal server, not a multi-worker hub.
+all provider descriptors and configured dynamic components. The public command
+entry point is `simplex run`; the [hub](../hub/README.md) provides the server and
+interactive panel.
 
 ## Start
 
-Build simplex_worker and simplex_shell, or install the complete project.
+Build the `simplex` target (`cmake --build build --target simplex`), or build and
+install the complete project with CMake. The build tree and installation both
+provide `bin/simplex` beside `bin/simplex_worker`. Add the installed `bin` directory
+to `PATH` to use the public command.
 Copy bin/config.example.yaml to an operator-owned config.yaml. Select the
 provider/model and set credentials. If config.yaml is outside bin, copy the
 `prompts` directory alongside it or set an absolute `worker.system_prompt_file`.
-Omitting that field uses the default prompt beside the executable. For the local example:
+Omitting that field uses the default prompt beside the executable. When using
+the bundled hub, use its generated session configuration for authenticated
+per-session endpoints. For another server exposing the following routes:
 
 ~~~yaml
 client:
@@ -25,9 +31,10 @@ worker:
   event_capacity: 1024
   system_prompt_file: ./prompts/coding_agent.yaml
 persistence:
-  directory: ./data/sessions
+  directory: ./data/session
+  state: state
   readable: false
-  memory: ./.data/memory
+  memory: memory
 ~~~
 
 The default structured prompt lives in [core/prompts/coding_agent.yaml](prompts/coding_agent.yaml)
@@ -38,27 +45,39 @@ use its sections; restored sessions retain the prompt in their snapshot. Tool
 skills are rebuilt from the active registry in both cases. See the
 [load prompt format](../load/README.md#system-prompt-files) for custom files.
 
-Run in separate terminals inside a disposable container when testing process
-tools:
+Start the hub or another compatible server, then run the worker. Use a
+disposable container when testing process tools:
 
 ~~~sh
-simplex_shell --listen 127.0.0.1:8765
-simplex_worker --config ./config.yaml --session demo --threads 4
+simplex run --config ./config.yaml --session demo --threads 4
 ~~~
 
-`simplex_worker --help` prints the available options. `--config/-c` defaults
+`simplex --help` lists subcommands; `simplex run --help` prints the available options. `--config/-c` defaults
 to `config.yaml`; `--session/-s` is required. `--threads/-t` accepts a positive
 integer and defaults to 1. It counts all threads running the worker io_context,
 including the main thread; it does not increase the number of active agent loops.
 All executor threads are joined before the application is destroyed.
 
-The shell uses plain local WebSockets without authentication, for a trusted
-local test environment. Production deployments supply an authenticated service;
-the worker supports wss://. See [the shell guide](example/README.md).
+The launcher requires Bash and forwards arguments unchanged using `exec`.
+The caller's working directory and environment are preserved, as are the worker's
+exit status and signal handling. It finds the worker beside the launcher,
+including when invoked through a symbolic link, so a complete installed tree
+can be relocated. Worker configuration defaults still resolve from the caller's
+working directory; plugin and default prompt discovery remain relative to the
+worker executable. The underlying `simplex_worker` binary remains available for
+programmatic launchers such as the hub.
+
+`simplex_shell` is deprecated: its source and historical tests remain for
+reference, but it has no build target, install rule, or `simplex` subcommand.
+See [the deprecated example](example/README.md).
 
 Session IDs accept 1–128 ASCII letters, digits, underscores or hyphens.
-Snapshots use <persistence.directory>/<session>/state.json; optional Markdown
-uses readable.md in the same directory. New sessions use the configured system
+Snapshots use `<persistence.directory>/<persistence.state>/state.json`; optional Markdown
+uses readable.md in the same directory. `persistence.directory` is the direct
+session root; the worker never appends a session ID. The `state` and `memory`
+subdirectories default to `state` and `memory` and must be relative paths without
+parent traversal. The root holds `session.lock`, shared by every state
+subdirectory configuration. New sessions use the configured system
 prompt; restoration retains the stored prompt and history. Startup and reconnect
 never start a run automatically.
 
@@ -181,12 +200,13 @@ disconnect/deadline/cancellation, serial admission, duplicates, stale run IDs,
 model cancellation, event overflow, storage failure and blocked restoration.
 Loop tests verify checkpoint failure, projection recovery and validated edits.
 
-core_worker_container runs the actual shell, worker, provider adapter and
-process tools against an offline SSE fixture. It exercises approval with
-separate stdout/stderr and cancellation while waiting for confirmation.
-core_lifecycle_container uses actual workers to verify session ownership,
+`core_simplex_cli` runs worker option and SIGTERM checks through `simplex run`.
+`core_simplex_launcher` checks routing, argument boundaries, relocation, symlinks,
+working directory, environment and exit/PID preservation. The hub end-to-end
+suite covers a real worker with tool approval against an offline provider.
+`core_lifecycle_container` uses actual workers to verify session ownership,
 crash recovery with executed children, historical process-ID rejection, and
-shutdown with descendant-held pipes. Both tests are skipped outside Docker.
+shutdown with descendant-held pipes; it is skipped outside Docker.
 The Linux test_core_dns fixture blocks an already-running resolver backend
 until explicitly released, covering both timeout and external cancellation.
  A manual real-provider session
@@ -197,8 +217,7 @@ requires deployment credentials and remains a separate operator check.
 The top-level core package composes load, loop, IO, intrinsic process/reading/editing tools and
 the intrinsic context-statistic hook. core_protocol contains only message
 validation/identities and links the dataclass and Boost header interfaces.
-The shell links core_protocol and intercom_iface, without worker or provider
-implementation dependencies. intercom_exchange supplies a cancellable one-shot
+intercom_exchange supplies a cancellable one-shot
 transport with an overall deadline. load now parses full worker settings in
 addition to its independent plugin-discovery and explicit persistence APIs.
 
@@ -220,8 +239,8 @@ the original conversation. See [the wire contract](docs/worker-protocol.md#compa
 for admission rules, failure behavior, and event fields. Hub commands and display
 support are intentionally delivered separately.
 
-Archives accumulate under `persistence.memory` (default `./.data/memory`) in
-session subdirectories. Every attempt reserves a new numbered directory, so
+Archives accumulate under `<persistence.directory>/<persistence.memory>`
+(default subdirectory `memory`), without another session-ID component. Every attempt reserves a new numbered directory, so
 restarts and clock changes preserve ordering without replacing earlier files.
 Injected memory identifies the absolute archive directory for later tool-based
 lookup. The compact instruction is loaded from

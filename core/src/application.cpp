@@ -333,7 +333,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     /** Required JSON saves latch failure even if RunFinished swallows observers. */
     void save(SaveBoundary boundary) {
         if (!config.persistence || storage_failed) return;
-        const auto directory = config.storage / session_id;
+        const auto directory = config.state_directory;
         try {
             if (state.meta.session_id != session_id)
                 throw std::logic_error("hook changed the worker session identity");
@@ -381,7 +381,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
 
     /** Restore history unchanged, reconciling only host-owned capabilities. */
     void restore_state() {
-        const auto snapshot = config.storage / session_id / "state.json";
+        const auto snapshot = config.state_directory / "state.json";
         const bool restored = config.persistence && config.restore && std::filesystem::exists(snapshot);
         if (restored) {
             state = load::load_state(snapshot);
@@ -588,7 +588,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     asio::awaitable<loop::RunResult> compact() {
         const auto stop = run_stop.get_token();
         const auto memory_directory = std::filesystem::absolute(
-            config.memory / session_id).lexically_normal();
+            config.memory).lexically_normal();
         const auto archive_directory = reserve_archive(memory_directory, run_id);
         const auto archive_file = archive_directory / "state.md";
         load::save_state(archive_file, state, load::StateFormat::Readable);
@@ -698,7 +698,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             co_return result;
         }
         try {
-            load::save_state(config.storage / session_id / "state.json", replacement);
+            load::save_state(config.state_directory / "state.json", replacement);
         } catch (...) {
             storage_failed = true;
             if (!failure) failure = std::current_exception();
@@ -712,7 +712,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         emit("persisted", {{"boundary", "compact"}, {"format", "json"}});
         if (config.readable) {
             try {
-                load::save_state(config.storage / session_id / "readable.md",
+                load::save_state(config.state_directory / "readable.md",
                     state, load::StateFormat::Readable);
             } catch (const std::exception& error) {
                 emit("export_error", {{"message", error.what()}});
@@ -847,7 +847,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // guard releases it even when startup throws while Application survives.
         std::unique_ptr<fileio::SessionLock> ownership;
         if (config.persistence) {
-            const auto directory = config.storage / session_id;
+            const auto directory = config.storage;
             std::filesystem::create_directories(directory);
             ownership = std::make_unique<fileio::SessionLock>(directory / "session.lock");
         }

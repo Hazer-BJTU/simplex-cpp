@@ -9,6 +9,7 @@
  * every stop path without building or running the C++ worker.
  */
 import { readFileSync } from 'node:fs';
+import { parse } from 'yaml';
 import { WebSocket } from 'ws';
 
 const argv = process.argv.slice(2);
@@ -21,7 +22,7 @@ function option(flag, fallback = '') {
 
 const session = option('--session', 'fixture');
 const configPath = option('--config');
-const config = configPath ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
+const config = configPath ? parse(readFileSync(configPath, 'utf8')) : {};
 const endpoint = config.client?.endpoint ?? '';
 const workerId = `fixture-${process.pid}`;
 let sequence = 0;

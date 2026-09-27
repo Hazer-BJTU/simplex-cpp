@@ -27,7 +27,7 @@ BOOST_AUTO_TEST_CASE(selected_provider_and_independent_endpoints) {
     BOOST_TEST(config.confirmation->host == "confirm.example");
     BOOST_TEST(config.confirmation->target == "/approve?mode=one");
     BOOST_TEST(config.confirmation_timeout.count() == 50);
-    BOOST_TEST(config.storage == "/tmp/config/data/sessions");
+    BOOST_TEST(config.storage == "/tmp/config/data/session");
     BOOST_CHECK(!load::parse_configuration(configuration(), "/tmp").confirmation);
 }
 
@@ -87,11 +87,11 @@ BOOST_AUTO_TEST_CASE(protocol_never_admits_fabricated_tool_messages) {
 
 BOOST_AUTO_TEST_CASE(compact_configuration_defaults_and_validation) {
     auto config = load::parse_configuration(configuration(), "/tmp/config");
-    BOOST_TEST(config.memory == "/tmp/config/.data/memory");
+    BOOST_TEST(config.memory == "/tmp/config/data/session/memory");
     BOOST_TEST(config.compact_prompt.find("Do not call tools") != std::string::npos);
     auto value = configuration();
-    value["persistence"]["memory"] = "../archives";
-    BOOST_TEST(load::parse_configuration(value, "/tmp/config").memory == "/tmp/archives");
+    value["persistence"]["memory"] = "archives";
+    BOOST_TEST(load::parse_configuration(value, "/tmp/config").memory == "/tmp/config/data/session/archives");
     value["persistence"]["memory"] = "";
     BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
     value = configuration();
@@ -111,5 +111,22 @@ BOOST_AUTO_TEST_CASE(compact_payload_is_explicit_and_has_no_external_content) {
         auto invalid = payload;
         invalid[field] = "external instruction";
         BOOST_CHECK_THROW(core::parse_input(invalid), std::exception);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(persistence_paths_are_direct_and_children_are_relative) {
+    auto value = configuration();
+    value["persistence"] = {{"directory", "../sessions/demo"},
+        {"state", "snapshots/current"}, {"memory", "archives"}};
+    const auto parsed = load::parse_configuration(value, "/tmp/config");
+    BOOST_TEST(parsed.storage == "/tmp/sessions/demo");
+    BOOST_TEST(parsed.state_directory == "/tmp/sessions/demo/snapshots/current");
+    BOOST_TEST(parsed.memory == "/tmp/sessions/demo/archives");
+    for (const auto key : {"state", "memory"}) {
+        for (const auto invalid : {"", "../outside", "nested/../../outside", "/absolute"}) {
+            auto bad = value;
+            bad["persistence"][key] = invalid;
+            BOOST_CHECK_THROW(load::parse_configuration(bad, "/tmp"), std::invalid_argument);
+        }
     }
 }

@@ -43,6 +43,28 @@ bool flag(const Json& parent, const char* key, bool fallback) {
     return it->get<bool>();
 }
 
+/** Resolve a configured child directory without permitting root escape. */
+std::filesystem::path storage_child(
+    const Json& storage,
+    const char* key,
+    const std::filesystem::path& root
+) {
+    const auto value = text(storage, key, key);
+    const std::filesystem::path child(value);
+    if (value.empty() || value.find('\0') != std::string::npos
+        || child.is_absolute() || child.has_root_name()) {
+        throw std::invalid_argument(std::string("persistence.") + key
+            + " must be a nonempty relative directory");
+    }
+    for (const auto& component : child) {
+        if (component == "..") {
+            throw std::invalid_argument(std::string("persistence.") + key
+                + " must not contain parent traversal");
+        }
+    }
+    return (root / child).lexically_normal();
+}
+
 /** One pass only: substituted values are never parsed as expressions. */
 std::string expand(const std::string& value) {
     std::string result;
@@ -209,9 +231,13 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
 
     const auto& storage = object(document, "persistence");
     result.persistence = flag(storage, "enabled", true);
-    auto location = text(storage, "directory", "./data/sessions");
-    if (location.empty()) throw std::invalid_argument("persistence directory must be nonempty");
-    result.storage = (directory / location).lexically_normal();
+    auto location = text(storage, "directory", "./data/session");
+    if (location.empty() || location.find('\0') != std::string::npos) {
+        throw std::invalid_argument("persistence.directory must be nonempty without NUL");
+    }
+    result.storage = std::filesystem::absolute(directory / location).lexically_normal();
+    result.state_directory = storage_child(storage, "state", result.storage);
+    result.memory = storage_child(storage, "memory", result.storage);
     if (text(storage, "format", "json") != "json") throw std::invalid_argument("persistence format must be json");
     auto restore = text(storage, "restore", "if_present");
     if (restore != "if_present" && restore != "never") throw std::invalid_argument("invalid restore policy");
@@ -221,11 +247,6 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
     result.save_run = flag(save, "on_run_finished", true);
     result.save_shutdown = flag(save, "on_shutdown", true);
     result.readable = flag(storage, "readable", false);
-    const auto memory = text(storage, "memory", "./.data/memory");
-    if (memory.empty() || memory.find('\0') != std::string::npos) {
-        throw std::invalid_argument("persistence.memory must be a nonempty path without NUL");
-    }
-    result.memory = std::filesystem::absolute(directory / memory).lexically_normal();
     return result;
 }
 

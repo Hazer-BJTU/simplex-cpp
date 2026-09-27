@@ -93,7 +93,7 @@ describe('renderSessionConfig', () => {
         assert.equal(document.client.endpoint, endpoints.events);
         assert.equal(document.security.confirmation.endpoint, endpoints.confirm);
         assert.equal(document.security.confirmation.timeout_ms, config.worker.confirmationTimeoutMs);
-        assert.equal(document.persistence.directory, persistenceRoot(config));
+        assert.equal(document.persistence.directory, sessionDir(config, 'demo'));
         assert.equal(document.persistence.restore, 'if_present');
         assert.equal(document.worker.max_exchanges, 512);
         assert.equal(document.worker.environment.workspace, '');
@@ -197,7 +197,7 @@ describe('renderSessionConfig', () => {
 
     it('derives per-session directories from the data directory', () => {
         const config = testConfig();
-        assert.equal(sessionDir(config, 'demo'), join(config.dataDir, 'workers', 'demo'));
+        assert.equal(sessionDir(config, 'demo'), join(config.dataDir, 'sessions', 'demo'));
         assert.equal(persistenceRoot(config), join(config.dataDir, 'sessions'));
     });
 });
@@ -308,8 +308,30 @@ describe('createLauncher', () => {
             'command');
     });
 
-    it('reports whether the launcher owns configuration', () => {
-        const owned = testConfig({ launcher: { config: 'launcher' } });
-        assert.equal(createLauncher({ config: owned, log }).ownsConfig, true);
+});
+
+describe('Docker worker example isolation', () => {
+    it('mounts only the current session and binds the launch config read-only', () => {
+        const { config } = loadConfig({
+            file: join(hubRoot, 'hub.config.docker-worker.jsonc'),
+        });
+        const configPath = '/tmp/hub-data/sessions/demo/config/config.yaml';
+        const directory = '/tmp/hub-data/sessions/demo';
+        const invocation = buildCommandInvocation({
+            config,
+            sessionId: 'demo',
+            spec: normalizeSpec(config, { provider: 'mock' }),
+            configPath,
+            sessionDir: directory,
+            endpoints,
+            token: 'test-token',
+        });
+        const mounts = invocation.args.flatMap((argument, index) =>
+            invocation.args[index - 1] === '-v' ? [argument] : []);
+        assert.ok(mounts.includes(`${directory}:${directory}`));
+        assert.ok(mounts.includes(`${configPath}:${configPath}:ro`));
+        assert.ok(!mounts.includes(`${config.dataDir}:${config.dataDir}`));
+        assert.ok(mounts.indexOf(`${directory}:${directory}`)
+            < mounts.indexOf(`${configPath}:${configPath}:ro`));
     });
 });

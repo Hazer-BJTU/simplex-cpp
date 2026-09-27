@@ -48,10 +48,12 @@ client can check for a feature instead of guessing.
 | `session-history` | panel can query a worker's simplified conversation history |
 
 These describe the hub **build**, not its configuration. `supervisor` means
-"this hub starts and signals worker processes", which stays true whichever
-launcher renders the configuration; the launcher's own difference is reported
-separately as `launcher.owns_config`. A capability that varied with
+"this hub starts and signals worker processes", which stays true for every
+launcher. A capability that varied with
 configuration would be a different kind of list, and nothing in this one does.
+Metadata retains `launcher.owns_config` as a deprecated protocol-v1 field. It
+is always `false` because the hub now owns the saved worker configuration for
+every launcher; v1 clients can continue to read the original shape.
 
 `shared/protocol.ts` is the machine-readable copy, and
 `test/panel-protocol-drift.test.js` fails when this table and that module
@@ -161,7 +163,7 @@ confirmation connection existed.
 | `GET /api/sessions` | — | `{sessions: [session...]}` |
 | `POST /api/sessions` | `{session, spec?}` | `201 {session}`; `400 invalid_session`; `409 session_exists` |
 | `GET /api/sessions/:id` | — | `{session}`; `404 unknown_session` |
-| `DELETE /api/sessions/:id` | — | `{removed}`; removes the worker snapshot and hub event log, preserving tool-created files under `workers/<session>/`; `409 session_busy` while a worker runs or is connected |
+| `DELETE /api/sessions/:id` | — | `{removed}`; removes the complete session directory, including config, state, memory, logs and tool-created files within it; `409 session_busy` while a worker runs or is connected |
 | `POST /api/sessions/:id/start` | `{spec?}` | `{ok, pid?, config}`; `409` with `{ok:false, error}` |
 | `POST /api/sessions/:id/stop` | — | `{ok, how, forced}` — `how` is `shutdown-signal`, `sigterm`, `sigkill`, `sigkill-process-group`, `already-exited`, or `not-started` |
 | `POST /api/sessions/:id/restart` | `{spec?}` | start result plus `stop` |
@@ -177,8 +179,16 @@ status. `error` codes are stable; `message` is not.
 `hub_sequence` counts retained transcript envelopes in *this hub process*,
 which is what a client resumes from. `latest` is the current end of the transcript.
 
+Start and restart reuse `sessions/<session>/config/config.yaml` once it exists.
+Only the hub-owned session root, connection URLs/tokens and active mock URL are
+refreshed. Later spec fields affect only launch parameters (`threads`, `env`,
+`extraArgs`); edit the saved configuration to change worker settings.
+`persistence.state` and `persistence.memory` select relative subdirectories of
+`persistence.directory`, which the hub sets to `<dataDir>/sessions/<session>`.
+Old layouts are not migrated automatically.
+
 `snapshot` reads the worker's own files
-(`<persistence.directory>/<session>/state.json` and `readable.md`) without
+(`<persistence.directory>/<persistence.state>/state.json` and `readable.md`) without
 modifying them. The worker owns that state; there is no operation to replace,
 edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 
@@ -192,7 +202,7 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 | `unsubscribe` | `session` | stops live messages for that session |
 | `list_sessions` | — | answers with `sessions` |
 | `create_session` | `session`, optional `spec` | answers with `created`, or `session_exists` / `invalid_session` |
-| `delete_session` | `session` | removes the worker snapshot and hub event log, then answers with `session_removed`; refused while busy |
+| `delete_session` | `session` | removes the complete session directory, then answers with `session_removed`; refused while busy |
 | `worker` | `session`, `action`: `start`\|`stop`\|`restart`\|`force-kill`, optional `spec` | answers with `accepted` (carrying the result) or `worker_action_failed` |
 | `input` | `session`, `content`, optional `operation`, `request_id`, `options` | validates, sends a payload, answers with `accepted` and `request_id` |
 | `history` | `session`, optional `request_id`, `start`, `step`, `limit` | if the current worker advertises `session-history`, sends a read-only payload; otherwise returns `input_not_sent`. The response arrives as a transient `history` worker event |

@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
         options::variables_map arguments;
         options::store(options::parse_command_line(argc, argv, description), arguments);
         if (arguments.count("help")) {
-            std::cout << "Usage: simplex_worker [options]\n\n" << description << '\n';
+            std::cout << "Usage: simplex run [options]\n\n" << description << '\n';
             return 0;
         }
         options::notify(arguments);

@@ -163,4 +163,12 @@ describe('loadConfig', () => {
         assert.ok(config.providerProfiles.deepseek);
         assert.ok(config.providerProfiles.mock);
     });
+
+    it('loads the configuration shipped with the hub test image', () => {
+        const file = join(import.meta.dirname, '..', '..', 'docker', 'hub-test.config.jsonc');
+        const { config } = loadConfig({ file });
+        assert.equal(config.launcher.kind, 'simplex-worker');
+        assert.equal(config.dataDir, '/data');
+        assert.equal(config.worker.bin, '/src/build/bin/simplex_worker');
+    });
 });

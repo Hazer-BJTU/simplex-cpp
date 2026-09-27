@@ -47,8 +47,7 @@ export const PANEL_VERSION: number = PANEL_PROTOCOL.version;
  * These describe the hub build, not its configuration. Deriving the list from
  * the config was tempting, but nothing in it actually varies that way —
  * `supervisor` means "this hub starts and signals worker processes", which stays
- * true whichever launcher renders the configuration, and the launcher's own
- * difference is already reported as `launcher.owns_config`. A capability list
+ * true for every launcher. A capability list
  * derived from configuration would be an abstraction over an empty set, so the
  * list stays a property of the build and the *consumers* are what changed: the
  * panel reads it now, and did not before.
@@ -153,7 +152,8 @@ export interface PayloadOptions {
     confirmation?: { mode?: 'ask' | 'approve' | 'deny' | string };
 }
 
-/** Launch specification for one session. */
+/** Initial worker configuration and launch parameters. Once config/config.yaml
+ * exists, only threads, env and extraArgs affect subsequent launches. */
 export interface SessionSpec {
     provider?: string;
     model?: string;
@@ -324,7 +324,11 @@ export interface HubMetadata {
     /** Absent from a hub older than this field; see `TranscriptEpoch`. */
     transcript_epoch?: TranscriptEpoch | undefined;
     listen: { host: string; port: number };
-    launcher: { kind: string; owns_config: boolean };
+    launcher: {
+        kind: string;
+        /** Deprecated in protocol v1; always false. */
+        owns_config: boolean;
+    };
     provider_profiles: string[];
     force_kill_process_group: boolean;
     mock: { enabled: boolean };
@@ -368,7 +372,7 @@ export interface SupervisorResult {
     ok: boolean;
     pid?: number | undefined;
     error?: string | undefined;
-    /** The spec that was actually rendered; absent when none was read. */
+    /** The normalized launch/configuration description; absent when none was read. */
     config?: unknown;
     /** `stop`/`force-kill`: how the process ended. */
     how?: string | undefined;
