@@ -14,8 +14,8 @@
  *     `{threads}`, `{worker_bin}`, and `{prompts_dir}` placeholders.
  *
  * A launcher may own its configuration (`launcher.config: "launcher"`), in
- * which case the hub writes no configuration file and the template's `{config}`
- * expands to the path it *would* have written. A launcher that daemonizes must
+ * which case the hub still maintains its inspection configuration, but the
+ * launcher decides whether to use the supplied `{config}` path. A launcher that daemonizes must
  * declare `launcher.pidFile`; the supervisor then signals that pid instead of
  * the process it spawned. See hub/docs/worker-adapter.md.
  */

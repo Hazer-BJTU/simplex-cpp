@@ -185,7 +185,7 @@ describe('end to end with the real worker', { skip }, () => {
                 (envelope) => envelope.event === 'persisted' && envelope.data.boundary === 'before_tools'));
 
             // The worker owns the authoritative snapshot.
-            const snapshotPath = join(persistenceRoot(ctx.config), 'e2e-live', 'state.json');
+            const snapshotPath = join(persistenceRoot(ctx.config), 'e2e-live', 'state', 'state.json');
             await until(() => existsSync(snapshotPath), { timeout: 30000, label: 'state.json' });
             const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'));
             assert.equal(snapshot.loop.status, 'completed');

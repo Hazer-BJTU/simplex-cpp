@@ -80,7 +80,7 @@ def scenario(cancel):
             "client": {"endpoint": f"ws://127.0.0.1:{port}/agent/events"},
             "security": {"confirmation": {"endpoint": f"ws://127.0.0.1:{port}/agent/confirm",
                                             "timeout_ms": 5000}},
-            "persistence": {"directory": str(root / "sessions"), "readable": True},
+            "persistence": {"directory": str(root / "sessions/integration"), "readable": True},
         }
         path = root / "config.yaml"
         path.write_text(json.dumps(config))
@@ -124,7 +124,7 @@ def scenario(cancel):
                 command("/cancel" if cancel else "/approve " + match.group(1))
                 wait_for(r'"status": "' + ("cancelled" if cancel else "completed") + '"')
                 assert marker.exists() != cancel
-                snapshot = root / "sessions/integration/state.json"
+                snapshot = root / "sessions/integration/state/state.json"
                 state = json.loads(snapshot.read_text())
                 assert state["loop"]["status"] == ("cancelled" if cancel else "completed")
                 assert state["loop"]["phase"] == "ready"

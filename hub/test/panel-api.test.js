@@ -181,13 +181,19 @@ describe('panel API', () => {
         const missing = await api('/api/sessions/nope');
         assert.equal(missing.status, 404);
 
-        const stateDirectory = join(persistenceRoot(ctx.config), 'rest-created');
+        const stateDirectory = join(persistenceRoot(ctx.config), 'rest-created', 'state');
         const statePath = join(stateDirectory, 'state.json');
-        const eventPath = join(ctx.config.dataDir, 'events', 'rest-created.jsonl');
+        const eventPath = join(persistenceRoot(ctx.config), 'rest-created', 'events.jsonl');
         mkdirSync(stateDirectory, { recursive: true });
-        mkdirSync(join(ctx.config.dataDir, 'events'), { recursive: true });
         writeFileSync(statePath, '{"turns":[{"user":"old"}]}');
         writeFileSync(eventPath, '{"event":"old"}\n');
+        const sessionRoot = join(persistenceRoot(ctx.config), 'rest-created');
+        for (const [subdirectory, file] of [['config', 'config.yaml'],
+            ['memory/0001', 'state.md'], ['logs', 'worker.log']]) {
+            mkdirSync(join(sessionRoot, subdirectory), { recursive: true });
+            writeFileSync(join(sessionRoot, subdirectory, file), 'old session data');
+        }
+
 
         const removed = await api('/api/sessions/rest-created', { method: 'DELETE' });
         assert.equal(removed.status, 200);
@@ -195,6 +201,7 @@ describe('panel API', () => {
         assert.equal(ctx.hub.registry.get('rest-created'), undefined);
         assert.equal(existsSync(statePath), false);
         assert.equal(existsSync(eventPath), false);
+        assert.equal(existsSync(sessionRoot), false);
 
         const recreated = await api('/api/sessions', {
             method: 'POST', body: { session: 'rest-created' },
@@ -205,7 +212,7 @@ describe('panel API', () => {
 
     it('deletes a session snapshot through the panel socket too', async () => {
         const session = ctx.hub.registry.create('socket-delete');
-        const stateDirectory = join(persistenceRoot(ctx.config), session.id);
+        const stateDirectory = join(persistenceRoot(ctx.config), session.id, 'state');
         const statePath = join(stateDirectory, 'state.json');
         mkdirSync(stateDirectory, { recursive: true });
         writeFileSync(statePath, '{"turns":[{"user":"old"}]}');
@@ -454,7 +461,7 @@ describe('panel API', () => {
 
     it('serves the worker snapshot read-only', async () => {
         const session = ctx.hub.registry.create('snapshot-session');
-        const directory = join(persistenceRoot(ctx.config), session.id);
+        const directory = join(persistenceRoot(ctx.config), session.id, 'state');
         mkdirSync(directory, { recursive: true });
         writeFileSync(join(directory, 'state.json'), JSON.stringify({ loop: { status: 'completed' } }));
         writeFileSync(join(directory, 'readable.md'), '# transcript\n');
@@ -466,6 +473,23 @@ describe('panel API', () => {
         const empty = await api('/api/sessions/welcome-session/snapshot');
         assert.equal(empty.status, 200);
         assert.equal(empty.body.state, null);
+    });
+
+    it('reads custom state paths from YAML and rejects traversal', async () => {
+        const session = ctx.hub.registry.create('custom-snapshot');
+        const root = join(persistenceRoot(ctx.config), session.id);
+        mkdirSync(join(root, 'config'), { recursive: true });
+        mkdirSync(join(root, 'checkpoints'), { recursive: true });
+        const path = join(root, 'config/config.yaml');
+        writeFileSync(path, 'persistence:\n  state: checkpoints\n');
+        writeFileSync(join(root, 'checkpoints/state.json'), '{"turns":[]}');
+        const snapshot = await api('/api/sessions/custom-snapshot/snapshot');
+        assert.deepEqual(snapshot.body.state, { turns: [] });
+        assert.equal(snapshot.body.files.state, join(root, 'checkpoints/state.json'));
+        writeFileSync(path, 'persistence:\n  state: ../../elsewhere\n');
+        const invalid = await api('/api/sessions/custom-snapshot/snapshot');
+        assert.equal(invalid.body.state, null);
+        assert.match(invalid.body.state_error, /cannot resolve/);
     });
 
     it('handles heartbeat, unknown sessions, and unknown message types', async () => {

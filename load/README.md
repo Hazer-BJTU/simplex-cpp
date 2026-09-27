@@ -189,7 +189,7 @@ guarantee.
     tools/
     loop/
   schemas/                     # existing component declarations/configuration
-  data/sessions/               # example persistence location
+  data/session/                # example direct session root
 ```
 
 Explicit relative paths resolve against the main configuration file's parent
@@ -349,7 +349,9 @@ before releasing its dependencies. See [IO](../io/README.md) and
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Enable restoration and saving of session state. |
-| `directory` | `./data/sessions` | Storage root, relative to the configuration file. |
+| `directory` | `./data/session` | Direct session root, relative to the configuration file; no session ID is appended. |
+| `state` | `state` | Snapshot subdirectory relative to `directory`. |
+| `memory` | `memory` | Compact archive subdirectory relative to `directory`. |
 | `format` | `json` | Existing `AgentInputState` dataclass serialization. |
 | `restore` | `if_present` | Restore an existing session; create fresh state only when absent. |
 | `save.on_step_finished` | `true` | Save after a completed step's state-edit hooks. |
@@ -504,9 +506,11 @@ rendered as the internal user instruction for an explicit compact request.
 When omitted, it loads `prompts/operations/compact.yaml` beside the executable.
 The file is validated at startup and must render nonempty instructions.
 
-`persistence.memory` defaults to `./.data/memory`, resolved relative to the
-configuration directory. Core creates a new directory for each attempt at
-`<memory>/<session_id>/<20-digit ordinal>-<UTC timestamp>-<run_id>/state.md`. Directory creation is
+`persistence.state` and `persistence.memory` default to `state` and `memory`,
+resolved relative to the direct session root `persistence.directory`. Both must
+be nonempty relative paths without `..` components. This is lexical validation,
+not filesystem sandboxing. Core creates a new directory for each attempt at
+`<directory>/<memory>/<20-digit ordinal>-<UTC timestamp>-<run_id>/state.md`. Directory creation is
 exclusive; an existing archive is never reused or overwritten. Archives remain
 even when summarization is cancelled or fails. Empty directories can remain if
 the initial export fails. Readable exports include all conversation records but
@@ -517,9 +521,8 @@ Compact requires `persistence.enabled: true`. Its original-state Markdown export
 and successful final JSON save are mandatory regardless of `readable` and
 `save.on_run_finished`. An optional session `readable.md` is also refreshed when
 `readable: true`. Core never automatically rotates or deletes compact archives.
-The current hub session-delete action does not remove this separate directory;
-operators retain cleanup ownership for now. Before a hub compact command is
-exposed, its managed-worker integration must define safe post-shutdown deletion,
-per-session count and size limits, and cleanup ownership. Remote worker archive
-directories remain under their operator's control. See the
+Deleting an inactive hub-managed session removes its entire session directory,
+including memory archives. Archives for externally managed workers remain under
+their operator's control. There is no automatic age, size, or count retention.
+The old session-ID-appending layout is not migrated or read automatically. See the
 [worker protocol](../core/docs/worker-protocol.md#compact-conversation-context).

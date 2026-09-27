@@ -98,7 +98,7 @@ function describe(action: Pending['action'], options: { processGroup: boolean })
                 action,
                 title: 'Restart this worker?',
                 body: 'The current worker is asked to shut down and a new one is launched'
-                    + ' with the same specification. Anything the worker has not persisted is lost.',
+                    + ' using its saved configuration with refreshed hub connections. Unsaved work is lost.',
                 confirm: 'Restart',
                 danger: false,
             };
@@ -130,8 +130,8 @@ function describe(action: Pending['action'], options: { processGroup: boolean })
             return {
                 action,
                 title: 'Delete this session?',
-                body: 'The session, its conversation snapshot, and its hub event history are'
-                    + ' deleted. Files created by tools in the worker directory are kept.'
+                body: 'The entire session directory is deleted, including its configuration,'
+                    + ' snapshots, memory archives, logs, and any tool-created files inside it.'
                     + ' This cannot be undone.',
                 confirm: 'Delete',
                 danger: true,
@@ -220,7 +220,7 @@ export function SessionHeader() {
                         data-testid="session-primary-action"
                         icon={<Glyph name="start" size="sm" />}
                         onClick={() => { void client.workerAction(sessionId, 'start'); }}
-                        title="launch a worker process for this session"
+                        title="start using the saved configuration if present; refresh hub connections"
                     >
                         Start
                     </Button>

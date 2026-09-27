@@ -35,12 +35,15 @@ struct Configuration {
     model_io::PromptTemplate system_prompt;
     /** Startup-loaded internal user instruction for a compact operation. */
     std::string compact_prompt;
-    /** Append-only readable archives, partitioned by session and operation. */
+    /** Resolved append-only archive directory; each compact operation adds a child. */
     std::filesystem::path memory;
     /** Refreshed from startup configuration even for restored sessions. */
     RuntimeEnvironment environment;
     bool persistence = true;
+    /** Direct session root; the worker never appends a session ID. */
     std::filesystem::path storage;
+    /** Resolved snapshot directory below storage (persistence.state). */
+    std::filesystem::path state_directory;
     bool restore = true;
     bool save_step = true;
     bool save_run = true;
@@ -50,7 +53,9 @@ struct Configuration {
 
 /** Parse and validate startup fields before loading native code or opening IO.
  * Unknown keys remain tolerated. Only the selected provider's credentials are
- * expanded. Explicit paths resolve against the absolute configuration directory.
+ * expanded. Explicit paths resolve against the absolute configuration directory,
+ * except persistence.state and persistence.memory, which are relative to the
+ * direct persistence.directory root.
  * Errors identify fields, never expanded credential values.
  */
 Configuration parse_configuration(nlohmann::json document, std::filesystem::path directory);

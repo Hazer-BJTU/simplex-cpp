@@ -166,12 +166,12 @@ promise to terminate. It is never used implicitly.
 The hub stores sessions, launch specs, tokens, and process identity in
 `hub.json`. Conversation history is deliberately absent — that is the worker's
 own snapshot, and duplicating it would create a second source of truth. The
-panel can *read* `<persistence.directory>/<session>/state.json` and
+panel can *read* `<persistence.directory>/<persistence.state>/state.json` and
 `readable.md`; there is no operation to replace, edit, or reset a snapshot,
 because the protocol defines none and inventing one would need a managed
 integration on the worker side.
 
-The hub's own event transcript (`<dataDir>/events/<session>.jsonl`) is an
+The hub's own event transcript (`<dataDir>/sessions/<session>/events.jsonl`) is an
 operator artifact. A hub restart starts an empty in-memory transcript instead of
 replaying the file, so panel replay is scoped to one hub process.
 

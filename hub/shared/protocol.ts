@@ -153,7 +153,8 @@ export interface PayloadOptions {
     confirmation?: { mode?: 'ask' | 'approve' | 'deny' | string };
 }
 
-/** Launch specification for one session. */
+/** Initial worker configuration and launch parameters. Once config/config.yaml
+ * exists, only threads, env and extraArgs affect subsequent launches. */
 export interface SessionSpec {
     provider?: string;
     model?: string;
@@ -368,7 +369,7 @@ export interface SupervisorResult {
     ok: boolean;
     pid?: number | undefined;
     error?: string | undefined;
-    /** The spec that was actually rendered; absent when none was read. */
+    /** The normalized launch/configuration description; absent when none was read. */
     config?: unknown;
     /** `stop`/`force-kill`: how the process ended. */
     how?: string | undefined;

@@ -93,7 +93,7 @@ describe('renderSessionConfig', () => {
         assert.equal(document.client.endpoint, endpoints.events);
         assert.equal(document.security.confirmation.endpoint, endpoints.confirm);
         assert.equal(document.security.confirmation.timeout_ms, config.worker.confirmationTimeoutMs);
-        assert.equal(document.persistence.directory, persistenceRoot(config));
+        assert.equal(document.persistence.directory, sessionDir(config, 'demo'));
         assert.equal(document.persistence.restore, 'if_present');
         assert.equal(document.worker.max_exchanges, 512);
         assert.equal(document.worker.environment.workspace, '');
@@ -197,7 +197,7 @@ describe('renderSessionConfig', () => {
 
     it('derives per-session directories from the data directory', () => {
         const config = testConfig();
-        assert.equal(sessionDir(config, 'demo'), join(config.dataDir, 'workers', 'demo'));
+        assert.equal(sessionDir(config, 'demo'), join(config.dataDir, 'sessions', 'demo'));
         assert.equal(persistenceRoot(config), join(config.dataDir, 'sessions'));
     });
 });

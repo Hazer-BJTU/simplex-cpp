@@ -60,10 +60,9 @@
             // refers to `${DEEPSEEK_API_KEY}` and the worker expands it, which
             // is why the variable has to exist *here* and not only on the host.
             "-e", "DEEPSEEK_API_KEY",
-            // The generated config, the session's snapshot and the captured
-            // log all live under the data directory, at absolute paths the
-            // configuration names — so mounting it at the same path is what
-            // makes those paths mean the same thing on both sides.
+            // Config, state, memory archives and logs all live under
+            // {data_dir}/sessions/{session}. Mount the data directory at the
+            // same absolute path so configuration paths resolve on both sides.
             "-v", "{data_dir}:{data_dir}",
             "-v", "{prompts_dir}:{prompts_dir}:ro",
             // Tools the model asks for run inside the container. Point this at

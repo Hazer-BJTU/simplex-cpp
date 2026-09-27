@@ -25,9 +25,10 @@ worker:
   event_capacity: 1024
   system_prompt_file: ./prompts/coding_agent.yaml
 persistence:
-  directory: ./data/sessions
+  directory: ./data/session
+  state: state
   readable: false
-  memory: ./.data/memory
+  memory: memory
 ~~~
 
 The default structured prompt lives in [core/prompts/coding_agent.yaml](prompts/coding_agent.yaml)
@@ -57,8 +58,12 @@ local test environment. Production deployments supply an authenticated service;
 the worker supports wss://. See [the shell guide](example/README.md).
 
 Session IDs accept 1–128 ASCII letters, digits, underscores or hyphens.
-Snapshots use <persistence.directory>/<session>/state.json; optional Markdown
-uses readable.md in the same directory. New sessions use the configured system
+Snapshots use `<persistence.directory>/<persistence.state>/state.json`; optional Markdown
+uses readable.md in the same directory. `persistence.directory` is the direct
+session root; the worker never appends a session ID. The `state` and `memory`
+subdirectories default to `state` and `memory` and must be relative paths without
+parent traversal. The root holds `session.lock`, shared by every state
+subdirectory configuration. New sessions use the configured system
 prompt; restoration retains the stored prompt and history. Startup and reconnect
 never start a run automatically.
 
@@ -220,8 +225,8 @@ the original conversation. See [the wire contract](docs/worker-protocol.md#compa
 for admission rules, failure behavior, and event fields. Hub commands and display
 support are intentionally delivered separately.
 
-Archives accumulate under `persistence.memory` (default `./.data/memory`) in
-session subdirectories. Every attempt reserves a new numbered directory, so
+Archives accumulate under `<persistence.directory>/<persistence.memory>`
+(default subdirectory `memory`), without another session-ID component. Every attempt reserves a new numbered directory, so
 restarts and clock changes preserve ordering without replacing earlier files.
 Injected memory identifies the absolute archive directory for later tool-based
 lookup. The compact instruction is loaded from

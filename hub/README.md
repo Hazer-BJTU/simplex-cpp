@@ -22,8 +22,8 @@ behaviour: it implements the worker side of
   server side.
 - A built worker binary — `build/bin/simplex_worker` plus its `plugins/` and
   `prompts/` directories. Build it with the repository's normal CMake flow.
-- One runtime dependency: [`ws`](https://github.com/websockets/ws). Everything
-  else in `package.json` is a development dependency.
+- Runtime dependencies: `ws` for WebSockets and `yaml` for preserving operator
+  configuration and comments. Everything else in `package.json` is a development dependency.
 
 ## Quick start
 
@@ -241,9 +241,22 @@ directory; command-line paths resolve against the working directory.
 
 ## Managing workers
 
-The hub renders a complete worker configuration per session into
-`<dataDir>/workers/<session>/config.yaml`, and then runs the configured
-launcher. Two kinds ship:
+On the first start, the hub writes the session configuration to
+`<dataDir>/sessions/<session>/config/config.yaml`. Later starts and restarts reuse
+this file, including hand-written YAML and comments. Hub default changes and
+configuration fields in a later launch spec do not overwrite it. Edit the saved
+file while the worker is stopped to change model, prompt, persistence or other
+worker settings. Launch-only `threads`, `env` and `extraArgs` still come from the
+session spec.
+
+Before each launch the hub refreshes only `persistence.directory` (the direct
+session root), `client.endpoint`, `security.confirmation.endpoint` (including
+session authentication tokens), and the active mock provider's dynamic
+`endpoint.base_url`. Provider credentials and other operator fields remain intact.
+Malformed saved YAML or invalid persistence child paths fail startup without
+replacing the file. Updates are published with an atomic rename.
+
+The hub then runs the configured launcher. Two kinds ship:
 
 - **`simplex-worker`** — `simplex_worker --config <generated> --session <id>
   --threads N`, which is exactly the command line `core/README.md` documents.
@@ -310,22 +323,27 @@ older workers without that classification receive general failure wording.
 ```
 <dataDir>/
   hub.json                        sessions, tokens, process records
-  workers/<session>/config.yaml    generated worker configuration
-  workers/<session>/worker.log     captured worker output (rotated)
-  events/<session>.jsonl           worker events the hub received
-  sessions/<session>/state.json    the worker's own snapshot (authoritative)
-  sessions/<session>/readable.md   optional human-readable copy
-  workers/<session>/.data/memory/<session>/  default compact archives
+  sessions/<session>/
+    config/config.yaml            persistent worker configuration
+    state/state.json              authoritative worker snapshot
+    state/readable.md             optional human-readable copy
+    memory/<ordinal>-<time>-<run>/state.md   compact archives
+    logs/worker.log                captured worker output (rotated)
+    events.jsonl                  worker events the hub received
+    session.lock                  exclusive worker ownership
 ```
 
 Conversation state lives in the worker's snapshot, not in the hub. The panel can
 read it; nothing can replace, edit, or reset it.
-Deleting an inactive session removes its snapshot directory and hub event log,
-so recreating the same session ID starts with an empty conversation. Files made
-by tools in `workers/<session>/` are retained for the operator to inspect.
-Compact archives are also retained when a session is deleted. The current hub
-does not expose compact or clean its archives; the operator owns retention until
-the follow-up hub integration defines limits and cleanup after worker shutdown.
+Deleting an inactive session removes this entire directory, including configuration,
+archives, logs and tool-created files inside it. Recreating the same ID starts
+fresh. Files outside the session directory are untouched. State and memory
+subdirectory names may be configured with `persistence.state` and
+`persistence.memory`; both are relative to `persistence.directory`, without any
+additional session-ID suffix. Snapshot inspection follows the saved `state` path.
+There is no automatic archive retention policy. The old `workers/`, `events/`,
+and session-ID-appending worker layouts are not migrated or read automatically.
+
 When a worker is connected, the panel also requests a bounded, display-only
 history projection of its turns. This restores the conversation after a panel
 reload or hub restart without copying the worker's full state into hub storage.
@@ -506,5 +524,5 @@ the runner's Ubuntu.
 | The worker starts and exits immediately | the provider profile is missing a credential (`DEEPSEEK_API_KEY`), or another worker already owns the session lock |
 | A confirmation is denied with "identity mismatch" | a worker the hub does not know opened a confirmation for that session; check the event connection log |
 | A confirmation is denied after ~15 s | the event connection never identified the worker; check that the event socket reconnected |
-| Log lines are missing in the panel | the in-memory ring is bounded (`limits.logLines`); the full file is `workers/<session>/worker.log` |
+| Log lines are missing in the panel | the in-memory ring is bounded (`limits.logLines`); the full file is `sessions/<session>/logs/worker.log` |
 | The panel returns 401 | `panel.token` is set; supply it with `?token=...` in the URL once |

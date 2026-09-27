@@ -25,7 +25,8 @@ import { authorizePanel, presentedToken, safeEqual } from '../http/auth.ts';
 import { readJsonBody, sendError, sendJson } from '../http/server.ts';
 import type { UpgradeContext, UpgradeHandler } from '../http/server.ts';
 import type { RouteHandler } from '../http/router.ts';
-import { persistenceRoot } from '../launch/config-render.ts';
+import { sessionDir } from '../launch/config-render.ts';
+import { sessionStateDirectory } from '../launch/config-file.ts';
 import { normalizeSpec } from '../launch/spec.ts';
 import { buildPayload, buildSignal, newRequestId } from '../protocol/messages.ts';
 import type { PayloadEnvelope, SignalEnvelope } from '../protocol/messages.ts';
@@ -171,9 +172,8 @@ export function createPanelApi({
     function removeSession(session: Session): void {
         // A later session with the same ID must start empty. The worker owns
         // this directory, so only remove it after the worker has stopped.
-        rmSync(join(persistenceRoot(config), session.id), { recursive: true, force: true });
         transcripts.remove(session.id);
-        rmSync(join(config.dataDir, 'events', `${session.id}.jsonl`), { force: true });
+        rmSync(sessionDir(config, session.id), { recursive: true, force: true });
         registry.remove(session.id);
         persist({ immediate: true });
         broadcast({ type: 'session_removed', session: session.id });
@@ -338,7 +338,13 @@ export function createPanelApi({
 
     /** Read the tail of a session's on-disk snapshot, read-only. */
     function readSnapshot(session: Session): SnapshotView {
-        const directory = join(persistenceRoot(config), session.id);
+        let directory: string;
+        try {
+            directory = sessionStateDirectory(config, session.id);
+        } catch {
+            return { session_id: session.id, state: null, readable: null, files: {},
+                state_error: 'cannot resolve the session state directory from config/config.yaml' };
+        }
         const statePath = join(directory, 'state.json');
         const readablePath = join(directory, 'readable.md');
         const result: SnapshotView = { session_id: session.id, state: null, readable: null, files: {} };

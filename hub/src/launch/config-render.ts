@@ -26,15 +26,15 @@ export type RenderConfig = Pick<HubConfig, 'dataDir' | 'worker' | 'providerProfi
 
 /** Directory holding one session's generated files. */
 export function sessionDir(config: { dataDir: string }, sessionId: string): string {
-    return join(config.dataDir, 'workers', sessionId);
+    return join(config.dataDir, 'sessions', sessionId);
 }
 
 /** Path of the generated worker configuration for a session. */
 export function workerConfigPath(config: { dataDir: string }, sessionId: string): string {
-    return join(sessionDir(config, sessionId), 'config.yaml');
+    return join(sessionDir(config, sessionId), 'config', 'config.yaml');
 }
 
-/** Root directory of worker session snapshots (`<dir>/<session>/state.json`). */
+/** Root directory containing all session directories. */
 export function persistenceRoot(config: { dataDir: string }): string {
     return join(config.dataDir, 'sessions');
 }
@@ -75,6 +75,8 @@ export interface WorkerConfigDocument {
     persistence: {
         enabled: boolean;
         directory: string;
+        state: string;
+        memory: string;
         format: string;
         readable: boolean;
         restore: string;
@@ -92,15 +94,9 @@ export interface RenderWorkerConfigOptions {
     mock?: { baseUrl: string } | null | undefined;
 }
 
-/**
- * Build the worker configuration document for one session.
- *
- * `sessionId` is accepted and not read: the document is a function of the
- * configuration and the spec, and the caller already knows which session it is
- * rendering for. It stays in the signature so the call sites read uniformly.
- */
+/** Build the initial worker configuration document for one session. */
 export function renderWorkerConfig({
-    config, spec, endpoints, mock,
+    config, sessionId, spec, endpoints, mock,
 }: RenderWorkerConfigOptions): WorkerConfigDocument {
     const profileName = spec.provider;
     const profile = structuredClone(config.providerProfiles[profileName]) as ProviderProfile;
@@ -153,7 +149,9 @@ export function renderWorkerConfig({
         },
         persistence: {
             enabled: spec.persistence.enabled,
-            directory: persistenceRoot(config),
+            directory: sessionDir(config, sessionId),
+            state: 'state',
+            memory: 'memory',
             format: 'json',
             readable: spec.persistence.readable,
             restore: spec.restore,

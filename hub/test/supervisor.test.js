@@ -8,7 +8,8 @@
  * leave.
  */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { parse, stringify } from 'yaml';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { PROCESS_STATE, isSameProcess, readProcessStartTime } from '../src/launch/supervisor.ts';
@@ -58,11 +59,11 @@ describe('worker supervisor', () => {
 
         const configPath = workerConfigPath(ctx.config, session.id);
         assert.ok(existsSync(configPath));
-        const written = JSON.parse(readFileSync(configPath, 'utf8'));
+        const written = parse(readFileSync(configPath, 'utf8'));
         assert.equal(written.client.endpoint, ctx.hub.supervisor.endpointsFor(session.id, session.token).events);
         assert.match(written.client.endpoint, new RegExp(`token=${session.token}`));
         assert.equal(written.driver_model, 'deepseek');
-        assert.equal(written.persistence.directory, join(ctx.config.dataDir, 'sessions'));
+        assert.equal(written.persistence.directory, join(ctx.config.dataDir, 'sessions', session.id));
 
         // The fixture reports `ready` and answers the hub's status request, so
         // the session must end up with a live identity.
@@ -82,7 +83,7 @@ describe('worker supervisor', () => {
         const lines = ctx.hub.supervisor.logs(session);
         assert.ok(lines.some((line) => line.includes(`session=${session.id}`)));
         assert.ok(lines.some((line) => line.includes('stderr line')));
-        const logPath = join(sessionDir(ctx.config, session.id), 'worker.log');
+        const logPath = join(sessionDir(ctx.config, session.id), 'logs', 'worker.log');
         assert.ok(existsSync(logPath));
         await until(() => readFileSync(logPath, 'utf8').includes('fixture: connected'));
     });
@@ -117,6 +118,28 @@ describe('worker supervisor', () => {
         assert.notEqual(restarted.pid, first.pid);
         assert.equal(session.process.state, PROCESS_STATE.running);
         await until(() => session.connected, { label: 'second worker connection' });
+    });
+
+    it('restarts with operator-edited YAML and refreshed session credentials', async () => {
+        const { ctx, session } = await setup();
+        const first = await ctx.hub.supervisor.start(session);
+        assert.equal(first.ok, true, first.error);
+        await until(() => session.connected);
+        await ctx.hub.supervisor.stop(session);
+        await until(() => !session.connected);
+        const path = workerConfigPath(ctx.config, session.id);
+        const saved = parse(readFileSync(path, 'utf8'));
+        saved.worker.max_exchanges = 77;
+        saved.client.endpoint = 'ws://127.0.0.1:1/stale';
+        writeFileSync(path, '# Keep this operator comment\n' + stringify(saved));
+        session.token = 'replacement-token';
+        const second = await ctx.hub.supervisor.start(session);
+        assert.equal(second.ok, true, second.error);
+        await until(() => session.connected);
+        const current = parse(readFileSync(path, 'utf8'));
+        assert.equal(current.worker.max_exchanges, 77);
+        assert.match(current.client.endpoint, /replacement-token/);
+        assert.match(readFileSync(path, 'utf8'), /Keep this operator comment/);
     });
 
     it('escalates to SIGTERM and then SIGKILL for a worker that refuses to leave', async () => {
