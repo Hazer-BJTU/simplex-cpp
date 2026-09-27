@@ -19,9 +19,9 @@
 // work with no inheritance and no boilerplate. The ADL pair MUST be declared
 // before any type that embeds the record by value, so each struct is followed
 // immediately by its to_json/from_json and the types are ordered so
-// dependencies come first: Content -> InvokeQuery -> InvokeReturn ->
-// TokenCost -> MessageItem -> AgentLoopStep -> UserLoopStep -> Invocable ->
-// MetaInfo.
+// dependencies come first: ContentType -> Modality -> Content ->
+// InvokeQuery -> InvokeReturn -> TokenCost -> MessageItem -> AgentLoopStep ->
+// UserLoopStep -> Invocable -> MetaInfo.
 // PromptTemplate (prompt_template.hpp) carries its own pair under this same
 // protocol, which is what lets the session container AgentInputState close
 // the file WITH one: the whole session — the STRUCTURED system prompt
@@ -82,9 +82,13 @@
 //  3. Optional fields are OMITTED when empty and present when set (never
 //     emitted as JSON null); a missing key on read yields std::nullopt.
 //  4. Enumerations serialise as lowercase snake_case STRING names
-//     (e.g. ContentType::ExternalRef -> "external_ref"), never integers. An
-//     unrecognised value on read falls back to the first listed mapping, so
-//     types should list their safest/neutral value first.
+//     (e.g. ContentType::ExternalRef -> "external_ref"), never integers.
+//     Where an enum is decoded through NLOHMANN_JSON_SERIALIZE_ENUM, an
+//     unrecognised value falls back to the first listed mapping, so those
+//     types list their safest/neutral value first. An enum decoded through a
+//     hand-written pair instead REJECTS an unknown name (Modality, LoopStatus,
+//     LoopPhase): it is used where a silent fallback would change what the
+//     payload means — turning an unlabelled attachment into text.
 //  5. nlohmann::json fields (e.g. arguments, extras) embed inline as-is.
 //  6. Unknown keys are ignored on read (forward-compatible). A MISSING key
 //     keeps the member's default (plain fields) or yields std::nullopt
@@ -140,7 +144,88 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ContentType, {
     {ContentType::ExternalRef, "external_ref"},
 })
 
-// A single piece of user/model content.
+// WHAT THE CONTENT IS — the media category of the payload, orthogonal to
+// ContentType, which says only how `raw` encodes it. The two answer different
+// questions and neither implies the other: an Image may arrive as base64
+// (Binary) or as a URL (ExternalRef), and an ExternalRef may point at an image,
+// a PDF, or a video. A consumer must read this field, never infer the category
+// from ContentType — "external_ref therefore image" is exactly the inference
+// this label exists to retire.
+//
+// Text is listed first so a default-constructed Content is text. Every producer
+// writes the label, the public input boundary requires it explicitly, and
+// decoding is strict (see the pair below): an unknown name is an error, never a
+// silent fallback to text, because a fallback would let a misspelled image label
+// reach a provider as plain text. A MISSING key still reads as text under
+// protocol rule 6, which is the one absence with a single safe reading.
+enum class Modality {
+    Text,     // Human-readable text.
+    Image,    // A still image.
+    Audio,    // Audio.
+    Video,    // Video.
+    Document, // A document/file (PDF, ...).
+};
+
+/** Writes the stable JSON name; invalid enum values throw instead of becoming defaults. */
+inline void to_json(nlohmann::json& j, Modality value) {
+    switch (value) {
+        case Modality::Text:
+            j = "text";
+            return;
+        case Modality::Image:
+            j = "image";
+            return;
+        case Modality::Audio:
+            j = "audio";
+            return;
+        case Modality::Video:
+            j = "video";
+            return;
+        case Modality::Document:
+            j = "document";
+            return;
+    }
+    throw std::invalid_argument("invalid Modality value");
+}
+
+/** Reads a known JSON name; an unknown modality cannot silently become text. */
+inline void from_json(const nlohmann::json& j, Modality& value) {
+    const auto& name = j.get_ref<const std::string&>();
+    if (name == "text") {
+        value = Modality::Text;
+        return;
+    }
+    if (name == "image") {
+        value = Modality::Image;
+        return;
+    }
+    if (name == "audio") {
+        value = Modality::Audio;
+        return;
+    }
+    if (name == "video") {
+        value = Modality::Video;
+        return;
+    }
+    if (name == "document") {
+        value = Modality::Document;
+        return;
+    }
+    throw std::invalid_argument("unknown Modality name: " + name);
+}
+
+// A single piece of user/model content. `type` is the encoding, `modality` is
+// the media category; both are explicit and no consumer may derive one from the
+// other — "external_ref therefore image" is exactly the inference this field
+// retires.
+//
+// Both fields default to Text, which is what keeps the common case and a
+// default-constructed Content well defined: a field left indeterminate would
+// make `Content{}` (and any value-initialised element of a content vector) read
+// as an out-of-range enum, and serialising it would then throw from inside a
+// record that only ever meant "empty text". The default is a floor, not a
+// licence to omit the label: a producer that means an image, a file, or audio
+// states it, and a DEFAULT (or missing JSON key) reads as text by design.
 struct Content {
     ContentType type = ContentType::Text;
     std::string raw;
@@ -149,16 +234,18 @@ struct Content {
     // coarse text/binary/external_ref, or annotations. Consumers that map to
     // a plain string content ignore it.
     std::optional<nlohmann::json> extras;
+    Modality modality = Modality::Text;
 };
 
 inline void to_json(nlohmann::json& j, const Content& c) {
-    j = nlohmann::json{{"type", c.type}, {"raw", c.raw}};
+    j = nlohmann::json{{"type", c.type}, {"raw", c.raw}, {"modality", c.modality}};
     if (c.extras) j["extras"] = *c.extras;
 }
 
 inline void from_json(const nlohmann::json& j, Content& c) {
     if (auto it = j.find("type"); it != j.end()) it->get_to(c.type);
     if (auto it = j.find("raw"); it != j.end()) it->get_to(c.raw);
+    if (auto it = j.find("modality"); it != j.end()) it->get_to(c.modality);
     detail::read_optional(j, "extras", c.extras);
 }
 
@@ -718,6 +805,12 @@ inline void from_json(const nlohmann::json& j, MetaInfo& m) {
 //   |        content        : vector<Content>  ordered, heterogeneous parts;
 //   |                          each part has type : ContentType (text | binary |
 //   |                               external_ref) — how `raw` is encoded;
+//   |                               modality : Modality (text | image | audio |
+//   |                               video | document) — WHAT the payload is,
+//   |                               written explicitly by every producer and
+//   |                               never inferred from `type`. Adapters map
+//   |                               the categories they support and reject the
+//   |                               rest; they never fall back to text;
 //   |                               raw  : string payload;
 //   |                               extras? : optional<json> content-part
 //   |                               fields beyond ContentType (e.g. the

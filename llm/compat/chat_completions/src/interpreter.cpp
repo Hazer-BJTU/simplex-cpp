@@ -21,8 +21,57 @@ std::string text_content(const std::vector<model_io::Content>& content) {
     return result;
 }
 
+/**
+ * The one category this dialect cannot describe at all: Chat Completions
+ * content parts cover text and images, so everything else is a construction
+ * error rather than something to mislabel. This is the module's hard error #3
+ * (see the header contract): the caller picked a modality its provider cannot
+ * receive, and silently sending it as text would corrupt the request.
+ */
+void require_supported_modality(const model_io::Content& part) {
+    if (part.modality == model_io::Modality::Text ||
+        part.modality == model_io::Modality::Image) {
+        return;
+    }
+    throw HttpRequestException(
+        HttpRequestException::Stage::CreateRequest,
+        "chat completions cannot send a non-text, non-image content part "
+        "(modality " + nlohmann::json(part.modality).dump() + ")");
+}
+
+/**
+ * Check every part the dialect has to describe, before building anything.
+ * Walking up front keeps the failure at construction time and independent of
+ * how deep in the conversation the offending part sits.
+ */
+void require_supported_content(const model_io::MessageItem& item) {
+    for (const auto& part : item.content) require_supported_modality(part);
+    if (item.reasoning) require_supported_modality(*item.reasoning);
+    if (item.action_status) require_supported_modality(*item.action_status);
+}
+
+void require_supported_conversation(const model_io::AgentInputState& state) {
+    for (const auto& turn : state.turns) {
+        require_supported_content(turn.user_input);
+        for (const auto& step : turn.agent_loop_step) {
+            require_supported_content(step.model_response);
+            if (!step.invoke_returns) continue;
+            for (const auto& item : *step.invoke_returns) {
+                require_supported_content(item);
+            }
+        }
+    }
+}
+
+/**
+ * One provider part for one Content entry. The media category decides the part
+ * kind — never the encoding: an image is an image whether it arrived as a data
+ * URL or as base64, and a text part stays text even when its bytes ride in an
+ * external reference. Unsupported categories never reach here (the check above
+ * runs first).
+ */
 json user_content_part(const model_io::Content& content) {
-    if (content.type == model_io::ContentType::ExternalRef) {
+    if (content.modality == model_io::Modality::Image) {
         json image = json::object();
         if (content.extras && content.extras->is_object()) {
             const auto it = content.extras->find("image_url");
@@ -44,7 +93,7 @@ json user_content(const std::vector<model_io::Content>& content) {
     // The string form is accepted by the broadest set of compatible servers.
     if (content.empty()) return "";
     if (content.size() == 1 &&
-        content.front().type == model_io::ContentType::Text) {
+        content.front().modality == model_io::Modality::Text) {
         return content.front().raw;
     }
     json::array_t parts;
@@ -182,6 +231,9 @@ ChatCompletionsInterpreter::build_request(
             HttpRequestException::Stage::CreateRequest,
             "generation carries no non-empty \"model\"");
     }
+    // Hard error #3: a modality this dialect cannot describe is a construction
+    // failure, checked before any part is mapped (see the header contract).
+    require_supported_conversation(conversation);
     const endpoint::ResolvedEndpoint where = endpoint::resolve_endpoint(endpoint);
 
     json body = generation;

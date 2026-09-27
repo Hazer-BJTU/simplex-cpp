@@ -139,6 +139,7 @@ model_io::MessageItem execute_tool(const model_io::InvokeQuery& query) {
     model_io::InvokeReturn record;
     record.query = query;
     record.output.type = model_io::ContentType::Text;
+    record.output.modality = model_io::Modality::Text;
 
     double a = 0;
     double b = 0;
@@ -365,6 +366,7 @@ int main(int argc, char* argv[]) {
         model_io::Content text;
         text.type = model_io::ContentType::Text;
         text.raw = line;
+        text.modality = model_io::Modality::Text;
         input.content.push_back(std::move(text));
         model->integrate(state, input);
 

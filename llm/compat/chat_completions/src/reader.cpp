@@ -102,6 +102,9 @@ void ChatCompletionsReader::_assemble() {
     model_io::Content content;
     content.type = model_io::ContentType::Text;
     content.raw = _content;
+    // A provider response channel is text: this dialect streams no other
+    // category back, so the label is stated rather than inferred.
+    content.modality = model_io::Modality::Text;
     if (!_refusal.empty()) {
         if (content.raw.empty()) {
             content.raw = _refusal; // readable fallback for refusal-only output
@@ -120,6 +123,7 @@ void ChatCompletionsReader::_assemble() {
         model_io::Content reasoning;
         reasoning.type = model_io::ContentType::Text;
         reasoning.raw = _reasoning;
+        reasoning.modality = model_io::Modality::Text;
         result.reasoning = std::move(reasoning);
     }
 

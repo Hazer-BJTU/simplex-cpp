@@ -196,11 +196,15 @@ BOOST_AUTO_TEST_CASE(multimodal_user_content_uses_chat_content_parts) {
     model_io::AgentInputState state;
     model_io::UserLoopStep turn;
     turn.user_input.content.push_back(
-        {model_io::ContentType::Text, "describe"});
+        {model_io::ContentType::Text, "describe", {},
+         model_io::Modality::Text});
+    // The category is stated, so the URL becomes an image part because the
+    // producer said image — not because the encoding is a reference.
     turn.user_input.content.push_back(
         {model_io::ContentType::ExternalRef,
          "https://example.com/cat.png",
-         nlohmann::json{{"detail", "low"}}});
+         nlohmann::json{{"detail", "low"}},
+         model_io::Modality::Image});
     state.turns.push_back(turn);
 
     const auto content = body_of(ChatCompletionsInterpreter{}.build_request(
@@ -211,6 +215,60 @@ BOOST_AUTO_TEST_CASE(multimodal_user_content_uses_chat_content_parts) {
     BOOST_CHECK_EQUAL(content[1]["image_url"]["url"],
                       "https://example.com/cat.png");
     BOOST_CHECK_EQUAL(content[1]["image_url"]["detail"], "low");
+}
+
+// The retired inference: an external reference is NOT an image. A reference
+// labelled text stays text, and one labelled document is not silently sent as
+// a picture either.
+BOOST_AUTO_TEST_CASE(external_reference_is_not_inferred_to_be_an_image) {
+    Fixture fixture;
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content.push_back(
+        {model_io::ContentType::ExternalRef,
+         "https://example.invalid/notes.txt", {},
+         model_io::Modality::Text});
+    state.turns.push_back(turn);
+
+    const auto content = body_of(ChatCompletionsInterpreter{}.build_request(
+        state, fixture.endpoint, fixture.generation))["messages"][0]["content"];
+    // A single text part takes the compact string form chat servers accept.
+    BOOST_CHECK(content.is_string());
+    BOOST_CHECK_EQUAL(content.get<std::string>(),
+                      "https://example.invalid/notes.txt");
+}
+
+// Hard error #3: this dialect describes text and images only, so a category it
+// cannot carry fails construction instead of riding along as text.
+BOOST_AUTO_TEST_CASE(unsupported_modality_is_a_create_request_error) {
+    Fixture fixture;
+    for (const auto modality : {model_io::Modality::Audio,
+                                model_io::Modality::Video,
+                                model_io::Modality::Document}) {
+        model_io::AgentInputState state;
+        model_io::UserLoopStep turn;
+        turn.user_input.content.push_back(
+            {model_io::ContentType::ExternalRef,
+             "https://example.invalid/attachment", {}, modality});
+        state.turns.push_back(turn);
+
+        BOOST_CHECK_THROW(
+            ChatCompletionsInterpreter{}.build_request(
+                state, fixture.endpoint, fixture.generation),
+            HttpRequestException);
+    }
+
+    // An image is still fine, so the check rejects the category rather than
+    // refusing attachments wholesale.
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content.push_back(
+        {model_io::ContentType::ExternalRef,
+         "https://example.invalid/photo.png", {}, model_io::Modality::Image});
+    state.turns.push_back(turn);
+    BOOST_CHECK_NO_THROW(
+        ChatCompletionsInterpreter{}.build_request(
+            state, fixture.endpoint, fixture.generation));
 }
 
 BOOST_AUTO_TEST_CASE(generation_passthrough_but_builder_owned_keys_win) {

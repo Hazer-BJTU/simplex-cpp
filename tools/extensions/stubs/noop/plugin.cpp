@@ -22,7 +22,8 @@ public:
     }
     boost::asio::awaitable<model_io::Content> invoke(
         const model_io::InvokeQuery&) override {
-        co_return model_io::Content{model_io::ContentType::Text, "noop", {}};
+        co_return model_io::Content{model_io::ContentType::Text, "noop", {},
+                                    model_io::Modality::Text};
     }
 private:
     model_io::Invocable details_;

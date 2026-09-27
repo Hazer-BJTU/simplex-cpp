@@ -347,12 +347,14 @@ protected:
         _response.content.push_back(model_io::Content{
             .type = model_io::ContentType::Text,
             .raw = _content,
+            .modality = model_io::Modality::Text,
         });
 
         if (!_reasoning.empty()) {
             _response.reasoning = model_io::Content{};
             _response.reasoning->type = model_io::ContentType::Text;
             _response.reasoning->raw = _reasoning;
+            _response.reasoning->modality = model_io::Modality::Text;
         }
 
         if (!_calls.empty()) {
@@ -642,6 +644,7 @@ model_io::MessageItem execute_tool(const model_io::InvokeQuery& query) {
     model_io::InvokeReturn record;
     record.query = query;
     record.output.type = model_io::ContentType::Text;
+    record.output.modality = model_io::Modality::Text;
 
     if (query.name == "get_current_time") {
         record.output.raw = current_time_utc();
@@ -805,6 +808,7 @@ int main() {
         turn.user_input.content.push_back(model_io::Content{
             .type = model_io::ContentType::Text,
             .raw = line,
+            .modality = model_io::Modality::Text,
         });
         state.turns.push_back(std::move(turn));
 

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <iterator>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,26 +39,77 @@ json content_part(const model_io::Content& content, const char* wire_type) {
     return part;
 }
 
+/**
+ * The one category this dialect cannot describe: the Responses input list
+ * carries text, image references and file references, but no audio or video
+ * part. Sending such a part as one of the supported kinds would corrupt the
+ * request, so it is a construction error instead. This is the module's hard
+ * error #3 (see the header contract).
+ */
+void require_supported_modality(const model_io::Content& part) {
+    if (part.modality != model_io::Modality::Audio &&
+        part.modality != model_io::Modality::Video) {
+        return;
+    }
+    throw HttpRequestException(
+        HttpRequestException::Stage::CreateRequest,
+        "responses cannot send an audio or video content part (modality "
+            + nlohmann::json(part.modality).dump() + ")");
+}
+
+/**
+ * Check every part the dialect has to describe, before building anything.
+ * Walking up front keeps the failure at construction time and independent of
+ * how deep in the conversation the offending part sits.
+ */
+void require_supported_content(const model_io::MessageItem& item) {
+    for (const auto& part : item.content) require_supported_modality(part);
+    if (item.reasoning) require_supported_modality(*item.reasoning);
+    if (item.action_status) require_supported_modality(*item.action_status);
+}
+
+void require_supported_conversation(const model_io::AgentInputState& state) {
+    for (const auto& turn : state.turns) {
+        require_supported_content(turn.user_input);
+        for (const auto& step : turn.agent_loop_step) {
+            require_supported_content(step.model_response);
+            if (!step.invoke_returns) continue;
+            for (const auto& item : *step.invoke_returns) {
+                require_supported_content(item);
+            }
+        }
+    }
+}
+
+/**
+ * One provider part for one input Content entry. The media category decides the
+ * part kind, never the encoding: an image is an image whether it arrived as a
+ * URL or as base64, and an external reference to a PDF is a file, not a picture.
+ *
+ * A part captured from a previous response may carry its own wire part in
+ * extras — a provider-side distinction finer than our modality (a
+ * provider-hosted file_id, say). For a text part that captured type is dropped,
+ * because a text payload replayed as an image of its own text is the very
+ * mislabelling this mapping exists to prevent. Unsupported categories never
+ * reach here (the check above runs first).
+ */
 json input_content_part(const model_io::Content& content) {
     json part = (content.extras && content.extras->is_object())
         ? *content.extras
         : json::object();
     const std::string explicit_type = part.value("type", std::string());
 
-    if (content.type == model_io::ContentType::Text) {
-        part["type"] = "input_text";
-        part["text"] = content.raw;
-        return part;
-    }
-
-    if (explicit_type == "input_image") {
+    if (content.modality == model_io::Modality::Image) {
+        if (explicit_type == "input_file") return part;   // captured file part
         part["type"] = "input_image";
         if (!part.contains("image_url") && !part.contains("file_id")) {
             part["image_url"] = content.raw;
         }
         return part;
     }
-    if (explicit_type == "input_file") {
+
+    if (content.modality == model_io::Modality::Document) {
+        if (explicit_type == "input_image") return part;  // captured image part
         part["type"] = "input_file";
         if (!part.contains("file_data") && !part.contains("file_id") &&
             !part.contains("file_url")) {
@@ -70,13 +122,12 @@ json input_content_part(const model_io::Content& content) {
         return part;
     }
 
-    if (content.type == model_io::ContentType::ExternalRef) {
-        part["type"] = "input_image";
-        part["image_url"] = content.raw;
-    } else {
-        part["type"] = "input_file";
-        part["file_data"] = content.raw;
+    // Text: the payload goes out as text whatever the encoding says.
+    if (explicit_type == "input_image" || explicit_type == "input_file") {
+        return part;
     }
+    part["type"] = "input_text";
+    part["text"] = content.raw;
     return part;
 }
 
@@ -261,7 +312,7 @@ void emit_tool_results(
         if (item.content.empty()) {
             out["output"] = record ? record->output.raw : std::string();
         } else if (item.content.size() == 1 &&
-                   item.content.front().type == model_io::ContentType::Text) {
+                   item.content.front().modality == model_io::Modality::Text) {
             out["output"] = (item.content.front().raw.empty() && record)
                 ? record->output.raw
                 : item.content.front().raw;
@@ -296,6 +347,9 @@ endpoint::ModelRequestInterpreter::HttpRequest ResponsesInterpreter::build_reque
     }
     // Hard error #2 comes with the resolver.
     const endpoint::ResolvedEndpoint where = endpoint::resolve_endpoint(endpoint);
+    // Hard error #3: a modality this dialect cannot describe is a construction
+    // failure, checked before any part is mapped (see the header contract).
+    require_supported_conversation(conversation);
 
     json body = generation;   // verbatim passthrough; builder keys below win
 

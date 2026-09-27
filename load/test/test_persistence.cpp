@@ -73,16 +73,20 @@ model_io::AgentInputState example_state() {
 
     model_io::UserLoopStep turn;
     turn.user_input.role = "user";
-    turn.user_input.content.push_back({model_io::ContentType::Text, "hello", {}});
+    turn.user_input.content.push_back(
+        {model_io::ContentType::Text, "hello", {}, model_io::Modality::Text});
     turn.extras = Json{{"request_id", "r1"}};
     model_io::AgentLoopStep step;
     step.commit_sequence = 7;
     step.retain_priority = model_io::RetainPriority::Pinned;
     step.model_response.type = model_io::MessageItemType::ModelResponse;
     step.model_response.role = "assistant";
-    step.model_response.content.push_back({model_io::ContentType::Text, "answer", {}});
-    step.model_response.reasoning = model_io::Content{model_io::ContentType::Text, "reasoning", {}};
-    step.model_response.action_status = model_io::Content{model_io::ContentType::Text, "working", {}};
+    step.model_response.content.push_back(
+        {model_io::ContentType::Text, "answer", {}, model_io::Modality::Text});
+    step.model_response.reasoning = model_io::Content{
+        model_io::ContentType::Text, "reasoning", {}, model_io::Modality::Text};
+    step.model_response.action_status = model_io::Content{
+        model_io::ContentType::Text, "working", {}, model_io::Modality::Text};
     step.model_response.invokes = {query};
     step.model_response.cost = model_io::TokenCost{100, 20, 40};
     step.model_response.extras = Json{{"provider_id", "p1"}};
@@ -206,7 +210,8 @@ BOOST_AUTO_TEST_CASE(readable_clips_json_but_keeps_later_sections_and_plain_text
     response.content[0].raw = Json({{"encoded", huge}}).dump();
     state.turns[0].user_input.content[0].raw = "plain-prose-" + std::string(9000, 'p');
     state.turns.push_back({});
-    state.turns.back().user_input.content.push_back({model_io::ContentType::Text, "LAST TURN", {}});
+    state.turns.back().user_input.content.push_back(
+        {model_io::ContentType::Text, "LAST TURN", {}, model_io::Modality::Text});
     load::ReadableOptions options;
     options.max_json_string_bytes = 24;
     options.max_json_items = 3;

@@ -354,10 +354,14 @@ user message may therefore combine text, images, and files, for example:
 model_io::MessageItem message;
 message.type = model_io::MessageItemType::UserInput;
 message.content = {
-    {model_io::ContentType::Text, "Describe this image"},
+    // Each part states its encoding AND its media category; neither is
+    // inferred from the other.
+    {model_io::ContentType::Text, "Describe this image", std::nullopt,
+     model_io::Modality::Text},
     {model_io::ContentType::ExternalRef,
      "https://example.com/image.png",
-     nlohmann::json{{"type", "input_image"}, {"detail", "high"}}},
+     nlohmann::json{{"type", "input_image"}, {"detail", "high"}},
+     model_io::Modality::Image},
 };
 ```
 
@@ -365,10 +369,15 @@ The serialized `content` field is always a JSON array. Deserialization also
 accepts the former single-`Content` object and promotes it to a one-element
 array so existing persisted conversations remain readable. The Responses
 adapter preserves list order and emits every entry as one content part in the
-same provider message. `Text` becomes `input_text`; `ExternalRef` defaults to
-`input_image`; `Binary` defaults to `input_file`. Set `extras.type` to
-`input_image` or `input_file` when the default is not appropriate, and put
-provider fields such as `detail`, `filename`, or `file_id` in `extras`.
+same provider message, choosing the part kind from `modality`: `Text` becomes
+`input_text`, `Image` becomes `input_image`, and `Document` becomes
+`input_file` (a reference rides as `file_url`, inline bytes as `file_data`).
+`Audio` and `Video` are contract labels with no Responses part kind, so the
+adapter rejects them at request construction — it never sends an unsupported
+category as text or as a file. Set `extras.type` to `input_image` or
+`input_file` only to preserve a finer provider-side distinction on a part the
+provider itself handed back, and put provider fields such as `detail`,
+`filename`, or `file_id` in `extras`.
 
 ## Configuration
 

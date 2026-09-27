@@ -111,7 +111,8 @@ public:
         const model_io::InvokeQuery&) override
     {
         co_return model_io::Content{
-            .type = model_io::ContentType::Text, .raw = "12 bytes", .extras = {}};
+            .type = model_io::ContentType::Text, .raw = "12 bytes", .extras = {},
+            .modality = model_io::Modality::Text};
     }
 };
 
@@ -199,7 +200,8 @@ BOOST_AUTO_TEST_CASE(a_nested_failure_still_answers_the_models_own_tool_call)
     turn.user_input.content.push_back(model_io::Content{
         .type = model_io::ContentType::Text,
         .raw = "How big is /etc/hosts?",
-        .extras = {}});
+        .extras = {},
+        .modality = model_io::Modality::Text});
 
     model_io::AgentLoopStep step;
     step.model_response.type = model_io::MessageItemType::ModelResponse;
@@ -274,7 +276,8 @@ BOOST_AUTO_TEST_CASE(an_unroutable_call_is_answered_in_the_request_too)
     model_io::UserLoopStep turn;
     turn.user_input.role = "user";
     turn.user_input.content.push_back(model_io::Content{
-        .type = model_io::ContentType::Text, .raw = "clean up", .extras = {}});
+        .type = model_io::ContentType::Text, .raw = "clean up", .extras = {},
+        .modality = model_io::Modality::Text});
 
     model_io::AgentLoopStep step;
     step.model_response.type = model_io::MessageItemType::ModelResponse;

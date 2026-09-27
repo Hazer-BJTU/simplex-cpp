@@ -247,7 +247,8 @@ public:
         invoke_ran = true;
         fail_if(Hook::Invoke, query);
         co_return model_io::Content{
-            .type = model_io::ContentType::Text, .raw = payload, .extras = {}};
+            .type = model_io::ContentType::Text, .raw = payload, .extras = {},
+            .modality = model_io::Modality::Text};
     }
 
     model_io::InvokeReturn check_result(
@@ -375,7 +376,8 @@ public:
         const model_io::InvokeQuery&) override
     {
         co_return model_io::Content{
-            .type = model_io::ContentType::Text, .raw = payload, .extras = {}};
+            .type = model_io::ContentType::Text, .raw = payload, .extras = {},
+            .modality = model_io::Modality::Text};
     }
 };
 
@@ -419,7 +421,8 @@ public:
 
         --in_flight;
         co_return model_io::Content{
-            .type = model_io::ContentType::Text, .raw = "read", .extras = {}};
+            .type = model_io::ContentType::Text, .raw = "read", .extras = {},
+            .modality = model_io::Modality::Text};
     }
 };
 

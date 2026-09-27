@@ -176,13 +176,17 @@ BOOST_AUTO_TEST_CASE(interpreter_maps_multimodal_content_and_runs_dialect) {
 
     auto& message = state.turns.emplace_back().user_input;
     message.type = model_io::MessageItemType::UserInput;
+    // Each entry's category is stated and decides its part kind: an inline PDF
+    // is a file and a referenced PNG is an image, whichever encoding each uses.
     auto& binary = message.content.emplace_back();
     binary.type = model_io::ContentType::Binary;
     binary.raw = "ZmFrZS1wZGY=";
     binary.extras = nlohmann::json{{"filename", "sample.pdf"}};
+    binary.modality = model_io::Modality::Document;
     auto& image = message.content.emplace_back();
     image.type = model_io::ContentType::ExternalRef;
     image.raw = "https://example.invalid/image.png";
+    image.modality = model_io::Modality::Image;
 
     model_io::ModelEndpoint endpoint;
     endpoint.base_url = "https://example.invalid";
@@ -199,6 +203,56 @@ BOOST_AUTO_TEST_CASE(interpreter_maps_multimodal_content_and_runs_dialect) {
     BOOST_CHECK_EQUAL(body["input"][0]["content"][1]["type"], "input_image");
     BOOST_CHECK_EQUAL(body["input"][0]["content"][1]["image_url"],
                       "https://example.invalid/image.png");
+}
+
+// The retired inference: a referenced text part is text, not an image.
+BOOST_AUTO_TEST_CASE(interpreter_does_not_infer_a_category_from_the_encoding) {
+    llm::responses::ResponsesInterpreter interpreter(
+        std::make_shared<const FixtureDialect>());
+    model_io::AgentInputState state;
+    auto& message = state.turns.emplace_back().user_input;
+    message.type = model_io::MessageItemType::UserInput;
+    auto& part = message.content.emplace_back();
+    part.type = model_io::ContentType::ExternalRef;
+    part.raw = "https://example.invalid/notes.txt";
+    part.modality = model_io::Modality::Text;
+
+    model_io::ModelEndpoint endpoint;
+    endpoint.base_url = "https://example.invalid";
+    endpoint.request_path = "/responses";
+    const auto request = interpreter.build_request(
+        state, endpoint, nlohmann::json{{"model", "fixture-model"}});
+    const auto body = nlohmann::json::parse(request.body());
+
+    BOOST_CHECK_EQUAL(body["input"][0]["content"][0]["type"], "input_text");
+    BOOST_CHECK_EQUAL(body["input"][0]["content"][0]["text"],
+                      "https://example.invalid/notes.txt");
+}
+
+// Hard error #3: the input list carries text, images and files, so audio and
+// video fail construction rather than riding as a file or as text.
+BOOST_AUTO_TEST_CASE(interpreter_rejects_audio_and_video_parts) {
+    llm::responses::ResponsesInterpreter interpreter(
+        std::make_shared<const FixtureDialect>());
+    model_io::ModelEndpoint endpoint;
+    endpoint.base_url = "https://example.invalid";
+    endpoint.request_path = "/responses";
+
+    for (const auto modality :
+         {model_io::Modality::Audio, model_io::Modality::Video}) {
+        model_io::AgentInputState state;
+        auto& message = state.turns.emplace_back().user_input;
+        message.type = model_io::MessageItemType::UserInput;
+        auto& part = message.content.emplace_back();
+        part.type = model_io::ContentType::ExternalRef;
+        part.raw = "https://example.invalid/attachment";
+        part.modality = modality;
+
+        BOOST_CHECK_THROW(
+            interpreter.build_request(
+                state, endpoint, nlohmann::json{{"model", "fixture-model"}}),
+            HttpRequestException);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(converse_runs_llm_model_to_terminal_response_fallback) {

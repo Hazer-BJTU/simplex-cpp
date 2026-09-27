@@ -99,6 +99,9 @@ model_io::Content ToolResult::render() const {
         .type = model_io::ContentType::Text,
         .raw = text(),
         .extras = std::nullopt,
+        // A tool result is always text: the contract gives a tool one text
+        // payload to answer with.
+        .modality = model_io::Modality::Text,
     };
 }
 

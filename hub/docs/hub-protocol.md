@@ -213,8 +213,9 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 | `status_snapshot` | `session`, optional `since` | answers with a fresh `snapshot` |
 | `ping` | — | answers with `pong` |
 
-`input` accepts the same content parts as the worker protocol (`text`,
-`binary`, `external_ref` with optional `extras`) and the same option categories
+`input` accepts the same content parts as the worker protocol (`type` of
+`text`, `binary`, or `external_ref` plus the required `modality` label, with
+optional `extras`) and the same option categories
 (`model`, `tools` — reserved and empty, `confirmation.mode`). The hub validates
 them locally so the panel can report a mistake immediately; the worker is still
 authoritative and its rejection is surfaced unchanged.

@@ -140,7 +140,7 @@ in a text WebSocket message.
 Hub-to-worker event-connection messages have this envelope:
 
 ```json
-{"type":"payload","data":{"operation":"message","request_id":"req-001","content":[{"type":"text","raw":"Hello"}]}}
+{"type":"payload","data":{"operation":"message","request_id":"req-001","content":[{"type":"text","raw":"Hello","modality":"text"}]}}
 ```
 
 `type` must be `payload` or `signal`; `data` must be present. Each operation
@@ -219,7 +219,7 @@ queue or changes the conversation.
       "tools": {},
       "confirmation": {"mode": "ask"}
     },
-    "content": [{"type": "text", "raw": "Explain this carefully."}]
+    "content": [{"type": "text", "raw": "Explain this carefully.", "modality": "text"}]
   }
 }
 ```
@@ -266,10 +266,11 @@ but before a run starts. Applying options is not a delivery or execution guarant
     "operation": "message",
     "request_id": "req-001",
     "content": [
-      {"type": "text", "raw": "Describe this image."},
+      {"type": "text", "raw": "Describe this image.", "modality": "text"},
       {
         "type": "external_ref",
         "raw": "https://example.com/photo.png",
+        "modality": "image",
         "extras": {"detail": "low"}
       }
     ]
@@ -283,27 +284,35 @@ user message's ordered `content` list:
 
 | Input part field | Requirement | Conversion |
 | --- | --- | --- |
-| `type` | Required string: `text`, `binary`, or `external_ref` | `Content.type`; describes encoding, not media category. Unknown values are rejected. |
+| `type` | Required string: `text`, `binary`, or `external_ref` | `Content.type`; describes **encoding only**, never the media category. Unknown values are rejected. |
 | `raw` | Required nonempty string | `Content.raw`, unchanged: text, base64 bytes, or an external reference according to `type`. |
-| `extras` | Optional JSON object | Additional content metadata, preserved unchanged. Current image options include `detail`; richer modality distinctions will be defined through this object in future extensions. |
+| `modality` | Required string: `text`, `image`, `audio`, `video`, or `document` | `Content.modality`; the media category of the payload. Unknown values are rejected; the field is never derived from `type`. |
+| `extras` | Optional JSON object | Additional content metadata, preserved unchanged. Image options include `detail`; provider-specific part fields belong here. |
 
 For example, the image part above becomes the following persisted/output Content
-object. No category field is added during conversion; absent `extras` remains
-absent:
+object. `modality` is carried through as sent; absent `extras` remains absent:
 
 ```json
 {
   "type": "external_ref",
   "raw": "https://example.com/photo.png",
+  "modality": "image",
   "extras": {"detail": "low"}
 }
 ```
 
 An attachment-only message is valid; no text part is required. Parts remain in
 array order. Unknown extra part fields are ignored; metadata that must survive
-conversion belongs in `extras`. `type: "image"` is invalid: use
-`type: "external_ref"` with the image URL in `raw`. No `label` parameter is
-part of the current input contract.
+conversion belongs in `extras`. `type: "image"` is invalid: media categories are
+labels, not encodings, so an image reference is
+`{"type": "external_ref", "modality": "image"}`.
+
+`type` and `modality` are independent and both explicit. Sending an image as
+`binary` (a base64 payload) or as `external_ref` (a URL) is the sender's choice
+of encoding; saying `modality: "image"` is how the worker knows it is an image.
+The encoding never implies the category, so a reference to a PDF is
+`modality: "document"` and is not sent to a provider as a picture, and a text
+part whose bytes ride in a reference stays `modality: "text"`.
 
 The worker neither fetches references nor decodes base64 during admission.
 There is no upload endpoint or implicit mapping from a hub-local filename to
@@ -311,28 +320,39 @@ worker/provider-accessible bytes. The sender must provide the bytes/reference
 required by its selected provider adapter. There is no application-level raw
 length setting; transport and memory limits still apply. Text is not trimmed.
 
-The current Chat Completions adapter maps `external_ref` to an `image_url`
-content part, using `raw` as its URL (including provider-supported image data
-URLs). Thus current multimodal input consists of text and image references:
+### What an adapter does with a modality
+
+Core admits all five categories — what the worker may carry is the contract's
+business — and the selected provider adapter maps the ones it can describe. An
+adapter never silently converts an unsupported category into text or into a
+different category; it fails request construction instead, so a mismatch is
+reported rather than sent as a corrupted prompt.
+
+| Adapter | Maps | Rejects |
+| --- | --- | --- |
+| Chat Completions | `text` → `text`, `image` → `image_url` | `audio`, `video`, `document` |
+| Responses | `text` → `input_text`, `image` → `input_image`, `document` → `input_file` | `audio`, `video` |
+
+An image part mapped by the Chat Completions adapter uses `raw` as its URL,
+including provider-supported image data URLs:
 
 ```json
 {"type":"image_url","image_url":{"url":"https://example.com/photo.png","detail":"low"}}
 ```
 
 This is the provider-facing form of the image example above, not a worker input
-part. The worker input keeps the provider-independent `type`/`raw` representation.
-Image options such as `extras.detail` are forwarded by the adapter. The existing
-`extras.image_url` option can override the provider URL; normally omit it and
-use `raw` to avoid two competing URLs.
+part. The worker input keeps the provider-independent
+`type`/`raw`/`modality` representation. Image options such as `extras.detail` are
+forwarded by the adapter. The existing `extras.image_url` option can override the
+provider URL; normally omit it and use `raw` to avoid two competing URLs.
 
-More complex modalities, such as video/audio or binary attachments requiring a
-media-specific encoding, will be distinguished through `extras` in future
-provider extensions. No category key or values are standardized for those modes
-yet. Core can retain binary content and opaque metadata, but that does **not**
-make the current adapter support those modalities. Do not send a video reference
-as `external_ref` expecting video behavior: this adapter treats it as an image.
-Provider adapter support and the selected model's capabilities must both match
-what the hub sends.
+Audio and video are contract labels without a provider mapping today: the worker
+retains them and the panel can display them, but both current adapters reject
+them at request construction rather than guessing a category. Document has a
+Responses mapping (or a provider-hosted file through `extras.type: "input_file"`
+plus `file_id`) and no Chat Completions mapping. Do not send a video reference
+expecting video behavior. Provider adapter support and the selected model's
+capabilities must both match what the hub sends.
 
 The former `data.text` field is no longer accepted for `message`, including when
 `content` is also present. Send a one-element text array instead. Role and tool
@@ -383,9 +403,10 @@ and a tool-call count. `omitted_steps` counts model steps still to be fetched;
 list includes at most four parts;
 `omitted_parts` on a model step counts its remaining parts.
 Tool arguments, results, system prompt, and the rest of `AgentInputState` are
-never returned. Text parts are limited to 4096 UTF-8 bytes and external
-references to 2048 bytes; `truncated: true` marks clipped values. Binary
+never returned. Text parts are limited to 4096 UTF-8 bytes and parts of any other
+modality to 2048 bytes; `truncated: true` marks clipped values. Binary
 contents carry an empty `raw`, `omitted: true`, and their encoded byte length.
+Each projected part carries `type` and `modality`.
 This is display data, not a restorable snapshot.
 
 Pages reflect state at the time each query runs. Hooks may prune or edit turns
@@ -772,6 +793,7 @@ them as commands.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `type` | `text`, `binary`, `external_ref` | Encoding of `raw`. |
+| `modality` | `text`, `image`, `audio`, `video`, `document` | Media category of the payload, independent of `type`. |
 | `raw` | String | UTF-8 text, base64 binary, or an external URI/reference, respectively. |
 | `extras` | Optional JSON | Provider/tool metadata. Admitted user content retains the supplied metadata object unchanged. |
 
@@ -801,7 +823,7 @@ computing total tokens. Usage is provider-reported and may be partial.
 {
   "type": "model_response",
   "role": "assistant",
-  "content": [{"type":"text","raw":"Hello."}],
+  "content": [{"type":"text","raw":"Hello.","modality":"text"}],
   "cost": {"prompt":120,"generated":4,"cache_hit":80}
 }
 ```

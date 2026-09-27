@@ -227,7 +227,8 @@ public:
         --in_flight;
         note(query, "finished");
         co_return model_io::Content{
-            .type = model_io::ContentType::Text, .raw = payload, .extras = {}};
+            .type = model_io::ContentType::Text, .raw = payload, .extras = {},
+            .modality = model_io::Modality::Text};
     }
 
     model_io::InvokeReturn check_result(

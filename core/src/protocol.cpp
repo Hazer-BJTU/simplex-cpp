@@ -67,6 +67,23 @@ Input parse_input(const nlohmann::json& payload) {
             } else {
                 throw std::invalid_argument("unknown content type");
             }
+            // The media category is required and must be one of the five
+            // labels: the boundary never infers it from the encoding, and it
+            // never lets an unknown label through as if it were text.
+            const auto modality = part.at("modality").get<std::string>();
+            if (modality == "text") {
+                content.modality = model_io::Modality::Text;
+            } else if (modality == "image") {
+                content.modality = model_io::Modality::Image;
+            } else if (modality == "audio") {
+                content.modality = model_io::Modality::Audio;
+            } else if (modality == "video") {
+                content.modality = model_io::Modality::Video;
+            } else if (modality == "document") {
+                content.modality = model_io::Modality::Document;
+            } else {
+                throw std::invalid_argument("unknown content modality");
+            }
             content.raw = part.at("raw").get<std::string>();
             if (content.raw.empty()) {
                 throw std::invalid_argument("content raw must not be empty");
@@ -150,13 +167,18 @@ std::string clipped(const std::string& raw, std::size_t maximum) {
 }
 
 nlohmann::json display_content(const model_io::Content& part) {
-    nlohmann::json value = {{"type", part.type}};
+    // The part's encoding and its media category are both projected: the panel
+    // reads `type` for how `raw` is encoded and `modality` for what it is.
+    nlohmann::json value = {{"type", part.type}, {"modality", part.modality}};
     if (part.type == model_io::ContentType::Binary) {
         value["raw"] = "";
         value["omitted"] = true;
         value["bytes"] = part.raw.size();
     } else {
-        const auto maximum = part.type == model_io::ContentType::Text ? 4096u : 2048u;
+        // The display budget follows the category: a text part may use twice
+        // the room of an attachment reference.
+        const auto maximum =
+            part.modality == model_io::Modality::Text ? 4096u : 2048u;
         value["raw"] = clipped(part.raw, maximum);
         if (part.raw.size() > maximum) value["truncated"] = true;
     }

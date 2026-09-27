@@ -29,11 +29,16 @@
 // `input` flattening, per turn, in order:
 //
 //   user_input           -> {type:"message", role:"user", content:[parts...]}
-//                           one provider part per ordered Content entry:
-//                           text -> input_text, external_ref -> input_image,
-//                           binary -> input_file; extras.type may explicitly
-//                           select input_image/input_file and extras fields
-//                           (detail, filename, file_id, ...) are preserved
+//                           one provider part per ordered Content entry, its
+//                           kind chosen by Content::modality (NEVER by the
+//                           encoding): text -> input_text, image ->
+//                           input_image, document -> input_file (a
+//                           reference as file_url, inline bytes as
+//                           file_data). extras fields (detail, filename,
+//                           file_id, ...) are preserved; a captured
+//                           extras.type keeps its finer provider-side kind on
+//                           a part that already is an image or a file, and a
+//                           text part never carries one
 //   model_response       -> up to three groups, in this order:
 //     reasoning          extras.items (captured done items) re-emitted
 //                       VERBATIM — ids, summaries and encrypted_content must
@@ -66,15 +71,17 @@
 // apply_transport_headers() applies auth/user-agent/extra headers. The
 // endpoint's request_path is used VERBATIM — set it to "/v1/responses" (the
 // dataclass default "/chat/completions" is chat-completions flavoured and
-// would misroute this body; the interface contract allows no third hard
-// error, so this stays the caller's responsibility). SSE-specific headers
+// would misroute this body; nothing here detects the mismatch, so this stays
+// the caller's responsibility). SSE-specific headers
 // (Accept: text/event-stream, Content-Type: application/json) are set here,
 // not in the shared helper.
 //
 // Implementation contract (model_request.hpp) applies in full: synchronous,
 // pure, no I/O, stateless — one instance may serve concurrent calls; lenient
-// on imperfect conversations; exactly two hard errors (missing non-empty
-// "model"; hostless base_url), both HttpRequestException{CreateRequest}.
+// on imperfect conversations; three hard errors, all
+// HttpRequestException{CreateRequest}: missing non-empty "model", hostless
+// base_url, and a content modality this protocol cannot describe (audio or
+// video — see the flattening notes above).
 //
 
 #include <nlohmann/json.hpp>

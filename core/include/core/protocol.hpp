@@ -30,11 +30,15 @@ struct Input {
 };
 /**
  * Parse a message's ordered content parts into user MessageItem::content.
- * Each part requires type (text/binary/external_ref) and nonempty raw.
- * Optional object metadata is preserved in Content::extras without injecting
- * category fields. Binary/reference bytes are retained verbatim: this boundary
- * neither decodes nor fetches them. Current Chat Completions adapters map
- * external_ref to image_url; future richer modalities can use extras metadata.
+ * Each part requires type (text/binary/external_ref) as its encoding and
+ * modality (text/image/audio/video/document) as its media category, plus
+ * nonempty raw. Both labels are explicit and required: the boundary neither
+ * infers a category from the encoding nor accepts an unknown one, so an
+ * attachment can never arrive as text by omission. Optional object metadata is
+ * preserved in Content::extras without injecting category fields.
+ * Binary/reference bytes are retained verbatim: this boundary neither decodes
+ * nor fetches them. An adapter maps the modalities it supports and rejects the
+ * rest; this boundary does not decide what a provider can carry.
  *
  * Optional options must contain category objects. Model and confirmation values
  * are validated by their handlers; tools is a reserved empty object. Unknown
