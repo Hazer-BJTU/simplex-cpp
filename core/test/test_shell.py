@@ -1,3 +1,4 @@
+# DEPRECATED: historical simplex_shell test; not registered with CTest.
 """Plain terminal router integration, using only Python's standard library."""
 import base64
 import json

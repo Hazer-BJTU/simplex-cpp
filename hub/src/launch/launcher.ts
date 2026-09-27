@@ -3,8 +3,8 @@
  *
  * A launcher turns a session into a process invocation. It is a separate
  * concept from configuration rendering on purpose: the deployment may replace
- * `simplex_worker --config ... --session ...` with a wrapper script or a future
- * `simplex run <session>` front end without changing how the hub talks to
+ * `simplex_worker --config ... --session ...` with `simplex run`, a wrapper
+ * script, or another front end without changing how the hub talks to
  * workers, how it renders configuration, or how the panel behaves.
  *
  * Two kinds ship today:

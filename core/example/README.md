@@ -1,4 +1,10 @@
-# One-to-one terminal shell
+# Deprecated one-to-one terminal shell
+
+`simplex_shell` is deprecated and retained as historical source only. It has no
+CMake target, is not installed, and is not a `simplex` subcommand. Use the
+[hub](../../hub/README.md) for interactive sessions and approvals. The usage
+below documents the old implementation; its shell-dependent tests are also
+retained but no longer registered with CTest.
 
 simplex_shell --listen 127.0.0.1:8765 listens for one worker. Configure routes
 with --events-path /agent/events and --confirmation-path /agent/confirm.

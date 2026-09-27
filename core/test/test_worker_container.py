@@ -1,3 +1,4 @@
+# DEPRECATED: historical simplex_shell test; not registered with CTest.
 """Offline provider + actual worker/shell/process tools, restricted to Docker."""
 import json
 from pathlib import Path

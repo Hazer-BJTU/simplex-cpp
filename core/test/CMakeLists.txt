@@ -7,17 +7,6 @@ endforeach()
 target_link_libraries(test_core_protocol PRIVATE llm_chat_completions)
 target_link_libraries(test_core_application PRIVATE fileio_lib)
 
-add_test(NAME core_worker_container
-    COMMAND /bin/sh ${PROJECT_SOURCE_DIR}/loop/test/run_example_container_smoke.sh
-        ${CMAKE_CURRENT_SOURCE_DIR}/test_worker_container.py
-        $<TARGET_FILE:simplex_worker> $<TARGET_FILE:simplex_shell>)
-set_tests_properties(core_worker_container PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
-
-add_test(NAME core_shell_protocol
-    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/run_python_test.sh
-        ${CMAKE_CURRENT_SOURCE_DIR}/test_shell.py $<TARGET_FILE:simplex_shell>)
-set_tests_properties(core_shell_protocol PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
-
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Export the test executable's resolver override for interposition in Asio.
     # Keeping the fixture in this executable avoids a test-only DT_NEEDED
@@ -38,3 +27,16 @@ add_test(NAME core_worker_cli
     COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/run_python_test.sh
         ${CMAKE_CURRENT_SOURCE_DIR}/test_worker_cli.py $<TARGET_FILE:simplex_worker>)
 set_tests_properties(core_worker_cli PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+
+# Run the same CLI and signal checks through the public command router.
+add_test(NAME core_simplex_cli
+    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/run_python_test.sh
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_worker_cli.py
+        ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/simplex run)
+set_tests_properties(core_simplex_cli PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+
+add_test(NAME core_simplex_launcher
+    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/run_python_test.sh
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_simplex_launcher.py
+        ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/simplex)
+set_tests_properties(core_simplex_launcher PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)

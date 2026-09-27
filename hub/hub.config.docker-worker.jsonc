@@ -52,7 +52,7 @@
             // — executable but not readable, which is enough for a binary and
             // not for a shell script. Overriding it is what lets a non-root
             // user run the worker at all.
-            "--entrypoint", "/src/build/bin/simplex_worker",
+            "--entrypoint", "/src/build/bin/simplex",
             // The model credential, forwarded from the hub's own environment.
             // No `=value`: Docker takes the value from the environment of the
             // process that runs `docker`, so the key stays in the operator's
@@ -70,6 +70,7 @@
             "-v", "/tmp/simplex-workspace:/workspace",
             "-w", "{session_dir}",
             "simplex-hub-test:latest",
+            "run",
             "--config", "{config}",
             "--session", "{session}",
             "--threads", "{threads}"

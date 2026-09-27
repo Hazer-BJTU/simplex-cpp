@@ -63,8 +63,8 @@
         // "simplex-worker": run worker.bin with --config/--session/--threads.
         // "command": run launcher.command as a template with the placeholders
         // {session}, {config}, {data_dir}, {session_dir}, {endpoint},
-        // {confirm_endpoint}. Use it for a wrapper script or a future
-        // `simplex run ...` front end.
+        // {confirm_endpoint}. Use it for a wrapper script or the
+        // installed `simplex run ...` entry point.
         "kind": "simplex-worker",
         "command": [],
         "args": [],

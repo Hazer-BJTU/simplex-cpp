@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Public command router. Keep worker argument parsing in the C++ executable.
+set -euo pipefail
+
+usage() {
+    cat <<'HELP'
+Usage: simplex <command> [options]
+
+Commands:
+  run       Start a worker session
+
+Use "simplex run --help" for worker options.
+HELP
+}
+
+case "${1:-}" in
+    ''|-h|--help)
+        usage
+        exit 0
+        ;;
+    run)
+        shift
+        ;;
+    *)
+        printf 'simplex: unknown command: %s\n\n' "$1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
+# Follow launcher symlinks without changing the caller's working directory.
+# This also keeps executable-relative plugin and prompt discovery in the worker.
+launcher=${BASH_SOURCE[0]}
+links=0
+while [[ -L "$launcher" ]]; do
+    if (( links >= 40 )); then
+        printf 'simplex: too many launcher symbolic links\n' >&2
+        exit 126
+    fi
+    links=$((links + 1))
+    directory=$(cd -P -- "$(dirname -- "$launcher")" && pwd)
+    launcher=$(readlink -- "$launcher")
+    if [[ "$launcher" != /* ]]; then
+        launcher="$directory/$launcher"
+    fi
+done
+
+directory=$(cd -P -- "$(dirname -- "$launcher")" && pwd)
+worker="$directory/simplex_worker"
+if [[ ! -f "$worker" || ! -x "$worker" ]]; then
+    printf 'simplex: worker executable is missing or not executable: %s\n' "$worker" >&2
+    exit 127
+fi
+
+# No intermediate shell process survives: the worker receives signals directly.
+exec "$worker" "$@"

@@ -2,7 +2,7 @@
 
 This is the communication contract implemented by `simplex_worker`. It is
 intended for authors of hubs, gateways, terminal clients, and web interfaces in
-any language. The bundled `simplex_shell` is one example server, not a required
+any language. The deprecated `simplex_shell` source is a historical example, not a required
 implementation or an additional protocol layer.
 
 The worker is always the WebSocket client. One worker process owns one session

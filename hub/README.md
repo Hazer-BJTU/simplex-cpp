@@ -3,11 +3,9 @@
 A Node.js server that runs `simplex_worker` sessions and gives them a browser
 panel.
 
-`simplex_shell` (in `core/example`) is a one-to-one terminal server: one
-operator, one session, approvals typed as UUIDs. The hub is the multi-session
-counterpart — it launches workers, speaks the worker protocol on their behalf,
-collects their events, turns tool confirmations into buttons, and keeps the
-process output around when something goes wrong.
+The hub launches workers, collects their events, displays tool confirmations,
+and retains process output. The old one-to-one terminal server `simplex_shell`
+is deprecated source only and is no longer built or installed.
 
 The hub is an additive component. It changes no C++ code and no client
 behaviour: it implements the worker side of

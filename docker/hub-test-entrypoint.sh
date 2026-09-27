@@ -37,7 +37,7 @@ simplex hub — disposable test container
             container-local unless you mount a volume; rm the container and
             it is gone
 
-  worker    /src/build/bin/simplex_worker   Debug, built inside this image
+  worker    /src/build/bin/simplex run   Debug, built inside this image
   sources   /src                            the tree this image was built from
 
   mock      ${MOCK_STATE} — the hub serves its own model, no key needed.

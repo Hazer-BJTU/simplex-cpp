@@ -323,7 +323,7 @@ Two details it inherits from the manual-test image on purpose: it builds on the
 **portable** base so in-container behaviour matches the shipped binaries, and it
 builds the worker **Debug**, because assertions and stack frames are what a
 hand-driven session wants. The worker is built, not staged: the hub is pointed at
-`/src/build/bin/simplex_worker`. The staged release layout is CI's `hub-e2e`
+`/src/build/bin/simplex run`. The staged release layout is CI's `hub-e2e`
 job's subject, not this image's.
 
 ## Using it

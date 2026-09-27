@@ -1,3 +1,4 @@
+// DEPRECATED: retained for reference only; not built or installed. Use the hub.
 #include "terminal.hpp"
 #include "core/protocol.hpp"
 #include <boost/asio.hpp>

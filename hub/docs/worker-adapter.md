@@ -115,7 +115,7 @@ Other confirmation rules:
 
 ### A second event connection supersedes the first
 
-`simplex_shell` answers a second event connection with HTTP 409. This hub does
+The deprecated `simplex_shell` example answered a second event connection with HTTP 409. This hub does
 not: it closes the previous connection (code 4001) and accepts the new one.
 
 The reason is operational. A worker that reconnects after an unobserved peer

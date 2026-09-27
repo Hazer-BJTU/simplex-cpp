@@ -643,7 +643,10 @@ jobs:
         # links the release's shared libraries through its RPATH but loads no
         # plugin, so this is the packaging half. The end-to-end run below is
         # what loads plugins and executes a tool.
-        run: stage/bin/simplex_worker --help
+        run: |
+          stage/bin/simplex --help
+          stage/bin/simplex run --help
+          test ! -e stage/bin/simplex_shell
 
       - name: Assert a browser is available for the panel check
         # An explicit red step rather than a test that quietly skips. A panel
