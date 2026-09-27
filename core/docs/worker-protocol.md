@@ -481,11 +481,10 @@ outstanding history queries, refreshes the new revision, and renders the summary
 as a compact result. Retained hub events remain available as an execution record.
 
 After each successful state replacement the worker applies
-`persistence.memory_retention`: `max_archives` (default 20), `max_bytes` (default
-268435456), and `max_age_days` (default 30). Zero disables the respective limit.
-It keeps the current archive even if that file alone exceeds a limit, then
-considers other recognized archives newest first within all enabled limits.
-Age is measured from `state.md` modification time. Cleanup is synchronous under
+`persistence.memory_retention.max_archives` (default 5). Zero disables cleanup.
+It always keeps the current archive, which counts toward the limit, then
+retains other recognized archives newest first until the count limit is reached.
+Cleanup is synchronous under
 session ownership, after the durable commit, with no archive writer or tool
 running. Failed or cancelled attempts remain until a later successful compact;
 these limits are therefore cleanup targets, not a hard disk quota.
@@ -693,7 +692,7 @@ the next payload as described under
 | `stopping` | Boolean | Worker shutdown is in progress as observed at this snapshot. |
 | `storage_failed` | Boolean | A required JSON persistence operation failed; further saves are suppressed. |
 | `rejected_payloads` | Nonnegative integer | Cumulative inbound payload-queue overflow count in this IO client lifetime; not semantic input rejections. |
-| `memory_retention` | Object | Effective `max_archives`, `max_bytes`, and `max_age_days`; zero disables a limit. Older workers omit this field. |
+| `memory_retention` | Object | Effective `max_archives` (default 5); zero disables cleanup. Older workers omit this field. |
 | `capabilities` | Array of strings | Features supported by this worker process. `session-history` means it accepts read-only `history` payloads; `context-compact` means it implements the `compact` lifecycle (subject to persistence and state prerequisites). A hub should check this before querying a worker that may be older than the hub. |
 | `loop` | Optional loop-progress object | Present only when conversation state contains loop progress, including restored progress. |
 

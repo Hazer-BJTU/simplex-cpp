@@ -77,7 +77,7 @@ export interface WorkerConfigDocument {
         directory: string;
         state: string;
         memory: string;
-        memory_retention: { max_archives: number; max_bytes: number; max_age_days: number };
+        memory_retention: { max_archives: number };
         format: string;
         readable: boolean;
         restore: string;
@@ -155,8 +155,6 @@ export function renderWorkerConfig({
             memory: 'memory',
             memory_retention: {
                 max_archives: config.worker.memoryRetention.maxArchives,
-                max_bytes: config.worker.memoryRetention.maxBytes,
-                max_age_days: config.worker.memoryRetention.maxAgeDays,
             },
             format: 'json',
             readable: spec.persistence.readable,

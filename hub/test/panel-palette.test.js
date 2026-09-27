@@ -145,13 +145,12 @@ describe('composer command prefixes', () => {
         assert.match(unavailableReason(command, true, true, true), /current run/);
         assert.match(unavailableReason(command, true, false, false), /does not support/);
         assert.equal(unavailableReason(command, true, false, true), null);
-        assert.match(compactRetentionDetail({ max_archives: 20, max_bytes: 268435456,
-            max_age_days: 30 }), /20 archives, 256 MiB, 30 days/);
-        assert.match(compactRetentionDetail({ max_archives: 0, max_bytes: 0,
-            max_age_days: 0 }), /disabled/);
+        assert.match(compactRetentionDetail({ max_archives: 5 }), /5 archives/);
+        assert.match(compactRetentionDetail({ max_archives: 0 }), /disabled/);
         assert.match(compactRetentionDetail(undefined), /not reported/);
-        assert.match(compactRetentionDetail({ max_archives: 0, max_bytes: 512,
-            max_age_days: 0 }), /512 bytes/);
+        for (const max_archives of [-1, 1.5, '5']) {
+            assert.match(compactRetentionDetail({ max_archives }), /not reported/);
+        }
     });
     it('offers one conversation refresh command by name prefix only', () => {
         assert.deepEqual(matchingComposerCommands('ref').map((command) => command.name),

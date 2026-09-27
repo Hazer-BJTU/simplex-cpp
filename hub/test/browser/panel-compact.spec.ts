@@ -13,9 +13,9 @@ test('Compact context is gated, carries no message, and preserves a refused draf
     const command = page.getByRole('option', { name: /Compact context/ });
     await expect(command).toBeDisabled();
     await emit(page, 'status', { active: false, capabilities: ['context-compact'],
-        memory_retention: { max_archives: 20, max_bytes: 268435456, max_age_days: 30 } });
+        memory_retention: { max_archives: 5 } });
     await expect(command).toBeEnabled();
-    await expect(command).toContainText('20 archives, 256 MiB, 30 days');
+    await expect(command).toContainText('5 archives');
     await page.getByLabel('command input').press('Enter');
     await expect(page.getByTestId('round-summary').last()).toContainText('context compaction');
     await expect(page.getByTestId('outbox-item')).toHaveCount(0);

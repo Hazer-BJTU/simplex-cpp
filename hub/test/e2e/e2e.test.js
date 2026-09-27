@@ -88,7 +88,7 @@ function waitForExit(child, timeoutMs = 10000) {
 describe('end to end with the real worker', { skip }, () => {
     it('compacts through the hub and prunes archives only after publishing the replacement', { timeout: 180000 }, async () => {
         const ctx = await startE2eHub();
-        ctx.config.worker.memoryRetention = { maxArchives: 1, maxBytes: 0, maxAgeDays: 0 };
+        ctx.config.worker.memoryRetention = { maxArchives: 1 };
         const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
         try {
             const created = await api(ctx.base, '/api/sessions', {

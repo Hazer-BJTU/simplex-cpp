@@ -242,8 +242,8 @@ for admission rules, failure behavior, and event fields. The hub exposes it as
 Archives accumulate under `<persistence.directory>/<persistence.memory>`
 (default subdirectory `memory`), without another session-ID component. Every attempt reserves a new numbered directory, so
 restarts and clock changes preserve ordering without replacing earlier files.
-After a successful compact, `persistence.memory_retention` applies count, byte
-and age limits (20 archives, 256 MiB, 30 days by default). The current archive is
+After a successful compact, `persistence.memory_retention` applies a
+`max_archives` count limit (5 by default; zero disables cleanup). The current archive is
 always retained. Failed attempts and unfamiliar files may remain; these are
 cleanup targets rather than a disk quota. Cleanup failure is reported alongside
 the saved summary without undoing it.

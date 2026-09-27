@@ -223,7 +223,7 @@ directory; command-line paths resolve against the working directory.
 | `worker.confirmationTimeoutMs` | `120000` | confirmation deadline written into the worker configuration |
 | `worker.stopTimeoutMs`, `worker.sigtermGraceMs`, `worker.sigkillGraceMs` | `15000`, `5000`, `2000` | the stop escalation ladder |
 | `worker.persistence` | `{enabled: true, readable: false}` | worker snapshot policy |
-| `worker.memoryRetention` | `{maxArchives: 20, maxBytes: 268435456, maxAgeDays: 30}` | compact archive cleanup defaults for new worker configs; zero disables a limit |
+| `worker.memoryRetention` | `{maxArchives: 5}` | compact archive cleanup defaults for new worker configs; zero disables cleanup |
 | `providerProfiles` | `deepseek`, `mock` | copied into the generated worker configuration; a session picks one by name |
 | `launcher.kind` | `simplex-worker` | `simplex-worker` or `command` |
 | `launcher.command`, `launcher.args` | `[]` | template and extra arguments for the `command` launcher |
@@ -359,8 +359,8 @@ Child-path validation rejects absolute paths and lexical `..` traversal, but
 does not resolve symlinks. A symlink within the session can point state or
 memory outside it; these paths are not a filesystem sandbox. The operator must
 trust or constrain workers with filesystem access.
-After a successful compact, worker-owned cleanup applies the configured count,
-byte and age limits to recognized archives, preserving the current archive.
+After a successful compact, worker-owned cleanup applies the configured count
+limit (5 by default) to recognized archives, preserving the current archive.
 Cleanup failures are visible beside the saved summary. Failed/cancelled attempts,
 unexpected files and empty directories can remain, so limits are cleanup targets
 rather than disk quotas. The hub never deletes a remote path from an event.

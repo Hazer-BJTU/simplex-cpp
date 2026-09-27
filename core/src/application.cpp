@@ -308,9 +308,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         Json value = {{"active", active}, {"stopping", stopping},
             {"storage_failed", storage_failed}, {"rejected_payloads", client.rejected_payloads()},
             {"capabilities", Json::array({"session-history", "context-compact"})}};
-        value["memory_retention"] = {{"max_archives", config.memory_retention.max_archives},
-            {"max_bytes", config.memory_retention.max_bytes},
-            {"max_age_days", config.memory_retention.max_age_days}};
+        value["memory_retention"] = {{"max_archives", config.memory_retention.max_archives}};
         if (state.loop) value["loop"] = *state.loop;
         return value;
     }
