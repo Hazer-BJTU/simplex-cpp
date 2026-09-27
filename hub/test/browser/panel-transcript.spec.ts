@@ -790,3 +790,32 @@ test('latest token usage stays by the composer while per-turn costs require deta
     await page.getByLabel('message', { exact: true }).press('Alt+Enter');
     await expect(usage).toContainText('prompt 1.0M');
 });
+
+test('the token scale uses eight bands and remains full above 1M', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.setViewportSize({ width: 320, height: 568 });
+    await emit(page, 'run_started', {});
+    const cost = (prompt: number, generated = 0) => modelResponse('Usage update', {
+        cost: { prompt, generated, cache_hit: prompt },
+    });
+    await emit(page, 'model_response', cost(128 * 1024, 1));
+    const usage = page.getByLabel('Latest token usage');
+    const meter = page.getByRole('meter', { name: 'Latest request token size' });
+    await expect(meter).toHaveAttribute('aria-valuenow', '131073');
+    await expect(usage).toContainText('2/8 · 256K');
+    await expect(meter.getByTestId('token-band-fill')).toHaveCount(8);
+    const fills = () => meter.getByTestId('token-band-fill').evaluateAll(
+        (nodes) => nodes.map((node) => (node as HTMLElement).style.width));
+    expect((await fills())[0]).toBe('100%');
+    const bounds = await meter.boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
+    await emit(page, 'model_response', cost(1024 * 1024));
+    await expect(usage).toContainText('8/8 · 1M');
+    await expect.poll(fills).toEqual(Array(8).fill('100%'));
+    await emit(page, 'model_response', cost(2 * 1024 * 1024));
+    await expect(meter).toHaveAttribute('aria-valuenow', '1048576');
+    await expect(usage).toContainText('8/8 · 1M');
+    expect(await fills()).toEqual(Array(8).fill('100%'));
+});

@@ -27,7 +27,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '../ui/overlays.tsx';
 import type { ConfirmMode } from '../state/store.ts';
 import { useClient } from './ClientContext.tsx';
 import { currentModelOptions, modelOptionFields } from './modelOptions.ts';
-import { formatCacheRate, formatTokens } from '../state/tokenUsage.ts';
+import { TokenUsageIndicator } from './TokenUsageIndicator.tsx';
 import {
     matchingComposerCommands,
     compactRetentionDetail,
@@ -227,14 +227,7 @@ export function Composer() {
                 }
             }}
         >
-            {tokenUsage && (
-                <div aria-label="Latest token usage"
-                    className="mx-auto mb-1 flex max-w-4xl justify-end gap-2 px-1 text-[10px] text-ink-muted tabular-nums">
-                    <span>prompt {formatTokens(tokenUsage.prompt)}</span>
-                    <span>generated {formatTokens(tokenUsage.generated)}</span>
-                    <span>cache-rate {formatCacheRate(tokenUsage)}</span>
-                </div>
-            )}
+            {tokenUsage && <TokenUsageIndicator usage={tokenUsage} />}
             <div className="relative mx-auto max-w-4xl rounded-xl border border-line-strong
                 bg-surface shadow-sm focus-within:border-ink-muted">
                 <div className="flex items-center border-b border-line px-2 py-1.5">

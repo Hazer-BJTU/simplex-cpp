@@ -33,3 +33,21 @@ export function formatCacheRate(usage: TokenUsage): string {
     const ratio = usage.prompt > 0 ? Math.min(1, usage.cacheHit / usage.prompt) : 0;
     return `${(ratio * 100).toFixed(1)}%`;
 }
+
+/** Context-window scale: eight 128 Ki-token bands, capped at 1 Mi-token. */
+export function tokenUsageBand(usage: TokenUsage) {
+    const bandSize = 128 * 1024;
+    const maximum = bandSize * 8;
+    const total = usage.prompt + usage.generated;
+    const capped = Math.min(total, maximum);
+    const level = Math.max(1, Math.ceil(capped / bandSize));
+    return {
+        total,
+        capped,
+        maximum,
+        level,
+        upper: level === 8 ? '1M' : `${level * 128}K`,
+        fills: Array.from({ length: 8 }, (_, index) =>
+            Math.max(0, Math.min(1, (capped - index * bandSize) / bandSize))),
+    };
+}
