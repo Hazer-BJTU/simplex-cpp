@@ -160,10 +160,21 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         ? { ...restOptions, fetchImpl: options.fetchImpl }
         : restOptions);
 
+    // These track requests in flight on the current panel connection, not
+    // durable worker capabilities. A lost socket invalidates both assumptions.
+    const optionsRequested = new Map<SessionId, string>();
     const socket: PanelSocket = createPanelSocket({
         location: loc,
         token: () => tokens.get(),
-        onState: (status) => store.getState().setConnection(status),
+        onState: (status) => {
+            if (status.state !== 'open') {
+                optionsRequested.clear();
+                for (const [sessionId, view] of store.getState().views) {
+                    if (view.cancelPending) store.getState().setCancelPending(sessionId, false);
+                }
+            }
+            store.getState().setConnection(status);
+        },
         onEvent: (event) => {
             if (event.kind === 'ignored') store.getState().noteIgnoredFrame();
             else if (event.kind === 'refused') store.getState().noteRefusal(event.code, event.detail);
@@ -195,7 +206,6 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
     }>();
     const subscribedSessions = new Set<SessionId>();
     // Capabilities stay fixed for a worker lifetime. Do not poll on every run.
-    const optionsRequested = new Map<SessionId, string>();
     function requestModelOptions(sessionId: SessionId, force = false): void {
         const state = store.getState();
         const session = state.sessions.get(sessionId);
@@ -333,6 +343,9 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 }
                 if (message.envelope.event === 'ready') {
                     requestModelOptions(message.session);
+                }
+                if (message.envelope.event === 'options') {
+                    optionsRequested.delete(message.session);
                 }
                 if (freshEvent && message.envelope.event === 'input_rejected'
                     && (message.envelope.data as { code?: unknown } | null)?.code === 'invalid_options'

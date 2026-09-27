@@ -42,10 +42,11 @@
         "command": [
             "docker", "run", "--rm", "--init",
             "--name", "simplex-worker-{session}",
-            // Manual testing uses root inside the container.
-            "--user", "0:0",
+            // Root runs with the hub's group. The umask below lets the host
+            // hub delete state and memory directories created by the worker.
+            "--user", "0:{gid}",
             // Override the image entrypoint, which otherwise starts the hub.
-            "--entrypoint", "/src/build/bin/simplex",
+            "--entrypoint", "/bin/sh",
             // The model credential, forwarded from the hub's own environment.
             // No `=value`: Docker takes the value from the environment of the
             // process that runs `docker`, so the key stays in the operator's
@@ -61,6 +62,7 @@
             // The image creates this private workspace for process tools.
             "-w", "/root/workspace",
             "simplex-hub-test:latest",
+            "-c", "umask 0002; exec \"$@\"", "sh", "/src/build/bin/simplex",
             "run",
             "--config", "{config}",
             "--session", "{session}",

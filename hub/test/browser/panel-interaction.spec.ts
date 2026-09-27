@@ -351,6 +351,25 @@ test('the primary composer button cancels an active run and keeps the draft', as
     await expect(message).toHaveValue('keep for the next run');
 });
 
+test('a cancel without acknowledgement can be retried after panel reconnect', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'run_started', {});
+    await page.getByRole('button', { name: 'Cancel run' }).click();
+    await expect(page.getByRole('button', { name: 'Cancelling…' })).toBeDisabled();
+    await page.request.post(`${STUB}/__stub/down`);
+    await expect(page.getByText('connected', { exact: true })).toHaveCount(0);
+    await page.request.post(`${STUB}/__stub/up`);
+    await expect(page.getByText('connected', { exact: true })).toBeVisible();
+    const cancel = page.getByRole('button', { name: 'Cancel run' });
+    await expect(cancel).toBeEnabled();
+    await cancel.click();
+    await expect(page.getByRole('button', { name: 'Cancelling…' })).toBeDisabled();
+    const response = await page.request.get(`${STUB}/__stub/received`);
+    expect((await response.json()).received.filter((entry: { type: string; operation?: string }) =>
+        entry.type === 'signal' && entry.operation === 'cancel')).toHaveLength(2);
+});
+
 test('command mode completes a prefix without sending or losing a message draft', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();

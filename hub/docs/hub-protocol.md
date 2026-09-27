@@ -205,7 +205,7 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 | `create_session` | `session`, optional `spec` | answers with `created`, or `session_exists` / `invalid_session` |
 | `delete_session` | `session` | removes the complete session directory, then answers with `session_removed`; refused while busy |
 | `worker` | `session`, `action`: `start`\|`stop`\|`restart`\|`force-kill`, optional `spec` | answers with `accepted` (carrying the result) or `worker_action_failed` |
-| `input` | `session`, optional `content`, `operation`, `request_id`, `options` | `message` requires content; `continue` and `compact` omit it. Validates, sends a payload, answers with `accepted` and `request_id` |
+| `input` | `session`, `operation?`: `message` \| `continue` \| `compact`, optional `content`, `request_id`, `options` | Omitted `operation` means `message`. `message` requires content; `continue` and `compact` omit it. Validates, sends a payload, answers with `accepted` and `request_id` |
 | `history` | `session`, optional `request_id`, `start`, `step`, `limit` | if the current worker advertises `session-history`, sends a read-only payload; otherwise returns `input_not_sent`. The response arrives as a transient `history` worker event |
 | `signal` | `session`, `operation`: `status`\|`options`\|`cancel`\|`shutdown`, optional `run_id` | answers with `accepted` or `signal_not_sent` |
 | `confirmation` | `session`, `confirmation_id`, `decision`, optional `reason` | answers with `accepted` or `confirmation_rejected` |

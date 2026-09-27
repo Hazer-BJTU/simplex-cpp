@@ -575,7 +575,7 @@ may occur in nested dataclass records.
 | `status` | Status object | Snapshot produced by `status` or `cancel`. |
 | `options` | Options object | Available choices and current selections returned in response to the `options` signal. |
 | `history` | Display history page | Read-only response to a `history` payload; not a run event. |
-| `compact_finished` | `{ "summary": string, "memory_file": string, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true }` | Compacted state was durably published; old history pages must be invalidated. |
+| `compact_finished` | `{ "summary": string, "memory_file": string, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
 | `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
 | `input_admitted` | `{ "operation": string }` | Host admitted `message`, `continue`, or `compact` and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
 | `input_rejected` | `{ "request_id": any JSON value or null, "message": string, "code"?: "invalid_options" }` | Dequeued input failed host validation; no run was started for that input. |

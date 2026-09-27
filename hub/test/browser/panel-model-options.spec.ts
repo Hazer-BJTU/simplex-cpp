@@ -67,6 +67,19 @@ test('a replacement worker cannot reuse the previous worker model menu', async (
     await expect(page.getByRole('button', { name: 'Model options' })).toBeEnabled();
 });
 
+test('an unanswered options request is retried after the panel reconnects', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await expect.poll(async () => (await requests(page, 'signal', 'options')).length).toBe(1);
+    await page.request.post(`${STUB}/__stub/down`);
+    await expect(page.getByText('connected', { exact: true })).toHaveCount(0);
+    await page.request.post(`${STUB}/__stub/up`);
+    await expect(page.getByText('connected', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await requests(page, 'signal', 'options')).length).toBe(2);
+    await emit(page, 'options', advertised);
+    await expect(page.getByRole('button', { name: 'Model options' })).toBeEnabled();
+});
+
 test('mode switching keeps the same toolbar and disables message settings', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();

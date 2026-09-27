@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { STUB, emit, open } from './harness.ts';
+import { STUB, emit, open, runningSession, withSession } from './harness.ts';
 
 const result = { summary: 'A **saved summary**', memory_file: '/worker/memory/archive/state.md',
     removed_turns: 1, revision: 2, durable: true };
@@ -47,6 +47,31 @@ test('Compact context is gated, carries no message, and preserves a refused draf
     await page.reload();
     await expect(page.getByTestId('compact-result')).toContainText('saved summary');
     await expect(page.getByTestId('admitted-placeholder')).toHaveCount(0);
+});
+
+test('a rejected compact retains its identity after transcript replay', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
+    await page.request.post(`${STUB}/__stub/settings`, { data: { rejectInput: true } });
+    await page.getByLabel('message').press('Alt+Enter');
+    await page.getByLabel('command input').fill('compact');
+    await page.getByLabel('command input').press('Enter');
+    await expect(page.getByText('Context compaction was rejected.', { exact: false })).toBeVisible();
+    // The real hub retains the request record in its session description.
+    // The stub deliberately does not, so provide the same replay input here.
+    const response = await page.request.get(`${STUB}/__stub/received`);
+    const input = (await response.json()).received.find((entry: { type: string }) =>
+        entry.type === 'input');
+    await withSession(page, {
+        ...runningSession('demo'),
+        requests: [{ request_id: input.request_id, operation: 'compact', state: 'rejected',
+            sent_at: new Date().toISOString(), settled_at: new Date().toISOString(),
+            detail: 'no turns to compact' }],
+    });
+    await page.reload();
+    await expect(page.getByText('Context compaction was rejected.', { exact: false })).toBeVisible();
+    await expect(page.getByTestId('round-summary').last()).toContainText('context compaction');
 });
 
 test('successful compaction retires old history queries and refreshes the new revision', async ({ page }) => {

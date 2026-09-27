@@ -133,12 +133,19 @@ Three things make it work, and each is a way to get it wrong:
    would then name a host directory that does not exist, and Docker helpfully
    creates an empty one.
 
-The test launcher uses `--user 0:0`: workers and their tools run as root inside
+The test launcher uses `--user 0:{gid}`: workers and their tools run as root inside
 the container. Each container has its own `/root/workspace`, created by the
 image and selected as both the working directory and the model's workspace
 hint. No host workspace is mounted. Stopping and removing the container discards
 workspace files; session state remains in the mounted session directory.
-Files written there by the worker are root-owned on the host.
+The worker starts with umask `0002`, so directories it creates under the
+mounted session path are group-writable by the hub process. Worker files have
+root ownership and the hub's primary GID; the host hub can still remove the
+session tree. A tool that deliberately changes permissions inside the mounted
+session path can defeat this cooperative policy.
+After building the image, run `SIMPLEX_DOCKER_WORKER_TEST=1 node --test
+test/e2e/docker-worker.test.js` from `hub/` to verify a real compact, stop,
+and session deletion as the current non-root host user.
 
 To see that the isolation is real rather than assumed, the example config asks
 the mock for `hostname; id -u; cat /etc/hostname`. The tool card then shows the

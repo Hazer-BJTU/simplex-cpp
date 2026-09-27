@@ -333,5 +333,8 @@ describe('Docker worker example isolation', () => {
         assert.ok(!mounts.includes(`${config.dataDir}:${config.dataDir}`));
         assert.ok(mounts.indexOf(`${directory}:${directory}`)
             < mounts.indexOf(`${configPath}:${configPath}:ro`));
+        assert.ok(invocation.args.includes(`0:${process.getgid()}`));
+        assert.ok(invocation.args.includes('umask 0002; exec "$@"'));
+        assert.ok(!mounts.some((mount) => mount.endsWith(':/root/workspace')));
     });
 });

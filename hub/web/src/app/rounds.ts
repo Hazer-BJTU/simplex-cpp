@@ -389,14 +389,20 @@ export function buildRounds(
     // Older workers left admission data empty. Their request records can help
     // while retained, but newer replayable admission events take precedence.
     const continuationIds = new Set<string>();
+    const compactIds = new Set<string>();
     for (const request of requests.values()) {
         if (request.operation === 'continue') continuationIds.add(request.request_id);
+        if (request.operation === 'compact') compactIds.add(request.request_id);
     }
     for (const item of items) {
         if (item.kind === 'outbox' && item.operation === 'continue') {
             continuationIds.add(item.requestId);
+        } else if (item.kind === 'outbox' && item.operation === 'compact') {
+            compactIds.add(item.requestId);
         } else if (item.kind === 'request' && item.request.operation === 'continue') {
             continuationIds.add(item.request.request_id);
+        } else if (item.kind === 'request' && item.request.operation === 'compact') {
+            compactIds.add(item.request.request_id);
         }
     }
     const byId = new Map<string, ConfirmationPrompt>();
@@ -617,6 +623,11 @@ export function buildRounds(
 
         if (PROBLEM_EVENTS.has(name)) {
             const run = ensureRun();
+            const rejectedRequestId = obj(envelope.data)?.request_id;
+            if (name === 'input_rejected' && typeof rejectedRequestId === 'string'
+                && compactIds.has(rejectedRequestId)) {
+                run.compacting = true;
+            }
             if (name === 'input_rejected' && run.compacting) {
                 run.status = 'rejected';
                 run.open = false;
