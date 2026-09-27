@@ -525,9 +525,10 @@ the runner's Ubuntu.
 - The hub cannot prove that a payload was admitted, executed, or persisted. It
   shows what it observed and marks the rest unknown, and it never resends
   automatically.
-- The strongest boundary here is the container, not the token: run sessions in
-  `docker/Dockerfile.hub-test` (above) and the worst case is a container you
-  throw away. `run_command` is `require_confirm`, so every command is shown in
+- The strongest boundary here is the container, not the token. An unmounted
+  disposable container can be discarded, but `/data` and workspace mounts
+  survive it and remain writable according to their mount permissions.
+  `run_command` is `require_confirm`, so every command is shown in
   the panel before it runs — but a confirmation is a decision, not a sandbox.
 
 ## Troubleshooting

@@ -51,6 +51,9 @@ These describe the hub **build**, not its configuration. `supervisor` means
 "this hub starts and signals worker processes", which stays true for every
 launcher. A capability that varied with
 configuration would be a different kind of list, and nothing in this one does.
+Metadata retains `launcher.owns_config` as a deprecated protocol-v1 field. It
+is always `false` because the hub now owns the saved worker configuration for
+every launcher; v1 clients can continue to read the original shape.
 
 `shared/protocol.ts` is the machine-readable copy, and
 `test/panel-protocol-drift.test.js` fails when this table and that module

@@ -65,7 +65,6 @@
         "kind": "simplex-worker",
         "command": [],
         "args": [],
-        "config": "hub",
         "cwd": "",
         "pidFile": ""
     },

@@ -324,7 +324,11 @@ export interface HubMetadata {
     /** Absent from a hub older than this field; see `TranscriptEpoch`. */
     transcript_epoch?: TranscriptEpoch | undefined;
     listen: { host: string; port: number };
-    launcher: { kind: string };
+    launcher: {
+        kind: string;
+        /** Deprecated in protocol v1; always false. */
+        owns_config: boolean;
+    };
     provider_profiles: string[];
     force_kill_process_group: boolean;
     mock: { enabled: boolean };

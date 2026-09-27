@@ -63,7 +63,7 @@ function meta(epoch) {
         capabilities: ['transcript-replay', 'transcript-epoch', 'global-confirmations'],
         ...(epoch === undefined ? {} : { transcript_epoch: epoch }),
         listen: { host: '127.0.0.1', port: 8800 },
-        launcher: { kind: 'local' },
+        launcher: { kind: 'local', owns_config: false },
         provider_profiles: [],
         force_kill_process_group: false,
         mock: { enabled: true },
