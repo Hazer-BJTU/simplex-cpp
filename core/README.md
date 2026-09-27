@@ -236,12 +236,17 @@ structured summary without tools, and replaces conversation turns with a final
 `memory.runtime` system-prompt section. The worker publishes the replacement JSON
 snapshot before emitting `compact_finished`. Failed or cancelled attempts retain
 the original conversation. See [the wire contract](docs/worker-protocol.md#compact-conversation-context)
-for admission rules, failure behavior, and event fields. Hub commands and display
-support are intentionally delivered separately.
+for admission rules, failure behavior, and event fields. The hub exposes it as
+**Compact context** in Command mode, gated on the current worker's capabilities.
 
 Archives accumulate under `<persistence.directory>/<persistence.memory>`
 (default subdirectory `memory`), without another session-ID component. Every attempt reserves a new numbered directory, so
 restarts and clock changes preserve ordering without replacing earlier files.
+After a successful compact, `persistence.memory_retention` applies count, byte
+and age limits (20 archives, 256 MiB, 30 days by default). The current archive is
+always retained. Failed attempts and unfamiliar files may remain; these are
+cleanup targets rather than a disk quota. Cleanup failure is reported alongside
+the saved summary without undoing it.
 Injected memory identifies the absolute archive directory for later tool-based
 lookup. The compact instruction is loaded from
 [prompts/operations/compact.yaml](prompts/operations/compact.yaml) at startup.

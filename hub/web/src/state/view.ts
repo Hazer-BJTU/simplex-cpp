@@ -27,6 +27,7 @@ import type {
     TranscriptEpoch,
     WorkerEnvelope,
 } from '../../../shared/protocol.ts';
+import { parseCompactResult } from './compact.ts';
 
 /** Envelopes retained per session on the client. */
 export const TRANSCRIPT_CAP = 2000;
@@ -190,6 +191,15 @@ export function nextItemId(prefix: string): string {
  */
 export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
     const name = typeof envelope.event === 'string' ? envelope.event : '';
+    // Replay can arrive after a newer history query. Only discard a projection
+    // that predates this replacement, not pages fetched after it.
+    if (name === 'compact_finished' && parseCompactResult(envelope.data)
+        && typeof envelope.sequence === 'number'
+        && view.historyWorker === envelope.worker_id
+        && (view.historySequence === null || view.historySequence <= envelope.sequence)) {
+        view = { ...view, history: [], historyLoading: false,
+            historySequence: envelope.sequence };
+    }
     const latestEvents = name
         ? { ...view.latestEvents, [name]: envelope }
         : view.latestEvents;

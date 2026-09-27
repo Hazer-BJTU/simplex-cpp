@@ -265,6 +265,8 @@ export interface PanelActions {
     /** Account for a transient worker reply without advancing hub replay. */
     noteTransientWorkerEvent(sessionId: SessionId, envelope: WorkerEnvelope): void;
     beginHistory(sessionId: SessionId): void;
+    /** Forget pre-compaction pages before querying the new history revision. */
+    invalidateHistory(sessionId: SessionId): void;
     endHistory(sessionId: SessionId): void;
     /** Commit one already validated page; false means it did not fit the current load. */
     applyHistoryPage(sessionId: SessionId, envelope: WorkerEnvelope, page: HistoryPage): boolean;
@@ -881,6 +883,12 @@ export function createPanelStore() {
 
         beginHistory(sessionId) {
             set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: true })));
+        },
+
+        invalidateHistory(sessionId) {
+            set(withView(get(), sessionId, (view) => ({ ...view,
+                history: [], historyLoading: false, historySequence: null, historyWorker: null,
+            })));
         },
 
         endHistory(sessionId) {

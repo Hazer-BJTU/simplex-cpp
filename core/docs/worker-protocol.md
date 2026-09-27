@@ -446,7 +446,7 @@ contains the summary, the absolute session archive directory, and the latest
 archive file path, with instructions to read archives for historical details.
 The summary sits between a unique begin/end marker and follows a fixed warning
 that it is untrusted historical context, not system policy or current user intent.
-It replaces older injected memory while keeping every disk archive. Restoring
+It replaces older injected memory; archive retention is described below. Restoring
 a worker preserves memory after the refreshed runtime signature.
 
 The new JSON snapshot is mandatory even when `save.on_run_finished` is false.
@@ -474,19 +474,31 @@ for this attempt does not invalidate the original snapshot. Retrying compact use
 a fresh request ID. There is no automatic retry or archive deletion.
 
 After success, history contains zero turns. `continue` is rejected until a new
-message creates a turn; that message sees the new system-prompt memory. Compact
-is worker-side in this revision: hub command and display support are a separate
-change, and older hubs may surface `compact_finished` as an unknown event.
+message creates a turn; that message sees the new system-prompt memory.
+The hub exposes this operation as **Compact context** in the composer's Command
+mode. Both hub and current worker advertise `context-compact`. The panel retires
+outstanding history queries, refreshes the new revision, and renders the summary
+as a compact result. Retained hub events remain available as an execution record.
 
-Archive retention is an explicit prerequisite for the hub/UI rollout. The worker
-currently appends without a count, byte, or age limit and never deletes archives.
-The hub deletes the entire managed session directory, including memory archives,
-only after the worker has stopped and disconnected. Automatic per-session count,
-byte and age retention remain separate work before hub/UI compact rollout.
-For externally managed workers, the owner of their storage remains responsible;
-the hub must not assume it can access or delete a remote memory path. Any cleanup
-must leave active and in-progress archives intact and make retention visible to
-operators before a compact command is exposed in the panel.
+After each successful state replacement the worker applies
+`persistence.memory_retention`: `max_archives` (default 20), `max_bytes` (default
+268435456), and `max_age_days` (default 30). Zero disables the respective limit.
+It keeps the current archive even if that file alone exceeds a limit, then
+considers other recognized archives newest first within all enabled limits.
+Age is measured from `state.md` modification time. Cleanup is synchronous under
+session ownership, after the durable commit, with no archive writer or tool
+running. Failed or cancelled attempts remain until a later successful compact;
+these limits are therefore cleanup targets, not a hard disk quota.
+
+Only ordinary directories matching the worker archive name and containing
+exactly one regular `state.md` are eligible. Symlinks, extra files and empty or
+unrecognized directories are left untouched. Deletion is never recursive. This
+assumes cooperating filesystem users, not hostile concurrent path replacement.
+The status object reports the active policy. `compact_finished` additionally
+reports `archive_cleanup: {removed_archives, removed_bytes}` or
+`archive_cleanup_error: string`; a cleanup failure does not undo a saved summary.
+The panel displays cleanup failures. The worker owns cleanup even when its files
+are remote to the hub; the hub never deletes a path received in an event.
 
 ### Admission and rejection
 
@@ -681,6 +693,7 @@ the next payload as described under
 | `stopping` | Boolean | Worker shutdown is in progress as observed at this snapshot. |
 | `storage_failed` | Boolean | A required JSON persistence operation failed; further saves are suppressed. |
 | `rejected_payloads` | Nonnegative integer | Cumulative inbound payload-queue overflow count in this IO client lifetime; not semantic input rejections. |
+| `memory_retention` | Object | Effective `max_archives`, `max_bytes`, and `max_age_days`; zero disables a limit. Older workers omit this field. |
 | `capabilities` | Array of strings | Features supported by this worker process. `session-history` means it accepts read-only `history` payloads; `context-compact` means it implements the `compact` lifecycle (subject to persistence and state prerequisites). A hub should check this before querying a worker that may be older than the hub. |
 | `loop` | Optional loop-progress object | Present only when conversation state contains loop progress, including restored progress. |
 

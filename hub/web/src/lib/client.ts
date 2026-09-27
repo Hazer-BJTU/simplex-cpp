@@ -25,6 +25,7 @@ import { ApiError, createRest, type RestClient, type WorkerAction } from './rest
 import { createPanelSocket, type PanelSocket } from './socket.ts';
 import { createTokenStore, type HistoryLike, type KeyValueStorage, type LocationLike, type TokenStore } from './token.ts';
 import { parseHistoryPage } from '../state/history.ts';
+import { parseCompactResult } from '../state/compact.ts';
 
 /** Query parameter carrying the selected session, so a view can be linked to. */
 export const SESSION_PARAM = 'session';
@@ -310,7 +311,17 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 } else {
                     store.getState().noteTransientWorkerEvent(message.session, message.envelope);
                 }
-                if (message.envelope.event === 'history') {
+                if (message.envelope.event === 'compact_finished') {
+                    const result = parseCompactResult(message.envelope.data);
+                    if (result) {
+                        // Retire any outstanding pre-replacement query so late
+                        // replies cannot restore archived turns into the view.
+                        historyRequests.delete(message.session);
+                        store.getState().invalidateHistory(message.session);
+                        historyNeedsRecovery.add(message.session);
+                        requestHistory(message.session, 0, 0, result.revision);
+                    }
+                } else if (message.envelope.event === 'history') {
                     const pending = historyRequests.get(message.session);
                     const raw = message.envelope.data as { request_id?: unknown } | null;
                     if (pending && (typeof raw?.request_id !== 'string'
@@ -534,7 +545,10 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         sendInput(sessionId, parts, operation = 'message', options) {
             // A session can exist before its worker starts. Do not create an
             // outbox entry or send an input frame until a worker is attached.
-            if (!store.getState().sessions.get(sessionId)?.connected) return false;
+            const session = store.getState().sessions.get(sessionId);
+            if (!session?.connected) return false;
+            if (operation === 'compact' && (!store.getState().hasCapability('context-compact')
+                || !session.worker_capabilities?.includes('context-compact'))) return false;
             const requestId = newRequestId();
             store.getState().beginInput(sessionId, requestId, parts, operation);
             const sent = socket.send({
@@ -542,7 +556,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 session: sessionId,
                 request_id: requestId,
                 operation,
-                ...(operation === 'continue' ? {} : { content: [...parts] }),
+                ...(operation === 'message' ? { content: [...parts] } : {}),
                 ...(options ? { options } : {}),
             });
             if (!sent) {

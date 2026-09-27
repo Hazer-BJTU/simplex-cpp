@@ -13,6 +13,7 @@ import { buildCommands, filterCommands, matches } from '../web/src/app/palette.t
 import {
     matchingComposerCommands,
     unavailableReason,
+    compactRetentionDetail,
 } from '../web/src/app/composerCommands.ts';
 
 /** One session description, as the store holds it. */
@@ -137,6 +138,21 @@ describe('command filtering', () => {
 });
 
 describe('composer command prefixes', () => {
+    it('offers compact only when connected, idle, and supported', () => {
+        const [command] = matchingComposerCommands('comp');
+        assert.equal(command.id, 'compact-context');
+        assert.match(unavailableReason(command, false, false, true), /Connect/);
+        assert.match(unavailableReason(command, true, true, true), /current run/);
+        assert.match(unavailableReason(command, true, false, false), /does not support/);
+        assert.equal(unavailableReason(command, true, false, true), null);
+        assert.match(compactRetentionDetail({ max_archives: 20, max_bytes: 268435456,
+            max_age_days: 30 }), /20 archives, 256 MiB, 30 days/);
+        assert.match(compactRetentionDetail({ max_archives: 0, max_bytes: 0,
+            max_age_days: 0 }), /disabled/);
+        assert.match(compactRetentionDetail(undefined), /not reported/);
+        assert.match(compactRetentionDetail({ max_archives: 0, max_bytes: 512,
+            max_age_days: 0 }), /512 bytes/);
+    });
     it('offers one conversation refresh command by name prefix only', () => {
         assert.deepEqual(matchingComposerCommands('ref').map((command) => command.name),
             ['Refresh conversation']);

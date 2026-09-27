@@ -44,6 +44,7 @@ export const EVENT_TABLE = {
     tool_calls: { tone: 'tool', note: 'calls proposed for a batch', array: true },
     tool_results: { tone: 'tool', note: 'complete returned batch', array: true },
     persisted: { tone: 'muted', note: 'JSON snapshot written' },
+    compact_finished: { tone: 'summary', note: 'context summary durably published' },
     export_error: { tone: 'warn', note: 'Markdown export failed' },
     error: { tone: 'error', note: 'control or storage diagnostic' },
     run_finished: { tone: 'summary', note: 'invocation settled', run: true },

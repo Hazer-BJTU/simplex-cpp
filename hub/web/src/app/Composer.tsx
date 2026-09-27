@@ -28,6 +28,7 @@ import type { ConfirmMode } from '../state/store.ts';
 import { useClient } from './ClientContext.tsx';
 import {
     matchingComposerCommands,
+    compactRetentionDetail,
     unavailableReason,
     type ComposerCommand,
 } from './composerCommands.ts';
@@ -68,6 +69,7 @@ export function Composer() {
     const failed = usePanel((state) => state.failedInput);
     const clearFailedInput = usePanel((state) => state.clearFailedInput);
     const connectionState = usePanel((state) => state.connection.state);
+    const hubCompactSupported = usePanel((state) => state.hasCapability('context-compact'));
     const mode = usePanel((state) => (state.selected
         ? state.confirmMode.get(state.selected) ?? 'ask'
         : 'ask'));
@@ -115,7 +117,7 @@ export function Composer() {
     // for the newly selected session is not cleared by that reset.
     useEffect(() => {
         if (!failed || failed.sessionId !== selected) return;
-        if (failed.operation === 'continue') {
+        if (failed.operation === 'continue' || failed.operation === 'compact') {
             // A continuation has no content to refund. In particular, a
             // rejected continuation must not erase a separate unsent draft.
             clearFailedInput();
@@ -134,20 +136,30 @@ export function Composer() {
     const sessionId: string = selected;
     const connected = session.connected;
     const runActive = Boolean(view?.runActive);
+    const compactSupported = hubCompactSupported
+        && Boolean(session.worker_capabilities?.includes('context-compact'));
+    const latestStatus = view?.latestEvents.status;
+    const latestReady = view?.latestEvents.ready;
+    const workerStatus = (latestStatus?.worker_id === session.identity.worker_id
+        ? latestStatus : latestReady?.worker_id === session.identity.worker_id
+            ? latestReady : undefined)?.data as
+        Record<string, unknown> | undefined;
     const canSend = draft.trim().length > 0 || references.length > 0;
     const commands = matchingComposerCommands(commandQuery);
     const highlighted = Math.min(activeCommand, Math.max(0, commands.length - 1));
     const selectedCommand = commands[highlighted];
     const selectedUnavailable = selectedCommand
-        ? unavailableReason(selectedCommand, connected, runActive)
+        ? unavailableReason(selectedCommand, connected, runActive, compactSupported)
         : null;
 
     function runCommand(command: ComposerCommand): void {
-        if (unavailableReason(command, connected, runActive)) return;
+        if (unavailableReason(command, connected, runActive, compactSupported)) return;
         if (command.id === 'refresh-conversation') {
             client.refreshConversation(sessionId);
         } else if (command.id === 'continue-run') {
             send('continue');
+        } else if (command.id === 'compact-context') {
+            send('compact');
         }
         setCommandQuery('');
         setActiveCommand(0);
@@ -163,7 +175,7 @@ export function Composer() {
         return list;
     }
 
-    function send(operation: 'message' | 'continue' = 'message'): void {
+    function send(operation: 'message' | 'continue' | 'compact' = 'message'): void {
         if (!connected || runActive || (operation === 'message' && !canSend)) return;
         // The mode travels with the payload. The worker freezes the policy per
         // run, so sending it every time is what makes a change take effect on
@@ -172,7 +184,7 @@ export function Composer() {
         const options: PayloadOptions = { confirmation: { mode } };
         const sent = client.sendInput(
             sessionId,
-            operation === 'continue' ? [] : parts(),
+            operation === 'message' ? parts() : [],
             operation,
             options,
         );
@@ -296,7 +308,7 @@ export function Composer() {
                             </p>
                         )}
                         {commands.map((command, index) => {
-                            const reason = unavailableReason(command, connected, runActive);
+                            const reason = unavailableReason(command, connected, runActive, compactSupported);
                             return (
                                 <button key={command.id} id={`composer-command-${command.id}`}
                                     type="button" role="option"
@@ -309,6 +321,11 @@ export function Composer() {
                                         ${index === highlighted ? 'bg-subtle' : 'hover:bg-subtle'}`}>
                                     <span className="block font-medium text-ink">{command.name}</span>
                                     <span className="block text-ink-muted">{command.detail}</span>
+                                    {command.id === 'compact-context' && (
+                                        <span className="block text-ink-faint">
+                                            {compactRetentionDetail(workerStatus?.memory_retention)}
+                                        </span>
+                                    )}
                                     {reason && <span className="block text-warn">{reason}</span>}
                                 </button>
                             );
@@ -454,15 +471,25 @@ export function Composer() {
                         className={`col-start-1 row-start-1 flex items-center justify-end
                             px-2 pb-2
                             ${entryMode === 'command' ? '' : 'invisible'}`}>
-                        <Button type="button" variant="primary" size="md"
-                            disabled={!selectedCommand || selectedUnavailable !== null}
-                            onClick={() => {
-                                const command = commands[highlighted];
-                                if (command) runCommand(command);
-                            }}
-                            className={PRIMARY_ACTION_CLASS}>
-                            Run
-                        </Button>
+                        {runActive ? (
+                            <Button type="button" variant="danger" size="md"
+                                disabled={!connected}
+                                onClick={() => client.sendSignal(sessionId, 'cancel')}
+                                className="h-9 justify-center leading-5"
+                                icon={<Glyph name="cancel" />}>
+                                Cancel run
+                            </Button>
+                        ) : (
+                            <Button type="button" variant="primary" size="md"
+                                disabled={!selectedCommand || selectedUnavailable !== null}
+                                onClick={() => {
+                                    const command = commands[highlighted];
+                                    if (command) runCommand(command);
+                                }}
+                                className={PRIMARY_ACTION_CLASS}>
+                                Run
+                            </Button>
+                        )}
                     </div>
                 </div>
             </div>

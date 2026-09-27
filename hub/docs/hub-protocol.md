@@ -46,6 +46,7 @@ client can check for a feature instead of guessing.
 | `transcript-epoch` | `transcript_epoch` is reported, so a stale cursor is detectable |
 | `global-confirmations` | confirmations reach every client, not only subscribers |
 | `session-history` | panel can query a worker's simplified conversation history |
+| `context-compact` | panel can request worker context compaction and display the result |
 
 These describe the hub **build**, not its configuration. `supervisor` means
 "this hub starts and signals worker processes", which stays true for every
@@ -204,7 +205,7 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 | `create_session` | `session`, optional `spec` | answers with `created`, or `session_exists` / `invalid_session` |
 | `delete_session` | `session` | removes the complete session directory, then answers with `session_removed`; refused while busy |
 | `worker` | `session`, `action`: `start`\|`stop`\|`restart`\|`force-kill`, optional `spec` | answers with `accepted` (carrying the result) or `worker_action_failed` |
-| `input` | `session`, `content`, optional `operation`, `request_id`, `options` | validates, sends a payload, answers with `accepted` and `request_id` |
+| `input` | `session`, optional `content`, `operation`, `request_id`, `options` | `message` requires content; `continue` and `compact` omit it. Validates, sends a payload, answers with `accepted` and `request_id` |
 | `history` | `session`, optional `request_id`, `start`, `step`, `limit` | if the current worker advertises `session-history`, sends a read-only payload; otherwise returns `input_not_sent`. The response arrives as a transient `history` worker event |
 | `signal` | `session`, `operation`: `status`\|`options`\|`cancel`\|`shutdown`, optional `run_id` | answers with `accepted` or `signal_not_sent` |
 | `confirmation` | `session`, `confirmation_id`, `decision`, optional `reason` | answers with `accepted` or `confirmation_rejected` |
@@ -217,6 +218,13 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 (`model`, `tools` — reserved and empty, `confirmation.mode`). The hub validates
 them locally so the panel can report a mistake immediately; the worker is still
 authoritative and its rejection is surfaced unchanged.
+For `operation: "compact"`, omit content. The hub requires the current worker
+to advertise `context-compact`, tracks the request like other runs, and forwards
+`compact_finished` for display and replay. The panel shows the saved summary
+without a user bubble, invalidates old history pages, and queries the new revision.
+It does not invalidate history on failed or cancelled attempts. The current
+worker's `memory_retention` status describes cleanup, and any optional
+`archive_cleanup_error` in the result is displayed beside the saved summary.
 
 `signal` with `operation: "cancel"` defaults `run_id` to the most recently
 observed one. A stale id is ignored by the worker, so the default is convenient

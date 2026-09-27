@@ -10,7 +10,7 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/schemas/config.example.yaml"
     DESTINATION bin)
 
 # Startup discovery and configured extension construction.
-add_library(load_lib SHARED src/plugins.cpp src/persistence.cpp src/configuration.cpp src/system_prompt.cpp)
+add_library(load_lib SHARED src/plugins.cpp src/persistence.cpp src/configuration.cpp src/system_prompt.cpp src/archives.cpp)
 target_include_directories(load_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(load_lib PUBLIC llm_iface tools_extensions loop_extensions io_lib)
 target_link_libraries(load_lib PRIVATE yamlconfig_iface fileio_lib boost_dll_iface)

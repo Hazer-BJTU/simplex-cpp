@@ -31,6 +31,10 @@ add_executable(test_state_persistence test_persistence.cpp)
 target_link_libraries(test_state_persistence PRIVATE load_lib Boost::unit_test_framework)
 add_test(NAME test_state_persistence COMMAND test_state_persistence)
 
+add_executable(test_memory_archives test_archives.cpp)
+target_link_libraries(test_memory_archives PRIVATE load_lib Boost::unit_test_framework)
+add_test(NAME test_memory_archives COMMAND test_memory_archives)
+
 # Export the test-only fsync interposer to exercise failures in the shared utility.
 add_executable(test_persistence_publication test_persistence_publication.cpp)
 target_link_libraries(test_persistence_publication PRIVATE

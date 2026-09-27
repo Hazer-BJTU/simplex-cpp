@@ -34,6 +34,10 @@
         "sigtermGraceMs": 5000,
         "sigkillGraceMs": 2000,
         "persistence": { "enabled": true, "readable": false },
+        // Copied to new worker configs as persistence.memory_retention.
+        // Applied after successful compact; the current archive is kept.
+        // Zero disables the respective limit.
+        "memoryRetention": { "maxArchives": 20, "maxBytes": 268435456, "maxAgeDays": 30 },
         "environment": { "workspace": "", "platform": "", "software": [] }
     },
 

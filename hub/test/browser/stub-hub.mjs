@@ -119,6 +119,7 @@ function meta() {
         capabilities: [
             'worker-events', 'confirmations', 'supervisor', 'transcript-replay',
             'snapshot-view', 'transcript-epoch', 'global-confirmations',
+            'context-compact',
             ...(settings.historyEnabled ? ['session-history'] : []),
         ],
         transcript_epoch: epoch,
@@ -508,8 +509,11 @@ function handle(ws, message) {
             });
             // Admission carries the operation so replay can distinguish a
             // continuation even after the request record has been pruned.
-            const envelope = append(message.session, 'input_admitted',
-                { operation: message.operation ?? 'message' }, { request_id: requestId });
+            const envelope = settings.rejectInput
+                ? append(message.session, 'input_rejected',
+                    { request_id: requestId, message: 'no turns to compact' })
+                : append(message.session, 'input_admitted',
+                    { operation: message.operation ?? 'message' }, { request_id: requestId });
             broadcast({
                 type: 'event', session: message.session,
                 hub_seq: envelope.hub_sequence, envelope,
@@ -523,7 +527,7 @@ function handle(ws, message) {
             const limit = message.limit ?? 10;
             const response = settings.historyResponses?.[historyResponseIndex] ?? {};
             historyResponseIndex += 1;
-            const { __error, ...pageOverrides } = response;
+            const { __error, __hold, ...pageOverrides } = response;
             const envelope = __error ? append(message.session, 'history_error', {
                 request_id: message.request_id, message: __error,
             }) : append(message.session, 'history', {
@@ -539,8 +543,10 @@ function handle(ws, message) {
             });
             send(ws, { type: 'accepted', action: 'history', session: message.session,
                 request_id: message.request_id });
-            broadcast({ type: 'event', session: message.session,
-                hub_seq: envelope.hub_sequence, envelope });
+            if (!__hold) {
+                broadcast({ type: 'event', session: message.session,
+                    hub_seq: envelope.hub_sequence, envelope });
+            }
             return;
         }
         default:

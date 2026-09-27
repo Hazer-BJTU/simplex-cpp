@@ -33,6 +33,7 @@ import type {
 } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { statsOf, type NoteItem, type OutboxItem, type TranscriptItem } from '../state/view.ts';
+import { parseCompactResult } from '../state/compact.ts';
 import { useClient } from './ClientContext.tsx';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
 import { Glyph } from '../ui/icons.tsx';
@@ -171,13 +172,16 @@ function ProblemLine({ problem }: { problem: Problem }) {
 }
 
 /** Visible run failure; raw provider diagnostics stay available on demand. */
-function RunFailureNotice({ failure, actionable }: {
+function RunFailureNotice({ failure, actionable, compacting }: {
     failure: RunFailure;
     actionable: boolean;
+    compacting: boolean;
 }) {
     const model = failure.stage === 'model_request';
     let guidance = 'Inspect the error and worker state before trying again.';
-    if (model && actionable) {
+    if (compacting) {
+        guidance = 'Context compaction did not finish. Inspect the error and refresh the worker state before trying Compact context again.';
+    } else if (model && actionable) {
         guidance = 'The worker kept the conversation state. Use Continue run in Command mode to try again.';
     } else if (failure.canContinue) {
         guidance = 'The worker reported that this run could be continued when it settled.';
@@ -187,7 +191,7 @@ function RunFailureNotice({ failure, actionable }: {
         <div data-testid="run-failure" role="alert"
             className="rounded-lg border border-danger-line bg-danger-soft px-3 py-2 text-sm
                 text-danger">
-            <p className="font-medium">{model ? 'Model request failed' : 'Run failed'}</p>
+            <p className="font-medium">{compacting ? 'Context compaction failed' : model ? 'Model request failed' : 'Run failed'}</p>
             <p className="mt-1">{guidance}</p>
             {failure.error && (
                 <details className="mt-2">
@@ -378,7 +382,7 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
     const hidden = round.protocol.length;
     if (hidden > 0) parts.push(`${hidden} protocol event${hidden === 1 ? '' : 's'}`);
 
-    const preview = round.continued ? 'continued from worker state' : round.input
+    const preview = round.compacting ? 'context compaction' : round.continued ? 'continued from worker state' : round.input
         ? round.input.parts.map((part: ContentPart) => part.raw).join(' ').slice(0, 80)
         : round.admitted && historicalInput
             ? historicalInput.user.map(contentText).filter(Boolean).join(' ').slice(0, 80)
@@ -447,6 +451,17 @@ function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
 
     return (
         <div className="space-y-2">
+            {round.compacting && !round.compactResult && !round.failure && (
+                <p className="text-sm text-ink-muted">
+                    {round.status === 'cancelled'
+                        ? 'Context compaction cancelled. The original conversation remains available.'
+                        : round.status === 'rejected'
+                            ? 'Context compaction was rejected. See the worker’s reason below.'
+                            : round.status
+                                ? 'No saved summary was received. Refresh conversation to inspect the current state.'
+                                : round.open ? 'Compacting conversation context…' : 'Context compaction requested.'}
+                </p>
+            )}
             {round.input ? (
                 <UserMessage item={round.input} />
             ) : round.admitted && historicalInput ? (
@@ -456,6 +471,29 @@ function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
             ) : null}
 
             {round.timeline.map((entry) => {
+                if (entry.kind === 'compact') {
+                    const result = round.compactResult;
+                    return result ? (
+                        <section key={entry.key} data-testid="compact-result"
+                            className="min-w-0 space-y-2 rounded-lg border border-line bg-subtle p-3">
+                            <p className="text-sm font-medium">Context compacted</p>
+                            <p className="text-xs text-ink-muted">
+                                {result.removed_turns} turns replaced by this saved summary.
+                                Send a new message to keep working.
+                            </p>
+                            <Markdown>{result.summary}</Markdown>
+                            {result.archive_cleanup_error && (
+                                <p role="alert" className="break-words text-xs text-warn">
+                                    Summary saved, but archive cleanup failed: {result.archive_cleanup_error}
+                                </p>
+                            )}
+                            <details className="text-xs text-ink-muted">
+                                <summary className="cursor-pointer">Archive location</summary>
+                                <p className="mt-1 break-all font-mono">{result.memory_file}</p>
+                            </details>
+                        </section>
+                    ) : null;
+                }
                 if (entry.kind === 'assistant') {
                     const block = assistant.get(entry.key);
                     return block
@@ -484,7 +522,8 @@ function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
             })}
 
             {round.failure && (
-                <RunFailureNotice failure={round.failure} actionable={actionableFailure} />
+                <RunFailureNotice failure={round.failure} actionable={actionableFailure}
+                    compacting={round.compacting} />
             )}
         </div>
     );
@@ -511,7 +550,7 @@ export function Transcript() {
     // that failed run is the latest run of the same connected worker.
     const actionableFailureKey = useMemo(() => {
         const latestRun = rounds.findLast((round) => round.kind === 'run');
-        if (!latestRun?.failure || latestRun.failure.stage !== 'model_request'
+        if (!latestRun?.failure || latestRun.compacting || latestRun.failure.stage !== 'model_request'
             || !latestRun.failure.canContinue || view?.runActive) return null;
         if (!session?.connected || session.identity.state !== 'live') return null;
         const finished = latestRun.protocol.findLast(
@@ -533,6 +572,10 @@ export function Transcript() {
         const mapped = new Map<string, HistoryTurn>();
         const baseline = view?.historySequence;
         const worker = view?.historyWorker;
+        const compact = view?.latestEvents.compact_finished;
+        const compactSequence = compact && compact.worker_id === worker
+            && typeof compact.sequence === 'number' && parseCompactResult(compact.data)
+            ? compact.sequence : -1;
         if (view?.historyLoading || baseline === null || baseline === undefined || !worker) {
             return { olderHistory: history, historyForRun: mapped };
         }
@@ -540,6 +583,7 @@ export function Transcript() {
             && round.protocol.some((item) => item.envelope.event === 'input_committed'
                 && item.envelope.worker_id === worker
                 && typeof item.envelope.sequence === 'number'
+                && item.envelope.sequence > compactSequence
                 && item.envelope.sequence <= baseline));
         const count = Math.min(detailed.length, history.length);
         const older = history.slice(0, history.length - count);
@@ -549,7 +593,8 @@ export function Transcript() {
             });
         }
         return { olderHistory: older, historyForRun: mapped };
-    }, [history, rounds, view?.historyLoading, view?.historySequence, view?.historyWorker]);
+    }, [history, rounds, view?.historyLoading, view?.historySequence, view?.historyWorker,
+        view?.latestEvents.compact_finished]);
 
     // Which turns the reader has opened or closed by hand. Absent means the
     // default: the most recent few are open.

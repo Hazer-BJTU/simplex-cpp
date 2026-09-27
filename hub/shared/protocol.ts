@@ -76,6 +76,8 @@ export const CAPABILITIES = [
     'global-confirmations',
     /** Worker-backed, display-only conversation history queries. */
     'session-history',
+    /** Worker context compaction through an input operation. */
+    'context-compact',
 ] as const;
 
 /** One advertised capability. */
