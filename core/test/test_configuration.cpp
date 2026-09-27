@@ -31,6 +31,20 @@ BOOST_AUTO_TEST_CASE(selected_provider_and_independent_endpoints) {
     BOOST_CHECK(!load::parse_configuration(configuration(), "/tmp").confirmation);
 }
 
+BOOST_AUTO_TEST_CASE(memory_retention_defaults_and_validation) {
+    const auto defaults = load::parse_configuration(configuration(), "/tmp");
+    BOOST_TEST(defaults.memory_retention.max_archives == 5u);
+    auto value = configuration();
+    value["persistence"]["memory_retention"] = {
+        {"max_archives", 2}};
+    const auto parsed = load::parse_configuration(value, "/tmp");
+    BOOST_TEST(parsed.memory_retention.max_archives == 2u);
+    for (const auto& invalid : {Json(-1), Json(1.5), Json("many")}) {
+        value["persistence"]["memory_retention"]["max_archives"] = invalid;
+        BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(validation_and_expansion_do_not_leak_credentials) {
     auto value = configuration();
     value["providers"]["local"]["endpoint"]["auth"]["api_key"] = "${CORE_TEST_MISSING_KEY}";

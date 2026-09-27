@@ -18,6 +18,7 @@
  *    either dropped as a duplicate or spliced into the middle of the old
  *    numbering. The view therefore records the epoch its cursor belongs to.
  */
+import { parseTokenUsage, type TokenUsage } from './tokenUsage.ts';
 import type {
     ConfirmationPrompt,
     ContentPart,
@@ -27,6 +28,7 @@ import type {
     TranscriptEpoch,
     WorkerEnvelope,
 } from '../../../shared/protocol.ts';
+import { parseCompactResult } from './compact.ts';
 
 /** Envelopes retained per session on the client. */
 export const TRANSCRIPT_CAP = 2000;
@@ -134,6 +136,14 @@ export interface ViewState {
     /** event name -> most recent envelope. */
     readonly latestEvents: Readonly<Record<string, WorkerEnvelope>>;
     readonly runActive: boolean;
+    /** A cancel was sent; wait for the worker to finish at a safe boundary. */
+    readonly cancelPending: boolean;
+    /** Local choices applied only with the next payload. */
+    readonly modelSelection: Readonly<Record<string, unknown>>;
+    /** Keep the worker catalog even when transcript entries are pruned or replaced. */
+    readonly modelCatalog: WorkerEnvelope | null;
+    /** Most recent response carrying cost; never an accumulated total. */
+    readonly tokenUsage: (TokenUsage & { workerId: string; sequence: number }) | null;
     readonly lastRunId: string;
     readonly gaps: number;
     readonly duplicates: number;
@@ -160,6 +170,10 @@ export function emptyView(id: SessionId): ViewState {
         logs: { lines: [], dropped: 0, logPath: null },
         latestEvents: {},
         runActive: false,
+        cancelPending: false,
+        modelSelection: {},
+        modelCatalog: null,
+        tokenUsage: null,
         lastRunId: '',
         gaps: 0,
         duplicates: 0,
@@ -190,6 +204,15 @@ export function nextItemId(prefix: string): string {
  */
 export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
     const name = typeof envelope.event === 'string' ? envelope.event : '';
+    // Replay can arrive after a newer history query. Only discard a projection
+    // that predates this replacement, not pages fetched after it.
+    if (name === 'compact_finished' && parseCompactResult(envelope.data)
+        && typeof envelope.sequence === 'number'
+        && view.historyWorker === envelope.worker_id
+        && (view.historySequence === null || view.historySequence <= envelope.sequence)) {
+        view = { ...view, history: [], historyLoading: false,
+            historySequence: envelope.sequence };
+    }
     const latestEvents = name
         ? { ...view.latestEvents, [name]: envelope }
         : view.latestEvents;
@@ -213,7 +236,23 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
         }
     }
 
-    return noteWorkerSequence({ ...view, latestEvents, lastRunId, runActive }, envelope);
+    const cost = name === 'model_response'
+        ? parseTokenUsage((envelope.data as { cost?: unknown } | null)?.cost) : null;
+    const usageSequence = Number(envelope.sequence);
+    const tokenUsage = cost && (view.tokenUsage?.workerId !== envelope.worker_id
+        || usageSequence > view.tokenUsage.sequence)
+        ? { ...cost, workerId: envelope.worker_id, sequence: usageSequence }
+        : view.tokenUsage;
+    const cancelPending = view.cancelPending && runActive
+        && !(RUN_START_EVENTS.has(name) && lastRunId !== view.lastRunId);
+    const modelCatalog = name === 'options'
+        && (view.modelCatalog?.worker_id !== envelope.worker_id
+            || Number(envelope.sequence) > Number(view.modelCatalog?.sequence ?? -1))
+        ? envelope : view.modelCatalog;
+    const modelSelection = modelCatalog !== view.modelCatalog ? {} : view.modelSelection;
+    return noteWorkerSequence({
+        ...view, latestEvents, lastRunId, runActive, cancelPending, modelSelection, modelCatalog, tokenUsage,
+    }, envelope);
 }
 
 /** Account for a received worker envelope without retaining it as transcript. */

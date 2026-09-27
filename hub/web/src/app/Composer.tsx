@@ -9,7 +9,7 @@
  * have asked", so the leak quietly disabled approvals session-wide.
  *
  * Here the mode belongs to a session, lives in a compact settings popover, and is shown
- * as a permanent badge whenever it is not the default — because a setting that
+ * on the fixed-width trigger whenever it is not the default — because a setting that
  * turns approvals off should not be discoverable only by opening the thing that
  * sets it.
  *
@@ -21,13 +21,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ContentPart, PayloadOptions } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
-import { Badge, Button } from '../ui/Button.tsx';
+import { Button } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/overlays.tsx';
 import type { ConfirmMode } from '../state/store.ts';
 import { useClient } from './ClientContext.tsx';
+import { currentModelOptions, modelOptionFields } from './modelOptions.ts';
+import { TokenUsageIndicator, TokenUsageMeter } from './TokenUsageIndicator.tsx';
 import {
     matchingComposerCommands,
+    compactRetentionDetail,
     unavailableReason,
     type ComposerCommand,
 } from './composerCommands.ts';
@@ -39,21 +42,15 @@ interface Reference {
 }
 
 /** How a confirmation mode reads, and how loudly. */
-const MODES: Record<ConfirmMode, { label: string; detail: string; tone: 'neutral' | 'warn' | 'bad' }> = {
+const MODES: Record<ConfirmMode, { detail: string }> = {
     ask: {
-        label: 'ask',
         detail: 'every call that needs approval opens a prompt',
-        tone: 'neutral',
     },
     approve: {
-        label: 'approve',
         detail: 'every call that would have asked is approved without a prompt',
-        tone: 'bad',
     },
     deny: {
-        label: 'deny',
         detail: 'every call that would have asked is denied without a prompt',
-        tone: 'warn',
     },
 };
 
@@ -68,10 +65,12 @@ export function Composer() {
     const failed = usePanel((state) => state.failedInput);
     const clearFailedInput = usePanel((state) => state.clearFailedInput);
     const connectionState = usePanel((state) => state.connection.state);
+    const hubCompactSupported = usePanel((state) => state.hasCapability('context-compact'));
     const mode = usePanel((state) => (state.selected
         ? state.confirmMode.get(state.selected) ?? 'ask'
         : 'ask'));
     const setConfirmMode = usePanel((state) => state.setConfirmMode);
+    const setModelOption = usePanel((state) => state.setModelOption);
 
     const [draft, setDraft] = useState('');
     const [entryMode, setEntryMode] = useState<'message' | 'command'>('message');
@@ -79,6 +78,16 @@ export function Composer() {
     const [activeCommand, setActiveCommand] = useState(0);
     const [references, setReferences] = useState<readonly Reference[]>([]);
     const [refOpen, setRefOpen] = useState(false);
+    const [confirmOpen, setConfirmOpen] = useState(false);
+    const [modelOpen, setModelOpen] = useState(false);
+
+    // A mode change closes settings rather than leaving a disabled trigger's
+    // popover interactive above the shared toolbar.
+    useEffect(() => {
+        setRefOpen(false);
+        setConfirmOpen(false);
+        setModelOpen(false);
+    }, [entryMode, selected]);
     const box = useRef<HTMLTextAreaElement>(null);
 
     // Capture Alt+Enter before the textarea's Enter-to-send handler. Dialogs
@@ -115,7 +124,7 @@ export function Composer() {
     // for the newly selected session is not cleared by that reset.
     useEffect(() => {
         if (!failed || failed.sessionId !== selected) return;
-        if (failed.operation === 'continue') {
+        if (failed.operation === 'continue' || failed.operation === 'compact') {
             // A continuation has no content to refund. In particular, a
             // rejected continuation must not erase a separate unsent draft.
             clearFailedInput();
@@ -133,21 +142,39 @@ export function Composer() {
 
     const sessionId: string = selected;
     const connected = session.connected;
+    const tokenUsage = view?.tokenUsage?.workerId === session.identity.worker_id
+        ? view.tokenUsage : null;
+    const optionsEvent = view?.modelCatalog;
+    const modelData = optionsEvent?.worker_id === session.identity.worker_id
+        ? optionsEvent?.data : undefined;
+    const modelFields = modelOptionFields(modelData);
+    const modelChoices = { ...currentModelOptions(modelData), ...view?.modelSelection };
     const runActive = Boolean(view?.runActive);
+    const cancelPending = runActive && Boolean(view?.cancelPending);
+    const compactSupported = hubCompactSupported
+        && Boolean(session.worker_capabilities?.includes('context-compact'));
+    const latestStatus = view?.latestEvents.status;
+    const latestReady = view?.latestEvents.ready;
+    const workerStatus = (latestStatus?.worker_id === session.identity.worker_id
+        ? latestStatus : latestReady?.worker_id === session.identity.worker_id
+            ? latestReady : undefined)?.data as
+        Record<string, unknown> | undefined;
     const canSend = draft.trim().length > 0 || references.length > 0;
     const commands = matchingComposerCommands(commandQuery);
     const highlighted = Math.min(activeCommand, Math.max(0, commands.length - 1));
     const selectedCommand = commands[highlighted];
     const selectedUnavailable = selectedCommand
-        ? unavailableReason(selectedCommand, connected, runActive)
+        ? unavailableReason(selectedCommand, connected, runActive, compactSupported)
         : null;
 
     function runCommand(command: ComposerCommand): void {
-        if (unavailableReason(command, connected, runActive)) return;
+        if (unavailableReason(command, connected, runActive, compactSupported)) return;
         if (command.id === 'refresh-conversation') {
             client.refreshConversation(sessionId);
         } else if (command.id === 'continue-run') {
             send('continue');
+        } else if (command.id === 'compact-context') {
+            send('compact');
         }
         setCommandQuery('');
         setActiveCommand(0);
@@ -163,16 +190,19 @@ export function Composer() {
         return list;
     }
 
-    function send(operation: 'message' | 'continue' = 'message'): void {
+    function send(operation: 'message' | 'continue' | 'compact' = 'message'): void {
         if (!connected || runActive || (operation === 'message' && !canSend)) return;
         // The mode travels with the payload. The worker freezes the policy per
         // run, so sending it every time is what makes a change take effect on
         // the next run rather than the next restart — and what keeps one
         // session's choice out of another's.
         const options: PayloadOptions = { confirmation: { mode } };
+        if (modelData && view && Object.keys(view.modelSelection).length > 0) {
+            options.model = { ...view.modelSelection };
+        }
         const sent = client.sendInput(
             sessionId,
-            operation === 'continue' ? [] : parts(),
+            operation === 'message' ? parts() : [],
             operation,
             options,
         );
@@ -197,14 +227,19 @@ export function Composer() {
                 }
             }}
         >
+            {tokenUsage && <TokenUsageIndicator usage={tokenUsage} />}
             <div className="relative mx-auto max-w-4xl rounded-xl border border-line-strong
                 bg-surface shadow-sm focus-within:border-ink-muted">
                 <div className="flex items-center border-b border-line px-2 py-1.5">
-                    <span className="rounded bg-subtle px-2 py-1 text-xs font-medium
-                        capitalize text-ink">
+                    <span key={entryMode} data-testid="composer-mode"
+                        className={`animate-enter w-28 shrink-0 whitespace-nowrap rounded px-1 py-1 text-center text-xs font-medium capitalize
+                            ${entryMode === 'message' ? 'bg-info-soft text-info' : 'bg-warn-soft text-warn'}`}>
                         {entryMode} mode
                     </span>
-                    <span className="ml-auto text-xs text-ink-faint">Alt + Enter to switch</span>
+                    <div className="ml-2">
+                        {tokenUsage && <TokenUsageMeter usage={tokenUsage} />}
+                    </div>
+                    <span className="ml-auto hidden text-xs text-ink-faint sm:inline">Alt + Enter to switch</span>
                 </div>
                 {references.length > 0 && (
                     <ul className="flex flex-wrap gap-1.5 px-4 pt-3">
@@ -218,6 +253,7 @@ export function Composer() {
                                 <button
                                     type="button"
                                     aria-label={`remove reference ${reference.raw}`}
+                                    disabled={entryMode === 'command'}
                                     className="rounded-full p-0.5 hover:bg-line"
                                     onClick={() => setReferences((current) => (
                                         current.filter((item) => item.raw !== reference.raw)
@@ -296,7 +332,7 @@ export function Composer() {
                             </p>
                         )}
                         {commands.map((command, index) => {
-                            const reason = unavailableReason(command, connected, runActive);
+                            const reason = unavailableReason(command, connected, runActive, compactSupported);
                             return (
                                 <button key={command.id} id={`composer-command-${command.id}`}
                                     type="button" role="option"
@@ -309,6 +345,11 @@ export function Composer() {
                                         ${index === highlighted ? 'bg-subtle' : 'hover:bg-subtle'}`}>
                                     <span className="block font-medium text-ink">{command.name}</span>
                                     <span className="block text-ink-muted">{command.detail}</span>
+                                    {command.id === 'compact-context' && (
+                                        <span className="block text-ink-faint">
+                                            {compactRetentionDetail(workerStatus?.memory_retention)}
+                                        </span>
+                                    )}
                                     {reason && <span className="block text-warn">{reason}</span>}
                                 </button>
                             );
@@ -316,156 +357,193 @@ export function Composer() {
                     </div>
                 )}
 
-                <div className="grid">
-                    <div aria-hidden={entryMode !== 'message'}
-                        inert={entryMode !== 'message'}
-                        className={`col-start-1 row-start-1 flex flex-wrap items-center gap-1 sm:gap-2
-                            px-2 pb-2 ${entryMode === 'message' ? '' : 'invisible'}`}>
-                        <Popover open={refOpen} onOpenChange={setRefOpen}>
-                            <PopoverTrigger asChild>
-                                <Button
-                                    aria-label="Attach a reference"
-                                    variant="ghost"
-                                    size="md"
-                                    disabled={!connected}
-                                    className="h-9 justify-center leading-5"
-                                    icon={<Glyph name="attach" />}
-                                >
-                                    <span>Attach</span>
-                                </Button>
-                            </PopoverTrigger>
-                            <PopoverContent align="start" width="w-80">
-                                <form
-                                    onSubmit={(event) => {
-                                        event.preventDefault();
-                                        const field = event.currentTarget.elements.namedItem('reference');
-                                        if (!(field instanceof HTMLInputElement)) return;
-                                        const value = field.value.trim();
-                                        if (!value) return;
-                                        // A reference is sent as data, not fetched by the panel.
-                                        setReferences((current) => (
-                                            current.some((item) => item.raw === value)
-                                                ? current
-                                                : [...current, { kind: 'external_ref', raw: value }]
-                                        ));
-                                        field.value = '';
-                                        setRefOpen(false);
-                                    }}
-                                >
-                                    <label className="block text-xs font-medium text-ink-muted"
-                                        htmlFor="composer-reference">
-                                        external reference
-                                    </label>
-                                    <input
-                                        id="composer-reference"
-                                        name="reference"
-                                        autoFocus
-                                        placeholder="https://…"
-                                        className="mt-1 w-full rounded border border-line-strong px-2 py-1
-                                            font-mono text-xs focus:border-line-strong focus:outline-none"
-                                    />
-                                    <p className="mt-1 text-xs text-ink-muted">
-                                        Sent to the worker as an <code>external_ref</code> part. The panel
-                                        never fetches it.
-                                    </p>
-                                    <div className="mt-2 flex justify-end">
-                                        <Button type="submit" variant="primary">Attach</Button>
-                                    </div>
-                                </form>
-                            </PopoverContent>
-                        </Popover>
-
-                        <Popover>
-                            <PopoverTrigger asChild>
-                                <Button
-                                    aria-label={`confirmation mode: ${mode}`}
-                                    variant="ghost"
-                                    size="md"
-                                    className="h-9 justify-center leading-5"
-                                    icon={<Glyph name="options" />}
-                                    title="how the worker should answer tool confirmations for this session"
-                                >
-                                    <span>Confirm</span>
-                                </Button>
-                            </PopoverTrigger>
-                            <PopoverContent align="start">
-                                <p className="text-xs font-medium text-ink">
-                                    Confirmation mode for <span className="font-mono">{sessionId}</span>
+                <div className="flex flex-wrap items-center gap-1 px-2 pb-2 sm:gap-2">
+                    <Popover open={refOpen} onOpenChange={setRefOpen}>
+                        <PopoverTrigger asChild>
+                            <Button
+                                aria-label="Attach a reference"
+                                variant="ghost"
+                                size="md"
+                                // Attachment entry is reserved until the feature is ready.
+                                disabled
+                                className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
+                                icon={<Glyph name="attach" />}
+                            >
+                                <span>Attach</span>
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="start" width="w-80">
+                            <form
+                                onSubmit={(event) => {
+                                    event.preventDefault();
+                                    const field = event.currentTarget.elements.namedItem('reference');
+                                    if (!(field instanceof HTMLInputElement)) return;
+                                    const value = field.value.trim();
+                                    if (!value) return;
+                                    // A reference is sent as data, not fetched by the panel.
+                                    setReferences((current) => (
+                                        current.some((item) => item.raw === value)
+                                            ? current
+                                            : [...current, { kind: 'external_ref', raw: value }]
+                                    ));
+                                    field.value = '';
+                                    setRefOpen(false);
+                                }}
+                            >
+                                <label className="block text-xs font-medium text-ink-muted"
+                                    htmlFor="composer-reference">
+                                    external reference
+                                </label>
+                                <input
+                                    id="composer-reference"
+                                    name="reference"
+                                    autoFocus
+                                    placeholder="https://…"
+                                    className="mt-1 w-full rounded border border-line-strong px-2 py-1
+                                        font-mono text-xs focus:border-line-strong focus:outline-none"
+                                />
+                                <p className="mt-1 text-xs text-ink-muted">
+                                    Sent to the worker as an <code>external_ref</code> part. The panel
+                                    never fetches it.
                                 </p>
-                                <div className="mt-2 space-y-1">
-                                    {(['ask', 'approve', 'deny'] as const).map((value) => (
-                                        <label
-                                            key={value}
-                                            className="flex cursor-pointer items-start gap-2 rounded p-1
-                                                hover:bg-sunken"
-                                        >
-                                            <input
-                                                type="radio"
-                                                name="confirm-mode"
-                                                value={value}
-                                                checked={mode === value}
-                                                onChange={() => setConfirmMode(sessionId, value)}
-                                                className="mt-0.5 accent-interactive"
-                                            />
-                                            <span>
-                                                <span className="font-mono text-xs text-ink">{value}</span>
-                                                <span className="block text-xs text-ink-muted">
-                                                    {MODES[value].detail}
-                                                </span>
-                                            </span>
-                                        </label>
-                                    ))}
+                                <div className="mt-2 flex justify-end">
+                                    <Button type="submit" variant="primary">Attach</Button>
                                 </div>
-                                <p className="mt-2 border-t border-line pt-2 text-xs text-ink-muted">
-                                    This choice applies to the next run for this session.
-                                </p>
-                            </PopoverContent>
-                        </Popover>
+                            </form>
+                        </PopoverContent>
+                    </Popover>
 
-                        <div className="ml-auto flex items-center gap-2">
-                            {runActive ? (
-                                <Button
-                                    variant="danger"
-                                    size="md"
-                                    disabled={!connected}
-                                    onClick={() => client.sendSignal(sessionId, 'cancel')}
-                                    title="ask the worker to cancel the active run"
-                                    className="h-9 justify-center leading-5"
-                                    icon={<Glyph name="cancel" />}
-                                >
-                                    <span>Cancel run</span>
-                                </Button>
-                            ) : (
-                                <Button
-                                    type="submit"
-                                    variant="primary"
-                                    size="md"
-                                    disabled={!connected || !canSend}
-                                    className={PRIMARY_ACTION_CLASS}
-                                    icon={<Glyph name="send" />}
-                                >
-                                    <span>Send</span>
-                                </Button>
-                            )}
-                        </div>
-                    </div>
-                    <div aria-hidden={entryMode !== 'command'}
-                        inert={entryMode !== 'command'}
-                        className={`col-start-1 row-start-1 flex items-center justify-end
-                            px-2 pb-2
-                            ${entryMode === 'command' ? '' : 'invisible'}`}>
-                        <Button type="button" variant="primary" size="md"
-                            disabled={!selectedCommand || selectedUnavailable !== null}
-                            onClick={() => {
-                                const command = commands[highlighted];
-                                if (command) runCommand(command);
-                            }}
-                            className={PRIMARY_ACTION_CLASS}>
-                            Run
-                        </Button>
+                    <Popover open={confirmOpen} onOpenChange={setConfirmOpen}>
+                        <PopoverTrigger asChild>
+                            <Button
+                                aria-label={`confirmation mode: ${mode}`}
+                                disabled={entryMode === 'command'}
+                                variant="ghost"
+                                size="md"
+                                className="h-9 w-[72px] justify-center max-sm:px-1! max-sm:text-xs! leading-5 sm:w-24"
+                                icon={<Glyph name="options" />}
+                                title={MODES[mode].detail}
+                            >
+                                <span className={mode === 'approve' ? 'text-danger'
+                                    : mode === 'deny' ? 'text-warn' : undefined}>
+                                    {mode === 'ask' ? 'Confirm' : mode === 'approve' ? 'Approve' : 'Deny'}
+                                </span>
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="start">
+                            <p className="text-xs font-medium text-ink">
+                                Confirmation mode for <span className="font-mono">{sessionId}</span>
+                            </p>
+                            <div className="mt-2 space-y-1">
+                                {(['ask', 'approve', 'deny'] as const).map((value) => (
+                                    <label
+                                        key={value}
+                                        className="flex cursor-pointer items-start gap-2 rounded p-1
+                                            hover:bg-sunken"
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="confirm-mode"
+                                            value={value}
+                                            checked={mode === value}
+                                            onChange={() => setConfirmMode(sessionId, value)}
+                                            className="mt-0.5 accent-interactive"
+                                        />
+                                        <span>
+                                            <span className="font-mono text-xs text-ink">{value}</span>
+                                            <span className="block text-xs text-ink-muted">
+                                                {MODES[value].detail}
+                                            </span>
+                                        </span>
+                                    </label>
+                                ))}
+                            </div>
+                            <p className="mt-2 border-t border-line pt-2 text-xs text-ink-muted">
+                                This choice applies to the next run for this session.
+                            </p>
+                        </PopoverContent>
+                    </Popover>
+
+                    <Popover open={modelOpen} onOpenChange={setModelOpen}>
+                        <PopoverTrigger asChild>
+                            <Button aria-label="Model options" variant="ghost" size="md"
+                                disabled={entryMode === 'command' || !connected || modelFields.length === 0}
+                                className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
+                                icon={<span className="hidden sm:inline-flex"><Glyph name="options" /></span>}>
+                                <span>Model</span>
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="start" width="w-80">
+                            <p className="text-xs font-medium text-ink">Model options</p>
+                            <div className="mt-2 space-y-3">
+                                {modelFields.map((field) => {
+                                    const current = modelChoices[field.name];
+                                    const index = field.options.findIndex((value) =>
+                                        JSON.stringify(value) === JSON.stringify(current));
+                                    return (
+                                        <label key={field.name} className="block text-xs text-ink-muted">
+                                            {field.name}
+                                            <select aria-label={`Model option: ${field.name}`}
+                                                className="mt-1 block w-full rounded border border-line bg-surface p-2 text-ink"
+                                                value={index < 0 ? '' : String(index)}
+                                                onChange={(event) => setModelOption(sessionId,
+                                                    field.name, field.options[Number(event.target.value)])}>
+                                                {index < 0 && <option value="" disabled>
+                                                    {current === undefined ? 'Select an option' : String(current)}
+                                                </option>}
+                                                {field.options.map((value, optionIndex) => (
+                                                    <option key={optionIndex} value={optionIndex}>
+                                                        {typeof value === 'string' ? value : JSON.stringify(value)}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                            <p className="mt-3 text-xs text-ink-muted">
+                                These choices apply to the next run, including Continue run and Compact context.
+                            </p>
+                        </PopoverContent>
+                    </Popover>
+
+                    <div className="ml-auto flex items-center gap-2">
+                        {runActive ? (
+                            <Button
+                                variant="danger"
+                                size="md"
+                                disabled={!connected || cancelPending}
+                                aria-busy={cancelPending}
+                                onClick={() => client.sendSignal(sessionId, 'cancel')}
+                                title="ask the worker to cancel the active run"
+                                className="h-9 justify-center leading-5"
+                                icon={<Glyph name={cancelPending ? 'spinner' : 'cancel'} />}
+                            >
+                                <span>{cancelPending ? 'Cancelling…' : 'Cancel run'}</span>
+                            </Button>
+                        ) : (
+                            <Button
+                                type="submit"
+                                variant="primary"
+                                size="md"
+                                disabled={entryMode === 'command'
+                                    ? !selectedCommand || selectedUnavailable !== null
+                                    : !connected || !canSend}
+                                className={PRIMARY_ACTION_CLASS}
+                                icon={<Glyph name="send" />}
+                            >
+                                <span>Send</span>
+                            </Button>
+                        )}
                     </div>
                 </div>
             </div>
+
+            {cancelPending && (
+                <p role="status" className="mx-auto mt-2 max-w-4xl px-1 text-xs text-warn">
+                    Cancellation requested. Waiting for the worker to reach an interruptible boundary.
+                </p>
+            )}
 
             <div className="mx-auto mt-1 flex max-w-4xl flex-wrap items-center gap-x-3 gap-y-1
                 px-1 text-xs text-ink-muted">
@@ -473,17 +551,10 @@ export function Composer() {
                     <span className="text-warn">the panel is not connected</span>
                 )}
                 {!connected && <span>no worker attached</span>}
-                {mode !== 'ask' && (
-                    <Badge tone={MODES[mode].tone} title={MODES[mode].detail}>
-                        approvals: {MODES[mode].label}
-                    </Badge>
-                )}
-
                 <span className="flex-1" />
-                <span className="hidden sm:inline">{entryMode === 'command'
-                    ? 'Type a prefix · Tab to complete · Enter to run'
-                    : runActive ? 'Cancel stops this run · draft stays here'
-                        : 'Enter to send · Shift+Enter for a new line'}</span>
+                <span className="hidden sm:inline">{runActive
+                    ? 'Cancel stops this run · draft stays here'
+                    : 'Enter to send'}</span>
             </div>
         </form>
     );

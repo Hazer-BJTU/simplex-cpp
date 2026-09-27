@@ -32,7 +32,7 @@
             // A hint to the model, nothing more: the process tools decide their
             // own working directory per call, and an omitted one inherits the
             // worker's, which is the session directory under /data.
-            "workspace": "/workspace",
+            "workspace": "/root/workspace",
             "platform": "linux container (AlmaLinux 9)",
             "software": ["bash", "coreutils"]
         }

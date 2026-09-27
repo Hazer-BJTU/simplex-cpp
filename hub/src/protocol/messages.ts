@@ -18,7 +18,7 @@ export const CONFIRMATION_MODES = ['ask', 'approve', 'deny'] as const;
 export const SIGNAL_OPERATIONS = ['status', 'options', 'cancel', 'shutdown'] as const;
 
 /** Input operations accepted by the worker. */
-export const INPUT_OPERATIONS = ['message', 'continue', 'history'] as const;
+export const INPUT_OPERATIONS = ['message', 'continue', 'compact', 'history'] as const;
 
 /** One accepted content encoding. */
 export type ContentType = (typeof CONTENT_TYPES)[number];
@@ -174,7 +174,7 @@ export function normalizeOptions(options: unknown): NormalizedOptions | undefine
 export interface PayloadInput {
     operation?: InputOperation;
     requestId: string;
-    /** Required for `message`, refused for `continue`. */
+    /** Required for `message`, refused for `continue` and `compact`. */
     content?: unknown;
     options?: unknown;
     start?: number;
@@ -182,7 +182,7 @@ export interface PayloadInput {
     limit?: number;
 }
 
-/** Build a `payload` envelope for a user message or a continuation. */
+/** Build a payload for a message, continuation, context compaction, or history query. */
 export function buildPayload({
     operation = 'message', requestId, content, options, start, step, limit,
 }: PayloadInput): PayloadEnvelope {
@@ -219,9 +219,9 @@ export function buildPayload({
             }
             data.limit = limit;
         }
-    } else if (operation === 'continue') {
+    } else if (operation === 'continue' || operation === 'compact') {
         if (content !== undefined && content !== null) {
-            throw new ProtocolError('continue must not carry content');
+            throw new ProtocolError(`${operation} must not carry content`);
         }
     } else {
         if (!Array.isArray(content) || content.length === 0) {

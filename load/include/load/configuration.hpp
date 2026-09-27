@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 #include "io/client.hpp"
 #include "dataclass/prompt_template.hpp"
+#include "load/archives.hpp"
 
 namespace load {
 
@@ -35,8 +36,9 @@ struct Configuration {
     model_io::PromptTemplate system_prompt;
     /** Startup-loaded internal user instruction for a compact operation. */
     std::string compact_prompt;
-    /** Resolved append-only archive directory; each compact operation adds a child. */
+    /** Resolved archive directory; each compact operation adds a child. */
     std::filesystem::path memory;
+    MemoryRetention memory_retention;
     /** Refreshed from startup configuration even for restored sessions. */
     RuntimeEnvironment environment;
     bool persistence = true;

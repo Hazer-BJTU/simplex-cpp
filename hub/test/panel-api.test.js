@@ -112,6 +112,40 @@ describe('panel API', () => {
         assert.equal(replay.transcript.some((entry) => entry.event === 'history'), false);
     });
 
+    it('gates compact on current worker capabilities and tracks its durable result', async () => {
+        const session = ctx.hub.registry.create('compact-session');
+        const worker = await identify(session, 'compact-worker');
+        const socket = await panel();
+        socket.send({ v: 1, type: 'subscribe', session: session.id });
+        await socket.waitFor((message) => message.type === 'subscribed');
+        socket.send({ v: 1, type: 'input', session: session.id,
+            operation: 'compact', request_id: 'unsupported' });
+        const denied = await socket.waitFor((message) => message.type === 'error');
+        assert.match(denied.message, /context-compact/);
+        assert.equal(session.requests.size, 0);
+        worker.send(workerEvent({ session: session.id, worker: 'compact-worker',
+            sequence: 2, event: 'status', data: { active: false, capabilities: ['context-compact'] } }));
+        await until(() => session.workerCapabilities.names.includes('context-compact'));
+        socket.send({ v: 1, type: 'input', session: session.id,
+            operation: 'compact', request_id: 'compact-1', options: { confirmation: { mode: 'ask' } } });
+        const payload = await worker.waitFor((message) => message.type === 'payload');
+        assert.equal(payload.data.operation, 'compact');
+        assert.equal(Object.hasOwn(payload.data, 'content'), false);
+        assert.equal(payload.data.options.confirmation.mode, 'ask');
+        worker.send(workerEvent({ session: session.id, worker: 'compact-worker', sequence: 3,
+            event: 'input_admitted', requestId: 'compact-1', runId: 'compact-run', data: { operation: 'compact' } }));
+        worker.send(workerEvent({ session: session.id, worker: 'compact-worker', sequence: 4,
+            event: 'compact_finished', requestId: 'compact-1', runId: 'compact-run',
+            data: { summary: 'Saved summary', memory_file: '/worker/memory/state.md',
+                removed_turns: 2, revision: 3, durable: true } }));
+        const result = await socket.waitFor((message) => message.type === 'event'
+            && message.envelope.event === 'compact_finished');
+        assert.equal(result.envelope.data.summary, 'Saved summary');
+        assert.equal(session.requests.get('compact-1').state, 'admitted');
+        assert.ok(ctx.hub.transcripts.get(session.id).toArray().some(
+            (event) => event.event === 'compact_finished'));
+    });
+
     it('refuses history until the current worker advertises support', async () => {
         const session = ctx.hub.registry.create('history-gate-session');
         const worker = await connectWorker(

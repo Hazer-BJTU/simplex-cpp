@@ -232,13 +232,19 @@ test('the confirmation mode belongs to one session (D15)', async ({ page }) => {
     await expect(page.getByText('connected', { exact: true })).toBeVisible();
 
     await page.getByTestId('session-row').filter({ hasText: 'first' }).click();
+    const initialBounds = await page.locator('main > form').boundingBox();
+    const confirmBounds = await page.getByRole('button', { name: /^confirmation/ }).boundingBox();
     await page.getByRole('button', { name: /^confirmation/ }).click();
     await page.getByRole('radio', { name: /approve/ }).check();
 
     // The mode that turns approvals off is shown without opening anything: the
     // old panel kept it in one `<select>` that was never reset, so choosing it
     // once silently applied it to every session opened afterwards.
-    await expect(page.getByText('approvals: approve')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'confirmation mode: approve' })).toContainText('Approve');
+    await page.keyboard.press('Escape');
+    expect(await page.locator('main > form').boundingBox()).toEqual(initialBounds);
+    expect(await page.getByRole('button', { name: /^confirmation/ }).boundingBox()).toEqual(confirmBounds);
+    await expect(page.getByText('approvals: approve')).toHaveCount(0);
 
     await page.getByTestId('session-row').filter({ hasText: 'second' }).click();
     await expect(page.getByText('approvals: approve')).toHaveCount(0);
@@ -255,14 +261,11 @@ test('the confirmation mode belongs to one session (D15)', async ({ page }) => {
     expect(inputs.at(-1).options).toEqual({ confirmation: { mode: 'ask' } });
 });
 
-test('the composer keeps references as parts and clears on Escape (D12)', async ({ page }) => {
+test('the composer disables Attach and clears the message on Escape', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
 
-    await page.getByLabel('Attach a reference').click();
-    await page.getByLabel('external reference').fill('https://example.com/a.png');
-    await page.getByRole('button', { name: 'Attach', exact: true }).click();
-    await expect(page.getByText('https://example.com/a.png')).toBeVisible();
+    await expect(page.getByLabel('Attach a reference')).toBeDisabled();
 
     await page.getByLabel('message').fill('look at this');
     await page.getByRole('button', { name: 'Send' }).click();
@@ -272,7 +275,6 @@ test('the composer keeps references as parts and clears on Escape (D12)', async 
         .filter((message: { type: string }) => message.type === 'input').at(-1);
     expect(input.content).toEqual([
         { type: 'text', raw: 'look at this' },
-        { type: 'external_ref', raw: 'https://example.com/a.png' },
     ]);
 
     await page.getByLabel('message').fill('scratch that');
@@ -327,6 +329,62 @@ test('the primary composer button cancels an active run and keeps the draft', as
         entry.type === 'signal' && entry.operation === 'cancel'
     ))).toBe(true);
     await expect(message).toHaveValue('keep for the next run');
+    const pending = page.getByRole('button', { name: 'Cancelling…' });
+    await expect(pending).toBeDisabled();
+    await expect(page.getByRole('status').filter({ hasText: 'interruptible boundary' })).toBeVisible();
+    await pending.evaluate((button: HTMLButtonElement) => button.click());
+    await page.keyboard.press('Alt+Enter');
+    await expect(pending).toBeDisabled();
+    await pending.evaluate((button: HTMLButtonElement) => button.click());
+    const after = await page.request.get(`${STUB}/__stub/received`);
+    expect((await after.json()).received.filter((entry: { type: string; operation?: string }) =>
+        entry.type === 'signal' && entry.operation === 'cancel')).toHaveLength(1);
+    await emit(page, 'run_finished', { status: 'cancelled' });
+    await expect(pending).toHaveCount(0);
+    await emit(page, 'run_started', {});
+    const nextCancel = page.getByRole('button', { name: 'Cancel run' });
+    await expect(nextCancel).toBeEnabled();
+    await nextCancel.click();
+    await expect(pending).toBeDisabled();
+    await page.keyboard.press('Alt+Enter');
+    await expect(pending).toBeDisabled();
+    await expect(message).toHaveValue('keep for the next run');
+});
+
+test('a cancel without acknowledgement can be retried after panel reconnect', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'run_started', {});
+    await page.getByRole('button', { name: 'Cancel run' }).click();
+    await expect(page.getByRole('button', { name: 'Cancelling…' })).toBeDisabled();
+    await page.request.post(`${STUB}/__stub/down`);
+    await expect(page.getByText('connected', { exact: true })).toHaveCount(0);
+    await page.request.post(`${STUB}/__stub/up`);
+    await expect(page.getByText('connected', { exact: true })).toBeVisible();
+    const cancel = page.getByRole('button', { name: 'Cancel run' });
+    await expect(cancel).toBeEnabled();
+    await cancel.click();
+    await expect(page.getByRole('button', { name: 'Cancelling…' })).toBeDisabled();
+    const response = await page.request.get(`${STUB}/__stub/received`);
+    expect((await response.json()).received.filter((entry: { type: string; operation?: string }) =>
+        entry.type === 'signal' && entry.operation === 'cancel')).toHaveLength(2);
+});
+
+test('a cancel without acknowledgement can be retried after worker reconnect', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'run_started', {});
+    await page.getByRole('button', { name: 'Cancel run' }).click();
+    await expect(page.getByRole('button', { name: 'Cancelling…' })).toBeDisabled();
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
+    const cancel = page.getByRole('button', { name: 'Cancel run' });
+    await expect(cancel).toBeEnabled();
+    await cancel.click();
+    await expect(page.getByRole('button', { name: 'Cancelling…' })).toBeDisabled();
+    const response = await page.request.get(`${STUB}/__stub/received`);
+    expect((await response.json()).received.filter((entry: { type: string; operation?: string }) =>
+        entry.type === 'signal' && entry.operation === 'cancel')).toHaveLength(2);
 });
 
 test('command mode completes a prefix without sending or losing a message draft', async ({ page }) => {
@@ -385,21 +443,15 @@ test('only Alt+Enter switches modes without changing the composer height', async
     expect((await composer.boundingBox())?.height).toBe(initialHeight);
 });
 
-test('a refused input restores references as references', async ({ page }) => {
+test('a refused input restores the message draft', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
     await page.request.post(`${STUB}/__stub/settings`, { data: { refuseInput: true } });
 
-    await page.getByLabel('Attach a reference').click();
-    await page.getByLabel('external reference').fill('https://example.com/a.png');
-    await page.getByRole('button', { name: 'Attach', exact: true }).click();
     await page.getByRole('textbox', { name: 'message' }).fill('look at this');
     await page.getByRole('button', { name: 'Send' }).click();
 
     await expect(page.getByRole('textbox', { name: 'message' })).toHaveValue('look at this');
-    await expect(page.getByRole('button', {
-        name: 'remove reference https://example.com/a.png',
-    })).toBeVisible();
 
     await page.request.post(`${STUB}/__stub/settings`, { data: { refuseInput: false } });
     await page.getByRole('button', { name: 'Send' }).click();

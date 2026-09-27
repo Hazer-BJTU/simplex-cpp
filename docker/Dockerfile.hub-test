@@ -55,6 +55,8 @@
 ARG BASE_IMAGE=ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
 FROM ${BASE_IMAGE}
 
+USER root
+
 # -j4 for the same reason every other image here uses it: the build shares the
 # host's CPUs, and this repository is developed on WSL, where saturating them
 # destabilises the WSL services.
@@ -118,9 +120,9 @@ RUN cd /src/hub \
     && npm run build \
     && if [ "${RUN_TESTS}" = "1" ]; then npm test; fi
 
-# A workspace the worker's environment hint points at, so a mounted directory
-# has somewhere obvious to go. Nothing writes here unless a session is asked to.
-RUN mkdir -p /workspace /data
+# Disposable workspace for manual testing; no host workspace mount is needed.
+# The host-hub launcher also uses this as the worker's working directory.
+RUN mkdir -p /root/workspace /data
 
 COPY docker/hub-test.config.jsonc /etc/simplex-hub/hub.config.jsonc
 COPY docker/hub-test-entrypoint.sh /usr/local/bin/simplex-hub-entrypoint

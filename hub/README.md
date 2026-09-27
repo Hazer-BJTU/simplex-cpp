@@ -102,8 +102,10 @@ is told to dial*.
 `hub.config.docker-worker.jsonc` is a working example. The short version:
 
 ```sh
+# From the repository root:
+docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .
+cd hub
 npm run build
-docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .   # once, ~10 min
 node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --mock \
     --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
 # then: http://127.0.0.1:8800/?token=dev
@@ -131,23 +133,30 @@ Three things make it work, and each is a way to get it wrong:
    would then name a host directory that does not exist, and Docker helpfully
    creates an empty one.
 
-`--user {uid}:{gid}` is in the template for a reason that only shows up
-afterwards: an image runs as root, so the worker writes `state.json` and
-`session.lock` into the mounted data directory as root, and the operator who
-owns that directory cannot delete them. The two placeholders are the invoking
-user; on a platform that has no uid to report, a template that asks for one is
-refused at spawn time rather than passed to Docker as `--user :`.
+The test launcher uses `--user 0:{gid}`: workers and their tools run as root inside
+the container. Each container has its own `/root/workspace`, created by the
+image and selected as both the working directory and the model's workspace
+hint. No host workspace is mounted. Stopping and removing the container discards
+workspace files; session state remains in the mounted session directory.
+The worker starts with umask `0002`, so directories it creates under the
+mounted session path are group-writable by the hub process. Worker files have
+root ownership and the hub's primary GID; the host hub can still remove the
+session tree. A tool that deliberately changes permissions inside the mounted
+session path can defeat this cooperative policy.
+After building the image, run `SIMPLEX_DOCKER_WORKER_TEST=1 node --test
+test/e2e/docker-worker.test.js` from `hub/` to verify a real compact, stop,
+and session deletion as the current non-root host user.
 
 To see that the isolation is real rather than assumed, the example config asks
 the mock for `hostname; id -u; cat /etc/hostname`. The tool card then shows the
-container's hostname, the invoking user's UID and its own PID namespace — from
+container's hostname, UID 0 and its own PID namespace — from
 a session whose hub is an ordinary process on the host:
 
 ```
 command   hostname; id -u; cat /etc/hostname
 pid       10
 stdout    66485abf0d8d          ← the container
-          1000
+          0
           66485abf0d8d
 ```
 
@@ -223,6 +232,7 @@ directory; command-line paths resolve against the working directory.
 | `worker.confirmationTimeoutMs` | `120000` | confirmation deadline written into the worker configuration |
 | `worker.stopTimeoutMs`, `worker.sigtermGraceMs`, `worker.sigkillGraceMs` | `15000`, `5000`, `2000` | the stop escalation ladder |
 | `worker.persistence` | `{enabled: true, readable: false}` | worker snapshot policy |
+| `worker.memoryRetention` | `{maxArchives: 5}` | compact archive cleanup defaults for new worker configs; zero disables cleanup |
 | `providerProfiles` | `deepseek`, `mock` | copied into the generated worker configuration; a session picks one by name |
 | `launcher.kind` | `simplex-worker` | `simplex-worker` or `command` |
 | `launcher.command`, `launcher.args` | `[]` | template and extra arguments for the `command` launcher |
@@ -317,6 +327,13 @@ is connected and no run is active; it asks the worker to continue from its
 current internal state without sending a new message, and keeps the draft.
 The worker requires an existing conversation turn and reports an error if there
 is none. The panel shows the continued run without a user-message bubble.
+**Compact context** archives the conversation and replaces the worker's context
+with a durably saved summary. It is enabled only when the connected worker and
+hub advertise support and no run is active. The worker requires persistence and
+a settled conversation. The panel displays the summary separately, refreshes
+worker history, and preserves any unsent draft. Send a new message after success;
+there is no turn to continue. Cancellation and failure preserve the old history.
+The command shows the worker's actual archive-retention policy when reported.
 When a run fails, its transcript shows a visible failure notice with technical
 details available on demand. A model-request failure suggests **Continue run**
 only while it remains the latest run of the same connected worker and the
@@ -351,7 +368,12 @@ Child-path validation rejects absolute paths and lexical `..` traversal, but
 does not resolve symlinks. A symlink within the session can point state or
 memory outside it; these paths are not a filesystem sandbox. The operator must
 trust or constrain workers with filesystem access.
-There is no automatic archive retention policy. The old `workers/`, `events/`,
+After a successful compact, worker-owned cleanup applies the configured count
+limit (5 by default) to recognized archives, preserving the current archive.
+Cleanup failures are visible beside the saved summary. Failed/cancelled attempts,
+unexpected files and empty directories can remain, so limits are cleanup targets
+rather than disk quotas. The hub never deletes a remote path from an event.
+The old `workers/`, `events/`,
 and session-ID-appending worker layouts are not migrated or read automatically.
 This is an incompatible layout change: migrate standalone worker configurations
 that previously set a root directory and relied on the worker appending the
@@ -542,3 +564,41 @@ the runner's Ubuntu.
 | A confirmation is denied after ~15 s | the event connection never identified the worker; check that the event socket reconnected |
 | Log lines are missing in the panel | the in-memory ring is bounded (`limits.logLines`); the full file is `sessions/<session>/logs/worker.log` |
 | The panel returns 401 | `panel.token` is set; supply it with `?token=...` in the URL once |
+
+
+The message composer places **Model** beside **Confirm**. It fetches the connected
+worker's model options once and caches the advertised choices for that worker
+ID. Selections travel in the next message, continuation, or compact payload;
+they never mutate an active run through a signal. A new worker gets a new cache.
+An explicit `input_rejected` with `code: "invalid_options"` refreshes the options
+and restores the provider's effective selections; ordinary input failures do
+not refresh them. The header no longer exposes Status or Options buttons.
+
+
+Message and Command modes share the same input layout and Send button.
+Command mode keeps Confirm and Model visible but disabled; existing selections
+still accompany commands that start a run. Alt+Enter changes the mode badge,
+placeholder, and command suggestions without moving the toolbar. The mode badge
+uses distinct colors and a short animation, disabled by reduced-motion settings.
+
+A small usage line above the composer shows only the latest model response's
+prompt tokens, generated tokens, and cache-hit percentage (`cache_hit / prompt`,
+or zero for an empty prompt). Counts use decimal K/M/B units with one fractional
+digit. Responses without cost leave the previous usage visible; counts are not
+accumulated. Per-response and per-turn token details appear only with Technical
+details enabled.
+
+
+The confirmation trigger has a fixed width. Its label changes from Confirm to
+Approve (red) or Deny (amber), so the active policy stays visible without adding
+a warning row below the composer or changing the input area's height.
+
+The composer header places an eight-segment request-size meter at a fixed
+position immediately to the right of the Message/Command badge. It is based on the
+last response's prompt plus generated tokens (cache hits are already included
+in prompt). Each segment spans 128K = 131,072 tokens; the scale ends at 1M =
+1,048,576 tokens. Completed bands are filled, the current band is proportional,
+and the display remains full above 1M. The adjacent fraction identifies the
+current band; zero belongs to the first band with an empty meter. This fixed
+visual scale is not the provider's context-window limit. Numeric token counts
+continue to use decimal K/M/B units.

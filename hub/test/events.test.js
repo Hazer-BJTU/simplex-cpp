@@ -20,7 +20,7 @@ describe('event vocabulary', () => {
             'ready', 'status', 'options', 'history', 'history_error',
             'input_admitted', 'input_rejected',
             'run_started', 'input_committed', 'model_response', 'tool_calls',
-            'tool_results', 'persisted', 'export_error', 'error', 'run_finished',
+            'tool_results', 'persisted', 'compact_finished', 'export_error', 'error', 'run_finished',
         ];
         for (const name of documented) {
             assert.ok(KNOWN_EVENTS.includes(name), `missing event: ${name}`);

@@ -139,6 +139,28 @@ describe('tool output', () => {
 describe('rounds', () => {
     const noPrompts = new Map();
 
+    it('keeps compact results separate from user messages in live and replayed runs', () => {
+        const result = { summary: 'A **saved** summary', memory_file: '/memory/state.md',
+            removed_turns: 3, revision: 5, durable: true };
+        for (const admission of [
+            { kind: 'outbox', id: 'out-compact', requestId: 'req-1', parts: [],
+                operation: 'compact', state: 'pending' },
+            event('e1', 'input_admitted', { operation: 'compact' }),
+        ]) {
+            const [run] = buildRounds([admission,
+                event('e2', 'run_started', {}),
+                event('e3', 'compact_finished', result),
+                event('e4', 'run_finished', { status: 'completed' }),
+            ], noPrompts);
+            assert.equal(run.compacting, true);
+            assert.deepEqual(run.compactResult, result);
+            assert.equal(run.input, null);
+            assert.equal(run.admitted, null);
+            assert.equal(run.assistant.length, 0);
+            assert.equal(run.problems.length, 0);
+        }
+    });
+
     it('retains classified failure details in the failed round', () => {
         const items = [
             event('e1', 'run_started', {}),

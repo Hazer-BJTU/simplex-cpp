@@ -81,6 +81,7 @@ export interface HubConfig {
         sigtermGraceMs: number;
         sigkillGraceMs: number;
         persistence: { enabled: boolean; readable: boolean };
+        memoryRetention: { maxArchives: number };
         environment: { workspace: string; platform: string; software: string[] };
     };
     providerProfiles: Record<string, ProviderProfile>;
@@ -150,6 +151,7 @@ export function defaultConfig(): HubConfig {
             sigtermGraceMs: 5000,
             sigkillGraceMs: 2000,
             persistence: { enabled: true, readable: false },
+            memoryRetention: { maxArchives: 5 },
             environment: { workspace: '', platform: '', software: [] },
         },
         // Maps directly onto the worker's `providers` + `driver_model`.
@@ -435,6 +437,9 @@ export function validateConfig(config: HubConfig): HubConfig {
         'worker.sigtermGraceMs and worker.sigkillGraceMs must be positive');
     check(typeof worker.persistence?.enabled === 'boolean',
         'worker.persistence.enabled must be a boolean');
+    const maxArchives = worker.memoryRetention?.maxArchives;
+    check(Number.isSafeInteger(maxArchives) && maxArchives >= 0 && maxArchives <= 2147483647,
+        'worker.memoryRetention.maxArchives must be an integer between 0 and 2147483647');
 
     check(isPlainObject(config.providerProfiles), 'providerProfiles must be an object');
     check(Object.keys(config.providerProfiles).length > 0,

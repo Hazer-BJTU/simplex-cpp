@@ -496,7 +496,7 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
     await message.press('Alt+Enter');
     await expect(page.getByLabel('command input')).toBeFocused();
     expect((await composer.boundingBox())!.height).toBe(messageHeight);
-    const run = page.getByRole('button', { name: 'Run', exact: true });
+    const run = page.getByRole('button', { name: 'Send', exact: true });
     const runBounds = await run.boundingBox();
     expect(runBounds).not.toBeNull();
     expect({
@@ -760,4 +760,69 @@ test('a folded turn still shows what went wrong in it', async ({ page }) => {
     await expect(page.getByTestId('transcript-problem')).toContainText(
         'the storage layer refused the write',
     );
+});
+
+test('latest token usage stays by the composer while per-turn costs require details', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'run_started', {});
+    await emit(page, 'model_response', modelResponse('A reply', {
+        cost: { prompt: 4895, generated: 64, cache_hit: 0 },
+    }));
+    const usage = page.getByLabel('Latest token usage');
+    await expect(usage).toContainText('prompt 4.9K');
+    await expect(usage).toContainText('generated 64.0');
+    await expect(usage).toContainText('cache-rate 0.0%');
+    await expect(usage).not.toContainText('total');
+    await expect(page.getByTestId('transcript')).not.toContainText('prompt 4895');
+    await expect(page.getByTestId('round-summary')).not.toContainText('tokens');
+    await page.getByTestId('details-toggle').check();
+    await expect(page.getByTestId('assistant-message')).toContainText('prompt 4895');
+    await page.getByTestId('details-toggle').uncheck();
+    await emit(page, 'model_response', modelResponse('No usage reported'));
+    await expect(usage).toContainText('prompt 4.9K');
+    await emit(page, 'model_response', modelResponse('Latest response', {
+        cost: { prompt: 1000000, generated: 0, cache_hit: 250000 },
+    }));
+    await expect(usage).toContainText('prompt 1.0M');
+    await expect(usage).toContainText('generated 0.0');
+    await expect(usage).toContainText('cache-rate 25.0%');
+    await page.getByLabel('message', { exact: true }).press('Alt+Enter');
+    await expect(usage).toContainText('prompt 1.0M');
+});
+
+test('the token scale uses eight bands and remains full above 1M', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.setViewportSize({ width: 320, height: 568 });
+    await emit(page, 'run_started', {});
+    const cost = (prompt: number, generated = 0) => modelResponse('Usage update', {
+        cost: { prompt, generated, cache_hit: prompt },
+    });
+    await emit(page, 'model_response', cost(128 * 1024, 1));
+    const usage = page.getByLabel('Token usage band');
+    const meter = page.getByRole('meter', { name: 'Latest request token size' });
+    await expect(meter).toHaveAttribute('aria-valuenow', '131073');
+    await expect(usage).toContainText('2/8 · 256K');
+    await expect(meter.getByTestId('token-band-fill')).toHaveCount(8);
+    const fills = () => meter.getByTestId('token-band-fill').evaluateAll(
+        (nodes) => nodes.map((node) => (node as HTMLElement).style.width));
+    expect((await fills())[0]).toBe('100%');
+    const bounds = await meter.boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
+    const badge = await page.getByTestId('composer-mode').boundingBox();
+    expect(bounds!.x).toBeGreaterThan(badge!.x + badge!.width);
+    expect(bounds!.y).toBeGreaterThanOrEqual(badge!.y);
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(badge!.y + badge!.height);
+    await page.getByLabel('message', { exact: true }).press('Alt+Enter');
+    expect(await meter.boundingBox()).toEqual(bounds);
+    await page.getByLabel('command input').press('Alt+Enter');
+    await emit(page, 'model_response', cost(1024 * 1024));
+    await expect(usage).toContainText('8/8 · 1M');
+    await expect.poll(fills).toEqual(Array(8).fill('100%'));
+    await emit(page, 'model_response', cost(2 * 1024 * 1024));
+    await expect(meter).toHaveAttribute('aria-valuenow', '1048576');
+    await expect(usage).toContainText('8/8 · 1M');
+    expect(await fills()).toEqual(Array(8).fill('100%'));
 });

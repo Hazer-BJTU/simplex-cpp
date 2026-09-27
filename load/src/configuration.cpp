@@ -238,6 +238,8 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
     result.storage = std::filesystem::absolute(directory / location).lexically_normal();
     result.state_directory = storage_child(storage, "state", result.storage);
     result.memory = storage_child(storage, "memory", result.storage);
+    const auto& retention = object(storage, "memory_retention");
+    result.memory_retention.max_archives = number(retention, "max_archives", 5, true);
     if (text(storage, "format", "json") != "json") throw std::invalid_argument("persistence format must be json");
     auto restore = text(storage, "restore", "if_present");
     if (restore != "if_present" && restore != "never") throw std::invalid_argument("invalid restore policy");

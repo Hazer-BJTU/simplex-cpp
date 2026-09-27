@@ -370,13 +370,18 @@ export function createPanelApi({
     ): { ok: true; request_id: string } | SendFailure {
         const connection = session.connection;
         if (!connection?.isOpen) return { ok: false, error: 'the worker is not connected' };
+        if (body.operation === 'compact'
+            && (session.workerCapabilities?.workerId !== session.identity.workerId
+                || !session.workerCapabilities.names.includes('context-compact'))) {
+            return { ok: false, error: 'the current worker has not advertised context-compact' };
+        }
         const requestId = typeof body.request_id === 'string' && body.request_id.length > 0
             ? body.request_id
             : newRequestId();
         let payload: PayloadEnvelope;
         try {
             payload = buildPayload({
-                operation: (body.operation ?? 'message') as 'message' | 'continue',
+                operation: (body.operation ?? 'message') as 'message' | 'continue' | 'compact',
                 requestId,
                 content: body.content,
                 options: body.options,

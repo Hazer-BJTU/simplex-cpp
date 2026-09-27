@@ -16,6 +16,24 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createPanelStore, statsFor } from '../web/src/state/store.ts';
 import { parseHistoryPage } from '../web/src/state/history.ts';
+import { emptyView, indexEnvelope } from '../web/src/state/view.ts';
+
+it('invalidates older history on compact replay but preserves newer projections', () => {
+    const oldHistory = [{ index: 0, user: [], steps: [], omitted_steps: 0 }];
+    const result = envelope(10, 'compact_finished', { data: {
+        summary: 'summary', memory_file: '/memory/state.md', removed_turns: 1,
+        revision: 2, durable: true,
+    } });
+    const view = { ...emptyView('demo'), history: oldHistory,
+        historyWorker: 'worker-1', historySequence: 9, historyLoading: true };
+    assert.deepEqual(indexEnvelope(view, result).history, []);
+    assert.equal(indexEnvelope(view, result).historyLoading, false);
+    assert.deepEqual(indexEnvelope({ ...view, historySequence: 11 }, result).history, oldHistory);
+    assert.deepEqual(indexEnvelope(view, { ...result, data: { durable: false } }).history, oldHistory);
+    assert.deepEqual(indexEnvelope(view, envelope(10, 'run_finished', {
+        data: { status: 'cancelled' },
+    })).history, oldHistory);
+});
 
 /** One worker envelope as the hub forwards it. */
 function envelope(hubSequence, event = 'model_response', extra = {}) {

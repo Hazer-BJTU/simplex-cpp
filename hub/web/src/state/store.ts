@@ -262,9 +262,13 @@ export interface PanelActions {
 
     applySubscribed(message: SubscribedMessage): ApplyEffects;
     applyEvent(message: EventMessage): void;
+    setCancelPending(sessionId: SessionId, pending: boolean): void;
+    setModelOption(sessionId: SessionId, name: string, value: unknown): void;
     /** Account for a transient worker reply without advancing hub replay. */
     noteTransientWorkerEvent(sessionId: SessionId, envelope: WorkerEnvelope): void;
     beginHistory(sessionId: SessionId): void;
+    /** Forget pre-compaction pages before querying the new history revision. */
+    invalidateHistory(sessionId: SessionId): void;
     endHistory(sessionId: SessionId): void;
     /** Commit one already validated page; false means it did not fit the current load. */
     applyHistoryPage(sessionId: SessionId, envelope: WorkerEnvelope, page: HistoryPage): boolean;
@@ -857,6 +861,16 @@ export function createPanelStore() {
             return NO_EFFECTS;
         },
 
+        setModelOption(sessionId, name, value) {
+            set(withView(get(), sessionId, (view) => ({
+                ...view, modelSelection: { ...view.modelSelection, [name]: value },
+            })));
+        },
+
+        setCancelPending(sessionId, pending) {
+            set(withView(get(), sessionId, (view) => ({ ...view, cancelPending: pending })));
+        },
+
         applyEvent(message) {
             const envelope = message.envelope;
             const sessionId = message.session ?? envelope?.session_id;
@@ -881,6 +895,12 @@ export function createPanelStore() {
 
         beginHistory(sessionId) {
             set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: true })));
+        },
+
+        invalidateHistory(sessionId) {
+            set(withView(get(), sessionId, (view) => ({ ...view,
+                history: [], historyLoading: false, historySequence: null, historyWorker: null,
+            })));
         },
 
         endHistory(sessionId) {
@@ -1019,6 +1039,9 @@ export function createPanelStore() {
                     historyLoading: view.historyLoading,
                     historySequence: view.historySequence,
                     historyWorker: view.historyWorker,
+                    modelSelection: view.modelSelection,
+                    modelCatalog: view.modelCatalog,
+                    tokenUsage: view.tokenUsage,
                 };
                 let maxSeq = 0;
                 for (const envelope of message.transcript ?? []) {
@@ -1027,7 +1050,11 @@ export function createPanelStore() {
                     if (seq !== null && seq > maxSeq) maxSeq = seq;
                     next = foldEnvelope(next, envelope);
                 }
-                return { ...next, lastSeq: maxSeq };
+                return { ...next, lastSeq: maxSeq,
+                    modelSelection: next.modelCatalog === view.modelCatalog ? view.modelSelection : {},
+                    cancelPending: view.cancelPending && next.runActive
+                        && next.lastRunId === view.lastRunId,
+                };
             }));
             set(seedFromSession(get(), sessionId));
         },

@@ -10,7 +10,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, symlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -86,6 +86,77 @@ function waitForExit(child, timeoutMs = 10000) {
 }
 
 describe('end to end with the real worker', { skip }, () => {
+    it('compacts through the hub and prunes archives only after publishing the replacement', { timeout: 180000 }, async () => {
+        const ctx = await startE2eHub();
+        ctx.config.worker.memoryRetention = { maxArchives: 1 };
+        const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
+        try {
+            const created = await api(ctx.base, '/api/sessions', {
+                method: 'POST',
+                body: { session: 'e2e-compact', spec: { provider: 'mock', model: 'mock-text' } },
+            });
+            assert.equal(created.status, 201);
+            const started = await api(ctx.base, '/api/sessions/e2e-compact/start', { method: 'POST' });
+            assert.equal(started.body.ok, true, started.body.error);
+            const session = ctx.hub.registry.get('e2e-compact');
+            await until(() => session.connected && session.workerCapabilities?.names.includes('context-compact'),
+                { timeout: 60000, label: 'compact capability' });
+            panel.send({ v: 1, type: 'subscribe', session: session.id });
+            await panel.waitFor((message) => message.type === 'subscribed');
+            let previousArchive = null;
+            for (let index = 0; index < 3; index += 1) {
+                if (index === 2) {
+                    // An operator-selected symlink remains usable for export,
+                    // but cleanup refuses it. A committed summary must still
+                    // be reported as successful when optional cleanup fails.
+                    const root = sessionDir(ctx.config, session.id);
+                    renameSync(join(root, 'memory'), join(root, 'memory-kept'));
+                    symlinkSync('memory-kept', join(root, 'memory'), 'dir');
+                }
+                const messageId = `message-${index}`;
+                panel.send({ v: 1, type: 'input', session: session.id, request_id: messageId,
+                    content: [{ type: 'text', raw: 'A detailed historical note. '.repeat(2000) }] });
+                const ordinary = await panel.waitFor((message) => message.type === 'event'
+                    && message.envelope.event === 'run_finished'
+                    && message.envelope.request_id === messageId, { timeout: 60000 });
+                assert.equal(ordinary.envelope.data.status, 'completed');
+                const compactId = `compact-${index}`;
+                panel.send({ v: 1, type: 'input', session: session.id,
+                    request_id: compactId, operation: 'compact' });
+                const compact = await panel.waitFor((message) => message.type === 'event'
+                    && message.envelope.event === 'compact_finished'
+                    && message.envelope.request_id === compactId, { timeout: 60000 });
+                const result = compact.envelope.data;
+                assert.equal(result.summary, 'mock response');
+                assert.equal(result.durable, true);
+                assert.equal(result.removed_turns, 1);
+                if (index === 2) {
+                    assert.match(result.archive_cleanup_error, /ordinary archive root/);
+                } else {
+                    assert.equal(result.archive_cleanup.removed_archives, index);
+                }
+                assert.ok(existsSync(result.memory_file));
+                if (previousArchive) assert.equal(existsSync(previousArchive), index === 2);
+                previousArchive = result.memory_file;
+                const finished = await panel.waitFor((message) => message.type === 'event'
+                    && message.envelope.event === 'run_finished'
+                    && message.envelope.request_id === compactId, { timeout: 60000 });
+                assert.equal(finished.envelope.data.status, 'completed');
+                const snapshot = JSON.parse(readFileSync(join(sessionDir(ctx.config, session.id),
+                    'state/state.json'), 'utf8'));
+                assert.deepEqual(snapshot.turns, []);
+                panel.send({ v: 1, type: 'history', session: session.id, request_id: `history-${index}` });
+                const history = await panel.waitFor((message) => message.type === 'event'
+                    && message.envelope.event === 'history'
+                    && message.envelope.data.request_id === `history-${index}`, { timeout: 30000 });
+                assert.equal(history.envelope.data.total, 0);
+            }
+        } finally {
+            await panel.close();
+            await ctx.hub.stop();
+        }
+    });
+
     it('cancels a pending confirmation without executing the command', { timeout: 180000 }, async () => {
         const ctx = await startE2eHub();
         const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
@@ -115,7 +186,12 @@ describe('end to end with the real worker', { skip }, () => {
             const marker = join(sessionDir(ctx.config, 'e2e-cancel'), 'mock-tool-marker.txt');
             assert.equal(existsSync(marker), false);
 
-            panel.send({ v: 1, type: 'signal', session: 'e2e-cancel', operation: 'cancel' });
+            // Confirmation and event sockets are independent; the prompt can
+            // arrive before the hub has observed the current run ID.
+            panel.send({ v: 1, type: 'signal', session: 'e2e-cancel', operation: 'cancel',
+                run_id: opened.confirmation.run_id });
+            await panel.waitFor((message) => message.type === 'accepted'
+                && message.action === 'signal' && message.operation === 'cancel');
             const finished = await panel.waitFor(
                 (message) => message.type === 'event' && message.envelope.event === 'run_finished',
                 { timeout: 90000, label: 'cancelled run' });

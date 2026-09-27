@@ -25,6 +25,7 @@ import { ApiError, createRest, type RestClient, type WorkerAction } from './rest
 import { createPanelSocket, type PanelSocket } from './socket.ts';
 import { createTokenStore, type HistoryLike, type KeyValueStorage, type LocationLike, type TokenStore } from './token.ts';
 import { parseHistoryPage } from '../state/history.ts';
+import { parseCompactResult } from '../state/compact.ts';
 
 /** Query parameter carrying the selected session, so a view can be linked to. */
 export const SESSION_PARAM = 'session';
@@ -159,10 +160,21 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         ? { ...restOptions, fetchImpl: options.fetchImpl }
         : restOptions);
 
+    // These track requests in flight on the current panel connection, not
+    // durable worker capabilities. A lost socket invalidates both assumptions.
+    const optionsRequested = new Map<SessionId, string>();
     const socket: PanelSocket = createPanelSocket({
         location: loc,
         token: () => tokens.get(),
-        onState: (status) => store.getState().setConnection(status),
+        onState: (status) => {
+            if (status.state !== 'open') {
+                optionsRequested.clear();
+                for (const [sessionId, view] of store.getState().views) {
+                    if (view.cancelPending) store.getState().setCancelPending(sessionId, false);
+                }
+            }
+            store.getState().setConnection(status);
+        },
         onEvent: (event) => {
             if (event.kind === 'ignored') store.getState().noteIgnoredFrame();
             else if (event.kind === 'refused') store.getState().noteRefusal(event.code, event.detail);
@@ -193,6 +205,18 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         revision: number | null; retries: number;
     }>();
     const subscribedSessions = new Set<SessionId>();
+    // Capabilities stay fixed for a worker lifetime. Do not poll on every run.
+    function requestModelOptions(sessionId: SessionId, force = false): void {
+        const state = store.getState();
+        const session = state.sessions.get(sessionId);
+        const worker = session?.identity.worker_id;
+        if (!session?.connected || !worker || !subscribedSessions.has(sessionId)) return;
+        const cached = state.views.get(sessionId)?.modelCatalog;
+        if (!force && (optionsRequested.get(sessionId) === worker || cached?.worker_id === worker)) return;
+        if (socket.send({ type: 'signal', session: sessionId, operation: 'options' })) {
+            optionsRequested.set(sessionId, worker);
+        }
+    }
     /** A new event connection can miss events even when its worker ID is unchanged. */
     const historyNeedsRecovery = new Set<SessionId>();
 
@@ -249,6 +273,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                     store.getState().endHistory(sessionId);
                 }
                 historyRequests.clear();
+                optionsRequested.clear();
                 subscribedSessions.clear();
                 if (store.getState().selected) {
                     historyNeedsRecovery.add(store.getState().selected!);
@@ -269,6 +294,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 }
                 if (!effects.resubscribe && message.session.connected) {
                     requestHistory(message.session.session_id);
+                    requestModelOptions(message.session.session_id);
                 }
                 return;
             }
@@ -276,9 +302,11 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 // A reply to `list_sessions`, racing with any REST refresh.
                 // Merged, never destructive (defect D23).
                 store.getState().upsertSessions(message.sessions);
+                for (const session of message.sessions) requestModelOptions(session.session_id);
                 return;
             case 'session':
                 store.getState().upsertSession(message.session);
+                requestModelOptions(message.session.session_id);
                 if (store.getState().selected === message.session.session_id
                     && subscribedSessions.has(message.session.session_id)
                     && !historyRequests.has(message.session.session_id)
@@ -296,6 +324,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'session_removed': {
                 subscribedSessions.delete(message.session);
+                optionsRequested.delete(message.session);
                 historyNeedsRecovery.delete(message.session);
                 const wasSelected = store.getState().selected === message.session;
                 store.getState().removeSession(message.session);
@@ -303,6 +332,8 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             }
             case 'event':
+                const freshEvent = typeof message.envelope.hub_sequence !== 'number'
+                    || message.envelope.hub_sequence > store.getState().lastSeq(message.session);
                 // History pages are transient control replies and have no
                 // retained hub sequence of their own.
                 if (message.envelope.event !== 'history') {
@@ -310,7 +341,28 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 } else {
                     store.getState().noteTransientWorkerEvent(message.session, message.envelope);
                 }
-                if (message.envelope.event === 'history') {
+                if (message.envelope.event === 'ready') {
+                    requestModelOptions(message.session);
+                }
+                if (message.envelope.event === 'options') {
+                    optionsRequested.delete(message.session);
+                }
+                if (freshEvent && message.envelope.event === 'input_rejected'
+                    && (message.envelope.data as { code?: unknown } | null)?.code === 'invalid_options'
+                    && message.envelope.worker_id === store.getState().sessions.get(message.session)?.identity.worker_id) {
+                    requestModelOptions(message.session, true);
+                }
+                if (message.envelope.event === 'compact_finished') {
+                    const result = parseCompactResult(message.envelope.data);
+                    if (result) {
+                        // Retire any outstanding pre-replacement query so late
+                        // replies cannot restore archived turns into the view.
+                        historyRequests.delete(message.session);
+                        store.getState().invalidateHistory(message.session);
+                        historyNeedsRecovery.add(message.session);
+                        requestHistory(message.session, 0, 0, result.revision);
+                    }
+                } else if (message.envelope.event === 'history') {
                     const pending = historyRequests.get(message.session);
                     const raw = message.envelope.data as { request_id?: unknown } | null;
                     if (pending && (typeof raw?.request_id !== 'string'
@@ -384,8 +436,13 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'connection':
                 store.getState().applyConnection(message);
+                if (message.connected) requestModelOptions(message.session);
                 historyNeedsRecovery.add(message.session);
                 if (!message.connected) {
+                    // Both requests need a live worker. The panel socket can
+                    // remain open while this worker connection disappears.
+                    optionsRequested.delete(message.session);
+                    store.getState().setCancelPending(message.session, false);
                     historyRequests.delete(message.session);
                     store.getState().endHistory(message.session);
                 }
@@ -401,6 +458,17 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'error':
                 store.getState().applyError(message);
+                const refusedSignal = message.request as {
+                    type?: unknown; operation?: unknown; session?: unknown;
+                } | undefined;
+                if (refusedSignal?.type === 'signal' && refusedSignal.operation === 'options'
+                    && typeof refusedSignal.session === 'string') {
+                    optionsRequested.delete(refusedSignal.session);
+                }
+                if (refusedSignal?.type === 'signal' && refusedSignal.operation === 'cancel'
+                    && typeof refusedSignal.session === 'string') {
+                    store.getState().setCancelPending(refusedSignal.session, false);
+                }
                 if (typeof message.request === 'object' && message.request !== null
                     && (message.request as { type?: unknown }).type === 'history') {
                     const session = (message.request as { session?: unknown }).session;
@@ -534,7 +602,10 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         sendInput(sessionId, parts, operation = 'message', options) {
             // A session can exist before its worker starts. Do not create an
             // outbox entry or send an input frame until a worker is attached.
-            if (!store.getState().sessions.get(sessionId)?.connected) return false;
+            const session = store.getState().sessions.get(sessionId);
+            if (!session?.connected) return false;
+            if (operation === 'compact' && (!store.getState().hasCapability('context-compact')
+                || !session.worker_capabilities?.includes('context-compact'))) return false;
             const requestId = newRequestId();
             store.getState().beginInput(sessionId, requestId, parts, operation);
             const sent = socket.send({
@@ -542,7 +613,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 session: sessionId,
                 request_id: requestId,
                 operation,
-                ...(operation === 'continue' ? {} : { content: [...parts] }),
+                ...(operation === 'message' ? { content: [...parts] } : {}),
                 ...(options ? { options } : {}),
             });
             if (!sent) {
@@ -554,12 +625,19 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         },
 
         sendSignal(sessionId, operation, runId) {
-            return socket.send({
+            if (operation === 'cancel' && store.getState().views.get(sessionId)?.cancelPending) {
+                return false;
+            }
+            const sent = socket.send({
                 type: 'signal',
                 session: sessionId,
                 operation,
                 ...(runId ? { run_id: runId } : {}),
             });
+            if (sent && operation === 'cancel') {
+                store.getState().setCancelPending(sessionId, true);
+            }
+            return sent;
         },
 
         sendConfirmation(sessionId, confirmationId, decision, reason) {

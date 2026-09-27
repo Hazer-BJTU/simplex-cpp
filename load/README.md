@@ -352,6 +352,7 @@ before releasing its dependencies. See [IO](../io/README.md) and
 | `directory` | `./data/session` | Direct session root, relative to the configuration file; no session ID is appended. |
 | `state` | `state` | Snapshot subdirectory relative to `directory`. |
 | `memory` | `memory` | Compact archive subdirectory relative to `directory`. |
+| `memory_retention.max_archives` | `5` | Archive-count cleanup target after successful compact; zero disables. |
 | `format` | `json` | Existing `AgentInputState` dataclass serialization. |
 | `restore` | `if_present` | Restore an existing session; create fresh state only when absent. |
 | `save.on_step_finished` | `true` | Save after a completed step's state-edit hooks. |
@@ -520,9 +521,13 @@ not restorable JSON snapshots.
 Compact requires `persistence.enabled: true`. Its original-state Markdown export
 and successful final JSON save are mandatory regardless of `readable` and
 `save.on_run_finished`. An optional session `readable.md` is also refreshed when
-`readable: true`. Core never automatically rotates or deletes compact archives.
-Deleting an inactive hub-managed session removes its entire session directory,
-including memory archives. Archives for externally managed workers remain under
-their operator's control. There is no automatic age, size, or count retention.
+`readable: true`. After a successful compact commit, the worker applies
+`persistence.memory_retention` and always keeps the current archive.
+Other recognized archives are retained newest first up to `max_archives`
+(default 5), including the current archive. The count accepts integers from 0
+through 2147483647; zero disables cleanup. Failed/cancelled attempts and unexpected files may
+remain, so this is not a hard disk quota. Cleanup never follows child symlinks or
+recursively removes directories, and failures are reported without undoing the
+committed summary. The same worker policy applies to externally managed workers.
 The old session-ID-appending layout is not migrated or read automatically. See the
 [worker protocol](../core/docs/worker-protocol.md#compact-conversation-context).

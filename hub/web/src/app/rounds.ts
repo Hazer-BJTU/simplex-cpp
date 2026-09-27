@@ -25,6 +25,7 @@
  *   the tool framework annotated one, and "not executed" is a third state.
  */
 import type { ConfirmationPrompt, RequestRecord, WorkerEnvelope } from '../../../shared/protocol.ts';
+import { parseCompactResult, type CompactResult } from '../state/compact.ts';
 import type {
     EventItem,
     NoteItem,
@@ -117,6 +118,7 @@ export interface RunFailure {
  * order, kept alongside the grouping rather than instead of it.
  */
 export type TimelineEntry =
+    | { readonly kind: 'compact'; readonly key: string }
     | { readonly kind: 'protocol'; readonly key: string }
     | { readonly kind: 'assistant'; readonly key: string }
     | { readonly kind: 'problem'; readonly key: string }
@@ -136,6 +138,8 @@ export interface Round {
     readonly admitted: EventItem | null;
     /** A continuation uses the worker's state and has no user message. */
     readonly continued: boolean;
+    readonly compacting: boolean;
+    readonly compactResult: CompactResult | null;
     readonly assistant: readonly AssistantBlock[];
     readonly calls: readonly ToolCall[];
     readonly problems: readonly Problem[];
@@ -179,6 +183,8 @@ interface Draft {
     input: OutboxItem | null;
     admitted: EventItem | null;
     continued: boolean;
+    compacting: boolean;
+    compactResult: CompactResult | null;
     assistant: AssistantBlock[];
     calls: ToolCall[];
     problems: Problem[];
@@ -208,6 +214,8 @@ function newDraft(key: string, index: number, kind: 'prelude' | 'run'): Draft {
         input: null,
         admitted: null,
         continued: false,
+        compacting: false,
+        compactResult: null,
         assistant: [],
         calls: [],
         problems: [],
@@ -381,14 +389,20 @@ export function buildRounds(
     // Older workers left admission data empty. Their request records can help
     // while retained, but newer replayable admission events take precedence.
     const continuationIds = new Set<string>();
+    const compactIds = new Set<string>();
     for (const request of requests.values()) {
         if (request.operation === 'continue') continuationIds.add(request.request_id);
+        if (request.operation === 'compact') compactIds.add(request.request_id);
     }
     for (const item of items) {
         if (item.kind === 'outbox' && item.operation === 'continue') {
             continuationIds.add(item.requestId);
+        } else if (item.kind === 'outbox' && item.operation === 'compact') {
+            compactIds.add(item.requestId);
         } else if (item.kind === 'request' && item.request.operation === 'continue') {
             continuationIds.add(item.request.request_id);
+        } else if (item.kind === 'request' && item.request.operation === 'compact') {
+            compactIds.add(item.request.request_id);
         }
     }
     const byId = new Map<string, ConfirmationPrompt>();
@@ -407,6 +421,7 @@ export function buildRounds(
     const hasContent = (draft: Draft): boolean => draft.input !== null
         || draft.admitted !== null
         || draft.continued
+        || draft.compacting
         || draft.assistant.length > 0
         || draft.calls.length > 0
         || draft.protocol.length > 0
@@ -436,9 +451,10 @@ export function buildRounds(
             // render. Its request ID remains in the outbox for admission and
             // refusal bookkeeping until the worker answers.
             if (current.kind === 'run'
-                && (current.input || current.admitted || current.continued)) startRun();
+                && (current.input || current.admitted || current.continued || current.compacting)) startRun();
             else ensureRun();
             if (item.operation === 'continue') current.continued = true;
+            else if (item.operation === 'compact') current.compacting = true;
             else current.input = item;
             continue;
         }
@@ -461,7 +477,9 @@ export function buildRounds(
             // A second admission while a run already holds one is a new turn.
             if (current.kind !== 'run' || current.admitted !== null) startRun();
             const operation = str(obj(envelope.data)?.operation);
-            if (operation === 'continue'
+            if (operation === 'compact') {
+                current.compacting = true;
+            } else if (operation === 'continue'
                 || (!operation && continuationIds.has(envelope.request_id))) {
                 current.continued = true;
             } else if (current.input === null) {
@@ -472,6 +490,18 @@ export function buildRounds(
             current.protocol.push(item);
             current.timeline.push({ kind: 'protocol', key: item.id });
             continue;
+        }
+
+        if (name === 'compact_finished') {
+            const result = parseCompactResult(envelope.data);
+            if (result) {
+                const run = ensureRun();
+                run.compacting = true;
+                run.compactResult = result;
+                track(run, envelope);
+                run.timeline.push({ kind: 'compact', key: item.id });
+                continue;
+            }
         }
 
         if (name === 'run_started') {
@@ -593,6 +623,16 @@ export function buildRounds(
 
         if (PROBLEM_EVENTS.has(name)) {
             const run = ensureRun();
+            const rejection = obj(envelope.data);
+            const rejectedRequestId = rejection?.request_id;
+            if (name === 'input_rejected' && (rejection?.operation === 'compact'
+                || (typeof rejectedRequestId === 'string' && compactIds.has(rejectedRequestId)))) {
+                run.compacting = true;
+            }
+            if (name === 'input_rejected' && run.compacting) {
+                run.status = 'rejected';
+                run.open = false;
+            }
             track(run, envelope);
             const data = obj(envelope.data) ?? {};
             run.problems.push({
@@ -628,6 +668,8 @@ export function buildRounds(
         input: draft.input,
         admitted: draft.admitted,
         continued: draft.continued,
+        compacting: draft.compacting,
+        compactResult: draft.compactResult,
         assistant: draft.assistant,
         calls: draft.calls,
         problems: draft.problems,

@@ -25,11 +25,10 @@
         // own `/src/build/bin/prompts` looks tidier and does not work: the
         // mount would then name a host directory that does not exist, and
         // Docker answers an empty one.
-        // The worker runs as the container's only process, so a workspace is
-        // whatever the image provides; nothing is mounted over it unless you
-        // add a volume for it.
+        // Disposable workspace inside each worker container; no host workspace
+        // is mounted. Removing the container discards its workspace files.
         "environment": {
-            "workspace": "/workspace",
+            "workspace": "/root/workspace",
             "platform": "linux",
             "software": ["bash", "coreutils"]
         }
@@ -43,16 +42,11 @@
         "command": [
             "docker", "run", "--rm", "--init",
             "--name", "simplex-worker-{session}",
-            // Run as the invoking user, not as the image's root. Without this
-            // the worker writes root-owned files into the mounted data
-            // directory, and the operator cannot delete them without help —
-            // which is how this line came to exist.
-            "--user", "{uid}:{gid}",
-            // The image's own entrypoint starts the *hub*, and it is mode 711
-            // — executable but not readable, which is enough for a binary and
-            // not for a shell script. Overriding it is what lets a non-root
-            // user run the worker at all.
-            "--entrypoint", "/src/build/bin/simplex",
+            // Root runs with the hub's group. The umask below lets the host
+            // hub delete state and memory directories created by the worker.
+            "--user", "0:{gid}",
+            // Override the image entrypoint, which otherwise starts the hub.
+            "--entrypoint", "/bin/sh",
             // The model credential, forwarded from the hub's own environment.
             // No `=value`: Docker takes the value from the environment of the
             // process that runs `docker`, so the key stays in the operator's
@@ -65,11 +59,10 @@
             "-v", "{session_dir}:{session_dir}",
             "-v", "{config}:{config}:ro",
             "-v", "{prompts_dir}:{prompts_dir}:ro",
-            // Tools the model asks for run inside the container. Point this at
-            // the directory you want the agent to work in.
-            "-v", "/tmp/simplex-workspace:/workspace",
-            "-w", "{session_dir}",
+            // The image creates this private workspace for process tools.
+            "-w", "/root/workspace",
             "simplex-hub-test:latest",
+            "-c", "umask 0002; exec \"$@\"", "sh", "/src/build/bin/simplex",
             "run",
             "--config", "{config}",
             "--session", "{session}",

@@ -1,11 +1,18 @@
 #pragma once
 #include <string>
+#include <stdexcept>
 #include <nlohmann/json.hpp>
 #include "dataclass/model_io.hpp"
 
 namespace core {
 /** Reject unsafe session path components before any filesystem access. */
 void validate_session_id(const std::string& id);
+/** Payload option validation failure, distinguishable from other input errors. */
+class InputOptionsError : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
 /** Serialized work admitted by the worker payload consumer. */
 enum class InputOperation { Message, Continue, Compact };
 

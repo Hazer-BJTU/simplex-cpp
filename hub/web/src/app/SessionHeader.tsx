@@ -226,24 +226,6 @@ export function SessionHeader() {
                     </Button>
                 )}
 
-                <Tooltip label="Ask the worker for a status snapshot">
-                    <IconButton
-                        label="Status"
-                        onClick={() => client.sendSignal(sessionId, 'status')}
-                        disabled={!session.connected}
-                    >
-                        <Glyph name="status" />
-                    </IconButton>
-                </Tooltip>
-                <Tooltip label="Ask the worker which models and tools it offers">
-                    <IconButton
-                        label="Options"
-                        onClick={() => client.sendSignal(sessionId, 'options')}
-                        disabled={!session.connected}
-                    >
-                        <Glyph name="options" />
-                    </IconButton>
-                </Tooltip>
                 <Tooltip label={inspectorOpen ? 'Hide the context drawer' : 'Show the context drawer'}>
                     <IconButton
                         label={inspectorOpen ? 'Hide inspector' : 'Show inspector'}

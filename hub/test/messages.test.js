@@ -207,3 +207,11 @@ describe('newRequestId', () => {
         assert.ok([...ids].every((id) => id.length <= 128));
     });
 });
+it('builds compact without content and preserves run options', () => {
+    const options = { confirmation: { mode: 'ask' } };
+    assert.deepEqual(buildPayload({ operation: 'compact', requestId: 'compact-1', options }), {
+        type: 'payload', data: { operation: 'compact', request_id: 'compact-1', options },
+    });
+    assert.throws(() => buildPayload({ operation: 'compact', requestId: 'compact-1',
+        content: [{ type: 'text', raw: 'not a message' }] }), /must not carry content/);
+});
