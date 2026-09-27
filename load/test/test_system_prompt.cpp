@@ -66,6 +66,7 @@ BOOST_AUTO_TEST_CASE(default_prompt_is_loaded_beside_the_executable) {
     const auto defaults = load::parse_configuration(configuration(), scratch.root);
     BOOST_TEST(defaults.system_prompt.contains("persona"));
     BOOST_TEST(!defaults.system_prompt.render().markdown.empty());
+    BOOST_TEST(defaults.compact_prompt.find("Do not call tools") != std::string::npos);
     BOOST_TEST(!fs::exists(scratch.root / "prompts/coding_agent.yaml"));
 }
 
@@ -84,7 +85,7 @@ BOOST_AUTO_TEST_CASE(malformed_or_missing_prompt_files_fail_with_filename_contex
         invalid.push_back(document);
     }
     for (const auto& patch : std::vector<Json>{
-        {{"name", "signature.runtime"}}, {{"name", "environment.runtime"}}, {{"name", ""}}, {{"name", "skill.process"}}, {{"name", nullptr}},
+        {{"name", "memory.runtime"}}, {{"name", "signature.runtime"}}, {{"name", "environment.runtime"}}, {{"name", ""}}, {{"name", "skill.process"}}, {{"name", nullptr}},
         {{"text", 1}}, {{"text", nullptr}}, {{"stability", "typo"}},
         {{"stability", nullptr}}, {{"title", false}}
     }) {
@@ -145,4 +146,15 @@ BOOST_AUTO_TEST_CASE(environment_hints_resolve_paths_without_changing_the_proces
         document["worker"]["environment"] = invalid;
         BOOST_CHECK_THROW(load::parse_configuration(document, scratch.root), std::invalid_argument);
     }
+}
+
+BOOST_AUTO_TEST_CASE(compact_prompt_uses_config_relative_paths_and_rejects_empty_content) {
+    Scratch scratch;
+    auto document = configuration();
+    const auto file = scratch.write("sections:\n  - name: compact\n    text: Summarize without tools.\n");
+    document["worker"]["compact_prompt_file"] = file.filename().string();
+    const auto config = load::parse_configuration(document, scratch.root);
+    BOOST_TEST(config.compact_prompt == "Summarize without tools.\n");
+    scratch.write("sections: []\n");
+    BOOST_CHECK_THROW(load::parse_configuration(document, scratch.root), std::invalid_argument);
 }

@@ -443,7 +443,7 @@ a unique, nonempty string `name` and string `text`. `title` defaults to an empty
 string (no heading), and `stability` defaults to `immutable`. Sections must be
 ordered by stability: `immutable`, then `growing`, then `volatile`. Duplicate
 names, unknown stability values, wrong field types, and names beginning with
-`skill.` or equal to `environment.runtime` / `signature.runtime` are rejected. These names are reserved
+`skill.` or equal to `environment.runtime` / `signature.runtime` / `memory.runtime` are rejected. These names are reserved
 for host-injected skills and runtime environment hints.
 Unknown additional fields are tolerated. The existing PromptTemplate text
 normalization and Markdown rendering rules apply; prompt text does not undergo
@@ -492,7 +492,28 @@ remove any old section without adding a new one. The section is saved with the
 session, is not hot-reloaded, and remains editable through existing loop hooks.
 
 The worker appends a short, untitled `signature.runtime` Volatile section after
-all other sections: a simplex version welcome, a greeting to the configured
+configured sections and before restored memory: a simplex version welcome, a greeting to the configured
 provider, and a wish for successful tasks. This decorative footer is regenerated
 at startup, including on restore, using the current build version and provider.
 It is host-owned and cannot be declared in a role YAML file.
+
+## Compact configuration
+
+The worker accepts `worker.compact_prompt_file`, a PromptTemplate YAML file
+rendered as the internal user instruction for an explicit compact request.
+When omitted, it loads `prompts/operations/compact.yaml` beside the executable.
+The file is validated at startup and must render nonempty instructions.
+
+`persistence.memory` defaults to `./.data/memory`, resolved relative to the
+configuration directory. Core creates a new directory for each attempt at
+`<memory>/<session_id>/<20-digit ordinal>-<UTC timestamp>-<run_id>/state.md`. Directory creation is
+exclusive; an existing archive is never reused or overwritten. Archives remain
+even when summarization is cancelled or fails. Empty directories can remain if
+the initial export fails. Readable exports include all conversation records but
+retain the existing JSON-preview clipping and binary omission rules; they are
+not restorable JSON snapshots.
+
+Compact requires `persistence.enabled: true`. Its original-state Markdown export
+and successful final JSON save are mandatory regardless of `readable` and
+`save.on_run_finished`. An optional session `readable.md` is also refreshed when
+`readable: true`. Core never automatically rotates or deletes compact archives.

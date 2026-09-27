@@ -1,4 +1,4 @@
-foreach(name configuration confirmation application protocol)
+foreach(name configuration confirmation application protocol compact)
     add_executable(test_core_${name} test_${name}.cpp)
     target_link_libraries(test_core_${name} PRIVATE core_lib Boost::unit_test_framework)
     add_test(NAME test_core_${name} COMMAND test_core_${name})

@@ -37,6 +37,11 @@ const DOC_PATH = join(hubRoot, '..', 'core', 'docs', 'worker-protocol.md');
 const available = existsSync(DOC_PATH);
 const skip = available ? false : `core documentation not present at ${DOC_PATH}`;
 
+// Worker-only rollout: remove these exact allowances when the follow-up hub
+// implementation can send compact and display its durable history replacement.
+const WORKER_ONLY_EVENTS = ['compact_finished'];
+const WORKER_ONLY_OPERATIONS = ['compact'];
+
 /** Hint appended to every parse failure. */
 const PARSER_HINT = 'The document was reformatted or the vocabulary moved. Update this '
     + "test's parser, or the hub, to match — do not delete the check.";
@@ -106,14 +111,14 @@ function identifier(cell) {
 }
 
 describe('worker protocol drift', { skip }, () => {
-    it('documents exactly the events the hub knows', () => {
+    it('documents hub events plus explicit worker-only additions', () => {
         const rows = firstTable(section(readDocument(), '## Worker events'), 'the worker events table');
         const documented = rows.map((row) => identifier(row[0])).sort();
-        assert.deepEqual([...KNOWN_EVENTS].sort(), documented,
+        assert.deepEqual([...KNOWN_EVENTS, ...WORKER_ONLY_EVENTS].sort(), documented,
             'the hub\'s event vocabulary and core/docs/worker-protocol.md disagree');
-        // A rendering hint for every documented event, so no event reaches the
-        // panel without a decision about how it looks.
-        for (const name of documented) {
+        // Every hub-supported event needs a rendering hint. Worker-only events
+        // use the existing unknown-event display until the follow-up rollout.
+        for (const name of documented.filter((name) => !WORKER_ONLY_EVENTS.includes(name))) {
             assert.ok(Object.hasOwn(EVENT_TABLE, name), `no rendering hint for ${name}`);
         }
     });
@@ -128,12 +133,12 @@ describe('worker protocol drift', { skip }, () => {
         }
     });
 
-    it('documents exactly the input operations the hub can send', () => {
+    it('documents hub input operations plus explicit worker-only additions', () => {
         const requests = section(readDocument(), '## User requests');
         const documented = [...requests.matchAll(/"operation"\s*:\s*"([a-z_]+)"/g)]
             .map((match) => match[1]);
         assert.ok(documented.length > 0, `no input operations found. ${PARSER_HINT}`);
-        assert.deepEqual([...INPUT_OPERATIONS].sort(), [...new Set(documented)].sort());
+        assert.deepEqual([...INPUT_OPERATIONS, ...WORKER_ONLY_OPERATIONS].sort(), [...new Set(documented)].sort());
         assert.doesNotThrow(() => buildPayload({ requestId: 'r', content: [{ type: 'text', raw: 'x' }] }));
         assert.doesNotThrow(() => buildPayload({ operation: 'continue', requestId: 'r' }));
     });

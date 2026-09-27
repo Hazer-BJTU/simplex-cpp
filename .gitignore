@@ -98,3 +98,6 @@ hub/web/dist/
 # are for the person debugging that run, not for the repository.
 hub/test-results/
 hub/playwright-report/
+
+# Default worker compact archives contain local conversation state.
+/.data/

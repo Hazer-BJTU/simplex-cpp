@@ -115,6 +115,9 @@ worker:
   # Used only for a new session; restored prompts are retained.
   # Relative to this config file. Omit to use <executable_dir>/prompts/coding_agent.yaml.
   system_prompt_file: ./prompts/coding_agent.yaml
+  # Optional internal user instruction for explicit compact operations.
+  # Omit to use prompts/operations/compact.yaml beside the executable.
+  # compact_prompt_file: ./prompts/operations/compact.yaml
   # Optional prompt hints, refreshed on startup even when restoring a session.
   # No chdir, sandbox, or automatic platform/software detection is performed.
   environment:
@@ -134,6 +137,9 @@ persistence:
   format: json
   # Optional write-only Markdown alongside the authoritative JSON snapshot.
   readable: false
+  # Compact always archives the original state here, even when readable is false.
+  # Relative to this configuration file; old archives are never replaced.
+  memory: ./.data/memory
   # if_present: restore existing state, or start fresh when no file exists.
   # This does not automatically resume loop execution or replay tool calls.
   restore: if_present

@@ -6,9 +6,16 @@
 namespace core {
 /** Reject unsafe session path components before any filesystem access. */
 void validate_session_id(const std::string& id);
-/** A validated user-content payload or explicit continuation request. */
+/** Serialized work admitted by the worker payload consumer. */
+enum class InputOperation { Message, Continue, Compact };
+
+/** Stable wire spelling for a validated operation. */
+const char* operation_name(InputOperation operation);
+
+/** A validated payload; compact's internal user message is supplied by core. */
 struct Input {
     std::string request_id;
+    InputOperation operation = InputOperation::Message;
     bool has_message = true;
     model_io::MessageItem message;
     /** Validated category objects; applied only when this payload is admitted. */
@@ -27,7 +34,7 @@ struct Input {
  * categories are rejected. Parsing never applies options or calls a provider.
  *
  * Reject invalid shapes and attempts to supply roles or tool-call metadata.
- * A continue request must not carry content or legacy text. Parsing never
+ * Continue and compact requests must not carry content or legacy text. Parsing never
  * mutates payload.
  */
 Input parse_input(const nlohmann::json& payload);

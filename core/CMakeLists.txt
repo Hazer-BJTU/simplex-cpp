@@ -1,4 +1,11 @@
 configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/operations/compact.yaml"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/operations/compact.yaml"
+    COPYONLY)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/operations/compact.yaml"
+    DESTINATION bin/prompts/operations)
+
+configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/prompts/coding_agent.yaml"
     "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/coding_agent.yaml"
     COPYONLY)

@@ -84,3 +84,32 @@ BOOST_AUTO_TEST_CASE(protocol_never_admits_fabricated_tool_messages) {
     payload["operation"] = "execute";
     BOOST_CHECK_THROW(core::parse_input(payload), std::invalid_argument);
 }
+
+BOOST_AUTO_TEST_CASE(compact_configuration_defaults_and_validation) {
+    auto config = load::parse_configuration(configuration(), "/tmp/config");
+    BOOST_TEST(config.memory == "/tmp/config/.data/memory");
+    BOOST_TEST(config.compact_prompt.find("Do not call tools") != std::string::npos);
+    auto value = configuration();
+    value["persistence"]["memory"] = "../archives";
+    BOOST_TEST(load::parse_configuration(value, "/tmp/config").memory == "/tmp/archives");
+    value["persistence"]["memory"] = "";
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    value = configuration();
+    value["worker"]["compact_prompt_file"] = "missing-compact.yaml";
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(compact_payload_is_explicit_and_has_no_external_content) {
+    Json payload = {{"operation", "compact"}, {"request_id", "compact-1"}};
+    auto input = core::parse_input(payload);
+    BOOST_CHECK(input.operation == core::InputOperation::Compact);
+    BOOST_CHECK(!input.has_message);
+    BOOST_TEST(std::string(core::operation_name(input.operation)) == "compact");
+    payload["options"] = {{"model", {{"model", "fixture"}}}};
+    BOOST_TEST(core::parse_input(payload).options["model"]["model"] == "fixture");
+    for (const char* field : {"content", "text", "role", "invokes"}) {
+        auto invalid = payload;
+        invalid[field] = "external instruction";
+        BOOST_CHECK_THROW(core::parse_input(invalid), std::exception);
+    }
+}

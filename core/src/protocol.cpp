@@ -11,6 +11,15 @@ void validate_session_id(const std::string& id) {
         || id.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos)
         throw std::invalid_argument("session ID must contain 1..128 ASCII letters, digits, underscores or hyphens");
 }
+const char* operation_name(InputOperation operation) {
+    switch (operation) {
+        case InputOperation::Message: return "message";
+        case InputOperation::Continue: return "continue";
+        case InputOperation::Compact: return "compact";
+    }
+    throw std::invalid_argument("invalid input operation");
+}
+
 Input parse_input(const nlohmann::json& payload) {
     if (!payload.is_object()) throw std::invalid_argument("payload must be an object");
     Input input;
@@ -18,8 +27,15 @@ Input parse_input(const nlohmann::json& payload) {
     if (input.request_id.empty() || input.request_id.size() > 128)
         throw std::invalid_argument("request_id must contain 1..128 bytes");
     const auto operation = payload.at("operation").get<std::string>();
-    if (operation != "message" && operation != "continue")
-        throw std::invalid_argument("operation must be message or continue");
+    if (operation == "message") {
+        input.operation = InputOperation::Message;
+    } else if (operation == "continue") {
+        input.operation = InputOperation::Continue;
+    } else if (operation == "compact") {
+        input.operation = InputOperation::Compact;
+    } else {
+        throw std::invalid_argument("operation must be message, continue, or compact");
+    }
     for (const char* field : {"role", "invokes", "invoke_return", "type"})
         if (payload.contains(field)) throw std::invalid_argument("payload cannot contain message metadata");
     input.has_message = operation == "message";
@@ -65,7 +81,7 @@ Input parse_input(const nlohmann::json& payload) {
             input.message.content.push_back(std::move(content));
         }
     } else if (payload.contains("content") || payload.contains("text")) {
-        throw std::invalid_argument("continue cannot contain content or text");
+        throw std::invalid_argument(operation + " cannot contain content or text");
     }
     if (const auto options = payload.find("options"); options != payload.end()) {
         if (!options->is_object()) {

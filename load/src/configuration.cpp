@@ -170,6 +170,19 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
             / "prompts" / "coding_agent.yaml";
     }
     result.system_prompt = read_system_prompt(prompt_file);
+    auto compact_file = boost::dll::program_location().parent_path()
+        / "prompts" / "operations" / "compact.yaml";
+    if (worker.contains("compact_prompt_file")) {
+        const auto path = text(worker, "compact_prompt_file");
+        if (path.empty() || path.find('\0') != std::string::npos) {
+            throw std::invalid_argument("compact_prompt_file must be a nonempty path without NUL");
+        }
+        compact_file = (directory / path).lexically_normal();
+    }
+    result.compact_prompt = read_system_prompt(compact_file).render().markdown;
+    if (result.compact_prompt.find_first_not_of(" \t\r\n") == std::string::npos) {
+        throw std::invalid_argument("compact_prompt_file must contain instructions");
+    }
     const auto& environment = object(worker, "environment");
     const auto workspace = text(environment, "workspace");
     if (workspace.find('\0') != std::string::npos) {
@@ -208,6 +221,11 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
     result.save_run = flag(save, "on_run_finished", true);
     result.save_shutdown = flag(save, "on_shutdown", true);
     result.readable = flag(storage, "readable", false);
+    const auto memory = text(storage, "memory", "./.data/memory");
+    if (memory.empty() || memory.find('\0') != std::string::npos) {
+        throw std::invalid_argument("persistence.memory must be a nonempty path without NUL");
+    }
+    result.memory = std::filesystem::absolute(directory / memory).lexically_normal();
     return result;
 }
 

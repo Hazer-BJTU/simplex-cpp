@@ -18,6 +18,10 @@
 #include <deque>
 #include <iostream>
 #include <ctime>
+#include <type_traits>
+#include <algorithm>
+#include <charconv>
+#include <limits>
 
 namespace core {
 namespace asio = boost::asio;
@@ -71,6 +75,41 @@ std::string timestamp() {
         throw std::runtime_error("cannot format session timestamp");
     }
     return text;
+}
+
+/**
+ * Reserve a never-reused archive directory in persistent sequence order.
+ * Derive the ordinal from existing entries so restarts and wall-clock changes
+ * cannot reorder archives. Failed attempts also consume their ordinal. The
+ * session's existing ownership lock serializes cooperating worker processes.
+ */
+std::filesystem::path reserve_archive(
+    const std::filesystem::path& directory,
+    const std::string& run
+) {
+    std::filesystem::create_directories(directory);
+    std::uint64_t latest = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        const auto name = entry.path().filename().string();
+        if (name.size() < 21 || name[20] != '-') continue;
+        std::uint64_t ordinal = 0;
+        const auto parsed = std::from_chars(name.data(), name.data() + 20, ordinal);
+        if (parsed.ec == std::errc{} && parsed.ptr == name.data() + 20) {
+            latest = std::max(latest, ordinal);
+        }
+    }
+    if (latest == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("compact archive sequence exhausted");
+    }
+    auto ordinal = std::to_string(latest + 1);
+    ordinal.insert(0, 20 - ordinal.size(), '0');
+    auto time = timestamp();
+    std::erase(time, ':');
+    const auto archive = directory / (ordinal + "-" + time + "-" + run);
+    if (!std::filesystem::create_directory(archive)) {
+        throw std::runtime_error("compact archive directory already exists");
+    }
+    return archive;
 }
 
 /** Queue cancellation must not hide the transport error that closed it. */
@@ -229,7 +268,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     Json status() const {
         Json value = {{"active", active}, {"stopping", stopping},
             {"storage_failed", storage_failed}, {"rejected_payloads", client.rejected_payloads()},
-            {"capabilities", Json::array({"session-history"})}};
+            {"capabilities", Json::array({"session-history", "context-compact"})}};
         if (state.loop) value["loop"] = *state.loop;
         return value;
     }
@@ -317,7 +356,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             state.system_prompt = std::move(config.system_prompt);
         }
         state.tools = registry.get_tools();
-        // Skills, environment.runtime, and signature.runtime are host-owned.
+        // Skills, environment.runtime, signature.runtime, and memory.runtime are host-owned.
         // replace old host sections and place skills and runtime hints before
         // Volatile sections without modifying any historical conversation record.
         model_io::PromptTemplate prompt;
@@ -326,6 +365,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             if (!section.name.starts_with("skill.")
                 && section.name != "environment.runtime"
                 && section.name != "signature.runtime"
+                && section.name != "memory.runtime"
                 && section.stability != model_io::SectionStability::Volatile)
                 prompt.add_section(section.name, section.title, section.text, section.stability);
         }
@@ -335,10 +375,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             if (!section.name.starts_with("skill.")
                 && section.name != "environment.runtime"
                 && section.name != "signature.runtime"
+                && section.name != "memory.runtime"
                 && section.stability == model_io::SectionStability::Volatile)
                 prompt.add_section(section.name, section.title, section.text, section.stability);
         }
-        // A decorative footer only; always last and refreshed on restore.
+        // A decorative footer refreshed on restore, immediately before memory.
         std::string signature = "Welcome to simplex ";
         signature += simplex::VERSION_STRING;
         signature += ". Hello, " + (config.provider.empty() ? std::string("provider") : config.provider);
@@ -349,6 +390,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             signature,
             model_io::SectionStability::Volatile
         );
+        if (const auto memory = state.system_prompt.find("memory.runtime");
+            memory != state.system_prompt.end()) {
+            prompt.add_section("memory.runtime", "Memory", memory->text,
+                model_io::SectionStability::Volatile);
+        }
         state.system_prompt = std::move(prompt);
     }
 
@@ -487,6 +533,139 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
     }
 
+    /**
+     * Summarize a private conversation copy, then publish a durable replacement.
+     * The ordinary hook bus and automatic saves never observe the temporary
+     * compact turn. History queries continue to see the original state while
+     * the model is suspended. A fresh local bus prohibits tool dispatch even
+     * when a provider ignores the omitted tool definitions and prompt.
+     *
+     * Archive directories are exclusively created and never reused. Successful
+     * and failed attempts remain in persistent sequence order for inspection.
+     * The JSON save is the commit boundary: before it succeeds, the live state
+     * is untouched. A published-but-unsynced write stops the worker just like
+     * other required snapshot failures. Cancellation during the synchronous
+     * commit does not roll back an already published snapshot.
+     */
+    asio::awaitable<loop::RunResult> compact() {
+        const auto stop = run_stop.get_token();
+        const auto memory_directory = std::filesystem::absolute(
+            config.memory / session_id).lexically_normal();
+        const auto archive_directory = reserve_archive(memory_directory, run_id);
+        const auto archive_file = archive_directory / "state.md";
+        load::save_state(archive_file, state, load::StateFormat::Readable);
+
+        auto draft = state;
+        draft.tools.clear();
+        eventbus::EventBus compact_events;
+        // This built-in hook is stateless. Account the summary response before
+        // pruning so the next ordinary run sees no commit-sequence gap.
+        auto statistics = loop::LoopHookInterface::attach(
+            hooks.get(loop::intrinsic::ContextStatisticHook::kName), compact_events);
+        tools::ToolRegistry no_tools;
+        auto prohibit_tools = compact_events.subscribe<loop::BeforeToolBatch>(
+            [](const auto&) {
+                throw std::runtime_error("compact response must not call tools");
+            });
+        model_io::MessageItem instruction;
+        instruction.type = model_io::MessageItemType::UserInput;
+        instruction.role = "user";
+        model_io::Content content;
+        content.raw = config.compact_prompt;
+        instruction.content.push_back(std::move(content));
+        emit("run_started");
+        auto result = co_await loop::run(
+            *model, no_tools, compact_events, strand, draft, true,
+            std::move(instruction), {1}, stop);
+        if (result.status != loop::RunStatus::Completed) {
+            co_return result;
+        }
+        // A model may complete concurrently with cancellation. Until the
+        // replacement save begins, cancellation still preserves the old state.
+        if (stop.stop_requested()) {
+            result.status = loop::RunStatus::Cancelled;
+            co_return result;
+        }
+        if (draft.turns.empty() || draft.turns.back().agent_loop_step.empty()) {
+            throw std::runtime_error("compact produced no response");
+        }
+        const auto& response = draft.turns.back().agent_loop_step.back().model_response;
+        std::string summary;
+        for (const auto& part : response.content) {
+            if (part.type == model_io::ContentType::Text && !part.raw.empty()) {
+                if (!summary.empty()) summary += "\n\n";
+                summary += part.raw;
+            }
+        }
+        if (summary.find_first_not_of(" \t\r\n") == std::string::npos) {
+            throw std::runtime_error("compact produced an empty text summary");
+        }
+
+        // Copy only the retained fields; never copy the heavy history again.
+        // Retain provider-specific extras; transfer only the built-in usage
+        // checkpoint produced by the private run before pruning its response.
+        model_io::AgentInputState replacement;
+        replacement.meta = state.meta;
+        replacement.meta.updated_at = timestamp();
+        replacement.tools = state.tools;
+        replacement.extras = state.extras;
+        model_io::sync_external_status(replacement,
+            loop::intrinsic::ContextStatisticHook::kName,
+            model_io::external_status(draft, loop::intrinsic::ContextStatisticHook::kName).value());
+        replacement.loop = std::move(draft.loop);
+        replacement.system_prompt.heading_level = state.system_prompt.heading_level;
+        for (const auto& section : state.system_prompt) {
+            if (section.name != "memory.runtime") {
+                replacement.system_prompt.add_section(
+                    section.name, section.title, section.text, section.stability);
+            }
+        }
+        replacement.system_prompt.add_section(
+            "memory.runtime", "Memory",
+            "Earlier conversation was compacted into the summary below. "
+            "For historical details, use reading tools to inspect the chronological "
+            "Markdown archives in: " + memory_directory.string()
+                + "\nLatest archive: " + archive_file.string() + "\n\n" + summary,
+            model_io::SectionStability::Volatile);
+        (void)replacement.system_prompt.render();
+        // Refresh prompt-size estimates after memory injection; the reconciled
+        // checkpoint prevents this second update from counting the cost twice.
+        compact_events.publish(loop::EditOnRunFinished{replacement, result});
+        const auto removed_turns = state.turns.size();
+        // Allocate the success event before committing so construction failures
+        // cannot be mistaken for an uncommitted operation.
+        Json completed = {{"summary", summary}, {"memory_file", archive_file.string()},
+            {"removed_turns", removed_turns}, {"revision", history_revision + 1},
+            {"durable", true}};
+        if (stop.stop_requested()) {
+            result.status = loop::RunStatus::Cancelled;
+            co_return result;
+        }
+        try {
+            load::save_state(config.storage / session_id / "state.json", replacement);
+        } catch (...) {
+            storage_failed = true;
+            if (!failure) failure = std::current_exception();
+            cancel();
+            throw;
+        }
+        static_assert(std::is_nothrow_move_assignable_v<model_io::AgentInputState>);
+        state = std::move(replacement);
+        ++history_revision;
+        run_saved = true;
+        emit("persisted", {{"boundary", "compact"}, {"format", "json"}});
+        if (config.readable) {
+            try {
+                load::save_state(config.storage / session_id / "readable.md",
+                    state, load::StateFormat::Readable);
+            } catch (const std::exception& error) {
+                emit("export_error", {{"message", error.what()}});
+            }
+        }
+        emit("compact_finished", std::move(completed));
+        co_return result;
+    }
+
     /** Serialized payload admission and loop execution; never overlaps runs. */
     asio::awaitable<void> consume() {
         auto payloads = client.subscribe_payload();
@@ -502,8 +681,21 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 if (state.loop && (state.loop->phase == model_io::LoopPhase::Tools
                     || state.loop->phase == model_io::LoopPhase::Blocked))
                     throw std::invalid_argument("session requires operator recovery inspection");
-                if (!input->has_message && state.turns.empty())
-                    throw std::invalid_argument("no turn to continue");
+                if (input->operation == InputOperation::Compact) {
+                    if (!config.persistence) {
+                        throw std::invalid_argument("compact requires persistence.enabled");
+                    }
+                    if (state.loop && state.loop->phase != model_io::LoopPhase::Ready) {
+                        throw std::invalid_argument("compact requires a settled ready state");
+                    }
+                    if (config.memory.empty() || config.compact_prompt.empty()) {
+                        throw std::invalid_argument("compact configuration is incomplete");
+                    }
+                }
+                if (!input->has_message && state.turns.empty()) {
+                    throw std::invalid_argument(input->operation == InputOperation::Compact
+                        ? "no turns to compact" : "no turn to continue");
+                }
                 // Validate confirmation on a value copy before invoking the
                 // provider. If either category fails, neither selection changes.
                 // Enum-only assignment after provider success cannot throw.
@@ -541,15 +733,20 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 run_id = new_identity();
             }
             active = true;
-            state.meta.updated_at = timestamp();
+            if (input->operation != InputOperation::Compact) {
+                state.meta.updated_at = timestamp();
+            }
             run_saved = false;
-            emit("input_admitted", {{"operation", input->has_message
-                ? "message" : "continue"}});
+            emit("input_admitted", {{"operation", operation_name(input->operation)}});
             loop::RunResult result;
             try {
-                result = co_await loop::run(*model, registry, events, strand, state,
-                    input->has_message, std::move(input->message),
-                    {config.max_exchanges}, run_stop.get_token());
+                if (input->operation == InputOperation::Compact) {
+                    result = co_await compact();
+                } else {
+                    result = co_await loop::run(*model, registry, events, strand, state,
+                        input->has_message, std::move(input->message),
+                        {config.max_exchanges}, run_stop.get_token());
+                }
             } catch (const std::exception& error) {
                 result.status = loop::RunStatus::Failed;
                 result.error = error.what();
@@ -557,7 +754,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             // An earlier RunFinished observer can throw and prevent our slot
             // from running. The returned state is still final: complete a
             // required save here before reporting durability or admitting input.
-            if (!storage_failed && !run_saved
+            if (input->operation != InputOperation::Compact && !storage_failed && !run_saved
                 && (config.save_run || result.status == loop::RunStatus::Cancelled)) {
                 save(config.save_run ? SaveBoundary::RunFinished : SaveBoundary::Cancelled);
             }

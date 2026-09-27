@@ -204,7 +204,7 @@ queue or changes the conversation.
 
 ### Apply options at the next run boundary
 
-Both `message` and `continue` accept an optional `data.options` object. For example:
+`message`, `continue`, and `compact` accept an optional `data.options` object. For example:
 
 ```json
 {
@@ -392,6 +392,79 @@ The response event's `sequence` is the display baseline for subsequent live
 events from the same worker. A query can run during an active invocation, but
 it observes only records already committed to in-memory state.
 
+### Compact conversation context
+
+A worker advertising `context-compact` accepts:
+
+```json
+{"type":"payload","data":{"operation":"compact","request_id":"compact-001"}}
+```
+
+`compact` accepts the same optional `options` as other run requests, applied at
+admission. It must not carry `content` or `text`. It requires enabled persistence,
+at least one conversation turn, and a settled `ready` phase (or no loop progress).
+`tools`, `blocked`, `model`, and `projection` require resolution before compact.
+Invalid requests receive `input_rejected`. A request accepted into the payload
+queue waits for earlier runs to settle, just like `message` and `continue`.
+
+Before model execution, the worker exports the original AgentInputState to a new
+readable Markdown archive under `persistence.memory` (default `./.data/memory`,
+relative to the startup configuration). Each exclusively created archive directory
+is `<session_id>/<20-digit ordinal>-<UTC timestamp>-<run_id>/`, containing `state.md`. Ordinals are derived from existing archives and increase across worker restarts
+and clock changes. Old directories and files are never reused. Failed or cancelled attempts retain their archives;
+export failure can leave an empty directory. Readable exports include all history,
+with the existing JSON-preview clipping and binary omission policy. They are not
+lossless restorable snapshots. Export failure prevents the model request.
+
+The worker appends its startup-loaded compact instruction to a private state copy
+and runs one model exchange without tools. Extension hooks, temporary input,
+model-response events, and automatic saves are excluded from this private run.
+Tool calls returned despite the instruction are rejected before dispatch. Empty
+or whitespace-only text summaries fail; reasoning and non-text content are not
+injected into memory. While summarization is pending, history queries continue
+to return the original conversation, and the live state remains unchanged. The
+private run uses the built-in context statistic hook to account for its response before pruning; successful publication
+retains that accounting and refreshes the estimate for the new system prompt.
+`run_started` follows the successful archive write.
+
+Only a successful, non-cancelled summary replaces the live state. All user turns
+are removed; other state fields are retained, apart from the updated timestamp,
+completed loop progress, built-in context statistics, and replacement
+`memory.runtime` prompt section. The response commit sequence continues monotonically. This last Volatile section
+contains the summary, the absolute session archive directory, and the latest
+archive file path, with instructions to read archives for historical details.
+It replaces older injected memory while keeping every disk archive. Restoring
+a worker preserves memory after the refreshed runtime signature.
+
+The new JSON snapshot is mandatory even when `save.on_run_finished` is false.
+It is atomically saved before the in-memory replacement and success notification.
+Cancellation before that commit preserves the original state. Cancellation during
+the synchronous commit does not undo it. Required JSON save failure stops further
+admission; a failure after file publication has uncertain durability and is never
+reported as success. Optional `readable.md` export failure emits `export_error`
+without undoing successful JSON publication.
+
+On success the worker emits `persisted` with boundary `compact`, then
+`compact_finished`, then `run_finished` with `status: completed` and `durable: true`.
+`compact_finished.data` contains:
+
+```json
+{"summary":"Summary text", "memory_file":"/absolute/archive/state.md", "removed_turns":12, "revision":38, "durable":true}
+```
+
+The history revision advances once at replacement. Clients should invalidate old
+history pages and display the summary as a compact result, not a new user turn.
+A failure or cancellation emits `run_finished` without `compact_finished` and
+without changing the authoritative conversation or loop progress; its status
+object can therefore still describe the preceding ordinary run. `durable: false`
+for this attempt does not invalidate the original snapshot. Retrying compact uses
+a fresh request ID. There is no automatic retry or archive deletion.
+
+After success, history contains zero turns. `continue` is rejected until a new
+message creates a turn; that message sees the new system-prompt memory. Compact
+is worker-side in this revision: hub command and display support are a separate
+change, and older hubs may surface `compact_finished` as an unknown event.
+
 ### Admission and rejection
 
 The worker emits `input_admitted` after host validation and assigning a run ID.
@@ -467,8 +540,9 @@ may occur in nested dataclass records.
 | `status` | Status object | Snapshot produced by `status` or `cancel`. |
 | `options` | Options object | Available choices and current selections returned in response to the `options` signal. |
 | `history` | Display history page | Read-only response to a `history` payload; not a run event. |
+| `compact_finished` | `{ "summary": string, "memory_file": string, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true }` | Compacted state was durably published; old history pages must be invalidated. |
 | `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
-| `input_admitted` | `{ "operation": "message" | "continue" }` | Host admitted an input and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
+| `input_admitted` | `{ "operation": string }` | Host admitted `message`, `continue`, or `compact` and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
 | `input_rejected` | `{ "request_id": any JSON value or null, "message": string }` | Dequeued input failed host validation; no run was started for that input. |
 | `run_started` | `{}` | Loop admitted the invocation. |
 | `input_committed` | `{}` | New user input was integrated in memory. |
@@ -584,7 +658,7 @@ the next payload as described under
 | `stopping` | Boolean | Worker shutdown is in progress as observed at this snapshot. |
 | `storage_failed` | Boolean | A required JSON persistence operation failed; further saves are suppressed. |
 | `rejected_payloads` | Nonnegative integer | Cumulative inbound payload-queue overflow count in this IO client lifetime; not semantic input rejections. |
-| `capabilities` | Array of strings | Features supported by this worker process. `session-history` means it accepts read-only `history` payloads. A hub should check this before querying a worker that may be older than the hub. |
+| `capabilities` | Array of strings | Features supported by this worker process. `session-history` means it accepts read-only `history` payloads; `context-compact` means it implements the `compact` lifecycle (subject to persistence and state prerequisites). A hub should check this before querying a worker that may be older than the hub. |
 | `loop` | Optional loop-progress object | Present only when conversation state contains loop progress, including restored progress. |
 
 Loop progress always contains the following fields when present:
@@ -640,6 +714,7 @@ error. Earlier step checkpoints can exist even when this field is false.
 | `results_ready` | Returned results buffered, phase `projection`, before projection; mandatory when persistence is enabled. |
 | `step_finished` | After tool-result projection and validated step edits, if `on_step_finished` is enabled. |
 | `run_finished` | Final invocation state, if `on_run_finished` is enabled. |
+| `compact` | Mandatory successful compact replacement, before the success event. |
 | `cancelled` | Settled cancellation state when final saving is disabled; still saved if persistence is enabled. |
 | `shutdown` | State during controlled shutdown, if `on_shutdown` is enabled. |
 

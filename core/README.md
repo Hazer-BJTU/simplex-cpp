@@ -27,6 +27,7 @@ worker:
 persistence:
   directory: ./data/sessions
   readable: false
+  memory: ./.data/memory
 ~~~
 
 The default structured prompt lives in [core/prompts/coding_agent.yaml](prompts/coding_agent.yaml)
@@ -208,3 +209,20 @@ restrictions. At startup, including restore, current hints replace the
 `environment.runtime` Volatile section after tool skills and before other
 Volatile sections. Empty configuration removes old hints. See
 [configuration and lifecycle details](../load/README.md#runtime-environment-hints).
+
+## Explicit context compaction
+
+The `compact` payload archives the current state as Markdown, generates a
+structured summary without tools, and replaces conversation turns with a final
+`memory.runtime` system-prompt section. The worker publishes the replacement JSON
+snapshot before emitting `compact_finished`. Failed or cancelled attempts retain
+the original conversation. See [the wire contract](docs/worker-protocol.md#compact-conversation-context)
+for admission rules, failure behavior, and event fields. Hub commands and display
+support are intentionally delivered separately.
+
+Archives accumulate under `persistence.memory` (default `./.data/memory`) in
+session subdirectories. Every attempt reserves a new numbered directory, so
+restarts and clock changes preserve ordering without replacing earlier files.
+Injected memory identifies the absolute archive directory for later tool-based
+lookup. The compact instruction is loaded from
+[prompts/operations/compact.yaml](prompts/operations/compact.yaml) at startup.
