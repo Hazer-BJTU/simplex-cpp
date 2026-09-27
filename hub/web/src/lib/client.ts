@@ -194,6 +194,19 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         revision: number | null; retries: number;
     }>();
     const subscribedSessions = new Set<SessionId>();
+    // Capabilities stay fixed for a worker lifetime. Do not poll on every run.
+    const optionsRequested = new Map<SessionId, string>();
+    function requestModelOptions(sessionId: SessionId, force = false): void {
+        const state = store.getState();
+        const session = state.sessions.get(sessionId);
+        const worker = session?.identity.worker_id;
+        if (!session?.connected || !worker || !subscribedSessions.has(sessionId)) return;
+        const cached = state.views.get(sessionId)?.modelCatalog;
+        if (!force && (optionsRequested.get(sessionId) === worker || cached?.worker_id === worker)) return;
+        if (socket.send({ type: 'signal', session: sessionId, operation: 'options' })) {
+            optionsRequested.set(sessionId, worker);
+        }
+    }
     /** A new event connection can miss events even when its worker ID is unchanged. */
     const historyNeedsRecovery = new Set<SessionId>();
 
@@ -250,6 +263,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                     store.getState().endHistory(sessionId);
                 }
                 historyRequests.clear();
+                optionsRequested.clear();
                 subscribedSessions.clear();
                 if (store.getState().selected) {
                     historyNeedsRecovery.add(store.getState().selected!);
@@ -270,6 +284,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 }
                 if (!effects.resubscribe && message.session.connected) {
                     requestHistory(message.session.session_id);
+                    requestModelOptions(message.session.session_id);
                 }
                 return;
             }
@@ -277,9 +292,11 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 // A reply to `list_sessions`, racing with any REST refresh.
                 // Merged, never destructive (defect D23).
                 store.getState().upsertSessions(message.sessions);
+                for (const session of message.sessions) requestModelOptions(session.session_id);
                 return;
             case 'session':
                 store.getState().upsertSession(message.session);
+                requestModelOptions(message.session.session_id);
                 if (store.getState().selected === message.session.session_id
                     && subscribedSessions.has(message.session.session_id)
                     && !historyRequests.has(message.session.session_id)
@@ -297,6 +314,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'session_removed': {
                 subscribedSessions.delete(message.session);
+                optionsRequested.delete(message.session);
                 historyNeedsRecovery.delete(message.session);
                 const wasSelected = store.getState().selected === message.session;
                 store.getState().removeSession(message.session);
@@ -304,12 +322,22 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             }
             case 'event':
+                const freshEvent = typeof message.envelope.hub_sequence !== 'number'
+                    || message.envelope.hub_sequence > store.getState().lastSeq(message.session);
                 // History pages are transient control replies and have no
                 // retained hub sequence of their own.
                 if (message.envelope.event !== 'history') {
                     store.getState().applyEvent(message);
                 } else {
                     store.getState().noteTransientWorkerEvent(message.session, message.envelope);
+                }
+                if (message.envelope.event === 'ready') {
+                    requestModelOptions(message.session);
+                }
+                if (freshEvent && message.envelope.event === 'input_rejected'
+                    && (message.envelope.data as { code?: unknown } | null)?.code === 'invalid_options'
+                    && message.envelope.worker_id === store.getState().sessions.get(message.session)?.identity.worker_id) {
+                    requestModelOptions(message.session, true);
                 }
                 if (message.envelope.event === 'compact_finished') {
                     const result = parseCompactResult(message.envelope.data);
@@ -395,6 +423,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'connection':
                 store.getState().applyConnection(message);
+                if (message.connected) requestModelOptions(message.session);
                 historyNeedsRecovery.add(message.session);
                 if (!message.connected) {
                     historyRequests.delete(message.session);
@@ -412,6 +441,17 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'error':
                 store.getState().applyError(message);
+                const refusedSignal = message.request as {
+                    type?: unknown; operation?: unknown; session?: unknown;
+                } | undefined;
+                if (refusedSignal?.type === 'signal' && refusedSignal.operation === 'options'
+                    && typeof refusedSignal.session === 'string') {
+                    optionsRequested.delete(refusedSignal.session);
+                }
+                if (refusedSignal?.type === 'signal' && refusedSignal.operation === 'cancel'
+                    && typeof refusedSignal.session === 'string') {
+                    store.getState().setCancelPending(refusedSignal.session, false);
+                }
                 if (typeof message.request === 'object' && message.request !== null
                     && (message.request as { type?: unknown }).type === 'history') {
                     const session = (message.request as { session?: unknown }).session;
@@ -568,12 +608,19 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         },
 
         sendSignal(sessionId, operation, runId) {
-            return socket.send({
+            if (operation === 'cancel' && store.getState().views.get(sessionId)?.cancelPending) {
+                return false;
+            }
+            const sent = socket.send({
                 type: 'signal',
                 session: sessionId,
                 operation,
                 ...(runId ? { run_id: runId } : {}),
             });
+            if (sent && operation === 'cancel') {
+                store.getState().setCancelPending(sessionId, true);
+            }
+            return sent;
         },
 
         sendConfirmation(sessionId, confirmationId, decision, reason) {

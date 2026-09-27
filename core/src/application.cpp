@@ -744,6 +744,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             auto payload = co_await payloads.next();
             if (stopping || shutdown_requested.load()) break;
             std::optional<Input> input;
+            bool applying_options = false;
             try {
                 input = parse_input(payload);
                 if (requests.contains(input->request_id))
@@ -769,6 +770,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 // Validate confirmation on a value copy before invoking the
                 // provider. If either category fails, neither selection changes.
                 // Enum-only assignment after provider success cannot throw.
+                applying_options = true;
                 auto next_confirmation = confirmation_options;
                 if (input->options.contains("confirmation")) {
                     next_confirmation.handle_options(input->options.at("confirmation"));
@@ -778,8 +780,14 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 }
                 confirmation_options = next_confirmation;
             } catch (const std::exception& error) {
-                emit("input_rejected", {{"request_id", payload.is_object() ? payload.value("request_id", Json()) : Json()},
-                    {"message", error.what()}});
+                Json rejection = {
+                    {"request_id", payload.is_object() ? payload.value("request_id", Json()) : Json()},
+                    {"message", error.what()}
+                };
+                if (applying_options || dynamic_cast<const InputOptionsError*>(&error)) {
+                    rejection["code"] = "invalid_options";
+                }
+                emit("input_rejected", std::move(rejection));
                 continue;
             }
             request_id = input->request_id;

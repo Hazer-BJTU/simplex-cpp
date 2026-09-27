@@ -156,7 +156,7 @@ BOOST_AUTO_TEST_CASE(payload_options_validate_all_categories_without_mutation) {
     }) {
         message["options"] = bad;
         const auto before = message;
-        BOOST_CHECK_THROW(core::parse_input(message), std::invalid_argument);
+        BOOST_CHECK_THROW(core::parse_input(message), core::InputOptionsError);
         BOOST_TEST(message == before);
     }
 }

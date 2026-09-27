@@ -628,6 +628,7 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
                 }
             } else if (name == "input_rejected") {
                 ++rejected;
+                BOOST_TEST(event.at("data").at("code") == "invalid_options");
                 BOOST_TEST(event.at("data").at("message") == (rejected == 1
                     ? "confirmation mode must be ask, approve or deny"
                     : "unsupported fixture model"));

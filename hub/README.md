@@ -557,3 +557,12 @@ the runner's Ubuntu.
 | A confirmation is denied after ~15 s | the event connection never identified the worker; check that the event socket reconnected |
 | Log lines are missing in the panel | the in-memory ring is bounded (`limits.logLines`); the full file is `sessions/<session>/logs/worker.log` |
 | The panel returns 401 | `panel.token` is set; supply it with `?token=...` in the URL once |
+
+
+The message composer places **Model** beside **Confirm**. It fetches the connected
+worker's model options once and caches the advertised choices for that worker
+ID. Selections travel in the next message, continuation, or compact payload;
+they never mutate an active run through a signal. A new worker gets a new cache.
+An explicit `input_rejected` with `code: "invalid_options"` refreshes the options
+and restores the provider's effective selections; ordinary input failures do
+not refresh them. The header no longer exposes Status or Options buttons.

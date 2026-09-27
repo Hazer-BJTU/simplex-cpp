@@ -85,19 +85,19 @@ Input parse_input(const nlohmann::json& payload) {
     }
     if (const auto options = payload.find("options"); options != payload.end()) {
         if (!options->is_object()) {
-            throw std::invalid_argument("options must be an object");
+            throw InputOptionsError("options must be an object");
         }
         // Validate every category before any provider is allowed to mutate state.
         // Future category handlers belong at the same serialized admission point.
         for (const auto& [category, values] : options->items()) {
             if (!values.is_object()) {
-                throw std::invalid_argument("each options category must be an object");
+                throw InputOptionsError("each options category must be an object");
             }
             if (category == "model" || category == "confirmation") {
                 continue;
             }
             if (category != "tools" || !values.empty()) {
-                throw std::invalid_argument("unsupported options category: " + category);
+                throw InputOptionsError("unsupported options category: " + category);
             }
         }
         input.options = *options;

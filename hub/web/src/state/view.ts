@@ -135,6 +135,12 @@ export interface ViewState {
     /** event name -> most recent envelope. */
     readonly latestEvents: Readonly<Record<string, WorkerEnvelope>>;
     readonly runActive: boolean;
+    /** A cancel was sent; wait for the worker to finish at a safe boundary. */
+    readonly cancelPending: boolean;
+    /** Local choices applied only with the next payload. */
+    readonly modelSelection: Readonly<Record<string, unknown>>;
+    /** Keep the worker catalog even when transcript entries are pruned or replaced. */
+    readonly modelCatalog: WorkerEnvelope | null;
     readonly lastRunId: string;
     readonly gaps: number;
     readonly duplicates: number;
@@ -161,6 +167,9 @@ export function emptyView(id: SessionId): ViewState {
         logs: { lines: [], dropped: 0, logPath: null },
         latestEvents: {},
         runActive: false,
+        cancelPending: false,
+        modelSelection: {},
+        modelCatalog: null,
         lastRunId: '',
         gaps: 0,
         duplicates: 0,
@@ -223,7 +232,16 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
         }
     }
 
-    return noteWorkerSequence({ ...view, latestEvents, lastRunId, runActive }, envelope);
+    const cancelPending = view.cancelPending && runActive
+        && !(RUN_START_EVENTS.has(name) && lastRunId !== view.lastRunId);
+    const modelCatalog = name === 'options'
+        && (view.modelCatalog?.worker_id !== envelope.worker_id
+            || Number(envelope.sequence) > Number(view.modelCatalog?.sequence ?? -1))
+        ? envelope : view.modelCatalog;
+    const modelSelection = modelCatalog !== view.modelCatalog ? {} : view.modelSelection;
+    return noteWorkerSequence({
+        ...view, latestEvents, lastRunId, runActive, cancelPending, modelSelection, modelCatalog,
+    }, envelope);
 }
 
 /** Account for a received worker envelope without retaining it as transcript. */

@@ -241,7 +241,8 @@ The worker first validates the whole payload, duplicate request ID, and session
 recovery prerequisites. It then validates confirmation options on a temporary
 copy, applies model options synchronously, and commits the confirmation selection
 before `input_admitted` and before starting the loop. If either category is
-invalid, neither selection changes. Invalid options produce `input_rejected`,
+invalid, neither selection changes. Invalid options produce `input_rejected`
+with `code: "invalid_options"`,
 preserve the prior settings, and do not consume the request ID or add a user
 message. A corrected request may reuse that ID. A queued payload cannot change
 the settings of the active run; its options
@@ -577,7 +578,7 @@ may occur in nested dataclass records.
 | `compact_finished` | `{ "summary": string, "memory_file": string, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true }` | Compacted state was durably published; old history pages must be invalidated. |
 | `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
 | `input_admitted` | `{ "operation": string }` | Host admitted `message`, `continue`, or `compact` and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
-| `input_rejected` | `{ "request_id": any JSON value or null, "message": string }` | Dequeued input failed host validation; no run was started for that input. |
+| `input_rejected` | `{ "request_id": any JSON value or null, "message": string, "code"?: "invalid_options" }` | Dequeued input failed host validation; no run was started for that input. |
 | `run_started` | `{}` | Loop admitted the invocation. |
 | `input_committed` | `{}` | New user input was integrated in memory. |
 | `model_response` | Message object | One complete model response was committed in memory. It can contain tool calls and need not be the final answer. |

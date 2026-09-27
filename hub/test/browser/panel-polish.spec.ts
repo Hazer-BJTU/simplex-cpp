@@ -159,8 +159,6 @@ test.describe('the keyboard', () => {
         // is in DOM order, because Tab only goes forwards.
         for (const target of [
             '[data-testid="session-primary-action"]',
-            'button[aria-label="Status"]',
-            'button[aria-label="Options"]',
             'button[aria-label="Show inspector"]',
             'button[aria-label="More actions"]',
         ]) {

@@ -26,6 +26,7 @@ import { Glyph } from '../ui/icons.tsx';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/overlays.tsx';
 import type { ConfirmMode } from '../state/store.ts';
 import { useClient } from './ClientContext.tsx';
+import { currentModelOptions, modelOptionFields } from './modelOptions.ts';
 import {
     matchingComposerCommands,
     compactRetentionDetail,
@@ -74,6 +75,7 @@ export function Composer() {
         ? state.confirmMode.get(state.selected) ?? 'ask'
         : 'ask'));
     const setConfirmMode = usePanel((state) => state.setConfirmMode);
+    const setModelOption = usePanel((state) => state.setModelOption);
 
     const [draft, setDraft] = useState('');
     const [entryMode, setEntryMode] = useState<'message' | 'command'>('message');
@@ -135,7 +137,13 @@ export function Composer() {
 
     const sessionId: string = selected;
     const connected = session.connected;
+    const optionsEvent = view?.modelCatalog;
+    const modelData = optionsEvent?.worker_id === session.identity.worker_id
+        ? optionsEvent?.data : undefined;
+    const modelFields = modelOptionFields(modelData);
+    const modelChoices = { ...currentModelOptions(modelData), ...view?.modelSelection };
     const runActive = Boolean(view?.runActive);
+    const cancelPending = runActive && Boolean(view?.cancelPending);
     const compactSupported = hubCompactSupported
         && Boolean(session.worker_capabilities?.includes('context-compact'));
     const latestStatus = view?.latestEvents.status;
@@ -182,6 +190,9 @@ export function Composer() {
         // the next run rather than the next restart — and what keeps one
         // session's choice out of another's.
         const options: PayloadOptions = { confirmation: { mode } };
+        if (modelData && view && Object.keys(view.modelSelection).length > 0) {
+            options.model = { ...view.modelSelection };
+        }
         const sent = client.sendInput(
             sessionId,
             operation === 'message' ? parts() : [],
@@ -344,8 +355,9 @@ export function Composer() {
                                     aria-label="Attach a reference"
                                     variant="ghost"
                                     size="md"
-                                    disabled={!connected}
-                                    className="h-9 justify-center leading-5"
+                                    // Attachment entry is reserved until the feature is ready.
+                                    disabled
+                                    className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
                                     icon={<Glyph name="attach" />}
                                 >
                                     <span>Attach</span>
@@ -398,7 +410,7 @@ export function Composer() {
                                     aria-label={`confirmation mode: ${mode}`}
                                     variant="ghost"
                                     size="md"
-                                    className="h-9 justify-center leading-5"
+                                    className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
                                     icon={<Glyph name="options" />}
                                     title="how the worker should answer tool confirmations for this session"
                                 >
@@ -439,18 +451,62 @@ export function Composer() {
                             </PopoverContent>
                         </Popover>
 
+                        <Popover>
+                            <PopoverTrigger asChild>
+                                <Button aria-label="Model options" variant="ghost" size="md"
+                                    disabled={!connected || modelFields.length === 0}
+                                    className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
+                                    icon={<span className="hidden sm:inline-flex"><Glyph name="options" /></span>}>
+                                    <span>Model</span>
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent align="start" width="w-80">
+                                <p className="text-xs font-medium text-ink">Model options</p>
+                                <div className="mt-2 space-y-3">
+                                    {modelFields.map((field) => {
+                                        const current = modelChoices[field.name];
+                                        const index = field.options.findIndex((value) =>
+                                            JSON.stringify(value) === JSON.stringify(current));
+                                        return (
+                                            <label key={field.name} className="block text-xs text-ink-muted">
+                                                {field.name}
+                                                <select aria-label={`Model option: ${field.name}`}
+                                                    className="mt-1 block w-full rounded border border-line bg-surface p-2 text-ink"
+                                                    value={index < 0 ? '' : String(index)}
+                                                    onChange={(event) => setModelOption(sessionId,
+                                                        field.name, field.options[Number(event.target.value)])}>
+                                                    {index < 0 && <option value="" disabled>
+                                                        {current === undefined ? 'Select an option' : String(current)}
+                                                    </option>}
+                                                    {field.options.map((value, optionIndex) => (
+                                                        <option key={optionIndex} value={optionIndex}>
+                                                            {typeof value === 'string' ? value : JSON.stringify(value)}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                                <p className="mt-3 text-xs text-ink-muted">
+                                    These choices apply to the next run, including Continue run and Compact context.
+                                </p>
+                            </PopoverContent>
+                        </Popover>
+
                         <div className="ml-auto flex items-center gap-2">
                             {runActive ? (
                                 <Button
                                     variant="danger"
                                     size="md"
-                                    disabled={!connected}
+                                    disabled={!connected || cancelPending}
+                                    aria-busy={cancelPending}
                                     onClick={() => client.sendSignal(sessionId, 'cancel')}
                                     title="ask the worker to cancel the active run"
                                     className="h-9 justify-center leading-5"
-                                    icon={<Glyph name="cancel" />}
+                                    icon={<Glyph name={cancelPending ? 'spinner' : 'cancel'} />}
                                 >
-                                    <span>Cancel run</span>
+                                    <span>{cancelPending ? 'Cancelling…' : 'Cancel run'}</span>
                                 </Button>
                             ) : (
                                 <Button
@@ -473,11 +529,12 @@ export function Composer() {
                             ${entryMode === 'command' ? '' : 'invisible'}`}>
                         {runActive ? (
                             <Button type="button" variant="danger" size="md"
-                                disabled={!connected}
+                                disabled={!connected || cancelPending}
+                                aria-busy={cancelPending}
                                 onClick={() => client.sendSignal(sessionId, 'cancel')}
                                 className="h-9 justify-center leading-5"
-                                icon={<Glyph name="cancel" />}>
-                                Cancel run
+                                icon={<Glyph name={cancelPending ? 'spinner' : 'cancel'} />}>
+                                {cancelPending ? 'Cancelling…' : 'Cancel run'}
                             </Button>
                         ) : (
                             <Button type="button" variant="primary" size="md"
@@ -493,6 +550,12 @@ export function Composer() {
                     </div>
                 </div>
             </div>
+
+            {cancelPending && (
+                <p role="status" className="mx-auto mt-2 max-w-4xl px-1 text-xs text-warn">
+                    Cancellation requested. Waiting for the worker to reach an interruptible boundary.
+                </p>
+            )}
 
             <div className="mx-auto mt-1 flex max-w-4xl flex-wrap items-center gap-x-3 gap-y-1
                 px-1 text-xs text-ink-muted">
