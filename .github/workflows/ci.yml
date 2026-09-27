@@ -320,7 +320,9 @@ jobs:
           test -s stage/bin/schemas/editing/skill.yaml
 
       - name: Assert the release carries the default role prompt
-        run: test -s stage/bin/prompts/coding_agent.yaml
+        run: |
+          test -s stage/bin/prompts/coding_agent.yaml
+          test -s stage/bin/prompts/operations/compact.yaml
 
       - name: Test
         run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
@@ -581,6 +583,7 @@ jobs:
         run: |
           set -euo pipefail
           test -s stage/bin/prompts/coding_agent.yaml
+          test -s stage/bin/prompts/operations/compact.yaml
           cp build/bin/test_load_system_prompt stage/bin/
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_load_system_prompt --run_test=default_prompt_is_loaded_beside_the_executable
