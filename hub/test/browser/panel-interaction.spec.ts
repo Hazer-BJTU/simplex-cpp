@@ -232,13 +232,19 @@ test('the confirmation mode belongs to one session (D15)', async ({ page }) => {
     await expect(page.getByText('connected', { exact: true })).toBeVisible();
 
     await page.getByTestId('session-row').filter({ hasText: 'first' }).click();
+    const initialBounds = await page.locator('main > form').boundingBox();
+    const confirmBounds = await page.getByRole('button', { name: /^confirmation/ }).boundingBox();
     await page.getByRole('button', { name: /^confirmation/ }).click();
     await page.getByRole('radio', { name: /approve/ }).check();
 
     // The mode that turns approvals off is shown without opening anything: the
     // old panel kept it in one `<select>` that was never reset, so choosing it
     // once silently applied it to every session opened afterwards.
-    await expect(page.getByText('approvals: approve')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'confirmation mode: approve' })).toContainText('Approve');
+    await page.keyboard.press('Escape');
+    expect(await page.locator('main > form').boundingBox()).toEqual(initialBounds);
+    expect(await page.getByRole('button', { name: /^confirmation/ }).boundingBox()).toEqual(confirmBounds);
+    await expect(page.getByText('approvals: approve')).toHaveCount(0);
 
     await page.getByTestId('session-row').filter({ hasText: 'second' }).click();
     await expect(page.getByText('approvals: approve')).toHaveCount(0);

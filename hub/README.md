@@ -580,3 +580,8 @@ or zero for an empty prompt). Counts use decimal K/M/B units with one fractional
 digit. Responses without cost leave the previous usage visible; counts are not
 accumulated. Per-response and per-turn token details appear only with Technical
 details enabled.
+
+
+The confirmation trigger has a fixed width. Its label changes from Confirm to
+Approve (red) or Deny (amber), so the active policy stays visible without adding
+a warning row below the composer or changing the input area's height.

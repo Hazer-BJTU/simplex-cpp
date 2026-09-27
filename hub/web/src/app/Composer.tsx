@@ -9,7 +9,7 @@
  * have asked", so the leak quietly disabled approvals session-wide.
  *
  * Here the mode belongs to a session, lives in a compact settings popover, and is shown
- * as a permanent badge whenever it is not the default — because a setting that
+ * on the fixed-width trigger whenever it is not the default — because a setting that
  * turns approvals off should not be discoverable only by opening the thing that
  * sets it.
  *
@@ -21,7 +21,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ContentPart, PayloadOptions } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
-import { Badge, Button } from '../ui/Button.tsx';
+import { Button } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/overlays.tsx';
 import type { ConfirmMode } from '../state/store.ts';
@@ -42,21 +42,15 @@ interface Reference {
 }
 
 /** How a confirmation mode reads, and how loudly. */
-const MODES: Record<ConfirmMode, { label: string; detail: string; tone: 'neutral' | 'warn' | 'bad' }> = {
+const MODES: Record<ConfirmMode, { detail: string }> = {
     ask: {
-        label: 'ask',
         detail: 'every call that needs approval opens a prompt',
-        tone: 'neutral',
     },
     approve: {
-        label: 'approve',
         detail: 'every call that would have asked is approved without a prompt',
-        tone: 'bad',
     },
     deny: {
-        label: 'deny',
         detail: 'every call that would have asked is denied without a prompt',
-        tone: 'warn',
     },
 };
 
@@ -430,11 +424,14 @@ export function Composer() {
                                 disabled={entryMode === 'command'}
                                 variant="ghost"
                                 size="md"
-                                className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
+                                className="h-9 w-[72px] justify-center max-sm:px-1! max-sm:text-xs! leading-5 sm:w-24"
                                 icon={<Glyph name="options" />}
-                                title="how the worker should answer tool confirmations for this session"
+                                title={MODES[mode].detail}
                             >
-                                <span>Confirm</span>
+                                <span className={mode === 'approve' ? 'text-danger'
+                                    : mode === 'deny' ? 'text-warn' : undefined}>
+                                    {mode === 'ask' ? 'Confirm' : mode === 'approve' ? 'Approve' : 'Deny'}
+                                </span>
                             </Button>
                         </PopoverTrigger>
                         <PopoverContent align="start">
@@ -558,12 +555,6 @@ export function Composer() {
                     <span className="text-warn">the panel is not connected</span>
                 )}
                 {!connected && <span>no worker attached</span>}
-                {mode !== 'ask' && (
-                    <Badge tone={MODES[mode].tone} title={MODES[mode].detail}>
-                        approvals: {MODES[mode].label}
-                    </Badge>
-                )}
-
                 <span className="flex-1" />
                 <span className="hidden sm:inline">{runActive
                     ? 'Cancel stops this run · draft stays here'
