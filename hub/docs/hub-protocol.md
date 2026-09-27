@@ -48,9 +48,8 @@ client can check for a feature instead of guessing.
 | `session-history` | panel can query a worker's simplified conversation history |
 
 These describe the hub **build**, not its configuration. `supervisor` means
-"this hub starts and signals worker processes", which stays true whichever
-launcher renders the configuration; the launcher's own difference is reported
-separately as `launcher.owns_config`. A capability that varied with
+"this hub starts and signals worker processes", which stays true for every
+launcher. A capability that varied with
 configuration would be a different kind of list, and nothing in this one does.
 
 `shared/protocol.ts` is the machine-readable copy, and

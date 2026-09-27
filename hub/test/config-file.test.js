@@ -1,6 +1,6 @@
 /** Durable configuration reuse and the single session directory contract. */
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -72,6 +72,20 @@ describe('session configuration files', () => {
         const result = prepareSessionConfig(input).document;
         assert.equal(result.providers.mock.endpoint.base_url, input.mock.baseUrl);
         assert.equal(result.driver_model, 'mock');
+    });
+
+    it('preserves existing access permissions across a configuration refresh', () => {
+        const input = options();
+        prepareSessionConfig(input);
+        const path = workerConfigPath(input.config, input.sessionId);
+        assert.equal(statSync(path).mode & 0o777, 0o600);
+        chmodSync(path, 0o640);
+        const before = statSync(path);
+        prepareSessionConfig(input);
+        const after = statSync(path);
+        assert.equal(after.mode & 0o777, 0o640);
+        assert.equal(after.uid, before.uid);
+        assert.equal(after.gid, before.gid);
     });
 
     it('rejects invalid files and child paths without replacing saved bytes', () => {

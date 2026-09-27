@@ -308,8 +308,30 @@ describe('createLauncher', () => {
             'command');
     });
 
-    it('reports whether the launcher owns configuration', () => {
-        const owned = testConfig({ launcher: { config: 'launcher' } });
-        assert.equal(createLauncher({ config: owned, log }).ownsConfig, true);
+});
+
+describe('Docker worker example isolation', () => {
+    it('mounts only the current session and binds the launch config read-only', () => {
+        const { config } = loadConfig({
+            file: join(hubRoot, 'hub.config.docker-worker.jsonc'),
+        });
+        const configPath = '/tmp/hub-data/sessions/demo/config/config.yaml';
+        const directory = '/tmp/hub-data/sessions/demo';
+        const invocation = buildCommandInvocation({
+            config,
+            sessionId: 'demo',
+            spec: normalizeSpec(config, { provider: 'mock' }),
+            configPath,
+            sessionDir: directory,
+            endpoints,
+            token: 'test-token',
+        });
+        const mounts = invocation.args.flatMap((argument, index) =>
+            invocation.args[index - 1] === '-v' ? [argument] : []);
+        assert.ok(mounts.includes(`${directory}:${directory}`));
+        assert.ok(mounts.includes(`${configPath}:${configPath}:ro`));
+        assert.ok(!mounts.includes(`${config.dataDir}:${config.dataDir}`));
+        assert.ok(mounts.indexOf(`${directory}:${directory}`)
+            < mounts.indexOf(`${configPath}:${configPath}:ro`));
     });
 });

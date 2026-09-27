@@ -3,7 +3,7 @@
  * addresses are refreshed on restart; operator settings and YAML comments stay.
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, parse, sep } from 'node:path';
 import { isMap, parseDocument } from 'yaml';
 import type { Document } from 'yaml';
@@ -51,7 +51,17 @@ function writeDocument(path: string, text: string): void {
     mkdirSync(dirname(path), { recursive: true });
     const temporary = `${path}.${randomUUID()}.tmp`;
     try {
+        const previous = existsSync(path) ? statSync(path) : null;
         writeFileSync(temporary, text, { flag: 'wx', mode: 0o600 });
+        if (previous) {
+            // A refresh must not revoke access granted to a worker running
+            // under a compatible, but different, uid or group.
+            const created = statSync(temporary);
+            if (created.uid !== previous.uid || created.gid !== previous.gid) {
+                chownSync(temporary, previous.uid, previous.gid);
+            }
+            chmodSync(temporary, previous.mode & 0o777);
+        }
         renameSync(temporary, path);
     } finally {
         rmSync(temporary, { force: true });

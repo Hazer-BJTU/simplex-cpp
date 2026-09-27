@@ -60,10 +60,10 @@
             // refers to `${DEEPSEEK_API_KEY}` and the worker expands it, which
             // is why the variable has to exist *here* and not only on the host.
             "-e", "DEEPSEEK_API_KEY",
-            // Config, state, memory archives and logs all live under
-            // {data_dir}/sessions/{session}. Mount the data directory at the
-            // same absolute path so configuration paths resolve on both sides.
-            "-v", "{data_dir}:{data_dir}",
+            // Expose only this session's data. The hub owns config/config.yaml;
+            // a second file mount prevents worker tools from rewriting it.
+            "-v", "{session_dir}:{session_dir}",
+            "-v", "{config}:{config}:ro",
             "-v", "{prompts_dir}:{prompts_dir}:ro",
             // Tools the model asks for run inside the container. Point this at
             // the directory you want the agent to work in.

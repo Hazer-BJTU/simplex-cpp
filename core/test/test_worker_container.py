@@ -129,7 +129,7 @@ def scenario(cancel):
                 state = json.loads(snapshot.read_text())
                 assert state["loop"]["status"] == ("cancelled" if cancel else "completed")
                 assert state["loop"]["phase"] == "ready"
-                assert (root / "sessions/integration/readable.md").exists()
+                assert (root / "sessions/integration/state/readable.md").exists()
                 if not cancel:
                     assert len(requests) == 2
                     assert "stdout (" in transcript and "stderr (" in transcript

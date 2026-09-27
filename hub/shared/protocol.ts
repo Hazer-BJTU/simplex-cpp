@@ -47,8 +47,7 @@ export const PANEL_VERSION: number = PANEL_PROTOCOL.version;
  * These describe the hub build, not its configuration. Deriving the list from
  * the config was tempting, but nothing in it actually varies that way —
  * `supervisor` means "this hub starts and signals worker processes", which stays
- * true whichever launcher renders the configuration, and the launcher's own
- * difference is already reported as `launcher.owns_config`. A capability list
+ * true for every launcher. A capability list
  * derived from configuration would be an abstraction over an empty set, so the
  * list stays a property of the build and the *consumers* are what changed: the
  * panel reads it now, and did not before.
@@ -325,7 +324,7 @@ export interface HubMetadata {
     /** Absent from a hub older than this field; see `TranscriptEpoch`. */
     transcript_epoch?: TranscriptEpoch | undefined;
     listen: { host: string; port: number };
-    launcher: { kind: string; owns_config: boolean };
+    launcher: { kind: string };
     provider_profiles: string[];
     force_kill_process_group: boolean;
     mock: { enabled: boolean };

@@ -68,10 +68,8 @@
         "kind": "simplex-worker",
         "command": [],
         "args": [],
-        // "hub": the hub creates, then reuses, sessions/<id>/config/config.yaml.
-        // "launcher": the launcher owns its configuration; the hub still
-        // maintains the inspection file and supplies paths and endpoints.
-        "config": "hub",
+        // The hub creates and refreshes sessions/<id>/config/config.yaml
+        // for every launcher.
         // Working directory for the spawned command; empty means the
         // per-session hub directory.
         "cwd": "",

@@ -123,7 +123,7 @@ function meta() {
         ],
         transcript_epoch: epoch,
         listen: { host: '127.0.0.1', port: PORT },
-        launcher: { kind: 'local', owns_config: true },
+        launcher: { kind: 'local' },
         provider_profiles: [],
         force_kill_process_group: settings.force_kill_process_group,
         mock: { enabled: true },

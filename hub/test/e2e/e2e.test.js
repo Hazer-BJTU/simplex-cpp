@@ -86,6 +86,49 @@ function waitForExit(child, timeoutMs = 10000) {
 }
 
 describe('end to end with the real worker', { skip }, () => {
+    it('cancels a pending confirmation without executing the command', { timeout: 180000 }, async () => {
+        const ctx = await startE2eHub();
+        const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
+        try {
+            const created = await api(ctx.base, '/api/sessions', {
+                method: 'POST',
+                body: { session: 'e2e-cancel', spec: { provider: 'mock', model: 'mock-auto' } },
+            });
+            assert.equal(created.status, 201, JSON.stringify(created.body));
+            const started = await api(ctx.base, '/api/sessions/e2e-cancel/start', { method: 'POST' });
+            assert.equal(started.body.ok, true, started.body.error);
+            const session = ctx.hub.registry.get('e2e-cancel');
+            await until(() => session.connected && session.identity.state === 'live',
+                { timeout: 60000, label: 'the worker to connect' });
+            panel.send({ v: 1, type: 'subscribe', session: 'e2e-cancel' });
+            await panel.waitFor((message) => message.type === 'subscribed', { timeout: 10000 });
+            panel.send({
+                v: 1, type: 'input', session: 'e2e-cancel',
+                content: [{ type: 'text', raw: 'Run the fixture command' }],
+            });
+            await panel.waitFor((message) => message.type === 'accepted'
+                && message.action === 'input', { timeout: 10000 });
+            const opened = await panel.waitFor(
+                (message) => message.type === 'confirmation' && message.open === true,
+                { timeout: 60000, label: 'pending confirmation' });
+            assert.equal(opened.confirmation.call.name, 'run_command');
+            const marker = join(sessionDir(ctx.config, 'e2e-cancel'), 'mock-tool-marker.txt');
+            assert.equal(existsSync(marker), false);
+
+            panel.send({ v: 1, type: 'signal', session: 'e2e-cancel', operation: 'cancel' });
+            const finished = await panel.waitFor(
+                (message) => message.type === 'event' && message.envelope.event === 'run_finished',
+                { timeout: 90000, label: 'cancelled run' });
+            assert.equal(finished.envelope.data.status, 'cancelled');
+            await panel.waitFor((message) => message.type === 'confirmation'
+                && message.open === false, { timeout: 30000, label: 'retired confirmation' });
+            assert.equal(existsSync(marker), false, 'cancelled command executed');
+        } finally {
+            await panel.close();
+            await ctx.hub.stop();
+        }
+    });
+
     it('runs a tool call, asks for confirmation, and completes', { timeout: 180000 }, async () => {
         const ctx = await startE2eHub();
         const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
