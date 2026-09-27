@@ -517,3 +517,9 @@ Compact requires `persistence.enabled: true`. Its original-state Markdown export
 and successful final JSON save are mandatory regardless of `readable` and
 `save.on_run_finished`. An optional session `readable.md` is also refreshed when
 `readable: true`. Core never automatically rotates or deletes compact archives.
+The current hub session-delete action does not remove this separate directory;
+operators retain cleanup ownership for now. Before a hub compact command is
+exposed, its managed-worker integration must define safe post-shutdown deletion,
+per-session count and size limits, and cleanup ownership. Remote worker archive
+directories remain under their operator's control. See the
+[worker protocol](../core/docs/worker-protocol.md#compact-conversation-context).

@@ -315,6 +315,7 @@ older workers without that classification receive general failure wording.
   events/<session>.jsonl           worker events the hub received
   sessions/<session>/state.json    the worker's own snapshot (authoritative)
   sessions/<session>/readable.md   optional human-readable copy
+  workers/<session>/.data/memory/<session>/  default compact archives
 ```
 
 Conversation state lives in the worker's snapshot, not in the hub. The panel can
@@ -322,6 +323,9 @@ read it; nothing can replace, edit, or reset it.
 Deleting an inactive session removes its snapshot directory and hub event log,
 so recreating the same session ID starts with an empty conversation. Files made
 by tools in `workers/<session>/` are retained for the operator to inspect.
+Compact archives are also retained when a session is deleted. The current hub
+does not expose compact or clean its archives; the operator owns retention until
+the follow-up hub integration defines limits and cleanup after worker shutdown.
 When a worker is connected, the panel also requests a bounded, display-only
 history projection of its turns. This restores the conversation after a panel
 reload or hub restart without copying the worker's full state into hub storage.

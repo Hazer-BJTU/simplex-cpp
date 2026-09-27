@@ -427,12 +427,23 @@ private run uses the built-in context statistic hook to account for its response
 retains that accounting and refreshes the estimate for the new system prompt.
 `run_started` follows the successful archive write.
 
+The worker rejects an empty summary, one above 32 KiB, or a replacement that
+does not reduce the measured context by at least 10%. The replacement must also
+fit a byte budget: the lesser of 64 KiB and 75% of the configured context window
+token count. This deterministic measure adds the rendered system prompt and
+JSON-encoded tools and turns, in UTF-8 bytes. It is a conservative size proxy;
+provider-specific tokenization and message wrappers can differ. These checks
+run before the mandatory JSON save. A rejected result leaves the original state
+authoritative and emits no `compact_finished`.
+
 Only a successful, non-cancelled summary replaces the live state. All user turns
 are removed; other state fields are retained, apart from the updated timestamp,
 completed loop progress, built-in context statistics, and replacement
 `memory.runtime` prompt section. The response commit sequence continues monotonically. This last Volatile section
 contains the summary, the absolute session archive directory, and the latest
 archive file path, with instructions to read archives for historical details.
+The summary sits between a unique begin/end marker and follows a fixed warning
+that it is untrusted historical context, not system policy or current user intent.
 It replaces older injected memory while keeping every disk archive. Restoring
 a worker preserves memory after the refreshed runtime signature.
 
@@ -464,6 +475,18 @@ After success, history contains zero turns. `continue` is rejected until a new
 message creates a turn; that message sees the new system-prompt memory. Compact
 is worker-side in this revision: hub command and display support are a separate
 change, and older hubs may surface `compact_finished` as an unknown event.
+
+Archive retention is an explicit prerequisite for the hub/UI rollout. The worker
+currently appends without a count, byte, or age limit and never deletes archives.
+The current hub's session deletion removes its session snapshot and event log,
+but does **not** remove `persistence.memory/<session_id>`; operators own cleanup
+until a managed policy exists. For hub-managed local workers, the follow-up must
+coordinate deletion after worker shutdown, define per-session count and byte
+limits and oldest-first retention, and identify which process performs cleanup.
+For externally managed workers, the owner of their storage remains responsible;
+the hub must not assume it can access or delete a remote memory path. Any cleanup
+must leave active and in-progress archives intact and make retention visible to
+operators before a compact command is exposed in the panel.
 
 ### Admission and rejection
 
