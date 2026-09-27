@@ -586,7 +586,8 @@ The confirmation trigger has a fixed width. Its label changes from Confirm to
 Approve (red) or Deny (amber), so the active policy stays visible without adding
 a warning row below the composer or changing the input area's height.
 
-The usage line also includes an eight-segment request-size meter based on the
+The composer header places an eight-segment request-size meter at a fixed
+position immediately to the right of the Message/Command badge. It is based on the
 last response's prompt plus generated tokens (cache hits are already included
 in prompt). Each segment spans 128K = 131,072 tokens; the scale ends at 1M =
 1,048,576 tokens. Completed bands are filled, the current band is proportional,

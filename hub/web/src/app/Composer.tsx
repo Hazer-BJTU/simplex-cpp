@@ -27,7 +27,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '../ui/overlays.tsx';
 import type { ConfirmMode } from '../state/store.ts';
 import { useClient } from './ClientContext.tsx';
 import { currentModelOptions, modelOptionFields } from './modelOptions.ts';
-import { TokenUsageIndicator } from './TokenUsageIndicator.tsx';
+import { TokenUsageIndicator, TokenUsageMeter } from './TokenUsageIndicator.tsx';
 import {
     matchingComposerCommands,
     compactRetentionDetail,
@@ -232,11 +232,14 @@ export function Composer() {
                 bg-surface shadow-sm focus-within:border-ink-muted">
                 <div className="flex items-center border-b border-line px-2 py-1.5">
                     <span key={entryMode} data-testid="composer-mode"
-                        className={`animate-enter rounded px-2 py-1 text-xs font-medium capitalize
+                        className={`animate-enter w-28 shrink-0 whitespace-nowrap rounded px-1 py-1 text-center text-xs font-medium capitalize
                             ${entryMode === 'message' ? 'bg-info-soft text-info' : 'bg-warn-soft text-warn'}`}>
                         {entryMode} mode
                     </span>
-                    <span className="ml-auto text-xs text-ink-faint">Alt + Enter to switch</span>
+                    <div className="ml-2">
+                        {tokenUsage && <TokenUsageMeter usage={tokenUsage} />}
+                    </div>
+                    <span className="ml-auto hidden text-xs text-ink-faint sm:inline">Alt + Enter to switch</span>
                 </div>
                 {references.length > 0 && (
                     <ul className="flex flex-wrap gap-1.5 px-4 pt-3">

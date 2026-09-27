@@ -800,7 +800,7 @@ test('the token scale uses eight bands and remains full above 1M', async ({ page
         cost: { prompt, generated, cache_hit: prompt },
     });
     await emit(page, 'model_response', cost(128 * 1024, 1));
-    const usage = page.getByLabel('Latest token usage');
+    const usage = page.getByLabel('Token usage band');
     const meter = page.getByRole('meter', { name: 'Latest request token size' });
     await expect(meter).toHaveAttribute('aria-valuenow', '131073');
     await expect(usage).toContainText('2/8 · 256K');
@@ -811,6 +811,13 @@ test('the token scale uses eight bands and remains full above 1M', async ({ page
     const bounds = await meter.boundingBox();
     expect(bounds!.x).toBeGreaterThanOrEqual(0);
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
+    const badge = await page.getByTestId('composer-mode').boundingBox();
+    expect(bounds!.x).toBeGreaterThan(badge!.x + badge!.width);
+    expect(bounds!.y).toBeGreaterThanOrEqual(badge!.y);
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(badge!.y + badge!.height);
+    await page.getByLabel('message', { exact: true }).press('Alt+Enter');
+    expect(await meter.boundingBox()).toEqual(bounds);
+    await page.getByLabel('command input').press('Alt+Enter');
     await emit(page, 'model_response', cost(1024 * 1024));
     await expect(usage).toContainText('8/8 · 1M');
     await expect.poll(fills).toEqual(Array(8).fill('100%'));
