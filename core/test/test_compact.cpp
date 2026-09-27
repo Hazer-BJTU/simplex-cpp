@@ -253,12 +253,14 @@ void scenario(Scenario mode) {
             } else if (name == "input_rejected") {
                 ++rejected;
                 if (admission_failure) {
+                    BOOST_TEST(event["data"]["operation"] == "compact");
                     if (mode == Scenario::Disabled) {
                         BOOST_TEST(event["data"]["message"] == "compact requires persistence.enabled");
                     }
                     co_await send("signal", {{"operation", "shutdown"}});
                 } else {
                     BOOST_CHECK(mode == Scenario::Success);
+                    BOOST_TEST(event["data"]["operation"] == "continue");
                     BOOST_TEST(event["data"]["message"] == "no turn to continue");
                     co_await send("payload", {{"operation", "message"}, {"request_id", "next"},
                         {"content", Json::array({{{"type", "text"},

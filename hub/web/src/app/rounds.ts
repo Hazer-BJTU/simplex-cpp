@@ -623,9 +623,10 @@ export function buildRounds(
 
         if (PROBLEM_EVENTS.has(name)) {
             const run = ensureRun();
-            const rejectedRequestId = obj(envelope.data)?.request_id;
-            if (name === 'input_rejected' && typeof rejectedRequestId === 'string'
-                && compactIds.has(rejectedRequestId)) {
+            const rejection = obj(envelope.data);
+            const rejectedRequestId = rejection?.request_id;
+            if (name === 'input_rejected' && (rejection?.operation === 'compact'
+                || (typeof rejectedRequestId === 'string' && compactIds.has(rejectedRequestId)))) {
                 run.compacting = true;
             }
             if (name === 'input_rejected' && run.compacting) {

@@ -511,7 +511,8 @@ function handle(ws, message) {
             // continuation even after the request record has been pruned.
             const envelope = settings.rejectInput
                 ? append(message.session, 'input_rejected',
-                    { request_id: requestId, message: 'no turns to compact' })
+                    { request_id: requestId, operation: message.operation ?? 'message',
+                        message: 'no turns to compact' })
                 : append(message.session, 'input_admitted',
                     { operation: message.operation ?? 'message' }, { request_id: requestId });
             broadcast({

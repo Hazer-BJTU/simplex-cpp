@@ -80,6 +80,17 @@ test('an unanswered options request is retried after the panel reconnects', asyn
     await expect(page.getByRole('button', { name: 'Model options' })).toBeEnabled();
 });
 
+test('an unanswered options request is retried when only the worker reconnects', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await expect.poll(async () => (await requests(page, 'signal', 'options')).length).toBe(1);
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
+    await expect.poll(async () => (await requests(page, 'signal', 'options')).length).toBe(2);
+    await emit(page, 'options', advertised);
+    await expect(page.getByRole('button', { name: 'Model options' })).toBeEnabled();
+});
+
 test('mode switching keeps the same toolbar and disables message settings', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();

@@ -578,7 +578,7 @@ may occur in nested dataclass records.
 | `compact_finished` | `{ "summary": string, "memory_file": string, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
 | `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
 | `input_admitted` | `{ "operation": string }` | Host admitted `message`, `continue`, or `compact` and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
-| `input_rejected` | `{ "request_id": any JSON value or null, "message": string, "code"?: "invalid_options" }` | Dequeued input failed host validation; no run was started for that input. |
+| `input_rejected` | `{ "request_id": any JSON value or null, "message": string, "operation"?: "message" \| "continue" \| "compact", "code"?: "invalid_options" }` | Dequeued input failed host validation; no run was started for that input. A recognized operation is retained for transcript replay even after request bookkeeping expires. |
 | `run_started` | `{}` | Loop admitted the invocation. |
 | `input_committed` | `{}` | New user input was integrated in memory. |
 | `model_response` | Message object | One complete model response was committed in memory. It can contain tool calls and need not be the final answer. |

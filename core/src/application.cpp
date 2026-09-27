@@ -784,6 +784,16 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     {"request_id", payload.is_object() ? payload.value("request_id", Json()) : Json()},
                     {"message", error.what()}
                 };
+                // Keep the requested operation in the replayable event. Hub
+                // request records can expire before the transcript does.
+                if (payload.is_object() && payload.contains("operation")
+                    && payload.at("operation").is_string()) {
+                    const auto operation = payload.at("operation").get<std::string>();
+                    if (operation == "message" || operation == "continue"
+                        || operation == "compact") {
+                        rejection["operation"] = operation;
+                    }
+                }
                 if (applying_options || dynamic_cast<const InputOptionsError*>(&error)) {
                     rejection["code"] = "invalid_options";
                 }

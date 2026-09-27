@@ -72,6 +72,11 @@ test('a rejected compact retains its identity after transcript replay', async ({
     await page.reload();
     await expect(page.getByText('Context compaction was rejected.', { exact: false })).toBeVisible();
     await expect(page.getByTestId('round-summary').last()).toContainText('context compaction');
+    // New worker events carry the operation themselves, so this remains
+    // identifiable after the hub's shorter request-record window expires.
+    await withSession(page, runningSession('demo'));
+    await page.reload();
+    await expect(page.getByText('Context compaction was rejected.', { exact: false })).toBeVisible();
 });
 
 test('successful compaction retires old history queries and refreshes the new revision', async ({ page }) => {

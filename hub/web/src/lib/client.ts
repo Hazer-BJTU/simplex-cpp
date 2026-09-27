@@ -439,6 +439,10 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 if (message.connected) requestModelOptions(message.session);
                 historyNeedsRecovery.add(message.session);
                 if (!message.connected) {
+                    // Both requests need a live worker. The panel socket can
+                    // remain open while this worker connection disappears.
+                    optionsRequested.delete(message.session);
+                    store.getState().setCancelPending(message.session, false);
                     historyRequests.delete(message.session);
                     store.getState().endHistory(message.session);
                 }
