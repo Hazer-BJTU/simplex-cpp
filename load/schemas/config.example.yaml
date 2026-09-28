@@ -80,6 +80,25 @@ providers:
       initial_backoff_ms: 500
       max_backoff_ms: 120000
 
+  # Optional auxiliary model example. Uncomment this mapping and the
+  # modality_assist_model selector below to enable image interpretation.
+  # Replace the endpoint and model placeholders with a vision-capable model
+  # served through the Responses protocol used by the openai plugin.
+  # vision:
+  #   plugin: openai
+  #   endpoint:
+  #     base_url: https://your-provider.example
+  #     request_path: /v1/responses
+  #     auth:
+  #       scheme: bearer
+  #       api_key: ${VISION_API_KEY}
+  #   model: your-vision-model
+  #   config: {}
+  #   retry:
+  #     max_attempts: 3
+  #     initial_backoff_ms: 500
+  #     max_backoff_ms: 120000
+
 # Required reference to a providers entry.
 # No implicit first-provider fallback.
 driver_model: deepseek
@@ -91,7 +110,7 @@ driver_model: deepseek
 # Enables the intrinsic modality_assist tool, which describes local images using
 # isolated one-exchange requests. No automatic input conversion is performed.
 # modality_assist_model: vision
-# Define providers.vision with the desired plugin, endpoint, model, and config.
+# Uncomment and customize providers.vision above together with this selector.
 
 # Persistent event connection; independent of the confirmation endpoint.
 client:
