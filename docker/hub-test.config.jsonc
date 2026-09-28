@@ -20,8 +20,7 @@
 
     "worker": {
         "bin": "/src/build/bin/simplex_worker",
-        "promptsDir": "/src/build/bin/prompts",
-        "systemPromptFile": "coding_agent.yaml",
+        "systemPromptFile": "prompts/coding_agent.yaml",
         "threads": 2,
         "maxExchanges": 256,
         "eventCapacity": 1024,

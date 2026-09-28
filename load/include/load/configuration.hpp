@@ -32,9 +32,11 @@ struct Configuration {
     std::chrono::milliseconds confirmation_timeout{120000};
     std::size_t event_capacity = 1024;
     std::size_t max_exchanges = 512;
-    /** Parsed prompt for a new session; restored snapshots retain their prompt. */
+    /** Parsed prompt for a new session, read from the installation directory;
+     * restored snapshots retain their own prompt instead. */
     model_io::PromptTemplate system_prompt;
-    /** Startup-loaded internal user instruction for a compact operation. */
+    /** Startup-loaded internal user instruction for a compact operation, read
+     * from the installation directory and rendered to Markdown once. */
     std::string compact_prompt;
     /** Resolved archive directory; each compact operation adds a child. */
     std::filesystem::path memory;
@@ -58,9 +60,34 @@ struct Configuration {
  * expanded. Explicit paths resolve against the absolute configuration directory,
  * except persistence.state and persistence.memory, which are relative to the
  * direct persistence.directory root.
+ *
+ * worker.system_prompt_file and worker.compact_prompt_file are the mirror image
+ * of that rule: they resolve against the installation directory — the running
+ * executable's own directory — because a prompt is an asset of the deployed
+ * worker rather than of the session that names it. They must be nonempty
+ * relative paths; rooted forms (a leading `/` or `\`, or a drive letter, which
+ * a POSIX build and a Windows build would otherwise read differently) and `..`
+ * components are refused instead of interpreted. Omitting either selects
+ * prompts/coding_agent.yaml or prompts/operations/compact.yaml below the same
+ * root.
+ *
+ * That containment is LEXICAL, not a filesystem sandbox: symlinks are not
+ * resolved here, so a link below the installation directory still points
+ * wherever it points. Resolution stays lexical on purpose — staging prompts
+ * through links is a deployment choice, and canonicalising would make the rule
+ * depend on the filesystem's state at read time.
+ *
  * Errors identify fields, never expanded credential values.
  */
 Configuration parse_configuration(nlohmann::json document, std::filesystem::path directory);
+
+/** The same parse with an explicit installation directory, for a host that
+ * stages the worker's assets elsewhere and for tests that need a writable root.
+ * The two-argument form and read_configuration use the running executable's
+ * directory, which is the only root a deployed worker can be sure of.
+ */
+Configuration parse_configuration(nlohmann::json document, std::filesystem::path directory,
+    std::filesystem::path installation);
 Configuration read_configuration(const std::filesystem::path& file);
 
 /**

@@ -59,7 +59,7 @@ security:
 worker:
   event_capacity: 1024
   max_exchanges: 512
-  system_prompt_file: ./prompts/coding_agent.yaml
+  system_prompt_file: prompts/coding_agent.yaml
 persistence:
   enabled: true
   directory: ./data/session
@@ -82,7 +82,15 @@ backoff delays, confirmation timeout, and `max_exchanges` must be positive.
 nonnegative; zero disables it.
 
 `worker.system_prompt_file` selects an independent YAML prompt file for new
-sessions. Explicit relative paths resolve against the main configuration file.
+sessions. It is a relative path below the executable's directory — the
+installation directory — and never resolves against the configuration file, so
+a session's generated configuration can live anywhere and still name the
+deployed prompt. Empty values, `..` components, and every rooted spelling are
+rejected; "rooted" covers both path grammars (a leading `/` or `\`, and a drive
+letter with or without a separator), because the file may be written on one
+platform and read on another. Containment is lexical, not a sandbox: symlinks
+are not resolved, so a link below the installation directory points wherever it
+points.
 Omitting it reads `prompts/coding_agent.yaml` beside the executable. The file is
 validated at startup, including when restoring a session; missing or malformed
 files fail startup. Restored sessions retain their stored prompt. Current tool
@@ -91,6 +99,9 @@ Environment hints describe the workspace, platform, and expected software withou
 changing the working directory or restricting access. See
 [environment configuration](../../load/README.md#runtime-environment-hints) and the [prompt file format](../../load/README.md#system-prompt-files).
 The previous inline `worker.system_prompt` field is rejected.
+`worker.compact_prompt_file` names the internal compact instruction and follows
+the same rule; omitting it reads `prompts/operations/compact.yaml` beside the
+executable, and its rendered text must not be empty.
 
 Paths such as `/agent/events` and `/agent/confirm` are examples, not reserved
 protocol routes. URLs accept `ws://` and `wss://`, an explicit or scheme-default

@@ -96,7 +96,7 @@ Most messages embed this object, produced by `Session.describe()`:
   "created_at": "2026-01-01T00:00:00.000Z",
   "spec": {
     "provider": "mock", "model": "", "threads": 1, "maxExchanges": 512,
-    "systemPromptFile": "/abs/path/coding_agent.yaml",
+    "systemPromptFile": "prompts/coding_agent.yaml",
     "workspace": "", "platform": "", "software": [],
     "persistence": {"enabled": true, "readable": false}, "restore": "if_present",
     "env": {}, "extraArgs": []

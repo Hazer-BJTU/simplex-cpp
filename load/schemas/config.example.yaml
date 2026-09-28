@@ -113,11 +113,13 @@ worker:
   # Bounded host event queue. Overflow safely stops the worker.
   event_capacity: 1024
   # Used only for a new session; restored prompts are retained.
-  # Relative to this config file. Omit to use <executable_dir>/prompts/coding_agent.yaml.
-  system_prompt_file: ./prompts/coding_agent.yaml
-  # Optional internal user instruction for explicit compact operations.
-  # Omit to use prompts/operations/compact.yaml beside the executable.
-  # compact_prompt_file: ./prompts/operations/compact.yaml
+  # Relative to the executable's directory, never to this file; a rooted path
+  # (leading '/' or '\', or a drive letter) and '..' are rejected. Omit to use
+  # <executable_dir>/prompts/coding_agent.yaml.
+  system_prompt_file: prompts/coding_agent.yaml
+  # Optional internal user instruction for explicit compact operations, by the
+  # same rule. Omit for prompts/operations/compact.yaml beside the executable.
+  # compact_prompt_file: prompts/operations/compact.yaml
   # Optional prompt hints, refreshed on startup even when restoring a session.
   # No chdir, sandbox, or automatic platform/software detection is performed.
   environment:

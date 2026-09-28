@@ -126,12 +126,12 @@ Three things make it work, and each is a way to get it wrong:
    hub knowing anything about Docker.
 3. **The mounts.** The generated `config.yaml`, the session's snapshot and the
    captured log are all named by *absolute host paths*. Only the current
-   session directory is mounted read-write at the same path; `config.yaml` is
-   mounted again as a read-only file, and `promptsDir` is read-only. This keeps
-   tools from rewriting durable launch settings or another session's data.
-   Overriding `promptsDir` to the image's path looks tidier and does not work: the mount
-   would then name a host directory that does not exist, and Docker helpfully
-   creates an empty one.
+   session directory is mounted read-write at the same path, and `config.yaml`
+   is mounted again as a read-only file. This keeps tools from rewriting durable
+   launch settings or another session's data. The prompt is not mounted at all:
+   the worker reads it from its own installation directory inside the image, and
+   the generated `worker.system_prompt_file` is a relative path that names the
+   same file on both sides.
 
 The test launcher uses `--user 0:{gid}`: workers and their tools run as root inside
 the container. Each container has its own `/root/workspace`, created by the
@@ -227,7 +227,7 @@ directory; command-line paths resolve against the working directory.
 | `dataDir` | `./data` | hub state, generated worker configs, logs, JSONL event logs, worker snapshots |
 | `panel.token` | `""` | shared panel token; required for a non-loopback listener |
 | `worker.bin` | `../build/bin/simplex_worker` | worker executable |
-| `worker.promptsDir`, `worker.systemPromptFile` | `../build/bin/prompts`, `coding_agent.yaml` | default prompt for new sessions |
+| `worker.systemPromptFile` | `prompts/coding_agent.yaml` | default prompt for new sessions, relative to the worker's installation directory |
 | `worker.threads`, `worker.maxExchanges`, `worker.eventCapacity` | `1`, `512`, `1024` | defaults copied into generated worker configurations |
 | `worker.confirmationTimeoutMs` | `120000` | confirmation deadline written into the worker configuration |
 | `worker.stopTimeoutMs`, `worker.sigtermGraceMs`, `worker.sigkillGraceMs` | `15000`, `5000`, `2000` | the stop escalation ladder |
@@ -246,7 +246,7 @@ directory; command-line paths resolve against the working directory.
 | `forceKillProcessGroup` | `false` | whether `SIGKILL` targets the worker's process group |
 
 `npm start -- --help` lists the command-line overrides (`--listen`,
-`--data-dir`, `--worker-bin`, `--prompts-dir`, `--panel-token`, `--mock`,
+`--data-dir`, `--worker-bin`, `--panel-token`, `--mock`,
 `--force-kill-process-group`, `--log-level`).
 
 ## Managing workers
@@ -288,8 +288,8 @@ The hub then runs the configured launcher. Two kinds ship:
   ```
 
   Placeholders are `{session}`, `{config}`, `{data_dir}`, `{session_dir}`,
-  `{endpoint}`, `{confirm_endpoint}`, `{token}`, `{threads}`, `{worker_bin}`,
-  and `{prompts_dir}`. An unknown placeholder fails the spawn by name instead of
+  `{endpoint}`, `{confirm_endpoint}`, `{token}`, `{threads}`, and
+  `{worker_bin}`. An unknown placeholder fails the spawn by name instead of
   being passed through. A launcher that daemonizes must set `launcher.pidFile`,
   because the pid the hub spawned would then name a short-lived wrapper.
 

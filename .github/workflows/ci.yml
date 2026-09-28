@@ -660,8 +660,8 @@ jobs:
         env:
           # The staged release, not build/: the build tree's binaries carry
           # CMake's absolute build RPATH into paths that do not exist here.
+          # The worker reads its prompts from that same stage/bin directory.
           SIMPLEX_WORKER_BIN: ${{ github.workspace }}/stage/bin/simplex_worker
-          SIMPLEX_PROMPTS_DIR: ${{ github.workspace }}/stage/bin/prompts
           # A browser check that cannot find a browser must fail, not skip.
           PANEL_REQUIRE_BROWSER: '1'
         run: npm run test:e2e

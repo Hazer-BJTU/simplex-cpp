@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { hubRoot } from '../../src/config.ts';
 import { persistenceRoot, sessionDir } from '../../src/launch/config-render.ts';
-import { WORKER_BIN, PROMPTS_DIR, e2eSkip, startE2eHub } from '../helpers/e2e.js';
+import { WORKER_BIN, e2eSkip, startE2eHub } from '../helpers/e2e.js';
 import { connectWorker, until } from '../helpers/worker.js';
 
 const skip = e2eSkip;
@@ -52,7 +52,6 @@ async function startHubProcess({ port, dataDir, mock = true }) {
         '--listen', `127.0.0.1:${port}`,
         '--data-dir', dataDir,
         '--worker-bin', WORKER_BIN,
-        '--prompts-dir', PROMPTS_DIR,
         '--log-level', 'info',
     ];
     if (mock) args.push('--mock');

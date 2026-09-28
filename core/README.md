@@ -13,9 +13,10 @@ install the complete project with CMake. The build tree and installation both
 provide `bin/simplex` beside `bin/simplex_worker`. Add the installed `bin` directory
 to `PATH` to use the public command.
 Copy bin/config.example.yaml to an operator-owned config.yaml. Select the
-provider/model and set credentials. If config.yaml is outside bin, copy the
-`prompts` directory alongside it or set an absolute `worker.system_prompt_file`.
-Omitting that field uses the default prompt beside the executable. When using
+provider/model and set credentials. `worker.system_prompt_file` is relative to
+the executable's directory, not to config.yaml: a configuration kept anywhere
+still reads the installed prompt, and an absolute path is rejected. Omitting the
+field uses the default prompt beside the executable. When using
 the bundled hub, use its generated session configuration for authenticated
 per-session endpoints. For another server exposing the following routes:
 
@@ -29,7 +30,7 @@ security:
 worker:
   max_exchanges: 512
   event_capacity: 1024
-  system_prompt_file: ./prompts/coding_agent.yaml
+  system_prompt_file: prompts/coding_agent.yaml
 persistence:
   directory: ./data/session
   state: state
@@ -39,8 +40,10 @@ persistence:
 
 The default structured prompt lives in [core/prompts/coding_agent.yaml](prompts/coding_agent.yaml)
 and is copied/installed as `bin/prompts/coding_agent.yaml`. The loader resolves
-an explicit relative path against the startup configuration file's directory.
-It validates the file at startup, even when restoring a session. New sessions
+an explicit relative path against the executable's own directory and refuses a
+rooted path (a leading separator in either grammar, or a drive letter) and `..`
+components; the containment is lexical, so symlinks are the filesystem's
+business. It validates the file at startup, even when restoring a session. New sessions
 use its sections; restored sessions retain the prompt in their snapshot. Tool
 skills are rebuilt from the active registry in both cases. See the
 [load prompt format](../load/README.md#system-prompt-files) for custom files.

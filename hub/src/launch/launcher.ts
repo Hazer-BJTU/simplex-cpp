@@ -11,7 +11,7 @@
  *   - `simplex-worker`: run `worker.bin` with the generated configuration.
  *   - `command`: run a template, with `{session}`, `{config}`, `{data_dir}`,
  *     `{session_dir}`, `{endpoint}`, `{confirm_endpoint}`, `{token}`,
- *     `{threads}`, `{worker_bin}`, and `{prompts_dir}` placeholders.
+ *     `{threads}`, and `{worker_bin}` placeholders.
  *
  * The hub owns the session configuration for every launcher. A launcher that daemonizes must
  * declare `launcher.pidFile`; the supervisor then signals that pid instead of

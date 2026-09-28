@@ -18,13 +18,9 @@
         // `"--add-host=host.docker.internal:host-gateway"` to the command below.
         "connectHost": "172.17.0.1",
 
-        // `promptsDir` is deliberately left at its host default. The generated
-        // configuration names that host path, and the mount below puts the
-        // same directory at the same absolute path inside the container — so
-        // one value is correct on both sides. Overriding it with the image's
-        // own `/src/build/bin/prompts` looks tidier and does not work: the
-        // mount would then name a host directory that does not exist, and
-        // Docker answers an empty one.
+        // No prompt path is configured here, and none needs mounting: the
+        // worker reads `prompts/coding_agent.yaml` from its own installation
+        // directory, which is inside the image.
         // Disposable workspace inside each worker container; no host workspace
         // is mounted. Removing the container discards its workspace files.
         "environment": {
@@ -37,7 +33,7 @@
     "launcher": {
         "kind": "command",
         // Placeholders: {session} {config} {data_dir} {session_dir}
-        // {prompts_dir} {worker_bin} {endpoint} {confirm_endpoint} {token}
+        // {worker_bin} {endpoint} {confirm_endpoint} {token}
         // {threads}
         "command": [
             "docker", "run", "--rm", "--init",
@@ -58,7 +54,6 @@
             // a second file mount prevents worker tools from rewriting it.
             "-v", "{session_dir}:{session_dir}",
             "-v", "{config}:{config}:ro",
-            "-v", "{prompts_dir}:{prompts_dir}:ro",
             // The image creates this private workspace for process tools.
             "-w", "/root/workspace",
             "simplex-hub-test:latest",

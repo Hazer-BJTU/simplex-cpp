@@ -66,7 +66,13 @@ export interface HubConfig {
          * address (`172.17.0.1`) for a container, a LAN name for a fleet.
          */
         connectHost: string;
-        promptsDir: string;
+        /**
+         * Prompt file for new sessions, relative to the worker's installation
+         * directory (`load::parse_configuration` reads it exactly that way).
+         * The hub deliberately keeps no directory of its own here: a prompt is
+         * an asset of the deployed worker, so a session spec stays portable to
+         * a worker running on another machine or inside a container.
+         */
         systemPromptFile: string;
         maxExchanges: number;
         eventCapacity: number;
@@ -131,8 +137,7 @@ export function defaultConfig(): HubConfig {
             // Empty means "derive it from the listener": loopback, or the host
             // it is bound to.
             connectHost: '',
-            promptsDir: '../build/bin/prompts',
-            systemPromptFile: 'coding_agent.yaml',
+            systemPromptFile: 'prompts/coding_agent.yaml',
             maxExchanges: 512,
             eventCapacity: 1024,
             confirmationTimeoutMs: 120000,
@@ -369,7 +374,6 @@ export function resolveAgainst(base: string, value: string): string {
 function resolvePaths(config: HubConfig, baseDir: string): HubConfig {
     config.dataDir = resolveAgainst(baseDir, config.dataDir);
     config.worker.bin = resolveAgainst(baseDir, config.worker.bin);
-    config.worker.promptsDir = resolveAgainst(baseDir, config.worker.promptsDir);
     if (config.worker.environment.workspace) {
         config.worker.environment.workspace =
             resolveAgainst(baseDir, config.worker.environment.workspace);
@@ -382,9 +386,44 @@ function check(condition: unknown, message: string): asserts condition {
     if (!condition) throw new ConfigError(message);
 }
 
+/**
+ * Validate a worker prompt path and return it unchanged.
+ *
+ * The worker reads `worker.system_prompt_file` relative to its own installation
+ * directory and refuses anything else (`load/src/configuration.cpp`), so a path
+ * the worker would reject must not reach a session's generated configuration.
+ * The hub cannot check that the file exists — the worker may run on another
+ * machine or inside a container — which is exactly why the path stays relative.
+ *
+ * The rule is deliberately PLATFORM-NEUTRAL rather than `node:path`'s: the hub
+ * may be preparing a configuration for a worker on another OS, where a leading
+ * `\` or a drive letter means something `path.isAbsolute()` on this host does
+ * not report. The worker stays the authoritative validator, because only it
+ * knows the installation directory it will resolve against.
+ */
+export function checkPromptFile(value: unknown, field: string): string {
+    const path = typeof value === 'string' ? value : '';
+    // A leading separator of either kind, or a drive letter — with or without a
+    // following separator, since `C:prompts` is drive-relative and still not
+    // relative to the installation directory.
+    const rooted = path.startsWith('/') || path.startsWith('\\') || /^[A-Za-z]:/.test(path);
+    if (path.length === 0 || path.includes('\0') || rooted
+        || path.split(/[\\/]+/).includes('..')) {
+        throw new ConfigError(`${field} must be a nonempty path relative to the worker's `
+            + 'installation directory, without a root or a ".." component');
+    }
+    return path;
+}
+
 /** Validate a merged configuration; throws ConfigError with a specific reason. */
 export function validateConfig(config: HubConfig): HubConfig {
     check(isPlainObject(config), 'configuration must be an object');
+    // Named before the generic unknown-key check, which would report the same
+    // field without saying what replaced it.
+    if (isPlainObject(config.worker) && Object.hasOwn(config.worker, 'promptsDir')) {
+        throw new ConfigError('worker.promptsDir is no longer supported: '
+            + 'worker.systemPromptFile is relative to the worker\'s installation directory');
+    }
     const unknown = unknownConfigKeys(config, defaultConfig());
     check(unknown.length === 0,
         `unknown configuration ${unknown.length === 1 ? 'key' : 'keys'}: ${unknown.join(', ')}`);
@@ -417,6 +456,7 @@ export function validateConfig(config: HubConfig): HubConfig {
     // down, which is a confusing way to learn about a typo.
     check(worker.connectHost === '' || !/[/:?#\s]/.test(worker.connectHost),
         'worker.connectHost must be a bare host or address, without a scheme, port or path');
+    checkPromptFile(worker.systemPromptFile, 'worker.systemPromptFile');
     check(Number.isInteger(worker.maxExchanges) && worker.maxExchanges > 0,
         'worker.maxExchanges must be a positive integer');
     check(Number.isInteger(worker.eventCapacity) && worker.eventCapacity > 0,
@@ -559,9 +599,6 @@ export function loadConfig({
     // which is what a user typing `--data-dir ./x` expects.
     if (overrides.dataDir) merged.dataDir = resolveAgainst(cwd, overrides.dataDir);
     if (overrides.worker?.bin) merged.worker.bin = resolveAgainst(cwd, overrides.worker.bin);
-    if (overrides.worker?.promptsDir) {
-        merged.worker.promptsDir = resolveAgainst(cwd, overrides.worker.promptsDir);
-    }
     validateConfig(merged);
     return { config: merged, file: selected, baseDir, overrideDir: cwd };
 }

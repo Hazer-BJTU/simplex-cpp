@@ -33,17 +33,23 @@ describe('normalizeSpec', () => {
         assert.equal(spec.maxExchanges, 512);
         assert.equal(spec.persistence.enabled, true);
         assert.equal(spec.restore, 'if_present');
-        assert.equal(spec.systemPromptFile, join(config.worker.promptsDir, 'coding_agent.yaml'));
+        assert.equal(spec.systemPromptFile, 'prompts/coding_agent.yaml');
     });
 
-    it('selects a prompt file by name or by absolute path', () => {
+    it('keeps a prompt path relative to the worker installation', () => {
         const config = testConfig();
         assert.equal(
-            normalizeSpec(config, { systemPromptFile: 'other.yaml' }).systemPromptFile,
-            join(config.worker.promptsDir, 'other.yaml'));
-        assert.equal(
-            normalizeSpec(config, { systemPromptFile: '/tmp/agent.yaml' }).systemPromptFile,
-            '/tmp/agent.yaml');
+            normalizeSpec(config, { systemPromptFile: 'prompts/other.yaml' }).systemPromptFile,
+            'prompts/other.yaml');
+        // The worker refuses rooted paths and parent traversal, so the hub
+        // refuses them at the spec layer rather than failing a spawn later.
+        for (const rejected of [
+            '/tmp/agent.yaml', '../coding_agent.yaml',
+            'prompts/../../outside.yaml', '', 7,
+            '\\rooted\\prompt.yaml', 'C:\\absolute\\prompt.yaml',
+        ]) {
+            assert.throws(() => normalizeSpec(config, { systemPromptFile: rejected }), ConfigError);
+        }
     });
 
     it('honours per-session overrides', () => {

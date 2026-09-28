@@ -119,6 +119,33 @@ describe('validateConfig', () => {
         config.mock.profile = 'missing';
         assert.throws(() => validateConfig(config), /mock\.profile/);
     });
+
+    it('keeps the prompt path relative to the worker installation', () => {
+        const config = defaultConfig();
+        assert.doesNotThrow(() => validateConfig(config));
+        // Rooted in either grammar: the hub may be preparing a configuration for
+        // a worker on another OS, so a leading backslash and a drive letter are
+        // refused here even though this host would read them as a filename.
+        for (const rejected of ['', '/srv/prompts/coding_agent.yaml', '../coding_agent.yaml',
+            'prompts/../../outside.yaml', 7,
+            '\\rooted\\prompt.yaml', 'C:\\absolute\\prompt.yaml', 'C:prompt.yaml',
+            '..\\outside.yaml', 'prompts\\..\\..\\outside.yaml']) {
+            config.worker.systemPromptFile = rejected;
+            assert.throws(() => validateConfig(config), /systemPromptFile/);
+        }
+        // Backslash spellings are relative paths, not traversal.
+        for (const accepted of ['prompts/coding_agent.yaml', 'prompts\\coding_agent.yaml',
+            '.\\prompts\\coding_agent.yaml']) {
+            config.worker.systemPromptFile = accepted;
+            assert.doesNotThrow(() => validateConfig(config));
+        }
+    });
+
+    it('names what replaced worker.promptsDir', () => {
+        const config = defaultConfig();
+        config.worker.promptsDir = '../build/bin/prompts';
+        assert.throws(() => validateConfig(config), /worker\.promptsDir is no longer supported/);
+    });
 });
 
 describe('loadConfig', () => {
