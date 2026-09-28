@@ -227,6 +227,11 @@ sections:
             const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_TEST(state.turns.size() == 2u);
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
+                [](const auto& tool) { return tool.name == "modality_assist"; })
+                == with_modality_assist);
+            BOOST_TEST((state.system_prompt.render().markdown.find("Interpreting images")
+                != std::string::npos) == with_modality_assist);
+            BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "read_text"; }));
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "str_replace_edit"; }));

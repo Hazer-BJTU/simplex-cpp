@@ -12,7 +12,8 @@ plugins:
     # A nonempty list replaces the default; directories are scanned in order.
     directories: []
 
-  # The core worker loads all compiled-in intrinsic components automatically.
+  # Core loads intrinsic components automatically; modality_assist additionally
+  # requires the optional modality_assist_model configured below.
   # Plugin discovery alone does not initialize intrinsics or session registries.
   # Their enablement and configuration are not exposed by this contract.
   extensions:
@@ -87,7 +88,8 @@ driver_model: deepseek
 # Omit to leave this model unloaded. Explicit null or an empty name is invalid.
 # Uses the same endpoint/config/retry fields as driver_model; each role gets
 # its own model instance, even when both reference the same entry.
-# Currently constructed at startup only; multimodal processing is not wired yet.
+# Enables the intrinsic modality_assist tool, which describes local images using
+# isolated one-exchange requests. No automatic input conversion is performed.
 # modality_assist_model: vision
 # Define providers.vision with the desired plugin, endpoint, model, and config.
 

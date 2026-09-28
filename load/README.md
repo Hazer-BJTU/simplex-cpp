@@ -244,8 +244,10 @@ does not act as a plugin allowlist: all compatible provider descriptors are
 loaded regardless of which model roles use them. Core constructs the selected
 models after parsing host configuration.
 
-Core loads every compiled-in intrinsic component with its existing configuration
-mechanism. Plugin-only loading does not initialize intrinsics. This public startup contract has no intrinsic enable/disable list,
+Core loads intrinsic components with their existing configuration mechanism.
+The modality-assist toolset additionally requires `modality_assist_model`; it is
+omitted when that model is absent. Plugin-only loading does not initialize
+intrinsics. This public startup contract has no intrinsic enable/disable list,
 configuration override, or schema-location override.
 
 Each enabled dynamic entry requires `name`, matching the module's exported
@@ -281,11 +283,14 @@ an unknown reference, invalid selected settings, or an unavailable factory is
 an error; startup does not silently substitute the driver. Each role gets a
 separate instance, even if both reference the same provider entry.
 
-This role is reserved for interpreting multimodal inputs separately, with the
-intended benefit of reducing persistence and generation pressure on the main
-`AgentInputState`. Currently core only constructs and owns the instance; input
-processing, loop execution, model options, and persisted state still use their
-existing contracts. No multimodal interpretation request is made yet.
+This role interprets multimodal inputs separately to reduce persistence and
+generation pressure on the main `AgentInputState`. Core passes the constructed
+conversation model to the intrinsic
+[`modality_assist` toolset](../tools/intrinsic/toolsets/modality_assist/README.md).
+The driver can explicitly request a local image description; each call uses a
+temporary state, one model exchange, and no tools. Image data is not added to
+driver history. Input processing performs no automatic multimodal conversion;
+the model-options protocol continues to address the driver only.
 
 ```yaml
 driver_model: deepseek

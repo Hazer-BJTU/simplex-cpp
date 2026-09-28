@@ -32,7 +32,7 @@ struct Configuration {
     /** Driver factory and its validated, credential-expanded configuration. */
     std::string provider;
     nlohmann::json model;
-    /** Optional independent model for future multimodal interpretation.
+    /** Optional independent model for the intrinsic modality_assist toolset.
      * Absence means no instance is constructed; never persisted in session state. */
     std::optional<ModelConfiguration> modality_assist_model;
     endpoint::ResolvedEndpoint client;

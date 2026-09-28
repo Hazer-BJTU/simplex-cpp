@@ -11,8 +11,10 @@ The optional top-level `modality_assist_model` configuration names an entry in
 `providers`, just like `driver_model`. Core constructs a separate instance at
 startup and keeps shared ownership for the application lifetime. Omission skips
 construction; an invalid or unavailable configured model fails startup before
-client admission. This member is reserved for decoupled multimodal interpretation
-and is not invoked yet. It is not part of `AgentInputState`, and the current
+client admission. A loaded conversation model enables the intrinsic
+[`modality_assist` toolset](../tools/intrinsic/toolsets/modality_assist/README.md),
+which sends local images in isolated requests and returns text to the driver.
+The auxiliary model is not part of `AgentInputState`, and the current
 `options.model` protocol continues to configure only the driver. See the
 [model-role configuration](../load/README.md#providers-and-model-roles).
 

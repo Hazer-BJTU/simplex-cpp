@@ -12,6 +12,7 @@
 #include "tools/intrinsic/process/toolset.hpp"
 #include "tools/intrinsic/reading/toolset.hpp"
 #include "tools/intrinsic/editing/toolset.hpp"
+#include "tools/intrinsic/modality_assist/toolset.hpp"
 #include "tools/registry.hpp"
 #include <boost/asio/experimental/channel.hpp>
 #include <unordered_set>
@@ -228,8 +229,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     std::string session_id;
     std::string worker_id = new_identity();
     std::shared_ptr<llm::LLMModel> driver_model;
-    /** Optional startup-owned model reserved for decoupled multimodal interpretation.
-     * Constructed independently of the driver; not yet used by the run pipeline. */
+    /** Optional model shared with the modality-assist toolset for isolated exchanges. */
     std::shared_ptr<llm::LLMModel> modality_assist_model;
     eventbus::EventBus events;
     tools::ToolRegistry registry;
@@ -391,6 +391,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             store, &eventbus::default_async_bus()));
         registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>());
         registry.add(std::make_shared<tools::intrinsic::EditingToolSet>());
+        if (modality_assist_model) {
+            registry.add(std::make_shared<tools::intrinsic::ModalityAssistToolSet>(
+                modality_assist_model));
+        }
         for (auto& tool : extensions.tools) registry.add(std::move(tool));
         hooks.add(loop::intrinsic::ContextStatisticHook::from_config());
         for (auto& hook : extensions.loop_hooks) hooks.add(std::move(hook));
