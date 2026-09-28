@@ -65,9 +65,17 @@ struct Configuration {
  * of that rule: they resolve against the installation directory — the running
  * executable's own directory — because a prompt is an asset of the deployed
  * worker rather than of the session that names it. They must be nonempty
- * relative paths without parent traversal; absolute paths are refused instead
- * of interpreted. Omitting either selects prompts/coding_agent.yaml or
- * prompts/operations/compact.yaml below the same root.
+ * relative paths; rooted forms (a leading `/` or `\`, or a drive letter, which
+ * a POSIX build and a Windows build would otherwise read differently) and `..`
+ * components are refused instead of interpreted. Omitting either selects
+ * prompts/coding_agent.yaml or prompts/operations/compact.yaml below the same
+ * root.
+ *
+ * That containment is LEXICAL, not a filesystem sandbox: symlinks are not
+ * resolved here, so a link below the installation directory still points
+ * wherever it points. Resolution stays lexical on purpose — staging prompts
+ * through links is a deployment choice, and canonicalising would make the rule
+ * depend on the filesystem's state at read time.
  *
  * Errors identify fields, never expanded credential values.
  */

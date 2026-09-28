@@ -1,5 +1,6 @@
 #include "load/configuration.hpp"
 #include "yamlconfig/yaml_json.hpp"
+#include <cctype>
 #include <cstdlib>
 #include <charconv>
 #include <limits>
@@ -73,13 +74,52 @@ std::filesystem::path executable_directory() {
 }
 
 /**
+ * True when the value starts with a root in EITHER path grammar.
+ *
+ * `std::filesystem` answers in the grammar of the host it was compiled for: on
+ * POSIX `\outside.yaml` is one ordinary filename, while on Windows it is rooted
+ * at the current drive's root and `C:\x / \outside.yaml` would discard the
+ * installation directory. A configuration written on one platform is read on
+ * the other, so the rule is spelled over the string and refuses every rooted
+ * form — a leading separator of either kind, and a drive letter with or without
+ * a following separator (`C:x` is drive-relative, which is still not relative
+ * to us).
+ */
+bool rooted(const std::string& value) {
+    if (value.empty()) return false;
+    if (value.front() == '/' || value.front() == '\\') return true;
+    return value.size() >= 2 && value[1] == ':'
+        && std::isalpha(static_cast<unsigned char>(value.front())) != 0;
+}
+
+/** True when either separator spelling contains a parent component. */
+bool has_parent_traversal(const std::string& value) {
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const auto end = value.find_first_of("/\\", start);
+        const auto component = value.substr(start, end == std::string::npos
+            ? std::string::npos : end - start);
+        if (component == "..") return true;
+        if (end == std::string::npos) return false;
+        start = end + 1;
+    }
+    return false;
+}
+
+/**
  * Resolve one configured prompt file below the installation directory.
  *
  * Deliberately not relative to the configuration file: a prompt is an asset of
  * the deployed worker, so one spelling means the same file wherever a session's
- * generated configuration happens to live. Absolute paths and parent traversal
+ * generated configuration happens to live. Rooted paths and parent traversal
  * are refused instead of interpreted, which is what keeps a configuration
  * copied from another machine pointing at that machine's worker.
+ *
+ * The containment is LEXICAL, not a filesystem sandbox: nothing here resolves
+ * symlinks, so a link below the installation directory may still point outside
+ * it. Resolution stays lexical on purpose — an installation that stages its
+ * prompts through links is a deployment choice, and canonicalising would also
+ * make the rule depend on the filesystem's state at read time.
  */
 std::filesystem::path installed_file(
     const Json& worker,
@@ -92,15 +132,13 @@ std::filesystem::path installed_file(
     const auto value = text(worker, key);
     const std::filesystem::path path(value);
     if (value.empty() || value.find('\0') != std::string::npos
-        || path.is_absolute() || path.has_root_name()) {
+        || rooted(value) || path.has_root_path()) {
         throw std::invalid_argument(std::string(key)
             + " must be a nonempty path relative to the executable directory");
     }
-    for (const auto& component : path) {
-        if (component == "..") {
-            throw std::invalid_argument(std::string(key)
-                + " must not contain parent traversal");
-        }
+    if (has_parent_traversal(value)) {
+        throw std::invalid_argument(std::string(key)
+            + " must not contain parent traversal");
     }
     return (installation / path).lexically_normal();
 }

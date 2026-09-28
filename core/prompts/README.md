@@ -7,9 +7,11 @@ relative to the installation prefix. No prompt text is embedded in the worker.
 
 Select a custom file through `worker.system_prompt_file` in the startup YAML.
 Relative paths are resolved against the executable's own directory, the
-installation directory, and absolute paths are rejected: every session reads its
-prompt from the deployed worker, wherever the configuration itself lives. Omit
-the field to load the default beside the executable. All files are validated at
+installation directory, and a rooted path (a leading separator in either
+grammar, or a drive letter) or a `..` component is rejected: every session reads
+its prompt from the deployed worker, wherever the configuration itself lives.
+The containment is lexical, not a sandbox — symlinks are not resolved. Omit the
+field to load the default beside the executable. All files are validated at
 startup.
 
 The format is an ordered `model_io::PromptTemplate`: an optional `heading_level`

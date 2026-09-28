@@ -41,11 +41,12 @@ describe('normalizeSpec', () => {
         assert.equal(
             normalizeSpec(config, { systemPromptFile: 'prompts/other.yaml' }).systemPromptFile,
             'prompts/other.yaml');
-        // The worker refuses absolute paths and parent traversal, so the hub
+        // The worker refuses rooted paths and parent traversal, so the hub
         // refuses them at the spec layer rather than failing a spawn later.
         for (const rejected of [
             '/tmp/agent.yaml', '../coding_agent.yaml',
             'prompts/../../outside.yaml', '', 7,
+            '\\rooted\\prompt.yaml', 'C:\\absolute\\prompt.yaml',
         ]) {
             assert.throws(() => normalizeSpec(config, { systemPromptFile: rejected }), ConfigError);
         }

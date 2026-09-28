@@ -394,13 +394,23 @@ function check(condition: unknown, message: string): asserts condition {
  * the worker would reject must not reach a session's generated configuration.
  * The hub cannot check that the file exists — the worker may run on another
  * machine or inside a container — which is exactly why the path stays relative.
+ *
+ * The rule is deliberately PLATFORM-NEUTRAL rather than `node:path`'s: the hub
+ * may be preparing a configuration for a worker on another OS, where a leading
+ * `\` or a drive letter means something `path.isAbsolute()` on this host does
+ * not report. The worker stays the authoritative validator, because only it
+ * knows the installation directory it will resolve against.
  */
 export function checkPromptFile(value: unknown, field: string): string {
     const path = typeof value === 'string' ? value : '';
-    if (path.length === 0 || path.includes('\0') || isAbsolute(path)
-        || /^[A-Za-z]:/.test(path) || path.split(/[\\/]+/).includes('..')) {
+    // A leading separator of either kind, or a drive letter — with or without a
+    // following separator, since `C:prompts` is drive-relative and still not
+    // relative to the installation directory.
+    const rooted = path.startsWith('/') || path.startsWith('\\') || /^[A-Za-z]:/.test(path);
+    if (path.length === 0 || path.includes('\0') || rooted
+        || path.split(/[\\/]+/).includes('..')) {
         throw new ConfigError(`${field} must be a nonempty path relative to the worker's `
-            + 'installation directory, without an absolute path or ".."');
+            + 'installation directory, without a root or a ".." component');
     }
     return path;
 }

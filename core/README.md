@@ -40,9 +40,10 @@ persistence:
 
 The default structured prompt lives in [core/prompts/coding_agent.yaml](prompts/coding_agent.yaml)
 and is copied/installed as `bin/prompts/coding_agent.yaml`. The loader resolves
-an explicit relative path against the executable's own directory, and refuses
-absolute paths and parent traversal.
-It validates the file at startup, even when restoring a session. New sessions
+an explicit relative path against the executable's own directory and refuses a
+rooted path (a leading separator in either grammar, or a drive letter) and `..`
+components; the containment is lexical, so symlinks are the filesystem's
+business. It validates the file at startup, even when restoring a session. New sessions
 use its sections; restored sessions retain the prompt in their snapshot. Tool
 skills are rebuilt from the active registry in both cases. See the
 [load prompt format](../load/README.md#system-prompt-files) for custom files.

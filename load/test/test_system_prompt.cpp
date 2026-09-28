@@ -94,7 +94,14 @@ BOOST_AUTO_TEST_CASE(prompt_files_must_stay_inside_the_installation_directory) {
     std::vector<Json> invalid = {
         nested.string(), "/etc/simplex/agent.yaml", "../outside.yaml",
         "prompts/../../outside.yaml", "", std::string("bad\0path", 8),
-        nullptr, 7
+        nullptr, 7,
+        // Rooted in the OTHER path grammar. A POSIX build would read
+        // `\outside.yaml` as one filename and a Windows build would resolve it
+        // against the current drive's root, discarding the installation
+        // directory — so the rule is spelled over the string and both readings
+        // are refused, whichever platform is compiling this test.
+        "\\outside.yaml", "\\rooted\\prompt.yaml", "C:\\absolute\\prompt.yaml",
+        "C:prompt.yaml", "..\\outside.yaml", "prompts\\..\\..\\outside.yaml",
     };
     for (const auto& key : {"system_prompt_file", "compact_prompt_file"}) {
         for (const auto& path : invalid) {
@@ -102,6 +109,24 @@ BOOST_AUTO_TEST_CASE(prompt_files_must_stay_inside_the_installation_directory) {
             BOOST_CHECK_THROW(load::parse_configuration(
                 document, scratch.root, scratch.installation()), std::exception);
         }
+    }
+}
+
+// The other half of the portable rule: a backslash spelling is NOT traversal or
+// a root, so it passes validation on every platform. On POSIX the whole string
+// is then one filename, which is what this stages — the point is that the
+// validation did not refuse it, not that the two platforms open the same file.
+BOOST_AUTO_TEST_CASE(backslash_spellings_are_relative_paths_not_traversal) {
+    Scratch scratch;
+    scratch.stage_defaults();
+    auto document = configuration();
+    for (const auto& selected : {"prompts\\coding_agent.yaml",
+                                 ".\\prompts\\coding_agent.yaml"}) {
+        scratch.install(selected, structured);
+        document["worker"] = {{"system_prompt_file", selected}};
+        const auto parsed = load::parse_configuration(
+            document, scratch.root, scratch.installation());
+        BOOST_TEST(parsed.system_prompt.render().markdown.find("### Identity") == 0u);
     }
 }
 

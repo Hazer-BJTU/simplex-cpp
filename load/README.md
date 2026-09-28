@@ -418,12 +418,26 @@ A configured path is relative to the **installation directory**, the directory
 holding the running executable, and not to the configuration file. One spelling
 therefore names the same prompt whatever directory a session keeps its generated
 configuration in, and a configuration copied from another machine still reads
-that machine's installed worker. Absolute paths and `..` components are refused
-rather than interpreted, and empty paths fail. If the field is omitted, the
-loader reads `<executable_dir>/prompts/coding_agent.yaml`. Missing files fail
-startup; there is no embedded text fallback. The old inline
-`worker.system_prompt` field is rejected with a migration error. Plugin-only
-loading APIs do not read prompt files.
+that machine's installed worker. If the field is omitted, the loader reads
+`<executable_dir>/prompts/coding_agent.yaml`. Missing files fail startup; there
+is no embedded text fallback. The old inline `worker.system_prompt` field is
+rejected with a migration error. Plugin-only loading APIs do not read prompt
+files.
+
+A path is refused when it is empty, contains a NUL, is rooted, or contains a
+`..` component. "Rooted" is checked in **both** path grammars rather than the
+host's alone, because a configuration written on one platform is read on the
+other: a leading `/` or `\`, and a drive letter with or without a following
+separator (`C:\x` and `C:x`), are all rejected on every platform, while
+`prompts\coding_agent.yaml` is a relative path — a Windows build resolves it as
+two components and a POSIX build reads the backslash as an ordinary filename
+character, which is the filesystem's business, not this check's.
+
+Containment is **lexical, not a filesystem sandbox**: the loader does not
+resolve symlinks, so a link below the installation directory still points
+wherever it points. Resolution stays lexical on purpose — staging prompts
+through links is a deployment choice, and canonicalising would make the rule
+depend on the filesystem's state at read time.
 
 ```yaml
 heading_level: 2

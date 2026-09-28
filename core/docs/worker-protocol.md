@@ -85,7 +85,12 @@ nonnegative; zero disables it.
 sessions. It is a relative path below the executable's directory — the
 installation directory — and never resolves against the configuration file, so
 a session's generated configuration can live anywhere and still name the
-deployed prompt. Absolute paths, `..`, and empty values are rejected.
+deployed prompt. Empty values, `..` components, and every rooted spelling are
+rejected; "rooted" covers both path grammars (a leading `/` or `\`, and a drive
+letter with or without a separator), because the file may be written on one
+platform and read on another. Containment is lexical, not a sandbox: symlinks
+are not resolved, so a link below the installation directory points wherever it
+points.
 Omitting it reads `prompts/coding_agent.yaml` beside the executable. The file is
 validated at startup, including when restoring a session; missing or malformed
 files fail startup. Restored sessions retain their stored prompt. Current tool
