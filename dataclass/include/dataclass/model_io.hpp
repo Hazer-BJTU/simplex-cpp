@@ -129,6 +129,18 @@ void read_optional(const nlohmann::json& j, const char* key,
         member.reset();
     }
 }
+
+// Whether pre-label extras asked the old Responses adapter for a provider FILE
+// part. That adapter honoured `extras.type == "input_file"` and sent the
+// reference as `input_file`/`file_url`; Chat Completions ignored the marker and
+// sent the same record as an image URL. The two readings disagree, so a legacy
+// reference carrying it cannot be migrated without choosing for the operator.
+inline bool legacy_provider_file_part(const std::optional<nlohmann::json>& extras) {
+    if (!extras || !extras->is_object()) return false;
+    const auto type = extras->find("type");
+    return type != extras->end() && type->is_string()
+        && type->get_ref<const std::string&>() == "input_file";
+}
 } // namespace detail
 
 // ---- conversation data types ------------------------------------------------
@@ -158,8 +170,10 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ContentType, {
 // writes the label, the public input boundary requires it explicitly, and
 // decoding is strict (see the pair below): an unknown name is an error, never a
 // silent fallback to text, because a fallback would let a misspelled image label
-// reach a provider as plain text. A MISSING key still reads as text under
-// protocol rule 6, which is the one absence with a single safe reading.
+// reach a provider as plain text. A MISSING key is not a silent fallback either:
+// it is the pre-label durable record, and Content::from_json recovers or refuses
+// it according to the semantics those records were written under (see the decode
+// note on Content).
 enum class Modality {
     Text,     // Human-readable text.
     Image,    // A still image.
@@ -233,14 +247,21 @@ inline void from_json(const nlohmann::json& j, Modality& value) {
 // `to_json` always writes the label, and the public input boundary
 // (core::parse_input) REQUIRES it, so this path is only ever reached by a
 // session persisted before the label existed. Silently reading such a record as
-// text would change what a durable turn means: both adapters used to send an
-// external reference to the provider as an image URL, so a legacy
-// `external_ref` is recovered as Image, and a legacy `text` as Text. A legacy
-// `binary` is REFUSED, because the two adapters disagreed about it — Chat
-// Completions sent the base64 payload as message text, Responses sent it as
-// file data — and there is no reading that is faithful to both. The error
-// names the field and the fix, and the next save of a decoded record writes the
-// recovered label back, so the migration happens exactly once.
+// text would change what a durable turn means, so each shape is recovered from
+// what the old adapters actually did with it:
+//
+//   legacy `text`         -> Text   (both adapters, whatever extras said)
+//   legacy `external_ref` -> Image  (both sent a plain reference as an image URL)
+//   legacy `binary`       -> REFUSED (Chat Completions sent the base64 as message
+//                            text, Responses as file data: no faithful reading)
+//   legacy `external_ref` carrying `extras.type == "input_file"` -> REFUSED
+//                         (Responses sent it as a provider file part,
+//                          input_file/file_url; Chat Completions ignored the
+//                          marker and sent an image — the marker is a
+//                          provider-side override the other adapter never had)
+//
+// The refusals name the field and the fix, and the next save of a decoded record
+// writes the recovered label back, so the migration happens exactly once.
 struct Content {
     ContentType type = ContentType::Text;
     std::string raw;
@@ -248,7 +269,9 @@ struct Content {
     // e.g. the Responses API's part "type" ("output_text", ...) alongside our
     // coarse text/binary/external_ref, or annotations. Consumers that map to
     // a plain string content ignore it. NOT trusted to describe the part: see
-    // the adapter support matrices in llm/README.md.
+    // the adapter support matrices in llm/README.md. It is still consulted when
+    // decoding a pre-label record, because there it is evidence of what the old
+    // adapters did rather than an instruction to a new one.
     std::optional<nlohmann::json> extras;
     Modality modality = Modality::Text;
 };
@@ -266,12 +289,19 @@ inline void from_json(const nlohmann::json& j, Content& c) {
         it->get_to(c.modality);
         return;
     }
-    if (c.type == ContentType::ExternalRef) {
-        c.modality = Modality::Image;   // the pre-modality adapters' reading
-        return;
-    }
     if (c.type == ContentType::Text) {
         c.modality = Modality::Text;
+        return;
+    }
+    if (c.type == ContentType::ExternalRef) {
+        if (detail::legacy_provider_file_part(c.extras)) {
+            throw std::invalid_argument(
+                "content part has no 'modality', and its 'extras.type' of "
+                "\"input_file\" makes it ambiguous: the pre-modality Responses "
+                "adapter sent it as a provider file and Chat Completions sent it "
+                "as an image, so add an explicit modality (image or document)");
+        }
+        c.modality = Modality::Image;
         return;
     }
     throw std::invalid_argument(

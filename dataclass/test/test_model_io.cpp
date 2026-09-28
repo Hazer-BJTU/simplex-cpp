@@ -97,13 +97,34 @@ BOOST_AUTO_TEST_CASE(legacy_records_without_a_label_are_recovered_or_refused) {
     nlohmann::json{{"type", "text"}, {"raw", "x"}}.get_to(text);
     BOOST_CHECK(text.modality == Modality::Text);
 
-    // Both adapters used to send an external reference to the provider as an
-    // image URL, so that is what a reference meant.
+    // Both adapters used to send a plain external reference to the provider as
+    // an image URL, so that is what a reference meant.
     Content reference;
     nlohmann::json{{"type", "external_ref"}, {"raw", "https://x/y.png"}}
         .get_to(reference);
     BOOST_CHECK(reference.modality == Modality::Image);
     BOOST_CHECK_EQUAL(nlohmann::json(reference)["modality"], "image");
+
+    // ... unless the old Responses adapter was asked for a provider file part:
+    // it sent `input_file`/`file_url` while Chat Completions ignored the marker
+    // and sent an image, so the record is ambiguous and refused rather than
+    // migrated to whichever reading this build happens to prefer.
+    Content provider_file;
+    const nlohmann::json legacy_file{{"type", "external_ref"},
+        {"raw", "https://x/paper.pdf"}, {"extras", {{"type", "input_file"}}}};
+    BOOST_CHECK_EXCEPTION(legacy_file.get_to(provider_file), std::invalid_argument,
+        [](const auto& error) {
+            const std::string message = error.what();
+            return message.find("input_file") != std::string::npos
+                && message.find("modality") != std::string::npos;
+        });
+
+    // A provider-image marker is not ambiguous: Responses sent input_image and
+    // Chat Completions sent an image URL, which is the same reading.
+    Content provider_image;
+    nlohmann::json{{"type", "external_ref"}, {"raw", "https://x/y.png"},
+                   {"extras", {{"type", "input_image"}}}}.get_to(provider_image);
+    BOOST_CHECK(provider_image.modality == Modality::Image);
 
     // A legacy binary payload is refused instead of guessed: Chat Completions
     // sent it as text and Responses as file data, so no single reading is

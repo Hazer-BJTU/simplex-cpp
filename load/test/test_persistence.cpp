@@ -161,12 +161,12 @@ BOOST_AUTO_TEST_CASE(json_uses_dataclass_compatibility_without_treating_invalid_
         });
 }
 
-// A session written before the modality label existed. The reference must come
-// back as the image both adapters used to send it as, the recovered label must
-// be written on the next save, and the one payload whose old reading was
-// ambiguous must fail the load instead of being replayed as something it was
+// A session written before the modality label existed. A plain reference must
+// come back as the image both adapters used to send it as, the recovered label
+// must be written on the next save, and the two shapes whose old reading was
+// ambiguous must fail the load instead of being replayed as something they were
 // never sent as.
-BOOST_AUTO_TEST_CASE(legacy_state_without_a_label_recovers_references_and_refuses_binary) {
+BOOST_AUTO_TEST_CASE(legacy_state_without_a_label_recovers_references_and_refuses_ambiguous_parts) {
     Scratch scratch;
     Json document = example_state();
     document["turns"][0]["user_input"]["content"] = Json::array({
@@ -186,6 +186,22 @@ BOOST_AUTO_TEST_CASE(legacy_state_without_a_label_recovers_references_and_refuse
     BOOST_CHECK(migrated["turns"][0]["user_input"]["content"][1]["modality"] == "image");
     BOOST_CHECK(migrated == Json(state));
 
+    // A legacy reference the old Responses adapter sent as a provider file
+    // (input_file/file_url) while Chat Completions sent it as an image.
+    document["turns"][0]["user_input"]["content"] = Json::array({
+        {{"type", "external_ref"}, {"raw", "https://example.invalid/paper.pdf"},
+         {"extras", {{"type", "input_file"}}}},
+    });
+    scratch.write("provider-file.json", document.dump());
+    BOOST_CHECK_EXCEPTION((void)load::load_state(scratch.root / "provider-file.json"),
+        load::PersistenceError, [](const auto& error) {
+            const std::string message = error.what();
+            return message.find("provider-file.json") != std::string::npos
+                && message.find("input_file") != std::string::npos;
+        });
+
+    // A legacy binary payload: Chat Completions sent it as text, Responses as
+    // file data, so there is no reading to recover either.
     document["turns"][0]["user_input"]["content"] = Json::array({
         {{"type", "binary"}, {"raw", "AA=="}},
     });
