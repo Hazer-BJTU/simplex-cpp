@@ -7,8 +7,8 @@
 #                 metadata field formatting.
 #   - logging/    `logging_lib` (STATIC): thread-safe console logger
 #                 (logging::Logger), standard-library only.
-#   - fileio/     `fileio_lib` (SHARED): atomic file replacement through a
-#                 stream callback, with private POSIX resource ownership.
+#   - fileio/     `fileio_lib` (SHARED): atomic file replacement, binary file
+#                 reads, and Base64 conversion, with private POSIX ownership.
 #   - yamlconfig/ `yamlconfig_lib` (SHARED, the one copy of yaml-cpp per
 #                 process and of the conversion itself) + `yamlconfig_iface`
 #                 (INTERFACE wrapper): one-way YAML -> nlohmann JSON config
