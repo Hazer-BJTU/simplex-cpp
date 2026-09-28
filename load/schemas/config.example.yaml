@@ -82,18 +82,19 @@ providers:
 
   # Optional auxiliary model example. Uncomment this mapping and the
   # modality_assist_model selector below to enable image interpretation.
-  # Replace the endpoint and model placeholders with a vision-capable model
-  # served through the Responses protocol used by the openai plugin.
+  # Uses DeepSeek through its Chat Completions endpoint, like the driver.
   # vision:
-  #   plugin: openai
+  #   plugin: deepseek
   #   endpoint:
-  #     base_url: https://your-provider.example
-  #     request_path: /v1/responses
+  #     base_url: https://api.deepseek.com
+  #     request_path: /chat/completions
   #     auth:
   #       scheme: bearer
-  #       api_key: ${VISION_API_KEY}
-  #   model: your-vision-model
-  #   config: {}
+  #       api_key: ${DEEPSEEK_API_KEY}
+  #   model: deepseek-flash
+  #   config:
+  #     reasoning:
+  #       effort: high
   #   retry:
   #     max_attempts: 3
   #     initial_backoff_ms: 500

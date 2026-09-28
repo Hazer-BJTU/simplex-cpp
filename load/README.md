@@ -300,11 +300,14 @@ providers:
     plugin: deepseek
     model: deepseek-flash
   vision:
-    plugin: openai
-    model: your-vision-model
+    plugin: deepseek
+    model: deepseek-flash
     endpoint:
       auth:
-        api_key: ${VISION_API_KEY}
+        api_key: ${DEEPSEEK_API_KEY}
+    config:
+      reasoning:
+        effort: high
 ```
 
 | Provider field | Omitted behavior | Meaning |
