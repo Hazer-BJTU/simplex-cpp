@@ -54,6 +54,7 @@ export interface WorkerConfigDocument {
     };
     providers: Record<string, ProviderProfile>;
     driver_model: string;
+    modality_assist_model?: string;
     client: {
         endpoint: string;
         payload_capacity: number;
@@ -109,6 +110,17 @@ export function renderWorkerConfig({
         };
     }
 
+    const providers: Record<string, ProviderProfile> = { [profileName]: profile };
+    // The assistant always gets its own entry. In particular, a session model
+    // override on the driver must not alter the assistant's model choice.
+    const assistName = profileName === 'modality_assist'
+        ? 'modality_assist_model' : 'modality_assist';
+    const assistProfile = spec.modalityAssistProvider
+        ? config.providerProfiles[spec.modalityAssistProvider] : undefined;
+    if (assistProfile) {
+        providers[assistName] = structuredClone(assistProfile);
+    }
+
     return {
         // Plugin discovery stays at its executable-relative default; dynamic
         // toolsets and loop hooks are not part of this contract.
@@ -119,8 +131,9 @@ export function renderWorkerConfig({
                 loop_hooks: { directories: [], enable: [] },
             },
         },
-        providers: { [profileName]: profile },
+        providers,
         driver_model: profileName,
+        ...(spec.modalityAssistProvider ? { modality_assist_model: assistName } : {}),
         client: {
             endpoint: endpoints.events,
             payload_capacity: config.worker.payloadCapacity,

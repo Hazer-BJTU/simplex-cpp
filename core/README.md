@@ -1,10 +1,22 @@
 # Worker application
 
-One process owns one session, one model, both registries, an IO client and at
-most one active agent loop. simplex_worker assembles all intrinsic components,
+One process owns one session, a driver model, an optional modality-assist model,
+both registries, an IO client and at most one active agent loop. simplex_worker
+assembles all intrinsic components,
 all provider descriptors and configured dynamic components. The public command
 entry point is `simplex run`; the [hub](../hub/README.md) provides the server and
 interactive panel.
+
+The optional top-level `modality_assist_model` configuration names an entry in
+`providers`, just like `driver_model`. Core constructs a separate instance at
+startup and keeps shared ownership for the application lifetime. Omission skips
+construction; an invalid or unavailable configured model fails startup before
+client admission. A loaded conversation model enables the intrinsic
+[`modality_assist` toolset](../tools/intrinsic/toolsets/modality_assist/README.md),
+which sends local images in isolated requests and returns text to the driver.
+The auxiliary model is not part of `AgentInputState`, and the current
+`options.model` protocol continues to configure only the driver. See the
+[model-role configuration](../load/README.md#providers-and-model-roles).
 
 ## Start
 

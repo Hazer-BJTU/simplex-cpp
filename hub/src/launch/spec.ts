@@ -29,6 +29,8 @@ export interface NormalizedSpec {
     provider: string;
     /** Empty means "use the profile's model". */
     model: string;
+    /** Profile for a separate assistant role, or null to omit the role. */
+    modalityAssistProvider: string | null;
     threads: number;
     maxExchanges: number;
     eventCapacity: number;
@@ -63,6 +65,17 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
         throw new ConfigError(
             `unknown provider profile "${provider}"; configured profiles: ${profiles.join(', ')}`);
     }
+    // DeepSeek sessions use the configured DeepSeek profile by default. Other
+    // providers only acquire an additional model dependency by explicit choice.
+    const defaultAssist = provider === 'deepseek' && provider !== config.mock.profile
+        ? 'deepseek' : null;
+    const assist = raw.modalityAssistProvider === undefined
+        ? defaultAssist : raw.modalityAssistProvider;
+    if (assist !== null && (typeof assist !== 'string'
+        || !Object.hasOwn(config.providerProfiles, assist)
+        || assist === config.mock.profile)) {
+        throw new ConfigError('spec.modalityAssistProvider must name a non-mock provider profile or be null');
+    }
     const positive = (value: unknown, fallback: number, name: string): number => {
         const resolved = value ?? fallback;
         if (!Number.isInteger(resolved) || (resolved as number) <= 0) {
@@ -85,6 +98,7 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
         provider,
         // Empty means "use the profile's model".
         model: typeof raw.model === 'string' ? raw.model : '',
+        modalityAssistProvider: assist,
         threads: positive(raw.threads, config.worker.threads, 'threads'),
         maxExchanges: positive(raw.maxExchanges, config.worker.maxExchanges, 'maxExchanges'),
         eventCapacity: positive(raw.eventCapacity, config.worker.eventCapacity, 'eventCapacity'),

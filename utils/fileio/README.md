@@ -1,5 +1,28 @@
 # File IO utilities
 
+`fileio/base64.hpp` converts arbitrary binary bytes between standard padded
+Base64 and their original form. `base64_encode_file(path)` reads a regular file
+and returns its Base64 text; `base64_decode_file(text, path)` validates the
+encoding and atomically writes the decoded bytes. Neither function guesses a
+media type or adds a data-URL prefix. Empty files produce empty strings.
+Decoding rejects whitespace, URL-safe characters, malformed padding, and
+nonzero unused bits. These convenience functions hold their input and result in
+memory, so callers should set their own size limits before using them with
+untrusted, potentially large files or strings. Reading does not guarantee a
+snapshot if another process edits the file concurrently. The decoder inherits
+`atomic_write`'s destination and publication behavior.
+
+```cpp
+#include "fileio/base64.hpp"
+
+const auto encoded = fileio::base64_encode_file("image.png");
+fileio::base64_decode_file(encoded, "image-copy.png");
+```
+
+`test_base64` compares encodings against OpenSSL, checks standard test vectors
+and malformed input, and round-trips valid PNG, GIF, PDF, ZIP, and UTF-8 files
+plus a larger arbitrary binary file.
+
 `fileio/replace_existing.hpp` provides bounded reads and replacement of an
 existing single-link regular file for text editing. It refuses the final
 symlink and special mode bits, compares initially read identity and bytes before publication,

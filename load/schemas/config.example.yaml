@@ -12,7 +12,8 @@ plugins:
     # A nonempty list replaces the default; directories are scanned in order.
     directories: []
 
-  # The core worker loads all compiled-in intrinsic components automatically.
+  # Core loads intrinsic components automatically; modality_assist additionally
+  # requires the optional modality_assist_model configured below.
   # Plugin discovery alone does not initialize intrinsics or session registries.
   # Their enablement and configuration are not exposed by this contract.
   extensions:
@@ -37,8 +38,9 @@ plugins:
       #   config_file: ./schemas/loop/extensions/noop_hook/config.yaml
       # Omit config_file to use the existing extension lookup rules.
 
-# Named endpoint/model configurations. Only the selected provider is instantiated.
-# Credential expansion is limited to its API key and extra-header values.
+# Named endpoint/model configurations. Only entries selected by a model role
+# are instantiated. Credential expansion is limited to their API keys and
+# extra-header values.
 # Multiple entries may use the same plugin with different endpoints or models.
 providers:
   deepseek:
@@ -78,10 +80,38 @@ providers:
       initial_backoff_ms: 500
       max_backoff_ms: 120000
 
+  # Optional auxiliary model example. Uncomment this mapping and the
+  # modality_assist_model selector below to enable image interpretation.
+  # Uses DeepSeek through its Chat Completions endpoint, like the driver.
+  # vision:
+  #   plugin: deepseek
+  #   endpoint:
+  #     base_url: https://api.deepseek.com
+  #     request_path: /chat/completions
+  #     auth:
+  #       scheme: bearer
+  #       api_key: ${DEEPSEEK_API_KEY}
+  #   model: deepseek-flash
+  #   config:
+  #     reasoning:
+  #       effort: high
+  #   retry:
+  #     max_attempts: 3
+  #     initial_backoff_ms: 500
+  #     max_backoff_ms: 120000
+
 # Required reference to a providers entry.
 # No implicit first-provider fallback.
-# The driver model is currently the only model role exposed by this contract.
 driver_model: deepseek
+
+# Optional reference to a providers entry for decoupled multimodal interpretation.
+# Omit to leave this model unloaded. Explicit null or an empty name is invalid.
+# Uses the same endpoint/config/retry fields as driver_model; each role gets
+# its own model instance, even when both reference the same entry.
+# Enables the intrinsic modality_assist tool, which describes local images using
+# isolated one-exchange requests. No automatic input conversion is performed.
+# modality_assist_model: vision
+# Uncomment and customize providers.vision above together with this selector.
 
 # Persistent event connection; independent of the confirmation endpoint.
 client:

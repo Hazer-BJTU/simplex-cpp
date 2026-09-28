@@ -52,6 +52,7 @@ describe('session configuration files', () => {
         assert.equal(reused.spec.threads, 3);
         assert.equal(reused.spec.provider, 'deepseek');
         assert.equal(reused.spec.model, 'operator-model');
+        assert.equal(reused.spec.modalityAssistProvider, 'modality_assist');
         assert.deepEqual(reused.document, {
             ...initial,
             client: { ...initial.client, endpoint: input.endpoints.events },
@@ -61,6 +62,29 @@ describe('session configuration files', () => {
         assert.equal(sessionStateDirectory(input.config, input.sessionId),
             join(sessionDir(input.config, input.sessionId), 'custom/snapshots'));
         assert.deepEqual(readdirSync(join(sessionDir(input.config, input.sessionId), 'config')), ['config.yaml']);
+    });
+
+    it('defaults the assistant only on first creation and preserves operator choices', () => {
+        const input = options();
+        const initial = prepareSessionConfig(input).document;
+        assert.equal(initial.modality_assist_model, 'modality_assist');
+        const path = workerConfigPath(input.config, input.sessionId);
+        initial.providers.vision = structuredClone(initial.providers.modality_assist);
+        initial.modality_assist_model = 'vision';
+        writeFileSync(path, stringify(initial));
+        input.rawSpec = { provider: 'deepseek', modalityAssistProvider: 'deepseek' };
+        const retargeted = prepareSessionConfig(input);
+        assert.equal(retargeted.document.modality_assist_model, 'vision');
+        assert.equal(retargeted.spec.modalityAssistProvider, 'vision');
+
+        delete initial.modality_assist_model;
+        writeFileSync(path, stringify(initial));
+        const disabled = prepareSessionConfig(input);
+        assert.equal(Object.hasOwn(disabled.document, 'modality_assist_model'), false);
+        assert.equal(disabled.spec.modalityAssistProvider, null);
+        assert.equal(prepareSessionConfig({
+            ...input, rawSpec: disabled.spec,
+        }).spec.modalityAssistProvider, null);
     });
 
     it('refreshes the dynamic mock URL without replacing provider settings', () => {
@@ -92,7 +116,9 @@ describe('session configuration files', () => {
         const input = options();
         prepareSessionConfig(input);
         const path = workerConfigPath(input.config, input.sessionId);
-        for (const invalid of ['[broken', 'null', 'client: wrong', 'persistence:\n  state: ../escape', 'persistence:\n  memory: null']) {
+        for (const invalid of ['[broken', 'null', 'client: wrong',
+            'persistence:\n  state: ../escape', 'persistence:\n  memory: null',
+            'modality_assist_model: missing', 'modality_assist_model: null']) {
             writeFileSync(path, invalid);
             assert.throws(() => prepareSessionConfig(input));
             assert.equal(readFileSync(path, 'utf8'), invalid);

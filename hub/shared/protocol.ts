@@ -162,6 +162,9 @@ export interface PayloadOptions {
 export interface SessionSpec {
     provider?: string;
     model?: string;
+    /** Source profile for a new auxiliary model. On config reuse, this reports
+     * the provider key selected by the saved worker config; null means off. */
+    modalityAssistProvider?: string | null;
     threads?: number;
     maxExchanges?: number;
     eventCapacity?: number;

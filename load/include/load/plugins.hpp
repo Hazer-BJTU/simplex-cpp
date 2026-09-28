@@ -44,7 +44,8 @@ struct LoadedPlugins {
  *
  * @param configuration Complete startup JSON mapping, usually converted from
  * YAML. Only the provider discovery section is consumed. In particular, the
- * top-level providers and driver_model fields do not filter plugin admission.
+ * top-level providers, driver_model and modality_assist_model fields do not
+ * filter plugin admission.
  * @param configuration_directory Base for explicit relative directory paths.
  * Must be absolute, making resolution independent of the current directory.
  *

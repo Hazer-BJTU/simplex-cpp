@@ -24,6 +24,9 @@ public:
      * configuration comes from load::read_configuration. session_id chooses
      * the snapshot directory and is validated before IO. model, when supplied,
      * bypasses driver construction but not component discovery or registries.
+     * A configured modality_assist_model is constructed independently and owned
+     * for the application lifetime, and enables the intrinsic modality_assist
+     * toolset. Auxiliary exchanges use temporary states outside AgentInputState.
      */
     Application(boost::asio::any_io_executor executor, load::Configuration configuration,
                 std::string session_id, std::shared_ptr<llm::LLMModel> model = {});

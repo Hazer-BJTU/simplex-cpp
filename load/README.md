@@ -5,7 +5,8 @@
 implemented: it reads YAML, discovers provider modules, and constructs selected
 dynamic toolsets and loop hooks. Explicit JSON snapshot IO and Markdown session
 export are also implemented. The core worker now consumes the full startup
-configuration, initializes intrinsics and registries, constructs the driver model,
+configuration, initializes intrinsics and registries, constructs the driver and
+optional modality-assist models,
 starts IO and applies persistence policy. Plugin-only entry points remain usable
 independently. See [core](../core/README.md) for the runtime contract.
 
@@ -13,7 +14,7 @@ independently. See [core](../core/README.md) for the runtime contract.
 | --- | --- |
 | `plugins` | Parse YAML, discover all provider descriptors, construct selected extensions. |
 | Intrinsic components and registries | Initialized by core, not plugin-only loading. |
-| `providers`, `driver_model` | Selected provider validated/expanded by read_configuration; constructed by core. |
+| `providers`, `driver_model`, `modality_assist_model` | Selected providers validated/expanded by read_configuration; independent instances constructed by core. |
 | `client` | Parsed by read_configuration; started by core. |
 | `persistence` | Parsed by read_configuration; applied by core. |
 | `security.confirmation`, `worker` | Approval endpoint/deadline, event capacity, exchange budget and initial prompt. |
@@ -48,7 +49,8 @@ native modules. `load_providers(configuration, configuration_directory)` and
 `load_extensions(configuration, configuration_directory)` also accept a complete
 JSON document that a host has already parsed. Their base directory must be
 absolute, and each validates only its own section. Unknown fields are ignored.
-The unrelated `providers`, `driver_model`, `client`, and `persistence` sections
+The unrelated `providers`, `driver_model`, `modality_assist_model`, `client`, and
+`persistence` sections
 are not consumed or validated by these plugin-only functions. In particular, this stage neither substitutes
 environment variables nor needs model credentials or a running IO executor.
 
@@ -203,7 +205,7 @@ the corresponding default. There is no implicit shell expansion of paths.
 There is no version field. The implemented plugin loader uses the existing
 `yamlconfig` YAML-to-JSON boundary and accepts a single mapping document.
 Plugin-only entry points validate `plugins`. `read_configuration()` validates
-the selected provider and the host IO, security, worker and persistence settings.
+the selected providers and the host IO, security, worker and persistence settings.
 Unknown host fields are ignored and omitted optional fields use documented
 defaults. Missing mappings behave as empty mappings. Explicit null is not a
 substitute for a mapping, sequence, or required scalar. Known fields with wrong
@@ -239,10 +241,13 @@ Directories are scanned nonrecursively in configured order using the existing
 domain loaders and their compatibility checks. Discovery loads native modules;
 it is distinct from constructing configured instances. A provider configuration
 does not act as a plugin allowlist: all compatible provider descriptors are
-loaded even when only one is used by the driver model. Core constructs the selected model after parsing host configuration.
+loaded regardless of which model roles use them. Core constructs the selected
+models after parsing host configuration.
 
-Core loads every compiled-in intrinsic component with its existing configuration
-mechanism. Plugin-only loading does not initialize intrinsics. This public startup contract has no intrinsic enable/disable list,
+Core loads intrinsic components with their existing configuration mechanism.
+The modality-assist toolset additionally requires `modality_assist_model`; it is
+omitted when that model is absent. Plugin-only loading does not initialize
+intrinsics. This public startup contract has no intrinsic enable/disable list,
 configuration override, or schema-location override.
 
 Each enabled dynamic entry requires `name`, matching the module's exported
@@ -263,13 +268,47 @@ hook order is fixed by the host, followed by the configured dynamic hook order;
 directory enumeration never determines subscription order. Registries remain
 session-level objects.
 
-## Providers and the driver model
+## Providers and model roles
 
 `providers` maps configuration names to endpoint/model definitions. Each name
 is a host reference, not necessarily a plugin name. For example, two entries
 named `direct` and `proxy` can both set `plugin: deepseek`, with different base
 URLs, credentials, models, or generation parameters. `driver_model: proxy`
-selects the latter for the agent loop. No other model role is defined yet.
+selects the latter for the agent loop.
+
+`modality_assist_model` is an optional reference to another `providers` entry,
+using exactly the same endpoint, credential, generation, and retry fields as
+`driver_model`. Omission leaves the role unloaded. Explicit null, an empty name,
+an unknown reference, invalid selected settings, or an unavailable factory is
+an error; startup does not silently substitute the driver. Each role gets a
+separate instance, even if both reference the same provider entry.
+
+This role interprets multimodal inputs separately to reduce persistence and
+generation pressure on the main `AgentInputState`. Core passes the constructed
+conversation model to the intrinsic
+[`modality_assist` toolset](../tools/intrinsic/toolsets/modality_assist/README.md).
+The driver can explicitly request a description of local images; each call uses a
+temporary state, one model exchange, and no tools. Image data is not added to
+driver history. Input processing performs no automatic multimodal conversion;
+the model-options protocol continues to address the driver only.
+
+```yaml
+driver_model: deepseek
+modality_assist_model: vision  # Omit this line to leave the role unloaded.
+providers:
+  deepseek:
+    plugin: deepseek
+    model: deepseek-flash
+  vision:
+    plugin: deepseek
+    model: deepseek-flash
+    endpoint:
+      auth:
+        api_key: ${DEEPSEEK_API_KEY}
+    config:
+      reasoning:
+        effort: high
+```
 
 | Provider field | Omitted behavior | Meaning |
 | --- | --- | --- |
@@ -386,7 +425,8 @@ Include load/configuration.hpp and call read_configuration(file) to validate
 host settings before native loading. parse_configuration(document, directory)
 supports an already parsed document and requires an absolute base directory.
 Both return Configuration, a runtime settings bundle rather than a persisted
-session dataclass. Model credentials are expanded only for driver_model.
+session dataclass. Model credentials are expanded only for entries selected by
+`driver_model` and the optional `modality_assist_model`.
 
 The optional security.confirmation mapping selects a complete ws:// or wss://
 endpoint and a positive timeout_ms (default 120000). Missing configuration

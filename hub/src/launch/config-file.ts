@@ -117,6 +117,20 @@ export function prepareSessionConfig(options: RenderSessionConfigOptions): {
         spec.provider = result.driver_model;
         spec.model = result.providers?.[spec.provider]?.model ?? '';
     }
+    // The saved worker config is authoritative for the assistant as well.
+    // In particular, an operator may have removed or retargeted this role
+    // since the session spec was last saved in hub.json.
+    const assist = result.modality_assist_model;
+    if (assist === undefined) {
+        spec.modalityAssistProvider = null;
+    } else if (typeof assist === 'string' && assist.length > 0
+        && result.providers?.[assist]
+        && typeof result.providers[assist] === 'object'
+        && !Array.isArray(result.providers[assist])) {
+        spec.modalityAssistProvider = assist;
+    } else {
+        throw new Error('modality_assist_model must name a providers mapping');
+    }
     spec.maxExchanges = result.worker?.max_exchanges ?? spec.maxExchanges;
     spec.eventCapacity = result.worker?.event_capacity ?? spec.eventCapacity;
     spec.systemPromptFile = result.worker?.system_prompt_file ?? spec.systemPromptFile;

@@ -12,6 +12,7 @@
 #include "tools/intrinsic/process/toolset.hpp"
 #include "tools/intrinsic/reading/toolset.hpp"
 #include "tools/intrinsic/editing/toolset.hpp"
+#include "tools/intrinsic/modality_assist/toolset.hpp"
 #include "tools/registry.hpp"
 #include <boost/asio/experimental/channel.hpp>
 #include <unordered_set>
@@ -215,7 +216,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     Impl(asio::any_io_executor executor, load::Configuration configuration,
          std::string session, std::shared_ptr<llm::LLMModel> injected)
         : strand(asio::make_strand(executor)), config(std::move(configuration)),
-          session_id(std::move(session)), model(std::move(injected)),
+          session_id(std::move(session)), driver_model(std::move(injected)),
           hooks(events), store(std::make_shared<tools::intrinsic::ProcessSessionStore>(strand)),
           client(strand, config.client, events, config.queues, config.transport),
           outgoing(strand, config.event_capacity), sender_done(strand, 1), client_done(strand, 1) {
@@ -227,7 +228,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     load::Configuration config;
     std::string session_id;
     std::string worker_id = new_identity();
-    std::shared_ptr<llm::LLMModel> model;
+    std::shared_ptr<llm::LLMModel> driver_model;
+    /** Optional model shared with the modality-assist toolset for isolated exchanges. */
+    std::shared_ptr<llm::LLMModel> modality_assist_model;
     eventbus::EventBus events;
     tools::ToolRegistry registry;
     loop::LoopHookRegistry hooks;
@@ -318,7 +321,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * categories do not imply that tools are disabled.
      */
     Json options() const {
-        const llm::LLMModel& provider = *model;
+        const llm::LLMModel& provider = *driver_model;
         return {
             {"model", {
                 {"available", provider.get_options()},
@@ -370,12 +373,28 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     void construct_runtime() {
         auto plugins = load::load_plugins(config.document, config.directory);
         auto& extensions = plugins.extensions;
-        if (!model) model = plugins.providers.create_model(config.provider, strand, config.model);
-        if (!model) throw std::runtime_error("driver provider could not construct a model");
+        if (!driver_model) {
+            driver_model = plugins.providers.create_model(config.provider, strand, config.model);
+        }
+        if (!driver_model) {
+            throw std::runtime_error("driver provider could not construct a model");
+        }
+        if (config.modality_assist_model) {
+            const auto& selected = *config.modality_assist_model;
+            modality_assist_model = plugins.providers.create_model(
+                selected.provider, strand, selected.model);
+            if (!modality_assist_model) {
+                throw std::runtime_error("modality_assist_model provider could not construct a model");
+            }
+        }
         registry.add(std::make_shared<tools::intrinsic::ProcessToolSet>(
             store, &eventbus::default_async_bus()));
         registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>());
         registry.add(std::make_shared<tools::intrinsic::EditingToolSet>());
+        if (modality_assist_model) {
+            registry.add(std::make_shared<tools::intrinsic::ModalityAssistToolSet>(
+                modality_assist_model));
+        }
         for (auto& tool : extensions.tools) registry.add(std::move(tool));
         hooks.add(loop::intrinsic::ContextStatisticHook::from_config());
         for (auto& hook : extensions.loop_hooks) hooks.add(std::move(hook));
@@ -616,7 +635,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         instruction.content.push_back(std::move(content));
         emit("run_started");
         auto result = co_await loop::run(
-            *model, no_tools, compact_events, strand, draft, true,
+            *driver_model, no_tools, compact_events, strand, draft, true,
             std::move(instruction), {1}, stop);
         if (result.status != loop::RunStatus::Completed) {
             co_return result;
@@ -776,7 +795,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     next_confirmation.handle_options(input->options.at("confirmation"));
                 }
                 if (input->options.contains("model")) {
-                    model->handle_options(input->options.at("model"));
+                    driver_model->handle_options(input->options.at("model"));
                 }
                 confirmation_options = next_confirmation;
             } catch (const std::exception& error) {
@@ -831,7 +850,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 if (input->operation == InputOperation::Compact) {
                     result = co_await compact();
                 } else {
-                    result = co_await loop::run(*model, registry, events, strand, state,
+                    result = co_await loop::run(*driver_model, registry, events, strand, state,
                         input->has_message, std::move(input->message),
                         {config.max_exchanges}, run_stop.get_token());
                 }

@@ -4,6 +4,11 @@ The host's own built-in tools — the ones a host offers without loading
 anything, as opposed to the plugin-provided tools the extension framework
 brings.
 
+The [`modality_assist` toolset](toolsets/modality_assist/README.md) is an intrinsic
+with an injected model dependency. Core registers it only when its optional
+`modality_assist_model` is loaded; its single tool interprets local images in
+isolated auxiliary exchanges and returns text to the driver.
+
 Organised the way `llm/` organises its providers: a shared core at this level,
 one self-contained package per toolset under `toolsets/`, each with its own
 `include/` + `src/` + `test/` and its own library. One deliberate difference

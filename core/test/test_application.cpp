@@ -56,7 +56,7 @@ enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
                   ProtocolFailure, History, ModelFailure };
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
-void scenario(Mode mode) {
+void scenario(Mode mode, bool with_modality_assist = false) {
     Scratch scratch;
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
@@ -64,6 +64,12 @@ void scenario(Mode mode) {
     config.directory = scratch.root;
     config.provider = "fixture";
     config.document = Json::object();
+    if (with_modality_assist) {
+        config.modality_assist_model = load::ModelConfiguration{
+            "deepseek", {{"model", "deepseek-flash"},
+                {"endpoint", {{"base_url", "https://127.0.0.1:1"}}}}
+        };
+    }
     config.client = load::websocket_endpoint("ws://127.0.0.1:"
         + std::to_string(acceptor.local_endpoint().port()) + "/events");
     config.storage = scratch.root / "session";
@@ -221,6 +227,11 @@ sections:
             const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_TEST(state.turns.size() == 2u);
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
+                [](const auto& tool) { return tool.name == "modality_assist"; })
+                == with_modality_assist);
+            BOOST_TEST((state.system_prompt.render().markdown.find("Interpreting images")
+                != std::string::npos) == with_modality_assist);
+            BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "read_text"; }));
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "str_replace_edit"; }));
@@ -318,6 +329,33 @@ sections:
 }
 }
 BOOST_AUTO_TEST_CASE(serial_admission_duplicate_rejection_and_stale_cancel) { scenario(Mode::Normal); }
+BOOST_AUTO_TEST_CASE(optional_modality_model_loads_without_replacing_the_driver) {
+    scenario(Mode::Normal, true);
+}
+
+BOOST_AUTO_TEST_CASE(unavailable_modality_provider_fails_startup) {
+    asio::io_context io;
+    load::Configuration config;
+    config.directory = std::filesystem::temp_directory_path();
+    config.document = Json::object();
+    config.persistence = false;
+    config.client = load::websocket_endpoint("ws://127.0.0.1:1/events");
+    config.modality_assist_model = load::ModelConfiguration{
+        "missing-modality-provider", {{"model", "vision"}}
+    };
+    auto model = std::make_shared<Model>(io.get_executor());
+    core::Application app(io.get_executor(), config, "test", model);
+    std::stop_source stop;
+    stop.request_stop();
+    auto running = asio::co_spawn(io, app.run(stop.get_token()), asio::use_future);
+    io.run();
+    BOOST_CHECK_EXCEPTION(running.get(), std::runtime_error,
+        [](const std::runtime_error& error) {
+            return std::string(error.what()).find("modality_assist_model")
+                != std::string::npos;
+        });
+    BOOST_TEST(model->calls.load() == 0);
+}
 BOOST_AUTO_TEST_CASE(model_cancellation_saves_settled_state) { scenario(Mode::Cancel); }
 BOOST_AUTO_TEST_CASE(model_failure_reports_recoverable_stage_and_continues) {
     scenario(Mode::ModelFailure);

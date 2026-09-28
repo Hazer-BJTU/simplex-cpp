@@ -31,6 +31,66 @@ BOOST_AUTO_TEST_CASE(selected_provider_and_independent_endpoints) {
     BOOST_CHECK(!load::parse_configuration(configuration(), "/tmp").confirmation);
 }
 
+BOOST_AUTO_TEST_CASE(optional_modality_model_uses_the_provider_configuration_contract) {
+    auto value = configuration();
+    value["providers"]["vision"] = {
+        {"plugin", "openai"}, {"model", "vision-fixture"},
+        {"endpoint", {
+            {"base_url", "https://vision.example"},
+            {"auth", {{"api_key", "${CORE_TEST_VISION_KEY}"}}},
+            {"extra_headers", {{"X-Test", "${CORE_TEST_VISION_KEY}"}}}
+        }},
+        {"config", {{"temperature", 0.2}}},
+        {"retry", {{"max_attempts", 1}, {"initial_backoff_ms", 25}}}
+    };
+    // An unselected entry must not require credentials or create a model role.
+    ::unsetenv("CORE_TEST_VISION_KEY");
+    BOOST_CHECK(!load::parse_configuration(value, "/tmp").modality_assist_model);
+    value["modality_assist_model"] = "vision";
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    ::setenv("CORE_TEST_VISION_KEY", "vision-secret", 1);
+    const auto parsed = load::parse_configuration(value, "/tmp");
+    ::unsetenv("CORE_TEST_VISION_KEY");
+    BOOST_REQUIRE(parsed.modality_assist_model);
+    const auto& assist = *parsed.modality_assist_model;
+    BOOST_TEST(assist.provider == "openai");
+    BOOST_TEST(assist.model["model"] == "vision-fixture");
+    BOOST_TEST(assist.model["endpoint"]["base_url"] == "https://vision.example");
+    BOOST_TEST(assist.model["endpoint"]["auth"]["api_key"] == "vision-secret");
+    BOOST_TEST(assist.model["endpoint"]["extra_headers"]["X-Test"] == "vision-secret");
+    BOOST_TEST(assist.model["temperature"] == 0.2);
+    BOOST_TEST(assist.model["retry"]["max_attempts"] == 1);
+    BOOST_TEST(parsed.provider == "deepseek");
+    BOOST_TEST(parsed.model["model"] == "fixture");
+
+    value["modality_assist_model"] = "local";
+    auto same = load::parse_configuration(value, "/tmp");
+    BOOST_REQUIRE(same.modality_assist_model);
+    BOOST_TEST(same.modality_assist_model->model == same.model);
+    same.modality_assist_model->model["model"] = "changed";
+    BOOST_TEST(same.model["model"] == "fixture");
+}
+
+BOOST_AUTO_TEST_CASE(explicit_modality_model_must_be_valid) {
+    for (const auto& invalid : {Json(nullptr), Json(""), Json(1), Json("missing"),
+                              Json::object(), Json::array()}) {
+        auto value = configuration();
+        value["modality_assist_model"] = invalid;
+        BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    }
+    for (const auto& invalid : {
+        Json{{"model", ""}},
+        Json{{"model", "vision"}, {"config", {{"endpoint", Json::object()}}}},
+        Json{{"model", "vision"}, {"endpoint", {{"auth", {{"scheme", "invalid"}}}}}},
+        Json{{"model", "vision"}, {"retry", {{"max_backoff_ms", 1}}}}
+    }) {
+        auto value = configuration();
+        value["modality_assist_model"] = "vision";
+        value["providers"]["vision"] = invalid;
+        BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(memory_retention_defaults_and_validation) {
     const auto defaults = load::parse_configuration(configuration(), "/tmp");
     BOOST_TEST(defaults.memory_retention.max_archives == 5u);

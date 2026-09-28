@@ -96,6 +96,7 @@ endif()
 add_subdirectory(toolsets/process)
 add_subdirectory(toolsets/reading)
 add_subdirectory(toolsets/editing)
+add_subdirectory(toolsets/modality_assist)
 
 if(BUILD_TESTS)
     add_subdirectory(test)

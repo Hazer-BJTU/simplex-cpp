@@ -19,12 +19,22 @@ struct RuntimeEnvironment {
     std::vector<std::string> software;
 };
 
+/** Selected provider factory and its validated, credential-expanded settings. */
+struct ModelConfiguration {
+    std::string provider;
+    nlohmann::json model;
+};
+
 /** Parsed startup settings. Runtime configuration, never a session snapshot. */
 struct Configuration {
     nlohmann::json document;
     std::filesystem::path directory;
+    /** Driver factory and its validated, credential-expanded configuration. */
     std::string provider;
     nlohmann::json model;
+    /** Optional independent model for the intrinsic modality_assist toolset.
+     * Absence means no instance is constructed; never persisted in session state. */
+    std::optional<ModelConfiguration> modality_assist_model;
     endpoint::ResolvedEndpoint client;
     io::ClientOptions queues;
     intercom::StableWebSocketOptions transport;
@@ -56,7 +66,8 @@ struct Configuration {
 };
 
 /** Parse and validate startup fields before loading native code or opening IO.
- * Unknown keys remain tolerated. Only the selected provider's credentials are
+ * Unknown keys remain tolerated. Only providers selected by driver_model and
+ * the optional modality_assist_model have their credentials
  * expanded. Explicit paths resolve against the absolute configuration directory,
  * except persistence.state and persistence.memory, which are relative to the
  * direct persistence.directory root.
