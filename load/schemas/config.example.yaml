@@ -37,8 +37,9 @@ plugins:
       #   config_file: ./schemas/loop/extensions/noop_hook/config.yaml
       # Omit config_file to use the existing extension lookup rules.
 
-# Named endpoint/model configurations. Only the selected provider is instantiated.
-# Credential expansion is limited to its API key and extra-header values.
+# Named endpoint/model configurations. Only entries selected by a model role
+# are instantiated. Credential expansion is limited to their API keys and
+# extra-header values.
 # Multiple entries may use the same plugin with different endpoints or models.
 providers:
   deepseek:
@@ -80,8 +81,15 @@ providers:
 
 # Required reference to a providers entry.
 # No implicit first-provider fallback.
-# The driver model is currently the only model role exposed by this contract.
 driver_model: deepseek
+
+# Optional reference to a providers entry for decoupled multimodal interpretation.
+# Omit to leave this model unloaded. Explicit null or an empty name is invalid.
+# Uses the same endpoint/config/retry fields as driver_model; each role gets
+# its own model instance, even when both reference the same entry.
+# Currently constructed at startup only; multimodal processing is not wired yet.
+# modality_assist_model: vision
+# Define providers.vision with the desired plugin, endpoint, model, and config.
 
 # Persistent event connection; independent of the confirmation endpoint.
 client:

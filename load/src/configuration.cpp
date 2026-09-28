@@ -166,6 +166,49 @@ std::string expand(const std::string& value) {
     }
     return result;
 }
+
+/** Resolve one model role using the same validation and credential policy. */
+ModelConfiguration parse_model(const Json& document, const char* role) {
+    ModelConfiguration result;
+    auto name = text(document, role);
+    const auto& providers = object(document, "providers");
+    if (name.empty() || !providers.contains(name) || !providers.at(name).is_object())
+        throw std::invalid_argument(std::string(role) + " must name a providers mapping");
+    const auto& selected = providers.at(name);
+    result.provider = text(selected, "plugin", name);
+    result.model = object(selected, "config");
+    for (const char* reserved : {"model", "provider", "endpoint", "retry"}) {
+        if (result.model.contains(reserved))
+            throw std::invalid_argument("provider config contains a host-owned field");
+    }
+    const auto model = text(selected, "model");
+    if (model.empty() || result.provider.empty()) throw std::invalid_argument("provider and model must be nonempty");
+    result.model["model"] = model;
+    auto endpoint = object(selected, "endpoint");
+    const auto& auth = object(endpoint, "auth");
+    auto scheme = text(auth, "scheme", "bearer");
+    if (scheme != "none" && scheme != "bearer" && scheme != "custom_header")
+        throw std::invalid_argument("invalid provider auth scheme");
+    for (const char* field : {"base_url", "request_path", "user_agent"}) {
+        if (endpoint.contains(field)) (void)text(endpoint, field);
+    }
+    (void)text(auth, "header_name");
+    if (auth.contains("api_key")) endpoint["auth"]["api_key"] = expand(text(auth, "api_key"));
+    const auto headers = object(endpoint, "extra_headers");
+    for (auto it = headers.begin(); it != headers.end(); ++it) {
+        if (!it->is_string()) throw std::invalid_argument("extra_headers values must be strings");
+        endpoint["extra_headers"][it.key()] = expand(it->get<std::string>());
+    }
+    result.model["endpoint"] = std::move(endpoint);
+    const auto& retry = object(selected, "retry");
+    const auto initial = number(retry, "initial_backoff_ms", 500);
+    const auto maximum = number(retry, "max_backoff_ms", 120000);
+    if (maximum < initial) throw std::invalid_argument("model backoff maximum is below initial");
+    result.model["retry"] = {{"max_attempts", number(retry, "max_attempts", 3, true)},
+        {"initial_backoff_ms", initial}, {"max_backoff_ms", maximum}};
+
+    return result;
+}
 } // namespace
 
 endpoint::ResolvedEndpoint websocket_endpoint(const std::string& url) {
@@ -207,42 +250,12 @@ Configuration parse_configuration(
     Configuration result;
     result.document = document;
     result.directory = directory;
-    auto name = text(document, "driver_model");
-    const auto& providers = object(document, "providers");
-    if (name.empty() || !providers.contains(name) || !providers.at(name).is_object())
-        throw std::invalid_argument("driver_model must name a providers mapping");
-    const auto& selected = providers.at(name);
-    result.provider = text(selected, "plugin", name);
-    result.model = object(selected, "config");
-    for (const char* reserved : {"model", "provider", "endpoint", "retry"}) {
-        if (result.model.contains(reserved))
-            throw std::invalid_argument("provider config contains a host-owned field");
+    auto driver = parse_model(document, "driver_model");
+    result.provider = std::move(driver.provider);
+    result.model = std::move(driver.model);
+    if (document.contains("modality_assist_model")) {
+        result.modality_assist_model = parse_model(document, "modality_assist_model");
     }
-    const auto model = text(selected, "model");
-    if (model.empty() || result.provider.empty()) throw std::invalid_argument("provider and model must be nonempty");
-    result.model["model"] = model;
-    auto endpoint = object(selected, "endpoint");
-    const auto& auth = object(endpoint, "auth");
-    auto scheme = text(auth, "scheme", "bearer");
-    if (scheme != "none" && scheme != "bearer" && scheme != "custom_header")
-        throw std::invalid_argument("invalid provider auth scheme");
-    for (const char* field : {"base_url", "request_path", "user_agent"}) {
-        if (endpoint.contains(field)) (void)text(endpoint, field);
-    }
-    (void)text(auth, "header_name");
-    if (auth.contains("api_key")) endpoint["auth"]["api_key"] = expand(text(auth, "api_key"));
-    const auto headers = object(endpoint, "extra_headers");
-    for (auto it = headers.begin(); it != headers.end(); ++it) {
-        if (!it->is_string()) throw std::invalid_argument("extra_headers values must be strings");
-        endpoint["extra_headers"][it.key()] = expand(it->get<std::string>());
-    }
-    result.model["endpoint"] = std::move(endpoint);
-    const auto& retry = object(selected, "retry");
-    const auto initial = number(retry, "initial_backoff_ms", 500);
-    const auto maximum = number(retry, "max_backoff_ms", 120000);
-    if (maximum < initial) throw std::invalid_argument("model backoff maximum is below initial");
-    result.model["retry"] = {{"max_attempts", number(retry, "max_attempts", 3, true)},
-        {"initial_backoff_ms", initial}, {"max_backoff_ms", maximum}};
 
     const auto& client = object(document, "client");
     result.client = websocket_endpoint(text(client, "endpoint"));
