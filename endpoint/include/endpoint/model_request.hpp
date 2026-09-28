@@ -71,16 +71,23 @@
 //    CreateRequest (the module's existing request-lifecycle exception):
 //      - generation carries no non-empty "model"
 //      - base_url resolves to no host (see resolve_endpoint)
-//      - a content part is one this protocol cannot carry. Mapping is by
-//        Content::modality and Content::type together, never inferred from
-//        either alone and never taken from Content::extras (sender-supplied
-//        data, not an instruction), and an unsupported part is an error
-//        rather than being sent as text or as some other category —
-//        leniency about imperfect conversations does not extend to silently
-//        changing what a payload IS. A base64 image is the case that makes
-//        the encoding matter: no field would carry its media type, so it is
-//        refused instead of being sent as an image URL. Each implementation
-//        documents the pairs it supports.
+//      - a content part is one this protocol cannot carry AT THE POSITION it
+//        would be emitted at. Mapping is by Content::modality and
+//        Content::type together, never inferred from either alone and never
+//        taken from Content::extras (sender-supplied data, not an
+//        instruction), and an unsupported part is an error rather than being
+//        sent as text or as some other category — leniency about imperfect
+//        conversations does not extend to silently changing what a payload
+//        IS. Support is therefore per wire position and not per conversation:
+//        the same image is legal in a user message and impossible in an
+//        assistant message that this protocol replays as one string, and a
+//        field the implementation never maps (action_status, for the two
+//        shipped adapters) is not validated at all, because the provider's
+//        capabilities say nothing about content it will never receive. A
+//        base64 image is the case that makes the encoding matter: no field
+//        would carry its media type, so it is refused instead of being sent
+//        as an image URL. Each implementation documents the pairs each of its
+//        positions supports.
 //  * Tool results correlate to their calls through the embedded provenance
 //    record (MessageItem::invoke_return->query.id — the wire "tool call
 //    id"); when it is absent, implementations may fall back to positional

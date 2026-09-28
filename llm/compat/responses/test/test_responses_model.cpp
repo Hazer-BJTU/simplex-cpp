@@ -9,6 +9,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -344,6 +345,175 @@ BOOST_AUTO_TEST_CASE(interpreter_lets_neither_extras_type_nor_extra_fields_relab
     BOOST_CHECK_EQUAL(parts[2]["type"], "input_file");
     BOOST_CHECK_EQUAL(parts[2]["file_data"], "ZmFrZS1wZGY=");
     BOOST_CHECK_EQUAL(parts[2]["filename"], "sample.pdf");
+}
+
+// The matrix belongs to the POSITION. An image or a document is fine in the
+// input list, and impossible in a synthesized assistant message, which this
+// adapter emits as `output_text` — passing the input check and then replayed as
+// the characters of a URL is the silent category change the label prevents.
+BOOST_AUTO_TEST_CASE(interpreter_validates_assistant_content_as_a_text_position) {
+    llm::responses::ResponsesInterpreter interpreter(
+        std::make_shared<const FixtureDialect>());
+    model_io::ModelEndpoint endpoint;
+    endpoint.base_url = "https://example.invalid";
+    endpoint.request_path = "/responses";
+    const auto request = [&](model_io::Modality modality,
+                             model_io::ContentType type) {
+        model_io::AgentInputState state;
+        auto& turn = state.turns.emplace_back();
+        auto& user = turn.user_input.content.emplace_back();
+        user.type = model_io::ContentType::Text;
+        user.raw = "describe this";
+        user.modality = model_io::Modality::Text;
+        auto& step = turn.agent_loop_step.emplace_back();
+        step.model_response.type = model_io::MessageItemType::ModelResponse;
+        auto& part = step.model_response.content.emplace_back();
+        part.type = type;
+        part.raw = "https://example.invalid/answer";
+        part.modality = modality;
+        return interpreter.build_request(
+            state, endpoint, nlohmann::json{{"model", "fixture-model"}});
+    };
+
+    BOOST_CHECK_THROW(request(model_io::Modality::Image,
+                              model_io::ContentType::ExternalRef),
+                      HttpRequestException);
+    BOOST_CHECK_THROW(request(model_io::Modality::Document,
+                              model_io::ContentType::ExternalRef),
+                      HttpRequestException);
+    // The very same pairs build in the user position.
+    BOOST_CHECK_NO_THROW(request(model_io::Modality::Text,
+                                 model_io::ContentType::Text));
+    // A captured assistant message is re-emitted verbatim, so its Content is
+    // not what reaches the provider and its label places no demand on it.
+    {
+        model_io::AgentInputState state;
+        auto& turn = state.turns.emplace_back();
+        auto& step = turn.agent_loop_step.emplace_back();
+        step.model_response.type = model_io::MessageItemType::ModelResponse;
+        step.model_response.extras = nlohmann::json{{"output_items",
+            nlohmann::json::array({nlohmann::json{
+                {"type", "message"}, {"role", "assistant"},
+                {"content", nlohmann::json::array({nlohmann::json{
+                    {"type", "output_text"}, {"text", "captured"}}})}}})}};
+        auto& part = step.model_response.content.emplace_back();
+        part.type = model_io::ContentType::ExternalRef;
+        part.raw = "https://example.invalid/answer.png";
+        part.modality = model_io::Modality::Image;
+        BOOST_CHECK_NO_THROW(interpreter.build_request(
+            state, endpoint, nlohmann::json{{"model", "fixture-model"}}));
+    }
+}
+
+// Tool output goes out through the same input array as user content, so the
+// input matrix applies there, and the captured fast path skips it.
+BOOST_AUTO_TEST_CASE(interpreter_validates_tool_results_as_an_input_position) {
+    llm::responses::ResponsesInterpreter interpreter(
+        std::make_shared<const FixtureDialect>());
+    model_io::ModelEndpoint endpoint;
+    endpoint.base_url = "https://example.invalid";
+    endpoint.request_path = "/responses";
+
+    model_io::AgentInputState state;
+    auto& turn = state.turns.emplace_back();
+    auto& step = turn.agent_loop_step.emplace_back();
+    step.model_response.type = model_io::MessageItemType::ModelResponse;
+    model_io::MessageItem result;
+    result.type = model_io::MessageItemType::InvokeReturn;
+    auto& part = result.content.emplace_back();
+    part.type = model_io::ContentType::ExternalRef;
+    part.raw = "https://example.invalid/screenshot.png";
+    part.modality = model_io::Modality::Image;
+    step.invoke_returns = std::vector<model_io::MessageItem>{result};
+
+    // The turn's user message is emitted first (empty here), so find the tool
+    // result by its wire type rather than by position.
+    const auto find = [](const nlohmann::json& body, const char* type) -> const nlohmann::json& {
+        for (const auto& item : body["input"]) {
+            if (item.value("type", std::string()) == type) return item;
+        }
+        throw std::runtime_error(std::string("no ") + type + " in the input list");
+    };
+    const auto body = nlohmann::json::parse(interpreter.build_request(
+        state, endpoint, nlohmann::json{{"model", "fixture-model"}}).body());
+    const auto& output = find(body, "function_call_output")["output"];
+    BOOST_REQUIRE(output.is_array());
+    BOOST_CHECK_EQUAL(output[0]["type"], "input_image");
+
+    // The same part with a text representation that cannot survive the array.
+    step.invoke_returns->front().content.front().type = model_io::ContentType::Text;
+    BOOST_CHECK_THROW(interpreter.build_request(
+        state, endpoint, nlohmann::json{{"model", "fixture-model"}}),
+        HttpRequestException);
+}
+
+// A field this dialect never maps is not subject to provider capabilities.
+BOOST_AUTO_TEST_CASE(interpreter_does_not_validate_unmapped_action_status) {
+    llm::responses::ResponsesInterpreter interpreter(
+        std::make_shared<const FixtureDialect>());
+    model_io::ModelEndpoint endpoint;
+    endpoint.base_url = "https://example.invalid";
+    endpoint.request_path = "/responses";
+
+    model_io::AgentInputState state;
+    auto& step = state.turns.emplace_back().agent_loop_step.emplace_back();
+    step.model_response.type = model_io::MessageItemType::ModelResponse;
+    auto& content = step.model_response.content.emplace_back();
+    content.type = model_io::ContentType::Text;
+    content.raw = "the answer";
+    content.modality = model_io::Modality::Text;
+    auto& status = step.model_response.action_status.emplace();
+    status.type = model_io::ContentType::ExternalRef;
+    status.raw = "https://example.invalid/clip.mp4";
+    status.modality = model_io::Modality::Video;
+
+    const auto body = nlohmann::json::parse(interpreter.build_request(
+        state, endpoint, nlohmann::json{{"model", "fixture-model"}}).body());
+    const nlohmann::json* assistant = nullptr;
+    for (const auto& item : body["input"]) {
+        if (item.value("type", std::string()) == "message"
+            && item.value("role", std::string()) == "assistant") {
+            assistant = &item;
+        }
+    }
+    BOOST_REQUIRE(assistant != nullptr);
+    BOOST_REQUIRE_EQUAL((*assistant)["content"].size(), 1u);
+    BOOST_CHECK_EQUAL((*assistant)["content"][0]["type"], "output_text");
+    // The unmapped field added no provider part of its own.
+    BOOST_CHECK_EQUAL(body["input"].size(), 2u);
+}
+
+// Reasoning is synthesized as a summary_text unless captured items are replayed
+// verbatim, in which case the Content's own label is not emitted at all.
+BOOST_AUTO_TEST_CASE(interpreter_validates_reasoning_only_when_it_is_synthesized) {
+    llm::responses::ResponsesInterpreter interpreter(
+        std::make_shared<const FixtureDialect>());
+    model_io::ModelEndpoint endpoint;
+    endpoint.base_url = "https://example.invalid";
+    endpoint.request_path = "/responses";
+    const auto state_with = [](model_io::Content reasoning) {
+        model_io::AgentInputState state;
+        auto& step = state.turns.emplace_back().agent_loop_step.emplace_back();
+        step.model_response.type = model_io::MessageItemType::ModelResponse;
+        auto& content = step.model_response.content.emplace_back();
+        content.type = model_io::ContentType::Text;
+        content.raw = "the answer";
+        step.model_response.reasoning = std::move(reasoning);
+        return state;
+    };
+
+    model_io::Content image;
+    image.type = model_io::ContentType::ExternalRef;
+    image.raw = "https://example.invalid/thought.png";
+    image.modality = model_io::Modality::Image;
+    BOOST_CHECK_THROW(interpreter.build_request(
+        state_with(image), endpoint, nlohmann::json{{"model", "fixture-model"}}),
+        HttpRequestException);
+
+    image.extras = nlohmann::json{{"items", nlohmann::json::array({
+        nlohmann::json{{"type", "reasoning"}, {"id", "rs_1"}}})}};
+    BOOST_CHECK_NO_THROW(interpreter.build_request(
+        state_with(image), endpoint, nlohmann::json{{"model", "fixture-model"}}));
 }
 
 BOOST_AUTO_TEST_CASE(converse_runs_llm_model_to_terminal_response_fallback) {

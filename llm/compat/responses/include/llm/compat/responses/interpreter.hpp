@@ -43,12 +43,17 @@
 //     reasoning          extras.items (captured done items) re-emitted
 //                       VERBATIM — ids, summaries and encrypted_content must
 //                       survive; a bare reasoning Content synthesizes
-//                       {type:"reasoning", summary:[{type:"summary_text"}]}
+//                       {type:"reasoning", summary:[{type:"summary_text"}]},
+//                       so only a text part survives that path (a non-text
+//                       reasoning is a CreateRequest error, unless it is
+//                       re-emitted verbatim and its own label is unused)
 //     the message itself extras["output_items"] message items re-emitted
 //                       verbatim (annotations/phase/status preserved);
 //                       otherwise a synthesized {role:"assistant",
 //                       content:[{type:"output_text", text:raw}]} when raw
-//                       is non-empty
+//                       is non-empty — again a text position, so an assistant
+//                       image or document is a CreateRequest error there
+//                       rather than being flattened into its URL
 //     invokes            each -> {type:"function_call", call_id, name,
 //                       arguments} — arguments as a JSON STRING
 //                       (is_string() passthrough, else dump()); q.extras
@@ -63,9 +68,10 @@
 //                       content list falls back to output.raw
 //
 // action_status is deliberately NOT mapped (explicit placeholder; the wire
-// `phase` annotation is future work). A MessageItem of type InvokeReturn in
-// a user_input position still takes the function_call_output branch — the
-// embedded record says what it is.
+// `phase` annotation is future work), and precisely because no provider part
+// comes from it, its content is not capability-checked either. A MessageItem of
+// type InvokeReturn in a user_input position still takes the
+// function_call_output branch — the embedded record says what it is.
 //
 // Transport: resolve_endpoint() picks host/port/target and
 // apply_transport_headers() applies auth/user-agent/extra headers. The

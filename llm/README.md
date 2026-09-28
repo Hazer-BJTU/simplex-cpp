@@ -376,15 +376,25 @@ same provider message, choosing the part kind from `modality`: `Text` becomes
 adapter rejects them at request construction — it never sends an unsupported
 category as text or as a file.
 
-Support is a property of the (encoding, modality) pair. A reference can carry
-text, an image or a document; base64 can carry a document; nothing can carry a
-base64 image or a base64 text part, because no provider field takes a media
-type there and the encoding itself would be delivered instead of the payload.
-Unsupported pairs fail request construction, exactly like unsupported
-categories, and a conversation persisted before `modality` existed is read with
-the semantics it was written under (a stored reference was an image to both
-adapters; a stored binary part without a label is refused rather than guessed —
-see `core/docs/worker-protocol.md`).
+Support is a property of the (encoding, modality) pair **at a wire position**. A
+reference can carry text, an image or a document; base64 can carry a document;
+nothing can carry a base64 image or a base64 text part, because no provider field
+takes a media type there and the encoding itself would be delivered instead of
+the payload. Unsupported pairs fail request construction, exactly like
+unsupported categories.
+
+The position matters as much as the pair: user input carries the whole matrix,
+a Responses tool result carries it too (its output is an input array), while an
+assistant message and a replayed reasoning part are text in both adapters, so an
+image there is refused rather than flattened into the characters of its URL.
+A field an adapter does not map at all — `action_status` in both — is not
+validated, because the provider never sees it.
+
+A conversation persisted before `modality` existed is read with the semantics it
+was written under: a stored reference was an image to both adapters (unless its
+`extras.type` asked the old Responses adapter for a provider file part, which is
+refused as ambiguous), and a stored binary part without a label is refused
+rather than guessed — see `core/docs/worker-protocol.md`.
 
 `extras` is sender-supplied data and never decides the part kind: the adapter
 builds the provider part from `modality` and from the fields that kind defines

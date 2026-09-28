@@ -349,6 +349,23 @@ need) and `text` with `document` (a plain string is not file data). The
 matrices are deliberately narrow; each can grow when a representation gains the
 metadata it needs.
 
+The matrix belongs to the **position** a part is emitted at, not to the
+conversation as a whole:
+
+| Position | What the adapter can carry |
+| --- | --- |
+| User input | the full table above |
+| Tool result | Chat Completions: text only (its tool output is one string). Responses: the full table above (tool output is an input-list array) |
+| Assistant replay | text only in both adapters — an assistant message is replayed as text (a Chat Completions `content` string, a Responses `output_text` part) |
+| Reasoning | text only, and only where it is replayed at all (Chat Completions when the dialect opts in; Responses when it is synthesized rather than re-emitted from captured items) |
+| `action_status` | mapped by neither adapter, so no provider capability applies and it is not validated |
+
+An image is therefore legal in a user message and impossible in an assistant
+message: replaying it there would send the characters of its URL as if the model
+had written them. A part the adapter never emits — `action_status` today, or
+anything replayed verbatim from provider-captured metadata — is not a provider
+capability question and does not fail construction.
+
 `extras` is sender-supplied **data, never an instruction about the part kind**.
 An adapter builds the provider part from `modality` and the fields that kind
 defines (`detail`, `filename`, `file_id`, `image_url`); a `type` inside `extras`

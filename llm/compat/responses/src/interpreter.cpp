@@ -48,7 +48,10 @@ json content_part(const model_io::Content& content, const char* wire_type) {
  * the modality maps to. A base64 image has no media type that would let us build
  * an `image_url`, and a text string in `file_data` is not file data. Those
  * combinations are refused here rather than sent as something they are not.
- * This is the module's hard error #3 (see the header contract).
+ * This is the module's hard error #3 (see the header contract), and it applies
+ * to the INPUT-LIST positions: user content and tool output both go through
+ * input_content(). Assistant replay and reasoning are text positions instead —
+ * see require_text_position().
  *
  * | modality | encoding     | wire                                     |
  * | -------- | ------------ | ---------------------------------------- |
@@ -59,7 +62,7 @@ json content_part(const model_io::Content& content, const char* wire_type) {
  * | document | binary       | `input_file` + `file_data`               |
  * | anything else            | refused                                  |
  */
-void require_supported_part(const model_io::Content& part) {
+void require_input_part(const model_io::Content& part) {
     const auto modality = part.modality;
     const auto type = part.type;
     const auto refuse = [&](const std::string& reason) {
@@ -93,24 +96,106 @@ void require_supported_part(const model_io::Content& part) {
 }
 
 /**
+ * Check one part against a TEXT POSITION: a synthesized assistant message goes
+ * out as `output_text`, and a synthesized reasoning item as a `summary_text`
+ * inside `{type:"reasoning"}`. Both carry `raw` and nothing else.
+ *
+ * Only a text part survives that. An image or a document passing the input-list
+ * matrix and then reaching this path would be replayed as the characters of its
+ * URL or its base64, which is exactly the silent change of category the label
+ * exists to prevent. `position` names the field the caller is about to fill.
+ */
+void require_text_position(const model_io::Content& part, const char* position) {
+    if (part.modality == model_io::Modality::Text &&
+        part.type != model_io::ContentType::Binary) {
+        return;
+    }
+    throw HttpRequestException(
+        HttpRequestException::Stage::CreateRequest,
+        std::string("responses sends ") + position + " as text, so a "
+            + nlohmann::json(part.type).dump() + " "
+            + nlohmann::json(part.modality).dump()
+            + " part cannot be preserved there");
+}
+
+// The wire item captured in an extras record, if it is one of the wanted
+// type — the round-trip fast path the stream handler sets up.
+const json* captured_item(const std::optional<json>& extras,
+                          const char* wire_type) {
+    if (!extras || !extras->is_object()) return nullptr;
+    const auto type = extras->find("type");
+    if (type == extras->end() || !type->is_string()) return nullptr;
+    if (type->get<std::string>() != wire_type) return nullptr;
+    return &*extras;
+}
+
+/** Whether emit_assistant_message() re-emits captured provider items verbatim. */
+bool assistant_is_replayed_verbatim(const model_io::MessageItem& response) {
+    if (!response.extras || !response.extras->is_object()) return false;
+    const auto items = response.extras->find("output_items");
+    if (items == response.extras->end() || !items->is_array()) return false;
+    for (const auto& item : *items) {
+        if (item.is_object() &&
+            item.value("type", std::string()) == "message") {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Whether emit_reasoning() re-emits captured provider items verbatim. When it
+ * does, `reasoning.raw` and its label are not used at all, so the label places
+ * no demand on the provider.
+ */
+bool reasoning_is_replayed_verbatim(const model_io::Content& reasoning) {
+    if (!reasoning.extras || !reasoning.extras->is_object()) return false;
+    const auto items = reasoning.extras->find("items");
+    if (items != reasoning.extras->end() && items->is_array()) {
+        for (const auto& item : *items) {
+            if (item.is_object()) return true;
+        }
+    }
+    return captured_item(reasoning.extras, "reasoning") != nullptr;
+}
+
+/** Whether emit_tool_results() re-emits the captured provider item verbatim. */
+bool tool_result_is_replayed_verbatim(const model_io::MessageItem& item) {
+    return item.invoke_return
+        && captured_item(item.invoke_return->extras, "function_call_output");
+}
+
+/**
  * Check every part the dialect has to describe, before building anything.
  * Walking up front keeps the failure at construction time and independent of
  * how deep in the conversation the offending part sits.
+ *
+ * Each position is checked against the representation it is actually emitted
+ * with, and a part that is not emitted at all is not checked: a captured item
+ * replayed verbatim does not depend on its Content's label, and `action_status`
+ * has no mapping in this dialect, so the provider's capabilities say nothing
+ * about it.
  */
-void require_supported_content(const model_io::MessageItem& item) {
-    for (const auto& part : item.content) require_supported_part(part);
-    if (item.reasoning) require_supported_part(*item.reasoning);
-    if (item.action_status) require_supported_part(*item.action_status);
-}
-
 void require_supported_conversation(const model_io::AgentInputState& state) {
     for (const auto& turn : state.turns) {
-        require_supported_content(turn.user_input);
+        // A user position and a tool-output position both go through
+        // input_content(), so they share the input-list matrix.
+        for (const auto& part : turn.user_input.content) require_input_part(part);
         for (const auto& step : turn.agent_loop_step) {
-            require_supported_content(step.model_response);
+            const auto& response = step.model_response;
+            if (!assistant_is_replayed_verbatim(response)) {
+                for (const auto& part : response.content) {
+                    require_text_position(part, "an assistant message");
+                }
+            }
+            if (response.reasoning &&
+                !reasoning_is_replayed_verbatim(*response.reasoning)) {
+                require_text_position(*response.reasoning, "assistant reasoning");
+            }
             if (!step.invoke_returns) continue;
             for (const auto& item : *step.invoke_returns) {
-                require_supported_content(item);
+                if (tool_result_is_replayed_verbatim(item)) continue;
+                for (const auto& part : item.content) require_input_part(part);
             }
         }
     }
@@ -210,17 +295,6 @@ json::array_t input_content(const std::vector<model_io::Content>& content) {
         parts.push_back(input_content_part(value));
     }
     return parts;
-}
-
-// The wire item captured in an extras record, if it is one of the wanted
-// type — the round-trip fast path the stream handler sets up.
-const json* captured_item(const std::optional<json>& extras,
-                          const char* wire_type) {
-    if (!extras || !extras->is_object()) return nullptr;
-    const auto type = extras->find("type");
-    if (type == extras->end() || !type->is_string()) return nullptr;
-    if (type->get<std::string>() != wire_type) return nullptr;
-    return &*extras;
 }
 
 std::string derived_role(const model_io::MessageItem& item) {
