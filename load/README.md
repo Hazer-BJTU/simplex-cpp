@@ -287,7 +287,7 @@ This role interprets multimodal inputs separately to reduce persistence and
 generation pressure on the main `AgentInputState`. Core passes the constructed
 conversation model to the intrinsic
 [`modality_assist` toolset](../tools/intrinsic/toolsets/modality_assist/README.md).
-The driver can explicitly request a local image description; each call uses a
+The driver can explicitly request a description of local images; each call uses a
 temporary state, one model exchange, and no tools. Image data is not added to
 driver history. Input processing performs no automatic multimodal conversion;
 the model-options protocol continues to address the driver only.

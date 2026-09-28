@@ -60,12 +60,18 @@ ModalityAssistTool::ModalityAssistTool(std::shared_ptr<llm::LLMModel> model)
 
 void ModalityAssistTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
-    const auto path = require_string(query, "path", "the local image to interpret");
-    if (path.find('\0') != std::string::npos) {
-        bad_argument("path must not contain NUL");
+    const auto paths = optional_string_list(query, "path");
+    if (paths.empty()) {
+        bad_argument("path must be a nonempty array of image paths");
     }
-    if (image_media_type(path).empty()) {
-        bad_argument("path must end in .png, .jpg, .jpeg, .gif, or .webp");
+    for (std::size_t index = 0; index < paths.size(); ++index) {
+        const auto label = "path[" + std::to_string(index) + "]";
+        if (paths[index].empty() || paths[index].find('\0') != std::string::npos) {
+            bad_argument(label + " must be nonempty and must not contain NUL");
+        }
+        if (image_media_type(paths[index]).empty()) {
+            bad_argument(label + " must end in .png, .jpg, .jpeg, .gif, or .webp");
+        }
     }
     if (settle_string(query, "extra_modality", "vision") != "vision") {
         bad_argument("extra_modality must be vision");
@@ -87,8 +93,7 @@ boost::asio::awaitable<model_io::Content> ModalityAssistTool::invoke(
 {
     co_await boost::asio::this_coro::reset_cancellation_state(
         boost::asio::disable_cancellation());
-    const auto path = require_string(query, "path", "the local image to interpret");
-    const auto media_type = image_media_type(path);
+    const auto paths = optional_string_list(query, "path");
     try {
         model_io::AgentInputState input;
         input.system_prompt.add_section("instruction", "",
@@ -100,30 +105,36 @@ boost::asio::awaitable<model_io::Content> ModalityAssistTool::invoke(
         user.content.push_back(std::move(request));
 
         std::size_t file_bytes = 0;
-        {
-            // Inspect the opened descriptor through read_prefix; no check/open race,
-            // no waiting for a FIFO writer. Read one extra byte to reject oversize
-            // input without encoding a silently truncated image.
-            const auto bytes = fileio::read_prefix(path, kMaxFileBytes + 1);
-            file_bytes = bytes.size();
-            if (bytes.empty()) throw std::runtime_error("image file is empty");
-            if (bytes.size() > kMaxFileBytes) {
-                throw std::runtime_error("image file exceeds 16 MiB");
+        std::vector<std::string> media_types;
+        for (std::size_t index = 0; index < paths.size(); ++index) {
+            try {
+                // Bound the whole request, reading one extra byte to detect overflow.
+                // Every file must be ready before any model request is submitted.
+                const auto remaining = kMaxInputBytes - file_bytes;
+                const auto bytes = fileio::read_prefix(paths[index], remaining + 1);
+                if (bytes.empty()) throw std::runtime_error("image file is empty");
+                if (bytes.size() > remaining) {
+                    throw std::runtime_error("combined image size exceeds 16 MiB");
+                }
+                file_bytes += bytes.size();
+                media_types.emplace_back(image_media_type(paths[index]));
+                model_io::Content image;
+                image.type = model_io::ContentType::ExternalRef;
+                image.modality = model_io::Modality::Image;
+                image.raw = "data:" + media_types.back() + ";base64,";
+                image.raw += fileio::base64_encode(bytes);
+                user.content.push_back(std::move(image));
+            } catch (const std::exception& error) {
+                throw std::runtime_error("path[" + std::to_string(index) + "]: " + error.what());
             }
-            model_io::Content image;
-            image.type = model_io::ContentType::ExternalRef;
-            image.modality = model_io::Modality::Image;
-            image.raw = "data:" + std::string(media_type) + ";base64,";
-            image.raw += fileio::base64_encode(bytes);
-            user.content.push_back(std::move(image));
         }
 
         // Transfer the temporary state rather than copying image data. converse
         // is one exchange; provider retry policy owns any transport retries.
         const auto response = co_await model_->converse(std::move(input));
         ToolResult output;
-        output.field("path", path)
-            .field("media_type", media_type)
+        output.field("path", paths)
+            .field("media_type", media_types)
             .field("file_bytes", file_bytes);
         if (response.cost) output.field("token_cost", *response.cost);
         output.block("description", response_text(response));

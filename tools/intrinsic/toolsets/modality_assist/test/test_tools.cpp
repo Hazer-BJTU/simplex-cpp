@@ -84,7 +84,7 @@ struct Fixture {
     }
     Json arguments() const
     {
-        return {{"path", MODALITY_IMAGE_FIXTURE}, {"request", "What color is the pixel?"}};
+        return {{"path", Json::array({MODALITY_IMAGE_FIXTURE})}, {"request", "What color is the pixel?"}};
     }
 };
 } // namespace
@@ -108,7 +108,7 @@ BOOST_FIXTURE_TEST_CASE(one_exchange_defaults_and_image_bytes_are_preserved, Fix
     BOOST_CHECK(image.type == model_io::ContentType::ExternalRef);
     BOOST_REQUIRE(image.raw.starts_with("data:image/png;base64,"));
     BOOST_TEST(fileio::base64_decode(image.raw.substr(image.raw.find(',') + 1))
-        == fileio::read_prefix(MODALITY_IMAGE_FIXTURE, ModalityAssistTool::kMaxFileBytes));
+        == fileio::read_prefix(MODALITY_IMAGE_FIXTURE, ModalityAssistTool::kMaxInputBytes));
     BOOST_TEST(input.system_prompt.render().markdown.find(ModalityAssistTool::kDefaultSystemPrompt)
         != std::string::npos);
     BOOST_TEST(result.output.raw.find("A red pixel.") != std::string::npos);
@@ -122,6 +122,8 @@ BOOST_FIXTURE_TEST_CASE(one_exchange_defaults_and_image_bytes_are_preserved, Fix
     const auto& schema = tool.get_details().argument_schema;
     BOOST_TEST(schema.at("properties").size() == 4u);
     BOOST_TEST(schema.at("required") == Json::array({"request", "path"}));
+    BOOST_TEST(schema.at("properties").at("path").at("type") == "array");
+    BOOST_TEST(schema.at("properties").at("path").at("items").at("type") == "string");
     for (const auto& [name, property] : schema.at("properties").items()) {
         if (property.contains("default")) {
             BOOST_TEST(result.query.arguments.at(name) == property.at("default"));
@@ -131,22 +133,66 @@ BOOST_FIXTURE_TEST_CASE(one_exchange_defaults_and_image_bytes_are_preserved, Fix
     BOOST_TEST(registry.inject_skills(prompt) == 1u);
 }
 
-BOOST_FIXTURE_TEST_CASE(data_url_reaches_both_protocols_as_an_image, Fixture)
+BOOST_FIXTURE_TEST_CASE(multiple_images_preserve_order_and_duplicates_in_both_protocols, Fixture)
 {
-    BOOST_REQUIRE(!tools::is_error(call(arguments())));
+    const auto gif = (fs::path(MODALITY_IMAGE_FIXTURE).parent_path() / "icon.gif").string();
+    auto args = arguments();
+    const std::vector<std::string> paths{MODALITY_IMAGE_FIXTURE, gif, MODALITY_IMAGE_FIXTURE};
+    args["path"] = paths;
+    const auto result = call(args);
+    BOOST_REQUIRE(!tools::is_error(result));
+    BOOST_REQUIRE(model->inputs.size() == 1u);
     const auto& input = model->inputs.front();
-    const auto& url = input.turns.front().user_input.content[1].raw;
+    const auto& content = input.turns.front().user_input.content;
+    BOOST_REQUIRE(content.size() == paths.size() + 1);
+    BOOST_TEST(result.query.arguments["path"] == Json(paths));
     model_io::ModelEndpoint endpoint;
     endpoint.base_url = "https://model.example";
     endpoint.auth.scheme = model_io::AuthScheme::None;
     Json generation = {{"model", "vision-fixture"}};
     llm::chat_completions::ChatCompletionsInterpreter chat;
     const auto chat_body = Json::parse(chat.build_request(input, endpoint, generation).body());
-    BOOST_TEST(chat_body["messages"].back()["content"][1]["image_url"]["url"] == url);
     llm::responses::ResponsesInterpreter responses;
     const auto response_body = Json::parse(responses.build_request(input, endpoint, generation).body());
-    BOOST_TEST(response_body["input"].back()["content"][1]["image_url"] == url);
-    BOOST_TEST(response_body["input"].back()["content"][1]["type"] == "input_image");
+    BOOST_REQUIRE(chat_body["messages"].back()["content"].size() == content.size());
+    BOOST_REQUIRE(response_body["input"].back()["content"].size() == content.size());
+    std::size_t total_bytes = 0;
+    for (std::size_t index = 0; index < paths.size(); ++index) {
+        const auto& image = content[index + 1];
+        const auto bytes = fileio::read_prefix(paths[index], ModalityAssistTool::kMaxInputBytes);
+        total_bytes += bytes.size();
+        BOOST_TEST(fileio::base64_decode(image.raw.substr(image.raw.find(',') + 1)) == bytes);
+        BOOST_CHECK(image.modality == model_io::Modality::Image);
+        BOOST_TEST(chat_body["messages"].back()["content"][index + 1]["image_url"]["url"] == image.raw);
+        BOOST_TEST(response_body["input"].back()["content"][index + 1]["image_url"] == image.raw);
+        BOOST_TEST(response_body["input"].back()["content"][index + 1]["type"] == "input_image");
+    }
+    BOOST_TEST(content[1].raw.starts_with("data:image/png;base64,"));
+    BOOST_TEST(content[2].raw.starts_with("data:image/gif;base64,"));
+    BOOST_TEST(content[1].raw == content[3].raw);
+    BOOST_TEST(result.output.raw.find("[[file_bytes]]: " + std::to_string(total_bytes))
+        != std::string::npos);
+    BOOST_TEST(result.output.raw.find("base64,") == std::string::npos);
+}
+
+BOOST_FIXTURE_TEST_CASE(total_image_budget_is_enforced_before_model_io, Fixture)
+{
+    const auto first = root / "first.png";
+    const auto second = root / "second.png";
+    std::ofstream(first).close();
+    std::ofstream(second).close();
+    const auto half = ModalityAssistTool::kMaxInputBytes / 2;
+    fs::resize_file(first, half);
+    fs::resize_file(second, half + 1);
+    auto args = arguments();
+    args["path"] = Json::array({first.string(), second.string()});
+    const auto failed = call(args);
+    BOOST_TEST(tools::is_error(failed));
+    BOOST_TEST(failed.output.raw.find("path[1]") != std::string::npos);
+    BOOST_TEST(model->inputs.empty());
+    fs::resize_file(second, half);
+    BOOST_REQUIRE(!tools::is_error(call(args)));
+    BOOST_TEST(model->inputs.size() == 1u);
 }
 
 BOOST_FIXTURE_TEST_CASE(custom_prompts_and_successive_calls_have_no_shared_history, Fixture)
@@ -177,7 +223,7 @@ BOOST_FIXTURE_TEST_CASE(extension_checks_are_case_insensitive_and_only_advisory,
         const auto path = root / ("input" + extension);
         std::ofstream(path, std::ios::binary) << "suffix hint only";
         auto args = arguments();
-        args["path"] = path.string();
+        args["path"] = Json::array({path.string()});
         BOOST_REQUIRE(!tools::is_error(call(args)));
         BOOST_TEST(model->inputs.back().turns.front().user_input.content[1].raw.starts_with(
             "data:" + mime + ";base64,"));
@@ -185,7 +231,7 @@ BOOST_FIXTURE_TEST_CASE(extension_checks_are_case_insensitive_and_only_advisory,
     const auto link = root / "linked.png";
     fs::create_symlink(MODALITY_IMAGE_FIXTURE, link);
     auto args = arguments();
-    args["path"] = link.string();
+    args["path"] = Json::array({link.string()});
     BOOST_REQUIRE(!tools::is_error(call(args)));
 }
 
@@ -193,8 +239,13 @@ BOOST_FIXTURE_TEST_CASE(invalid_arguments_and_file_failures_do_not_call_the_mode
 {
     for (const auto& [key, value] : std::vector<std::pair<std::string, Json>>{
         {"request", ""}, {"request", nullptr}, {"request", 42},
-        {"path", ""}, {"path", nullptr}, {"path", "file.txt"},
-        {"path", std::string("bad\0.png", 8)},
+        {"path", ""}, {"path", nullptr}, {"path", MODALITY_IMAGE_FIXTURE},
+        {"path", Json::array()}, {"path", Json::array({""})},
+        {"path", Json::array({"file.txt"})},
+        {"path", Json::array({std::string("bad\0.png", 8)})},
+        {"path", Json::array({MODALITY_IMAGE_FIXTURE, 42})},
+        {"path", Json::array({MODALITY_IMAGE_FIXTURE, nullptr})},
+        {"path", Json::array({MODALITY_IMAGE_FIXTURE, "bad.txt"})},
         {"extra_modality", "audio"}, {"extra_modality", 1},
         {"system_prompt", ""}, {"system_prompt", false}
     }) {
@@ -210,19 +261,23 @@ BOOST_FIXTURE_TEST_CASE(invalid_arguments_and_file_failures_do_not_call_the_mode
     std::ofstream(empty).close();
     const auto large = root / "large.png";
     std::ofstream(large).close();
-    fs::resize_file(large, ModalityAssistTool::kMaxFileBytes + 1);
+    fs::resize_file(large, ModalityAssistTool::kMaxInputBytes + 1);
     for (const auto& path : {directory, pipe, empty, large, root / "missing.png"}) {
         auto args = arguments();
-        args["path"] = path.string();
-        BOOST_TEST(tools::is_error(call(args)));
+        args["path"] = Json::array({MODALITY_IMAGE_FIXTURE, path.string()});
+        const auto result = call(args);
+        BOOST_TEST(tools::is_error(result));
+        BOOST_TEST(result.output.raw.find("path[1]") != std::string::npos);
     }
     BOOST_TEST(model->inputs.empty());
 }
 
 BOOST_FIXTURE_TEST_CASE(provider_failures_and_invalid_replies_are_not_retried_by_the_tool, Fixture)
 {
+    auto args = arguments();
+    args["path"].push_back(MODALITY_IMAGE_FIXTURE);
     model->fail = true;
-    auto result = call(arguments());
+    auto result = call(args);
     BOOST_TEST(tools::is_error(result));
     BOOST_TEST(result.output.raw.find("test provider failure") != std::string::npos);
     model->fail = false;

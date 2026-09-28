@@ -1,14 +1,17 @@
 name: modality_assist
 title: Interpreting images
-description: Delegate one local image to the configured auxiliary vision model.
+description: Delegate local images in one request to the configured auxiliary vision model.
 keywords: [image, vision, describe, multimodal]
 text: |
-  Use `modality_assist` with `path` and a focused `request` to interpret a local
-  image. `extra_modality` defaults to `vision`; `system_prompt` has a general
+  Use `modality_assist` with a nonempty `path` array and a focused `request` to
+  interpret images together, e.g. `path: ["first.png", "second.jpg"]`.
+  Images are sent in list order; single images also use an array. `extra_modality` defaults to `vision`; `system_prompt` has a general
   image-description default. PNG/JPEG/GIF/WebP suffixes are accepted, regardless
-  of case, for nonempty regular files up to 16 MiB. Suffixes are only hints;
+  of case, for nonempty regular files totaling at most 16 MiB. Suffixes are only hints;
   actual image support depends on the configured model. Paths follow symlinks
-  and use the host working directory. The image is sent to the auxiliary endpoint.
+  and use the host working directory. All images are sent to the auxiliary endpoint.
+  Any invalid/unreadable file fails the whole call before model IO; a provider
+  parsing failure also fails the whole call. No images are silently skipped.
   Each call awaits one model exchange (including configured provider retries),
   with no tools or follow-up loop. Cancellation waits for this tool to finish.
   Only the text description and metadata return to the driver; the temporary
