@@ -111,13 +111,14 @@ export function renderWorkerConfig({
     }
 
     const providers: Record<string, ProviderProfile> = { [profileName]: profile };
-    // Keep mock sessions credential-free. Real sessions use the DeepSeek
-    // profile when available; custom deployments may omit that profile.
-    const assistProfile = config.providerProfiles.deepseek;
-    const enableModalityAssist = profileName !== config.mock.profile
-        && assistProfile !== undefined;
-    if (enableModalityAssist && assistProfile && profileName !== 'deepseek') {
-        providers.deepseek = structuredClone(assistProfile);
+    // The assistant always gets its own entry. In particular, a session model
+    // override on the driver must not alter the assistant's model choice.
+    const assistName = profileName === 'modality_assist'
+        ? 'modality_assist_model' : 'modality_assist';
+    const assistProfile = spec.modalityAssistProvider
+        ? config.providerProfiles[spec.modalityAssistProvider] : undefined;
+    if (assistProfile) {
+        providers[assistName] = structuredClone(assistProfile);
     }
 
     return {
@@ -132,7 +133,7 @@ export function renderWorkerConfig({
         },
         providers,
         driver_model: profileName,
-        ...(enableModalityAssist ? { modality_assist_model: 'deepseek' } : {}),
+        ...(spec.modalityAssistProvider ? { modality_assist_model: assistName } : {}),
         client: {
             endpoint: endpoints.events,
             payload_capacity: config.worker.payloadCapacity,

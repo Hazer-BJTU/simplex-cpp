@@ -115,7 +115,7 @@ BOOST_FIXTURE_TEST_CASE(one_exchange_defaults_and_image_bytes_are_preserved, Fix
     BOOST_TEST(result.output.raw.find("private reasoning") == std::string::npos);
     BOOST_TEST(result.output.raw.find("base64,") == std::string::npos);
     BOOST_CHECK(result.output.type == model_io::ContentType::Text);
-    BOOST_CHECK(result.query.type == model_io::InvokeType::ReadOnly);
+    BOOST_CHECK(result.query.type == model_io::InvokeType::ParallWrite);
     BOOST_CHECK(result.query.security == model_io::InvokeSecurity::Trusted);
 
     ModalityAssistTool tool(model);

@@ -259,14 +259,18 @@ file while the worker is stopped to change model, prompt, persistence or other
 worker settings. Launch-only `threads`, `env` and `extraArgs` still come from the
 session spec.
 
-New non-mock sessions also set `modality_assist_model: deepseek` when
-`providerProfiles.deepseek` exists, copying that profile into `providers` even
-if the driver uses another provider. When the driver itself selects `deepseek`,
-both models use the same profile, including any session model override, but
-the worker creates separate instances. Mock sessions omit the assistant so they
-remain usable without credentials. Existing session files are not backfilled;
-edit their top-level `modality_assist_model` field while the worker is stopped
-to enable, change or remove the assistant.
+New DeepSeek sessions default to a separate `providers.modality_assist` entry,
+copied from `providerProfiles.deepseek`, and set
+`modality_assist_model: modality_assist`. A session-level `model` override
+changes only the driver; the assistant keeps the model in the original profile.
+Other provider sessions and mock sessions do not acquire a DeepSeek dependency.
+For a new session using another provider, set `modalityAssistProvider` in the
+session spec to a configured, non-mock profile name to opt in. Set it to `null`
+to disable the DeepSeek default for a new DeepSeek session. The assistant always
+gets a separate provider entry, and its credentials must be available to the
+worker at startup. Existing session files are not backfilled; edit their
+top-level `providers` and `modality_assist_model` fields while the worker is
+stopped to enable, change or remove the assistant.
 
 Before each launch the hub refreshes only `persistence.directory` (the direct
 session root), `client.endpoint`, `security.confirmation.endpoint` (including

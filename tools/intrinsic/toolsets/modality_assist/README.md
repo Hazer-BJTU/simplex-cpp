@@ -28,7 +28,9 @@ uses an array. Order and duplicates are preserved. `request` is a required
 nonempty string. `extra_modality` defaults to
 `vision`, currently its only supported value. `system_prompt` optionally replaces
 the default instruction to describe accurately, answer in text, state uncertainty,
-and avoid tool calls. It applies only to this auxiliary request.
+and avoid tool calls. It applies only to this auxiliary request. The image-text
+instruction in that default is guidance, not a fixed security boundary: callers
+that replace the system prompt must include their own guidance.
 
 PNG, JPEG (`.jpg` or `.jpeg`), GIF, and WebP suffixes are accepted without regard
 to case. The suffix supplies the MIME type and is only a plausibility check;
@@ -45,7 +47,8 @@ Relative paths use the process working directory. Symlinks are followed; there
 is no workspace sandbox. Reads check the opened descriptor, cannot block waiting
 for a FIFO writer, and do not promise a snapshot of concurrent external edits.
 
-The tool declares `ReadOnly` / `Trusted`, consistent with local reading tools.
+The tool declares `ParallWrite` / `Trusted`: the provider request is an externally
+observable effect, while independent calls may run concurrently.
 It makes an external model request: all chosen files are transmitted to the
 configured auxiliary endpoint without a separate confirmation prompt.
 

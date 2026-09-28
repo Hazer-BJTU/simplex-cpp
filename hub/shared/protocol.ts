@@ -162,6 +162,8 @@ export interface PayloadOptions {
 export interface SessionSpec {
     provider?: string;
     model?: string;
+    /** Separate auxiliary profile; null disables the DeepSeek session default. */
+    modalityAssistProvider?: string | null;
     threads?: number;
     maxExchanges?: number;
     eventCapacity?: number;

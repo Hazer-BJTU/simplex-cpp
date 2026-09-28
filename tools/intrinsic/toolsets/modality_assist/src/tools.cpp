@@ -84,7 +84,7 @@ void ModalityAssistTool::ensure_arguments(model_io::InvokeQuery& query) const
 
 void ModalityAssistTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    query.type = model_io::InvokeType::ReadOnly;
+    query.type = model_io::InvokeType::ParallWrite;
     query.security = model_io::InvokeSecurity::Trusted;
 }
 

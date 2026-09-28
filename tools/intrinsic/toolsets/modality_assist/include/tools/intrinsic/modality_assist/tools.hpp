@@ -25,7 +25,7 @@ public:
 
     /// Validate strings, the supported modality/extension and materialize defaults.
     void ensure_arguments(model_io::InvokeQuery& query) const override;
-    /// ReadOnly/Trusted: explicitly sends the selected files to the configured model.
+    /// ParallWrite/Trusted: sends files to the provider, with external effects.
     void write_attributes(model_io::InvokeQuery& query) const override;
     /**
      * Read regular files within a shared byte budget, encode data URLs, then await

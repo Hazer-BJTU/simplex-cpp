@@ -66,9 +66,9 @@ describe('session configuration files', () => {
     it('defaults the assistant only on first creation and preserves operator choices', () => {
         const input = options();
         const initial = prepareSessionConfig(input).document;
-        assert.equal(initial.modality_assist_model, 'deepseek');
+        assert.equal(initial.modality_assist_model, 'modality_assist');
         const path = workerConfigPath(input.config, input.sessionId);
-        initial.providers.vision = structuredClone(initial.providers.deepseek);
+        initial.providers.vision = structuredClone(initial.providers.modality_assist);
         initial.modality_assist_model = 'vision';
         writeFileSync(path, stringify(initial));
         assert.equal(prepareSessionConfig(input).document.modality_assist_model, 'vision');
