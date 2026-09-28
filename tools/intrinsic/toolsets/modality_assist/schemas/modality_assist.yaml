@@ -11,7 +11,7 @@ description: >-
   use the host working directory, with no workspace restriction. Waits for the
   request to finish even if the driver run is cancelled. Image data and the
   temporary conversation are not inserted into the driver's history.
-type: read_only
+type: parall_write
 security: trusted
 argument_schema:
   type: object

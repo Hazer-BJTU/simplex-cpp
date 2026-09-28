@@ -271,6 +271,9 @@ gets a separate provider entry, and its credentials must be available to the
 worker at startup. Existing session files are not backfilled; edit their
 top-level `providers` and `modality_assist_model` fields while the worker is
 stopped to enable, change or remove the assistant.
+After a restart, the session spec reports the saved worker configuration's
+`modality_assist_model` provider key (or `null` when absent), even if Hub defaults
+or the original session spec have since changed.
 
 Before each launch the hub refreshes only `persistence.directory` (the direct
 session root), `client.endpoint`, `security.confirmation.endpoint` (including

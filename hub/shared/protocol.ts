@@ -162,7 +162,8 @@ export interface PayloadOptions {
 export interface SessionSpec {
     provider?: string;
     model?: string;
-    /** Separate auxiliary profile; null disables the DeepSeek session default. */
+    /** Source profile for a new auxiliary model. On config reuse, this reports
+     * the provider key selected by the saved worker config; null means off. */
     modalityAssistProvider?: string | null;
     threads?: number;
     maxExchanges?: number;
