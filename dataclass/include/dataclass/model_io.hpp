@@ -94,7 +94,9 @@
 //     keeps the member's default (plain fields) or yields std::nullopt
 //     (optional fields) — members therefore carry meaningful default
 //     initialisers, and from_json reads through find() guards instead of
-//     at(), which would throw.
+//     at(), which would throw. Content::modality is the one exception, and it
+//     is about DURABLE records rather than the input boundary: see the decode
+//     note on Content below.
 //  7. Round-trip invariant: json(x).get<X>() reproduces x.
 //
 
@@ -225,14 +227,28 @@ inline void from_json(const nlohmann::json& j, Modality& value) {
 // as an out-of-range enum, and serialising it would then throw from inside a
 // record that only ever meant "empty text". The default is a floor, not a
 // licence to omit the label: a producer that means an image, a file, or audio
-// states it, and a DEFAULT (or missing JSON key) reads as text by design.
+// states it, and a DEFAULT reads as text by design.
+//
+// DECODING A MISSING "modality" — the durable-record rule, not the input rule.
+// `to_json` always writes the label, and the public input boundary
+// (core::parse_input) REQUIRES it, so this path is only ever reached by a
+// session persisted before the label existed. Silently reading such a record as
+// text would change what a durable turn means: both adapters used to send an
+// external reference to the provider as an image URL, so a legacy
+// `external_ref` is recovered as Image, and a legacy `text` as Text. A legacy
+// `binary` is REFUSED, because the two adapters disagreed about it — Chat
+// Completions sent the base64 payload as message text, Responses sent it as
+// file data — and there is no reading that is faithful to both. The error
+// names the field and the fix, and the next save of a decoded record writes the
+// recovered label back, so the migration happens exactly once.
 struct Content {
     ContentType type = ContentType::Text;
     std::string raw;
     // Provider-specific content-part fields beyond what ContentType can say —
     // e.g. the Responses API's part "type" ("output_text", ...) alongside our
     // coarse text/binary/external_ref, or annotations. Consumers that map to
-    // a plain string content ignore it.
+    // a plain string content ignore it. NOT trusted to describe the part: see
+    // the adapter support matrices in llm/README.md.
     std::optional<nlohmann::json> extras;
     Modality modality = Modality::Text;
 };
@@ -245,8 +261,23 @@ inline void to_json(nlohmann::json& j, const Content& c) {
 inline void from_json(const nlohmann::json& j, Content& c) {
     if (auto it = j.find("type"); it != j.end()) it->get_to(c.type);
     if (auto it = j.find("raw"); it != j.end()) it->get_to(c.raw);
-    if (auto it = j.find("modality"); it != j.end()) it->get_to(c.modality);
     detail::read_optional(j, "extras", c.extras);
+    if (auto it = j.find("modality"); it != j.end()) {
+        it->get_to(c.modality);
+        return;
+    }
+    if (c.type == ContentType::ExternalRef) {
+        c.modality = Modality::Image;   // the pre-modality adapters' reading
+        return;
+    }
+    if (c.type == ContentType::Text) {
+        c.modality = Modality::Text;
+        return;
+    }
+    throw std::invalid_argument(
+        "content part has no 'modality', and a binary payload cannot be recovered: "
+        "the pre-modality protocol sent it as text in one adapter and as file data "
+        "in the other, so add an explicit modality");
 }
 
 // How a tool invocation may be SCHEDULED. This is the framework's definition of
@@ -807,14 +838,16 @@ inline void from_json(const nlohmann::json& j, MetaInfo& m) {
 //   |                               external_ref) — how `raw` is encoded;
 //   |                               modality : Modality (text | image | audio |
 //   |                               video | document) — WHAT the payload is,
-//   |                               written explicitly by every producer and
-//   |                               never inferred from `type`. Adapters map
-//   |                               the categories they support and reject the
-//   |                               rest; they never fall back to text;
+//   |                               required on input, written by every
+//   |                               producer, and never inferred from `type`.
+//   |                               Adapters map the (type, modality) PAIRS
+//   |                               they support and reject the rest; they
+//   |                               never fall back to text;
 //   |                               raw  : string payload;
 //   |                               extras? : optional<json> content-part
-//   |                               fields beyond ContentType (e.g. the
-//   |                               Responses API part "type")
+//   |                               fields beyond ContentType — sender DATA
+//   |                               that may fill in the chosen kind's own
+//   |                               fields, never a statement about the kind
 //   |        reasoning?     : optional<Content>  chain-of-thought, if any
 //   |        action_status? : optional<Content>  lifecycle annotation
 //   |        invokes?       : optional<vector<InvokeQuery>> — the tool calls

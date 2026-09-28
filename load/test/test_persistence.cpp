@@ -161,6 +161,43 @@ BOOST_AUTO_TEST_CASE(json_uses_dataclass_compatibility_without_treating_invalid_
         });
 }
 
+// A session written before the modality label existed. The reference must come
+// back as the image both adapters used to send it as, the recovered label must
+// be written on the next save, and the one payload whose old reading was
+// ambiguous must fail the load instead of being replayed as something it was
+// never sent as.
+BOOST_AUTO_TEST_CASE(legacy_state_without_a_label_recovers_references_and_refuses_binary) {
+    Scratch scratch;
+    Json document = example_state();
+    document["turns"][0]["user_input"]["content"] = Json::array({
+        {{"type", "text"}, {"raw", "describe this"}},
+        {{"type", "external_ref"}, {"raw", "https://example.invalid/cat.png"}},
+    });
+    scratch.write("state.json", document.dump());
+    const auto state = load::load_state(scratch.root / "state.json");
+    BOOST_REQUIRE_EQUAL(state.turns[0].user_input.content.size(), 2u);
+    BOOST_CHECK(state.turns[0].user_input.content[0].modality == model_io::Modality::Text);
+    BOOST_CHECK(state.turns[0].user_input.content[1].modality == model_io::Modality::Image);
+
+    // Saving writes the label, so the record migrates exactly once and the
+    // second load has nothing left to recover.
+    load::save_state(scratch.root / "migrated.json", state);
+    const auto migrated = Json(load::load_state(scratch.root / "migrated.json"));
+    BOOST_CHECK(migrated["turns"][0]["user_input"]["content"][1]["modality"] == "image");
+    BOOST_CHECK(migrated == Json(state));
+
+    document["turns"][0]["user_input"]["content"] = Json::array({
+        {{"type", "binary"}, {"raw", "AA=="}},
+    });
+    scratch.write("ambiguous.json", document.dump());
+    BOOST_CHECK_EXCEPTION((void)load::load_state(scratch.root / "ambiguous.json"),
+        load::PersistenceError, [](const auto& error) {
+            const std::string message = error.what();
+            return message.find("ambiguous.json") != std::string::npos
+                && message.find("modality") != std::string::npos;
+        });
+}
+
 BOOST_AUTO_TEST_CASE(failed_serialization_and_failed_rename_preserve_previous_files) {
     Scratch scratch;
     auto state = example_state();

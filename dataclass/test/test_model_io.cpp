@@ -76,26 +76,51 @@ BOOST_AUTO_TEST_CASE(unknown_modality_name_is_rejected_not_defaulted) {
     BOOST_CHECK_THROW(numeric.get<Content>(), nlohmann::json::exception);
 }
 
-// Missing-key tolerance (protocol rule 6) still applies to the field: a record
-// written before the label existed reads as text, and a fresh Content is text
-// too. The difference from the test above is omission versus a WRONG label:
-// absence has one safe reading, a wrong value has none. (The public input
-// boundary is stricter than the record itself: it REQUIRES the label.)
+// Missing-key tolerance (protocol rule 6) applies to this field only for
+// records written before it existed, and the reading is the one those records
+// actually had. Absence is different from a WRONG label (the test above), which
+// has no safe reading at all. (The public input boundary is stricter than the
+// record: it REQUIRES the label, so this path is only ever a durable record.)
 BOOST_AUTO_TEST_CASE(missing_key_or_default_is_text_never_indeterminate) {
     Content bare;
     BOOST_CHECK(bare.modality == Modality::Text);
     // A value-initialised element (Content{} inside a vector) must be text too:
     // an indeterminate enum would make serialising an "empty" part throw.
     BOOST_CHECK_EQUAL(nlohmann::json(bare)["modality"], "text");
+}
 
-    Content read;
-    nlohmann::json{{"type", "text"}, {"raw", "x"}}.get_to(read);
-    BOOST_CHECK(read.modality == Modality::Text);
+// A record persisted before the label existed is recovered by the reading the
+// pre-modality adapters used, and saving writes the label back, so the
+// migration happens exactly once.
+BOOST_AUTO_TEST_CASE(legacy_records_without_a_label_are_recovered_or_refused) {
+    Content text;
+    nlohmann::json{{"type", "text"}, {"raw", "x"}}.get_to(text);
+    BOOST_CHECK(text.modality == Modality::Text);
 
-    // Text stays text whatever the encoding says.
-    Content encoded;
-    nlohmann::json{{"type", "binary"}, {"raw", "AA=="}}.get_to(encoded);
-    BOOST_CHECK(encoded.modality == Modality::Text);
+    // Both adapters used to send an external reference to the provider as an
+    // image URL, so that is what a reference meant.
+    Content reference;
+    nlohmann::json{{"type", "external_ref"}, {"raw", "https://x/y.png"}}
+        .get_to(reference);
+    BOOST_CHECK(reference.modality == Modality::Image);
+    BOOST_CHECK_EQUAL(nlohmann::json(reference)["modality"], "image");
+
+    // A legacy binary payload is refused instead of guessed: Chat Completions
+    // sent it as text and Responses as file data, so no single reading is
+    // faithful, and picking one would silently change durable history.
+    Content binary;
+    const nlohmann::json legacy_binary{{"type", "binary"}, {"raw", "AA=="}};
+    BOOST_CHECK_EXCEPTION(legacy_binary.get_to(binary), std::invalid_argument,
+        [](const auto& error) {
+            return std::string(error.what()).find("modality") != std::string::npos;
+        });
+
+    // An explicit label still wins over the legacy reading, including the
+    // explicit "this reference is text".
+    Content labelled;
+    nlohmann::json{{"type", "external_ref"}, {"raw", "https://x/notes.txt"},
+                   {"modality", "text"}}.get_to(labelled);
+    BOOST_CHECK(labelled.modality == Modality::Text);
 }
 
 // A category and an encoding are independent: an image may arrive referenced
