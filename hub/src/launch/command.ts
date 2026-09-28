@@ -12,7 +12,7 @@ import type { LauncherInput, LauncherInvocation } from './invocation.ts';
 export const PLACEHOLDERS = [
     'session', 'config', 'data_dir', 'session_dir',
     'endpoint', 'confirm_endpoint', 'token',
-    'threads', 'worker_bin', 'prompts_dir',
+    'threads', 'worker_bin',
     // The invoking user, for a launcher that runs a container: a worker that
     // writes into a mounted host directory should do it as its owner, or the
     // operator cannot clean up after it without help.
@@ -66,7 +66,6 @@ export function buildCommandInvocation({
         token,
         threads: String(spec.threads),
         worker_bin: config.worker.bin,
-        prompts_dir: config.worker.promptsDir,
     };
     const expanded = config.launcher.command.map((part) => expandTemplate(part, values));
     const extra = config.launcher.args.map((part) => expandTemplate(part, values));

@@ -10,8 +10,7 @@
  * file. Threads, environment variables and extra command arguments remain
  * launch-time settings.
  */
-import { isAbsolute, join } from 'node:path';
-import { ConfigError } from '../config.ts';
+import { ConfigError, checkPromptFile } from '../config.ts';
 import type { HubConfig } from '../config.ts';
 
 /** Persistence restore policies accepted by the worker. */
@@ -79,10 +78,8 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
     if (!Array.isArray(software) || software.some((item) => typeof item !== 'string')) {
         throw new ConfigError('spec.software must be an array of strings');
     }
-    const promptFile = raw.systemPromptFile ?? config.worker.systemPromptFile;
-    if (typeof promptFile !== 'string' || promptFile.length === 0) {
-        throw new ConfigError('spec.systemPromptFile must be a nonempty path');
-    }
+    const promptFile = checkPromptFile(
+        raw.systemPromptFile ?? config.worker.systemPromptFile, 'spec.systemPromptFile');
     const persistence = isPlainObject(raw.persistence) ? raw.persistence : {};
     return {
         provider,
@@ -91,11 +88,10 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
         threads: positive(raw.threads, config.worker.threads, 'threads'),
         maxExchanges: positive(raw.maxExchanges, config.worker.maxExchanges, 'maxExchanges'),
         eventCapacity: positive(raw.eventCapacity, config.worker.eventCapacity, 'eventCapacity'),
-        // A bare file name selects a file in the configured prompts directory;
-        // an absolute path is used as given.
-        systemPromptFile: isAbsolute(promptFile)
-            ? promptFile
-            : join(config.worker.promptsDir, promptFile),
+        // Relative to the worker's installation directory, and stored exactly
+        // as given: the hub never rewrites it into a path of its own, so one
+        // session spec describes the same prompt on every machine.
+        systemPromptFile: promptFile,
         workspace: typeof raw.workspace === 'string'
             ? raw.workspace
             : config.worker.environment.workspace,

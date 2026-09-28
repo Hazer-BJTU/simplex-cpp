@@ -23,7 +23,6 @@ Options:
   -l, --listen <host:port>       listen address (default: 127.0.0.1:8800)
       --data-dir <dir>           runtime data directory (default: ./data)
       --worker-bin <path>        simplex_worker executable
-      --prompts-dir <dir>        directory holding worker prompt YAML files
       --panel-token <token>      require this token for panel access
       --mock                     enable the offline mock provider
       --no-mock                  disable the offline mock provider
@@ -103,8 +102,6 @@ export function parseArguments(argv: string[]): ParsedArguments {
                 overrides.dataDir = need(index, flag); index += 1; break;
             case '--worker-bin':
                 overrides.worker = { ...overrides.worker, bin: need(index, flag) }; index += 1; break;
-            case '--prompts-dir':
-                overrides.worker = { ...overrides.worker, promptsDir: need(index, flag) }; index += 1; break;
             case '--panel-token':
                 overrides.panel = { token: need(index, flag) }; index += 1; break;
             case '--mock': run.mock = true; break;

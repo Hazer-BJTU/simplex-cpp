@@ -119,6 +119,22 @@ describe('validateConfig', () => {
         config.mock.profile = 'missing';
         assert.throws(() => validateConfig(config), /mock\.profile/);
     });
+
+    it('keeps the prompt path relative to the worker installation', () => {
+        const config = defaultConfig();
+        assert.doesNotThrow(() => validateConfig(config));
+        for (const rejected of ['', '/srv/prompts/coding_agent.yaml', '../coding_agent.yaml',
+            'prompts/../../outside.yaml', 7]) {
+            config.worker.systemPromptFile = rejected;
+            assert.throws(() => validateConfig(config), /systemPromptFile/);
+        }
+    });
+
+    it('names what replaced worker.promptsDir', () => {
+        const config = defaultConfig();
+        config.worker.promptsDir = '../build/bin/prompts';
+        assert.throws(() => validateConfig(config), /worker\.promptsDir is no longer supported/);
+    });
 });
 
 describe('loadConfig', () => {

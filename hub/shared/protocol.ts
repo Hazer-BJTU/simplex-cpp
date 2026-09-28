@@ -165,6 +165,8 @@ export interface SessionSpec {
     threads?: number;
     maxExchanges?: number;
     eventCapacity?: number;
+    /** Prompt file relative to the worker's installation directory; the worker
+     * refuses absolute paths and parent traversal. */
     systemPromptFile?: string;
     workspace?: string;
     platform?: string;

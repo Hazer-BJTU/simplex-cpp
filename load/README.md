@@ -396,7 +396,8 @@ It is not a hard bound on return latency: an already-running system DNS backend
 may delay completion and shutdown until it returns. Late results remain denied.
 
 worker.max_exchanges defaults to 512 and event_capacity to 1024.
-worker.system_prompt_file selects a structured YAML prompt for new sessions.
+worker.system_prompt_file selects a structured YAML prompt for new sessions,
+addressed from the installation directory rather than from this file.
 persistence.readable defaults to false and enables an additional Markdown
 export. JSON remains authoritative. See core for safety checkpoints, cancellation
 saving and failure policy; the explicit persistence APIs do not interpret YAML.
@@ -410,16 +411,19 @@ as `<build>/bin/prompts/coding_agent.yaml` and
 
 ```yaml
 worker:
-  system_prompt_file: ./prompts/coding_agent.yaml
+  system_prompt_file: prompts/coding_agent.yaml
 ```
 
-An explicit path is resolved relative to the main configuration file, regardless
-of the working directory. Absolute paths are accepted. If the field is omitted,
-the loader reads `<executable_dir>/prompts/coding_agent.yaml`. Empty paths and
-missing files fail startup; there is no embedded text fallback. If an operator
-copies the example configuration to another directory, copy the prompt beside it
-or change this path. The old inline `worker.system_prompt` field is rejected with
-a migration error. Plugin-only loading APIs do not read prompt files.
+A configured path is relative to the **installation directory**, the directory
+holding the running executable, and not to the configuration file. One spelling
+therefore names the same prompt whatever directory a session keeps its generated
+configuration in, and a configuration copied from another machine still reads
+that machine's installed worker. Absolute paths and `..` components are refused
+rather than interpreted, and empty paths fail. If the field is omitted, the
+loader reads `<executable_dir>/prompts/coding_agent.yaml`. Missing files fail
+startup; there is no embedded text fallback. The old inline
+`worker.system_prompt` field is rejected with a migration error. Plugin-only
+loading APIs do not read prompt files.
 
 ```yaml
 heading_level: 2
@@ -503,8 +507,10 @@ It is host-owned and cannot be declared in a role YAML file.
 ## Compact configuration
 
 The worker accepts `worker.compact_prompt_file`, a PromptTemplate YAML file
-rendered as the internal user instruction for an explicit compact request.
-When omitted, it loads `prompts/operations/compact.yaml` beside the executable.
+rendered as the internal user instruction for an explicit compact request. It
+resolves by the same rule as `worker.system_prompt_file`: a relative path below
+the installation directory, with absolute paths and `..` refused. When omitted,
+it loads `prompts/operations/compact.yaml` beside the executable.
 The file is validated at startup and must render nonempty instructions.
 
 `persistence.state` and `persistence.memory` default to `state` and `memory`,

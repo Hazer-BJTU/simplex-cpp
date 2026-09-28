@@ -35,7 +35,7 @@ export interface LauncherInvocation {
 /** The slice of hub configuration a launcher reads. */
 export interface LauncherConfig {
     dataDir: string;
-    worker: { bin: string; args: string[]; promptsDir: string };
+    worker: { bin: string; args: string[] };
     launcher: {
         kind: string;
         command: string[];

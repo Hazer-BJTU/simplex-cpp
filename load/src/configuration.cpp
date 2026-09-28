@@ -4,6 +4,7 @@
 #include <charconv>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <boost/dll/runtime_symbol_info.hpp>
 
 namespace load {
@@ -65,6 +66,45 @@ std::filesystem::path storage_child(
     return (root / child).lexically_normal();
 }
 
+/** Directory holding the running executable: the root of installed assets. */
+std::filesystem::path executable_directory() {
+    const auto executable = boost::dll::program_location();
+    return std::filesystem::path(executable.string()).parent_path();
+}
+
+/**
+ * Resolve one configured prompt file below the installation directory.
+ *
+ * Deliberately not relative to the configuration file: a prompt is an asset of
+ * the deployed worker, so one spelling means the same file wherever a session's
+ * generated configuration happens to live. Absolute paths and parent traversal
+ * are refused instead of interpreted, which is what keeps a configuration
+ * copied from another machine pointing at that machine's worker.
+ */
+std::filesystem::path installed_file(
+    const Json& worker,
+    const char* key,
+    const std::filesystem::path& installation,
+    const char* fallback
+) {
+    const auto selected = worker.find(key);
+    if (selected == worker.end()) return (installation / fallback).lexically_normal();
+    const auto value = text(worker, key);
+    const std::filesystem::path path(value);
+    if (value.empty() || value.find('\0') != std::string::npos
+        || path.is_absolute() || path.has_root_name()) {
+        throw std::invalid_argument(std::string(key)
+            + " must be a nonempty path relative to the executable directory");
+    }
+    for (const auto& component : path) {
+        if (component == "..") {
+            throw std::invalid_argument(std::string(key)
+                + " must not contain parent traversal");
+        }
+    }
+    return (installation / path).lexically_normal();
+}
+
 /** One pass only: substituted values are never parsed as expressions. */
 std::string expand(const std::string& value) {
     std::string result;
@@ -115,8 +155,17 @@ endpoint::ResolvedEndpoint websocket_endpoint(const std::string& url) {
 }
 
 Configuration parse_configuration(Json document, std::filesystem::path directory) {
-    if (!document.is_object() || !directory.is_absolute())
-        throw std::invalid_argument("configuration requires a mapping and absolute base directory");
+    return parse_configuration(
+        std::move(document), std::move(directory), executable_directory());
+}
+
+Configuration parse_configuration(
+    Json document,
+    std::filesystem::path directory,
+    std::filesystem::path installation
+) {
+    if (!document.is_object() || !directory.is_absolute() || !installation.is_absolute())
+        throw std::invalid_argument("configuration requires a mapping and absolute directories");
     Configuration result;
     result.document = document;
     result.directory = directory;
@@ -180,27 +229,10 @@ Configuration parse_configuration(Json document, std::filesystem::path directory
     if (worker.contains("system_prompt")) {
         throw std::invalid_argument("worker.system_prompt is no longer supported; use system_prompt_file");
     }
-    std::filesystem::path prompt_file;
-    if (worker.contains("system_prompt_file")) {
-        const auto path = text(worker, "system_prompt_file");
-        if (path.empty() || path.find('\0') != std::string::npos) {
-            throw std::invalid_argument("system_prompt_file must be a nonempty path without NUL");
-        }
-        prompt_file = (directory / path).lexically_normal();
-    } else {
-        prompt_file = boost::dll::program_location().parent_path()
-            / "prompts" / "coding_agent.yaml";
-    }
-    result.system_prompt = read_system_prompt(prompt_file);
-    auto compact_file = boost::dll::program_location().parent_path()
-        / "prompts" / "operations" / "compact.yaml";
-    if (worker.contains("compact_prompt_file")) {
-        const auto path = text(worker, "compact_prompt_file");
-        if (path.empty() || path.find('\0') != std::string::npos) {
-            throw std::invalid_argument("compact_prompt_file must be a nonempty path without NUL");
-        }
-        compact_file = (directory / path).lexically_normal();
-    }
+    result.system_prompt = read_system_prompt(
+        installed_file(worker, "system_prompt_file", installation, "prompts/coding_agent.yaml"));
+    const auto compact_file = installed_file(
+        worker, "compact_prompt_file", installation, "prompts/operations/compact.yaml");
     result.compact_prompt = read_system_prompt(compact_file).render().markdown;
     if (result.compact_prompt.find_first_not_of(" \t\r\n") == std::string::npos) {
         throw std::invalid_argument("compact_prompt_file must contain instructions");

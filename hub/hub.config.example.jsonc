@@ -14,8 +14,9 @@
     "worker": {
         // Relative to this file; the default assumes an in-tree build tree.
         "bin": "../build/bin/simplex_worker",
-        "promptsDir": "../build/bin/prompts",
-        "systemPromptFile": "coding_agent.yaml",
+        // Relative to the worker's installation directory, which is where the
+        // worker looks for it; the hub never rewrites it into a local path.
+        "systemPromptFile": "prompts/coding_agent.yaml",
         "threads": 1,
         "maxExchanges": 512,
         "eventCapacity": 1024,
