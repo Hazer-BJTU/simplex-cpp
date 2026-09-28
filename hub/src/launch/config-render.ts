@@ -54,6 +54,7 @@ export interface WorkerConfigDocument {
     };
     providers: Record<string, ProviderProfile>;
     driver_model: string;
+    modality_assist_model?: string;
     client: {
         endpoint: string;
         payload_capacity: number;
@@ -109,6 +110,16 @@ export function renderWorkerConfig({
         };
     }
 
+    const providers: Record<string, ProviderProfile> = { [profileName]: profile };
+    // Keep mock sessions credential-free. Real sessions use the DeepSeek
+    // profile when available; custom deployments may omit that profile.
+    const assistProfile = config.providerProfiles.deepseek;
+    const enableModalityAssist = profileName !== config.mock.profile
+        && assistProfile !== undefined;
+    if (enableModalityAssist && assistProfile && profileName !== 'deepseek') {
+        providers.deepseek = structuredClone(assistProfile);
+    }
+
     return {
         // Plugin discovery stays at its executable-relative default; dynamic
         // toolsets and loop hooks are not part of this contract.
@@ -119,8 +130,9 @@ export function renderWorkerConfig({
                 loop_hooks: { directories: [], enable: [] },
             },
         },
-        providers: { [profileName]: profile },
+        providers,
         driver_model: profileName,
+        ...(enableModalityAssist ? { modality_assist_model: 'deepseek' } : {}),
         client: {
             endpoint: endpoints.events,
             payload_capacity: config.worker.payloadCapacity,

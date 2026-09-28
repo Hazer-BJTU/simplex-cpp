@@ -63,6 +63,21 @@ describe('session configuration files', () => {
         assert.deepEqual(readdirSync(join(sessionDir(input.config, input.sessionId), 'config')), ['config.yaml']);
     });
 
+    it('defaults the assistant only on first creation and preserves operator choices', () => {
+        const input = options();
+        const initial = prepareSessionConfig(input).document;
+        assert.equal(initial.modality_assist_model, 'deepseek');
+        const path = workerConfigPath(input.config, input.sessionId);
+        initial.providers.vision = structuredClone(initial.providers.deepseek);
+        initial.modality_assist_model = 'vision';
+        writeFileSync(path, stringify(initial));
+        assert.equal(prepareSessionConfig(input).document.modality_assist_model, 'vision');
+
+        delete initial.modality_assist_model;
+        writeFileSync(path, stringify(initial));
+        assert.equal(Object.hasOwn(prepareSessionConfig(input).document, 'modality_assist_model'), false);
+    });
+
     it('refreshes the dynamic mock URL without replacing provider settings', () => {
         const input = options();
         input.rawSpec = { provider: 'mock' };

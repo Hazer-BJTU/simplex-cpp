@@ -96,6 +96,8 @@ describe('renderSessionConfig', () => {
         });
         assert.equal(spec.provider, 'mock');
         assert.equal(document.driver_model, 'mock');
+        assert.equal(Object.hasOwn(document, 'modality_assist_model'), false);
+        assert.equal(Object.hasOwn(document.providers, 'deepseek'), false);
         assert.equal(document.client.endpoint, endpoints.events);
         assert.equal(document.security.confirmation.endpoint, endpoints.confirm);
         assert.equal(document.security.confirmation.timeout_ms, config.worker.confirmationTimeoutMs);
@@ -115,12 +117,33 @@ describe('renderSessionConfig', () => {
             endpoints,
         });
         const profile = document.providers.deepseek;
+        assert.equal(document.modality_assist_model, 'deepseek');
         assert.equal(profile.model, 'deepseek-v4-pro');
         assert.equal(profile.plugin, 'deepseek');
         assert.equal(profile.endpoint.auth.api_key, '${DEEPSEEK_API_KEY}');
         assert.deepEqual(profile.retry, { max_attempts: 3, initial_backoff_ms: 500, max_backoff_ms: 120000 });
         // The configuration must be free of resolved secrets.
         assert.equal(JSON.stringify(document).includes('sk-'), false);
+    });
+
+    it('includes the assistant profile with a different driver without mutating defaults', () => {
+        const config = testConfig();
+        config.providerProfiles.other = { plugin: 'openai', model: 'other-model' };
+        const { document } = renderSessionConfig({
+            config, sessionId: 'demo', rawSpec: { provider: 'other' }, endpoints,
+        });
+        assert.equal(document.driver_model, 'other');
+        assert.equal(document.modality_assist_model, 'deepseek');
+        assert.deepEqual(document.providers.deepseek, config.providerProfiles.deepseek);
+        document.providers.deepseek.model = 'changed';
+        assert.equal(config.providerProfiles.deepseek.model, 'deepseek-flash');
+
+        delete config.providerProfiles.deepseek;
+        const custom = renderSessionConfig({
+            config, sessionId: 'demo', rawSpec: { provider: 'other' }, endpoints,
+        }).document;
+        assert.equal(Object.hasOwn(custom, 'modality_assist_model'), false);
+        assert.deepEqual(Object.keys(custom.providers), ['other']);
     });
 
     it('points the mock profile at the resolved mock address', () => {
