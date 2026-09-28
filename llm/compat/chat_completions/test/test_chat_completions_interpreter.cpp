@@ -196,11 +196,15 @@ BOOST_AUTO_TEST_CASE(multimodal_user_content_uses_chat_content_parts) {
     model_io::AgentInputState state;
     model_io::UserLoopStep turn;
     turn.user_input.content.push_back(
-        {model_io::ContentType::Text, "describe"});
+        {model_io::ContentType::Text, "describe", {},
+         model_io::Modality::Text});
+    // The category is stated, so the URL becomes an image part because the
+    // producer said image — not because the encoding is a reference.
     turn.user_input.content.push_back(
         {model_io::ContentType::ExternalRef,
          "https://example.com/cat.png",
-         nlohmann::json{{"detail", "low"}}});
+         nlohmann::json{{"detail", "low"}},
+         model_io::Modality::Image});
     state.turns.push_back(turn);
 
     const auto content = body_of(ChatCompletionsInterpreter{}.build_request(
@@ -212,6 +216,188 @@ BOOST_AUTO_TEST_CASE(multimodal_user_content_uses_chat_content_parts) {
                       "https://example.com/cat.png");
     BOOST_CHECK_EQUAL(content[1]["image_url"]["detail"], "low");
 }
+
+// The retired inference: an external reference is NOT an image. A reference
+// labelled text stays text, and one labelled document is not silently sent as
+// a picture either.
+BOOST_AUTO_TEST_CASE(external_reference_is_not_inferred_to_be_an_image) {
+    Fixture fixture;
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content.push_back(
+        {model_io::ContentType::ExternalRef,
+         "https://example.invalid/notes.txt", {},
+         model_io::Modality::Text});
+    state.turns.push_back(turn);
+
+    const auto content = body_of(ChatCompletionsInterpreter{}.build_request(
+        state, fixture.endpoint, fixture.generation))["messages"][0]["content"];
+    // A single text part takes the compact string form chat servers accept.
+    BOOST_CHECK(content.is_string());
+    BOOST_CHECK_EQUAL(content.get<std::string>(),
+                      "https://example.invalid/notes.txt");
+}
+
+// Hard error #3: this dialect describes text and images only, so a category it
+// cannot carry fails construction instead of riding along as text.
+BOOST_AUTO_TEST_CASE(unsupported_modality_is_a_create_request_error) {
+    Fixture fixture;
+    for (const auto modality : {model_io::Modality::Audio,
+                                model_io::Modality::Video,
+                                model_io::Modality::Document}) {
+        model_io::AgentInputState state;
+        model_io::UserLoopStep turn;
+        turn.user_input.content.push_back(
+            {model_io::ContentType::ExternalRef,
+             "https://example.invalid/attachment", {}, modality});
+        state.turns.push_back(turn);
+
+        BOOST_CHECK_THROW(
+            ChatCompletionsInterpreter{}.build_request(
+                state, fixture.endpoint, fixture.generation),
+            HttpRequestException);
+    }
+
+    // An image is still fine, so the check rejects the category rather than
+    // refusing attachments wholesale.
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content.push_back(
+        {model_io::ContentType::ExternalRef,
+         "https://example.invalid/photo.png", {}, model_io::Modality::Image});
+    state.turns.push_back(turn);
+    BOOST_CHECK_NO_THROW(
+        ChatCompletionsInterpreter{}.build_request(
+            state, fixture.endpoint, fixture.generation));
+}
+
+// The other half of the matrix: a modality this dialect CAN describe still has
+// representations it cannot carry, and those fail construction rather than
+// reaching the wire as something else.
+BOOST_AUTO_TEST_CASE(unsupported_encoding_for_a_supported_modality_is_rejected) {
+    Fixture fixture;
+    const auto request = [&](model_io::ContentType type, model_io::Modality modality) {
+        model_io::AgentInputState state;
+        model_io::UserLoopStep turn;
+        turn.user_input.content.push_back({type, "cGF5bG9hZA==", {}, modality});
+        state.turns.push_back(turn);
+        return ChatCompletionsInterpreter{}.build_request(
+            state, fixture.endpoint, fixture.generation);
+    };
+
+    // A base64 blob is not an image URL: image_url has no media type to carry.
+    BOOST_CHECK_THROW(request(model_io::ContentType::Binary,
+                              model_io::Modality::Image), HttpRequestException);
+    // And it is not the message either — that would deliver the encoding.
+    BOOST_CHECK_THROW(request(model_io::ContentType::Binary,
+                              model_io::Modality::Text), HttpRequestException);
+    BOOST_CHECK_THROW(request(model_io::ContentType::Text,
+                              model_io::Modality::Image), HttpRequestException);
+    // The supported representations still build.
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::Text,
+                                 model_io::Modality::Text));
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::ExternalRef,
+                                 model_io::Modality::Text));
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::ExternalRef,
+                                 model_io::Modality::Image));
+}
+
+// extras is caller-supplied data. It may fill in an image's auxiliary fields,
+// but it is never an instruction about what the part IS: a payload that says
+// "input_file" in extras is still the text its modality declares.
+BOOST_AUTO_TEST_CASE(extras_type_cannot_relabel_a_part) {
+    Fixture fixture;
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content.push_back(
+        {model_io::ContentType::Text, "describe this", {},
+         model_io::Modality::Text});
+    turn.user_input.content.push_back(
+        {model_io::ContentType::ExternalRef, "https://example.com/cat.png",
+         nlohmann::json{{"type", "input_file"}, {"file_data", "smuggled"}},
+         model_io::Modality::Image});
+    state.turns.push_back(turn);
+
+    const auto content = body_of(ChatCompletionsInterpreter{}.build_request(
+        state, fixture.endpoint, fixture.generation))["messages"][0]["content"];
+    BOOST_REQUIRE_EQUAL(content.size(), 2u);
+    BOOST_CHECK_EQUAL(content[0]["type"], "text");
+    BOOST_CHECK_EQUAL(content[0]["text"], "describe this");
+    BOOST_CHECK_EQUAL(content[1]["type"], "image_url");
+    BOOST_CHECK_EQUAL(content[1]["image_url"]["url"],
+                      "https://example.com/cat.png");
+    // The smuggled provider field did not ride along beside the URL.
+    BOOST_CHECK(!content[1].contains("file_data"));
+}
+
+// The matrix belongs to the POSITION, not to the Content: the same image part is
+// legal in a user message and impossible in an assistant message, which this
+// dialect replays as one string. Passing the input check and then concatenating
+// `raw` would deliver the URL as if the model had written it.
+BOOST_AUTO_TEST_CASE(assistant_content_is_validated_as_a_text_position) {
+    Fixture fixture;
+    const auto with_assistant_part = [](model_io::Content part) {
+        model_io::AgentInputState state;
+        model_io::UserLoopStep turn;
+        turn.user_input.content.push_back(
+            {model_io::ContentType::Text, "describe this"});
+        model_io::AgentLoopStep step;
+        step.model_response.type = model_io::MessageItemType::ModelResponse;
+        step.model_response.content.push_back(std::move(part));
+        turn.agent_loop_step.push_back(std::move(step));
+        state.turns.push_back(std::move(turn));
+        return state;
+    };
+    const auto request = [&](model_io::Content part) {
+        return ChatCompletionsInterpreter{}.build_request(
+            with_assistant_part(std::move(part)), fixture.endpoint,
+            fixture.generation);
+    };
+
+    // The pair the input matrix accepts, refused where it cannot survive.
+    BOOST_CHECK_THROW(request({model_io::ContentType::ExternalRef,
+                               "https://example.invalid/answer.png", {},
+                               model_io::Modality::Image}),
+                      HttpRequestException);
+    BOOST_CHECK_THROW(request({model_io::ContentType::ExternalRef,
+                               "https://example.invalid/answer.pdf", {},
+                               model_io::Modality::Document}),
+                      HttpRequestException);
+    // Text still replays — including text carried by a reference, which this
+    // adapter sends as the string it is.
+    BOOST_CHECK_NO_THROW(request({model_io::ContentType::Text, "the answer"}));
+    BOOST_CHECK_NO_THROW(request({model_io::ContentType::ExternalRef,
+                                  "https://example.invalid/notes.txt", {},
+                                  model_io::Modality::Text}));
+}
+
+// Tool output is a string on this wire as well, so the same rule applies there.
+BOOST_AUTO_TEST_CASE(tool_result_content_is_validated_as_a_text_position) {
+    Fixture fixture;
+    auto state = react_state();
+    state.turns[0].agent_loop_step[0].invoke_returns->front().content =
+        {{model_io::ContentType::ExternalRef, "https://example.invalid/pic.png",
+          {}, model_io::Modality::Image}};
+    BOOST_CHECK_THROW(ChatCompletionsInterpreter{}.build_request(
+        state, fixture.endpoint, fixture.generation), HttpRequestException);
+}
+
+// A field this dialect never emits is not subject to the provider's
+// capabilities: rejecting a conversation because of an action_status modality
+// no provider call would ever see reports a problem that does not exist.
+BOOST_AUTO_TEST_CASE(unmapped_action_status_is_not_validated) {
+    Fixture fixture;
+    auto state = react_state();
+    model_io::Content status;
+    status.type = model_io::ContentType::ExternalRef;
+    status.raw = "https://example.invalid/clip.mp4";
+    status.modality = model_io::Modality::Video;
+    state.turns[0].agent_loop_step[1].model_response.action_status =
+        std::move(status);
+    BOOST_CHECK_NO_THROW(ChatCompletionsInterpreter{}.build_request(
+        state, fixture.endpoint, fixture.generation));
+}
+
 
 BOOST_AUTO_TEST_CASE(generation_passthrough_but_builder_owned_keys_win) {
     Fixture fixture;
@@ -372,4 +558,26 @@ BOOST_AUTO_TEST_CASE(assistant_reasoning_replays_only_when_the_dialect_opts_in) 
                     .build_request(state, fixture.endpoint,
                                    fixture.generation))["messages"];
     BOOST_CHECK_EQUAL(replaying[1]["reasoning_content"], "chain of thought");
+}
+
+// Reasoning is replayed only when the dialect asks for it, and a part that is
+// not replayed cannot be unsupported by the provider.
+BOOST_AUTO_TEST_CASE(reasoning_is_validated_only_when_it_is_replayed) {
+    Fixture fixture;
+    auto state = reasoning_state();
+    state.turns[0].agent_loop_step[0].model_response.reasoning->type =
+        model_io::ContentType::ExternalRef;
+    state.turns[0].agent_loop_step[0].model_response.reasoning->raw =
+        "https://example.invalid/thought.png";
+    state.turns[0].agent_loop_step[0].model_response.reasoning->modality =
+        model_io::Modality::Image;
+
+    // Default dialect: reasoning stays out of the request, so it builds.
+    BOOST_CHECK_NO_THROW(ChatCompletionsInterpreter{}.build_request(
+        state, fixture.endpoint, fixture.generation));
+    // Thinking-mode dialect: the same reasoning would be sent as text.
+    BOOST_CHECK_THROW(
+        ChatCompletionsInterpreter(std::make_shared<ReplayingDialect>())
+            .build_request(state, fixture.endpoint, fixture.generation),
+        HttpRequestException);
 }

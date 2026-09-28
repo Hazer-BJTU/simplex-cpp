@@ -132,7 +132,8 @@ sections:
                         {"operation", "message"},
                         {"request_id", "one"},
                         {"content", Json::array({{
-                            {"type", "text"}, {"raw", "hello"}
+                            {"type", "text"}, {"raw", "hello"},
+                            {"modality", "text"}
                         }})}
                     }}
                 };
@@ -442,7 +443,8 @@ void options_scenario(Json choices, bool fail = false) {
                     BOOST_TEST(model->calls.load() == 0);
                     co_await send({{"type", "payload"}, {"data", {
                         {"operation", "message"}, {"request_id", "options-run"},
-                        {"content", Json::array({{{"type", "text"}, {"raw", "hello"}}})}
+                        {"content", Json::array({{{"type", "text"}, {"raw", "hello"},
+                            {"modality", "text"}}})}
                     }}});
                 } else {
                     BOOST_TEST(event.at("request_id") == "options-run");
@@ -582,7 +584,8 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
             const auto name = event.at("event").get<std::string>();
             if (name == "ready") {
                 co_await send({{"operation", "message"}, {"request_id", "first"},
-                    {"content", Json::array({{{"type", "text"}, {"raw", "hello"}}})},
+                    {"content", Json::array({{{"type", "text"}, {"raw", "hello"},
+                        {"modality", "text"}}})},
                     {"options", {{"model", {{"model", "first"}}},
                         {"confirmation", {{"mode", "deny"}}}}}});
             } else if (name == "run_started" && event.at("request_id") == "first") {

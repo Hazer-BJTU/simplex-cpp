@@ -21,8 +21,127 @@ std::string text_content(const std::vector<model_io::Content>& content) {
     return result;
 }
 
+/**
+ * Check one part against the USER-MESSAGE support matrix and explain the refusal.
+ *
+ * The matrix is (modality, encoding), not modality alone: a part only reaches
+ * the wire when the field it maps to can actually carry `raw`. A base64 image
+ * has no media type that would let us build an `image_url` from it, and a
+ * base64 text part would put the encoding in the message instead of the text.
+ * Both would produce a syntactically valid request that means something else,
+ * which is worse than a construction error. This is the module's hard error #3
+ * (see the header contract).
+ *
+ * | modality | encoding     | wire                                  |
+ * | -------- | ------------ | ------------------------------------- |
+ * | text     | text         | `{"type":"text","text":raw}`          |
+ * | text     | external_ref | same; the reference travels as text   |
+ * | image    | external_ref | `image_url` (URL from `raw`)          |
+ * | anything else            | refused                               |
+ */
+void require_input_part(const model_io::Content& part) {
+    const auto modality = part.modality;
+    if (modality == model_io::Modality::Audio ||
+        modality == model_io::Modality::Video ||
+        modality == model_io::Modality::Document) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::CreateRequest,
+            "chat completions cannot send a " + nlohmann::json(modality).dump()
+                + " content part");
+    }
+    if (modality == model_io::Modality::Image) {
+        if (part.type == model_io::ContentType::ExternalRef) return;
+        throw HttpRequestException(
+            HttpRequestException::Stage::CreateRequest,
+            "chat completions sends an image as an external reference, and a "
+                + nlohmann::json(part.type).dump()
+                + " image carries no media type to describe it with");
+    }
+    if (part.type == model_io::ContentType::Binary) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::CreateRequest,
+            "chat completions cannot send a binary text part: the base64 "
+            "encoding would be delivered as the message");
+    }
+}
+
+/**
+ * Check one part against a TEXT POSITION: assistant replay, replayed reasoning,
+ * and tool output are each one string on this wire (assistant_message() and
+ * emit_tool_results() concatenate `raw`).
+ *
+ * Only a text part survives that: anything else — a URL reference to a picture,
+ * a document, audio — would be replayed as the characters of its `raw`, which is
+ * the silent change of category the label exists to prevent. The rule is per
+ * POSITION rather than per Content, because the same part is perfectly legal in a
+ * user message; `position` names the field the caller is about to fill.
+ */
+void require_text_position(const model_io::Content& part, const char* position) {
+    if (part.modality == model_io::Modality::Text &&
+        part.type != model_io::ContentType::Binary) {
+        return;
+    }
+    throw HttpRequestException(
+        HttpRequestException::Stage::CreateRequest,
+        std::string("chat completions sends ") + position + " as text, so a "
+            + nlohmann::json(part.type).dump() + " "
+            + nlohmann::json(part.modality).dump()
+            + " part cannot be preserved there");
+}
+
+/** Every part of a message that goes out through user_content(). */
+void require_input_content(const model_io::MessageItem& item) {
+    for (const auto& part : item.content) require_input_part(part);
+}
+
+/**
+ * Check every part the dialect has to describe, before building anything.
+ * Walking up front keeps the failure at construction time and independent of
+ * how deep in the conversation the offending part sits.
+ *
+ * `replay_reasoning` mirrors the dialect opt-in: reasoning that is not sent
+ * cannot be unsupported by the provider, so it is not validated. `action_status`
+ * is not mapped by this dialect at all and is left alone for the same reason.
+ */
+void require_supported_conversation(const model_io::AgentInputState& state,
+                                    bool replay_reasoning) {
+    for (const auto& turn : state.turns) {
+        // emit_message() routes an InvokeReturn in a user position through the
+        // tool-result path, which is a string; anything else is user content.
+        if (turn.user_input.type == model_io::MessageItemType::InvokeReturn) {
+            for (const auto& part : turn.user_input.content) {
+                require_text_position(part, "a tool result");
+            }
+        } else {
+            require_input_content(turn.user_input);
+        }
+        for (const auto& step : turn.agent_loop_step) {
+            const auto& response = step.model_response;
+            for (const auto& part : response.content) {
+                require_text_position(part, "an assistant message");
+            }
+            if (replay_reasoning && response.reasoning) {
+                require_text_position(*response.reasoning, "assistant reasoning");
+            }
+            if (!step.invoke_returns) continue;
+            for (const auto& item : *step.invoke_returns) {
+                for (const auto& part : item.content) {
+                    require_text_position(part, "a tool result");
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One provider part for one Content entry. The media category decides the part
+ * kind — never the encoding, and never `extras`: an image is an image whether
+ * its URL arrived in `raw` or in `extras.image_url`, while `extras.type` is
+ * caller-supplied data and is ignored. The pair was validated above, so the
+ * encoding here is one the chosen kind can carry.
+ */
 json user_content_part(const model_io::Content& content) {
-    if (content.type == model_io::ContentType::ExternalRef) {
+    if (content.modality == model_io::Modality::Image) {
         json image = json::object();
         if (content.extras && content.extras->is_object()) {
             const auto it = content.extras->find("image_url");
@@ -44,7 +163,7 @@ json user_content(const std::vector<model_io::Content>& content) {
     // The string form is accepted by the broadest set of compatible servers.
     if (content.empty()) return "";
     if (content.size() == 1 &&
-        content.front().type == model_io::ContentType::Text) {
+        content.front().modality == model_io::Modality::Text) {
         return content.front().raw;
     }
     json::array_t parts;
@@ -182,6 +301,11 @@ ChatCompletionsInterpreter::build_request(
             HttpRequestException::Stage::CreateRequest,
             "generation carries no non-empty \"model\"");
     }
+    // Hard error #3: a part this dialect cannot carry AT THE POSITION it would
+    // be emitted at is a construction failure, checked before anything is
+    // mapped (see the header contract and the per-position rules above).
+    require_supported_conversation(conversation,
+                                   _dialect->replay_assistant_reasoning());
     const endpoint::ResolvedEndpoint where = endpoint::resolve_endpoint(endpoint);
 
     json body = generation;

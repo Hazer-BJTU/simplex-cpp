@@ -167,7 +167,7 @@ describe('worker-backed display history', () => {
         const first = envelope(1, 'history', { data: {
             request_id: 'h-1', revision: 1, start: 0, step: 0,
             next: 1, next_step: 0, total: 2,
-            turns: [{ index: 0, user: [{ type: 'text', raw: 'old input' }],
+            turns: [{ index: 0, user: [{ type: 'text', raw: 'old input', modality: 'text' }],
                 steps: [], omitted_steps: 0 }],
         } });
         store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 1,
@@ -179,7 +179,7 @@ describe('worker-backed display history', () => {
         const second = envelope(2, 'history', { data: {
             request_id: 'h-2', revision: 1, start: 1, step: 0,
             next: 2, next_step: 0, total: 2,
-            turns: [{ index: 1, user: [{ type: 'text', raw: 'new input' }],
+            turns: [{ index: 1, user: [{ type: 'text', raw: 'new input', modality: 'text' }],
                 steps: [], omitted_steps: 0 }],
         } });
         assert.equal(store.getState().applyHistoryPage('demo', second,
@@ -196,8 +196,8 @@ describe('worker-backed display history', () => {
         const page = (sequence, step, nextStep, text) => envelope(sequence, 'history', {
             data: { request_id: `h-${sequence}`, revision: 1, start: 0, step,
                 next: nextStep ? 0 : 1, next_step: nextStep, total: 1,
-                turns: [{ index: 0, user: [{ type: 'text', raw: 'input' }],
-                    steps: [{ index: step, content: [{ type: 'text', raw: text }],
+                turns: [{ index: 0, user: [{ type: 'text', raw: 'input', modality: 'text' }],
+                    steps: [{ index: step, content: [{ type: 'text', raw: text, modality: 'text' }],
                         tool_calls: 0 }], omitted_steps: nextStep ? 1 : 0 }],
             },
         });

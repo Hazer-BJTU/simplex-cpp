@@ -29,21 +29,31 @@
 // `input` flattening, per turn, in order:
 //
 //   user_input           -> {type:"message", role:"user", content:[parts...]}
-//                           one provider part per ordered Content entry:
-//                           text -> input_text, external_ref -> input_image,
-//                           binary -> input_file; extras.type may explicitly
-//                           select input_image/input_file and extras fields
-//                           (detail, filename, file_id, ...) are preserved
+//                           one provider part per ordered Content entry, its
+//                           kind chosen by Content::modality (NEVER by the
+//                           encoding and never by extras): text -> input_text,
+//                           image -> input_image, document -> input_file (a
+//                           reference as file_url, base64 as file_data).
+//                           extras is DATA: the aux fields the chosen kind
+//                           defines (detail, filename, file_id, image_url) are
+//                           inherited, an extras.type is ignored, and a
+//                           (type, modality) pair whose field cannot carry the
+//                           representation is a CreateRequest error
 //   model_response       -> up to three groups, in this order:
 //     reasoning          extras.items (captured done items) re-emitted
 //                       VERBATIM — ids, summaries and encrypted_content must
 //                       survive; a bare reasoning Content synthesizes
-//                       {type:"reasoning", summary:[{type:"summary_text"}]}
+//                       {type:"reasoning", summary:[{type:"summary_text"}]},
+//                       so only a text part survives that path (a non-text
+//                       reasoning is a CreateRequest error, unless it is
+//                       re-emitted verbatim and its own label is unused)
 //     the message itself extras["output_items"] message items re-emitted
 //                       verbatim (annotations/phase/status preserved);
 //                       otherwise a synthesized {role:"assistant",
 //                       content:[{type:"output_text", text:raw}]} when raw
-//                       is non-empty
+//                       is non-empty — again a text position, so an assistant
+//                       image or document is a CreateRequest error there
+//                       rather than being flattened into its URL
 //     invokes            each -> {type:"function_call", call_id, name,
 //                       arguments} — arguments as a JSON STRING
 //                       (is_string() passthrough, else dump()); q.extras
@@ -58,23 +68,27 @@
 //                       content list falls back to output.raw
 //
 // action_status is deliberately NOT mapped (explicit placeholder; the wire
-// `phase` annotation is future work). A MessageItem of type InvokeReturn in
-// a user_input position still takes the function_call_output branch — the
-// embedded record says what it is.
+// `phase` annotation is future work), and precisely because no provider part
+// comes from it, its content is not capability-checked either. A MessageItem of
+// type InvokeReturn in a user_input position still takes the
+// function_call_output branch — the embedded record says what it is.
 //
 // Transport: resolve_endpoint() picks host/port/target and
 // apply_transport_headers() applies auth/user-agent/extra headers. The
 // endpoint's request_path is used VERBATIM — set it to "/v1/responses" (the
 // dataclass default "/chat/completions" is chat-completions flavoured and
-// would misroute this body; the interface contract allows no third hard
-// error, so this stays the caller's responsibility). SSE-specific headers
+// would misroute this body; nothing here detects the mismatch, so this stays
+// the caller's responsibility). SSE-specific headers
 // (Accept: text/event-stream, Content-Type: application/json) are set here,
 // not in the shared helper.
 //
 // Implementation contract (model_request.hpp) applies in full: synchronous,
 // pure, no I/O, stateless — one instance may serve concurrent calls; lenient
-// on imperfect conversations; exactly two hard errors (missing non-empty
-// "model"; hostless base_url), both HttpRequestException{CreateRequest}.
+// on imperfect conversations; three hard errors, all
+// HttpRequestException{CreateRequest}: missing non-empty "model", hostless
+// base_url, and a content part this protocol cannot carry (audio or video, or
+// an encoding its modality's field cannot describe — see the flattening notes
+// above).
 //
 
 #include <nlohmann/json.hpp>

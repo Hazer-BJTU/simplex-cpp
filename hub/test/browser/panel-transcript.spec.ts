@@ -127,8 +127,8 @@ test('recovers worker history and contains long content on a narrow viewport', a
     await page.request.post(`${STUB}/__stub/settings`, { data: {
         historyEnabled: true,
         historyTurns: [{ index: 0,
-            user: [{ type: 'text', raw: 'earlier user message' }],
-            steps: [{ index: 0, content: [{ type: 'text', raw: 'x'.repeat(1200) }],
+            user: [{ type: 'text', raw: 'earlier user message', modality: 'text' }],
+            steps: [{ index: 0, content: [{ type: 'text', raw: 'x'.repeat(1200), modality: 'text' }],
                 tool_calls: 2 }], omitted_steps: 0 }],
     } });
     await emit(page, 'ready', { active: false, capabilities: ['session-history'] });
@@ -151,8 +151,8 @@ test('collapses older restored turns while keeping them available', async ({ pag
     await page.request.post(`${STUB}/__stub/settings`, { data: {
         historyEnabled: true,
         historyTurns: Array.from({ length: 5 }, (_, index) => ({
-            index, user: [{ type: 'text', raw: `input ${index}` }],
-            steps: [{ index: 0, content: [{ type: 'text', raw: `answer ${index}` }],
+            index, user: [{ type: 'text', raw: `input ${index}`, modality: 'text' }],
+            steps: [{ index: 0, content: [{ type: 'text', raw: `answer ${index}`, modality: 'text' }],
                 tool_calls: 0 }], omitted_steps: 0,
         })),
     } });
@@ -188,10 +188,10 @@ test('a history refresh keeps detailed tool cards beside the final reply', async
     await emit(page, 'model_response', modelResponse('Final answer after the tool.'));
     await page.request.post(`${STUB}/__stub/settings`, { data: {
         historyTurns: [{ index: 0,
-            user: [{ type: 'text', raw: 'Please run the tool.' }],
+            user: [{ type: 'text', raw: 'Please run the tool.', modality: 'text' }],
             steps: [
                 { index: 0, content: [], tool_calls: 1 },
-                { index: 1, content: [{ type: 'text', raw: 'Final answer after the tool.' }],
+                { index: 1, content: [{ type: 'text', raw: 'Final answer after the tool.', modality: 'text' }],
                     tool_calls: 0 },
             ], omitted_steps: 0 }],
     } });
@@ -240,7 +240,7 @@ test('reload recovers history after the capability event leaves replay', async (
     await open(page);
     await page.request.post(`${STUB}/__stub/settings`, { data: {
         historyEnabled: true,
-        historyTurns: [{ index: 0, user: [{ type: 'text', raw: 'retained by worker' }],
+        historyTurns: [{ index: 0, user: [{ type: 'text', raw: 'retained by worker', modality: 'text' }],
             steps: [], omitted_steps: 0 }],
     } });
     await emit(page, 'status', { active: false, capabilities: ['session-history'] });
@@ -252,7 +252,7 @@ test('reload recovers history after the capability event leaves replay', async (
 test('the same worker reconnect refreshes history after its new status', async ({ page }) => {
     await open(page);
     const turn = (raw: string) => ({ index: 0,
-        user: [{ type: 'text', raw }], steps: [], omitted_steps: 0 });
+        user: [{ type: 'text', raw, modality: 'text' }], steps: [], omitted_steps: 0 });
     await page.request.post(`${STUB}/__stub/settings`, { data: {
         historyEnabled: true, historyTurns: [turn('before disconnect')],
     } });
@@ -379,7 +379,7 @@ test('revision change restarts pagination and a bad restart ends loading', async
 test('a pruned history cursor restarts from zero when the revision changes', async ({ page }) => {
     await open(page);
     const turn = (index: number, raw: string) => ({ index,
-        user: [{ type: 'text', raw }], steps: [], omitted_steps: 0 });
+        user: [{ type: 'text', raw, modality: 'text' }], steps: [], omitted_steps: 0 });
     await page.request.post(`${STUB}/__stub/settings`, { data: {
         historyEnabled: true,
         historyTurns: Array.from({ length: 6 }, (_, index) => turn(index, `old ${index}`)),
@@ -405,7 +405,7 @@ test('a pruned history cursor restarts from zero when the revision changes', asy
 
 test('an invalid partial-turn cursor error retries from zero', async ({ page }) => {
     await open(page);
-    const step = { index: 0, content: [{ type: 'text', raw: 'recovered answer' }],
+    const step = { index: 0, content: [{ type: 'text', raw: 'recovered answer', modality: 'text' }],
         tool_calls: 0 };
     await page.request.post(`${STUB}/__stub/settings`, { data: {
         historyEnabled: true,

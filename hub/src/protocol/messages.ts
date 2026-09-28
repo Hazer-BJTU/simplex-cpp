@@ -11,6 +11,16 @@ import { randomUUID } from 'node:crypto';
 /** Input content encodings accepted by the worker. */
 export const CONTENT_TYPES = ['text', 'binary', 'external_ref'] as const;
 
+/**
+ * Media categories a content part may declare.
+ *
+ * The worker requires one on every part and never infers it from `type`: an
+ * encoding says how bytes travel, not what they are. Declaring the full set
+ * here means the panel can name a category the current adapters refuse — the
+ * worker's own error is clearer than the hub rejecting it as unknown.
+ */
+export const CONTENT_MODALITIES = ['text', 'image', 'audio', 'video', 'document'] as const;
+
 /** Confirmation policies selectable per payload. */
 export const CONFIRMATION_MODES = ['ask', 'approve', 'deny'] as const;
 
@@ -22,6 +32,8 @@ export const INPUT_OPERATIONS = ['message', 'continue', 'compact', 'history'] as
 
 /** One accepted content encoding. */
 export type ContentType = (typeof CONTENT_TYPES)[number];
+/** One accepted media category. */
+export type ContentModality = (typeof CONTENT_MODALITIES)[number];
 /** One confirmation policy. */
 export type ConfirmationMode = (typeof CONFIRMATION_MODES)[number];
 /** One signal operation. */
@@ -36,6 +48,7 @@ const FORBIDDEN_DATA_FIELDS = ['role', 'invokes', 'invoke_return', 'type'] as co
 export interface NormalizedContentPart {
     type: ContentType;
     raw: string;
+    modality: ContentModality;
     extras?: Record<string, unknown>;
 }
 
@@ -107,16 +120,26 @@ export function normalizeContentPart(part: unknown, index: number): NormalizedCo
     if (typeof part !== 'object' || part === null || Array.isArray(part)) {
         throw new ProtocolError(`content[${index}] must be an object`);
     }
-    const { type, raw, extras } = part as Record<string, unknown>;
+    const { type, raw, modality, extras } = part as Record<string, unknown>;
     if (!(CONTENT_TYPES as readonly unknown[]).includes(type)) {
         throw new ProtocolError(
             `content[${index}].type must be one of ${CONTENT_TYPES.join(', ')}`
-            + (type === 'image' ? ' (use external_ref with the image URL in raw)' : ''));
+            + (type === 'image'
+                ? ' (an image URL is external_ref in raw with modality "image")'
+                : ''));
     }
     if (typeof raw !== 'string' || raw.length === 0) {
         throw new ProtocolError(`content[${index}].raw must be a nonempty string`);
     }
-    const normalized: NormalizedContentPart = { type: type as ContentType, raw };
+    // Required, never defaulted: `type` describes the encoding, and the worker
+    // refuses to guess what the bytes are. A panel that means text says so.
+    if (!(CONTENT_MODALITIES as readonly unknown[]).includes(modality)) {
+        throw new ProtocolError(
+            `content[${index}].modality must be one of ${CONTENT_MODALITIES.join(', ')}`);
+    }
+    const normalized: NormalizedContentPart = {
+        type: type as ContentType, raw, modality: modality as ContentModality,
+    };
     if (extras !== undefined) {
         if (typeof extras !== 'object' || extras === null || Array.isArray(extras)) {
             throw new ProtocolError(`content[${index}].extras must be an object`);

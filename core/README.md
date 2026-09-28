@@ -86,8 +86,13 @@ never start a run automatically.
 See the [formal worker client protocol](docs/worker-protocol.md) for all message
 formats, event data, connection roles, confirmation decisions, delivery limits,
 and recovery behavior. Message payloads carry an ordered `content` array of
-text/attachment parts. Use `external_ref` for image URLs; optional `extras`
-preserves additional metadata for future richer modalities.
+text/attachment parts. Each part states its encoding (`type`: `text`, `binary`,
+`external_ref`) and its media category (`modality`: `text`, `image`, `audio`,
+`video`, `document`) explicitly; an image URL is
+`{"type": "external_ref", "modality": "image"}`, never a category inferred from
+the encoding. Adapters map the categories their provider can describe and reject
+the rest, so optional `extras` carries provider metadata rather than a
+substitute label.
 It is the reference for independently implemented hubs
 and clients. The [documentation index](docs/index.md) lists the package's formal
 documents and their publishing conventions. The `options` signal returns

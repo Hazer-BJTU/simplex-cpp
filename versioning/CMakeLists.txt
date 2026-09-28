@@ -53,13 +53,27 @@
 #       Host and providers must be rebuilt together for the new vtable slot.
 #   v8: LLMModel gained the synchronous virtual handle_options() mutation hook.
 #   v9: LLMModel gained the const virtual get_current_options() query.
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 9)
+#   v10: model_io::Content gained an explicit Modality label, which changed both
+#       its size and its member order. Content is a member of MessageItem and
+#       AgentInputState, so every boundary that carries those — converse(),
+#       integrate(), the loop-hook events, and the toolset calls below — now
+#       disagrees with a plugin built against v9 about where each member after
+#       `raw` begins. Rebuilt plugins must report v10.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 10)
 
 # Independent contracts for dynamic toolsets and loop hooks.
 # v2: shared intrinsic ToolResult changed layout to buffer metadata/output
 #     separately. Tool plugins using that helper must be rebuilt with the host.
-set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 2)
-set(SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION 1)
+# v3: model_io::Content gained the Modality member. ToolInterface::invoke()
+#     returns a Content by value and check_result() takes one by value, so a
+#     toolset built against v2 would construct and read a different object.
+set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 3)
+
+# v2: loop hook events hand out MessageItem and AgentInputState references
+#     (loop/events.hpp), both of which contain Content. The same layout change
+#     therefore reaches every hook implementation, not only the ones that name
+#     Content directly.
+set(SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION 2)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
 # Rendered into version.hpp and hashed by extensions/plugin_magic.hpp

@@ -264,7 +264,8 @@ void scenario(Scenario mode) {
                     BOOST_TEST(event["data"]["message"] == "no turn to continue");
                     co_await send("payload", {{"operation", "message"}, {"request_id", "next"},
                         {"content", Json::array({{{"type", "text"},
-                            {"raw", "Next task" + std::string(6 * 1024, 'N')}}})}});
+                            {"raw", "Next task" + std::string(6 * 1024, 'N')},
+                            {"modality", "text"}}})}});
                 }
             } else if (name == "run_finished") {
                 ++finished;
@@ -288,7 +289,8 @@ void scenario(Scenario mode) {
                                 "context exceeds byte budget") != std::string::npos);
                         }
                         co_await send("payload", {{"operation", "message"}, {"request_id", "next"},
-                            {"content", Json::array({{{"type", "text"}, {"raw", "Next task"}}})}});
+                            {"content", Json::array({{{"type", "text"}, {"raw", "Next task"},
+                                {"modality", "text"}}})}});
                     }
                 } else if (request == "next" && mode == Scenario::Success) {
                     co_await send("payload", {{"operation", "compact"}, {"request_id", "compact-2"}});
@@ -349,7 +351,8 @@ void scenario(Scenario mode) {
                 if (name == "ready") {
                     co_await send("payload", {{"operation", "message"}, {"request_id", "restored"},
                         {"content", Json::array({{{"type", "text"},
-                            {"raw", "After restart" + std::string(6 * 1024, 'R')}}})}});
+                            {"raw", "After restart" + std::string(6 * 1024, 'R')},
+                            {"modality", "text"}}})}});
                 } else if (name == "compact_finished") {
                     const auto archive = std::filesystem::path(event["data"]["memory_file"].get<std::string>());
                     BOOST_CHECK(archive.parent_path().filename() > archives.back().parent_path().filename());

@@ -4,8 +4,10 @@
 #include "llm/compat/responses/interpreter.hpp"
 
 #include <algorithm>
+#include <initializer_list>
 #include <iterator>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,46 +40,220 @@ json content_part(const model_io::Content& content, const char* wire_type) {
     return part;
 }
 
-json input_content_part(const model_io::Content& content) {
-    json part = (content.extras && content.extras->is_object())
-        ? *content.extras
-        : json::object();
-    const std::string explicit_type = part.value("type", std::string());
-
-    if (content.type == model_io::ContentType::Text) {
-        part["type"] = "input_text";
-        part["text"] = content.raw;
-        return part;
+/**
+ * Check one part against the dialect's support matrix and explain the refusal.
+ *
+ * As in the sibling adapter the matrix is (modality, encoding): the input list
+ * has a field for every kind below, but only some representations fit the field
+ * the modality maps to. A base64 image has no media type that would let us build
+ * an `image_url`, and a text string in `file_data` is not file data. Those
+ * combinations are refused here rather than sent as something they are not.
+ * This is the module's hard error #3 (see the header contract), and it applies
+ * to the INPUT-LIST positions: user content and tool output both go through
+ * input_content(). Assistant replay and reasoning are text positions instead —
+ * see require_text_position().
+ *
+ * | modality | encoding     | wire                                     |
+ * | -------- | ------------ | ---------------------------------------- |
+ * | text     | text         | `input_text`                             |
+ * | text     | external_ref | `input_text`; the reference travels as text |
+ * | image    | external_ref | `input_image` + `image_url`              |
+ * | document | external_ref | `input_file` + `file_url`                |
+ * | document | binary       | `input_file` + `file_data`               |
+ * | anything else            | refused                                  |
+ */
+void require_input_part(const model_io::Content& part) {
+    const auto modality = part.modality;
+    const auto type = part.type;
+    const auto refuse = [&](const std::string& reason) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::CreateRequest,
+            "responses cannot send a " + nlohmann::json(type).dump() + " "
+                + nlohmann::json(modality).dump() + " content part: " + reason);
+    };
+    switch (modality) {
+        case model_io::Modality::Text:
+            if (type == model_io::ContentType::Binary) {
+                refuse("the base64 encoding would be delivered as the text");
+            }
+            return;
+        case model_io::Modality::Image:
+            if (type != model_io::ContentType::ExternalRef) {
+                refuse("input_image takes a URL, and this representation carries "
+                       "no media type to describe it with");
+            }
+            return;
+        case model_io::Modality::Document:
+            if (type != model_io::ContentType::ExternalRef &&
+                type != model_io::ContentType::Binary) {
+                refuse("input_file takes a reference or base64 data");
+            }
+            return;
+        case model_io::Modality::Audio:
+        case model_io::Modality::Video:
+            refuse("the input list has no such part kind");
     }
+}
 
-    if (explicit_type == "input_image") {
-        part["type"] = "input_image";
-        if (!part.contains("image_url") && !part.contains("file_id")) {
-            part["image_url"] = content.raw;
+/**
+ * Check one part against a TEXT POSITION: a synthesized assistant message goes
+ * out as `output_text`, and a synthesized reasoning item as a `summary_text`
+ * inside `{type:"reasoning"}`. Both carry `raw` and nothing else.
+ *
+ * Only a text part survives that. An image or a document passing the input-list
+ * matrix and then reaching this path would be replayed as the characters of its
+ * URL or its base64, which is exactly the silent change of category the label
+ * exists to prevent. `position` names the field the caller is about to fill.
+ */
+void require_text_position(const model_io::Content& part, const char* position) {
+    if (part.modality == model_io::Modality::Text &&
+        part.type != model_io::ContentType::Binary) {
+        return;
+    }
+    throw HttpRequestException(
+        HttpRequestException::Stage::CreateRequest,
+        std::string("responses sends ") + position + " as text, so a "
+            + nlohmann::json(part.type).dump() + " "
+            + nlohmann::json(part.modality).dump()
+            + " part cannot be preserved there");
+}
+
+// The wire item captured in an extras record, if it is one of the wanted
+// type — the round-trip fast path the stream handler sets up.
+const json* captured_item(const std::optional<json>& extras,
+                          const char* wire_type) {
+    if (!extras || !extras->is_object()) return nullptr;
+    const auto type = extras->find("type");
+    if (type == extras->end() || !type->is_string()) return nullptr;
+    if (type->get<std::string>() != wire_type) return nullptr;
+    return &*extras;
+}
+
+/** Whether emit_assistant_message() re-emits captured provider items verbatim. */
+bool assistant_is_replayed_verbatim(const model_io::MessageItem& response) {
+    if (!response.extras || !response.extras->is_object()) return false;
+    const auto items = response.extras->find("output_items");
+    if (items == response.extras->end() || !items->is_array()) return false;
+    for (const auto& item : *items) {
+        if (item.is_object() &&
+            item.value("type", std::string()) == "message") {
+            return true;
         }
-        return part;
     }
-    if (explicit_type == "input_file") {
-        part["type"] = "input_file";
-        if (!part.contains("file_data") && !part.contains("file_id") &&
-            !part.contains("file_url")) {
-            if (content.type == model_io::ContentType::ExternalRef) {
-                part["file_url"] = content.raw;
-            } else {
-                part["file_data"] = content.raw;
+    return false;
+}
+
+/**
+ * Whether emit_reasoning() re-emits captured provider items verbatim. When it
+ * does, `reasoning.raw` and its label are not used at all, so the label places
+ * no demand on the provider.
+ */
+bool reasoning_is_replayed_verbatim(const model_io::Content& reasoning) {
+    if (!reasoning.extras || !reasoning.extras->is_object()) return false;
+    const auto items = reasoning.extras->find("items");
+    if (items != reasoning.extras->end() && items->is_array()) {
+        for (const auto& item : *items) {
+            if (item.is_object()) return true;
+        }
+    }
+    return captured_item(reasoning.extras, "reasoning") != nullptr;
+}
+
+/** Whether emit_tool_results() re-emits the captured provider item verbatim. */
+bool tool_result_is_replayed_verbatim(const model_io::MessageItem& item) {
+    return item.invoke_return
+        && captured_item(item.invoke_return->extras, "function_call_output");
+}
+
+/**
+ * Check every part the dialect has to describe, before building anything.
+ * Walking up front keeps the failure at construction time and independent of
+ * how deep in the conversation the offending part sits.
+ *
+ * Each position is checked against the representation it is actually emitted
+ * with, and a part that is not emitted at all is not checked: a captured item
+ * replayed verbatim does not depend on its Content's label, and `action_status`
+ * has no mapping in this dialect, so the provider's capabilities say nothing
+ * about it.
+ */
+void require_supported_conversation(const model_io::AgentInputState& state) {
+    for (const auto& turn : state.turns) {
+        // A user position and a tool-output position both go through
+        // input_content(), so they share the input-list matrix.
+        for (const auto& part : turn.user_input.content) require_input_part(part);
+        for (const auto& step : turn.agent_loop_step) {
+            const auto& response = step.model_response;
+            if (!assistant_is_replayed_verbatim(response)) {
+                for (const auto& part : response.content) {
+                    require_text_position(part, "an assistant message");
+                }
+            }
+            if (response.reasoning &&
+                !reasoning_is_replayed_verbatim(*response.reasoning)) {
+                require_text_position(*response.reasoning, "assistant reasoning");
+            }
+            if (!step.invoke_returns) continue;
+            for (const auto& item : *step.invoke_returns) {
+                if (tool_result_is_replayed_verbatim(item)) continue;
+                for (const auto& part : item.content) require_input_part(part);
             }
         }
+    }
+}
+
+/**
+ * Copy the auxiliary provider fields a part kind defines out of `extras`.
+ *
+ * `extras` reaches the adapter from the conversation, and for user content the
+ * caller supplied it, so it is DATA and not an instruction: it may fill in
+ * fields of the kind `modality` already chose (a provider-hosted file id, a
+ * display filename, an image detail level) and it may never choose the kind
+ * itself. That is why the part is built from a whitelist instead of starting as
+ * a copy of `extras` — a caller-supplied `"type"` cannot relabel a text part as
+ * a file, and no other wire field can be smuggled in beside it.
+ */
+void inherit(const json& extras, json& part, std::initializer_list<const char*> keys) {
+    for (const char* key : keys) {
+        if (auto it = extras.find(key); it != extras.end()) part[key] = *it;
+    }
+}
+
+/**
+ * One provider part for one input Content entry. `modality` decides the part
+ * kind, never the encoding and never `extras`: an image is an image whether its
+ * URL arrived in `raw` or in `extras.image_url`, and an external reference to a
+ * PDF is a file, not a picture. The pair was validated above, so the encoding
+ * here is one the chosen kind can carry.
+ */
+json input_content_part(const model_io::Content& content) {
+    const json extras = (content.extras && content.extras->is_object())
+        ? *content.extras
+        : json::object();
+
+    if (content.modality == model_io::Modality::Image) {
+        json part{{"type", "input_image"}};
+        inherit(extras, part, {"detail", "file_id"});
+        if (!part.contains("file_id")) {
+            part["image_url"] = extras.contains("image_url")
+                ? extras["image_url"]
+                : json(content.raw);
+        }
         return part;
     }
 
-    if (content.type == model_io::ContentType::ExternalRef) {
-        part["type"] = "input_image";
-        part["image_url"] = content.raw;
-    } else {
-        part["type"] = "input_file";
-        part["file_data"] = content.raw;
+    if (content.modality == model_io::Modality::Document) {
+        json part{{"type", "input_file"}};
+        inherit(extras, part, {"filename", "file_id"});
+        if (!part.contains("file_id")) {
+            part[content.type == model_io::ContentType::ExternalRef
+                ? "file_url" : "file_data"] = content.raw;
+        }
+        return part;
     }
-    return part;
+
+    // Text: the payload goes out as text whatever the reference says, and
+    // input_text has no auxiliary field for extras to fill in.
+    return json{{"type", "input_text"}, {"text", content.raw}};
 }
 
 // The synthesized assistant content: the output_text part, then — when the
@@ -119,17 +295,6 @@ json::array_t input_content(const std::vector<model_io::Content>& content) {
         parts.push_back(input_content_part(value));
     }
     return parts;
-}
-
-// The wire item captured in an extras record, if it is one of the wanted
-// type — the round-trip fast path the stream handler sets up.
-const json* captured_item(const std::optional<json>& extras,
-                          const char* wire_type) {
-    if (!extras || !extras->is_object()) return nullptr;
-    const auto type = extras->find("type");
-    if (type == extras->end() || !type->is_string()) return nullptr;
-    if (type->get<std::string>() != wire_type) return nullptr;
-    return &*extras;
 }
 
 std::string derived_role(const model_io::MessageItem& item) {
@@ -261,7 +426,7 @@ void emit_tool_results(
         if (item.content.empty()) {
             out["output"] = record ? record->output.raw : std::string();
         } else if (item.content.size() == 1 &&
-                   item.content.front().type == model_io::ContentType::Text) {
+                   item.content.front().modality == model_io::Modality::Text) {
             out["output"] = (item.content.front().raw.empty() && record)
                 ? record->output.raw
                 : item.content.front().raw;
@@ -296,6 +461,9 @@ endpoint::ModelRequestInterpreter::HttpRequest ResponsesInterpreter::build_reque
     }
     // Hard error #2 comes with the resolver.
     const endpoint::ResolvedEndpoint where = endpoint::resolve_endpoint(endpoint);
+    // Hard error #3: a modality this dialect cannot describe is a construction
+    // failure, checked before any part is mapped (see the header contract).
+    require_supported_conversation(conversation);
 
     json body = generation;   // verbatim passthrough; builder keys below win
 

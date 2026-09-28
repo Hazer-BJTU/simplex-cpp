@@ -24,8 +24,10 @@ BOOST_AUTO_TEST_CASE(content_roundtrips) {
     Content c;
     c.type = ContentType::Text;
     c.raw = "hello";
+    c.modality = Modality::Text;
     auto c2 = roundtrip(c);
     BOOST_CHECK(c2.type == ContentType::Text);
+    BOOST_CHECK(c2.modality == Modality::Text);
     BOOST_CHECK_EQUAL(c2.raw, "hello");
 }
 
@@ -33,8 +35,132 @@ BOOST_AUTO_TEST_CASE(content_enum_serializes_as_string) {
     Content c;
     c.type = ContentType::ExternalRef;
     c.raw = "file:///x";
+    c.modality = Modality::Text;
     nlohmann::json j = c;
     BOOST_CHECK_EQUAL(j["type"], "external_ref");
+}
+
+// The category is a label of its own and every value survives the round trip,
+// including the categories no current adapter maps: the contract carries them
+// even while providers cannot receive them.
+BOOST_AUTO_TEST_CASE(every_modality_label_roundtrips) {
+    const std::pair<Modality, const char*> cases[] = {
+        {Modality::Text, "text"},
+        {Modality::Image, "image"},
+        {Modality::Audio, "audio"},
+        {Modality::Video, "video"},
+        {Modality::Document, "document"},
+    };
+    for (const auto& [modality, name] : cases) {
+        Content c;
+        c.type = ContentType::ExternalRef;
+        c.raw = "https://example.invalid/x";
+        c.modality = modality;
+        nlohmann::json j = c;
+        BOOST_CHECK_EQUAL(j["modality"], name);
+        BOOST_CHECK(roundtrip(c).modality == modality);
+    }
+}
+
+// `modality` is REQUIRED by every producer, and decoding is STRICT: a
+// misspelled or unknown category is an error, never a silent fall back to
+// text — a fallback would send an attachment to a provider as plain text.
+BOOST_AUTO_TEST_CASE(unknown_modality_name_is_rejected_not_defaulted) {
+    nlohmann::json j{{"type", "external_ref"},
+                     {"raw", "https://example.invalid/x"},
+                     {"modality", "imgae"}};
+    BOOST_CHECK_THROW(j.get<Content>(), std::invalid_argument);
+
+    // A non-string label is a shape error, likewise never a default.
+    nlohmann::json numeric{{"type", "text"}, {"raw", "x"}, {"modality", 7}};
+    BOOST_CHECK_THROW(numeric.get<Content>(), nlohmann::json::exception);
+}
+
+// Missing-key tolerance (protocol rule 6) applies to this field only for
+// records written before it existed, and the reading is the one those records
+// actually had. Absence is different from a WRONG label (the test above), which
+// has no safe reading at all. (The public input boundary is stricter than the
+// record: it REQUIRES the label, so this path is only ever a durable record.)
+BOOST_AUTO_TEST_CASE(missing_key_or_default_is_text_never_indeterminate) {
+    Content bare;
+    BOOST_CHECK(bare.modality == Modality::Text);
+    // A value-initialised element (Content{} inside a vector) must be text too:
+    // an indeterminate enum would make serialising an "empty" part throw.
+    BOOST_CHECK_EQUAL(nlohmann::json(bare)["modality"], "text");
+}
+
+// A record persisted before the label existed is recovered by the reading the
+// pre-modality adapters used, and saving writes the label back, so the
+// migration happens exactly once.
+BOOST_AUTO_TEST_CASE(legacy_records_without_a_label_are_recovered_or_refused) {
+    Content text;
+    nlohmann::json{{"type", "text"}, {"raw", "x"}}.get_to(text);
+    BOOST_CHECK(text.modality == Modality::Text);
+
+    // Both adapters used to send a plain external reference to the provider as
+    // an image URL, so that is what a reference meant.
+    Content reference;
+    nlohmann::json{{"type", "external_ref"}, {"raw", "https://x/y.png"}}
+        .get_to(reference);
+    BOOST_CHECK(reference.modality == Modality::Image);
+    BOOST_CHECK_EQUAL(nlohmann::json(reference)["modality"], "image");
+
+    // ... unless the old Responses adapter was asked for a provider file part:
+    // it sent `input_file`/`file_url` while Chat Completions ignored the marker
+    // and sent an image, so the record is ambiguous and refused rather than
+    // migrated to whichever reading this build happens to prefer.
+    Content provider_file;
+    const nlohmann::json legacy_file{{"type", "external_ref"},
+        {"raw", "https://x/paper.pdf"}, {"extras", {{"type", "input_file"}}}};
+    BOOST_CHECK_EXCEPTION(legacy_file.get_to(provider_file), std::invalid_argument,
+        [](const auto& error) {
+            const std::string message = error.what();
+            return message.find("input_file") != std::string::npos
+                && message.find("modality") != std::string::npos;
+        });
+
+    // A provider-image marker is not ambiguous: Responses sent input_image and
+    // Chat Completions sent an image URL, which is the same reading.
+    Content provider_image;
+    nlohmann::json{{"type", "external_ref"}, {"raw", "https://x/y.png"},
+                   {"extras", {{"type", "input_image"}}}}.get_to(provider_image);
+    BOOST_CHECK(provider_image.modality == Modality::Image);
+
+    // A legacy binary payload is refused instead of guessed: Chat Completions
+    // sent it as text and Responses as file data, so no single reading is
+    // faithful, and picking one would silently change durable history.
+    Content binary;
+    const nlohmann::json legacy_binary{{"type", "binary"}, {"raw", "AA=="}};
+    BOOST_CHECK_EXCEPTION(legacy_binary.get_to(binary), std::invalid_argument,
+        [](const auto& error) {
+            return std::string(error.what()).find("modality") != std::string::npos;
+        });
+
+    // An explicit label still wins over the legacy reading, including the
+    // explicit "this reference is text".
+    Content labelled;
+    nlohmann::json{{"type", "external_ref"}, {"raw", "https://x/notes.txt"},
+                   {"modality", "text"}}.get_to(labelled);
+    BOOST_CHECK(labelled.modality == Modality::Text);
+}
+
+// A category and an encoding are independent: an image may arrive referenced
+// or inline, and a PDF is a document, not a picture.
+BOOST_AUTO_TEST_CASE(modality_is_independent_of_encoding) {
+    Content referenced;
+    referenced.type = ContentType::ExternalRef;
+    referenced.raw = "https://example.invalid/paper.pdf";
+    referenced.modality = Modality::Document;
+
+    Content inline_image;
+    inline_image.type = ContentType::Binary;
+    inline_image.raw = "AA==";
+    inline_image.modality = Modality::Image;
+
+    BOOST_CHECK(roundtrip(referenced).modality == Modality::Document);
+    BOOST_CHECK(roundtrip(referenced).type == ContentType::ExternalRef);
+    BOOST_CHECK(roundtrip(inline_image).modality == Modality::Image);
+    BOOST_CHECK(roundtrip(inline_image).type == ContentType::Binary);
 }
 
 // Provider-specific content-part fields ride in extras — e.g. the Responses
@@ -67,21 +193,32 @@ BOOST_AUTO_TEST_CASE(message_content_list_roundtrips_heterogeneous_parts) {
     message.type = MessageItemType::UserInput;
     message.role = "user";
     message.content = {
-        Content{ContentType::Text, "describe this image"},
+        // The category is stated, never derived from the encoding: the image
+        // is an image because the producer says so, and a text part stays text
+        // even when its bytes ride in an external reference. Both parts here
+        // also exercise the two encodings with a NON-default category and a
+        // non-default encoding respectively.
+        Content{ContentType::Text, "describe this image",
+                std::nullopt, Modality::Text},
         Content{ContentType::ExternalRef,
                 "https://example.invalid/photo.png",
-                nlohmann::json{{"type", "input_image"}, {"detail", "high"}}},
+                nlohmann::json{{"type", "input_image"}, {"detail", "high"}},
+                Modality::Image},
     };
 
     nlohmann::json j = message;
     BOOST_REQUIRE(j["content"].is_array());
     BOOST_REQUIRE_EQUAL(j["content"].size(), 2u);
     BOOST_CHECK_EQUAL(j["content"][1]["type"], "external_ref");
+    BOOST_CHECK_EQUAL(j["content"][0]["modality"], "text");
+    BOOST_CHECK_EQUAL(j["content"][1]["modality"], "image");
 
     MessageItem copy = j.get<MessageItem>();
     BOOST_REQUIRE_EQUAL(copy.content.size(), 2u);
     BOOST_CHECK(copy.content[0].type == ContentType::Text);
+    BOOST_CHECK(copy.content[0].modality == Modality::Text);
     BOOST_CHECK(copy.content[1].type == ContentType::ExternalRef);
+    BOOST_CHECK(copy.content[1].modality == Modality::Image);
     BOOST_CHECK_EQUAL(copy.content[1].raw,
                       "https://example.invalid/photo.png");
     BOOST_REQUIRE(copy.content[1].extras.has_value());
@@ -329,6 +466,7 @@ BOOST_AUTO_TEST_CASE(message_item_optionals_restored_when_set) {
     m.reasoning = Content{};
     m.reasoning->type = ContentType::Text;
     m.reasoning->raw = "thinking...";
+    m.reasoning->modality = Modality::Text;
     m.invokes = std::vector<InvokeQuery>{};
     auto m2 = roundtrip(m);
     BOOST_CHECK(m2.reasoning.has_value());
@@ -503,13 +641,15 @@ BOOST_AUTO_TEST_CASE(user_loop_step_compact_preference_roundtrips) {
 BOOST_AUTO_TEST_CASE(records_are_plain_aggregates) {
     // No base class or declared constructors: aggregate initialisation works
     // and records convert through the nlohmann ADL functions.
-    Content c{ContentType::Binary, "AA=="};
+    Content c{ContentType::Binary, "AA==", std::nullopt, Modality::Image};
     nlohmann::json j = c;
     BOOST_CHECK_EQUAL(j["type"], "binary");
     BOOST_CHECK_EQUAL(j["raw"], "AA==");
+    BOOST_CHECK_EQUAL(j["modality"], "image");
 
     auto c2 = j.get<Content>(); // json -> record
     BOOST_CHECK(c2.type == ContentType::Binary);
+    BOOST_CHECK(c2.modality == Modality::Image);
     BOOST_CHECK_EQUAL(c2.raw, "AA==");
 
     Content c3;

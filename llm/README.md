@@ -354,10 +354,14 @@ user message may therefore combine text, images, and files, for example:
 model_io::MessageItem message;
 message.type = model_io::MessageItemType::UserInput;
 message.content = {
-    {model_io::ContentType::Text, "Describe this image"},
+    // Each part states its encoding AND its media category; neither is
+    // inferred from the other.
+    {model_io::ContentType::Text, "Describe this image", std::nullopt,
+     model_io::Modality::Text},
     {model_io::ContentType::ExternalRef,
      "https://example.com/image.png",
-     nlohmann::json{{"type", "input_image"}, {"detail", "high"}}},
+     nlohmann::json{{"detail", "high"}},
+     model_io::Modality::Image},
 };
 ```
 
@@ -365,10 +369,40 @@ The serialized `content` field is always a JSON array. Deserialization also
 accepts the former single-`Content` object and promotes it to a one-element
 array so existing persisted conversations remain readable. The Responses
 adapter preserves list order and emits every entry as one content part in the
-same provider message. `Text` becomes `input_text`; `ExternalRef` defaults to
-`input_image`; `Binary` defaults to `input_file`. Set `extras.type` to
-`input_image` or `input_file` when the default is not appropriate, and put
-provider fields such as `detail`, `filename`, or `file_id` in `extras`.
+same provider message, choosing the part kind from `modality`: `Text` becomes
+`input_text`, `Image` becomes `input_image`, and `Document` becomes
+`input_file` (a reference rides as `file_url`, inline bytes as `file_data`).
+`Audio` and `Video` are contract labels with no Responses part kind, so the
+adapter rejects them at request construction — it never sends an unsupported
+category as text or as a file.
+
+Support is a property of the (encoding, modality) pair **at a wire position**. A
+reference can carry text, an image or a document; base64 can carry a document;
+nothing can carry a base64 image or a base64 text part, because no provider field
+takes a media type there and the encoding itself would be delivered instead of
+the payload. Unsupported pairs fail request construction, exactly like
+unsupported categories.
+
+The position matters as much as the pair: user input carries the whole matrix,
+a Responses tool result carries it too (its output is an input array), while an
+assistant message and a replayed reasoning part are text in both adapters, so an
+image there is refused rather than flattened into the characters of its URL.
+A field an adapter does not map at all — `action_status` in both — is not
+validated, because the provider never sees it.
+
+A conversation persisted before `modality` existed is read with the semantics it
+was written under: a stored reference was an image to both adapters (unless its
+`extras.type` asked the old Responses adapter for a provider file part, which is
+refused as ambiguous), and a stored binary part without a label is refused
+rather than guessed — see `core/docs/worker-protocol.md`.
+
+`extras` is sender-supplied data and never decides the part kind: the adapter
+builds the provider part from `modality` and from the fields that kind defines
+(`detail`, `filename`, `file_id`, `image_url`). A `type` inside `extras` cannot
+turn a text part into a file part or a document into an image, and fields the
+chosen kind does not define are not forwarded. Put provider fields such as
+`detail`, `filename`, or `file_id` in `extras`; a provider-hosted file is
+`modality: Document` plus `extras.file_id`.
 
 ## Configuration
 

@@ -115,7 +115,7 @@ describe('end to end with the real worker', { skip }, () => {
                 }
                 const messageId = `message-${index}`;
                 panel.send({ v: 1, type: 'input', session: session.id, request_id: messageId,
-                    content: [{ type: 'text', raw: 'A detailed historical note. '.repeat(2000) }] });
+                    content: [{ type: 'text', raw: 'A detailed historical note. '.repeat(2000), modality: 'text' }] });
                 const ordinary = await panel.waitFor((message) => message.type === 'event'
                     && message.envelope.event === 'run_finished'
                     && message.envelope.request_id === messageId, { timeout: 60000 });
@@ -175,7 +175,7 @@ describe('end to end with the real worker', { skip }, () => {
             await panel.waitFor((message) => message.type === 'subscribed', { timeout: 10000 });
             panel.send({
                 v: 1, type: 'input', session: 'e2e-cancel',
-                content: [{ type: 'text', raw: 'Run the fixture command' }],
+                content: [{ type: 'text', raw: 'Run the fixture command', modality: 'text' }],
             });
             await panel.waitFor((message) => message.type === 'accepted'
                 && message.action === 'input', { timeout: 10000 });
@@ -231,7 +231,7 @@ describe('end to end with the real worker', { skip }, () => {
                 v: 1,
                 type: 'input',
                 session: 'e2e-live',
-                content: [{ type: 'text', raw: 'Run the fixture command' }],
+                content: [{ type: 'text', raw: 'Run the fixture command', modality: 'text' }],
             });
             const accepted = await panel.waitFor((message) => message.type === 'accepted',
                 { timeout: 10000, label: 'input acceptance' });

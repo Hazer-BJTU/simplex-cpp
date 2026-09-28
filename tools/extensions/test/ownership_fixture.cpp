@@ -78,7 +78,8 @@ public:
             std::move(query),
             {model_io::ContentType::Text,
              matched_before && matched_after ? "ownership preserved" : "ownership changed",
-             {}},
+             {},
+             model_io::Modality::Text},
             {}};
     }
 

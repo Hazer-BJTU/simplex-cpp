@@ -213,11 +213,16 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 | `status_snapshot` | `session`, optional `since` | answers with a fresh `snapshot` |
 | `ping` | — | answers with `pong` |
 
-`input` accepts the same content parts as the worker protocol (`text`,
-`binary`, `external_ref` with optional `extras`) and the same option categories
+`input` accepts the same content parts as the worker protocol (`type` of
+`text`, `binary`, or `external_ref`, a required `modality` of `text`, `image`,
+`audio`, `video`, or `document`, and optional `extras`) and the same option
+categories
 (`model`, `tools` — reserved and empty, `confirmation.mode`). The hub validates
 them locally so the panel can report a mistake immediately; the worker is still
-authoritative and its rejection is surfaced unchanged.
+authoritative and its rejection is surfaced unchanged. The worker requires the
+label on every part and never infers it from `type`, so the hub refuses a part
+without one rather than assuming text. Today's panel sends `modality: "text"`;
+the attach entry stays disabled until it can ask for the category.
 For `operation: "compact"`, omit content. The hub requires the current worker
 to advertise `context-compact`, tracks the request like other runs, and forwards
 `compact_finished` for display and replay. The panel shows the saved summary

@@ -24,6 +24,7 @@ import { hubRoot } from '../src/config.ts';
 import { EVENT_TABLE, KNOWN_EVENTS } from '../src/protocol/events.ts';
 import {
     CONFIRMATION_MODES,
+    CONTENT_MODALITIES,
     CONTENT_TYPES,
     INPUT_OPERATIONS,
     SIGNAL_OPERATIONS,
@@ -134,7 +135,8 @@ describe('worker protocol drift', { skip }, () => {
             .map((match) => match[1]);
         assert.ok(documented.length > 0, `no input operations found. ${PARSER_HINT}`);
         assert.deepEqual([...INPUT_OPERATIONS].sort(), [...new Set(documented)].sort());
-        assert.doesNotThrow(() => buildPayload({ requestId: 'r', content: [{ type: 'text', raw: 'x' }] }));
+        assert.doesNotThrow(() => buildPayload({
+            requestId: 'r', content: [{ type: 'text', raw: 'x', modality: 'text' }] }));
         assert.doesNotThrow(() => buildPayload({ operation: 'continue', requestId: 'r' }));
     });
 
@@ -144,6 +146,18 @@ describe('worker protocol drift', { skip }, () => {
         assert.ok(typeRow, `no "type" row in the Content table. ${PARSER_HINT}`);
         const documented = backticks(typeRow[1]).sort();
         assert.deepEqual([...CONTENT_TYPES].sort(), documented);
+    });
+
+    it('documents exactly the modalities the hub accepts', () => {
+        const rows = firstTable(section(readDocument(), '### Content'), 'the Content table');
+        const modalityRow = rows.find((row) => identifier(row[0]) === 'modality');
+        assert.ok(modalityRow, `no "modality" row in the Content table. ${PARSER_HINT}`);
+        const documented = backticks(modalityRow[1]).sort();
+        assert.deepEqual([...CONTENT_MODALITIES].sort(), documented);
+        // A part without the label is refused rather than assumed to be text.
+        assert.throws(
+            () => buildPayload({ requestId: 'r', content: [{ type: 'text', raw: 'x' }] }),
+            /modality/);
     });
 
     it('documents exactly the option categories the hub accepts', () => {
@@ -190,7 +204,8 @@ describe('worker protocol drift', { skip }, () => {
         const markdown = readDocument();
         const match = /`type` must be `payload` or `signal`/.exec(markdown);
         assert.ok(match, `the hub-to-worker envelope rule moved. ${PARSER_HINT}`);
-        assert.equal(buildPayload({ requestId: 'r', content: [{ type: 'text', raw: 'x' }] }).type, 'payload');
+        assert.equal(buildPayload({
+            requestId: 'r', content: [{ type: 'text', raw: 'x', modality: 'text' }] }).type, 'payload');
         assert.equal(buildSignal({ operation: 'status' }).type, 'signal');
     });
 });

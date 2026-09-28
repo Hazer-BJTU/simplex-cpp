@@ -437,6 +437,10 @@ void ResponsesReader::_assemble() {
     model_io::Content content;
     content.type = model_io::ContentType::Text;
     content.raw = std::move(text);
+    // A provider response channel is text: the output_text and refusal
+    // channels this reader drains carry no other category, so the label is
+    // stated rather than inferred.
+    content.modality = model_io::Modality::Text;
     if (!refusal.empty()) {
         // Refusal is a distinct part kind: keep it out of the visible text
         // when there is any; only a refusal-only response surfaces it there.
@@ -452,6 +456,7 @@ void ResponsesReader::_assemble() {
         model_io::Content reasoning;
         reasoning.type = model_io::ContentType::Text;
         reasoning.raw = !reasoning_text.empty() ? reasoning_text : summary;
+        reasoning.modality = model_io::Modality::Text;
         if (!reasoning_items.empty()) {
             reasoning.extras = nlohmann::json{{"items", std::move(reasoning_items)}};
         }

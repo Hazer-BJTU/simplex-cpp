@@ -316,7 +316,7 @@ describe('panel API', () => {
             v: 1,
             type: 'input',
             session: session.id,
-            content: [{ type: 'text', raw: 'hello' }],
+            content: [{ type: 'text', raw: 'hello', modality: 'text' }],
             options: { confirmation: { mode: 'deny' } },
         });
         const accepted = await socket.waitFor((message) => message.type === 'accepted');
@@ -325,7 +325,7 @@ describe('panel API', () => {
 
         const payload = await worker.waitFor((message) => message.type === 'payload');
         assert.equal(payload.data.operation, 'message');
-        assert.deepEqual(payload.data.content, [{ type: 'text', raw: 'hello' }]);
+        assert.deepEqual(payload.data.content, [{ type: 'text', raw: 'hello', modality: 'text' }]);
         assert.deepEqual(payload.data.options, { confirmation: { mode: 'deny' } });
         assert.equal(payload.data.request_id, accepted.request_id);
 
@@ -353,7 +353,7 @@ describe('panel API', () => {
         const socket = await panel();
         socket.send({ v: 1, type: 'subscribe', session: session.id });
         await socket.waitFor((message) => message.type === 'subscribed');
-        socket.send({ v: 1, type: 'input', session: session.id, content: [{ type: 'text', raw: 'x' }] });
+        socket.send({ v: 1, type: 'input', session: session.id, content: [{ type: 'text', raw: 'x', modality: 'text' }] });
         const accepted = await socket.waitFor((message) => message.type === 'accepted');
         worker.send(workerEvent({
             session: session.id,
@@ -373,7 +373,7 @@ describe('panel API', () => {
         const socket = await panel();
         socket.send({ v: 1, type: 'subscribe', session: session.id });
         await socket.waitFor((message) => message.type === 'subscribed');
-        socket.send({ v: 1, type: 'input', session: session.id, content: [{ type: 'text', raw: 'x' }] });
+        socket.send({ v: 1, type: 'input', session: session.id, content: [{ type: 'text', raw: 'x', modality: 'text' }] });
         await socket.waitFor((message) => message.type === 'accepted');
         await worker.close();
         await until(() => session.describeRequests().some((entry) => entry.state === 'unknown'),
@@ -383,7 +383,7 @@ describe('panel API', () => {
     it('refuses input validation mistakes and an offline worker', async () => {
         const session = ctx.hub.registry.create('offline-session');
         const socket = await panel();
-        socket.send({ v: 1, type: 'input', session: session.id, content: [{ type: 'text', raw: 'x' }] });
+        socket.send({ v: 1, type: 'input', session: session.id, content: [{ type: 'text', raw: 'x', modality: 'text' }] });
         const offline = await socket.waitFor((message) => message.type === 'error');
         assert.equal(offline.error, 'input_not_sent');
         assert.match(offline.message, /not connected/);

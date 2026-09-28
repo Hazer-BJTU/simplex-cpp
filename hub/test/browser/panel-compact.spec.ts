@@ -99,7 +99,7 @@ test('successful compaction retires old history queries and refreshes the new re
     expect(fresh.request_id).not.toBe(old.request_id);
     await emit(page, 'history', { request_id: old.request_id, revision: 1,
         start: 0, step: 0, next: 1, next_step: 0, total: 1,
-        turns: [{ index: 0, user: [{ type: 'text', raw: 'Stale archived user text' }],
+        turns: [{ index: 0, user: [{ type: 'text', raw: 'Stale archived user text', modality: 'text' }],
             steps: [], omitted_steps: 0 }] });
     await expect(page.getByTestId('history-turn')).toHaveCount(0);
     await emit(page, 'history', { request_id: fresh.request_id, revision: 2,
@@ -111,7 +111,7 @@ test('successful compaction retires old history queries and refreshes the new re
 test('failed or cancelled compact preserves history and uses compact-specific guidance', async ({ page }) => {
     await open(page);
     await page.request.post(`${STUB}/__stub/settings`, { data: { historyEnabled: true,
-        historyTurns: [{ index: 0, user: [{ type: 'text', raw: 'Original conversation' }],
+        historyTurns: [{ index: 0, user: [{ type: 'text', raw: 'Original conversation', modality: 'text' }],
             steps: [], omitted_steps: 0 }] } });
     await emit(page, 'status', { active: false, capabilities: ['context-compact', 'session-history'] });
     await page.goto('/?session=demo');

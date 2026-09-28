@@ -118,6 +118,9 @@ export type SessionId = string;
 export interface ContentPart {
     type: 'text' | 'binary' | 'external_ref' | string;
     raw: string;
+    /** Media category, independent of `type`: the worker requires it and never
+     * infers one from the encoding. */
+    modality: 'text' | 'image' | 'audio' | 'video' | 'document' | string;
     extras?: unknown;
 }
 

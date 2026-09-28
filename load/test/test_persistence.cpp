@@ -73,16 +73,20 @@ model_io::AgentInputState example_state() {
 
     model_io::UserLoopStep turn;
     turn.user_input.role = "user";
-    turn.user_input.content.push_back({model_io::ContentType::Text, "hello", {}});
+    turn.user_input.content.push_back(
+        {model_io::ContentType::Text, "hello", {}, model_io::Modality::Text});
     turn.extras = Json{{"request_id", "r1"}};
     model_io::AgentLoopStep step;
     step.commit_sequence = 7;
     step.retain_priority = model_io::RetainPriority::Pinned;
     step.model_response.type = model_io::MessageItemType::ModelResponse;
     step.model_response.role = "assistant";
-    step.model_response.content.push_back({model_io::ContentType::Text, "answer", {}});
-    step.model_response.reasoning = model_io::Content{model_io::ContentType::Text, "reasoning", {}};
-    step.model_response.action_status = model_io::Content{model_io::ContentType::Text, "working", {}};
+    step.model_response.content.push_back(
+        {model_io::ContentType::Text, "answer", {}, model_io::Modality::Text});
+    step.model_response.reasoning = model_io::Content{
+        model_io::ContentType::Text, "reasoning", {}, model_io::Modality::Text};
+    step.model_response.action_status = model_io::Content{
+        model_io::ContentType::Text, "working", {}, model_io::Modality::Text};
     step.model_response.invokes = {query};
     step.model_response.cost = model_io::TokenCost{100, 20, 40};
     step.model_response.extras = Json{{"provider_id", "p1"}};
@@ -157,6 +161,59 @@ BOOST_AUTO_TEST_CASE(json_uses_dataclass_compatibility_without_treating_invalid_
         });
 }
 
+// A session written before the modality label existed. A plain reference must
+// come back as the image both adapters used to send it as, the recovered label
+// must be written on the next save, and the two shapes whose old reading was
+// ambiguous must fail the load instead of being replayed as something they were
+// never sent as.
+BOOST_AUTO_TEST_CASE(legacy_state_without_a_label_recovers_references_and_refuses_ambiguous_parts) {
+    Scratch scratch;
+    Json document = example_state();
+    document["turns"][0]["user_input"]["content"] = Json::array({
+        {{"type", "text"}, {"raw", "describe this"}},
+        {{"type", "external_ref"}, {"raw", "https://example.invalid/cat.png"}},
+    });
+    scratch.write("state.json", document.dump());
+    const auto state = load::load_state(scratch.root / "state.json");
+    BOOST_REQUIRE_EQUAL(state.turns[0].user_input.content.size(), 2u);
+    BOOST_CHECK(state.turns[0].user_input.content[0].modality == model_io::Modality::Text);
+    BOOST_CHECK(state.turns[0].user_input.content[1].modality == model_io::Modality::Image);
+
+    // Saving writes the label, so the record migrates exactly once and the
+    // second load has nothing left to recover.
+    load::save_state(scratch.root / "migrated.json", state);
+    const auto migrated = Json(load::load_state(scratch.root / "migrated.json"));
+    BOOST_CHECK(migrated["turns"][0]["user_input"]["content"][1]["modality"] == "image");
+    BOOST_CHECK(migrated == Json(state));
+
+    // A legacy reference the old Responses adapter sent as a provider file
+    // (input_file/file_url) while Chat Completions sent it as an image.
+    document["turns"][0]["user_input"]["content"] = Json::array({
+        {{"type", "external_ref"}, {"raw", "https://example.invalid/paper.pdf"},
+         {"extras", {{"type", "input_file"}}}},
+    });
+    scratch.write("provider-file.json", document.dump());
+    BOOST_CHECK_EXCEPTION((void)load::load_state(scratch.root / "provider-file.json"),
+        load::PersistenceError, [](const auto& error) {
+            const std::string message = error.what();
+            return message.find("provider-file.json") != std::string::npos
+                && message.find("input_file") != std::string::npos;
+        });
+
+    // A legacy binary payload: Chat Completions sent it as text, Responses as
+    // file data, so there is no reading to recover either.
+    document["turns"][0]["user_input"]["content"] = Json::array({
+        {{"type", "binary"}, {"raw", "AA=="}},
+    });
+    scratch.write("ambiguous.json", document.dump());
+    BOOST_CHECK_EXCEPTION((void)load::load_state(scratch.root / "ambiguous.json"),
+        load::PersistenceError, [](const auto& error) {
+            const std::string message = error.what();
+            return message.find("ambiguous.json") != std::string::npos
+                && message.find("modality") != std::string::npos;
+        });
+}
+
 BOOST_AUTO_TEST_CASE(failed_serialization_and_failed_rename_preserve_previous_files) {
     Scratch scratch;
     auto state = example_state();
@@ -206,7 +263,8 @@ BOOST_AUTO_TEST_CASE(readable_clips_json_but_keeps_later_sections_and_plain_text
     response.content[0].raw = Json({{"encoded", huge}}).dump();
     state.turns[0].user_input.content[0].raw = "plain-prose-" + std::string(9000, 'p');
     state.turns.push_back({});
-    state.turns.back().user_input.content.push_back({model_io::ContentType::Text, "LAST TURN", {}});
+    state.turns.back().user_input.content.push_back(
+        {model_io::ContentType::Text, "LAST TURN", {}, model_io::Modality::Text});
     load::ReadableOptions options;
     options.max_json_string_bytes = 24;
     options.max_json_items = 3;

@@ -18,7 +18,10 @@ Json payload(Json parts) {
 }
 
 Json text_part() {
-    return {{"type", "text"}, {"raw", "Describe these attachments."}};
+    // Both labels are required by the input contract: the encoding and the
+    // media category. Text is stated, never implied.
+    return {{"type", "text"}, {"raw", "Describe these attachments."},
+            {"modality", "text"}};
 }
 
 } // namespace
@@ -27,8 +30,8 @@ BOOST_AUTO_TEST_CASE(ordered_content_and_metadata_survive_message_serialization)
     const auto request = payload(Json::array({
         text_part(),
         {{"type", "external_ref"}, {"raw", "https://example.com/photo.png"},
-         {"extras", {{"detail", "low"}}}},
-        {{"type", "binary"}, {"raw", "AAEC"},
+         {"modality", "image"}, {"extras", {{"detail", "low"}}}},
+        {{"type", "binary"}, {"raw", "AAEC"}, {"modality", "video"},
          {"extras", {{"mime_type", "video/mp4"}}}}
     }));
     const auto original = request;
@@ -40,6 +43,10 @@ BOOST_AUTO_TEST_CASE(ordered_content_and_metadata_survive_message_serialization)
     BOOST_TEST(input.message.content[0].raw == "Describe these attachments.");
     BOOST_CHECK(input.message.content[1].type == model_io::ContentType::ExternalRef);
     BOOST_CHECK(input.message.content[2].type == model_io::ContentType::Binary);
+    // The category is carried through unchanged and independently of the
+    // encoding: a base64 payload can be a video, a reference can be an image.
+    BOOST_CHECK(input.message.content[1].modality == model_io::Modality::Image);
+    BOOST_CHECK(input.message.content[2].modality == model_io::Modality::Video);
     BOOST_TEST(input.message.content[2].raw == "AAEC");
     BOOST_CHECK(!input.message.content[0].extras);
     BOOST_TEST(input.message.content[1].extras->at("detail") == "low");
@@ -52,11 +59,33 @@ BOOST_AUTO_TEST_CASE(ordered_content_and_metadata_survive_message_serialization)
 
 BOOST_AUTO_TEST_CASE(attachment_only_input_is_admitted) {
     const auto input = core::parse_input(payload(Json::array({{
-        {"type", "external_ref"}, {"raw", "https://example.com/photo.png"}
+        {"type", "external_ref"}, {"raw", "https://example.com/photo.png"},
+        {"modality", "image"}
     }})));
     BOOST_REQUIRE_EQUAL(input.message.content.size(), 1u);
     BOOST_CHECK(!input.message.content.front().extras);
+    BOOST_CHECK(input.message.content.front().modality == model_io::Modality::Image);
     BOOST_TEST(input.message.content.front().raw == "https://example.com/photo.png");
+}
+
+// The boundary admits every defined category, including the ones no current
+// adapter can send: what the worker may carry is the contract's business, what
+// a provider can receive is the adapter's.
+BOOST_AUTO_TEST_CASE(every_modality_label_is_admitted_and_carried_through) {
+    const std::pair<const char*, model_io::Modality> cases[] = {
+        {"text", model_io::Modality::Text},
+        {"image", model_io::Modality::Image},
+        {"audio", model_io::Modality::Audio},
+        {"video", model_io::Modality::Video},
+        {"document", model_io::Modality::Document},
+    };
+    for (const auto& [name, expected] : cases) {
+        auto part = text_part();
+        part["modality"] = name;
+        const auto input = core::parse_input(payload(Json::array({part})));
+        BOOST_REQUIRE_EQUAL(input.message.content.size(), 1u);
+        BOOST_CHECK(input.message.content.front().modality == expected);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(invalid_content_is_rejected_without_mutating_the_input) {
@@ -64,7 +93,7 @@ BOOST_AUTO_TEST_CASE(invalid_content_is_rejected_without_mutating_the_input) {
                               Json::array(), Json::array({"text"})}) {
         BOOST_CHECK_THROW(core::parse_input(payload(parts)), std::invalid_argument);
     }
-    for (const auto* field : {"type", "raw"}) {
+    for (const auto* field : {"type", "raw", "modality"}) {
         auto part = text_part();
         part.erase(field);
         BOOST_CHECK_THROW(core::parse_input(payload(Json::array({part}))), Json::exception);
@@ -80,6 +109,13 @@ BOOST_AUTO_TEST_CASE(invalid_content_is_rejected_without_mutating_the_input) {
     auto part = text_part();
     part["type"] = "image";
     BOOST_CHECK_THROW(core::parse_input(payload(Json::array({part}))), std::invalid_argument);
+    // The category label is strict: a type is never read as a modality, so a
+    // misspelled or invented category is rejected instead of becoming text.
+    for (const auto* label : {"image_url", "imgae", "Text", "application/pdf"}) {
+        part = text_part();
+        part["modality"] = label;
+        BOOST_CHECK_THROW(core::parse_input(payload(Json::array({part}))), std::invalid_argument);
+    }
     for (const auto& value : {Json(nullptr), Json::array(), Json("metadata")}) {
         part = text_part();
         part["extras"] = value;
@@ -116,7 +152,7 @@ BOOST_AUTO_TEST_CASE(worker_text_and_image_reach_chat_completions_in_order) {
     const auto input = core::parse_input(payload(Json::array({
         text_part(),
         {{"type", "external_ref"}, {"raw", "https://example.com/photo.png"},
-         {"extras", {{"detail", "low"}}}}
+         {"modality", "image"}, {"extras", {{"detail", "low"}}}}
     })));
     model_io::AgentInputState state;
     model_io::UserLoopStep turn;
@@ -168,11 +204,12 @@ BOOST_AUTO_TEST_CASE(history_query_projects_turns_without_tool_data_or_binary_by
     model_io::AgentInputState state;
     model_io::UserLoopStep turn;
     turn.user_input.content = {
-        {model_io::ContentType::Text, "hello", {}},
-        {model_io::ContentType::Binary, "AAEC", {}}
+        {model_io::ContentType::Text, "hello", {}, model_io::Modality::Text},
+        {model_io::ContentType::Binary, "AAEC", {}, model_io::Modality::Video}
     };
     model_io::AgentLoopStep step;
-    step.model_response.content = {{model_io::ContentType::Text, "answer", {}}};
+    step.model_response.content = {
+        {model_io::ContentType::Text, "answer", {}, model_io::Modality::Text}};
     turn.agent_loop_step.push_back(std::move(step));
     state.turns.push_back(std::move(turn));
     const auto page = core::history_page(state, request);
@@ -180,6 +217,9 @@ BOOST_AUTO_TEST_CASE(history_query_projects_turns_without_tool_data_or_binary_by
     BOOST_TEST(page.at("total") == 1);
     BOOST_TEST(page.at("next") == 1);
     BOOST_TEST(page.at("turns")[0]["user"][0]["raw"] == "hello");
+    // The projection carries both labels to the panel.
+    BOOST_TEST(page.at("turns")[0]["user"][0]["modality"] == "text");
+    BOOST_TEST(page.at("turns")[0]["user"][1]["modality"] == "video");
     BOOST_TEST(page.at("turns")[0]["user"][1]["omitted"] == true);
     BOOST_TEST(page.dump().find("AAEC") == std::string::npos);
     BOOST_TEST(page.dump().find("system_prompt") == std::string::npos);
@@ -191,11 +231,12 @@ BOOST_AUTO_TEST_CASE(history_query_projects_turns_without_tool_data_or_binary_by
 BOOST_AUTO_TEST_CASE(history_query_pages_within_a_long_turn) {
     model_io::AgentInputState state;
     model_io::UserLoopStep turn;
-    turn.user_input.content = {{model_io::ContentType::Text, "question", {}}};
+    turn.user_input.content = {
+        {model_io::ContentType::Text, "question", {}, model_io::Modality::Text}};
     for (int index = 0; index < 90; ++index) {
         model_io::AgentLoopStep step;
         step.model_response.content = {{model_io::ContentType::Text,
-            std::string(4000, 'a'), {}}};
+            std::string(4000, 'a'), {}, model_io::Modality::Text}};
         turn.agent_loop_step.push_back(std::move(step));
     }
     state.turns.push_back(std::move(turn));

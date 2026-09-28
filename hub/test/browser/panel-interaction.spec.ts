@@ -274,7 +274,7 @@ test('the composer disables Attach and clears the message on Escape', async ({ p
     const input = (await received.json()).received
         .filter((message: { type: string }) => message.type === 'input').at(-1);
     expect(input.content).toEqual([
-        { type: 'text', raw: 'look at this' },
+        { type: 'text', raw: 'look at this', modality: 'text' },
     ]);
 
     await page.getByLabel('message').fill('scratch that');

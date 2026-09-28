@@ -59,17 +59,35 @@
 //    instance may serve concurrent build_request() calls.
 //  * Input leniency: an imperfect conversation must still build. Tolerate
 //    empty turns (messages reduce to the system message, or none), empty
-//    roles (derive them from MessageItemType), binary / external_ref content
-//    (send `raw` as the string it is), absent invoke_returns (no
-//    placeholders), and invokes whose names are not in the tools registry
-//    (the registry is not a wire filter). Generation JSON passes through to
-//    the request body verbatim except: "model" must be a non-empty string,
-//    "stream" defaults to true when absent, and builder-owned keys
-//    ("messages", "tools") win over same-named generation keys.
-//  * Two hard errors only, reported as HttpRequestException with stage
+//    roles (derive them from MessageItemType), text content carried by an
+//    external reference (send `raw` as the string it is), absent
+//    invoke_returns (no placeholders), and invokes whose names are not in the
+//    tools registry (the registry is not a wire filter). Generation JSON
+//    passes through to the request body verbatim except: "model" must be a
+//    non-empty string, "stream" defaults to true when absent, and
+//    builder-owned keys ("messages", "tools") win over same-named generation
+//    keys.
+//  * Three hard errors, reported as HttpRequestException with stage
 //    CreateRequest (the module's existing request-lifecycle exception):
 //      - generation carries no non-empty "model"
 //      - base_url resolves to no host (see resolve_endpoint)
+//      - a content part is one this protocol cannot carry AT THE POSITION it
+//        would be emitted at. Mapping is by Content::modality and
+//        Content::type together, never inferred from either alone and never
+//        taken from Content::extras (sender-supplied data, not an
+//        instruction), and an unsupported part is an error rather than being
+//        sent as text or as some other category — leniency about imperfect
+//        conversations does not extend to silently changing what a payload
+//        IS. Support is therefore per wire position and not per conversation:
+//        the same image is legal in a user message and impossible in an
+//        assistant message that this protocol replays as one string, and a
+//        field the implementation never maps (action_status, for the two
+//        shipped adapters) is not validated at all, because the provider's
+//        capabilities say nothing about content it will never receive. A
+//        base64 image is the case that makes the encoding matter: no field
+//        would carry its media type, so it is refused instead of being sent
+//        as an image URL. Each implementation documents the pairs each of its
+//        positions supports.
 //  * Tool results correlate to their calls through the embedded provenance
 //    record (MessageItem::invoke_return->query.id — the wire "tool call
 //    id"); when it is absent, implementations may fall back to positional

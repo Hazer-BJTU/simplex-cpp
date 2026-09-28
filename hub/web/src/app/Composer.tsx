@@ -39,6 +39,8 @@ import {
 interface Reference {
     readonly kind: 'external_ref';
     readonly raw: string;
+    /** Kept so a refused reference is restored with the category it had. */
+    readonly modality: ContentPart['modality'];
 }
 
 /** How a confirmation mode reads, and how loudly. */
@@ -133,7 +135,9 @@ export function Composer() {
         setDraft(failed.parts.filter((part) => part.type === 'text')
             .map((part) => part.raw).join('\n\n'));
         setReferences(failed.parts.filter((part) => part.type === 'external_ref')
-            .map((part) => ({ kind: 'external_ref', raw: part.raw })));
+            .map((part) => ({
+                kind: 'external_ref', raw: part.raw, modality: part.modality ?? 'text',
+            })));
         clearFailedInput();
         box.current?.focus();
     }, [failed, selected, clearFailedInput]);
@@ -183,9 +187,15 @@ export function Composer() {
 
     function parts(): ContentPart[] {
         const list: ContentPart[] = [];
-        if (draft.trim().length > 0) list.push({ type: 'text', raw: draft });
+        if (draft.trim().length > 0) list.push({ type: 'text', raw: draft, modality: 'text' });
         for (const reference of references) {
-            list.push({ type: 'external_ref', raw: reference.raw });
+            // The attach entry is disabled, so the panel cannot classify a
+            // reference yet. When it is enabled it has to ask for the category
+            // — `text` here is the same choice the draft makes, not a guess
+            // about the URL.
+            list.push({
+                type: 'external_ref', raw: reference.raw, modality: reference.modality,
+            });
         }
         return list;
     }
@@ -381,10 +391,14 @@ export function Composer() {
                                     const value = field.value.trim();
                                     if (!value) return;
                                     // A reference is sent as data, not fetched by the panel.
+                                    // Text is what this form can declare: it takes a URL and
+                                    // nothing that says what the URL points at.
                                     setReferences((current) => (
                                         current.some((item) => item.raw === value)
                                             ? current
-                                            : [...current, { kind: 'external_ref', raw: value }]
+                                            : [...current, {
+                                                kind: 'external_ref', raw: value, modality: 'text',
+                                            }]
                                     ));
                                     field.value = '';
                                     setRefOpen(false);
