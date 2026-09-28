@@ -22,21 +22,47 @@ std::string text_content(const std::vector<model_io::Content>& content) {
 }
 
 /**
- * The one category this dialect cannot describe at all: Chat Completions
- * content parts cover text and images, so everything else is a construction
- * error rather than something to mislabel. This is the module's hard error #3
- * (see the header contract): the caller picked a modality its provider cannot
- * receive, and silently sending it as text would corrupt the request.
+ * Check one part against the dialect's support matrix and explain the refusal.
+ *
+ * The matrix is (modality, encoding), not modality alone: a part only reaches
+ * the wire when the field it maps to can actually carry `raw`. A base64 image
+ * has no media type that would let us build an `image_url` from it, and a
+ * base64 text part would put the encoding in the message instead of the text.
+ * Both would produce a syntactically valid request that means something else,
+ * which is worse than a construction error. This is the module's hard error #3
+ * (see the header contract).
+ *
+ * | modality | encoding     | wire                                  |
+ * | -------- | ------------ | ------------------------------------- |
+ * | text     | text         | `{"type":"text","text":raw}`          |
+ * | text     | external_ref | same; the reference travels as text   |
+ * | image    | external_ref | `image_url` (URL from `raw`)          |
+ * | anything else            | refused                               |
  */
-void require_supported_modality(const model_io::Content& part) {
-    if (part.modality == model_io::Modality::Text ||
-        part.modality == model_io::Modality::Image) {
-        return;
+void require_supported_part(const model_io::Content& part) {
+    const auto modality = part.modality;
+    if (modality == model_io::Modality::Audio ||
+        modality == model_io::Modality::Video ||
+        modality == model_io::Modality::Document) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::CreateRequest,
+            "chat completions cannot send a " + nlohmann::json(modality).dump()
+                + " content part");
     }
-    throw HttpRequestException(
-        HttpRequestException::Stage::CreateRequest,
-        "chat completions cannot send a non-text, non-image content part "
-        "(modality " + nlohmann::json(part.modality).dump() + ")");
+    if (modality == model_io::Modality::Image) {
+        if (part.type == model_io::ContentType::ExternalRef) return;
+        throw HttpRequestException(
+            HttpRequestException::Stage::CreateRequest,
+            "chat completions sends an image as an external reference, and a "
+                + nlohmann::json(part.type).dump()
+                + " image carries no media type to describe it with");
+    }
+    if (part.type == model_io::ContentType::Binary) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::CreateRequest,
+            "chat completions cannot send a binary text part: the base64 "
+            "encoding would be delivered as the message");
+    }
 }
 
 /**
@@ -45,9 +71,9 @@ void require_supported_modality(const model_io::Content& part) {
  * how deep in the conversation the offending part sits.
  */
 void require_supported_content(const model_io::MessageItem& item) {
-    for (const auto& part : item.content) require_supported_modality(part);
-    if (item.reasoning) require_supported_modality(*item.reasoning);
-    if (item.action_status) require_supported_modality(*item.action_status);
+    for (const auto& part : item.content) require_supported_part(part);
+    if (item.reasoning) require_supported_part(*item.reasoning);
+    if (item.action_status) require_supported_part(*item.action_status);
 }
 
 void require_supported_conversation(const model_io::AgentInputState& state) {
@@ -65,10 +91,10 @@ void require_supported_conversation(const model_io::AgentInputState& state) {
 
 /**
  * One provider part for one Content entry. The media category decides the part
- * kind — never the encoding: an image is an image whether it arrived as a data
- * URL or as base64, and a text part stays text even when its bytes ride in an
- * external reference. Unsupported categories never reach here (the check above
- * runs first).
+ * kind — never the encoding, and never `extras`: an image is an image whether
+ * its URL arrived in `raw` or in `extras.image_url`, while `extras.type` is
+ * caller-supplied data and is ignored. The pair was validated above, so the
+ * encoding here is one the chosen kind can carry.
  */
 json user_content_part(const model_io::Content& content) {
     if (content.modality == model_io::Modality::Image) {

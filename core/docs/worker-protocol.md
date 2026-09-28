@@ -328,10 +328,32 @@ adapter never silently converts an unsupported category into text or into a
 different category; it fails request construction instead, so a mismatch is
 reported rather than sent as a corrupted prompt.
 
-| Adapter | Maps | Rejects |
-| --- | --- | --- |
-| Chat Completions | `text` → `text`, `image` → `image_url` | `audio`, `video`, `document` |
-| Responses | `text` → `input_text`, `image` → `input_image`, `document` → `input_file` | `audio`, `video` |
+Support is a property of the **pair**, not of the category alone: a kind is only
+usable when the field it maps to can carry the representation `type` declares.
+
+| Adapter | Encoding | Modality | Provider part |
+| --- | --- | --- | --- |
+| Chat Completions | `text` | `text` | `text` |
+| Chat Completions | `external_ref` | `text` | `text` (the reference travels as text; it is not fetched) |
+| Chat Completions | `external_ref` | `image` | `image_url` |
+| Responses | `text` | `text` | `input_text` |
+| Responses | `external_ref` | `text` | `input_text` |
+| Responses | `external_ref` | `image` | `input_image` |
+| Responses | `external_ref` | `document` | `input_file` with `file_url` |
+| Responses | `binary` | `document` | `input_file` with `file_data` |
+
+Every other combination is rejected at request construction, including
+`binary` with `text` or `image` (a base64 blob is neither a message nor an
+image URL, and nothing in the part carries the media type a data URL would
+need) and `text` with `document` (a plain string is not file data). The
+matrices are deliberately narrow; each can grow when a representation gains the
+metadata it needs.
+
+`extras` is sender-supplied **data, never an instruction about the part kind**.
+An adapter builds the provider part from `modality` and the fields that kind
+defines (`detail`, `filename`, `file_id`, `image_url`); a `type` inside `extras`
+cannot relabel a text part as a file or a document as an image, and fields the
+chosen kind does not define are not forwarded.
 
 An image part mapped by the Chat Completions adapter uses `raw` as its URL,
 including provider-supported image data URLs:
@@ -349,10 +371,20 @@ provider URL; normally omit it and use `raw` to avoid two competing URLs.
 Audio and video are contract labels without a provider mapping today: the worker
 retains them and the panel can display them, but both current adapters reject
 them at request construction rather than guessing a category. Document has a
-Responses mapping (or a provider-hosted file through `extras.type: "input_file"`
-plus `file_id`) and no Chat Completions mapping. Do not send a video reference
-expecting video behavior. Provider adapter support and the selected model's
-capabilities must both match what the hub sends.
+Responses mapping and no Chat Completions mapping; a provider-hosted file is
+selected with `modality: "document"` plus `extras.file_id`. Do not send a video
+reference expecting video behavior. Provider adapter support and the selected
+model's capabilities must both match what the hub sends.
+
+Sessions persisted before `modality` existed are read with the semantics those
+records were written under: a stored `external_ref` becomes `image`, which is
+what both adapters used to send it as, and a stored `text` becomes `text`. A
+stored `binary` part without a label is **refused** with a migration error,
+because the two adapters disagreed about it (Chat Completions sent the base64 as
+message text, Responses as file data) and no reading is faithful to both. The
+next save rewrites the recovered label, so the migration happens once. This
+tolerance applies to durable records only: the input boundary above always
+requires the field.
 
 The former `data.text` field is no longer accepted for `message`, including when
 `content` is also present. Send a one-element text array instead. Role and tool

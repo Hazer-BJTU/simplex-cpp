@@ -4,6 +4,7 @@
 #include "llm/compat/responses/interpreter.hpp"
 
 #include <algorithm>
+#include <initializer_list>
 #include <iterator>
 #include <optional>
 #include <stdexcept>
@@ -40,21 +41,55 @@ json content_part(const model_io::Content& content, const char* wire_type) {
 }
 
 /**
- * The one category this dialect cannot describe: the Responses input list
- * carries text, image references and file references, but no audio or video
- * part. Sending such a part as one of the supported kinds would corrupt the
- * request, so it is a construction error instead. This is the module's hard
- * error #3 (see the header contract).
+ * Check one part against the dialect's support matrix and explain the refusal.
+ *
+ * As in the sibling adapter the matrix is (modality, encoding): the input list
+ * has a field for every kind below, but only some representations fit the field
+ * the modality maps to. A base64 image has no media type that would let us build
+ * an `image_url`, and a text string in `file_data` is not file data. Those
+ * combinations are refused here rather than sent as something they are not.
+ * This is the module's hard error #3 (see the header contract).
+ *
+ * | modality | encoding     | wire                                     |
+ * | -------- | ------------ | ---------------------------------------- |
+ * | text     | text         | `input_text`                             |
+ * | text     | external_ref | `input_text`; the reference travels as text |
+ * | image    | external_ref | `input_image` + `image_url`              |
+ * | document | external_ref | `input_file` + `file_url`                |
+ * | document | binary       | `input_file` + `file_data`               |
+ * | anything else            | refused                                  |
  */
-void require_supported_modality(const model_io::Content& part) {
-    if (part.modality != model_io::Modality::Audio &&
-        part.modality != model_io::Modality::Video) {
-        return;
+void require_supported_part(const model_io::Content& part) {
+    const auto modality = part.modality;
+    const auto type = part.type;
+    const auto refuse = [&](const std::string& reason) {
+        throw HttpRequestException(
+            HttpRequestException::Stage::CreateRequest,
+            "responses cannot send a " + nlohmann::json(type).dump() + " "
+                + nlohmann::json(modality).dump() + " content part: " + reason);
+    };
+    switch (modality) {
+        case model_io::Modality::Text:
+            if (type == model_io::ContentType::Binary) {
+                refuse("the base64 encoding would be delivered as the text");
+            }
+            return;
+        case model_io::Modality::Image:
+            if (type != model_io::ContentType::ExternalRef) {
+                refuse("input_image takes a URL, and this representation carries "
+                       "no media type to describe it with");
+            }
+            return;
+        case model_io::Modality::Document:
+            if (type != model_io::ContentType::ExternalRef &&
+                type != model_io::ContentType::Binary) {
+                refuse("input_file takes a reference or base64 data");
+            }
+            return;
+        case model_io::Modality::Audio:
+        case model_io::Modality::Video:
+            refuse("the input list has no such part kind");
     }
-    throw HttpRequestException(
-        HttpRequestException::Stage::CreateRequest,
-        "responses cannot send an audio or video content part (modality "
-            + nlohmann::json(part.modality).dump() + ")");
 }
 
 /**
@@ -63,9 +98,9 @@ void require_supported_modality(const model_io::Content& part) {
  * how deep in the conversation the offending part sits.
  */
 void require_supported_content(const model_io::MessageItem& item) {
-    for (const auto& part : item.content) require_supported_modality(part);
-    if (item.reasoning) require_supported_modality(*item.reasoning);
-    if (item.action_status) require_supported_modality(*item.action_status);
+    for (const auto& part : item.content) require_supported_part(part);
+    if (item.reasoning) require_supported_part(*item.reasoning);
+    if (item.action_status) require_supported_part(*item.action_status);
 }
 
 void require_supported_conversation(const model_io::AgentInputState& state) {
@@ -82,53 +117,58 @@ void require_supported_conversation(const model_io::AgentInputState& state) {
 }
 
 /**
- * One provider part for one input Content entry. The media category decides the
- * part kind, never the encoding: an image is an image whether it arrived as a
- * URL or as base64, and an external reference to a PDF is a file, not a picture.
+ * Copy the auxiliary provider fields a part kind defines out of `extras`.
  *
- * A part captured from a previous response may carry its own wire part in
- * extras — a provider-side distinction finer than our modality (a
- * provider-hosted file_id, say). For a text part that captured type is dropped,
- * because a text payload replayed as an image of its own text is the very
- * mislabelling this mapping exists to prevent. Unsupported categories never
- * reach here (the check above runs first).
+ * `extras` reaches the adapter from the conversation, and for user content the
+ * caller supplied it, so it is DATA and not an instruction: it may fill in
+ * fields of the kind `modality` already chose (a provider-hosted file id, a
+ * display filename, an image detail level) and it may never choose the kind
+ * itself. That is why the part is built from a whitelist instead of starting as
+ * a copy of `extras` — a caller-supplied `"type"` cannot relabel a text part as
+ * a file, and no other wire field can be smuggled in beside it.
+ */
+void inherit(const json& extras, json& part, std::initializer_list<const char*> keys) {
+    for (const char* key : keys) {
+        if (auto it = extras.find(key); it != extras.end()) part[key] = *it;
+    }
+}
+
+/**
+ * One provider part for one input Content entry. `modality` decides the part
+ * kind, never the encoding and never `extras`: an image is an image whether its
+ * URL arrived in `raw` or in `extras.image_url`, and an external reference to a
+ * PDF is a file, not a picture. The pair was validated above, so the encoding
+ * here is one the chosen kind can carry.
  */
 json input_content_part(const model_io::Content& content) {
-    json part = (content.extras && content.extras->is_object())
+    const json extras = (content.extras && content.extras->is_object())
         ? *content.extras
         : json::object();
-    const std::string explicit_type = part.value("type", std::string());
 
     if (content.modality == model_io::Modality::Image) {
-        if (explicit_type == "input_file") return part;   // captured file part
-        part["type"] = "input_image";
-        if (!part.contains("image_url") && !part.contains("file_id")) {
-            part["image_url"] = content.raw;
+        json part{{"type", "input_image"}};
+        inherit(extras, part, {"detail", "file_id"});
+        if (!part.contains("file_id")) {
+            part["image_url"] = extras.contains("image_url")
+                ? extras["image_url"]
+                : json(content.raw);
         }
         return part;
     }
 
     if (content.modality == model_io::Modality::Document) {
-        if (explicit_type == "input_image") return part;  // captured image part
-        part["type"] = "input_file";
-        if (!part.contains("file_data") && !part.contains("file_id") &&
-            !part.contains("file_url")) {
-            if (content.type == model_io::ContentType::ExternalRef) {
-                part["file_url"] = content.raw;
-            } else {
-                part["file_data"] = content.raw;
-            }
+        json part{{"type", "input_file"}};
+        inherit(extras, part, {"filename", "file_id"});
+        if (!part.contains("file_id")) {
+            part[content.type == model_io::ContentType::ExternalRef
+                ? "file_url" : "file_data"] = content.raw;
         }
         return part;
     }
 
-    // Text: the payload goes out as text whatever the encoding says.
-    if (explicit_type == "input_image" || explicit_type == "input_file") {
-        return part;
-    }
-    part["type"] = "input_text";
-    part["text"] = content.raw;
-    return part;
+    // Text: the payload goes out as text whatever the reference says, and
+    // input_text has no auxiliary field for extras to fill in.
+    return json{{"type", "input_text"}, {"text", content.raw}};
 }
 
 // The synthesized assistant content: the output_text part, then — when the

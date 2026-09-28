@@ -360,7 +360,7 @@ message.content = {
      model_io::Modality::Text},
     {model_io::ContentType::ExternalRef,
      "https://example.com/image.png",
-     nlohmann::json{{"type", "input_image"}, {"detail", "high"}},
+     nlohmann::json{{"detail", "high"}},
      model_io::Modality::Image},
 };
 ```
@@ -374,10 +374,25 @@ same provider message, choosing the part kind from `modality`: `Text` becomes
 `input_file` (a reference rides as `file_url`, inline bytes as `file_data`).
 `Audio` and `Video` are contract labels with no Responses part kind, so the
 adapter rejects them at request construction — it never sends an unsupported
-category as text or as a file. Set `extras.type` to `input_image` or
-`input_file` only to preserve a finer provider-side distinction on a part the
-provider itself handed back, and put provider fields such as `detail`,
-`filename`, or `file_id` in `extras`.
+category as text or as a file.
+
+Support is a property of the (encoding, modality) pair. A reference can carry
+text, an image or a document; base64 can carry a document; nothing can carry a
+base64 image or a base64 text part, because no provider field takes a media
+type there and the encoding itself would be delivered instead of the payload.
+Unsupported pairs fail request construction, exactly like unsupported
+categories, and a conversation persisted before `modality` existed is read with
+the semantics it was written under (a stored reference was an image to both
+adapters; a stored binary part without a label is refused rather than guessed —
+see `core/docs/worker-protocol.md`).
+
+`extras` is sender-supplied data and never decides the part kind: the adapter
+builds the provider part from `modality` and from the fields that kind defines
+(`detail`, `filename`, `file_id`, `image_url`). A `type` inside `extras` cannot
+turn a text part into a file part or a document into an image, and fields the
+chosen kind does not define are not forwarded. Put provider fields such as
+`detail`, `filename`, or `file_id` in `extras`; a provider-hosted file is
+`modality: Document` plus `extras.file_id`.
 
 ## Configuration
 

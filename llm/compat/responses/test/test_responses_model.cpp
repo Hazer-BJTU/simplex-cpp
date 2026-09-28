@@ -255,6 +255,97 @@ BOOST_AUTO_TEST_CASE(interpreter_rejects_audio_and_video_parts) {
     }
 }
 
+// The other half of the matrix: a kind this dialect has is still not a carrier
+// for every representation, and the mismatch fails construction.
+BOOST_AUTO_TEST_CASE(interpreter_rejects_an_encoding_the_kind_cannot_carry) {
+    llm::responses::ResponsesInterpreter interpreter(
+        std::make_shared<const FixtureDialect>());
+    model_io::ModelEndpoint endpoint;
+    endpoint.base_url = "https://example.invalid";
+    endpoint.request_path = "/responses";
+    const auto request = [&](model_io::ContentType type, model_io::Modality modality) {
+        model_io::AgentInputState state;
+        auto& part = state.turns.emplace_back().user_input.content.emplace_back();
+        part.type = type;
+        part.raw = "cGF5bG9hZA==";
+        part.modality = modality;
+        return interpreter.build_request(
+            state, endpoint, nlohmann::json{{"model", "fixture-model"}});
+    };
+
+    // input_image takes a URL; base64 would need a media type we do not have.
+    BOOST_CHECK_THROW(request(model_io::ContentType::Binary,
+                              model_io::Modality::Image), HttpRequestException);
+    // input_text would deliver the base64 encoding as the message.
+    BOOST_CHECK_THROW(request(model_io::ContentType::Binary,
+                              model_io::Modality::Text), HttpRequestException);
+    // input_file takes a reference or base64 data, not a plain string.
+    BOOST_CHECK_THROW(request(model_io::ContentType::Text,
+                              model_io::Modality::Document), HttpRequestException);
+    // Every documented pair still builds.
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::Text,
+                                 model_io::Modality::Text));
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::ExternalRef,
+                                 model_io::Modality::Text));
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::ExternalRef,
+                                 model_io::Modality::Image));
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::ExternalRef,
+                                 model_io::Modality::Document));
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::Binary,
+                                 model_io::Modality::Document));
+}
+
+// extras is caller-supplied data, not an instruction: whatever it claims, the
+// provider part kind comes from the modality, and fields the chosen kind does
+// not define are not forwarded.
+BOOST_AUTO_TEST_CASE(interpreter_lets_neither_extras_type_nor_extra_fields_relabel_a_part) {
+    llm::responses::ResponsesInterpreter interpreter(
+        std::make_shared<const FixtureDialect>());
+    model_io::ModelEndpoint endpoint;
+    endpoint.base_url = "https://example.invalid";
+    endpoint.request_path = "/responses";
+
+    model_io::AgentInputState state;
+    auto& message = state.turns.emplace_back().user_input;
+    message.type = model_io::MessageItemType::UserInput;
+    // A text part claiming to be a file.
+    auto& text = message.content.emplace_back();
+    text.type = model_io::ContentType::Text;
+    text.raw = "describe this";
+    text.modality = model_io::Modality::Text;
+    text.extras = nlohmann::json{{"type", "input_file"}, {"file_data", "smuggled"}};
+    // An image claiming to be a file.
+    auto& image = message.content.emplace_back();
+    image.type = model_io::ContentType::ExternalRef;
+    image.raw = "https://example.invalid/cat.png";
+    image.modality = model_io::Modality::Image;
+    image.extras = nlohmann::json{{"type", "input_file"}, {"detail", "low"}};
+    // A file claiming to be an image.
+    auto& document = message.content.emplace_back();
+    document.type = model_io::ContentType::Binary;
+    document.raw = "ZmFrZS1wZGY=";
+    document.modality = model_io::Modality::Document;
+    document.extras = nlohmann::json{
+        {"type", "input_image"}, {"filename", "sample.pdf"}};
+
+    const auto body = nlohmann::json::parse(interpreter.build_request(
+        state, endpoint, nlohmann::json{{"model", "fixture-model"}}).body());
+    const auto& parts = body["input"][0]["content"];
+    BOOST_REQUIRE_EQUAL(parts.size(), 3u);
+
+    BOOST_CHECK_EQUAL(parts[0]["type"], "input_text");
+    BOOST_CHECK_EQUAL(parts[0]["text"], "describe this");
+    BOOST_CHECK(!parts[0].contains("file_data"));
+
+    BOOST_CHECK_EQUAL(parts[1]["type"], "input_image");
+    BOOST_CHECK_EQUAL(parts[1]["image_url"], "https://example.invalid/cat.png");
+    BOOST_CHECK_EQUAL(parts[1]["detail"], "low");
+
+    BOOST_CHECK_EQUAL(parts[2]["type"], "input_file");
+    BOOST_CHECK_EQUAL(parts[2]["file_data"], "ZmFrZS1wZGY=");
+    BOOST_CHECK_EQUAL(parts[2]["filename"], "sample.pdf");
+}
+
 BOOST_AUTO_TEST_CASE(converse_runs_llm_model_to_terminal_response_fallback) {
     const nlohmann::json terminal = {
         {"type", "response.completed"},

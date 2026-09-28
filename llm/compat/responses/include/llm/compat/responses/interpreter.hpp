@@ -31,14 +31,14 @@
 //   user_input           -> {type:"message", role:"user", content:[parts...]}
 //                           one provider part per ordered Content entry, its
 //                           kind chosen by Content::modality (NEVER by the
-//                           encoding): text -> input_text, image ->
-//                           input_image, document -> input_file (a
-//                           reference as file_url, inline bytes as
-//                           file_data). extras fields (detail, filename,
-//                           file_id, ...) are preserved; a captured
-//                           extras.type keeps its finer provider-side kind on
-//                           a part that already is an image or a file, and a
-//                           text part never carries one
+//                           encoding and never by extras): text -> input_text,
+//                           image -> input_image, document -> input_file (a
+//                           reference as file_url, base64 as file_data).
+//                           extras is DATA: the aux fields the chosen kind
+//                           defines (detail, filename, file_id, image_url) are
+//                           inherited, an extras.type is ignored, and a
+//                           (type, modality) pair whose field cannot carry the
+//                           representation is a CreateRequest error
 //   model_response       -> up to three groups, in this order:
 //     reasoning          extras.items (captured done items) re-emitted
 //                       VERBATIM — ids, summaries and encrypted_content must
@@ -80,8 +80,9 @@
 // pure, no I/O, stateless — one instance may serve concurrent calls; lenient
 // on imperfect conversations; three hard errors, all
 // HttpRequestException{CreateRequest}: missing non-empty "model", hostless
-// base_url, and a content modality this protocol cannot describe (audio or
-// video — see the flattening notes above).
+// base_url, and a content part this protocol cannot carry (audio or video, or
+// an encoding its modality's field cannot describe — see the flattening notes
+// above).
 //
 
 #include <nlohmann/json.hpp>

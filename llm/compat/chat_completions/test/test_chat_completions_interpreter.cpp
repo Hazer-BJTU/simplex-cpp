@@ -271,6 +271,65 @@ BOOST_AUTO_TEST_CASE(unsupported_modality_is_a_create_request_error) {
             state, fixture.endpoint, fixture.generation));
 }
 
+// The other half of the matrix: a modality this dialect CAN describe still has
+// representations it cannot carry, and those fail construction rather than
+// reaching the wire as something else.
+BOOST_AUTO_TEST_CASE(unsupported_encoding_for_a_supported_modality_is_rejected) {
+    Fixture fixture;
+    const auto request = [&](model_io::ContentType type, model_io::Modality modality) {
+        model_io::AgentInputState state;
+        model_io::UserLoopStep turn;
+        turn.user_input.content.push_back({type, "cGF5bG9hZA==", {}, modality});
+        state.turns.push_back(turn);
+        return ChatCompletionsInterpreter{}.build_request(
+            state, fixture.endpoint, fixture.generation);
+    };
+
+    // A base64 blob is not an image URL: image_url has no media type to carry.
+    BOOST_CHECK_THROW(request(model_io::ContentType::Binary,
+                              model_io::Modality::Image), HttpRequestException);
+    // And it is not the message either — that would deliver the encoding.
+    BOOST_CHECK_THROW(request(model_io::ContentType::Binary,
+                              model_io::Modality::Text), HttpRequestException);
+    BOOST_CHECK_THROW(request(model_io::ContentType::Text,
+                              model_io::Modality::Image), HttpRequestException);
+    // The supported representations still build.
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::Text,
+                                 model_io::Modality::Text));
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::ExternalRef,
+                                 model_io::Modality::Text));
+    BOOST_CHECK_NO_THROW(request(model_io::ContentType::ExternalRef,
+                                 model_io::Modality::Image));
+}
+
+// extras is caller-supplied data. It may fill in an image's auxiliary fields,
+// but it is never an instruction about what the part IS: a payload that says
+// "input_file" in extras is still the text its modality declares.
+BOOST_AUTO_TEST_CASE(extras_type_cannot_relabel_a_part) {
+    Fixture fixture;
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content.push_back(
+        {model_io::ContentType::Text, "describe this", {},
+         model_io::Modality::Text});
+    turn.user_input.content.push_back(
+        {model_io::ContentType::ExternalRef, "https://example.com/cat.png",
+         nlohmann::json{{"type", "input_file"}, {"file_data", "smuggled"}},
+         model_io::Modality::Image});
+    state.turns.push_back(turn);
+
+    const auto content = body_of(ChatCompletionsInterpreter{}.build_request(
+        state, fixture.endpoint, fixture.generation))["messages"][0]["content"];
+    BOOST_REQUIRE_EQUAL(content.size(), 2u);
+    BOOST_CHECK_EQUAL(content[0]["type"], "text");
+    BOOST_CHECK_EQUAL(content[0]["text"], "describe this");
+    BOOST_CHECK_EQUAL(content[1]["type"], "image_url");
+    BOOST_CHECK_EQUAL(content[1]["image_url"]["url"],
+                      "https://example.com/cat.png");
+    // The smuggled provider field did not ride along beside the URL.
+    BOOST_CHECK(!content[1].contains("file_data"));
+}
+
 BOOST_AUTO_TEST_CASE(generation_passthrough_but_builder_owned_keys_win) {
     Fixture fixture;
     fixture.generation = {
