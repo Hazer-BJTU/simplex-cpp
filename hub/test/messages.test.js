@@ -18,14 +18,14 @@ describe('buildPayload', () => {
     it('builds a text message envelope', () => {
         const payload = buildPayload({
             requestId: 'req-1',
-            content: [{ type: 'text', raw: 'Hello' }],
+            content: [{ type: 'text', raw: 'Hello', modality: 'text' }],
         });
         assert.deepEqual(payload, {
             type: 'payload',
             data: {
                 operation: 'message',
                 request_id: 'req-1',
-                content: [{ type: 'text', raw: 'Hello' }],
+                content: [{ type: 'text', raw: 'Hello', modality: 'text' }],
             },
         });
     });
@@ -36,6 +36,7 @@ describe('buildPayload', () => {
             content: [{
                 type: 'external_ref',
                 raw: 'https://example.com/photo.png',
+                modality: 'image',
                 extras: { detail: 'low' },
                 ignored: true,
             }],
@@ -43,6 +44,7 @@ describe('buildPayload', () => {
         assert.deepEqual(payload.data.content, [{
             type: 'external_ref',
             raw: 'https://example.com/photo.png',
+            modality: 'image',
             extras: { detail: 'low' },
         }]);
     });
@@ -51,6 +53,24 @@ describe('buildPayload', () => {
         assert.throws(
             () => buildPayload({ requestId: 'r', content: [{ type: 'image', raw: 'x' }] }),
             /external_ref/);
+    });
+
+    it('requires a modality label the worker will accept', () => {
+        // The worker reads `modality` as a required field and never infers one
+        // from `type`, so a part without it must not leave the hub.
+        assert.throws(
+            () => buildPayload({ requestId: 'r', content: [{ type: 'text', raw: 'x' }] }),
+            /content\[0\]\.modality must be one of text, image, audio, video, document/);
+        assert.throws(
+            () => buildPayload({
+                requestId: 'r', content: [{ type: 'text', raw: 'x', modality: 'Text' }],
+            }),
+            /modality/);
+        assert.deepEqual(
+            buildPayload({
+                requestId: 'r', content: [{ type: 'text', raw: 'x', modality: 'document' }],
+            }).data.content,
+            [{ type: 'text', raw: 'x', modality: 'document' }]);
     });
 
     it('rejects empty content and non-string raw', () => {

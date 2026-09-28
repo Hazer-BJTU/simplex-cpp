@@ -112,12 +112,12 @@ describe('worker event connection', () => {
         const { session, worker } = await pair('send');
         const payload = buildPayload({
             requestId: 'req-send',
-            content: [{ type: 'text', raw: 'hello worker' }],
+            content: [{ type: 'text', raw: 'hello worker', modality: 'text' }],
         });
         assert.deepEqual(session.connection.sendPayload(payload), { ok: true });
         const received = await worker.waitFor((message) => message.type === 'payload');
         assert.equal(received.data.request_id, 'req-send');
-        assert.deepEqual(received.data.content, [{ type: 'text', raw: 'hello worker' }]);
+        assert.deepEqual(received.data.content, [{ type: 'text', raw: 'hello worker', modality: 'text' }]);
 
         assert.deepEqual(session.connection.sendSignal(buildSignal({ operation: 'status' })), { ok: true });
         await worker.waitFor((message) => message.type === 'signal' && message.data.operation === 'status');
@@ -130,7 +130,7 @@ describe('worker event connection', () => {
         await until(() => !session.connected, { label: 'disconnected session' });
         const result = connection.sendPayload(buildPayload({
             requestId: 'req-late',
-            content: [{ type: 'text', raw: 'x' }],
+            content: [{ type: 'text', raw: 'x', modality: 'text' }],
         }));
         assert.equal(result.ok, false);
         assert.match(result.error, /not connected/);

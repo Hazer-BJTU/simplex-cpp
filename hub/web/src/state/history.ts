@@ -11,7 +11,7 @@ function index(value: unknown): value is number {
 
 function part(value: unknown): value is ContentPart {
     return record(value) && typeof value.type === 'string'
-        && typeof value.raw === 'string';
+        && typeof value.raw === 'string' && typeof value.modality === 'string';
 }
 
 function parts(value: unknown): value is ContentPart[] {
