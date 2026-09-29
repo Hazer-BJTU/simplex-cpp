@@ -48,3 +48,22 @@ test('session creation offers both persisted configuration selectors', async ({ 
     await expect(dialog.getByLabel('Worker configuration')).toHaveValue('default');
     await expect(dialog.getByRole('button', { name: 'Create session', exact: true })).toBeEnabled();
 });
+
+test('configuration source remains text and the editor stays inside a narrow viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const source = '# <img src=x onerror="window.configInjected=true">\nclient:\n  endpoint: "{{hub.events_endpoint}}"\n';
+    await page.route('**/api/configurations/worker/template*', route => route.fulfill({ json: { text: source } }));
+    await open(page);
+    await page.getByRole('button', { name: 'Open the session list' }).click();
+    await page.getByRole('button', { name: 'Configurations', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Configurations' });
+    await dialog.getByRole('button', { name: 'New from template' }).click();
+    await expect(dialog.getByRole('textbox', { name: 'Configuration source' })).toHaveValue(source);
+    await expect(dialog.locator('[data-testid="config-editor"] img')).toHaveCount(0);
+    await expect(dialog.locator('.hljs-comment')).toContainText('onerror');
+    const bounds = (await dialog.boundingBox())!;
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(844);
+});

@@ -563,7 +563,7 @@ export type DeepPartial<T> = {
 
 /** What `loadConfig` accepts. */
 export interface LoadConfigOptions {
-    /** Configuration path; when omitted, an existing config beside the package is used. */
+    /** Configuration path; when omitted, search the selected persistent data root. */
     file?: string | undefined;
     /** Command-line overrides, already shaped like the configuration. */
     overrides?: DeepPartial<HubConfig>;
@@ -603,7 +603,7 @@ export function loadConfig({
         throw new ConfigError(`configuration file not found: ${selected}`);
     }
     if (!selected && requireFile) {
-        throw new ConfigError(`configuration file not found (looked in ${hubRoot})`);
+        throw new ConfigError(`configuration file not found in the selected data directory`);
     }
 
     const baseDir = selected ? dirname(selected) : hubRoot;

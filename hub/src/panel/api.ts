@@ -487,6 +487,10 @@ export function createPanelApi({
             const session = requireSession(res, params.id as string);
             if (!session) return;
             const body = await readJsonBody(req, 4096);
+            if (registry.get(session.id) !== session) {
+                sendError(res, 404, 'unknown_session', 'Session no longer exists');
+                return;
+            }
             // Recheck after awaiting the body; another request may have started it.
             if (supervisor.isRunning(session) || session.connected) {
                 sendError(res, 409, 'session_busy', 'Stop and disconnect the worker before applying configuration');
@@ -730,8 +734,14 @@ export function createPanelApi({
                     });
                     return;
                 }
-                const selected = selection(message.spec);
-                if (selected) snapshotConfigs(configurations, message.session, selected);
+                try {
+                    const selected = selection(message.spec);
+                    if (selected) snapshotConfigs(configurations, message.session, selected);
+                } catch (error) {
+                    send(client, { type: 'error', error: 'invalid_session', request: message,
+                        message: error instanceof Error ? error.message : String(error) });
+                    return;
+                }
                 const fresh = registry.create(created, message.spec ?? {});
                 fresh.spec = message.spec ?? {};
                 persist();

@@ -7,9 +7,8 @@ import { Button } from '../ui/Button.tsx';
 import { Dialog, DialogContent } from '../ui/overlays.tsx';
 import { ConfigEditor } from './ConfigEditor.tsx';
 
-type Kind = 'launch' | 'worker';
-interface File { kind: Kind; id: string; text: string; revision: string }
-export interface ConfigList { launch: string[]; worker: string[] }
+import type { ConfigKind as Kind, ConfigFile as File, ConfigList } from '../../../shared/configurations.ts';
+export type { ConfigList } from '../../../shared/configurations.ts';
 const control = 'rounded border border-line-strong bg-surface px-2 py-1.5 text-sm text-ink';
 
 /** Shared picker for session creation and explicit snapshot replacement. */
@@ -44,6 +43,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
     const selected = usePanel(state => state.selected);
     const session = usePanel(state => selected ? state.sessions.get(selected) : undefined);
     const [list, setList] = useState<ConfigList>({ launch: [], worker: [] });
+    const [templateSource, setTemplateSource] = useState('default');
     const [kind, setKind] = useState<Kind>('worker');
     const [file, setFile] = useState<File | null>(null);
     const [text, setText] = useState('');
@@ -106,10 +106,14 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                             <option value="">Select a saved file</option>
                             {list[kind].map(id => <option key={id}>{id}</option>)}
                         </select>
+                        <select aria-label="Template source" className={control} value={templateSource} disabled={busy} onChange={e => setTemplateSource(e.target.value)}>
+                            <option value="default">Default template</option>
+                            <option value="deployment">Current Hub deployment</option>
+                        </select>
                         <Button disabled={busy} onClick={() => {
                             if (!discard()) return;
                             void action(async () => {
-                                const result = await rest.request<{ text: string }>('GET', `/api/configurations/${kind}/template`);
+                                const result = await rest.request<{ text: string }>('GET', `/api/configurations/${kind}/template?source=${templateSource}`);
                                 setFile(null); setText(result.text); setName(''); setPreview(null);
                             });
                         }}>New from template</Button>

@@ -32,8 +32,14 @@ npm run build        # bundles the panel into web/dist
 npm start
 ```
 
-Then open <http://127.0.0.1:8800>. Create a session, choose a provider profile,
-and press *Start worker*.
+Then open <http://127.0.0.1:8800>. Open **Configurations**, edit the default
+worker YAML and inspect the local launch template. Create a session, select
+both saved configurations, and press *Start worker*. The local template uses
+`simplex run`; install `simplex` on PATH or edit its executable path.
+
+Configuration files and session data default to `~/.simplex/hub`; use
+`--data-dir` to choose another root. See [Configuration UI and lifecycle](docs/configurations.md)
+for editing, endpoint discovery, Docker launch profiles and snapshot reuse.
 
 For a real model, export the key the generated configuration refers to — the
 hub writes `${DEEPSEEK_API_KEY}` verbatim and the worker expands it, so the
@@ -57,7 +63,10 @@ docker run --rm --init -p 127.0.0.1:8800:8800 simplex-hub-test
 ```
 
 It carries the worker (Debug, built in the image), the hub, its dependencies,
-and the offline mock provider, so it needs no key and no configuration. Add
+and the offline mock provider. In **Configurations**, create a launch file and
+a worker file using **Current Hub deployment** as the template source, save both,
+and select them for your session. This uses the image's binary and mock endpoint
+without a model key. Add
 `-e DEEPSEEK_API_KEY=sk-...` to use a real provider as well — a session chooses
 its profile either way — and `-v simplex-hub-data:/data` to keep sessions after
 the container is gone. `docker run -it --rm simplex-hub-test bash` gives a shell
@@ -80,7 +89,9 @@ including tool calls, confirmations, and persistence — clickable offline:
 npm start -- --mock
 ```
 
-Create a session with the `mock` provider profile (model `mock-auto`), start it,
+Create both configuration files from the **Current Hub deployment** template.
+With `--mock`, its worker file selects the `mock` provider; choose `mock-auto`
+as the model in that YAML if desired. Select those files for a session, start it,
 send any message, and approve the `run_command` confirmation the mock proposes.
 The mock scenarios are selected by model name:
 
@@ -110,6 +121,11 @@ node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --mock \
     --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
 # then: http://127.0.0.1:8800/?token=dev
 ```
+
+In the configuration editor, select **Current Hub deployment** and save one
+launch configuration and one worker configuration. Select both for your session.
+The legacy startup file below remains the source of these deployment templates;
+subsequent edits take place in the saved library files.
 
 Three things make it work, and each is a way to get it wrong:
 
@@ -175,9 +191,9 @@ node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --no-mock \
     --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
 ```
 
-then create the session with the `deepseek` profile — from the panel's *new*
-form it would default to that profile anyway, since `deepseek` is the first
-entry in `providerProfiles`:
+then create both saved configurations from **Current Hub deployment** and
+select them for the session. With `--no-mock`, the worker template selects
+the first configured provider, normally `deepseek`:
 
 ```sh
 curl -s -X POST http://127.0.0.1:8800/api/sessions \
@@ -216,7 +232,8 @@ Two things to know before reading the result:
 ## Configuration
 
 Copy [`hub.config.example.jsonc`](hub.config.example.jsonc) to
-`hub.config.jsonc`, or pass any file with `--config`. Comments are allowed:
+`~/.simplex/hub/hub.config.jsonc` (or `<dataDir>/hub.config.jsonc`), or pass
+any file with `--config`. Comments are allowed:
 the reader strips `//` and `/* */` before parsing, and the file stays valid JSON
 without them. Relative paths resolve against the configuration file's
 directory; command-line paths resolve against the working directory.
@@ -226,7 +243,7 @@ directory; command-line paths resolve against the working directory.
 | `toolRequests.host`, `toolRequests.port` | inherits `listen.host`, `8801` | independent worker tool-request listener |
 | `toolRequests.timeoutMs`, `toolRequests.maxConnections` | `120000`, `128` | hard per-connection deadline and global upgraded-connection limit |
 | `listen.host`, `listen.port` | `127.0.0.1`, `8800` | panel and API listener |
-| `dataDir` | `./data` | hub state, generated worker configs, logs, JSONL event logs, worker snapshots |
+| `dataDir` | `~/.simplex/hub` | hub state, generated worker configs, logs, JSONL event logs, worker snapshots |
 | `panel.token` | `""` | shared panel token; required for a non-loopback listener |
 | `worker.bin` | `../build/bin/simplex_worker` | worker executable |
 | `worker.systemPromptFile` | `prompts/coding_agent.yaml` | default prompt for new sessions, relative to the worker's installation directory |

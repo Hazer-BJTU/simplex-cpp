@@ -1,12 +1,24 @@
 /** Plain-text source editor with aligned line numbers and syntax highlighting.
  * Source stays authoritative; highlighting never rewrites user input. */
-import { useMemo } from 'react';
-import hljs from 'highlight.js/lib/core';
+import { useMemo, type ReactNode } from 'react';
+import { createLowlight } from 'lowlight';
+import type { RootContent } from 'hast';
 import json from 'highlight.js/lib/languages/json';
 import yaml from 'highlight.js/lib/languages/yaml';
 
-hljs.registerLanguage('json', json);
-hljs.registerLanguage('yaml', yaml);
+const highlighter = createLowlight({ json, yaml });
+
+/** Render text and spans only. Configuration source never becomes HTML. */
+function tokens(nodes: RootContent[]): ReactNode {
+    return nodes.map((node, index) => {
+        if (node.type === 'text') return node.value;
+        if (node.type !== 'element') return null;
+        const classes = node.properties.className;
+        return <span key={index} className={Array.isArray(classes) ? classes.join(' ') : ''}>
+            {tokens(node.children)}
+        </span>;
+    });
+}
 
 export function ConfigEditor({ text, language, onChange, disabled }: {
     text: string;
@@ -15,7 +27,7 @@ export function ConfigEditor({ text, language, onChange, disabled }: {
     disabled: boolean;
 }) {
     const lines = text.split('\n');
-    const highlighted = useMemo(() => hljs.highlight(text + '\n', { language }).value, [text, language]);
+    const highlighted = useMemo(() => tokens(highlighter.highlight(language, text + '\n').children), [text, language]);
     const width = lines.reduce((longest, line) => Math.max(longest, line.length), 60) + 4;
     return (
         <div className="h-[45dvh] min-h-48 overflow-auto rounded-md border border-line bg-surface" data-testid="config-editor">
@@ -25,7 +37,7 @@ export function ConfigEditor({ text, language, onChange, disabled }: {
                 </pre>
                 <div className="relative min-w-0 flex-1">
                     <pre aria-hidden="true" className="pointer-events-none m-0 whitespace-pre p-3 font-mono text-xs leading-5 text-ink"
-                        dangerouslySetInnerHTML={{ __html: highlighted }} />
+                    >{highlighted}</pre>
                     <textarea aria-label="Configuration source" value={text} disabled={disabled}
                         wrap="off" spellCheck={false} autoCapitalize="off" autoCorrect="off"
                         onChange={event => onChange(event.target.value)}

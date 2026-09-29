@@ -1,6 +1,6 @@
 /** Session snapshots decouple existing conversations from later library edits. */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mergeConfig } from '../config.ts';
 import type { HubConfig } from '../config.ts';
@@ -8,7 +8,8 @@ import type { WorkerEndpoints } from '../launch/invocation.ts';
 import { ConfigurationStore, launchDocument, workerDocument, writeConfigFile, configError } from './store.ts';
 import type { LaunchDocument } from './store.ts';
 
-export interface ConfigSelection { launchConfig: string; workerConfig: string }
+import type { ConfigSelection } from '../../shared/configurations.ts';
+export type { ConfigSelection } from '../../shared/configurations.ts';
 
 /** Both selectors are required together. Legacy sessions may omit both. */
 export function selection(raw: unknown): ConfigSelection | null {
@@ -55,7 +56,11 @@ export function sessionLaunch(config: HubConfig, id: string): { config: HubConfi
     const path = join(config.dataDir, 'sessions', id, 'config', 'launch.jsonc');
     if (!existsSync(path)) return null;
     const launch = launchDocument(readFileSync(path, 'utf8'), config);
-    return { config: mergeConfig(config, { launcher: launch.launcher, worker: launch.worker ?? {} }), launch };
+    const resolved = mergeConfig(config, { launcher: launch.launcher, worker: launch.worker ?? {} });
+    const directory = join(config.dataDir, 'sessions', id, 'config');
+    if (resolved.launcher.cwd) resolved.launcher.cwd = resolve(directory, resolved.launcher.cwd);
+    if (launch.worker?.bin && !isAbsolute(launch.worker.bin)) resolved.worker.bin = resolve(directory, launch.worker.bin);
+    return { config: resolved, launch };
 }
 
 /** Replace only origin/prefix, retaining Hub-issued session identity and token.

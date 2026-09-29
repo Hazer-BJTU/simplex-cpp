@@ -354,7 +354,10 @@ export class WorkerSupervisor {
             const message = error instanceof Error ? error.message : String(error);
             return { ok: false, error: `cannot prepare session configuration: ${message}`, config: specSource };
         }
-        session.spec = { ...session.spec, ...rendered.spec };
+        session.spec = { ...session.spec, ...rendered.spec,
+            // Profile credentials stay in launch.jsonc, not public session metadata.
+            ...(launcher !== this.launcher ? { env: {} } : {}),
+        };
 
         let invocation: LauncherInvocation;
         try {
@@ -369,7 +372,7 @@ export class WorkerSupervisor {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return { ok: false, error: `cannot build the launcher invocation: ${message}`,
-                config: rendered.spec };
+                config: session.spec };
         }
 
         const logDirectory = join(directory, 'logs');
@@ -378,7 +381,7 @@ export class WorkerSupervisor {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return { ok: false, error: `cannot create ${logDirectory}: ${message}`,
-                config: rendered.spec };
+                config: session.spec };
         }
         const logPath = join(logDirectory, 'worker.log');
         rotateLog(logPath, this.config.limits);
@@ -411,7 +414,7 @@ export class WorkerSupervisor {
             const message = error instanceof Error ? error.message : String(error);
             this.finish(record, { error: message });
             return { ok: false, error: `cannot spawn ${invocation.command}: ${message}`,
-                config: rendered.spec };
+                config: session.spec };
         }
 
         record.child = child;
@@ -424,7 +427,7 @@ export class WorkerSupervisor {
             });
             this.finish(record, { error: failure.message });
             return { ok: false, error: `cannot spawn ${invocation.command}: ${failure.message}`,
-                config: rendered.spec };
+                config: session.spec };
         }
         record.pid = child.pid;
         record.pidStartTime = readProcessStartTime(child.pid);
@@ -448,7 +451,7 @@ export class WorkerSupervisor {
         this.log.info(
             `session ${session.id}: started ${invocation.command} (pid ${record.pid})`);
         this.notify(session, record);
-        return { ok: true, pid: record.pid, config: rendered.spec };
+        return { ok: true, pid: record.pid, config: session.spec };
     }
 
     /** Record process termination and release per-process resources. */
@@ -664,6 +667,8 @@ export class WorkerSupervisor {
         record.startedAt = typeof entry.started_at === 'string' ? entry.started_at : record.startedAt;
         record.state = PROCESS_STATE.running;
         record.adopted = true;
+        try { record.stopPolicy = sessionLaunch(this.config, session.id)?.config.worker ?? this.config.worker; }
+        catch { this.log.warn(`session ${session.id}: cannot read saved stop policy; using Hub defaults`); }
         record.stopRequested = false;
         // The exit of a process this hub did not spawn can only be observed by
         // polling; it is rare and cheap enough to justify keeping the panel

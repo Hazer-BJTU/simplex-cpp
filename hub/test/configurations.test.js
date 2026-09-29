@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultConfig } from '../src/config.ts';
+import { defaultConfig, parseConfigText } from '../src/config.ts';
 import { ConfigurationStore } from '../src/configurations/store.ts';
 
 test('configuration library preserves text, guards revisions and survives restart', () => {
@@ -99,4 +99,92 @@ test('authenticated configuration API and session selection retain independent s
         await ctx.hub.stop();
         rmSync(ctx.config.dataDir, { recursive: true, force: true });
     }
+});
+
+import { fileURLToPath } from 'node:url';
+import { until } from './helpers/worker.js';
+
+test('selected launchers run independently and survive Hub restart without library files', async () => {
+    let ctx = await startTestHub();
+    const dataDir = ctx.config.dataDir;
+    try {
+        const store = new ConfigurationStore(ctx.config);
+        for (const [name, threads] of [['one', 2], ['two', 3]]) {
+            const launch = parseConfigText(store.template('launch'), 'template');
+            launch.launcher.command = [process.execPath, fileURLToPath(new URL('./fixtures/fake-worker.js', import.meta.url)),
+                '--config', '{config}', '--session', '{session}', '--threads', '{threads}'];
+            launch.worker.threads = threads;
+            launch.env = { CONFIG_TEST_SECRET: 'not-in-session-metadata' };
+            store.save('launch', name, JSON.stringify(launch), null);
+            snapshotConfigs(store, name, { launchConfig: name, workerConfig: 'default' });
+            const session = ctx.hub.registry.create(name, { launchConfig: name, workerConfig: 'default' });
+            const result = await ctx.hub.supervisor.start(session);
+            assert.equal(result.ok, true, result.error);
+            assert.equal(JSON.stringify(result).includes('not-in-session-metadata'), false);
+            assert.equal(JSON.stringify(session.describe()).includes('not-in-session-metadata'), false);
+            await until(() => session.connected, { label: `${name} worker connects` });
+            // The observable spec and spawned process both originate in the selected snapshot.
+            assert.equal(session.spec.threads, threads);
+            assert.ok(session.process.pid > 0);
+            assert.equal((await ctx.hub.supervisor.stop(session)).ok, true);
+            store.remove('launch', name, store.read('launch', name).revision);
+        }
+        await ctx.hub.stop();
+        ctx = await startTestHub({ dataDir });
+        const restored = ctx.hub.registry.get('one');
+        assert.ok(restored);
+        assert.equal(restored.spec.launchConfig, 'one');
+        const result = await ctx.hub.supervisor.start(restored);
+        assert.equal(result.ok, true, result.error);
+        await until(() => restored.connected, { label: 'restored worker connects' });
+        assert.equal(restored.spec.threads, 2);
+        assert.equal((await ctx.hub.supervisor.stop(restored)).ok, true);
+    } finally {
+        await ctx.hub.stop();
+        rmSync(dataDir, { recursive: true, force: true });
+    }
+});
+
+import { loadConfig } from '../src/config.ts';
+import { launchDocument } from '../src/configurations/store.ts';
+import { writeFileSync } from 'node:fs';
+
+test('startup discovers configuration inside the selected persistent root', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
+    try {
+        const file = join(dataDir, 'hub.config.jsonc');
+        writeFileSync(file, '{ "listen": { "port": 9123 }, "worker": { "threads": 4 } }');
+        const loaded = loadConfig({ overrides: { dataDir } });
+        assert.equal(loaded.file, file);
+        assert.equal(loaded.config.listen.port, 9123);
+        assert.equal(loaded.config.worker.threads, 4);
+        assert.equal(loaded.config.dataDir, dataDir);
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('deployment templates copy existing launcher and mock choices; local defaults stay independent', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
+    try {
+        const config = defaultConfig();
+        config.dataDir = dataDir;
+        config.mock.enabled = true;
+        config.worker.hubRemoteCall = false;
+        config.worker.threads = 6;
+        config.worker.connectHost = '172.17.0.1';
+        config.launcher = { ...config.launcher, kind: 'command', command: ['wrapper', '{config}'] };
+        const store = new ConfigurationStore(config);
+        const launch = launchDocument(store.template('launch', 'deployment'), config);
+        assert.deepEqual(launch.launcher.command, ['wrapper', '{config}']);
+        assert.equal(launch.worker.threads, 6);
+        const worker = parseDocument(store.template('worker', 'deployment')).toJS();
+        assert.equal(worker.driver_model, 'mock');
+        assert.equal(worker.hub_remote_call, undefined);
+        assert.equal(worker.modality_assist_model, undefined);
+        store.validate('worker', store.template('worker', 'deployment'));
+        const local = launchDocument('{"launcher":{"kind":"command","command":["simplex","run"]}}', config);
+        assert.equal(local.worker.threads, 1);
+        assert.equal(local.worker.connectHost, '');
+        assert.throws(() => launchDocument('{"launcher":{"kind":"simplex-worker"}}', config), /worker.bin/);
+        assert.throws(() => store.validate('worker', store.template('worker').replace('state: state', 'state: ../outside')), /relative child/);
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
