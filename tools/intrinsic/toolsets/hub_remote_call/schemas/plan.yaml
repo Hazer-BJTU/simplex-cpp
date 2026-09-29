@@ -1,0 +1,30 @@
+name: plan
+description: >-
+  Read or replace this session's Markdown plan displayed in the user interface.
+  Use operation=read without markdown to retrieve it. Use operation=replace with
+  the complete markdown to replace it, or an empty string to clear it. The plan
+  survives runs, cancellation, compaction and restarts. Maximum 64 KiB UTF-8.
+  Read is read_only; replacement is serial_write. Both are trusted and only
+  affect this session's plan. Requests are not retried automatically; after an
+  uncertain transport failure, read before replacing again.
+type: serial_write
+security: trusted
+argument_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    operation:
+      type: string
+      enum: [read, replace]
+      description: Read the current plan or replace it in full.
+    markdown:
+      type: string
+      description: Complete replacement Markdown, at most 64 KiB UTF-8; empty clears the plan.
+  anyOf:
+    - required: [operation]
+      not: {required: [markdown]}
+      properties:
+        operation: {enum: [read]}
+    - required: [operation, markdown]
+      properties:
+        operation: {enum: [replace]}

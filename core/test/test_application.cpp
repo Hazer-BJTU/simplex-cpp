@@ -56,7 +56,7 @@ enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
                   ProtocolFailure, History, ModelFailure };
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
-void scenario(Mode mode, bool with_modality_assist = false) {
+void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote_call = false) {
     Scratch scratch;
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
@@ -69,6 +69,10 @@ void scenario(Mode mode, bool with_modality_assist = false) {
             "deepseek", {{"model", "deepseek-flash"},
                 {"endpoint", {{"base_url", "https://127.0.0.1:1"}}}}
         };
+    }
+    if (with_hub_remote_call) {
+        // No listener: registering the toolset must not initiate a request.
+        config.hub_remote_call = load::websocket_endpoint("ws://127.0.0.1:1/agent/test/tools");
     }
     config.client = load::websocket_endpoint("ws://127.0.0.1:"
         + std::to_string(acceptor.local_endpoint().port()) + "/events");
@@ -226,6 +230,8 @@ sections:
             BOOST_TEST(model->calls.load() == 2);
             const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_TEST(state.turns.size() == 2u);
+            BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
+                [](const auto& tool) { return tool.name == "plan"; }) == with_hub_remote_call);
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "modality_assist"; })
                 == with_modality_assist);
@@ -725,4 +731,8 @@ BOOST_AUTO_TEST_CASE(session_root_lock_is_independent_of_state_path_and_identity
     }
     BOOST_CHECK_NO_THROW(fileio::SessionLock(scratch.root / "session.lock"));
     BOOST_CHECK(!std::filesystem::exists(scratch.root / "different-id"));
+}
+
+BOOST_AUTO_TEST_CASE(optional_hub_remote_call_set_advertises_plan_without_startup_network_activity) {
+    scenario(Mode::Normal, false, true);
 }

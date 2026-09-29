@@ -11,6 +11,10 @@
     // (core/docs/worker-protocol.md).
     "panel": { "token": "" },
 
+    // Independent worker RPC listener. Empty host inherits listen.host.
+    // Plan read/replace routes are implemented; unknown routes are rejected.
+    "toolRequests": { "host": "", "port": 8801, "timeoutMs": 120000, "maxConnections": 128 },
+
     "worker": {
         // Relative to this file; the default assumes an in-tree build tree.
         "bin": "../build/bin/simplex_worker",
@@ -21,6 +25,8 @@
         "maxExchanges": 512,
         "eventCapacity": 1024,
         "confirmationTimeoutMs": 120000,
+        // Enable hub-backed tools such as plan in new sessions.
+        "hubRemoteCall": true,
         // Copied into every generated worker config; these are the worker's own
         // defaults from core/docs/worker-protocol.md.
         "payloadCapacity": 256,

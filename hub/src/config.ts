@@ -49,6 +49,8 @@ export interface ProviderProfile {
 /** The hub's complete configuration, exactly as `defaultConfig()` produces it. */
 export interface HubConfig {
     listen: { host: string; port: number };
+    /** Dedicated worker tool-request listener; empty host inherits listen.host. */
+    toolRequests: { host: string; port: number; timeoutMs: number; maxConnections: number };
     dataDir: string;
     /** Empty token disables panel authentication on a loopback listener. */
     panel: { token: string };
@@ -77,6 +79,8 @@ export interface HubConfig {
         maxExchanges: number;
         eventCapacity: number;
         confirmationTimeoutMs: number;
+        /** Include the optional hub remote-call toolset in new worker configs. */
+        hubRemoteCall: boolean;
         payloadCapacity: number;
         signalCapacity: number;
         writeCapacity: number;
@@ -125,6 +129,7 @@ export interface HubConfig {
 export function defaultConfig(): HubConfig {
     return {
         listen: { host: '127.0.0.1', port: 8800 },
+        toolRequests: { host: '', port: 8801, timeoutMs: 120000, maxConnections: 128 },
         dataDir: './data',
         // Empty string disables panel authentication. Non-loopback listeners
         // require a token (validated below): the worker-facing payload channel
@@ -141,6 +146,7 @@ export function defaultConfig(): HubConfig {
             maxExchanges: 512,
             eventCapacity: 1024,
             confirmationTimeoutMs: 120000,
+            hubRemoteCall: true,
             // Transport settings copied into every generated worker config;
             // the defaults are the worker's own (core/docs/worker-protocol.md).
             payloadCapacity: 256,
@@ -432,6 +438,16 @@ export function validateConfig(config: HubConfig): HubConfig {
     const port = config.listen?.port;
     check(Number.isInteger(port) && port >= 0 && port <= 65535,
         'listen.port must be an integer between 0 and 65535');
+    const tools = config.toolRequests;
+    check(typeof tools?.host === 'string', 'toolRequests.host must be a string');
+    check(Number.isInteger(tools?.port) && tools.port >= 0 && tools.port <= 65535,
+        'toolRequests.port must be an integer between 0 and 65535');
+    check(Number.isInteger(tools?.timeoutMs) && tools.timeoutMs > 0 && tools.timeoutMs <= 2147483647,
+        'toolRequests.timeoutMs must be an integer between 1 and 2147483647');
+    check(Number.isInteger(tools?.maxConnections) && tools.maxConnections > 0,
+        'toolRequests.maxConnections must be a positive integer');
+    check(port === 0 || tools.port === 0 || port !== tools.port,
+        'toolRequests.port must differ from listen.port (unless either is 0)');
     check(typeof config.dataDir === 'string' && config.dataDir.length > 0,
         'dataDir must be a nonempty string');
     check(typeof config.panel?.token === 'string', 'panel.token must be a string');
@@ -461,6 +477,7 @@ export function validateConfig(config: HubConfig): HubConfig {
         'worker.maxExchanges must be a positive integer');
     check(Number.isInteger(worker.eventCapacity) && worker.eventCapacity > 0,
         'worker.eventCapacity must be a positive integer');
+    check(typeof worker.hubRemoteCall === 'boolean', 'worker.hubRemoteCall must be a boolean');
     check(Number.isInteger(worker.confirmationTimeoutMs) && worker.confirmationTimeoutMs > 0,
         'worker.confirmationTimeoutMs must be a positive integer');
     for (const key of ['payloadCapacity', 'signalCapacity', 'writeCapacity',

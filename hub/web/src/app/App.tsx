@@ -19,6 +19,7 @@
  * read squeezed between them.
  */
 import { useEffect, useState } from 'react';
+import { ConversationPanels } from './ConversationPanels.tsx';
 import { Approvals } from './Approvals.tsx';
 import { CommandPalette } from './CommandPalette.tsx';
 import { Composer } from './Composer.tsx';
@@ -26,7 +27,6 @@ import { Inspector } from './Inspector.tsx';
 import { SessionHeader } from './SessionHeader.tsx';
 import { SessionList } from './SessionList.tsx';
 import { StatusBar } from './StatusBar.tsx';
-import { Transcript } from './Transcript.tsx';
 import { TooltipProvider } from '../ui/overlays.tsx';
 
 export function App() {
@@ -65,7 +65,7 @@ export function App() {
                     >
                         <SessionHeader />
                         <Approvals />
-                        <Transcript />
+                        <ConversationPanels />
                         <Composer />
                     </main>
                     <Inspector />

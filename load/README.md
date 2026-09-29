@@ -17,6 +17,7 @@ independently. See [core](../core/README.md) for the runtime contract.
 | `providers`, `driver_model`, `modality_assist_model` | Selected providers validated/expanded by read_configuration; independent instances constructed by core. |
 | `client` | Parsed by read_configuration; started by core. |
 | `persistence` | Parsed by read_configuration; applied by core. |
+| `hub_remote_call` | Optional endpoint and timeout; enables the hub remote-call intrinsic set. |
 | `security.confirmation`, `worker` | Approval endpoint/deadline, event capacity, exchange budget and initial prompt. |
 | `save_state()`, `load_state()` | Explicit file operations, independent of startup YAML. |
 
@@ -591,3 +592,21 @@ recursively removes directories, and failures are reported without undoing the
 committed summary. The same worker policy applies to externally managed workers.
 The old session-ID-appending layout is not migrated or read automatically. See the
 [worker protocol](../core/docs/worker-protocol.md#compact-conversation-context).
+
+## Remote tool transport configuration
+
+The optional `hub_remote_call` mapping accepts `endpoint`, a complete `ws://` or
+`wss://` base URL, and `timeout_ms`, an integer in `1..2147483647` (default
+`120000`).
+Omission leaves `Configuration::hub_remote_call` empty. An explicit mapping requires
+a valid endpoint; it is not silently enabled with a guessed server address.
+The parser retains the independent timeout in `hub_remote_call_timeout`.
+
+The endpoint names `/agent/<session>/tools`; a future client appends the operation
+route to the URL pathname while retaining its authentication query. These
+settings cause core to register an `HubRemoteCallToolSet` with the `plan` tool, whose future
+tools can use `HubRemoteCallToolBase`. Omission leaves the set unloaded.
+The plan tool and skill are registered; construction opens no connection. The hub
+accepts authenticated one-shot requests on its dedicated listener and rejects
+unknown routes with `not_implemented`; plan/read and plan/replace are implemented. The envelope and lifecycle contract
+are specified in [the worker protocol](../core/docs/worker-protocol.md#remote-tool-requests).

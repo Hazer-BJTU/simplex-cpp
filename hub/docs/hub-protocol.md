@@ -270,6 +270,7 @@ displayed page and offers a refresh after reconnection.
 | `snapshot` | `session`, `transcript` | transcript plus description, on request |
 | `accepted` | `action`, `session`, plus action-specific fields | the command was accepted |
 | `error` | `error`, `message`, optional `request` | the command was refused |
+| `plan` | `session`, `plan` | latest persisted session plan; an empty markdown string clears it |
 | `pong` | `at` | heartbeat reply |
 
 `envelope` is the worker's envelope with hub-added fields:
@@ -349,3 +350,16 @@ that requires confirmation. The hub therefore:
 It does **not** implement user accounts, roles, audit logs, or TLS. Deployments
 that need those should terminate TLS and authenticate at a reverse proxy, and
 keep the hub on a private interface.
+
+## Session plans
+
+`subscribed.plan` is an authoritative `{markdown, revision, updated_at}` snapshot
+of the hub-owned session plan. The hub subsequently pushes `type: "plan"` with
+`session` and `plan` to subscribers after a successful replacement. A revision is
+monotonic within the saved session document; panels ignore older live updates,
+but replace their cached value on subscription, including after hub restart.
+An empty markdown string hides the plan tab. Old hubs may omit the snapshot,
+which panels treat as empty. Plan updates are not transcript events.
+
+Plans persist in `<dataDir>/sessions/<session>/plan.json`. Only the current active
+worker can read/replace them via the dedicated tool listener; panels are read-only.

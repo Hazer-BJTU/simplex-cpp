@@ -246,6 +246,15 @@ const server = createServer((req, res) => {
                     json(res, 200, { ok: true });
                     return;
                 }
+                case '/__stub/plan': {
+                    const session = sessions.find((item) => item.session_id === (payload.session ?? 'demo'));
+                    if (session) {
+                        session.plan = payload.plan;
+                        broadcast({ type: 'plan', session: session.session_id, plan: payload.plan });
+                    }
+                    json(res, 200, { ok: true });
+                    return;
+                }
                 case '/__stub/emit': {
                     const envelope = append(
                         payload.session ?? 'demo', payload.event ?? 'model_response',
@@ -487,6 +496,7 @@ function handle(ws, message) {
             const since = Number(message.since) || 0;
             send(ws, {
                 type: 'subscribed',
+                plan: describe(id)?.plan ?? { markdown: '', revision: 0, updated_at: null },
                 session: describe(id),
                 transcript: transcriptOf(id).filter((e) => e.hub_sequence > since),
                 logs: [],

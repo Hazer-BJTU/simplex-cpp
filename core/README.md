@@ -270,3 +270,11 @@ the saved summary without undoing it.
 Injected memory identifies the absolute archive directory for later tool-based
 lookup. The compact instruction is loaded from
 [prompts/operations/compact.yaml](prompts/operations/compact.yaml) at startup.
+
+## Optional hub remote-call toolset
+
+`hub_remote_call.endpoint` and optional `timeout_ms` (default `120000`) enable an
+intrinsic `HubRemoteCallToolSet` with the `plan` tool. `construct_runtime()` copies these settings
+into the set before registering it. Omission leaves it unloaded. The set registers the plan tool and skill without opening a startup connection.
+See the [package guide](../tools/intrinsic/toolsets/hub_remote_call/README.md) for
+the request base and [wire protocol](docs/worker-protocol.md#remote-tool-requests).

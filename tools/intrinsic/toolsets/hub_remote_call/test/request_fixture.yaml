@@ -1,0 +1,7 @@
+# Test-only declaration. Never installed or registered by the production set.
+name: remote_request_fixture
+description: Test fixture for the abstract remote request base.
+type: parall_write
+security: default_deny
+argument_schema:
+  type: object

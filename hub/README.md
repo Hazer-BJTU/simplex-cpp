@@ -223,12 +223,15 @@ directory; command-line paths resolve against the working directory.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `toolRequests.host`, `toolRequests.port` | inherits `listen.host`, `8801` | independent worker tool-request listener |
+| `toolRequests.timeoutMs`, `toolRequests.maxConnections` | `120000`, `128` | hard per-connection deadline and global upgraded-connection limit |
 | `listen.host`, `listen.port` | `127.0.0.1`, `8800` | panel and API listener |
 | `dataDir` | `./data` | hub state, generated worker configs, logs, JSONL event logs, worker snapshots |
 | `panel.token` | `""` | shared panel token; required for a non-loopback listener |
 | `worker.bin` | `../build/bin/simplex_worker` | worker executable |
 | `worker.systemPromptFile` | `prompts/coding_agent.yaml` | default prompt for new sessions, relative to the worker's installation directory |
 | `worker.threads`, `worker.maxExchanges`, `worker.eventCapacity` | `1`, `512`, `1024` | defaults copied into generated worker configurations |
+| `worker.hubRemoteCall` | `true` | include the optional remote-call toolset config for new sessions |
 | `worker.confirmationTimeoutMs` | `120000` | confirmation deadline written into the worker configuration |
 | `worker.stopTimeoutMs`, `worker.sigtermGraceMs`, `worker.sigkillGraceMs` | `15000`, `5000`, `2000` | the stop escalation ladder |
 | `worker.persistence` | `{enabled: true, readable: false}` | worker snapshot policy |
@@ -276,8 +279,9 @@ After a restart, the session spec reports the saved worker configuration's
 or the original session spec have since changed.
 
 Before each launch the hub refreshes only `persistence.directory` (the direct
-session root), `client.endpoint`, `security.confirmation.endpoint` (including
-session authentication tokens), and the active mock provider's dynamic
+session root), `client.endpoint`, `security.confirmation.endpoint`, and
+`hub_remote_call.endpoint` when configured (including session authentication
+tokens), and the active mock provider's dynamic
 `endpoint.base_url`. Provider credentials and other operator fields remain intact.
 Malformed saved YAML or invalid persistence child paths fail startup without
 replacing the file. Updates are published with an atomic rename.
@@ -304,7 +308,7 @@ The hub then runs the configured launcher. Two kinds ship:
   ```
 
   Placeholders are `{session}`, `{config}`, `{data_dir}`, `{session_dir}`,
-  `{endpoint}`, `{confirm_endpoint}`, `{token}`, `{threads}`, and
+  `{endpoint}`, `{confirm_endpoint}`, `{tools_endpoint}`, `{token}`, `{threads}`, and
   `{worker_bin}`. An unknown placeholder fails the spawn by name instead of
   being passed through. A launcher that daemonizes must set `launcher.pidFile`,
   because the pid the hub spawned would then name a short-lived wrapper.
@@ -618,3 +622,37 @@ and the display remains full above 1M. The adjacent fraction identifies the
 current band; zero belongs to the first band with an empty meter. This fixed
 visual scale is not the provider's context-window limit. Numeric token counts
 continue to use decimal K/M/B units.
+
+## Worker remote tool requests
+
+The hub binds a second WebSocket listener at `toolRequests.host:toolRequests.port`
+(default port `8801`; empty host inherits `listen.host`). Port `0` selects an
+ephemeral port, useful for embedded instances and tests. A nonzero tool port must
+differ from the main port. This listener serves no panel, REST API, event stream,
+or confirmation route. Deployments must make it reachable from workers; the
+Docker worker example uses the same `worker.connectHost` for both ports.
+
+New worker configurations include the optional `hub_remote_call` mapping by
+default. Set `worker.hubRemoteCall: false` to disable it for new sessions. It contains the actual tool port,
+`/agent/<session>/tools`, the session token, and `timeout_ms`. An enabled worker
+constructs the intrinsic set and exposes the plan tool.
+On restart only an existing mapping's URL/token is refreshed. Its timeout and
+unknown fields are preserved; an absent mapping remains disabled even if hub
+defaults change. A missing timeout in an enabled mapping is filled from hub
+settings. A template launcher may also use `{tools_endpoint}`.
+
+A worker appends a route such as `files/read` to the URL pathname, opens one
+connection, sends one `tool_request`, and receives one `tool_response`. The `plan/read` and `plan/replace` routes operate on the current session plan
+after verifying the live worker and active run. Unknown routes receive
+`not_implemented`. Plans are saved atomically in the session root and pushed to
+the panel, which offers a Plan tab beside Conversation only when the plan is nonempty. See the complete
+[worker protocol](../core/docs/worker-protocol.md#remote-tool-requests).
+
+`src/worker/tools.ts` owns authentication, framing, resource bounds, and shutdown.
+`src/protocol/tool-requests.ts` owns envelope validation and the dispatch boundary.
+Future operations must add explicit route registration, live-worker/operation
+authorization, argument validation, response types, and tests at that boundary;
+they must not derive executable commands or filesystem paths from route strings.
+The session token alone is insufficient for plan operations: worker/run identity
+is verified using the event connection. There is no implicit retry, replay cache,
+confirmation bypass, or durable remote-call queue.

@@ -13,6 +13,7 @@
 #include "tools/intrinsic/reading/toolset.hpp"
 #include "tools/intrinsic/editing/toolset.hpp"
 #include "tools/intrinsic/modality_assist/toolset.hpp"
+#include "tools/intrinsic/hub_remote_call/toolset.hpp"
 #include "tools/registry.hpp"
 #include <boost/asio/experimental/channel.hpp>
 #include <unordered_set>
@@ -394,6 +395,18 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         if (modality_assist_model) {
             registry.add(std::make_shared<tools::intrinsic::ModalityAssistToolSet>(
                 modality_assist_model));
+        }
+        if (config.hub_remote_call) {
+            registry.add(std::make_shared<tools::intrinsic::HubRemoteCallToolSet>(
+                *config.hub_remote_call, config.hub_remote_call_timeout,
+                [weak = weak_from_this()] {
+                    auto self = weak.lock();
+                    if (!self) throw std::runtime_error("worker no longer available");
+                    std::lock_guard lock(self->control_mutex);
+                    if (!self->scope) throw std::runtime_error("no active run");
+                    return tools::intrinsic::HubRemoteCallIdentity{
+                        self->worker_id, self->session_id, self->run_id};
+                }));
         }
         for (auto& tool : extensions.tools) registry.add(std::move(tool));
         hooks.add(loop::intrinsic::ContextStatisticHook::from_config());

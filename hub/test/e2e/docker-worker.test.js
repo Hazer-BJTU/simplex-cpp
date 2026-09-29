@@ -27,6 +27,7 @@ describe('Docker worker host ownership', { skip: enabled ? false : 'opt-in Docke
             overrides: {
                 dataDir,
                 listen: { host: '0.0.0.0', port: 0 },
+                toolRequests: { port: 0 },
                 panel: { token: 'docker-lifetime-test' },
             },
         });

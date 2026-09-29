@@ -10,6 +10,8 @@
 // `docker run` that connects back over the bridge. See README.md,
 // "Workers in a container", for what each line below is doing.
 {
+    // Reachable from the container at worker.connectHost:8801.
+    "toolRequests": { "host": "", "port": 8801, "timeoutMs": 120000, "maxConnections": 128 },
     "worker": {
         // The address the hub writes into the worker's configuration. It must
         // be reachable *from inside the container*, which loopback is not:

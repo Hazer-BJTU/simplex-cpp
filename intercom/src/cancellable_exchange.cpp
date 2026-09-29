@@ -54,7 +54,7 @@ asio::awaitable<std::string> cancellable_exchange(
             boost::beast::flat_buffer buffer;
             co_await operation->stream->read(buffer);
             if (!operation->stream->got_text())
-                throw WsProtocolException("binary confirmation reply", endpoint.host, endpoint.target);
+                throw WsProtocolException("binary reply", endpoint.host, endpoint.target);
             auto reply = boost::beast::buffers_to_string(buffer.data());
             co_await operation->stream->close();
             co_return reply;

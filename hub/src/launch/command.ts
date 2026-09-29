@@ -11,7 +11,7 @@ import type { LauncherInput, LauncherInvocation } from './invocation.ts';
 /** Placeholders a command template may use. */
 export const PLACEHOLDERS = [
     'session', 'config', 'data_dir', 'session_dir',
-    'endpoint', 'confirm_endpoint', 'token',
+    'endpoint', 'confirm_endpoint', 'tools_endpoint', 'token',
     'threads', 'worker_bin',
     // The invoking user, for a launcher that runs a container: a worker that
     // writes into a mounted host directory should do it as its owner, or the
@@ -63,6 +63,7 @@ export function buildCommandInvocation({
         session_dir: sessionDir,
         endpoint: endpoints.events,
         confirm_endpoint: endpoints.confirm,
+        tools_endpoint: endpoints.tools,
         token,
         threads: String(spec.threads),
         worker_bin: config.worker.bin,

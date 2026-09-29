@@ -45,11 +45,13 @@
 // in tool_base.hpp, called from ensure_arguments() — knew nothing about it. So
 // the vocabulary is exactly what this tree's tools can express:
 //
-//   argument_schema  type: object, properties, required, anyOf
+//   argument_schema  type: object, properties, required,
+//                    additionalProperties: false, anyOf
 //   a property       type (string | boolean | integer | array), description,
 //                    default, enum, minimum, maximum, minLength, items
 //   items            type: string — the only array accessor here reads strings
-//   an anyOf branch  required, properties (whose entries may narrow a property
+//   an anyOf branch  required, optional not: {required: [property]},
+//                    properties (whose entries may narrow a property
 //                    with enum, minimum, maximum or minLength)
 //
 // and everything else is refused BY NAME, with a message that says what the

@@ -40,6 +40,10 @@ struct Configuration {
     intercom::StableWebSocketOptions transport;
     std::optional<endpoint::ResolvedEndpoint> confirmation;
     std::chrono::milliseconds confirmation_timeout{120000};
+    /** Optional base URL for one-shot remote tool requests, including the plan tool. */
+    std::optional<endpoint::ResolvedEndpoint> hub_remote_call;
+    /** Total request deadline for remote tool clients; retries are not implicit. */
+    std::chrono::milliseconds hub_remote_call_timeout{120000};
     std::size_t event_capacity = 1024;
     std::size_t max_exchanges = 512;
     /** Parsed prompt for a new session, read from the installation directory;

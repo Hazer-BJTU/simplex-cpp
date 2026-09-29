@@ -97,6 +97,7 @@ add_subdirectory(toolsets/process)
 add_subdirectory(toolsets/reading)
 add_subdirectory(toolsets/editing)
 add_subdirectory(toolsets/modality_assist)
+add_subdirectory(toolsets/hub_remote_call)
 
 if(BUILD_TESTS)
     add_subdirectory(test)

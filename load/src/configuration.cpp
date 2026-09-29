@@ -274,6 +274,11 @@ Configuration parse_configuration(
         result.confirmation = websocket_endpoint(text(confirmation, "endpoint"));
         result.confirmation_timeout = std::chrono::milliseconds(number(confirmation, "timeout_ms", 120000));
     }
+    if (document.contains("hub_remote_call")) {
+        const auto& tools = object(document, "hub_remote_call");
+        result.hub_remote_call = websocket_endpoint(text(tools, "endpoint"));
+        result.hub_remote_call_timeout = std::chrono::milliseconds(number(tools, "timeout_ms", 120000));
+    }
     const auto& worker = object(document, "worker");
     result.event_capacity = number(worker, "event_capacity", 1024);
     result.max_exchanges = number(worker, "max_exchanges", 512);

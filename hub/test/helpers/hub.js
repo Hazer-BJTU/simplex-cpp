@@ -18,6 +18,7 @@ export function testConfig(overrides = {}) {
     const { config } = loadConfig({
         overrides: {
             listen: { host: '127.0.0.1', port: 0 },
+            toolRequests: { port: 0 },
             dataDir: mkdtempSync(join(tmpdir(), 'simplex-hub-test-')),
             ...overrides,
         },

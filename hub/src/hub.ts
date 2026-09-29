@@ -1,9 +1,9 @@
 /**
  * @file hub assembly: wires the HTTP front door and every role adapter.
  *
- * One HTTP server carries all three audiences: the browser panel, the JSON API,
- * and the worker-facing WebSocket routes. Each role registers itself here, so
- * this file is the map of what the hub currently implements — and the only
+ * A dedicated listener carries tool requests. The main HTTP server serves the
+ * browser panel, the JSON API, and the event/confirmation WebSocket routes.
+ * Each role registers itself here, so this file is the map of what the hub currently implements — and the only
  * place that knows the whole object graph.
  */
 import { randomUUID } from 'node:crypto';
@@ -17,10 +17,13 @@ import type { ProcessRecord } from './launch/supervisor.ts';
 import { createPanelApi } from './panel/api.ts';
 import type { PanelApi } from './panel/api.ts';
 import { HubState } from './state/persist.ts';
+import { PlanStore } from './state/plan.ts';
 import { SessionRegistry } from './state/registry.ts';
 import type { Session } from './state/registry.ts';
 import { isValidSessionId } from './state/session-id.ts';
 import { TranscriptStore } from './state/transcript.ts';
+import { createWorkerToolRoute } from './worker/tools.ts';
+import type { WorkerEndpoints } from './launch/invocation.ts';
 import { createWorkerConfirmationRoute } from './worker/confirmation.ts';
 import type { PendingConfirmation } from './worker/confirmation.ts';
 import { createWorkerEventRoute } from './worker/connection.ts';
@@ -78,6 +81,8 @@ export interface CreateHubOptions {
 /** The hub instance. Nothing listens until `start()` is called. */
 export interface Hub {
     http: ReturnType<typeof createHttpServer>;
+    /** Dedicated listener for one-shot tool requests. */
+    toolHttp: ReturnType<typeof createHttpServer>;
     registry: SessionRegistry;
     supervisor: WorkerSupervisor;
     transcripts: TranscriptStore;
@@ -95,11 +100,20 @@ export function createHub({
     config, log, hubRoot, version = '0.0.0', hooks: extraHooks = {},
 }: CreateHubOptions): Hub {
     const http = createHttpServer({ config, log, hubRoot });
+    const toolHttp = createHttpServer({
+        config, log, hubRoot, upgradeOnly: true,
+        listen: {
+            host: config.toolRequests.host || config.listen.host,
+            port: config.toolRequests.port,
+        },
+    });
+    const plans = new PlanStore(config.dataDir);
     const registry = new SessionRegistry({ config, log });
     const transcripts = new TranscriptStore({ config, log });
     const state = new HubState({ config, log });
     /** Bound address, known only after `start()`. */
     let bound: { host: string; port: number } | null = null;
+    let toolBound: BoundAddress | null = null;
 
     /**
      * The address a worker should use to reach this hub.
@@ -114,14 +128,17 @@ export function createHub({
     }
 
     /** Worker-facing URLs for one session, valid after the listener is bound. */
-    function endpointsFor(sessionId: string, token: string): { events: string; confirm: string } {
-        if (!bound) throw new Error('the hub is not listening yet');
+    function endpointsFor(sessionId: string, token: string): WorkerEndpoints {
+        if (!bound || !toolBound) throw new Error('the hub is not listening yet');
         const host = advertisedHost();
         const authority = `${host.includes(':') ? `[${host}]` : host}:${bound.port}`;
+        const toolHost = config.worker.connectHost || connectHostFor(toolBound.host);
+        const toolAuthority = `${toolHost.includes(':') ? `[${toolHost}]` : toolHost}:${toolBound.port}`;
         const query = `token=${encodeURIComponent(token)}`;
         return {
             events: `ws://${authority}/agent/${sessionId}/events?${query}`,
             confirm: `ws://${authority}/agent/${sessionId}/confirm?${query}`,
+            tools: `ws://${toolAuthority}/agent/${sessionId}/tools?${query}`,
         };
     }
 
@@ -217,6 +234,11 @@ export function createHub({
     });
     http.useUpgrade(confirmations);
 
+    const toolRequests = createWorkerToolRoute({ registry, config, log, plans,
+        onPlanChanged: (session) => safely('plan update', () => panel?.broadcastPlan(session)),
+    });
+    toolHttp.useUpgrade(toolRequests);
+
     /** Started by `start()` when configured; read lazily by the supervisor. */
     let mock: MockProvider | null = null;
     const supervisor = new WorkerSupervisor({
@@ -241,6 +263,7 @@ export function createHub({
         supervisor,
         transcripts,
         state,
+        plans,
         meta,
         onSessionsChanged: (sessions) => state.schedule(sessions),
     });
@@ -262,6 +285,7 @@ export function createHub({
 
     return {
         http,
+        toolHttp,
         registry,
         supervisor,
         transcripts,
@@ -274,42 +298,58 @@ export function createHub({
         },
         /** Bind the listener and restore sessions recorded by a previous run. */
         start: async (): Promise<BoundAddress> => {
-            const address = await http.listen();
-            bound = { host: address.host, port: address.port };
-            if (config.mock.enabled) {
-                mock = new MockProvider({
-                    log: log.child('mock'),
-                    scenario: config.mock.scenario,
-                    slowMs: config.mock.slowMs,
-                    ...(config.mock.toolCommand ? { toolCommand: config.mock.toolCommand } : {}),
-                });
-                await mock.start(parseAddress(config.mock.listen),
-                    // The provider is reached by the worker, so it has to be
-                    // advertised at the same address the hub is.
-                    { advertiseHost: config.worker.connectHost });
-            }
-            const stored = state.load();
-            let restored = 0;
-            for (const raw of stored.sessions) {
-                // Entries come from a file that may have been edited by hand, so
-                // each one is narrowed here rather than trusted from the type.
-                if (typeof raw !== 'object' || raw === null) continue;
-                const entry = raw as Record<string, unknown>;
-                if (!isValidSessionId(entry.id) || registry.get(entry.id)) continue;
-                const session = registry.create(entry.id, (entry.spec ?? {}) as SessionSpec);
-                // Tokens must survive a restart, or a worker that is still
-                // running would be locked out by its own hub.
-                if (typeof entry.token === 'string' && entry.token.length > 0) {
-                    session.token = entry.token;
+            try {
+                const address = await http.listen();
+                toolBound = await toolHttp.listen();
+                bound = { host: address.host, port: address.port };
+                log.info(`worker tool requests listening at ${toolBound.url}`);
+                if (config.mock.enabled) {
+                    mock = new MockProvider({
+                        log: log.child('mock'),
+                        scenario: config.mock.scenario,
+                        slowMs: config.mock.slowMs,
+                        ...(config.mock.toolCommand ? { toolCommand: config.mock.toolCommand } : {}),
+                    });
+                    await mock.start(parseAddress(config.mock.listen),
+                        // The provider is reached by the worker, so it has to be
+                        // advertised at the same address the hub is.
+                        { advertiseHost: config.worker.connectHost });
                 }
-                if (typeof entry.created_at === 'string') session.createdAt = entry.created_at;
-                session.spec = (entry.spec ?? {}) as SessionSpec;
-                if (entry.process) supervisor.adopt(session, entry.process);
-                restored += 1;
+                const stored = state.load();
+                let restored = 0;
+                for (const raw of stored.sessions) {
+                    // Entries come from a file that may have been edited by hand, so
+                    // each one is narrowed here rather than trusted from the type.
+                    if (typeof raw !== 'object' || raw === null) continue;
+                    const entry = raw as Record<string, unknown>;
+                    if (!isValidSessionId(entry.id) || registry.get(entry.id)) continue;
+                    const session = registry.create(entry.id, (entry.spec ?? {}) as SessionSpec);
+                    // Tokens must survive a restart, or a worker that is still
+                    // running would be locked out by its own hub.
+                    if (typeof entry.token === 'string' && entry.token.length > 0) {
+                        session.token = entry.token;
+                    }
+                    if (typeof entry.created_at === 'string') session.createdAt = entry.created_at;
+                    session.spec = (entry.spec ?? {}) as SessionSpec;
+                    if (entry.process) supervisor.adopt(session, entry.process);
+                    restored += 1;
+                }
+                if (restored > 0) log.info(`restored ${restored} session(s) from ${state.path}`);
+                state.schedule(registry.list());
+                return address;
+            } catch (error) {
+                // A failed second listener or mock startup must release the
+                // resources already opened by this attempted hub instance.
+                toolRequests.close();
+                confirmations.close();
+                workerEvents.close();
+                panel.close();
+                await Promise.allSettled([mock?.stop(), toolHttp.close(), http.close()]);
+                transcripts.close();
+                bound = null;
+                toolBound = null;
+                throw error;
             }
-            if (restored > 0) log.info(`restored ${restored} session(s) from ${state.path}`);
-            state.schedule(registry.list());
-            return address;
         },
         /** Release listeners and owned resources, stopping workers first. */
         stop: async () => {
@@ -318,6 +358,8 @@ export function createHub({
             await mock?.stop();
             panel.close();
             confirmations.close();
+            toolRequests.close();
+            await toolHttp.close();
             workerEvents.close();
             await http.close();
             transcripts.close();

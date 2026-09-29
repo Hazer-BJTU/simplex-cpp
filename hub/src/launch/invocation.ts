@@ -17,6 +17,8 @@
 export interface WorkerEndpoints {
     events: string;
     confirm: string;
+    /** Base URL; append the remote route to its pathname, preserving the query. */
+    tools: string;
 }
 
 /** A process to spawn for one session. */

@@ -106,7 +106,7 @@ std::string require_string_at(const json& object, std::string_view key,
 // first, and then the check for it below.
 
 constexpr std::string_view kSchemaVocabulary =
-    "type, properties, required, anyOf";
+    "type, properties, required, additionalProperties, anyOf";
 constexpr std::string_view kPropertyVocabulary =
     "type, description, default, enum, minimum, maximum, minLength, items";
 constexpr std::string_view kNarrowingVocabulary = "enum, minimum, maximum, minLength";
@@ -446,10 +446,10 @@ void check_branch(const json& branch, const json& properties,
                                      "{}", branch.type_name()));
     }
     for (const auto& entry : branch.items()) {
-        if (!is_one_of(entry.key(), {"required", "properties"})) {
+        if (!is_one_of(entry.key(), {"required", "properties", "not"})) {
             fail(file, path + "/" + entry.key(),
                  std::format("\"{}\" is not something an alternative may state "
-                             "(required, properties); what an alternative does "
+                             "(required, properties, not); what an alternative does "
                              "is require properties of the call, and narrow "
                              "the values they may carry", entry.key()));
         }
@@ -463,6 +463,24 @@ void check_branch(const json& branch, const json& properties,
              "to the schema");
     }
     check_required_list(*names, properties, file, path + "/required");
+    if (const auto excluded = branch.find("not"); excluded != branch.end()) {
+        const std::string here = path + "/not";
+        if (!excluded->is_object() || excluded->size() != 1
+            || !excluded->contains("required")) {
+            fail(file, here, "not must contain only a required list of excluded properties");
+        }
+        check_required_list(excluded->at("required"), properties, file,
+                            here + "/required");
+        if (excluded->at("required").size() != 1) {
+            fail(file, here + "/required",
+                 "not must exclude exactly one declared property");
+        }
+        const std::string forbidden = excluded->at("required")[0].get<std::string>();
+        if (names_contain(*names, forbidden) || names_contain(required, forbidden)) {
+            fail(file, here + "/required",
+                 "a branch cannot both require and exclude a property");
+        }
+    }
     bool adds_a_requirement = false;
     for (const json& name : *names) {
         adds_a_requirement = adds_a_requirement
@@ -538,7 +556,7 @@ json require_argument_schema(const json& document, const std::filesystem::path& 
     const std::string base = "/argument_schema";
     for (const auto& entry : schema->items()) {
         if (!is_one_of(entry.key(),
-                       {"type", "properties", "required", "anyOf"})) {
+                       {"type", "properties", "required", "additionalProperties", "anyOf"})) {
             fail(file, base + "/" + entry.key(),
                  std::format("\"{}\" is not part of the argument-schema "
                              "vocabulary this project supports ({}); the "
@@ -569,6 +587,11 @@ json require_argument_schema(const json& document, const std::filesystem::path& 
     }
     const json& properties =
         declared != schema->end() ? *declared : no_properties;
+    if (const auto additional = schema->find("additionalProperties");
+        additional != schema->end() && *additional != false) {
+        fail(file, base + "/additionalProperties",
+             "additionalProperties must be false to exclude undeclared arguments");
+    }
     for (const auto& entry : properties.items()) {
         check_property(entry.value(), file,
                        base + "/properties/" + entry.key());

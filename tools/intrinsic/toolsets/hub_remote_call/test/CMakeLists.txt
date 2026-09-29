@@ -1,0 +1,7 @@
+add_executable(test_hub_remote_call_tools test_tools.cpp)
+target_link_libraries(test_hub_remote_call_tools PRIVATE
+    tools_intrinsic_hub_remote_call Boost::unit_test_framework)
+target_compile_definitions(test_hub_remote_call_tools PRIVATE
+    HUB_REMOTE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/request_fixture.yaml")
+add_test(NAME test_hub_remote_call_tools COMMAND test_hub_remote_call_tools)
+set_tests_properties(test_hub_remote_call_tools PROPERTIES TIMEOUT 30)
