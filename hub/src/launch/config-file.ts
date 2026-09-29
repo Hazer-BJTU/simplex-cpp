@@ -110,10 +110,12 @@ export function prepareSessionConfig(options: RenderSessionConfigOptions): {
             document.setIn(['hub_remote_call', 'timeout_ms'], config.toolRequests.timeoutMs);
         }
     }
-    mapping(document, ['security', 'confirmation']);
+    if (document.hasIn(['security', 'confirmation'])) {
+        mapping(document, ['security', 'confirmation']);
+        document.setIn(['security', 'confirmation', 'endpoint'], endpoints.confirm);
+    }
     document.setIn(['persistence', 'directory'], root);
     document.setIn(['client', 'endpoint'], endpoints.events);
-    document.setIn(['security', 'confirmation', 'endpoint'], endpoints.confirm);
     if (mock?.baseUrl && document.get('driver_model') === config.mock.profile) {
         mapping(document, ['providers', config.mock.profile, 'endpoint']);
         document.setIn(['providers', config.mock.profile, 'endpoint', 'base_url'], mock.baseUrl);

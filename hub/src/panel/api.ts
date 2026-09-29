@@ -1,3 +1,6 @@
+import { ConfigurationStore } from '../configurations/store.ts';
+import { configurationRoutes } from '../configurations/routes.ts';
+import { selection, snapshotConfigs } from '../configurations/session.ts';
 /**
  * @file the hub's own client protocol: JSON API plus a panel WebSocket.
  *
@@ -128,6 +131,7 @@ export interface PanelApiOptions {
 export function createPanelApi({
     config, log, registry, supervisor, transcripts, state, plans, meta, onSessionsChanged,
 }: PanelApiOptions): PanelApi {
+    const configurations = new ConfigurationStore(config);
     const clients = new Set<PanelClient>();
     const wss = new WebSocketServer({
         noServer: true,
@@ -478,6 +482,27 @@ export function createPanelApi({
     // ---------------------------------------------------------------------
 
     const routes: Record<string, RouteHandler> = {
+        ...configurationRoutes(configurations, supervisor),
+        'POST /api/sessions/:id/configurations': async ({ req, res, params }) => {
+            const session = requireSession(res, params.id as string);
+            if (!session) return;
+            const body = await readJsonBody(req, 4096);
+            // Recheck after awaiting the body; another request may have started it.
+            if (supervisor.isRunning(session) || session.connected) {
+                sendError(res, 409, 'session_busy', 'Stop and disconnect the worker before applying configuration');
+                return;
+            }
+            const selected = selection(body);
+            if (!selected) {
+                sendError(res, 400, 'invalid_configuration', 'Select both configurations');
+                return;
+            }
+            snapshotConfigs(configurations, session.id, selected, true);
+            session.spec = { ...session.spec, ...selected };
+            persist();
+            broadcastSession(session);
+            sendJson(res, 200, { session: session.describe() });
+        },
         'GET /api/sessions': ({ res }) => {
             sendJson(res, 200, {
                 sessions: registry.list().map((session) => session.describe()),
@@ -503,6 +528,8 @@ export function createPanelApi({
                 return;
             }
             try {
+                const selected = selection(rawSpec);
+                if (selected) snapshotConfigs(configurations, id, selected);
                 const session = registry.create(id, rawSpec);
                 session.spec = rawSpec;
                 persist();
@@ -703,6 +730,8 @@ export function createPanelApi({
                     });
                     return;
                 }
+                const selected = selection(message.spec);
+                if (selected) snapshotConfigs(configurations, message.session, selected);
                 const fresh = registry.create(created, message.spec ?? {});
                 fresh.spec = message.spec ?? {};
                 persist();
