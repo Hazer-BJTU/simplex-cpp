@@ -14,6 +14,11 @@ async function objectBody(req: IncomingMessage, limit: number): Promise<Record<s
     return body as Record<string, unknown>;
 }
 
+function stringField(body: Record<string, unknown>, key: string): string {
+    if (typeof body[key] !== 'string') throw configError(`${key} must be a string`);
+    return body[key];
+}
+
 export function configurationRoutes(store: ConfigurationStore, supervisor: WorkerSupervisor): Record<string, RouteHandler> {
     return {
         'GET /api/configurations': ({ res }) => {
@@ -27,34 +32,37 @@ export function configurationRoutes(store: ConfigurationStore, supervisor: Worke
             sendJson(res, 200, { text: store.template(kind, source as 'default' | 'deployment' | 'docker') });
         },
         'POST /api/configurations/preview': async ({ req, res }) => {
-            const body = await objectBody(req, 1024 * 1024) as { launch: string };
-            const launch = launchDocument(body.launch, store.config);
+            const body = await objectBody(req, 1024 * 1024);
+            const launch = launchDocument(stringField(body, 'launch'), store.config);
             const endpoints = launchEndpoints(supervisor.endpointsFor('SESSION_ID', 'SESSION_TOKEN'), launch);
             sendJson(res, 200, { endpoints });
         },
         'POST /api/configurations/:kind/validate': async ({ req, res, params }) => {
-            const body = await objectBody(req, 1024 * 1024) as { text: string };
-            store.validate(params.kind as ConfigKind, body.text);
+            const body = await objectBody(req, 1024 * 1024);
+            store.validate(params.kind as ConfigKind, stringField(body, 'text'));
             sendJson(res, 200, { valid: true });
         },
         'GET /api/configurations/:kind/:id': ({ res, params }) => {
             sendJson(res, 200, store.read(params.kind as ConfigKind, params.id!));
         },
         'PUT /api/configurations/:kind/:id': async ({ req, res, params }) => {
-            const body = await objectBody(req, 1024 * 1024) as { text: string; revision: string | null };
+            const body = await objectBody(req, 1024 * 1024);
             if (body.revision !== null && typeof body.revision !== 'string') throw configError('revision is required (null for a new file)');
-            sendJson(res, 200, store.save(params.kind as ConfigKind, params.id!, body.text, body.revision));
+            sendJson(res, 200, store.save(params.kind as ConfigKind, params.id!,
+                stringField(body, 'text'), body.revision));
         },
         'DELETE /api/configurations/:kind/:id': async ({ req, res, params }) => {
-            const body = await objectBody(req, 1024) as { revision: string };
-            store.remove(params.kind as ConfigKind, params.id!, body.revision);
+            const body = await objectBody(req, 1024);
+            store.remove(params.kind as ConfigKind, params.id!, stringField(body, 'revision'));
             sendJson(res, 200, { removed: params.id });
         },
         'POST /api/configurations/:kind/:id/rename': async ({ req, res, params }) => {
-            const body = await objectBody(req, 1024) as { id: string; revision: string };
+            const body = await objectBody(req, 1024);
+            const id = stringField(body, 'id');
+            const revision = stringField(body, 'revision');
             const original = store.read(params.kind as ConfigKind, params.id!);
-            if (original.revision !== body.revision) throw configError('Configuration changed; reload before renaming', 409);
-            const saved = store.save(original.kind, body.id, original.text, null);
+            if (original.revision !== revision) throw configError('Configuration changed; reload before renaming', 409);
+            const saved = store.save(original.kind, id, original.text, null);
             store.remove(original.kind, original.id, original.revision);
             sendJson(res, 200, saved);
         },

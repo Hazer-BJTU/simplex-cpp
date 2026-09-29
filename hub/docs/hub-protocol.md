@@ -347,7 +347,9 @@ opaque.
 
 Anyone who can reach the panel can submit payloads, and a payload may select
 `confirmation.mode: approve`, which is equivalent to approving every tool call
-that requires confirmation. The hub therefore:
+that requires confirmation. Panel access also allows editing launch commands
+that the Hub executes on its host. Treat the panel token as an administrative
+credential with host command-execution authority. The hub therefore:
 
 - defaults to a loopback listener, and refuses a non-loopback one without a
   panel token,

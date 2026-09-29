@@ -503,7 +503,7 @@ export function createPanelApi({
             }
             snapshotConfigs(configurations, session.id, selected, true);
             session.spec = { ...session.spec, ...selected };
-            persist();
+            persist({ immediate: true });
             broadcastSession(session);
             sendJson(res, 200, { session: session.describe() });
         },
@@ -533,10 +533,12 @@ export function createPanelApi({
             }
             try {
                 const selected = selection(rawSpec);
-                if (selected) snapshotConfigs(configurations, id, selected);
+                // A lost/corrupt hub.json may leave an orphan snapshot. With no
+                // registered session, a new creation may replace that snapshot.
+                if (selected) snapshotConfigs(configurations, id, selected, true);
                 const session = registry.create(id, rawSpec);
                 session.spec = rawSpec;
-                persist();
+                persist({ immediate: true });
                 broadcastSession(session);
                 sendJson(res, 201, { session: session.describe() });
             } catch (error) {
@@ -736,7 +738,7 @@ export function createPanelApi({
                 }
                 try {
                     const selected = selection(message.spec);
-                    if (selected) snapshotConfigs(configurations, message.session, selected);
+                    if (selected) snapshotConfigs(configurations, message.session, selected, true);
                 } catch (error) {
                     send(client, { type: 'error', error: 'invalid_session', request: message,
                         message: error instanceof Error ? error.message : String(error) });
@@ -744,7 +746,7 @@ export function createPanelApi({
                 }
                 const fresh = registry.create(created, message.spec ?? {});
                 fresh.spec = message.spec ?? {};
-                persist();
+                persist({ immediate: true });
                 broadcastSession(fresh);
                 send(client, { type: 'created', session: fresh.describe() });
                 return;

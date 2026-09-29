@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultConfig, parseConfigText } from '../src/config.ts';
@@ -101,6 +101,75 @@ test('authenticated configuration API and session selection retain independent s
     }
 });
 
+test('configuration mutation APIs reject malformed field types without publishing files', async () => {
+    const ctx = await startTestHub({ panel: { token: 'test-secret' } });
+    const api = async (path, method, body) => {
+        const response = await fetch(ctx.base + path, {
+            method, headers: { Authorization: 'Bearer test-secret', 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        return response.status;
+    };
+    try {
+        const store = new ConfigurationStore(ctx.config);
+        const original = store.read('launch', 'local');
+        for (const id of [null, undefined, [], 12, {}]) {
+            assert.equal(await api('/api/configurations/launch/local/rename', 'POST',
+                { id, revision: original.revision }), 400);
+        }
+        assert.equal(await api('/api/configurations/launch/local/rename', 'POST',
+            { id: 'new-name', revision: [] }), 400);
+        assert.equal(await api('/api/configurations/launch/new-name', 'PUT',
+            { text: [], revision: null }), 400);
+        assert.equal(await api('/api/configurations/launch/local', 'DELETE',
+            { revision: null }), 400);
+        assert.equal(await api('/api/configurations/launch/validate', 'POST',
+            { text: 1 }), 400);
+        assert.equal(await api('/api/configurations/preview', 'POST',
+            { launch: {} }), 400);
+        assert.deepEqual(store.list('launch'), ['docker', 'local']);
+        assert.equal(store.read('launch', 'local').revision, original.revision);
+    } finally {
+        await ctx.hub.stop();
+        rmSync(ctx.config.dataDir, { recursive: true, force: true });
+    }
+});
+
+test('orphan snapshots can be recreated and published source wins after restart', async () => {
+    let ctx = await startTestHub({ panel: { token: 'test-secret' } });
+    const dataDir = ctx.config.dataDir;
+    const create = async (id, selected) => {
+        const response = await fetch(ctx.base + '/api/sessions', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer test-secret', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session: id, spec: selected }),
+        });
+        return response.status;
+    };
+    try {
+        const store = new ConfigurationStore(ctx.config);
+        const original = { launchConfig: 'local', workerConfig: 'default' };
+        snapshotConfigs(store, 'orphan', original);
+        await ctx.hub.stop();
+        writeFileSync(join(dataDir, 'hub.json'), '{broken');
+        ctx = await startTestHub({ dataDir, panel: { token: 'test-secret' } });
+        assert.equal(await create('orphan', original), 201);
+        assert.equal(ctx.hub.registry.get('orphan').spec.launchConfig, 'local');
+        await ctx.hub.stop();
+
+        // Simulate a crash after snapshot replacement but before hub.json
+        // records the new selectors. The next restore must describe the
+        // snapshot that will actually launch.
+        const replacement = { launchConfig: 'docker', workerConfig: 'default' };
+        snapshotConfigs(new ConfigurationStore(ctx.config), 'orphan', replacement, true);
+        ctx = await startTestHub({ dataDir, panel: { token: 'test-secret' } });
+        assert.equal(ctx.hub.registry.get('orphan').spec.launchConfig, 'docker');
+    } finally {
+        await ctx.hub.stop();
+        rmSync(dataDir, { recursive: true, force: true });
+    }
+});
+
 import { fileURLToPath } from 'node:url';
 import { until } from './helpers/worker.js';
 
@@ -147,7 +216,6 @@ test('selected launchers run independently and survive Hub restart without libra
 
 import { loadConfig } from '../src/config.ts';
 import { launchDocument } from '../src/configurations/store.ts';
-import { writeFileSync } from 'node:fs';
 
 test('startup discovers configuration inside the selected persistent root', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
@@ -211,7 +279,10 @@ test('Docker template binds only session data and invokes an installed worker', 
         });
         assert.equal(invocation.command, 'docker');
         assert.ok(invocation.args.includes(`${root}:${root}`));
-        assert.ok(invocation.args.includes(`${configPath}:${configPath}:ro`));
+        assert.ok(invocation.args.includes(`${root}/config:${root}/config:ro`));
+        assert.equal(invocation.args.includes(`${configPath}:${configPath}:ro`), false);
+        assert.match(readFileSync(new URL('../hub.config.docker-worker.jsonc', import.meta.url), 'utf8'),
+            /\{session_dir\}\/config:\{session_dir\}\/config:ro/);
         assert.ok(invocation.args.includes('host.docker.internal:host-gateway'));
         assert.ok(invocation.args.includes('simplex-worker:latest'));
         assert.ok(invocation.args.some(arg => arg.includes('exec "$@"')));

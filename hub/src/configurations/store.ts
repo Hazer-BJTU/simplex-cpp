@@ -161,7 +161,8 @@ export class ConfigurationStore {
     directory(kind: ConfigKind): string { return join(this.config.dataDir, 'configs', kind); }
 
     path(kind: ConfigKind, id: string): string {
-        if (!['launch', 'worker'].includes(kind) || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw configError('Invalid configuration kind or ID');
+        if (!['launch', 'worker'].includes(kind) || typeof id !== 'string'
+            || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw configError('Invalid configuration kind or ID');
         return join(this.directory(kind), `${id}.${kind === 'launch' ? 'jsonc' : 'yaml'}`);
     }
 

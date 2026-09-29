@@ -142,9 +142,9 @@ Three things make it work, and each is a way to get it wrong:
    hub knowing anything about Docker.
 3. **The mounts.** The generated `config.yaml`, the session's snapshot and the
    captured log are all named by *absolute host paths*. Only the current
-   session directory is mounted read-write at the same path, and `config.yaml`
-   is mounted again as a read-only file. This keeps tools from rewriting durable
-   launch settings or another session's data. The prompt is not mounted at all:
+   session directory is mounted read-write at the same path, and its entire
+   `config/` directory is mounted again read-only. This keeps tools from
+   rewriting `launch.jsonc`, `source.json`, or `config.yaml`. The prompt is not mounted at all:
    the worker reads it from its own installation directory inside the image, and
    the generated `worker.system_prompt_file` is a relative path that names the
    same file on both sides.
@@ -576,7 +576,8 @@ the runner's Ubuntu.
   confirmation. The hub defaults to a loopback listener, refuses a non-loopback
   listener without `panel.token`, and refuses cross-origin WebSocket upgrades.
 - The hub has no user accounts or roles. One shared token guards the browser
-  surface. For anything beyond a trusted machine, put an authenticating reverse
+  surface. That token also permits editing launch commands executed by the Hub
+  host; treat it as an administrative credential. For anything beyond a trusted machine, put an authenticating reverse
   proxy in front and keep the hub on a private interface.
 - `wss://` is not implemented; terminate TLS at the proxy.
 - Worker session tokens are bearer credentials stored in `hub.json` and in the

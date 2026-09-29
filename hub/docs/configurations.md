@@ -151,7 +151,8 @@ if it is absent locally, according to its normal behavior.
 
 The container invokes `simplex run --config … --session … --threads …`, with
 `--init` and `--rm`. It bind-mounts only the current session directory at the same
-absolute path and mounts `config/config.yaml` read-only. State and memory remain
+absolute path and overlays the entire `config/` snapshot read-only, including
+`launch.jsonc`, `config.yaml`, and `source.json`. State and memory remain
 on the host after the container exits. `/root/workspace` is created inside the
 container and is disposable; set the worker YAML's `worker.environment.workspace`
 to that path if you want the model to see the corresponding workspace hint.
@@ -209,6 +210,14 @@ revisions in `source.json`. Each session builds its own launcher from its saved
 launch configuration. Starting or restarting reads those snapshots, refreshes
 managed fields and starts the process. Library files are no longer needed to
 restart the session; renaming or deleting them does not break it.
+
+The published snapshot is the authority for the two selected configuration
+IDs. If the Hub stops between publishing a replacement and updating `hub.json`,
+restore reconciles the session description from `source.json`. If `hub.json` is
+lost or corrupt, an unregistered session ID may be created again through the
+normal API; creation replaces any orphaned config snapshot for that ID. This
+creates a new session token. Stop any old worker before recreating its ID if
+the Hub lost its bookkeeping while that worker may still be running.
 
 To update an existing session, stop its worker and wait for disconnection. In
 **Configurations**, choose both saved files and select **Apply to …**. This

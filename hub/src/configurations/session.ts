@@ -52,6 +52,20 @@ export function snapshotConfigs(store: ConfigurationStore, sessionId: string, se
     if (moved) rmSync(backup, { recursive: true, force: true });
 }
 
+/** The published snapshot is authoritative for its configuration selectors.
+ * A missing or invalid source file belongs to legacy/incomplete snapshots and
+ * leaves the persisted spec unchanged. */
+export function snapshotSelection(config: HubConfig, id: string): ConfigSelection | null {
+    const path = join(config.dataDir, 'sessions', id, 'config', 'source.json');
+    if (!existsSync(path)) return null;
+    try {
+        const source: unknown = JSON.parse(readFileSync(path, 'utf8'));
+        return selection(source);
+    } catch {
+        return null;
+    }
+}
+
 export function sessionLaunch(config: HubConfig, id: string): { config: HubConfig; launch: LaunchDocument } | null {
     const path = join(config.dataDir, 'sessions', id, 'config', 'launch.jsonc');
     if (!existsSync(path)) return null;
