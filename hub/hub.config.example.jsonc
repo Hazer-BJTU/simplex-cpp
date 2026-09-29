@@ -11,6 +11,10 @@
     // (core/docs/worker-protocol.md).
     "panel": { "token": "" },
 
+    // Independent worker RPC listener. Empty host inherits listen.host.
+    // Currently every valid remote call is rejected with not_implemented.
+    "toolRequests": { "host": "", "port": 8801, "timeoutMs": 120000, "maxConnections": 128 },
+
     "worker": {
         // Relative to this file; the default assumes an in-tree build tree.
         "bin": "../build/bin/simplex_worker",

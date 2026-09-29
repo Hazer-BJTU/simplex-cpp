@@ -22,6 +22,7 @@ endpoints.
 - [Worker events](#worker-events)
 - [Shared data types](#shared-data-types)
 - [Tool confirmation](#tool-confirmation)
+- [Remote tool requests](#remote-tool-requests)
 - [Ordering and example exchanges](#ordering-and-example-exchanges)
 - [Delivery, backpressure, and reconnects](#delivery-backpressure-and-reconnects)
 - [Cancellation, shutdown, and recovery](#cancellation-shutdown-and-recovery)
@@ -29,7 +30,9 @@ endpoints.
 
 ## Connections and configuration
 
-There are two independent connection roles:
+There are two active worker connection roles. An additional, optional remote-tool
+transport is configured for future worker tools; see [Remote tool requests](#remote-tool-requests).
+The active roles are:
 
 | Role | Worker configuration | Lifetime | Traffic |
 | --- | --- | --- | --- |
@@ -1242,3 +1245,97 @@ A conforming hub integration should:
 These rules apply equally to a one-to-one terminal server and a multi-worker hub.
 A hub's own browser/API protocol may differ, but its worker-facing adapter must
 preserve the distinctions documented here.
+
+## Remote tool requests
+
+This transport is independent of events and confirmation. The hub implements
+the listener and rejection protocol; this release only parses its configuration
+on the worker and registers no remote tool. It must not be advertised as an
+implemented model-callable capability.
+
+```yaml
+remote_tools:
+  endpoint: ws://127.0.0.1:8801/agent/session-1/tools?token=SESSION_TOKEN
+  timeout_ms: 120000
+```
+
+The mapping is optional. If present, `endpoint` is a complete `ws://` or `wss://`
+URL; `timeout_ms` is an integer in `1..2147483647` and defaults to `120000`. The bundled hub uses
+plain WebSocket; a deployment may terminate TLS in front of it. The endpoint is
+a base URL: append `/<route>` to its **pathname**, preserving the query.
+For example, route `files/read` connects to
+`/agent/session-1/tools/files/read?token=SESSION_TOKEN`. The route consists of
+slash-separated lowercase segments matching `[a-z][a-z0-9_-]*`. It is a literal
+identifier, not an encoded path, command, or arbitrary URL. There are no aliases
+and no body field that overrides the selected route. No route is implemented yet.
+
+The hub authenticates the upgrade using the session's token, as for confirmation.
+Unknown sessions/paths receive HTTP `404`, invalid tokens `401`, and exhausted
+connection capacity or shutdown `503`. Only this dedicated listener exposes the
+route. An HTTP request without an upgrade receives `404`.
+
+One connection carries exactly one UTF-8 text JSON request:
+
+```json
+{
+  "type": "tool_request",
+  "data": {
+    "worker_id": "worker-1",
+    "session_id": "session-1",
+    "run_id": "run-1",
+    "request_id": "request-1",
+    "arguments": {}
+  }
+}
+```
+
+All four identifiers must be nonempty, non-whitespace strings. `session_id` must
+match the authenticated route; `arguments` must be an object. Additional fields
+are tolerated but ignored. The caller chooses a distinct `request_id` per
+attempt. Identifiers correlate exchanges; they provide neither authorization nor
+deduplication. In this rejection-only stage the hub does not require a live event
+connection or trust the claimed worker/run identity to execute anything.
+
+Every valid request, regardless of route or argument contents, receives:
+
+```json
+{
+  "type": "tool_response",
+  "data": {
+    "worker_id": "worker-1",
+    "session_id": "session-1",
+    "run_id": "run-1",
+    "request_id": "request-1",
+    "route": "files/read",
+    "status": "rejected",
+    "error": {
+      "code": "not_implemented",
+      "message": "remote tool route is not implemented"
+    }
+  }
+}
+```
+
+The hub echoes identifiers and the route, sends no result, then closes with
+`1000`. The response is a terminal rejection, not a tool result or confirmation
+decision. No side effect is performed, and no panel prompt/event is emitted.
+
+Binary requests close with `1003`; malformed JSON/envelopes, a mismatched session,
+or additional application frames close with `1008`. Oversized frames close with
+`1009`, and invalid UTF-8 with `1007`. A second frame never invokes dispatch
+again; a response already sent for the first frame cannot be revoked.
+`limits.maxMessageBytes` bounds incoming messages. `toolRequests.maxConnections`
+bounds upgraded sockets globally (default `128`). `toolRequests.timeoutMs`
+bounds the entire server-side exchange from upgrade through close (default
+`120000`); expiry terminates the socket, including silent clients and peers that
+never finish a closing handshake. Hub shutdown terminates these sockets without
+waiting for peers. Timeout/disconnection is a transport failure, not a synthesized
+application response. A future worker client must also enforce its configured
+request deadline and validate echoed identifiers.
+
+There is no automatic retry, replay, or exactly-once execution guarantee. Before
+adding executable routes, implementations must explicitly define authorization
+against the live worker, per-route arguments/results, cancellation and side-effect
+semantics, and whether retries/deduplication are safe. Receiving an RPC must never
+implicitly approve a tool or mutate the active AgentInputState. These rules are
+the extension boundary; no handler or successful response is exposed yet.

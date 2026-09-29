@@ -22,7 +22,7 @@ import type { HubConfig, ProviderProfile } from '../config.ts';
 import type { WorkerEndpoints } from './invocation.ts';
 
 /** The slice of hub configuration the renderer reads. */
-export type RenderConfig = Pick<HubConfig, 'dataDir' | 'worker' | 'providerProfiles' | 'mock'>;
+export type RenderConfig = Pick<HubConfig, 'dataDir' | 'worker' | 'providerProfiles' | 'mock' | 'toolRequests'>;
 
 /** Directory holding one session's generated files. */
 export function sessionDir(config: { dataDir: string }, sessionId: string): string {
@@ -66,6 +66,7 @@ export interface WorkerConfigDocument {
             idle_timeout_seconds: number;
         };
     };
+    remote_tools: { endpoint: string; timeout_ms: number };
     security: { confirmation: { endpoint: string; timeout_ms: number } };
     worker: {
         max_exchanges: number;
@@ -144,6 +145,10 @@ export function renderWorkerConfig({
                 max_backoff_ms: config.worker.maxBackoffMs,
                 idle_timeout_seconds: config.worker.idleTimeoutSeconds,
             },
+        },
+        remote_tools: {
+            endpoint: endpoints.tools,
+            timeout_ms: config.toolRequests.timeoutMs,
         },
         security: {
             confirmation: {

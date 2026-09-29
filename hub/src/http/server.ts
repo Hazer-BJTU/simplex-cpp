@@ -158,10 +158,16 @@ export interface HttpServerOptions {
     log: Logger;
     /** Absolute `hub/` directory. */
     hubRoot: string;
+    /** Optional separate listener; defaults to the panel/event address. */
+    listen?: { host: string; port: number };
+    /** Only registered WebSocket upgrades are exposed on a dedicated listener. */
+    upgradeOnly?: boolean;
 }
 
 /** Create the hub's HTTP front door. Call `listen()` to bind it. */
-export function createHttpServer({ config, log, hubRoot }: HttpServerOptions): HubHttpServer {
+export function createHttpServer({
+    config, log, hubRoot, listen = config.listen, upgradeOnly = false,
+}: HttpServerOptions): HubHttpServer {
     const router = createRouter();
     const upgradeHandlers: UpgradeHandler[] = [];
     const staticRoot = join(hubRoot, 'web', 'dist');
@@ -180,6 +186,10 @@ export function createHttpServer({ config, log, hubRoot }: HttpServerOptions): H
         const url = requestUrl(req);
         if (!url) {
             sendError(res, 400, 'bad_request', 'malformed request target');
+            return;
+        }
+        if (upgradeOnly) {
+            sendError(res, 404, 'not_found', 'this listener only accepts tool WebSocket upgrades');
             return;
         }
         try {
@@ -266,7 +276,7 @@ export function createHttpServer({ config, log, hubRoot }: HttpServerOptions): H
         useUpgrade: (handler) => { upgradeHandlers.push(handler); },
         listen: () => new Promise<BoundAddress>((resolve, reject) => {
             server.once('error', reject);
-            server.listen(config.listen.port, config.listen.host, () => {
+            server.listen(listen.port, listen.host, () => {
                 server.removeListener('error', reject);
                 const address = server.address();
                 if (address === null || typeof address === 'string') {

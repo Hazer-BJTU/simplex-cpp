@@ -130,6 +130,14 @@ client:
     # Zero disables idle timeout. Positive values enable idle ping/deadline.
     idle_timeout_seconds: 0
 
+# Optional one-shot remote tool service. Omission leaves it unconfigured.
+# Append the operation route to the endpoint pathname, preserving its query.
+# This release only parses these settings; no worker remote tool is registered.
+# The hub currently rejects every valid request with not_implemented.
+# remote_tools:
+#   endpoint: ws://127.0.0.1:8801/agent/session-1/tools?token=SESSION_TOKEN
+#   timeout_ms: 120000
+
 # Optional independent approval service. Omit this mapping to deny confirmations.
 security:
   confirmation:

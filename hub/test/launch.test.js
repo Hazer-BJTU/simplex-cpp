@@ -22,6 +22,7 @@ const log = createLogger({ level: 'silent' });
 const endpoints = {
     events: 'ws://127.0.0.1:8800/agent/demo/events?token=t',
     confirm: 'ws://127.0.0.1:8800/agent/demo/confirm?token=t',
+    tools: 'ws://127.0.0.1:8801/agent/demo/tools?token=t',
 };
 
 describe('normalizeSpec', () => {
@@ -104,6 +105,8 @@ describe('renderSessionConfig', () => {
         assert.equal(Object.hasOwn(document, 'modality_assist_model'), false);
         assert.equal(Object.hasOwn(document.providers, 'deepseek'), false);
         assert.equal(document.client.endpoint, endpoints.events);
+        assert.equal(document.remote_tools.endpoint, endpoints.tools);
+        assert.equal(document.remote_tools.timeout_ms, config.toolRequests.timeoutMs);
         assert.equal(document.security.confirmation.endpoint, endpoints.confirm);
         assert.equal(document.security.confirmation.timeout_ms, config.worker.confirmationTimeoutMs);
         assert.equal(document.persistence.directory, sessionDir(config, 'demo'));
@@ -198,6 +201,7 @@ describe('renderSessionConfig', () => {
             const { config } = loadConfig({
                 overrides: {
                     listen: { host: listen, port: 0 },
+                    toolRequests: { port: 0 },
                     dataDir: mkdtempSync(join(tmpdir(), 'simplex-hub-host-')),
                     // A wildcard listener is refused without one, which is the
                     // hub's own guard rather than this test's business.
@@ -216,6 +220,11 @@ describe('renderSessionConfig', () => {
                 assert.equal(started.ok, true, started.error);
                 const document = JSON.parse(
                     readFileSync(hub.supervisor.configPathFor('demo'), 'utf8'));
+                const toolUrl = new URL(document.remote_tools.endpoint);
+                assert.equal(toolUrl.hostname, expected);
+                assert.equal(Number(toolUrl.port), hub.toolHttp.server.address().port);
+                assert.equal(toolUrl.pathname, '/agent/demo/tools');
+                assert.equal(toolUrl.searchParams.get('token'), session.token);
                 assert.match(document.client.endpoint,
                     new RegExp(`^ws://${expected}:\\d+/agent/demo/events\\?token=`),
                     `listen ${listen} + connectHost "${connectHost}" advertised the wrong host`);
@@ -232,6 +241,7 @@ describe('renderSessionConfig', () => {
         const { config } = loadConfig({
             overrides: {
                 listen: { host: '127.0.0.1', port: 0 },
+                toolRequests: { port: 0 },
                 dataDir: mkdtempSync(join(tmpdir(), 'simplex-hub-mock-')),
                 mock: { enabled: true, listen: '127.0.0.1:0' },
                 worker: { connectHost: '172.17.0.1' },

@@ -16,7 +16,7 @@ function options(sessionId = 'demo') {
     roots.push(root);
     return {
         config: testConfig({ dataDir: root }), sessionId, rawSpec: {},
-        endpoints: { events: 'ws://old/events?token=old', confirm: 'ws://old/confirm?token=old' },
+        endpoints: { events: 'ws://old/events?token=old', confirm: 'ws://old/confirm?token=old', tools: 'ws://old/tools?token=old' },
     };
 }
 
@@ -40,6 +40,7 @@ describe('session configuration files', () => {
         initial.providers.deepseek.model = 'operator-model';
         initial.providers.deepseek.endpoint.auth.api_key = '${OPERATOR_KEY}';
         initial.worker.max_exchanges = 47;
+        initial.remote_tools.timeout_ms = 750;
         initial.persistence.state = 'custom/snapshots';
         initial.persistence.memory = 'custom/archives';
         initial.future_extension = { untouched: ['one', 'two'] };
@@ -47,7 +48,7 @@ describe('session configuration files', () => {
         input.config.worker.maxExchanges = 999;
         input.config.providerProfiles = { replacement: { plugin: 'deepseek', model: 'new-default' } };
         input.rawSpec = { provider: 'deepseek', model: 'ignored', threads: 3 };
-        input.endpoints = { events: 'ws://new/events?token=new', confirm: 'ws://new/confirm?token=new' };
+        input.endpoints = { events: 'ws://new/events?token=new', confirm: 'ws://new/confirm?token=new', tools: 'ws://new/tools?token=new' };
         const reused = prepareSessionConfig(input);
         assert.equal(reused.spec.threads, 3);
         assert.equal(reused.spec.provider, 'deepseek');
@@ -56,6 +57,7 @@ describe('session configuration files', () => {
         assert.deepEqual(reused.document, {
             ...initial,
             client: { ...initial.client, endpoint: input.endpoints.events },
+            remote_tools: { ...initial.remote_tools, endpoint: input.endpoints.tools },
             security: { confirmation: { ...initial.security.confirmation, endpoint: input.endpoints.confirm } },
         });
         assert.match(readFileSync(path, 'utf8'), /# Operator comment/);
@@ -116,7 +118,7 @@ describe('session configuration files', () => {
         const input = options();
         prepareSessionConfig(input);
         const path = workerConfigPath(input.config, input.sessionId);
-        for (const invalid of ['[broken', 'null', 'client: wrong',
+        for (const invalid of ['[broken', 'null', 'client: wrong', 'remote_tools: null',
             'persistence:\n  state: ../escape', 'persistence:\n  memory: null',
             'modality_assist_model: missing', 'modality_assist_model: null']) {
             writeFileSync(path, invalid);
@@ -137,5 +139,26 @@ describe('session configuration files', () => {
         prepareSessionConfig(input);
         assert.equal(parse(readFileSync(path, 'utf8')).persistence.directory,
             sessionDir(input.config, input.sessionId));
+    });
+});
+
+it('adds remote tool configuration to old sessions and refreshes only its endpoint on restart', () => {
+    const input = options();
+    const path = workerConfigPath(input.config, input.sessionId);
+    const original = prepareSessionConfig(input).document;
+    delete original.remote_tools;
+    writeFileSync(path, stringify(original));
+    const upgraded = prepareSessionConfig(input).document;
+    assert.deepEqual(upgraded.remote_tools, {
+        endpoint: input.endpoints.tools,
+        timeout_ms: input.config.toolRequests.timeoutMs,
+    });
+    upgraded.remote_tools.timeout_ms = 800;
+    upgraded.remote_tools.future_option = 'preserved';
+    writeFileSync(path, stringify(upgraded));
+    input.endpoints.tools = 'ws://new-host:9900/agent/demo/tools?token=rotated';
+    const restarted = prepareSessionConfig(input).document;
+    assert.deepEqual(restarted.remote_tools, {
+        endpoint: input.endpoints.tools, timeout_ms: 800, future_option: 'preserved',
     });
 });

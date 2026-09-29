@@ -223,6 +223,8 @@ directory; command-line paths resolve against the working directory.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `toolRequests.host`, `toolRequests.port` | inherits `listen.host`, `8801` | independent worker tool-request listener |
+| `toolRequests.timeoutMs`, `toolRequests.maxConnections` | `120000`, `128` | hard per-connection deadline and global upgraded-connection limit |
 | `listen.host`, `listen.port` | `127.0.0.1`, `8800` | panel and API listener |
 | `dataDir` | `./data` | hub state, generated worker configs, logs, JSONL event logs, worker snapshots |
 | `panel.token` | `""` | shared panel token; required for a non-loopback listener |
@@ -276,8 +278,8 @@ After a restart, the session spec reports the saved worker configuration's
 or the original session spec have since changed.
 
 Before each launch the hub refreshes only `persistence.directory` (the direct
-session root), `client.endpoint`, `security.confirmation.endpoint` (including
-session authentication tokens), and the active mock provider's dynamic
+session root), `client.endpoint`, `security.confirmation.endpoint`, and
+`remote_tools.endpoint` (including session authentication tokens), and the active mock provider's dynamic
 `endpoint.base_url`. Provider credentials and other operator fields remain intact.
 Malformed saved YAML or invalid persistence child paths fail startup without
 replacing the file. Updates are published with an atomic rename.
@@ -304,7 +306,7 @@ The hub then runs the configured launcher. Two kinds ship:
   ```
 
   Placeholders are `{session}`, `{config}`, `{data_dir}`, `{session_dir}`,
-  `{endpoint}`, `{confirm_endpoint}`, `{token}`, `{threads}`, and
+  `{endpoint}`, `{confirm_endpoint}`, `{tools_endpoint}`, `{token}`, `{threads}`, and
   `{worker_bin}`. An unknown placeholder fails the spawn by name instead of
   being passed through. A launcher that daemonizes must set `launcher.pidFile`,
   because the pid the hub spawned would then name a short-lived wrapper.
@@ -618,3 +620,35 @@ and the display remains full above 1M. The adjacent fraction identifies the
 current band; zero belongs to the first band with an empty meter. This fixed
 visual scale is not the provider's context-window limit. Numeric token counts
 continue to use decimal K/M/B units.
+
+## Worker remote tool requests
+
+The hub binds a second WebSocket listener at `toolRequests.host:toolRequests.port`
+(default port `8801`; empty host inherits `listen.host`). Port `0` selects an
+ephemeral port, useful for embedded instances and tests. A nonzero tool port must
+differ from the main port. This listener serves no panel, REST API, event stream,
+or confirmation route. Deployments must make it reachable from workers; the
+Docker worker example uses the same `worker.connectHost` for both ports.
+
+For each launched session, the hub writes `remote_tools.endpoint` with the actual
+bound port, `/agent/<session>/tools`, and the session token, plus `timeout_ms`.
+On restart the URL/token are refreshed, an existing timeout is preserved, and
+missing settings are added to old configurations. A template launcher may also
+use `{tools_endpoint}`. Worker configuration parsing supports these settings,
+but no worker-side tool invokes them in this release.
+
+A worker appends a route such as `files/read` to the URL pathname, opens one
+connection, sends one `tool_request`, and receives one `tool_response`. Every
+valid request currently receives `status: rejected`, error code
+`not_implemented`, and reason `remote tool route is not implemented`. There is no
+remote operation registration or execution yet. See the complete
+[worker protocol](../core/docs/worker-protocol.md#remote-tool-requests).
+
+`src/worker/tools.ts` owns authentication, framing, resource bounds, and shutdown.
+`src/protocol/tool-requests.ts` owns envelope validation and the dispatch boundary.
+Future operations must add explicit route registration, live-worker/operation
+authorization, argument validation, response types, and tests at that boundary;
+they must not derive executable commands or filesystem paths from route strings.
+A session token presently grants only access to a rejection response. It is not
+a grant to execute future operations. There is no implicit retry, replay cache,
+confirmation bypass, or durable remote-call queue.

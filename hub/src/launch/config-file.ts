@@ -39,7 +39,7 @@ function readDocument(path: string): Document {
 function mapping(document: Document, path: string[]): void {
     for (let count = 1; count <= path.length; count += 1) {
         const prefix = path.slice(0, count);
-        if (!document.hasIn(prefix)) document.setIn(prefix, {});
+        if (!document.hasIn(prefix)) document.setIn(prefix, document.createNode({}));
         if (!isMap(document.getIn(prefix, true))) {
             throw new Error(`${prefix.join('.')} must be a mapping`);
         }
@@ -69,7 +69,7 @@ function writeDocument(path: string, text: string): void {
 }
 
 /**
- * Create once, then refresh only the root, event/confirmation URLs (including
+ * Create once, then refresh only the root, event/confirmation/tool URLs (including
  * their session tokens), and the active mock profile's dynamic base URL.
  * Existing model credentials and unknown configuration keys remain untouched.
  * Launch-only spec fields still control threads, environment and extra args.
@@ -102,6 +102,11 @@ export function prepareSessionConfig(options: RenderSessionConfigOptions): {
         persistenceChild(root, child, key);
     }
     mapping(document, ['client']);
+    mapping(document, ['remote_tools']);
+    document.setIn(['remote_tools', 'endpoint'], endpoints.tools);
+    if (!document.hasIn(['remote_tools', 'timeout_ms'])) {
+        document.setIn(['remote_tools', 'timeout_ms'], config.toolRequests.timeoutMs);
+    }
     mapping(document, ['security', 'confirmation']);
     document.setIn(['persistence', 'directory'], root);
     document.setIn(['client', 'endpoint'], endpoints.events);

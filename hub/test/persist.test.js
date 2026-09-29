@@ -21,7 +21,11 @@ const log = createLogger({ level: 'silent' });
 function scratch() {
     const dataDir = mkdtempSync(join(tmpdir(), 'simplex-hub-state-'));
     const { config } = loadConfig({
-        overrides: { listen: { host: '127.0.0.1', port: 0 }, dataDir },
+        overrides: {
+            listen: { host: '127.0.0.1', port: 0 },
+            toolRequests: { port: 0 },
+            dataDir,
+        },
     });
     return { config, dataDir };
 }
