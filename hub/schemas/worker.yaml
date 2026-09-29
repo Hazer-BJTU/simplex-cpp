@@ -1,0 +1,200 @@
+# Startup configuration for simplex_worker.
+# load::read_configuration validates host settings; load_plugins handles discovery.
+# See load/README.md in the source tree for defaults and lifecycle semantics.
+# Copy this example to config.yaml before editing it for a deployment.
+# Explicit relative paths are relative to that configuration file's directory.
+# No version field is required. Unknown host fields are ignored.
+
+plugins:
+  # Discover all compatible provider plugins; there is no provider allowlist.
+  providers:
+    # Empty or omitted: <executable_dir>/plugins/llm.
+    # A nonempty list replaces the default; directories are scanned in order.
+    directories: []
+
+  # Core loads intrinsic components automatically; modality_assist additionally
+  # requires the optional modality_assist_model configured below.
+  # Plugin discovery alone does not initialize intrinsics or session registries.
+  # Their enablement and configuration are not exposed by this contract.
+  extensions:
+    tools:
+      # Empty or omitted: <executable_dir>/plugins/tools.
+      directories: []
+      # Only listed toolsets are constructed; the caller registers them.
+      # Empty or omitted: no dynamic toolsets are constructed.
+      enable: []
+      # - name: noop_toolset
+      #   schema_directory: ./schemas/tools/extensions/noop_toolset
+      # Omit schema_directory to use the existing extension lookup rules.
+
+    loop_hooks:
+      # Empty or omitted: <executable_dir>/plugins/loop.
+      directories: []
+      # Hooks are constructed in list order; the caller registers them.
+      # The core worker registers them after intrinsic hooks.
+      # Empty or omitted: no dynamic loop hooks are constructed.
+      enable: []
+      # - name: noop_hook
+      #   config_file: ./schemas/loop/extensions/noop_hook/config.yaml
+      # Omit config_file to use the existing extension lookup rules.
+
+# Named endpoint/model configurations. Only entries selected by a model role
+# are instantiated. Credential expansion is limited to their API keys and
+# extra-header values.
+# Multiple entries may use the same plugin with different endpoints or models.
+providers:
+  deepseek:
+    # Defaults to this entry's key. This selects a factory, not plugin admission.
+    plugin: deepseek
+
+    # Omitted endpoint fields inherit the provider plugin's defaults.
+    endpoint:
+      base_url: https://api.deepseek.com
+      # Appended to any path prefix in base_url.
+      request_path: /chat/completions
+      auth:
+        # Supported schemes: none, bearer, custom_header.
+        scheme: bearer
+        # ${NAME} is expanded only when this provider is instantiated.
+        # A referenced environment variable must be set and nonempty.
+        api_key: ${DEEPSEEK_API_KEY}
+        # Used only with custom_header; omitted default: x-api-key.
+        header_name: x-api-key
+      user_agent: simplex-cpp
+      # Applied after standard headers; matching names override defaults.
+      extra_headers: {}
+      # Optional provider endpoint metadata; omitted by default.
+      extras: {}
+
+    # Required nonempty provider model name for an instantiated configuration.
+    model: deepseek-flash
+    # Provider-specific generation options, passed through to the model plugin.
+    # Do not repeat endpoint, provider, model, or retry inside this mapping.
+    config:
+      reasoning:
+        effort: high
+
+    retry:
+      # Maximum retries AFTER the first attempt; zero means no retries.
+      max_attempts: 3
+      initial_backoff_ms: 500
+      max_backoff_ms: 120000
+
+  # Optional auxiliary model example. Uncomment this mapping and the
+  # modality_assist_model selector below to enable image interpretation.
+  # Uses DeepSeek through its Chat Completions endpoint, like the driver.
+  # vision:
+  #   plugin: deepseek
+  #   endpoint:
+  #     base_url: https://api.deepseek.com
+  #     request_path: /chat/completions
+  #     auth:
+  #       scheme: bearer
+  #       api_key: ${DEEPSEEK_API_KEY}
+  #   model: deepseek-flash
+  #   config:
+  #     reasoning:
+  #       effort: high
+  #   retry:
+  #     max_attempts: 3
+  #     initial_backoff_ms: 500
+  #     max_backoff_ms: 120000
+
+# Required reference to a providers entry.
+# No implicit first-provider fallback.
+driver_model: deepseek
+
+# Optional reference to a providers entry for decoupled multimodal interpretation.
+# Omit to leave this model unloaded. Explicit null or an empty name is invalid.
+# Uses the same endpoint/config/retry fields as driver_model; each role gets
+# its own model instance, even when both reference the same entry.
+# Enables the intrinsic modality_assist tool, which describes local images using
+# isolated one-exchange requests. No automatic input conversion is performed.
+# modality_assist_model: vision
+# Uncomment and customize providers.vision above together with this selector.
+
+# Persistent event connection; independent of the confirmation endpoint.
+client:
+  # Required complete ws:// or wss:// URL, including the upgrade target.
+  # Replace this placeholder with the actual server endpoint.
+  endpoint: ws://127.0.0.1:8765/agent/events
+  # Positive incoming queue capacities, measured in complete JSON messages.
+  payload_capacity: 256
+  signal_capacity: 256
+  transport:
+    # Positive outgoing queue capacity, measured in complete messages.
+    # Queue admission does not acknowledge delivery to the peer.
+    write_capacity: 256
+    initial_backoff_ms: 250
+    max_backoff_ms: 10000
+    # Zero disables idle timeout. Positive values enable idle ping/deadline.
+    idle_timeout_seconds: 0
+
+# Optional one-shot remote tool service. Omission leaves it unconfigured.
+# Append the operation route to the endpoint pathname, preserving its query.
+# When configured, core loads a HubRemoteCallToolSet with these settings.
+# Registers the plan tool and skill; construction opens no connection.
+# The hub supports plan/read and plan/replace; other routes are not implemented.
+# hub_remote_call:
+#   endpoint: ws://127.0.0.1:8801/agent/session-1/tools?token=SESSION_TOKEN
+#   timeout_ms: 120000
+
+# Optional independent approval service. Omit this mapping to deny confirmations.
+security:
+  confirmation:
+    endpoint: ws://127.0.0.1:8765/agent/confirm
+    # Positive approval deadline through connection, reply and close; no retry.
+    # Expiry denies approval; an active system DNS lookup can delay cleanup.
+    timeout_ms: 120000
+
+worker:
+  max_exchanges: 512
+  # Bounded host event queue. Overflow safely stops the worker.
+  event_capacity: 1024
+  # Used only for a new session; restored prompts are retained.
+  # Relative to the executable's directory, never to this file; a rooted path
+  # (leading '/' or '\', or a drive letter) and '..' are rejected. Omit to use
+  # <executable_dir>/prompts/coding_agent.yaml.
+  system_prompt_file: prompts/coding_agent.yaml
+  # Optional internal user instruction for explicit compact operations, by the
+  # same rule. Omit for prompts/operations/compact.yaml beside the executable.
+  # compact_prompt_file: prompts/operations/compact.yaml
+  # Optional prompt hints, refreshed on startup even when restoring a session.
+  # No chdir, sandbox, or automatic platform/software detection is performed.
+  environment:
+    # Relative workspace paths resolve against this configuration file.
+    workspace: ""
+    platform: ""
+    # Describe expected software, e.g. ["Python 3.12", "Docker CLI"].
+    software: []
+
+# Interpreted by core. Explicit save_state/load_state APIs remain policy-free.
+# Pre-dispatch/results checkpoints remain enabled independently of save flags.
+persistence:
+  enabled: true
+  # Direct session root, relative to this file. No session ID is appended.
+  directory: ./data/session
+  # Snapshot subdirectory, relative to directory.
+  state: state
+  # AgentInputState uses its existing dataclass JSON serialization.
+  format: json
+  # Optional write-only Markdown alongside the authoritative JSON snapshot.
+  readable: false
+  # Compact always archives the original state here, even when readable is false.
+  # Archive subdirectory, relative to directory; old archives are never replaced.
+  # state and memory must be nonempty relative paths without parent traversal.
+  memory: memory
+  # Applied after successful compact commits. The current archive is protected.
+  # Zero disables cleanup. Failed/cancelled attempts are retained until a later
+  # successful compact. Unknown files and symlinks are never cleaned.
+  memory_retention:
+    max_archives: 5
+  # if_present: restore existing state, or start fresh when no file exists.
+  # This does not automatically resume loop execution or replay tool calls.
+  restore: if_present
+  save:
+    # Save complete state after the respective state-edit hooks finish.
+    on_step_finished: true
+    on_run_finished: true
+    # Applies to orderly shutdown after state mutation has stopped.
+    on_shutdown: true
