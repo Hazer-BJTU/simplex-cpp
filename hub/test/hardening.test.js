@@ -160,7 +160,10 @@ describe('P0 hardening', () => {
 
     describe('a failing worker action is answered, not thrown', () => {
         it('reports a directory it cannot create instead of rejecting', async () => {
-            const ctx = await setup({ dataDir: join('/dev/null', 'nowhere') });
+            const ctx = await setup();
+            // Configuration storage must exist at startup. Simulate disk failure
+            // after startup to exercise the supervisor's error response.
+            ctx.config.dataDir = join('/dev/null', 'nowhere');
             ctx.hub.registry.create('nowhere');
             const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
             try {

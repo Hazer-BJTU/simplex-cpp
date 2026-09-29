@@ -160,6 +160,8 @@ export interface PayloadOptions {
 /** Initial worker configuration and launch parameters. Once config/config.yaml
  * exists, only threads, env and extraArgs affect subsequent launches. */
 export interface SessionSpec {
+    launchConfig?: string;
+    workerConfig?: string;
     provider?: string;
     model?: string;
     /** Source profile for a new auxiliary model. On config reuse, this reports

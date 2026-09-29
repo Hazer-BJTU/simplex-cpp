@@ -41,12 +41,13 @@ simplex hub — disposable test container
   sources   /src                            the tree this image was built from
 
   mock      ${MOCK_STATE} — the hub serves its own model, no key needed.
-            In the panel, create a session with the "mock" provider profile
-            (model mock-auto) and send anything: the scripted model proposes a
+            In Configurations, create launch and worker files from "Current
+            Hub deployment", select them for a session, and send anything:
+            the scripted mock model proposes a
             run_command call, so you get a real confirmation prompt, a real
             child process, and real output.
-  real      docker run ... -e DEEPSEEK_API_KEY=sk-... and pick the "deepseek"
-            profile instead. The key only ever enters the worker's environment.
+  real      Edit a worker configuration to select your model provider and
+            pass its credentials into the worker environment.
 
   shell     docker run -it --rm <image> bash
 

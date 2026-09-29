@@ -1,0 +1,34 @@
+{
+    // Runs on the Hub host. Replace "simplex" with its installed absolute path
+    // when it is not on PATH. Arguments are separate entries, never shell text.
+    "launcher": {
+        "kind": "command",
+        "command": [
+            "simplex", "run",
+            "--config", "{config}",
+            "--session", "{session}",
+            "--threads", "{threads}"
+        ],
+        "args": [],
+        // Empty cwd uses the session directory. A relative cwd is resolved
+        // against the session's config directory.
+        "cwd": "",
+        "pidFile": ""
+    },
+    "worker": {
+        "threads": 1,
+        // Empty: use the live Hub listener. For a container, enter the host
+        // address reachable from the container, e.g. "172.17.0.1".
+        "connectHost": "",
+        "stopTimeoutMs": 15000,
+        "sigtermGraceMs": 5000,
+        "sigkillGraceMs": 2000
+    },
+    // The child inherits the Hub environment; these entries override it.
+    "env": {},
+    // Optional per-channel advertised origins (ws:// or wss://), including a
+    // reverse-proxy prefix. Session routes and tokens are appended by the Hub.
+    // Example: "events": "wss://hub.example/worker"
+    // Channel keys: events, confirm, tools. Tools uses its own listener port.
+    "endpoints": {}
+}

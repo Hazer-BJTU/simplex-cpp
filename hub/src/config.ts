@@ -11,6 +11,7 @@
  * The worker configuration the hub *generates* is a different document: see
  * src/launch/config-render.ts.
  */
+import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { SCENARIOS } from './mock/provider.ts';
 import type { Scenario } from './mock/provider.ts';
@@ -130,7 +131,7 @@ export function defaultConfig(): HubConfig {
     return {
         listen: { host: '127.0.0.1', port: 8800 },
         toolRequests: { host: '', port: 8801, timeoutMs: 120000, maxConnections: 128 },
-        dataDir: './data',
+        dataDir: resolve(homedir(), '.simplex', 'hub'),
         // Empty string disables panel authentication. Non-loopback listeners
         // require a token (validated below): the worker-facing payload channel
         // is an approval authority (core/docs/worker-protocol.md).
@@ -562,7 +563,7 @@ export type DeepPartial<T> = {
 
 /** What `loadConfig` accepts. */
 export interface LoadConfigOptions {
-    /** Configuration path; when omitted, an existing config beside the package is used. */
+    /** Configuration path; when omitted, search the selected persistent data root. */
     file?: string | undefined;
     /** Command-line overrides, already shaped like the configuration. */
     overrides?: DeepPartial<HubConfig>;
@@ -592,7 +593,7 @@ export function loadConfig({
     let selected = file ? resolve(cwd, file) : null;
     if (!selected) {
         for (const candidate of ['hub.config.jsonc', 'hub.config.json']) {
-            const path = resolve(hubRoot, candidate);
+            const path = resolve(overrides.dataDir ? resolve(cwd, overrides.dataDir) : defaultConfig().dataDir, candidate);
             if (existsSync(path)) {
                 selected = path;
                 break;
@@ -602,7 +603,7 @@ export function loadConfig({
         throw new ConfigError(`configuration file not found: ${selected}`);
     }
     if (!selected && requireFile) {
-        throw new ConfigError(`configuration file not found (looked in ${hubRoot})`);
+        throw new ConfigError(`configuration file not found in the selected data directory`);
     }
 
     const baseDir = selected ? dirname(selected) : hubRoot;

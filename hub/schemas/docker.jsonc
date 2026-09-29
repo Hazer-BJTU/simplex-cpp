@@ -1,0 +1,46 @@
+{
+    // Requires a locally available image with /bin/sh and `simplex` on PATH.
+    // Build/tag your installed worker image as simplex-worker:latest, or replace
+    // that image name below. Docker may pull the named image if it is not present locally.
+    // The Hub must listen on an address reachable from Docker (e.g. 0.0.0.0)
+    // and have a panel token. Keep the tool-request listener reachable as well.
+    "launcher": {
+        "kind": "command",
+        "command": [
+            "docker", "run", "--rm", "--init",
+            "--name", "simplex-worker-{session}",
+            "--add-host", "host.docker.internal:host-gateway",
+            // Root with the Hub's primary group; the umask below permits the
+            // Hub to remove worker-created directories when deleting a session.
+            "--user", "0:{gid}",
+            "-e", "MODEL_API_KEY",
+            // Bind the current session only, at the same absolute path.
+            // State and memory survive container removal. The nested mount
+            // protects every Hub-owned snapshot, including launch.jsonc.
+            "-v", "{session_dir}:{session_dir}",
+            "-v", "{session_dir}/config:{session_dir}/config:ro",
+            "--entrypoint", "/bin/sh",
+            "simplex-worker:latest",
+            "-c", "umask 0002; mkdir -p /root/workspace && cd /root/workspace && exec \"$@\"",
+            "sh",
+            // Installed entry point. For the in-tree simplex-hub-test image,
+            // replace "simplex" below with "/src/build/bin/simplex".
+            "simplex", "run",
+            "--config", "{config}",
+            "--session", "{session}",
+            "--threads", "{threads}"
+        ],
+        "args": [],
+        "cwd": "",
+        "pidFile": ""
+    },
+    "worker": {
+        "threads": 1,
+        "connectHost": "host.docker.internal",
+        "stopTimeoutMs": 15000,
+        "sigtermGraceMs": 5000,
+        "sigkillGraceMs": 2000
+    },
+    "env": {},
+    "endpoints": {}
+}

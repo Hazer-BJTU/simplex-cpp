@@ -5,8 +5,9 @@
 //   node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --mock \
 //       --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
 //
-// then open http://127.0.0.1:8800/?token=dev and create a session with the
-// `mock` profile. The hub is an ordinary host process; each worker is a
+// then open http://127.0.0.1:8800/?token=dev, create launch and worker files
+// from "Current Hub deployment", and select both for a session. The hub is
+// an ordinary host process; each worker is a
 // `docker run` that connects back over the bridge. See README.md,
 // "Workers in a container", for what each line below is doing.
 {
@@ -52,10 +53,10 @@
             // refers to `${DEEPSEEK_API_KEY}` and the worker expands it, which
             // is why the variable has to exist *here* and not only on the host.
             "-e", "DEEPSEEK_API_KEY",
-            // Expose only this session's data. The hub owns config/config.yaml;
-            // a second file mount prevents worker tools from rewriting it.
+            // Expose only this session's data. The entire Hub-owned config
+            // snapshot is read-only, including launch.jsonc and source.json.
             "-v", "{session_dir}:{session_dir}",
-            "-v", "{config}:{config}:ro",
+            "-v", "{session_dir}/config:{session_dir}/config:ro",
             // The image creates this private workspace for process tools.
             "-w", "/root/workspace",
             "simplex-hub-test:latest",

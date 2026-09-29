@@ -180,10 +180,19 @@ status. `error` codes are stable; `message` is not.
 `hub_sequence` counts retained transcript envelopes in *this hub process*,
 which is what a client resumes from. `latest` is the current end of the transcript.
 
+New sessions may select saved files with
+`spec: {launchConfig: "local", workerConfig: "default"}`. Both selectors are
+required together. The Hub captures independent launch/worker snapshots; each
+session uses its own launcher. Configuration CRUD, endpoint preview and explicit
+snapshot replacement are documented in [Configuration API](configurations.md#configuration-api).
+Those routes have the same panel authentication requirements as this API.
+
 Start and restart reuse `sessions/<session>/config/config.yaml` once it exists.
 Only the hub-owned session root, connection URLs/tokens and active mock URL are
 refreshed. Later spec fields affect only launch parameters (`threads`, `env`,
-`extraArgs`); edit the saved configuration to change worker settings.
+`extraArgs`) for legacy sessions. Library-backed sessions instead use their
+saved launch snapshot for threads and environment; apply new snapshots while
+stopped to change their configuration.
 `persistence.state` and `persistence.memory` select relative subdirectories of
 `persistence.directory`, which the hub sets to `<dataDir>/sessions/<session>`.
 Old layouts are not migrated automatically.
@@ -338,7 +347,9 @@ opaque.
 
 Anyone who can reach the panel can submit payloads, and a payload may select
 `confirmation.mode: approve`, which is equivalent to approving every tool call
-that requires confirmation. The hub therefore:
+that requires confirmation. Panel access also allows editing launch commands
+that the Hub executes on its host. Treat the panel token as an administrative
+credential with host command-execution authority. The hub therefore:
 
 - defaults to a loopback listener, and refuses a non-loopback one without a
   panel token,

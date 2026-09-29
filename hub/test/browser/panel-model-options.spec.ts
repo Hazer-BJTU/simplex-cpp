@@ -28,6 +28,8 @@ test('model choices are fetched once and submitted only with a payload', async (
     await emit(page, 'options', advertised);
     await model.click();
     await expect(page.getByLabel('Model option: reasoning_effort')).toHaveValue('1');
+    await page.getByLabel('Model option: model', { exact: true }).focus();
+    expect(await page.getByLabel('Model option: model', { exact: true }).evaluate(node => getComputedStyle(node).outlineStyle)).toBe('none');
     await page.getByLabel('Model option: model', { exact: true }).selectOption('1');
     await page.getByLabel('Model option: reasoning_effort').selectOption('2');
     await page.keyboard.press('Escape');

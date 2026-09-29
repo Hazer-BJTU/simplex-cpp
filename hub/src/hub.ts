@@ -11,6 +11,7 @@ import { authorizePanel } from './http/auth.ts';
 import { createHttpServer, sendError, sendJson } from './http/server.ts';
 import type { BoundAddress } from './http/server.ts';
 import { createLauncher } from './launch/launcher.ts';
+import { snapshotSelection } from './configurations/session.ts';
 import { MockProvider, parseAddress } from './mock/provider.ts';
 import { WorkerSupervisor } from './launch/supervisor.ts';
 import type { ProcessRecord } from './launch/supervisor.ts';
@@ -331,6 +332,11 @@ export function createHub({
                     }
                     if (typeof entry.created_at === 'string') session.createdAt = entry.created_at;
                     session.spec = (entry.spec ?? {}) as SessionSpec;
+                    // Snapshot publication and hub.json are separate atomic
+                    // writes. The published source wins after a crash between
+                    // them, so the panel describes the launcher it will run.
+                    const selected = snapshotSelection(config, entry.id);
+                    if (selected) session.spec = { ...session.spec, ...selected };
                     if (entry.process) supervisor.adopt(session, entry.process);
                     restored += 1;
                 }

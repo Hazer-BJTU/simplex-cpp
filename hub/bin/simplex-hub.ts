@@ -6,7 +6,7 @@
  * shuts it down cleanly on SIGINT/SIGTERM (worker children are released by the
  * supervisor, not by an abrupt exit).
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigError, hubRoot, loadConfig } from '../src/config.ts';
@@ -21,7 +21,7 @@ const USAGE = `Usage: simplex-hub [options]
 Options:
   -c, --config <file>            hub configuration file (default: hub.config.jsonc)
   -l, --listen <host:port>       listen address (default: 127.0.0.1:8800)
-      --data-dir <dir>           runtime data directory (default: ./data)
+      --data-dir <dir>           configuration and data directory (default: ~/.simplex/hub)
       --worker-bin <path>        simplex_worker executable
       --panel-token <token>      require this token for panel access
       --mock                     enable the offline mock provider
@@ -136,6 +136,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<
     const level: string = run.logLevel ?? (run.verbose ? 'debug' : 'info');
     const log = createLogger({ level });
     const { config, file } = loadConfig({ file: run.config, overrides });
+    if (!file) {
+        mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+        const persistentConfig = resolve(config.dataDir, 'hub.config.jsonc');
+        if (!existsSync(persistentConfig)) {
+            writeFileSync(persistentConfig, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+        }
+    }
     log.info(file ? `configuration: ${file}` : 'configuration: built-in defaults');
     log.info(`data directory: ${config.dataDir}`);
 

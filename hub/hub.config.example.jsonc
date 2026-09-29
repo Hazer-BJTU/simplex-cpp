@@ -4,7 +4,7 @@
     // file stays valid JSON without them. Relative paths resolve against this
     // file's directory. See hub/README.md for every field.
     "listen": { "host": "127.0.0.1", "port": 8800 },
-    "dataDir": "./data",
+    // Omit dataDir to use ~/.simplex/hub. Set an absolute path to relocate it.
 
     // Empty token disables panel authentication. A non-loopback listen address
     // requires one: a payload channel is an approval authority

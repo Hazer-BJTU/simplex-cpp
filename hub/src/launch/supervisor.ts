@@ -18,6 +18,8 @@
  * supervisor therefore refuses to start a session whose recorded process is
  * still alive, and a restart always waits for the exit before spawning.
  */
+import { sessionLaunch, launchEndpoints } from '../configurations/session.ts';
+import { createLauncher } from './launcher.ts';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync }
@@ -179,6 +181,7 @@ export interface ProcessRecordOptions {
 
 /** One supervised worker process, plus its captured output. */
 export class ProcessRecord {
+    stopPolicy?: Pick<HubConfig['worker'], 'stopTimeoutMs' | 'sigtermGraceMs' | 'sigkillGraceMs'>;
     readonly sessionId: string;
     state: ProcessState;
     pid: number | null;
@@ -327,35 +330,49 @@ export class WorkerSupervisor {
                 config: specSource };
         }
         const configPath = workerConfigPath(this.config, session.id);
+        let launchConfig = this.config;
+        let launcher = this.launcher;
+        let endpoints = this.endpointsFor(session.id, session.token);
+        let launchSpec = specSource;
         let rendered: { spec: NormalizedSpec; document: unknown };
         try {
+            const saved = sessionLaunch(this.config, session.id);
+            if (saved) {
+                launchConfig = saved.config;
+                launcher = createLauncher({ config: launchConfig });
+                endpoints = launchEndpoints(endpoints, saved.launch);
+                launchSpec = { ...(specSource as object), threads: launchConfig.worker.threads, env: saved.launch.env ?? {}, extraArgs: [] };
+            }
             rendered = prepareSessionConfig({
-                config: this.config,
+                config: launchConfig,
                 sessionId: session.id,
-                rawSpec: specSource,
-                endpoints: this.endpointsFor(session.id, session.token),
+                rawSpec: launchSpec,
+                endpoints,
                 mock: this.mockProvider?.(),
             });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return { ok: false, error: `cannot prepare session configuration: ${message}`, config: specSource };
         }
-        session.spec = rendered.spec;
+        session.spec = { ...session.spec, ...rendered.spec,
+            // Profile credentials stay in launch.jsonc, not public session metadata.
+            ...(launcher !== this.launcher ? { env: {} } : {}),
+        };
 
         let invocation: LauncherInvocation;
         try {
-            invocation = this.launcher.buildInvocation({
+            invocation = launcher.buildInvocation({
                 sessionId: session.id,
                 spec: rendered.spec,
                 configPath,
                 sessionDir: directory,
-                endpoints: this.endpointsFor(session.id, session.token),
+                endpoints,
                 token: session.token,
             } satisfies InvocationContext);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return { ok: false, error: `cannot build the launcher invocation: ${message}`,
-                config: rendered.spec };
+                config: session.spec };
         }
 
         const logDirectory = join(directory, 'logs');
@@ -364,7 +381,7 @@ export class WorkerSupervisor {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return { ok: false, error: `cannot create ${logDirectory}: ${message}`,
-                config: rendered.spec };
+                config: session.spec };
         }
         const logPath = join(logDirectory, 'worker.log');
         rotateLog(logPath, this.config.limits);
@@ -380,6 +397,7 @@ export class WorkerSupervisor {
             this.log.warn(`session ${session.id}: worker log stream failed: ${error.message}`);
         });
         const record = new ProcessRecord({ sessionId: session.id, invocation, logPath, logStream, logs });
+        record.stopPolicy = { ...launchConfig.worker };
         session.process = record;
 
         let child: ChildProcess;
@@ -396,7 +414,7 @@ export class WorkerSupervisor {
             const message = error instanceof Error ? error.message : String(error);
             this.finish(record, { error: message });
             return { ok: false, error: `cannot spawn ${invocation.command}: ${message}`,
-                config: rendered.spec };
+                config: session.spec };
         }
 
         record.child = child;
@@ -409,7 +427,7 @@ export class WorkerSupervisor {
             });
             this.finish(record, { error: failure.message });
             return { ok: false, error: `cannot spawn ${invocation.command}: ${failure.message}`,
-                config: rendered.spec };
+                config: session.spec };
         }
         record.pid = child.pid;
         record.pidStartTime = readProcessStartTime(child.pid);
@@ -433,7 +451,7 @@ export class WorkerSupervisor {
         this.log.info(
             `session ${session.id}: started ${invocation.command} (pid ${record.pid})`);
         this.notify(session, record);
-        return { ok: true, pid: record.pid, config: rendered.spec };
+        return { ok: true, pid: record.pid, config: session.spec };
     }
 
     /** Record process termination and release per-process resources. */
@@ -530,7 +548,7 @@ export class WorkerSupervisor {
      */
     async stop(
         session: Session,
-        { timeoutMs = this.config.worker.stopTimeoutMs, processGroup }:
+        { timeoutMs = (session.process as ProcessRecord | null)?.stopPolicy?.stopTimeoutMs ?? this.config.worker.stopTimeoutMs, processGroup }:
         { timeoutMs?: number; processGroup?: boolean } = {},
     ): Promise<StopResult> {
         const record = session.process as ProcessRecord | null;
@@ -554,7 +572,7 @@ export class WorkerSupervisor {
 
         this.log.warn(`session ${session.id}: graceful stop timed out; sending SIGTERM`);
         this.signalProcess(record, 'SIGTERM');
-        if (await this.waitForExit(record, this.config.worker.sigtermGraceMs)) {
+        if (await this.waitForExit(record, record.stopPolicy?.sigtermGraceMs ?? this.config.worker.sigtermGraceMs)) {
             return { ok: true, how: 'sigterm', forced: true };
         }
 
@@ -563,7 +581,7 @@ export class WorkerSupervisor {
             `session ${session.id}: SIGTERM ignored; sending SIGKILL`
             + (group ? ' to the process group' : ''));
         this.signalProcess(record, 'SIGKILL', { processGroup: group });
-        const exited = await this.waitForExit(record, this.config.worker.sigkillGraceMs);
+        const exited = await this.waitForExit(record, record.stopPolicy?.sigkillGraceMs ?? this.config.worker.sigkillGraceMs);
         if (!exited) {
             this.log.error(`session ${session.id}: worker did not exit after SIGKILL`);
         }
@@ -601,7 +619,7 @@ export class WorkerSupervisor {
         }
         record.stopRequested = true;
         this.signalProcess(record, 'SIGKILL', { processGroup });
-        const exited = await this.waitForExit(record, this.config.worker.sigkillGraceMs);
+        const exited = await this.waitForExit(record, record.stopPolicy?.sigkillGraceMs ?? this.config.worker.sigkillGraceMs);
         return {
             ok: exited,
             how: processGroup ? 'sigkill-process-group' : 'sigkill',
@@ -649,6 +667,8 @@ export class WorkerSupervisor {
         record.startedAt = typeof entry.started_at === 'string' ? entry.started_at : record.startedAt;
         record.state = PROCESS_STATE.running;
         record.adopted = true;
+        try { record.stopPolicy = sessionLaunch(this.config, session.id)?.config.worker ?? this.config.worker; }
+        catch { this.log.warn(`session ${session.id}: cannot read saved stop policy; using Hub defaults`); }
         record.stopRequested = false;
         // The exit of a process this hub did not spawn can only be observed by
         // polling; it is rare and cheap enough to justify keeping the panel
