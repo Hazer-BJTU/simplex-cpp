@@ -384,6 +384,10 @@ const server = createServer((req, res) => {
         json(res, 200, meta());
         return;
     }
+    if (url.pathname === '/api/configurations') {
+        json(res, 200, { launch: ['local'], worker: ['default'] });
+        return;
+    }
     if (url.pathname === '/api/sessions') {
         json(res, 200, { sessions });
         return;

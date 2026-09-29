@@ -1,3 +1,5 @@
+import { Configurations, ConfigurationChoices } from './Configurations.tsx';
+import type { ConfigList } from './Configurations.tsx';
 /**
  * @file the session list.
  *
@@ -14,7 +16,7 @@
  * classes rather than two renderings of the list, because a second copy is a
  * second place for the rows to drift apart.
  */
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import type { SessionDescription } from '../../../shared/protocol.ts';
 import { usePanel, useView } from '../state/usePanel.ts';
 import { statsOf } from '../state/view.ts';
@@ -129,6 +131,22 @@ export function SessionList({ open, onClose }: {
     const selected = usePanel((state) => state.selected);
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState('');
+    const [configuring, setConfiguring] = useState(false);
+    const [configs, setConfigs] = useState<ConfigList>({ launch: [], worker: [] });
+    const [launch, setLaunch] = useState('local');
+    const [worker, setWorker] = useState('default');
+    const [loadingConfigs, setLoadingConfigs] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    useEffect(() => {
+        if (!creating) return;
+        let disposed = false;
+        setLoadingConfigs(true);
+        client.rest.request<ConfigList>('GET', '/api/configurations').then(list => {
+            if (!disposed) setConfigs(list);
+        }).catch(cause => { if (!disposed) setError(String(cause)); })
+            .finally(() => { if (!disposed) setLoadingConfigs(false); });
+        return () => { disposed = true; };
+    }, [creating, client]);
 
     const ordered = [...sessions.values()].sort((a, b) => (
         (b.created_at ?? '').localeCompare(a.created_at ?? '')
@@ -142,7 +160,10 @@ export function SessionList({ open, onClose }: {
         const id = field.value.trim();
         if (!id) return;
         setError('');
-        const ok = await client.createSession(id);
+        if (submitting || loadingConfigs || !configs.launch.includes(launch) || !configs.worker.includes(worker)) return;
+        setSubmitting(true);
+        const ok = await client.createSession(id, { launchConfig: launch, workerConfig: worker });
+        setSubmitting(false);
         if (!ok) {
             setError(`could not create "${id}"`);
             return;
@@ -235,10 +256,12 @@ export function SessionList({ open, onClose }: {
                     </ul>
                 )}
 
+                <Button className="mx-3 my-2 justify-center" onClick={() => setConfiguring(true)}>Configurations</Button>
                 <p className="border-t border-line px-3 py-2 text-xs text-ink-faint">
                     The hub has no delivery acknowledgement: <em>sent</em> is not <em>executed</em>.
                 </p>
             </aside>
+            <Configurations open={configuring} onClose={() => setConfiguring(false)} />
             <Dialog open={creating} onOpenChange={(value) => {
                 setCreating(value);
                 if (!value) setError('');
@@ -270,10 +293,12 @@ export function SessionList({ open, onClose }: {
                                 Use letters, numbers, hyphens, or underscores.
                             </p>
                         </div>
+                        <ConfigurationChoices list={configs} launch={launch} worker={worker} onLaunch={setLaunch} onWorker={setWorker} disabled={loadingConfigs || submitting} />
+                        <Button onClick={() => { setCreating(false); setConfiguring(true); }}>Edit configurations</Button>
                         {error && <p role="alert" className="text-sm text-danger">{error}</p>}
                         <div className="flex justify-end gap-2 border-t border-line pt-4">
                             <Button onClick={() => setCreating(false)} size="md">Cancel</Button>
-                            <Button type="submit" variant="primary" size="md">Create session</Button>
+                            <Button type="submit" variant="primary" size="md" disabled={loadingConfigs || submitting || !configs.launch.includes(launch) || !configs.worker.includes(worker)}>Create session</Button>
                         </div>
                     </form>
                 </DialogContent>

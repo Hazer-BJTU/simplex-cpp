@@ -96,9 +96,10 @@ export const DialogClose = DialogPrimitive.Close;
  * on a freshly opened approval dismissed it silently.
  */
 export function DialogContent({
-    title, description, children, footer, focus = 'first',
+    title, description, children, footer, focus = 'first', wide = false,
 }: {
     title: string;
+    wide?: boolean;
     description?: string | undefined;
     children?: ReactNode;
     footer?: ReactNode;
@@ -136,7 +137,8 @@ export function DialogContent({
                     }
                 }}
                 className={'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] '
-                    + 'w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 '
+                    + (wide ? 'w-[min(72rem,calc(100vw-2rem))] ' : 'w-[min(32rem,calc(100vw-2rem))] ')
+                    + '-translate-x-1/2 -translate-y-1/2 '
                     + 'flex-col animate-pop rounded-lg border border-line bg-raised p-4 '
                     + 'shadow-xl focus:outline-none'}
             >
