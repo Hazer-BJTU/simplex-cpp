@@ -237,10 +237,6 @@ export class ConfigurationStore {
         }
         doc.setIn(['client', 'endpoint'], '{{hub.events_endpoint}}');
         doc.setIn(['security', 'confirmation', 'endpoint'], '{{hub.confirm_endpoint}}');
-        if (source === 'default') {
-            doc.set('hub_remote_call', { endpoint: '{{hub.tools_endpoint}}', timeout_ms: 120000 });
-            doc.set('modality_assist_model', 'deepseek');
-        }
         doc.setIn(['persistence', 'directory'], '{{session.directory}}');
         return doc.toString();
     }

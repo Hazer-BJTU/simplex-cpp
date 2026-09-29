@@ -41,12 +41,12 @@ Configuration files and session data default to `~/.simplex/hub`; use
 `--data-dir` to choose another root. See [Configuration UI and lifecycle](docs/configurations.md)
 for editing, endpoint discovery, Docker launch profiles and snapshot reuse.
 
-For a real model, export the key the generated configuration refers to — the
-hub writes `${DEEPSEEK_API_KEY}` verbatim and the worker expands it, so the
-secret never passes through the hub:
+The default worker template uses `YOUR_*` placeholders for the provider, plugin,
+model and API endpoint. Fill them before starting a worker. Export the key the
+template refers to; the worker expands `${MODEL_API_KEY}` at startup:
 
 ```sh
-export DEEPSEEK_API_KEY=sk-...
+export MODEL_API_KEY=your-key
 ```
 
 ### In a disposable container

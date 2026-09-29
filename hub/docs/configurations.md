@@ -10,10 +10,12 @@ its own copies. Saving a reusable file does not change an existing session.
 1. Install the worker and make `simplex` available on the Hub host's `PATH`.
    Alternatively, edit the first entry of the launch template's `command` to
    the absolute path of the installed `simplex` executable.
-2. Export `DEEPSEEK_API_KEY` in the environment used to start the Hub, then run
+2. Export `MODEL_API_KEY` in the environment used to start the Hub, then run
    `npm start` from the `hub` package. Open the panel URL printed by the Hub.
 3. Open **Configurations**. Select **Worker configs**, then the saved `default`
-   file. Edit providers, model roles and worker settings in the source editor.
+   file. Replace `YOUR_PROVIDER`, `YOUR_PROVIDER_PLUGIN`, `YOUR_MODEL`,
+   `YOUR_PROVIDER_BASE_URL` and `YOUR_REQUEST_PATH` with your provider details.
+   Edit model roles and worker settings in the source editor.
    Save when ready. API keys may use `${ENV_VAR}`; the worker expands them.
 4. Inspect **Launch configs → local**. It runs `simplex run` on the Hub host.
    **Preview Hub endpoints** shows the addresses the worker will use, with
@@ -34,7 +36,8 @@ custom-command and mock-provider deployments: create and save both a launch
 file and a worker file from that source, then select them when creating a
 session. With `--mock`, the deployment worker template selects the mock provider;
 its live model endpoint is refreshed at worker launch. Default templates remain
-local-launch and DeepSeek examples regardless of mock mode.
+local-launch and provider-neutral examples regardless of mock mode. Auxiliary
+model and remote-call settings remain commented out until explicitly enabled.
 
 Validation checks syntax, selected model references, managed endpoint fields
 and persistence child paths. Unknown worker fields and provider options remain
@@ -150,7 +153,7 @@ on the host after the container exits. `/root/workspace` is created inside the
 container and is disposable; set the worker YAML's `worker.environment.workspace`
 to that path if you want the model to see the corresponding workspace hint.
 
-The template forwards `DEEPSEEK_API_KEY` from the Hub process environment. Add
+The template forwards `MODEL_API_KEY` from the Hub process environment. Add
 other `-e NAME` entries for other provider credentials. It runs as container root
 with the Hub's primary GID and umask `0002`, allowing the Hub to clean up ordinary
 worker-created directories. `{gid}` requires a POSIX Hub host, including WSL.
@@ -173,8 +176,8 @@ client:
 security:
   confirmation:
     endpoint: '{{hub.confirm_endpoint}}'
-hub_remote_call:
-  endpoint: '{{hub.tools_endpoint}}'
+# hub_remote_call:
+#   endpoint: '{{hub.tools_endpoint}}'
 persistence:
   directory: '{{session.directory}}'
 ```

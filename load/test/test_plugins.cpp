@@ -270,15 +270,21 @@ BOOST_AUTO_TEST_CASE(shipped_template_loads_plugins_without_credentials_or_netwo
     BOOST_TEST(loaded.extensions.tools.empty());
     BOOST_TEST(loaded.extensions.loop_hooks.empty());
 
-    // The installed YAML is also a valid worker configuration. Substitute a
-    // fixture credential locally; plugin discovery itself never needs one.
+    // Fill the provider-neutral template with local fixture values. Plugin
+    // discovery above does not require credentials or resolved endpoints.
     auto document = yamlconfig::load_file(LOAD_TEMPLATE);
-    document["providers"]["deepseek"]["endpoint"]["auth"]["api_key"] = "fixture";
+    auto& provider = document["providers"]["YOUR_PROVIDER"];
+    provider["plugin"] = "deepseek";
+    provider["model"] = "fixture-model";
+    provider["endpoint"]["base_url"] = "https://example.invalid";
+    provider["endpoint"]["request_path"] = "/chat/completions";
+    provider["endpoint"]["auth"]["api_key"] = "fixture";
+    document["client"]["endpoint"] = "ws://127.0.0.1:8765/events";
+    document["security"]["confirmation"]["endpoint"] = "ws://127.0.0.1:8765/confirm";
     const auto directory = fs::absolute(LOAD_TEMPLATE).parent_path();
     const auto config = load::parse_configuration(document, directory);
     BOOST_TEST(config.provider == "deepseek");
-    BOOST_TEST(config.model.at("model") == "deepseek-flash");
-    BOOST_TEST(config.model.at("reasoning").at("effort") == "high");
+    BOOST_TEST(config.model.at("model") == "fixture-model");
     BOOST_TEST(config.queues.payload_capacity == 256u);
     BOOST_TEST(config.queues.signal_capacity == 256u);
     BOOST_TEST(config.transport.write_capacity == 256u);

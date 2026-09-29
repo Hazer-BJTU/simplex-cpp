@@ -1,7 +1,9 @@
 # Startup configuration for simplex_worker.
 # load::read_configuration validates host settings; load_plugins handles discovery.
 # See load/README.md in the source tree for defaults and lifecycle semantics.
-# Copy this example to config.yaml before editing it for a deployment.
+# Copy this example to config.yaml and replace YOUR_* values before use.
+# Hub-managed sessions resolve {{hub.*}} endpoints automatically; for standalone
+# workers, replace those markers with complete WebSocket URLs.
 # Explicit relative paths are relative to that configuration file's directory.
 # No version field is required. Unknown host fields are ignored.
 
@@ -43,21 +45,21 @@ plugins:
 # extra-header values.
 # Multiple entries may use the same plugin with different endpoints or models.
 providers:
-  deepseek:
+  YOUR_PROVIDER:
     # Defaults to this entry's key. This selects a factory, not plugin admission.
-    plugin: deepseek
+    plugin: YOUR_PROVIDER_PLUGIN
 
     # Omitted endpoint fields inherit the provider plugin's defaults.
     endpoint:
-      base_url: https://api.deepseek.com
+      base_url: YOUR_PROVIDER_BASE_URL
       # Appended to any path prefix in base_url.
-      request_path: /chat/completions
+      request_path: YOUR_REQUEST_PATH
       auth:
         # Supported schemes: none, bearer, custom_header.
         scheme: bearer
         # ${NAME} is expanded only when this provider is instantiated.
         # A referenced environment variable must be set and nonempty.
-        api_key: ${DEEPSEEK_API_KEY}
+        api_key: ${MODEL_API_KEY}
         # Used only with custom_header; omitted default: x-api-key.
         header_name: x-api-key
       user_agent: simplex-cpp
@@ -67,12 +69,10 @@ providers:
       extras: {}
 
     # Required nonempty provider model name for an instantiated configuration.
-    model: deepseek-flash
+    model: YOUR_MODEL
     # Provider-specific generation options, passed through to the model plugin.
     # Do not repeat endpoint, provider, model, or retry inside this mapping.
-    config:
-      reasoning:
-        effort: high
+    config: {}
 
     retry:
       # Maximum retries AFTER the first attempt; zero means no retries.
@@ -82,19 +82,17 @@ providers:
 
   # Optional auxiliary model example. Uncomment this mapping and the
   # modality_assist_model selector below to enable image interpretation.
-  # Uses DeepSeek through its Chat Completions endpoint, like the driver.
-  # vision:
-  #   plugin: deepseek
+  # Choose an installed provider plugin and a model that supports images.
+  # YOUR_ASSIST_PROVIDER:
+  #   plugin: YOUR_PROVIDER_PLUGIN
   #   endpoint:
-  #     base_url: https://api.deepseek.com
-  #     request_path: /chat/completions
+  #     base_url: YOUR_PROVIDER_BASE_URL
+  #     request_path: YOUR_REQUEST_PATH
   #     auth:
   #       scheme: bearer
-  #       api_key: ${DEEPSEEK_API_KEY}
-  #   model: deepseek-flash
-  #   config:
-  #     reasoning:
-  #       effort: high
+  #       api_key: ${MODEL_API_KEY}
+  #   model: YOUR_MODEL
+  #   config: {}
   #   retry:
   #     max_attempts: 3
   #     initial_backoff_ms: 500
@@ -102,7 +100,7 @@ providers:
 
 # Required reference to a providers entry.
 # No implicit first-provider fallback.
-driver_model: deepseek
+driver_model: YOUR_PROVIDER
 
 # Optional reference to a providers entry for decoupled multimodal interpretation.
 # Omit to leave this model unloaded. Explicit null or an empty name is invalid.
@@ -110,14 +108,15 @@ driver_model: deepseek
 # its own model instance, even when both reference the same entry.
 # Enables the intrinsic modality_assist tool, which describes local images using
 # isolated one-exchange requests. No automatic input conversion is performed.
-# modality_assist_model: vision
-# Uncomment and customize providers.vision above together with this selector.
+# modality_assist_model: YOUR_ASSIST_PROVIDER
+# Uncomment and fill the auxiliary providers entry above, or reference another
+# configured provider that supports the required modalities.
 
 # Persistent event connection; independent of the confirmation endpoint.
 client:
   # Required complete ws:// or wss:// URL, including the upgrade target.
   # Replace this placeholder with the actual server endpoint.
-  endpoint: ws://127.0.0.1:8765/agent/events
+  endpoint: "{{hub.events_endpoint}}"
   # Positive incoming queue capacities, measured in complete JSON messages.
   payload_capacity: 256
   signal_capacity: 256
@@ -136,13 +135,13 @@ client:
 # Registers the plan tool and skill; construction opens no connection.
 # The hub supports plan/read and plan/replace; other routes are not implemented.
 # hub_remote_call:
-#   endpoint: ws://127.0.0.1:8801/agent/session-1/tools?token=SESSION_TOKEN
+#   endpoint: "{{hub.tools_endpoint}}"
 #   timeout_ms: 120000
 
 # Optional independent approval service. Omit this mapping to deny confirmations.
 security:
   confirmation:
-    endpoint: ws://127.0.0.1:8765/agent/confirm
+    endpoint: "{{hub.confirm_endpoint}}"
     # Positive approval deadline through connection, reply and close; no retry.
     # Expiry denies approval; an active system DNS lookup can delay cleanup.
     timeout_ms: 120000

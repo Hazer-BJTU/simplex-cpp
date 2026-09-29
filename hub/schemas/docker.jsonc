@@ -13,7 +13,7 @@
             // Root with the Hub's primary group; the umask below permits the
             // Hub to remove worker-created directories when deleting a session.
             "--user", "0:{gid}",
-            "-e", "DEEPSEEK_API_KEY",
+            "-e", "MODEL_API_KEY",
             // Bind the current session only, at the same absolute path.
             // State and memory survive container removal; config stays read-only.
             "-v", "{session_dir}:{session_dir}",

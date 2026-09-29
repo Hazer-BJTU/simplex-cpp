@@ -219,3 +219,23 @@ test('Docker template binds only session data and invokes an installed worker', 
         assert.throws(() => store.template('worker', 'docker'), /launch template/);
     } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
+
+test('default worker template is provider-neutral with optional settings commented in place', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
+    try {
+        const store = new ConfigurationStore({ ...defaultConfig(), dataDir });
+        for (const text of [store.template('worker'), store.read('worker', 'default').text]) {
+            const doc = parseDocument(text).toJS();
+            assert.equal(doc.driver_model, 'YOUR_PROVIDER');
+            assert.equal(doc.providers.YOUR_PROVIDER.plugin, 'YOUR_PROVIDER_PLUGIN');
+            assert.equal(doc.providers.YOUR_PROVIDER.model, 'YOUR_MODEL');
+            assert.equal(doc.modality_assist_model, undefined);
+            assert.equal(doc.hub_remote_call, undefined);
+            assert.doesNotMatch(text, /deepseek|127\.0\.0\.1|\/chat\/completions|\/agent\//i);
+            assert.match(text, /# modality_assist_model: YOUR_ASSIST_PROVIDER/);
+            assert.match(text, /#   endpoint: "\{\{hub.tools_endpoint\}\}"/);
+            assert.ok(text.indexOf('# modality_assist_model:') < text.indexOf('\nclient:'));
+            assert.ok(text.indexOf('# hub_remote_call:') < text.indexOf('\nsecurity:'));
+        }
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
