@@ -29,7 +29,7 @@ describe('normalizeSpec', () => {
     it('applies hub defaults', () => {
         const config = testConfig();
         const spec = normalizeSpec(config, {});
-        assert.equal(config.worker.hubRemoteCall, false);
+        assert.equal(config.worker.hubRemoteCall, true);
         assert.equal(spec.provider, 'deepseek');
         assert.equal(spec.modalityAssistProvider, 'deepseek');
         assert.equal(normalizeSpec(config, { provider: 'mock' }).modalityAssistProvider, null);
@@ -94,7 +94,7 @@ describe('normalizeSpec', () => {
 
 describe('renderSessionConfig', () => {
     it('renders a worker configuration with endpoints and persistence', () => {
-        const config = testConfig({ worker: { hubRemoteCall: true } });
+        const config = testConfig();
         const { spec, document } = renderSessionConfig({
             config,
             sessionId: 'demo',

@@ -11,7 +11,7 @@ hub_remote_call:
 ```
 
 Omission leaves the set unloaded. Hub-generated new sessions require
-`worker.hubRemoteCall: true` (default false). Existing session configurations keep
+`worker.hubRemoteCall: true` (the default). Existing session configurations keep
 their enabled/disabled choice. Timeout is an integer in `1..2147483647`.
 
 ## Plan tool

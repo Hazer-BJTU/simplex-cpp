@@ -146,7 +146,7 @@ export function defaultConfig(): HubConfig {
             maxExchanges: 512,
             eventCapacity: 1024,
             confirmationTimeoutMs: 120000,
-            hubRemoteCall: false,
+            hubRemoteCall: true,
             // Transport settings copied into every generated worker config;
             // the defaults are the worker's own (core/docs/worker-protocol.md).
             payloadCapacity: 256,

@@ -231,7 +231,7 @@ directory; command-line paths resolve against the working directory.
 | `worker.bin` | `../build/bin/simplex_worker` | worker executable |
 | `worker.systemPromptFile` | `prompts/coding_agent.yaml` | default prompt for new sessions, relative to the worker's installation directory |
 | `worker.threads`, `worker.maxExchanges`, `worker.eventCapacity` | `1`, `512`, `1024` | defaults copied into generated worker configurations |
-| `worker.hubRemoteCall` | `false` | include the optional remote-call toolset config for new sessions |
+| `worker.hubRemoteCall` | `true` | include the optional remote-call toolset config for new sessions |
 | `worker.confirmationTimeoutMs` | `120000` | confirmation deadline written into the worker configuration |
 | `worker.stopTimeoutMs`, `worker.sigtermGraceMs`, `worker.sigkillGraceMs` | `15000`, `5000`, `2000` | the stop escalation ladder |
 | `worker.persistence` | `{enabled: true, readable: false}` | worker snapshot policy |
@@ -632,8 +632,8 @@ differ from the main port. This listener serves no panel, REST API, event stream
 or confirmation route. Deployments must make it reachable from workers; the
 Docker worker example uses the same `worker.connectHost` for both ports.
 
-Set `worker.hubRemoteCall: true` to include the optional `hub_remote_call` mapping
-in new worker configurations (default `false`). It contains the actual tool port,
+New worker configurations include the optional `hub_remote_call` mapping by
+default. Set `worker.hubRemoteCall: false` to disable it for new sessions. It contains the actual tool port,
 `/agent/<session>/tools`, the session token, and `timeout_ms`. An enabled worker
 constructs the intrinsic set and exposes the plan tool.
 On restart only an existing mapping's URL/token is refreshed. Its timeout and
