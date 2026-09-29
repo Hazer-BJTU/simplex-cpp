@@ -226,7 +226,6 @@ and the shared async runtime.
 
 ## Optional hub remote calls
 
-[`hub_remote_call`](toolsets/hub_remote_call/README.md) is a host-injected empty
-set plus an abstract request-tool base. Core loads it only when the optional
+[`hub_remote_call`](toolsets/hub_remote_call/README.md) is a host-injected set with a plan tool and an abstract request-tool base. Core loads it only when the optional
 `hub_remote_call` configuration is present. It owns endpoint/deadline settings,
-registers no concrete tools or skill, and opens no connection during construction.
+registers the plan tool and skill, and opens no connection during construction.

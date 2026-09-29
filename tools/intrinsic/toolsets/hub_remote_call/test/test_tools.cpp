@@ -106,17 +106,17 @@ void exchange(Reply mode)
 }
 } // namespace
 
-BOOST_AUTO_TEST_CASE(empty_toolset_owns_settings_without_advertising_tools)
+BOOST_AUTO_TEST_CASE(toolset_registers_plan_and_owns_settings)
 {
     auto endpoint = endpoint_for();
-    auto set = std::make_shared<HubRemoteCallToolSet>(endpoint, std::chrono::milliseconds(500));
+    auto set = std::make_shared<HubRemoteCallToolSet>(endpoint, std::chrono::milliseconds(500), [] { return tools::intrinsic::HubRemoteCallIdentity{"worker", "session", "run"}; });
     endpoint.target = "/changed";
     BOOST_TEST(set->name() == "hub_remote_call");
     BOOST_TEST(set->endpoint().target == "/agent/session/tools/?token=secret");
     BOOST_TEST(set->timeout().count() == 500);
-    BOOST_TEST(set->tool_count() == 0u);
-    BOOST_TEST(set->get_tools().empty());
-    BOOST_CHECK(!set->skill());
+    BOOST_TEST(set->tool_count() == 1u);
+    BOOST_TEST(set->get_tools().at(0).name == "plan");
+    BOOST_REQUIRE(set->skill());
     tools::ToolRegistry registry;
     registry.add(set);
     BOOST_TEST(registry.size() == 1u);
@@ -125,11 +125,11 @@ BOOST_AUTO_TEST_CASE(empty_toolset_owns_settings_without_advertising_tools)
 
 BOOST_AUTO_TEST_CASE(configuration_and_routes_are_validated_before_io)
 {
-    BOOST_CHECK_THROW(HubRemoteCallToolSet(endpoint_for(), std::chrono::milliseconds(0)),
+    BOOST_CHECK_THROW(HubRemoteCallToolSet(endpoint_for(), std::chrono::milliseconds(0), {}),
         std::invalid_argument);
     auto invalid = endpoint_for();
     invalid.host.clear();
-    BOOST_CHECK_THROW(HubRemoteCallToolSet(invalid, std::chrono::milliseconds(1)),
+    BOOST_CHECK_THROW(HubRemoteCallToolSet(invalid, std::chrono::milliseconds(1), {}),
         std::invalid_argument);
     asio::io_context io;
     Probe tool(endpoint_for(), std::chrono::milliseconds(500));
@@ -150,5 +150,84 @@ BOOST_AUTO_TEST_CASE(one_shot_protocol_and_failure_cases)
         Reply::WorkerMismatch, Reply::SessionMismatch, Reply::RunMismatch, Reply::InvalidJson,
         Reply::InvalidStatus, Reply::Binary, Reply::Timeout}) {
         exchange(mode);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(plan_arguments_and_scheduling) {
+    tools::intrinsic::PlanTool tool(endpoint_for(), std::chrono::milliseconds(500),
+        [] { return tools::intrinsic::HubRemoteCallIdentity{"worker", "session", "run"}; });
+    for (const auto& arguments : {Json{{"operation", "read"}},
+        Json{{"operation", "replace"}, {"markdown", ""}},
+        Json{{"operation", "replace"}, {"markdown", "- [ ] Work"}}}) {
+        model_io::InvokeQuery query;
+        query.arguments = arguments;
+        tool.ensure_arguments(query);
+        tool.write_attributes(query);
+        BOOST_CHECK(query.type == (arguments.at("operation") == "read"
+            ? model_io::InvokeType::ReadOnly : model_io::InvokeType::SerialWrite));
+        BOOST_CHECK(query.security == model_io::InvokeSecurity::Trusted);
+    }
+    for (const auto& arguments : {Json::object(), Json{{"operation", "unknown"}},
+        Json{{"operation", "replace"}}, Json{{"operation", "read"}, {"markdown", ""}},
+        Json{{"operation", "replace"}, {"markdown", 1}},
+        Json{{"operation", "replace"}, {"markdown", std::string(65537, 'a')}},
+        Json{{"operation", "read"}, {"session_id", "other"}}}) {
+        model_io::InvokeQuery query;
+        query.arguments = arguments;
+        BOOST_CHECK_THROW(tool.ensure_arguments(query), tools::InvokeException);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(plan_invocation_formats_reads_and_replacements_and_reports_rejection)
+{
+    for (const std::string operation : {"read", "replace", "reject"}) {
+        asio::io_context io;
+        asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
+        tools::intrinsic::PlanTool tool(endpoint_for(acceptor.local_endpoint().port()),
+            std::chrono::milliseconds(2000), [] {
+                return tools::intrinsic::HubRemoteCallIdentity{"worker", "session", "run"};
+            });
+        const bool reading = operation != "replace";
+        auto peer = [&]() -> asio::awaitable<void> {
+            ws::stream<asio::ip::tcp::socket> socket(co_await acceptor.async_accept(asio::use_awaitable));
+            co_await socket.async_accept(asio::use_awaitable);
+            beast::flat_buffer buffer;
+            co_await socket.async_read(buffer, asio::use_awaitable);
+            auto data = Json::parse(beast::buffers_to_string(buffer.data())).at("data");
+            BOOST_TEST(data.at("arguments").at("operation") == (reading ? "read" : "replace"));
+            data.erase("arguments");
+            data["route"] = reading ? "plan/read" : "plan/replace";
+            if (operation == "reject") {
+                data["status"] = "rejected";
+                data["error"] = {{"code", "unauthorized"}, {"message", "active run not verified"}};
+            } else {
+                data["status"] = "succeeded";
+                data["result"] = {{"revision", 1}, {"updated_at", "2026-09-29T00:00:00Z"}};
+                if (reading) data["result"]["markdown"] = "- [ ] Work";
+                else data["result"]["changed"] = true;
+            }
+            const auto wire = Json{{"type", "tool_response"}, {"data", data}}.dump();
+            socket.text(true);
+            co_await socket.async_write(asio::buffer(wire), asio::use_awaitable);
+            boost::system::error_code error;
+            co_await socket.async_read(buffer, asio::redirect_error(asio::use_awaitable, error));
+        };
+        auto server = asio::co_spawn(io, peer, asio::use_future);
+        model_io::InvokeQuery query;
+        query.name = "plan";
+        query.id = "plan-call";
+        query.arguments = {{"operation", reading ? "read" : "replace"}};
+        if (!reading) query.arguments["markdown"] = "- [ ] Work";
+        tool.ensure_arguments(query);
+        auto result = asio::co_spawn(io, tool.invoke(query), asio::use_future);
+        io.run();
+        server.get();
+        if (operation == "reject") {
+            BOOST_CHECK_THROW(result.get(), tools::InvokeException);
+        } else {
+            const auto content = result.get();
+            BOOST_TEST((content.raw.find("- [ ] Work") != std::string::npos) == reading);
+            BOOST_TEST(content.raw.find("[[revision]]: 1") != std::string::npos);
+        }
     }
 }

@@ -79,7 +79,7 @@ export interface HubConfig {
         maxExchanges: number;
         eventCapacity: number;
         confirmationTimeoutMs: number;
-        /** Include the optional empty hub remote-call toolset in new worker configs. */
+        /** Include the optional hub remote-call toolset in new worker configs. */
         hubRemoteCall: boolean;
         payloadCapacity: number;
         signalCapacity: number;

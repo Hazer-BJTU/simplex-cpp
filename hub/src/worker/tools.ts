@@ -3,6 +3,8 @@
  * It shares session credentials with confirmation but owns no confirmation UI,
  * event subscription, persistent queue, replay, or automatic retry mechanism.
  */
+import { dispatchPlan } from './plan.ts';
+import type { PlanStore } from '../state/plan.ts';
 import { WebSocketServer } from 'ws';
 import type { RawData, WebSocket } from 'ws';
 import type { HubConfig } from '../config.ts';
@@ -20,10 +22,12 @@ export interface ToolRouteOptions {
     registry: SessionRegistry;
     config: HubConfig;
     log: Logger;
+    plans: PlanStore;
+    onPlanChanged: (session: string) => void;
 }
 
 /** Bind this adapter only to the dedicated tool listener. */
-export function createWorkerToolRoute({ registry, config, log }: ToolRouteOptions): UpgradeHandler & {
+export function createWorkerToolRoute({ registry, config, log, plans, onPlanChanged }: ToolRouteOptions): UpgradeHandler & {
     close(): void;
 } {
     const wss = new WebSocketServer({
@@ -33,14 +37,17 @@ export function createWorkerToolRoute({ registry, config, log }: ToolRouteOption
     });
     const open = new Set<WebSocket>();
     let closing = false;
+    const queues = new Map<string, Promise<unknown>>();
 
     /** Every accepted socket has a hard deadline, including its closing handshake. */
-    function accept(ws: WebSocket, sessionId: string, route: string): void {
+    function accept(ws: WebSocket, sessionId: string, route: string, token: string): void {
         open.add(ws);
         let received = false;
-        const timer = setTimeout(() => ws.terminate(), config.toolRequests.timeoutMs);
+        const abort = new AbortController();
+        const timer = setTimeout(() => { abort.abort(); ws.terminate(); }, config.toolRequests.timeoutMs);
         timer.unref();
         ws.once('close', () => {
+            abort.abort();
             clearTimeout(timer);
             open.delete(ws);
         });
@@ -51,6 +58,7 @@ export function createWorkerToolRoute({ registry, config, log }: ToolRouteOption
         });
         ws.on('message', (data: RawData, binary: boolean) => {
             if (received) {
+                abort.abort();
                 ws.close(1008, 'only one tool request is allowed');
                 return;
             }
@@ -71,11 +79,30 @@ export function createWorkerToolRoute({ registry, config, log }: ToolRouteOption
                 ws.close(1008, 'invalid tool request envelope');
                 return;
             }
-            const response = dispatchToolRequest(route, request);
-            ws.send(JSON.stringify(response), (error) => {
-                if (error) ws.terminate();
-                else ws.close(1000, 'tool request completed');
-            });
+            const dispatch = async (): Promise<void> => {
+                let response;
+                if (route === 'plan/read' || route === 'plan/replace') {
+                    const previous = queues.get(sessionId) ?? Promise.resolve();
+                    const pending = previous.catch(() => {}).then(() => dispatchPlan(
+                        route, request, registry, plans, token,
+                        Math.min(config.limits.confirmIdentityHoldMs, config.toolRequests.timeoutMs),
+                        abort.signal, onPlanChanged));
+                    queues.set(sessionId, pending);
+                    const cleanup = (): void => {
+                        if (queues.get(sessionId) === pending) queues.delete(sessionId);
+                    };
+                    void pending.then(cleanup, cleanup);
+                    response = await pending;
+                } else {
+                    response = dispatchToolRequest(route, request);
+                }
+                if (abort.signal.aborted || ws.readyState !== ws.OPEN) return;
+                ws.send(JSON.stringify(response), (error) => {
+                    if (error) ws.terminate();
+                    else ws.close(1000, 'tool request completed');
+                });
+            };
+            void dispatch().catch(() => ws.terminate());
         });
     }
 
@@ -100,7 +127,7 @@ export function createWorkerToolRoute({ registry, config, log }: ToolRouteOption
                 return;
             }
             wss.handleUpgrade(req, socket, head, (ws) => {
-                accept(ws, sessionId as string, params.route as string);
+                accept(ws, sessionId as string, params.route as string, presentedToken(url));
             });
         },
         close() {

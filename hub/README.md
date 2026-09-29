@@ -635,17 +635,17 @@ Docker worker example uses the same `worker.connectHost` for both ports.
 Set `worker.hubRemoteCall: true` to include the optional `hub_remote_call` mapping
 in new worker configurations (default `false`). It contains the actual tool port,
 `/agent/<session>/tools`, the session token, and `timeout_ms`. An enabled worker
-constructs the empty intrinsic set; it exposes no callable tool yet.
+constructs the intrinsic set and exposes the plan tool.
 On restart only an existing mapping's URL/token is refreshed. Its timeout and
 unknown fields are preserved; an absent mapping remains disabled even if hub
 defaults change. A missing timeout in an enabled mapping is filled from hub
 settings. A template launcher may also use `{tools_endpoint}`.
 
 A worker appends a route such as `files/read` to the URL pathname, opens one
-connection, sends one `tool_request`, and receives one `tool_response`. Every
-valid request currently receives `status: rejected`, error code
-`not_implemented`, and reason `remote tool route is not implemented`. There is no
-remote operation registration or execution yet. See the complete
+connection, sends one `tool_request`, and receives one `tool_response`. The `plan/read` and `plan/replace` routes operate on the current session plan
+after verifying the live worker and active run. Unknown routes receive
+`not_implemented`. Plans are saved atomically in the session root and pushed to
+the panel, which shows a collapsible card only when the plan is nonempty. See the complete
 [worker protocol](../core/docs/worker-protocol.md#remote-tool-requests).
 
 `src/worker/tools.ts` owns authentication, framing, resource bounds, and shutdown.
@@ -653,6 +653,6 @@ remote operation registration or execution yet. See the complete
 Future operations must add explicit route registration, live-worker/operation
 authorization, argument validation, response types, and tests at that boundary;
 they must not derive executable commands or filesystem paths from route strings.
-A session token presently grants only access to a rejection response. It is not
-a grant to execute future operations. There is no implicit retry, replay cache,
+The session token alone is insufficient for plan operations: worker/run identity
+is verified using the event connection. There is no implicit retry, replay cache,
 confirmation bypass, or durable remote-call queue.

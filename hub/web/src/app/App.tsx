@@ -19,6 +19,7 @@
  * read squeezed between them.
  */
 import { useEffect, useState } from 'react';
+import { PlanCard } from './PlanCard.tsx';
 import { Approvals } from './Approvals.tsx';
 import { CommandPalette } from './CommandPalette.tsx';
 import { Composer } from './Composer.tsx';
@@ -65,6 +66,7 @@ export function App() {
                     >
                         <SessionHeader />
                         <Approvals />
+                        <PlanCard />
                         <Transcript />
                         <Composer />
                     </main>

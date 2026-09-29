@@ -3,23 +3,23 @@
 #include <chrono>
 
 #include "tools/intrinsic/toolset_base.hpp"
-#include "endpoint/model_request.hpp"
+#include "tools/intrinsic/hub_remote_call/tools.hpp"
 
 namespace tools::intrinsic {
 
 /**
- * Optional, dependency-injected intrinsic set for hub remote calls. Core creates
- * it only when hub_remote_call is configured. Construction saves transport
- * settings but opens no connection. The set currently contains no tools, skill,
- * or capability groups; enabling it does not advertise a callable capability.
- * Future concrete tools will receive these settings during construction.
+ * Optional host-injected toolset for session-scoped hub operations. Core creates
+ * it only when hub_remote_call is configured. It registers PlanTool and its
+ * installed YAML skill without connecting during construction. The identity
+ * provider returns a fresh trusted snapshot for each invocation.
  */
 class HubRemoteCallToolSet final : public IntrinsicToolSet {
 public:
     /// Reject unusable endpoint/deadline settings without attempting a connection.
     HubRemoteCallToolSet(
         endpoint::ResolvedEndpoint endpoint,
-        std::chrono::milliseconds timeout);
+        std::chrono::milliseconds timeout,
+        HubRemoteCallIdentityProvider identity);
 
     std::string_view name() const noexcept override;
 

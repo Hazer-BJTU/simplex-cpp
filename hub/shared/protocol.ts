@@ -514,7 +514,15 @@ export interface ErrorMessage {
 }
 
 /** Everything the hub may send. */
+/** Latest hub-owned Markdown plan; an empty string hides the panel card. */
+export interface SessionPlan {
+    markdown: string;
+    revision: number;
+    updated_at: string | null;
+}
+
 export type HubMessage =
+    | { v?: number; type: 'plan'; session: SessionId; plan: SessionPlan }
     | {
         v?: number;
         type: 'welcome';
@@ -528,6 +536,7 @@ export type HubMessage =
     | {
         v?: number;
         type: 'subscribed';
+        plan?: SessionPlan;
         session: SessionDescription;
         transcript: WorkerEnvelope[];
         logs: string[];
@@ -581,5 +590,5 @@ export const PANEL_MESSAGE_TYPES = [
 export const HUB_MESSAGE_TYPES = [
     'welcome', 'sessions', 'session', 'session_removed', 'subscribed', 'created',
     'event', 'confirmation', 'process', 'connection', 'request', 'logs',
-    'snapshot', 'accepted', 'error', 'pong',
+    'snapshot', 'accepted', 'error', 'pong', 'plan',
 ] as const satisfies readonly HubMessageType[];

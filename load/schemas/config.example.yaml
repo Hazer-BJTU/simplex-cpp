@@ -132,9 +132,9 @@ client:
 
 # Optional one-shot remote tool service. Omission leaves it unconfigured.
 # Append the operation route to the endpoint pathname, preserving its query.
-# When configured, core loads an empty HubRemoteCallToolSet with these settings.
-# No concrete tool or skill is registered and construction opens no connection.
-# The hub currently rejects every valid request with not_implemented.
+# When configured, core loads a HubRemoteCallToolSet with these settings.
+# Registers the plan tool and skill; construction opens no connection.
+# The hub supports plan/read and plan/replace; other routes are not implemented.
 # hub_remote_call:
 #   endpoint: ws://127.0.0.1:8801/agent/session-1/tools?token=SESSION_TOKEN
 #   timeout_ms: 120000

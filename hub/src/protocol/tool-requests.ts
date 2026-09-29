@@ -1,7 +1,7 @@
 /**
  * One-shot worker tool RPC envelopes. Routing belongs to the URL, not arguments.
- * No remote operation is implemented yet; this module defines the validation
- * and dispatch boundary without exposing a handler registration API prematurely.
+ * Fixed operation adapters validate their arguments and authorize execution.
+ * This module owns envelope validation and the unknown-route rejection.
  */
 
 /** Identifiers are opaque, nonempty strings echoed verbatim by the response. */
@@ -22,8 +22,9 @@ export interface ToolResponse {
         run_id: string;
         request_id: string;
         route: string;
-        status: 'rejected';
-        error: { code: 'not_implemented'; message: string };
+        status: 'rejected' | 'succeeded';
+        error?: { code: string; message: string };
+        result?: Record<string, unknown>;
     };
 }
 
@@ -52,7 +53,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Dispatch boundary for future, explicitly registered remote operations.
- * Currently rejects every route, with no filesystem/process/model side effects.
+ * Fallback rejects unregistered routes without side effects.
  * A future implementation must authorize the live worker and operation before
  * invoking a handler; a session token alone is not a grant to execute tools.
  */

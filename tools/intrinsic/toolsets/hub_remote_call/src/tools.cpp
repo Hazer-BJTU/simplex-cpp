@@ -1,6 +1,7 @@
 #include "tools/intrinsic/hub_remote_call/tools.hpp"
 #include "tools/intrinsic/hub_remote_call/toolset.hpp"
 #include "tools/invoke_exception.hpp"
+#include "tools/intrinsic/hub_remote_call/schemas.hpp"
 
 #include <boost/asio/this_coro.hpp>
 #include <boost/uuid/random_generator.hpp>
@@ -60,10 +61,14 @@ bool valid_route(const std::string& route)
 
 HubRemoteCallToolSet::HubRemoteCallToolSet(
     endpoint::ResolvedEndpoint endpoint,
-    std::chrono::milliseconds timeout)
+    std::chrono::milliseconds timeout,
+    HubRemoteCallIdentityProvider identity)
     : endpoint_(std::move(endpoint)), timeout_(timeout)
 {
     validate_connection(endpoint_, timeout_);
+    register_tools({std::make_shared<PlanTool>(endpoint_, timeout_, std::move(identity))});
+    declare_capability_group("plan", {"plan"});
+    load_skill(hub_remote_call::schema_directory() / "skill.yaml");
 }
 
 std::string_view HubRemoteCallToolSet::name() const noexcept
@@ -144,9 +149,11 @@ boost::asio::awaitable<Json> HubRemoteCallToolBase::request(
         if (reply.at("type") != "tool_response" || !data.is_object()
             || data.at("worker_id") != worker_id || data.at("session_id") != session_id
             || data.at("run_id") != run_id || data.at("request_id") != request_id
-            || data.at("route") != route || data.at("status") != "rejected"
-            || data.at("error").at("code") != "not_implemented"
-            || !data.at("error").at("message").is_string()) {
+            || data.at("route") != route
+            || !((data.at("status") == "succeeded" && data.at("result").is_object() && !data.contains("error"))
+                || (data.at("status") == "rejected" && !data.contains("result")
+                    && data.at("error").at("code").is_string()
+                    && data.at("error").at("message").is_string()))) {
             throw std::invalid_argument("invalid response");
         }
         co_return data;

@@ -17,7 +17,7 @@ independently. See [core](../core/README.md) for the runtime contract.
 | `providers`, `driver_model`, `modality_assist_model` | Selected providers validated/expanded by read_configuration; independent instances constructed by core. |
 | `client` | Parsed by read_configuration; started by core. |
 | `persistence` | Parsed by read_configuration; applied by core. |
-| `hub_remote_call` | Optional endpoint and timeout; enables the empty hub remote-call intrinsic set. |
+| `hub_remote_call` | Optional endpoint and timeout; enables the hub remote-call intrinsic set. |
 | `security.confirmation`, `worker` | Approval endpoint/deadline, event capacity, exchange budget and initial prompt. |
 | `save_state()`, `load_state()` | Explicit file operations, independent of startup YAML. |
 
@@ -604,10 +604,9 @@ The parser retains the independent timeout in `hub_remote_call_timeout`.
 
 The endpoint names `/agent/<session>/tools`; a future client appends the operation
 route to the URL pathname while retaining its authentication query. These
-settings cause core to register an empty `HubRemoteCallToolSet`, whose future
+settings cause core to register an `HubRemoteCallToolSet` with the `plan` tool, whose future
 tools can use `HubRemoteCallToolBase`. Omission leaves the set unloaded.
-No concrete tool or skill is currently registered, and construction opens no
-connection. The hub
+The plan tool and skill are registered; construction opens no connection. The hub
 accepts authenticated one-shot requests on its dedicated listener and rejects
-every valid route with `not_implemented`. The envelope and lifecycle contract
+unknown routes with `not_implemented`; plan/read and plan/replace are implemented. The envelope and lifecycle contract
 are specified in [the worker protocol](../core/docs/worker-protocol.md#remote-tool-requests).

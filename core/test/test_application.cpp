@@ -71,7 +71,7 @@ void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote
         };
     }
     if (with_hub_remote_call) {
-        // No listener: registering an empty set must not initiate a request.
+        // No listener: registering the toolset must not initiate a request.
         config.hub_remote_call = load::websocket_endpoint("ws://127.0.0.1:1/agent/test/tools");
     }
     config.client = load::websocket_endpoint("ws://127.0.0.1:"
@@ -230,6 +230,8 @@ sections:
             BOOST_TEST(model->calls.load() == 2);
             const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_TEST(state.turns.size() == 2u);
+            BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
+                [](const auto& tool) { return tool.name == "plan"; }) == with_hub_remote_call);
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "modality_assist"; })
                 == with_modality_assist);
@@ -731,6 +733,6 @@ BOOST_AUTO_TEST_CASE(session_root_lock_is_independent_of_state_path_and_identity
     BOOST_CHECK(!std::filesystem::exists(scratch.root / "different-id"));
 }
 
-BOOST_AUTO_TEST_CASE(optional_hub_remote_call_set_starts_without_network_activity) {
+BOOST_AUTO_TEST_CASE(optional_hub_remote_call_set_advertises_plan_without_startup_network_activity) {
     scenario(Mode::Normal, false, true);
 }

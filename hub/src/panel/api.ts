@@ -30,6 +30,7 @@ import { sessionStateDirectory } from '../launch/config-file.ts';
 import { normalizeSpec } from '../launch/spec.ts';
 import { buildPayload, buildSignal, newRequestId } from '../protocol/messages.ts';
 import type { PayloadEnvelope, SignalEnvelope } from '../protocol/messages.ts';
+import type { PlanStore } from '../state/plan.ts';
 import { isValidSessionId } from '../state/session-id.ts';
 import type { Session, SessionRegistry } from '../state/registry.ts';
 import type { HubState, PersistableSession } from '../state/persist.ts';
@@ -99,6 +100,7 @@ export interface PanelApi {
     routes: Record<string, RouteHandler>;
     broadcast(message: HubMessage): void;
     broadcastSession(session: Session): void;
+    broadcastPlan(session: string): void;
     /** Number of connected panel clients, for diagnostics and tests. */
     clientCount(): number;
     close(): void;
@@ -112,6 +114,7 @@ export interface PanelApiOptions {
     supervisor: WorkerSupervisor;
     transcripts: TranscriptStore;
     state: HubState;
+    plans: PlanStore;
     /** Metadata for `welcome` and `/api/meta`. */
     meta: () => HubMetadata;
     /** Persistence hook, called for a debounced save. */
@@ -123,7 +126,7 @@ export interface PanelApiOptions {
  * the rest of the hub reports through.
  */
 export function createPanelApi({
-    config, log, registry, supervisor, transcripts, state, meta, onSessionsChanged,
+    config, log, registry, supervisor, transcripts, state, plans, meta, onSessionsChanged,
 }: PanelApiOptions): PanelApi {
     const clients = new Set<PanelClient>();
     const wss = new WebSocketServer({
@@ -658,6 +661,7 @@ export function createPanelApi({
                 client.subscriptions.add(target.id);
                 send(client, {
                     type: 'subscribed',
+                    plan: plans.read(target.id),
                     session: target.describe(),
                     // The transcript measures envelopes rather than describing
                     // them, so its element type is the narrower one.
@@ -933,6 +937,7 @@ export function createPanelApi({
         routes,
         broadcast,
         broadcastSession,
+        broadcastPlan: (session) => broadcastToSession(session, { type: 'plan', session, plan: plans.read(session) }),
         clientCount: () => clients.size,
         close() {
             for (const client of clients) {

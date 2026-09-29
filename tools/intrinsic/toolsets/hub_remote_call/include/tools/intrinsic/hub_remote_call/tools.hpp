@@ -1,9 +1,20 @@
 #pragma once
 
+#include <functional>
+
 #include "tools/intrinsic/tool_base.hpp"
 #include "intercom/cancellable_exchange.hpp"
 
 namespace tools::intrinsic {
+
+/** Trusted identity snapshot, copied at invocation time by the application. */
+struct HubRemoteCallIdentity {
+    std::string worker_id;
+    std::string session_id;
+    std::string run_id;
+};
+using HubRemoteCallIdentityProvider = std::function<HubRemoteCallIdentity()>;
+
 
 /**
  * Abstract base for future YAML-declared hub request tools. It owns an immutable
@@ -40,10 +51,9 @@ protected:
      * and return the validated response data. Parameters are copied into the
      * coroutine frame so the caller cannot change an in-flight envelope.
      *
-     * Only the protocol's rejected/not_implemented response exists today. A
-     * returned envelope is NOT a successful tool result: future invoke() methods
-     * must interpret its status and format an appropriate InvokeReturn. No
-     * success/result wire shape is invented by this scaffolding.
+     * Success carries an object result; rejection carries code/message. The
+     * concrete tool interprets the payload and converts rejection into a tool
+     * error. Request IDs and all host identity fields must match the request.
      *
      * Transport, malformed replies and correlation errors raise InvokeException
      * at Stage::Invoke, correlated to query. Diagnostics never include the
@@ -64,4 +74,18 @@ private:
     const std::chrono::milliseconds timeout_;
 };
 
+} // namespace tools::intrinsic
+
+namespace tools::intrinsic {
+/** Read or replace the current session's hub-owned Markdown plan. */
+class PlanTool final : public HubRemoteCallToolBase {
+public:
+    PlanTool(endpoint::ResolvedEndpoint endpoint, std::chrono::milliseconds timeout,
+        HubRemoteCallIdentityProvider identity);
+    void ensure_arguments(model_io::InvokeQuery& query) const override;
+    void write_attributes(model_io::InvokeQuery& query) const override;
+    boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
+private:
+    HubRemoteCallIdentityProvider identity_;
+};
 } // namespace tools::intrinsic

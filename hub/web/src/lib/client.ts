@@ -285,7 +285,12 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 if (selected) subscribe(selected);
                 return;
             }
+            case 'plan':
+                if (subscribedSessions.has(message.session)) store.getState().setPlan(message.session, message.plan);
+                return;
             case 'subscribed': {
+                store.getState().setPlan(message.session.session_id,
+                    message.plan ?? { markdown: '', revision: 0, updated_at: null }, true);
                 const effects = store.getState().applySubscribed(message);
                 if (effects.resubscribe) {
                     subscribe(effects.resubscribe.session, effects.resubscribe.since);

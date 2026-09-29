@@ -17,6 +17,7 @@ import type { ProcessRecord } from './launch/supervisor.ts';
 import { createPanelApi } from './panel/api.ts';
 import type { PanelApi } from './panel/api.ts';
 import { HubState } from './state/persist.ts';
+import { PlanStore } from './state/plan.ts';
 import { SessionRegistry } from './state/registry.ts';
 import type { Session } from './state/registry.ts';
 import { isValidSessionId } from './state/session-id.ts';
@@ -106,6 +107,7 @@ export function createHub({
             port: config.toolRequests.port,
         },
     });
+    const plans = new PlanStore(config.dataDir);
     const registry = new SessionRegistry({ config, log });
     const transcripts = new TranscriptStore({ config, log });
     const state = new HubState({ config, log });
@@ -232,7 +234,9 @@ export function createHub({
     });
     http.useUpgrade(confirmations);
 
-    const toolRequests = createWorkerToolRoute({ registry, config, log });
+    const toolRequests = createWorkerToolRoute({ registry, config, log, plans,
+        onPlanChanged: (session) => safely('plan update', () => panel?.broadcastPlan(session)),
+    });
     toolHttp.useUpgrade(toolRequests);
 
     /** Started by `start()` when configured; read lazily by the supervisor. */
@@ -259,6 +263,7 @@ export function createHub({
         supervisor,
         transcripts,
         state,
+        plans,
         meta,
         onSessionsChanged: (sessions) => state.schedule(sessions),
     });

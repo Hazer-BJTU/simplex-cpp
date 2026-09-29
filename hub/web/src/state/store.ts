@@ -1,3 +1,4 @@
+import type { SessionPlan } from '../../../shared/protocol.ts';
 /**
  * @file the panel's store.
  *
@@ -174,6 +175,7 @@ export interface SnapshotState {
 
 /** The state held by the store. */
 export interface PanelState {
+    plans: ReadonlyMap<SessionId, SessionPlan>;
     hub: HubMetadata | null;
     /** The hub process every cursor in `views` belongs to. */
     epoch: TranscriptEpoch | null;
@@ -219,6 +221,7 @@ export interface PanelState {
 
 /** Everything the store can be asked to do. */
 export interface PanelActions {
+    setPlan(session: SessionId, plan: SessionPlan, snapshot?: boolean): void;
     // -------------------------------------------------------------- reads --
     /** Sessions ordered for display: newest first. */
     sessionList(): SessionDescription[];
@@ -373,6 +376,7 @@ const INITIAL: PanelState = {
         ignoredFrames: 0,
     },
     authRequired: false,
+    plans: new Map(),
     sessions: new Map(),
     views: new Map(),
     selected: null,
@@ -751,11 +755,21 @@ export function createPanelStore() {
             }
             if (sessions) set({ sessions });
         },
+        setPlan(session, plan, snapshot = false) {
+            if (!plan || typeof plan.markdown !== 'string' || !Number.isSafeInteger(plan.revision)
+                || plan.revision < 0 || new TextEncoder().encode(plan.markdown).length > 65536) return;
+            const previous = get().plans.get(session);
+            if (!snapshot && previous && previous.revision >= plan.revision) return;
+            const plans = new Map(get().plans);
+            plans.set(session, plan);
+            set({ plans });
+        },
         upsertSession(session) {
             if (!session || typeof session.session_id !== 'string') return;
             set({ sessions: upserted(get(), session) });
         },
         applyWelcome(message) {
+            set({ plans: new Map() });
             const state = get();
             const patch: Partial<PanelState> = {};
             if (message.hub) {
@@ -798,7 +812,9 @@ export function createPanelStore() {
             sessions.delete(sessionId);
             const views = new Map(get().views);
             views.delete(sessionId);
-            const patch: Partial<PanelState> = { sessions, views };
+            const plans = new Map(get().plans);
+            plans.delete(sessionId);
+            const patch: Partial<PanelState> = { sessions, views, plans };
             if (get().selected === sessionId) patch.selected = null;
             set(patch);
         },

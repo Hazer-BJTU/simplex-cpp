@@ -169,6 +169,8 @@ export class Session {
     lastEvent: RegistryEnvelope | null;
     /** Run identifier the hub most recently observed, for cancel targeting. */
     lastRunId: string;
+    /** Only an observed active run may invoke executable hub routes. */
+    activeRunId = '';
     /** Open tool-confirmation prompts, keyed by confirmation ID. */
     readonly prompts: Map<string, RegisteredPrompt>;
     /** Identity observers, used by the confirmation adapter's hold. */
@@ -307,7 +309,10 @@ export class Session {
     noteIdentity(workerId: string, at = new Date().toISOString()): { incarnation: boolean } {
         const previous = this.identity.workerId;
         const incarnation = previous !== null && previous !== workerId;
-        if (previous !== workerId) this.workerCapabilities = null;
+        if (previous !== workerId) {
+            this.workerCapabilities = null;
+            this.activeRunId = '';
+        }
         if (incarnation) this.stats.incarnations += 1;
         this.identity = {
             state: IDENTITY.live,
@@ -321,6 +326,7 @@ export class Session {
 
     /** Mark a known identity as no longer backed by an open connection. */
     markStale(): void {
+        this.activeRunId = '';
         this.workerCapabilities = null;
         if (this.identity.state !== IDENTITY.live) return;
         this.identity = {
@@ -373,6 +379,15 @@ export class Session {
 
     /** Record an inbound envelope and update the cheap panel snapshots. */
     noteEnvelope(envelope: RegistryEnvelope): void {
+        if (envelope.event === 'input_admitted' || envelope.event === 'run_started') {
+            this.activeRunId = typeof envelope.run_id === 'string' ? envelope.run_id : '';
+        } else if (envelope.event === 'run_finished' || envelope.event === 'shutdown') {
+            this.activeRunId = '';
+        } else if (envelope.event === 'status') {
+            const data = envelope.data as { active?: boolean } | null;
+            this.activeRunId = data?.active && typeof envelope.run_id === 'string' ? envelope.run_id : '';
+        }
+
         this.stats.events += 1;
         this.lastEvent = envelope;
         if (envelope.event === 'ready' || envelope.event === 'status') {

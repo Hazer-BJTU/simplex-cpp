@@ -657,3 +657,26 @@ test('a transcript can be recovered over HTTP when the socket is down (D28)', as
     expect(recoveries.length).toBeGreaterThan(0);
     await page.request.post(`${STUB}/__stub/up`);
 });
+
+
+test('session plan updates live, stays bounded, restores on reload and hides when cleared', async ({ page }) => {
+    await open(page);
+    await withRunningSession(page);
+    await page.getByTestId('session-row').click();
+    await expect(page.getByTestId('plan-card')).toHaveCount(0);
+    const update = async (markdown: string, revision: number) => {
+        await page.request.post(`${STUB}/__stub/plan`, { data: {
+            session: 'demo', plan: { markdown, revision, updated_at: null },
+        } });
+    };
+    await update('- [x] Inspect\n- [ ] Implement\n' + 'Long plan line\n\n'.repeat(80), 1);
+    await expect(page.getByTestId('plan-card')).toBeVisible();
+    await expect(page.getByTestId('plan-content').getByRole('checkbox').first()).toBeDisabled();
+    expect(await page.getByTestId('plan-content').evaluate((node) => node.clientHeight)).toBeLessThanOrEqual(192);
+    await page.getByTestId('plan-card').getByText('Plan', { exact: true }).click();
+    await expect(page.getByTestId('plan-content')).not.toBeVisible();
+    await page.reload();
+    await expect(page.getByTestId('plan-card')).toBeVisible();
+    await update('', 2);
+    await expect(page.getByTestId('plan-card')).toHaveCount(0);
+});
