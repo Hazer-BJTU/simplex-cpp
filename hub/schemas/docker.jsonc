@@ -20,8 +20,11 @@
             "-v", "{config}:{config}:ro",
             "--entrypoint", "/bin/sh",
             "simplex-worker:latest",
-            "-c", "umask 0002; mkdir -p /root/workspace && cd /root/workspace && exec simplex run \"$@\"",
-            "simplex-worker",
+            "-c", "umask 0002; mkdir -p /root/workspace && cd /root/workspace && exec \"$@\"",
+            "sh",
+            // Installed entry point. For the in-tree simplex-hub-test image,
+            // replace "simplex" below with "/src/build/bin/simplex".
+            "simplex", "run",
             "--config", "{config}",
             "--session", "{session}",
             "--threads", "{threads}"

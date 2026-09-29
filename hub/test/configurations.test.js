@@ -214,7 +214,9 @@ test('Docker template binds only session data and invokes an installed worker', 
         assert.ok(invocation.args.includes(`${configPath}:${configPath}:ro`));
         assert.ok(invocation.args.includes('host.docker.internal:host-gateway'));
         assert.ok(invocation.args.includes('simplex-worker:latest'));
-        assert.ok(invocation.args.some(arg => arg.includes('exec simplex run "$@"')));
+        assert.ok(invocation.args.some(arg => arg.includes('exec "$@"')));
+        const shell = invocation.args.indexOf('-c');
+        assert.deepEqual(invocation.args.slice(shell + 2, shell + 5), ['sh', 'simplex', 'run']);
         assert.deepEqual(invocation.args.slice(-6), ['--config', configPath, '--session', 'docker-example', '--threads', '2']);
         assert.throws(() => store.template('worker', 'docker'), /launch template/);
     } finally { rmSync(dataDir, { recursive: true, force: true }); }

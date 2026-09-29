@@ -142,7 +142,10 @@ Events and confirmation use the main listener; tools uses its separate listener.
 Select the saved **docker** launch configuration, or choose **Docker container**
 as the template source when creating a launch file. It assumes a local image
 named `simplex-worker:latest` containing `/bin/sh` and an installed `simplex`
-command on PATH. Change the image name to match your deployment. The template
+command on PATH. Change the image name to match your deployment. The in-tree
+`simplex-hub-test:latest` image keeps its build-tree entry point at
+`/src/build/bin/simplex`; when using that image, replace the separate `simplex`
+command argument with this absolute path. The following argument remains `run`. The template
 does not build an image or install the worker; Docker may pull the named image
 if it is absent locally, according to its normal behavior.
 
