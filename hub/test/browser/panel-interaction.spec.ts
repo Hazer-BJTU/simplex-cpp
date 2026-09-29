@@ -659,24 +659,42 @@ test('a transcript can be recovered over HTTP when the socket is down (D28)', as
 });
 
 
-test('session plan updates live, stays bounded, restores on reload and hides when cleared', async ({ page }) => {
+test('session plan shares the conversation area, restores on reload and hides when cleared', async ({ page }) => {
     await open(page);
     await withRunningSession(page);
     await page.getByTestId('session-row').click();
-    await expect(page.getByTestId('plan-card')).toHaveCount(0);
+    const planTab = page.getByRole('tab', { name: 'Plan', exact: true });
+    const conversationTab = page.getByRole('tab', { name: 'Conversation', exact: true });
+    await expect(planTab).toHaveCount(0);
     const update = async (markdown: string, revision: number) => {
         await page.request.post(`${STUB}/__stub/plan`, { data: {
             session: 'demo', plan: { markdown, revision, updated_at: null },
         } });
     };
     await update('- [x] Inspect\n- [ ] Implement\n' + 'Long plan line\n\n'.repeat(80), 1);
-    await expect(page.getByTestId('plan-card')).toBeVisible();
-    await expect(page.getByTestId('plan-content').getByRole('checkbox').first()).toBeDisabled();
-    expect(await page.getByTestId('plan-content').evaluate((node) => node.clientHeight)).toBeLessThanOrEqual(192);
-    await page.getByTestId('plan-card').getByText('Plan', { exact: true }).click();
+    await expect(planTab).toBeVisible();
+    await expect(conversationTab).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId('plan-content')).not.toBeVisible();
+    const composer = page.getByRole('textbox', { name: 'message', exact: true });
+    const before = await composer.boundingBox();
+    await planTab.click();
+    await expect(page.getByTestId('plan-content')).toBeVisible();
+    await expect(page.getByTestId('transcript')).not.toBeVisible();
+    await expect(page.getByTestId('plan-content').getByRole('checkbox').first()).toBeDisabled();
+    expect(await composer.boundingBox()).toEqual(before);
+    expect(await page.getByTestId('plan-content').evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
+    await conversationTab.click();
+    await expect(page.getByTestId('transcript')).toBeVisible();
+    await planTab.focus();
+    await page.keyboard.press('ArrowLeft');
+    await expect(conversationTab).toHaveAttribute('aria-selected', 'true');
     await page.reload();
-    await expect(page.getByTestId('plan-card')).toBeVisible();
+    await expect(planTab).toBeVisible();
+    await expect(conversationTab).toHaveAttribute('aria-selected', 'true');
+    await planTab.click();
     await update('', 2);
-    await expect(page.getByTestId('plan-card')).toHaveCount(0);
+    await expect(planTab).toHaveCount(0);
+    await expect(page.getByTestId('transcript')).toBeVisible();
+    await update('New plan', 3);
+    await expect(conversationTab).toHaveAttribute('aria-selected', 'true');
 });

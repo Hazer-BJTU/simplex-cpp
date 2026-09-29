@@ -645,7 +645,7 @@ A worker appends a route such as `files/read` to the URL pathname, opens one
 connection, sends one `tool_request`, and receives one `tool_response`. The `plan/read` and `plan/replace` routes operate on the current session plan
 after verifying the live worker and active run. Unknown routes receive
 `not_implemented`. Plans are saved atomically in the session root and pushed to
-the panel, which shows a collapsible card only when the plan is nonempty. See the complete
+the panel, which offers a Plan tab beside Conversation only when the plan is nonempty. See the complete
 [worker protocol](../core/docs/worker-protocol.md#remote-tool-requests).
 
 `src/worker/tools.ts` owns authentication, framing, resource bounds, and shutdown.

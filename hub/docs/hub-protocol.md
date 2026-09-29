@@ -358,7 +358,7 @@ of the hub-owned session plan. The hub subsequently pushes `type: "plan"` with
 `session` and `plan` to subscribers after a successful replacement. A revision is
 monotonic within the saved session document; panels ignore older live updates,
 but replace their cached value on subscription, including after hub restart.
-An empty markdown string hides the plan card. Old hubs may omit the snapshot,
+An empty markdown string hides the plan tab. Old hubs may omit the snapshot,
 which panels treat as empty. Plan updates are not transcript events.
 
 Plans persist in `<dataDir>/sessions/<session>/plan.json`. Only the current active
