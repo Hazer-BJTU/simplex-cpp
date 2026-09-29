@@ -7,6 +7,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/beast.hpp>
+#include <algorithm>
 #include <type_traits>
 
 namespace {
@@ -175,6 +176,66 @@ BOOST_AUTO_TEST_CASE(plan_arguments_and_scheduling) {
         model_io::InvokeQuery query;
         query.arguments = arguments;
         BOOST_CHECK_THROW(tool.ensure_arguments(query), tools::InvokeException);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(plan_declaration_and_runtime_accept_the_same_argument_shapes)
+{
+    tools::intrinsic::PlanTool tool(endpoint_for(), std::chrono::milliseconds(500),
+        [] { return tools::intrinsic::HubRemoteCallIdentity{"worker", "session", "run"}; });
+    const auto schema = tool.get_details().argument_schema;
+    BOOST_TEST(schema.at("additionalProperties") == false);
+
+    // Evaluate the closed object, required keys, enum and branch exclusion as
+    // JSON Schema does, then compare each representative call with phase-one
+    // runtime validation. This catches declarations broader than the tool.
+    const auto declared = [&](const Json& arguments) {
+        if (!arguments.is_object()) return false;
+        for (const auto& [key, value] : arguments.items()) {
+            if (!schema.at("properties").contains(key)) return false;
+            const auto& property = schema.at("properties").at(key);
+            if (!value.is_string()) return false;
+            if (property.contains("enum") && std::find(property.at("enum").begin(),
+                    property.at("enum").end(), value) == property.at("enum").end()) return false;
+        }
+        for (const auto& branch : schema.at("anyOf")) {
+            bool matches = true;
+            for (const auto& required : branch.at("required")) {
+                matches &= arguments.contains(required.get<std::string>());
+            }
+            if (branch.contains("not")) {
+                bool excluded = true;
+                for (const auto& forbidden : branch.at("not").at("required")) {
+                    excluded &= arguments.contains(forbidden.get<std::string>());
+                }
+                matches &= !excluded;
+            }
+            for (const auto& [key, narrowed] : branch.at("properties").items()) {
+                if (arguments.contains(key) && narrowed.contains("enum")) {
+                    const auto& allowed = narrowed.at("enum");
+                    matches &= std::find(allowed.begin(), allowed.end(), arguments.at(key))
+                        != allowed.end();
+                }
+            }
+            if (matches) return true;
+        }
+        return false;
+    };
+    for (const Json arguments : {Json{{"operation", "read"}},
+            Json{{"operation", "replace"}, {"markdown", ""}},
+            Json{{"operation", "replace"}, {"markdown", "- [ ] Work"}},
+            Json{{"operation", "read"}, {"markdown", "unexpected"}},
+            Json{{"operation", "read"}, {"other", "unexpected"}},
+            Json{{"operation", "replace"}}, Json{{"operation", "unknown"}},
+            Json{{"operation", "replace"}, {"markdown", 4}}, Json::object()}) {
+        model_io::InvokeQuery query;
+        query.arguments = arguments;
+        bool accepted = true;
+        try { tool.ensure_arguments(query); }
+        catch (const tools::InvokeException&) { accepted = false; }
+        BOOST_TEST_CONTEXT(arguments.dump()) {
+            BOOST_TEST(declared(arguments) == accepted);
+        }
     }
 }
 

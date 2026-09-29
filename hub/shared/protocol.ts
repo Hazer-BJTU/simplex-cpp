@@ -514,7 +514,7 @@ export interface ErrorMessage {
 }
 
 /** Everything the hub may send. */
-/** Latest hub-owned Markdown plan; an empty string hides the panel card. */
+/** Latest hub-owned Markdown plan; an empty string hides the Plan tab. */
 export interface SessionPlan {
     markdown: string;
     revision: number;

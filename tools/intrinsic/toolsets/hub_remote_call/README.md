@@ -18,7 +18,7 @@ their enabled/disabled choice. Timeout is an integer in `1..2147483647`.
 
 `plan` accepts `{"operation":"read"}` or
 `{"operation":"replace","markdown":"- [ ] Work"}`. Replacement is complete;
-empty/whitespace Markdown clears the card. Read forbids the markdown argument.
+empty/whitespace Markdown hides the Plan tab. Read forbids the markdown argument.
 Both sides enforce a 64 KiB UTF-8 limit. No session/path/route arguments are exposed.
 Read uses ReadOnly scheduling; replace uses SerialWrite. Both use Trusted policy,
 since they access only the current session's plan and perform no arbitrary IO.

@@ -26,24 +26,25 @@ function SessionPanels({ markdown }: { markdown: string }) {
         <Tabs value={activePane} onValueChange={setPane} className="flex min-h-0 flex-1 flex-col">
             {hasPlan && (
                 <TabsList label="conversation panels">
-                    <TabsTrigger value="conversation">Conversation</TabsTrigger>
-                    <TabsTrigger value="plan">Plan</TabsTrigger>
+                    <TabsTrigger id="conversation-tab" value="conversation">Conversation</TabsTrigger>
+                    <TabsTrigger id="plan-tab" value="plan">Plan</TabsTrigger>
                 </TabsList>
             )}
-            {/* Keep transcript state and scroll position across tab switches. Explicit
-                display:none overrides the flex layout of an inactive mounted pane. */}
-            <TabsPrimitive.Content
-                value="conversation"
-                forceMount
+            {/* Keep the transcript mounted, including its scroll state. Without a
+                plan it is ordinary layout, so no orphan tabpanel is exposed. */}
+            <div
+                role={hasPlan ? 'tabpanel' : undefined}
+                aria-labelledby={hasPlan ? 'conversation-tab' : undefined}
                 style={{ display: activePane === 'conversation' ? 'flex' : 'none' }}
                 className="min-h-0 flex-1 flex-col focus:outline-none"
             >
                 <Transcript />
-            </TabsPrimitive.Content>
+            </div>
             {hasPlan && (
                 <TabsPrimitive.Content
                     value="plan"
                     forceMount
+                    aria-labelledby="plan-tab"
                     style={{ display: activePane === 'plan' ? 'block' : 'none' }}
                     className="min-h-0 flex-1 overflow-auto break-words p-4 text-sm focus:outline-none"
                     data-testid="plan-content"

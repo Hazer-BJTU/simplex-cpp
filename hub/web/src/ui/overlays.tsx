@@ -238,9 +238,10 @@ export function TabsList({ children, label }: { children: ReactNode; label: stri
     );
 }
 
-export function TabsTrigger({ value, children }: { value: string; children: ReactNode }) {
+export function TabsTrigger({ value, children, id }: { value: string; children: ReactNode; id?: string }) {
     return (
         <TabsPrimitive.Trigger
+            id={id}
             value={value}
             className={'rounded-t px-2 py-1 text-xs font-medium text-ink-muted '
                 + 'hover:bg-subtle data-[state=active]:bg-subtle '

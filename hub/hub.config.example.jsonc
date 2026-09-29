@@ -12,7 +12,7 @@
     "panel": { "token": "" },
 
     // Independent worker RPC listener. Empty host inherits listen.host.
-    // Currently every valid remote call is rejected with not_implemented.
+    // Plan read/replace routes are implemented; unknown routes are rejected.
     "toolRequests": { "host": "", "port": 8801, "timeoutMs": 120000, "maxConnections": 128 },
 
     "worker": {

@@ -434,8 +434,7 @@ BOOST_AUTO_TEST_CASE(a_keyword_outside_the_vocabulary_is_refused)
     Scratch scratch;
     // A keyword the loader does not know is one it cannot check, and one a
     // provider would be handed as part of the contract while the implementation
-    // ignored it. `pattern` and `additionalProperties` are the two an author is
-    // most likely to reach for.
+    // ignored it. `pattern` is one an author is likely to reach for.
     const std::string pattern = refusal_of(scratch, R"(
 name: probe
 description: a probe
@@ -456,9 +455,46 @@ name: probe
 description: a probe
 argument_schema:
   type: object
-  additionalProperties: false
+  additionalProperties: true
   properties: {}
 )"), "/argument_schema/additionalProperties"));
+}
+
+BOOST_AUTO_TEST_CASE(closed_arguments_and_excluded_branch_property_are_checked)
+{
+    Scratch scratch;
+    const auto file = scratch.write("closed.yaml", R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    operation: {type: string, description: Operation, enum: [read, replace]}
+    markdown: {type: string, description: Replacement text}
+  anyOf:
+    - required: [operation]
+      properties: {operation: {enum: [read]}}
+      not: {required: [markdown]}
+    - required: [operation, markdown]
+      properties: {operation: {enum: [replace]}}
+)");
+    const auto schema = load_tool_declaration(file).argument_schema;
+    BOOST_TEST(schema.at("additionalProperties") == false);
+    BOOST_TEST(schema.at("anyOf").at(0).at("not").at("required")
+               == nlohmann::json::array({"markdown"}));
+
+    BOOST_TEST(mentions(refusal_of(scratch, R"(
+name: probe
+description: a probe
+argument_schema:
+  type: object
+  properties:
+    operation: {type: string, description: Operation}
+  anyOf:
+    - required: [operation]
+      not: {required: [unknown]}
+)"), "/argument_schema/anyOf/0/not/required/0"));
 }
 
 BOOST_AUTO_TEST_CASE(clauses_that_disagree_with_their_type_are_refused)
