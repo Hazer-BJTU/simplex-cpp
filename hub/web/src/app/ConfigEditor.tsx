@@ -30,7 +30,7 @@ export function ConfigEditor({ text, language, onChange, disabled }: {
     const highlighted = useMemo(() => tokens(highlighter.highlight(language, text + '\n').children), [text, language]);
     const width = lines.reduce((longest, line) => Math.max(longest, line.length), 60) + 4;
     return (
-        <div className="h-[45dvh] min-h-48 overflow-auto rounded-md border border-line bg-surface" data-testid="config-editor">
+        <div className="h-[45dvh] min-h-48 overflow-auto bg-surface" data-testid="config-editor">
             <div className="flex min-h-full font-mono text-xs leading-5" style={{ minWidth: `${width + 6}ch` }}>
                 <pre aria-hidden="true" className="sticky left-0 z-10 m-0 shrink-0 select-none border-r border-line bg-sunken px-2 py-3 text-right text-ink-faint">
                     {lines.map((_, index) => index + 1).join('\n')}

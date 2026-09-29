@@ -9,7 +9,7 @@ import { ConfigEditor } from './ConfigEditor.tsx';
 
 import type { ConfigKind as Kind, ConfigFile as File, ConfigList } from '../../../shared/configurations.ts';
 export type { ConfigList } from '../../../shared/configurations.ts';
-const control = 'rounded border border-line-strong bg-surface px-2 py-1.5 text-sm text-ink';
+const control = 'config-control h-9 min-w-0 rounded-md border border-line bg-surface px-3 text-sm text-ink transition-colors hover:border-line-strong';
 
 /** Shared picker for session creation and explicit snapshot replacement. */
 export function ConfigurationChoices({ list, launch, worker, onLaunch, onWorker, disabled = false }: {
@@ -95,10 +95,10 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
     return (
         <Dialog open={open} onOpenChange={value => { if (!value && !busy && discard()) onClose(); }}>
             <DialogContent title="Configurations" description="Edit reusable launch and worker files. Session snapshots change only when explicitly applied." wide>
-                <div className="space-y-3">
-                    <div className="flex flex-wrap items-center gap-2">
+                <div className="configuration-workspace space-y-4">
+                    <div className="config-library flex flex-wrap items-center gap-3 rounded-lg border border-line bg-sunken p-3">
                         <select aria-label="Configuration kind" className={control} value={kind} disabled={busy}
-                            onChange={e => { if (discard()) { setKind(e.target.value as Kind); setFile(null); setText(''); setName(''); setPreview(null); } }}>
+                            onChange={e => { if (discard()) { setKind(e.target.value as Kind); setTemplateSource('default'); setFile(null); setText(''); setName(''); setPreview(null); } }}>
                             <option value="launch">Launch configs · JSONC</option><option value="worker">Worker configs · YAML</option>
                         </select>
                         <select aria-label="Saved configuration" className={control} value={file?.id ?? ''} disabled={busy}
@@ -109,6 +109,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                         <select aria-label="Template source" className={control} value={templateSource} disabled={busy} onChange={e => setTemplateSource(e.target.value)}>
                             <option value="default">Default template</option>
                             <option value="deployment">Current Hub deployment</option>
+                            {kind === 'launch' && <option value="docker">Docker container</option>}
                         </select>
                         <Button disabled={busy} onClick={() => {
                             if (!discard()) return;
@@ -118,10 +119,10 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                             });
                         }}>New from template</Button>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="config-file-toolbar flex flex-wrap items-center gap-2">
                         <input aria-label="Configuration name" className={control} value={name} placeholder="Configuration name"
                             disabled={busy} onChange={e => setName(e.target.value)} maxLength={128} />
-                        <span className="text-xs text-ink-muted">{kind === 'launch' ? '.jsonc' : '.yaml'}{dirty ? ' · Unsaved changes' : ''}</span>
+                        <span className="mr-auto rounded bg-sunken px-2 py-1 font-mono text-xs text-ink-muted">{kind === 'launch' ? '.jsonc' : '.yaml'}{dirty ? ' · Unsaved changes' : ''}</span>
                         <Button variant="primary" disabled={busy || !name || !text} onClick={() => void action(async () => {
                             const value = await rest.request<File>('PUT', path(name), { body: { text, revision: file?.id === name ? file.revision : null } });
                             loaded(value); await refresh(); setNotice('Saved. Existing session snapshots are unchanged.');
@@ -136,7 +137,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                             loaded(await rest.request<File>('POST', `${path(file.id)}/rename`, { body: { id: name, revision: file.revision } }));
                             await refresh();
                         })}>Rename</Button>
-                        <Button variant="danger" disabled={busy || !file} onClick={() => {
+                        <Button variant="ghost" className="text-danger" disabled={busy || !file} onClick={() => {
                             if (!file || !window.confirm(`Delete ${file.id}? Existing sessions keep their snapshots.`)) return;
                             void action(async () => {
                                 await rest.request('DELETE', path(file.id), { body: { revision: file.revision } });
@@ -144,9 +145,20 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                             });
                         }}>Delete</Button>
                     </div>
+                    <div className="overflow-hidden rounded-lg border border-line shadow-sm">
+                    <div className="flex items-center justify-between border-b border-line bg-sunken px-3 py-2 text-xs text-ink-muted">
+                        <span className="font-mono">{name || 'Untitled'}{kind === 'launch' ? '.jsonc' : '.yaml'}</span>
+                        <span>{busy ? 'Working…' : dirty ? 'Unsaved changes' : file ? 'Saved' : 'Choose a file or template'}</span>
+                    </div>
                     <ConfigEditor text={text} language={kind === 'worker' ? 'yaml' : 'json'} onChange={setText} disabled={busy} />
+                    </div>
                     {error && <p role="alert" className="break-words text-sm text-danger">{error}</p>}
                     {notice && <p role="status" className="text-xs text-ok">{notice}</p>}
+                    <section className="space-y-3 rounded-lg border border-line bg-sunken p-3" aria-label="Session configuration">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="text-xs font-semibold text-ink">Session configuration</h3>
+                        <span className="text-xs text-ink-muted">{selected ? `Apply saved files to ${selected}` : 'Select a session to apply saved files'}</span>
+                    </div>
                     <ConfigurationChoices list={list} launch={launch} worker={worker} onLaunch={setLaunch} onWorker={setWorker} disabled={busy} />
                     <div className="flex flex-wrap gap-2">
                         <Button disabled={busy || !launch} onClick={() => void action(showPreview)}>Preview Hub endpoints</Button>
@@ -160,6 +172,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                         <Button className="ml-auto" disabled={busy} onClick={() => { if (discard()) onClose(); }}>Close</Button>
                     </div>
                     <p className="text-xs text-ink-muted">Apply requires a stopped, disconnected worker and uses saved files. To copy a file, change its name and save.</p>
+                    </section>
                     {preview && <div className="overflow-auto rounded border border-line bg-surface p-2 text-xs">
                         <p className="mb-1 text-ink-muted">Session identity is filled at launch. For containers or proxies, edit the launch config address settings.</p>
                         {Object.entries(preview).map(([key, value]) => <p key={key} className="break-all font-mono">{key}: {value}</p>)}

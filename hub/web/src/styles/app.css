@@ -529,3 +529,35 @@ body {
 @media print {
     body { overflow: visible; }
 }
+
+/* Selects use a neutral focus boundary across configuration and model options.
+   Keep a visible keyboard cue without the browser's blue outline or shadow. */
+select:focus,
+select:focus-visible,
+.config-control:focus,
+.config-control:focus-visible {
+    outline: none;
+    box-shadow: none;
+    border-color: var(--ink-muted);
+}
+
+select option:checked {
+    background-color: var(--subtle);
+    color: var(--ink);
+}
+
+.configuration-workspace button {
+    min-height: 2.25rem;
+    justify-content: center;
+    border-radius: 0.375rem;
+}
+
+@media (max-width: 640px) {
+    .config-library > select {
+        flex: 1 1 45%;
+        width: 0;
+    }
+    .config-library > button {
+        flex: 1 1 45%;
+    }
+}

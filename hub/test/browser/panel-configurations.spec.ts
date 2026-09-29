@@ -45,6 +45,8 @@ test('session creation offers both persisted configuration selectors', async ({ 
     await page.getByRole('button', { name: 'Create a session', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Create a session' });
     await expect(dialog.getByLabel('Launch configuration')).toHaveValue('local');
+    await dialog.getByLabel('Launch configuration').focus();
+    expect(await dialog.getByLabel('Launch configuration').evaluate(node => getComputedStyle(node).outlineStyle)).toBe('none');
     await expect(dialog.getByLabel('Worker configuration')).toHaveValue('default');
     await expect(dialog.getByRole('button', { name: 'Create session', exact: true })).toBeEnabled();
 });

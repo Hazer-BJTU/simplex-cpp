@@ -53,7 +53,8 @@ not moved automatically.
 ├── hub.json                  # Hub session metadata
 ├── configs/
 │   ├── launch/
-│   │   └── local.jsonc
+│   │   ├── local.jsonc
+│   │   └── docker.jsonc
 │   └── worker/
 │       └── default.yaml
 └── sessions/
@@ -83,7 +84,7 @@ Hub's listeners. Library files and newly published snapshots use private file
 permissions. The Hub process owns the configuration library; use one Hub process
 per root. Revisions protect concurrent panel edits within that process.
 
-`local` and `default` are seeded when absent at startup. Other library files
+`local`, `docker` and `default` are seeded when absent at startup. Other library files
 are never replaced by startup. Worker templates are bundled from
 `load/schemas/config.example.yaml`, with a regression check preventing drift.
 
@@ -132,6 +133,35 @@ respective prefix and adds the current session token. Configure the proxy to
 forward each route to its corresponding listener. Without an explicit origin,
 the Hub uses the actual bound port, including when configured with port `0`.
 Events and confirmation use the main listener; tools uses its separate listener.
+
+## Docker launch template
+
+Select the saved **docker** launch configuration, or choose **Docker container**
+as the template source when creating a launch file. It assumes a local image
+named `simplex-worker:latest` containing `/bin/sh` and an installed `simplex`
+command on PATH. Change the image name to match your deployment. The template
+does not build an image or install the worker; Docker may pull the named image
+if it is absent locally, according to its normal behavior.
+
+The container invokes `simplex run --config … --session … --threads …`, with
+`--init` and `--rm`. It bind-mounts only the current session directory at the same
+absolute path and mounts `config/config.yaml` read-only. State and memory remain
+on the host after the container exits. `/root/workspace` is created inside the
+container and is disposable; set the worker YAML's `worker.environment.workspace`
+to that path if you want the model to see the corresponding workspace hint.
+
+The template forwards `DEEPSEEK_API_KEY` from the Hub process environment. Add
+other `-e NAME` entries for other provider credentials. It runs as container root
+with the Hub's primary GID and umask `0002`, allowing the Hub to clean up ordinary
+worker-created directories. `{gid}` requires a POSIX Hub host, including WSL.
+
+`host.docker.internal:host-gateway` supplies a host gateway on Docker Engine;
+`worker.connectHost` uses that name. Both Hub listeners must be reachable from
+the container. For example, start the Hub with `--listen 0.0.0.0:8800
+--panel-token YOUR_TOKEN` (the tool listener inherits that bind address). Keep
+these listeners on a trusted network. A loopback-only listener cannot accept
+connections through the Docker bridge. Explicit endpoint origins remain
+available for proxies or alternative networking setups.
 
 ## Worker templates and managed fields
 
@@ -194,7 +224,7 @@ Requests carrying source text are bounded to 1 MiB of JSON request body.
 | Method and route | Body / result |
 | --- | --- |
 | `GET /api/configurations` | `{launch: string[], worker: string[]}` |
-| `GET /api/configurations/:kind/template?source=default` | `{text}`; source is `default` or `deployment` |
+| `GET /api/configurations/:kind/template?source=default` | `{text}`; source is `default`, `deployment`, or `docker` (launch only) |
 | `GET /api/configurations/:kind/:id` | `{kind, id, text, revision}` |
 | `PUT /api/configurations/:kind/:id` | `{text, revision}`; `revision: null` creates, current revision updates |
 | `POST /api/configurations/:kind/validate` | `{text}` → `{valid: true}` |

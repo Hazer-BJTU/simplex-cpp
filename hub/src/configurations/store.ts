@@ -154,6 +154,7 @@ export class ConfigurationStore {
         this.config = config;
         for (const kind of ['launch', 'worker'] as const) mkdirSync(this.directory(kind), { recursive: true, mode: 0o700 });
         if (!existsSync(this.path('launch', 'local'))) this.save('launch', 'local', this.template('launch'), null);
+        if (!existsSync(this.path('launch', 'docker'))) this.save('launch', 'docker', this.template('launch', 'docker'), null);
         if (!existsSync(this.path('worker', 'default'))) this.save('worker', 'default', this.template('worker'), null);
     }
 
@@ -206,7 +207,11 @@ export class ConfigurationStore {
 
     /** Templates are source files, optionally seeded from the current deployment.
      * No session token is stored here; the live addresses are bound at startup. */
-    template(kind: ConfigKind, source: 'default' | 'deployment' = 'default'): string {
+    template(kind: ConfigKind, source: 'default' | 'deployment' | 'docker' = 'default'): string {
+        if (source === 'docker') {
+            if (kind !== 'launch') throw configError('Docker is a launch template');
+            return readFileSync(join(hubRoot, 'schemas', 'docker.jsonc'), 'utf8');
+        }
         if (source === 'deployment' && kind === 'launch') {
             const worker = this.config.worker;
             return '// Copied from the current Hub deployment. Edit before saving.\n' + JSON.stringify({

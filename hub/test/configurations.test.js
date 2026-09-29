@@ -79,7 +79,7 @@ test('authenticated configuration API and session selection retain independent s
     };
     try {
         assert.equal((await fetch(ctx.base + '/api/configurations')).status, 401);
-        assert.deepEqual((await api('/api/configurations')).body, { launch: ['local'], worker: ['default'] });
+        assert.deepEqual((await api('/api/configurations')).body, { launch: ['docker', 'local'], worker: ['default'] });
         const file = (await api('/api/configurations/launch/local')).body;
         const preview = await api('/api/configurations/preview', 'POST', { launch: file.text });
         assert.equal(new URL(preview.body.endpoints.events).port, String(ctx.port));
@@ -186,5 +186,36 @@ test('deployment templates copy existing launcher and mock choices; local defaul
         assert.equal(local.worker.connectHost, '');
         assert.throws(() => launchDocument('{"launcher":{"kind":"simplex-worker"}}', config), /worker.bin/);
         assert.throws(() => store.validate('worker', store.template('worker').replace('state: state', 'state: ../outside')), /relative child/);
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+import { buildCommandInvocation } from '../src/launch/command.ts';
+
+test('Docker template binds only session data and invokes an installed worker', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
+    try {
+        const config = { ...defaultConfig(), dataDir };
+        const store = new ConfigurationStore(config);
+        const file = store.read('launch', 'docker');
+        const launch = launchDocument(file.text, config);
+        assert.equal(launch.worker.connectHost, 'host.docker.internal');
+        if (typeof process.getgid !== 'function') return;
+        const root = join(dataDir, 'sessions', 'docker-example');
+        const configPath = join(root, 'config', 'config.yaml');
+        const invocation = buildCommandInvocation({
+            config: { ...config, launcher: launch.launcher },
+            sessionId: 'docker-example', configPath, sessionDir: root,
+            spec: { threads: 2, env: {}, extraArgs: [] },
+            endpoints: { events: 'ws://host/events', confirm: 'ws://host/confirm', tools: 'ws://host/tools' },
+            token: 'test-token',
+        });
+        assert.equal(invocation.command, 'docker');
+        assert.ok(invocation.args.includes(`${root}:${root}`));
+        assert.ok(invocation.args.includes(`${configPath}:${configPath}:ro`));
+        assert.ok(invocation.args.includes('host.docker.internal:host-gateway'));
+        assert.ok(invocation.args.includes('simplex-worker:latest'));
+        assert.ok(invocation.args.some(arg => arg.includes('exec simplex run "$@"')));
+        assert.deepEqual(invocation.args.slice(-6), ['--config', configPath, '--session', 'docker-example', '--threads', '2']);
+        assert.throws(() => store.template('worker', 'docker'), /launch template/);
     } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
