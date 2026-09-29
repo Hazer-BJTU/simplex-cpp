@@ -25,6 +25,8 @@
         "maxExchanges": 512,
         "eventCapacity": 1024,
         "confirmationTimeoutMs": 120000,
+        // Opt in for new sessions; currently an empty worker toolset.
+        "hubRemoteCall": false,
         // Copied into every generated worker config; these are the worker's own
         // defaults from core/docs/worker-protocol.md.
         "payloadCapacity": 256,

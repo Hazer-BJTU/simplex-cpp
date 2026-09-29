@@ -207,23 +207,23 @@ BOOST_AUTO_TEST_CASE(persistence_paths_are_direct_and_children_are_relative) {
 
 BOOST_AUTO_TEST_CASE(optional_remote_tool_endpoint_and_deadline) {
     const auto defaults = load::parse_configuration(configuration(), "/tmp");
-    BOOST_CHECK(!defaults.remote_tools);
-    BOOST_TEST(defaults.remote_tools_timeout.count() == 120000);
+    BOOST_CHECK(!defaults.hub_remote_call);
+    BOOST_TEST(defaults.hub_remote_call_timeout.count() == 120000);
 
     auto value = configuration();
-    value["remote_tools"] = {
+    value["hub_remote_call"] = {
         {"endpoint", "wss://tools.example:9443/agent/demo/tools?token=secret"},
         {"timeout_ms", 2500}
     };
     const auto parsed = load::parse_configuration(value, "/tmp");
-    BOOST_REQUIRE(parsed.remote_tools);
-    BOOST_TEST(parsed.remote_tools->host == "tools.example");
-    BOOST_TEST(parsed.remote_tools->target == "/agent/demo/tools?token=secret");
-    BOOST_TEST(parsed.remote_tools_timeout.count() == 2500);
+    BOOST_REQUIRE(parsed.hub_remote_call);
+    BOOST_TEST(parsed.hub_remote_call->host == "tools.example");
+    BOOST_TEST(parsed.hub_remote_call->target == "/agent/demo/tools?token=secret");
+    BOOST_TEST(parsed.hub_remote_call_timeout.count() == 2500);
     BOOST_TEST(parsed.client.host == "localhost");
 
-    value["remote_tools"].erase("timeout_ms");
-    BOOST_TEST(load::parse_configuration(value, "/tmp").remote_tools_timeout.count() == 120000);
+    value["hub_remote_call"].erase("timeout_ms");
+    BOOST_TEST(load::parse_configuration(value, "/tmp").hub_remote_call_timeout.count() == 120000);
     for (const auto& invalid : {
         Json(nullptr), Json::array(), Json::object(),
         Json{{"endpoint", "http://tools.example"}},
@@ -231,7 +231,7 @@ BOOST_AUTO_TEST_CASE(optional_remote_tool_endpoint_and_deadline) {
         Json{{"endpoint", "ws://tools.example"}, {"timeout_ms", -1}},
         Json{{"endpoint", "ws://tools.example"}, {"timeout_ms", "100"}}
     }) {
-        value["remote_tools"] = invalid;
+        value["hub_remote_call"] = invalid;
         BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
     }
 }

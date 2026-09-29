@@ -102,10 +102,13 @@ export function prepareSessionConfig(options: RenderSessionConfigOptions): {
         persistenceChild(root, child, key);
     }
     mapping(document, ['client']);
-    mapping(document, ['remote_tools']);
-    document.setIn(['remote_tools', 'endpoint'], endpoints.tools);
-    if (!document.hasIn(['remote_tools', 'timeout_ms'])) {
-        document.setIn(['remote_tools', 'timeout_ms'], config.toolRequests.timeoutMs);
+    // Omission is an operator choice to disable this optional toolset.
+    if (document.has('hub_remote_call')) {
+        mapping(document, ['hub_remote_call']);
+        document.setIn(['hub_remote_call', 'endpoint'], endpoints.tools);
+        if (!document.hasIn(['hub_remote_call', 'timeout_ms'])) {
+            document.setIn(['hub_remote_call', 'timeout_ms'], config.toolRequests.timeoutMs);
+        }
     }
     mapping(document, ['security', 'confirmation']);
     document.setIn(['persistence', 'directory'], root);

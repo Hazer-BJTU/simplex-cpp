@@ -79,6 +79,8 @@ export interface HubConfig {
         maxExchanges: number;
         eventCapacity: number;
         confirmationTimeoutMs: number;
+        /** Include the optional empty hub remote-call toolset in new worker configs. */
+        hubRemoteCall: boolean;
         payloadCapacity: number;
         signalCapacity: number;
         writeCapacity: number;
@@ -144,6 +146,7 @@ export function defaultConfig(): HubConfig {
             maxExchanges: 512,
             eventCapacity: 1024,
             confirmationTimeoutMs: 120000,
+            hubRemoteCall: false,
             // Transport settings copied into every generated worker config;
             // the defaults are the worker's own (core/docs/worker-protocol.md).
             payloadCapacity: 256,
@@ -474,6 +477,7 @@ export function validateConfig(config: HubConfig): HubConfig {
         'worker.maxExchanges must be a positive integer');
     check(Number.isInteger(worker.eventCapacity) && worker.eventCapacity > 0,
         'worker.eventCapacity must be a positive integer');
+    check(typeof worker.hubRemoteCall === 'boolean', 'worker.hubRemoteCall must be a boolean');
     check(Number.isInteger(worker.confirmationTimeoutMs) && worker.confirmationTimeoutMs > 0,
         'worker.confirmationTimeoutMs must be a positive integer');
     for (const key of ['payloadCapacity', 'signalCapacity', 'writeCapacity',

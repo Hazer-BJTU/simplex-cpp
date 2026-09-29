@@ -15,7 +15,7 @@ function options(sessionId = 'demo') {
     const root = mkdtempSync(join(tmpdir(), 'simplex-config-reuse-'));
     roots.push(root);
     return {
-        config: testConfig({ dataDir: root }), sessionId, rawSpec: {},
+        config: testConfig({ dataDir: root, worker: { hubRemoteCall: true } }), sessionId, rawSpec: {},
         endpoints: { events: 'ws://old/events?token=old', confirm: 'ws://old/confirm?token=old', tools: 'ws://old/tools?token=old' },
     };
 }
@@ -40,7 +40,7 @@ describe('session configuration files', () => {
         initial.providers.deepseek.model = 'operator-model';
         initial.providers.deepseek.endpoint.auth.api_key = '${OPERATOR_KEY}';
         initial.worker.max_exchanges = 47;
-        initial.remote_tools.timeout_ms = 750;
+        initial.hub_remote_call.timeout_ms = 750;
         initial.persistence.state = 'custom/snapshots';
         initial.persistence.memory = 'custom/archives';
         initial.future_extension = { untouched: ['one', 'two'] };
@@ -57,7 +57,7 @@ describe('session configuration files', () => {
         assert.deepEqual(reused.document, {
             ...initial,
             client: { ...initial.client, endpoint: input.endpoints.events },
-            remote_tools: { ...initial.remote_tools, endpoint: input.endpoints.tools },
+            hub_remote_call: { ...initial.hub_remote_call, endpoint: input.endpoints.tools },
             security: { confirmation: { ...initial.security.confirmation, endpoint: input.endpoints.confirm } },
         });
         assert.match(readFileSync(path, 'utf8'), /# Operator comment/);
@@ -118,7 +118,7 @@ describe('session configuration files', () => {
         const input = options();
         prepareSessionConfig(input);
         const path = workerConfigPath(input.config, input.sessionId);
-        for (const invalid of ['[broken', 'null', 'client: wrong', 'remote_tools: null',
+        for (const invalid of ['[broken', 'null', 'client: wrong', 'hub_remote_call: null',
             'persistence:\n  state: ../escape', 'persistence:\n  memory: null',
             'modality_assist_model: missing', 'modality_assist_model: null']) {
             writeFileSync(path, invalid);
@@ -142,23 +142,27 @@ describe('session configuration files', () => {
     });
 });
 
-it('adds remote tool configuration to old sessions and refreshes only its endpoint on restart', () => {
+it('preserves disabled remote calls on restart even if hub defaults enable them', () => {
     const input = options();
     const path = workerConfigPath(input.config, input.sessionId);
     const original = prepareSessionConfig(input).document;
-    delete original.remote_tools;
+    delete original.hub_remote_call;
     writeFileSync(path, stringify(original));
-    const upgraded = prepareSessionConfig(input).document;
-    assert.deepEqual(upgraded.remote_tools, {
-        endpoint: input.endpoints.tools,
-        timeout_ms: input.config.toolRequests.timeoutMs,
-    });
-    upgraded.remote_tools.timeout_ms = 800;
-    upgraded.remote_tools.future_option = 'preserved';
-    writeFileSync(path, stringify(upgraded));
+    const restarted = prepareSessionConfig(input).document;
+    assert.equal(Object.hasOwn(restarted, 'hub_remote_call'), false);
+});
+
+it('omits remote calls by default and preserves enabled settings when defaults change', () => {
+    const input = options();
+    input.config.worker.hubRemoteCall = false;
+    assert.equal(Object.hasOwn(prepareSessionConfig(input).document, 'hub_remote_call'), false);
+    const path = workerConfigPath(input.config, input.sessionId);
+    const document = parse(readFileSync(path, 'utf8'));
+    document.hub_remote_call = { endpoint: 'ws://old/tools', timeout_ms: 800, future_option: 'preserved' };
+    writeFileSync(path, stringify(document));
     input.endpoints.tools = 'ws://new-host:9900/agent/demo/tools?token=rotated';
     const restarted = prepareSessionConfig(input).document;
-    assert.deepEqual(restarted.remote_tools, {
+    assert.deepEqual(restarted.hub_remote_call, {
         endpoint: input.endpoints.tools, timeout_ms: 800, future_option: 'preserved',
     });
 });

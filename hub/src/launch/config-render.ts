@@ -66,7 +66,7 @@ export interface WorkerConfigDocument {
             idle_timeout_seconds: number;
         };
     };
-    remote_tools: { endpoint: string; timeout_ms: number };
+    hub_remote_call?: { endpoint: string; timeout_ms: number };
     security: { confirmation: { endpoint: string; timeout_ms: number } };
     worker: {
         max_exchanges: number;
@@ -146,10 +146,12 @@ export function renderWorkerConfig({
                 idle_timeout_seconds: config.worker.idleTimeoutSeconds,
             },
         },
-        remote_tools: {
-            endpoint: endpoints.tools,
-            timeout_ms: config.toolRequests.timeoutMs,
-        },
+        ...(config.worker.hubRemoteCall ? {
+            hub_remote_call: {
+                endpoint: endpoints.tools,
+                timeout_ms: config.toolRequests.timeoutMs,
+            },
+        } : {}),
         security: {
             confirmation: {
                 endpoint: endpoints.confirm,

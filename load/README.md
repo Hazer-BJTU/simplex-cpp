@@ -17,7 +17,7 @@ independently. See [core](../core/README.md) for the runtime contract.
 | `providers`, `driver_model`, `modality_assist_model` | Selected providers validated/expanded by read_configuration; independent instances constructed by core. |
 | `client` | Parsed by read_configuration; started by core. |
 | `persistence` | Parsed by read_configuration; applied by core. |
-| `remote_tools` | Optional one-shot tool endpoint and timeout; parsed for future worker tools. |
+| `hub_remote_call` | Optional endpoint and timeout; enables the empty hub remote-call intrinsic set. |
 | `security.confirmation`, `worker` | Approval endpoint/deadline, event capacity, exchange budget and initial prompt. |
 | `save_state()`, `load_state()` | Explicit file operations, independent of startup YAML. |
 
@@ -595,16 +595,19 @@ The old session-ID-appending layout is not migrated or read automatically. See t
 
 ## Remote tool transport configuration
 
-The optional `remote_tools` mapping accepts `endpoint`, a complete `ws://` or
+The optional `hub_remote_call` mapping accepts `endpoint`, a complete `ws://` or
 `wss://` base URL, and `timeout_ms`, an integer in `1..2147483647` (default
 `120000`).
-Omission leaves `Configuration::remote_tools` empty. An explicit mapping requires
+Omission leaves `Configuration::hub_remote_call` empty. An explicit mapping requires
 a valid endpoint; it is not silently enabled with a guessed server address.
-The parser retains the independent timeout in `remote_tools_timeout`.
+The parser retains the independent timeout in `hub_remote_call_timeout`.
 
 The endpoint names `/agent/<session>/tools`; a future client appends the operation
 route to the URL pathname while retaining its authentication query. These
-settings currently register no worker tool and create no connection. The hub
+settings cause core to register an empty `HubRemoteCallToolSet`, whose future
+tools can use `HubRemoteCallToolBase`. Omission leaves the set unloaded.
+No concrete tool or skill is currently registered, and construction opens no
+connection. The hub
 accepts authenticated one-shot requests on its dedicated listener and rejects
 every valid route with `not_implemented`. The envelope and lifecycle contract
 are specified in [the worker protocol](../core/docs/worker-protocol.md#remote-tool-requests).

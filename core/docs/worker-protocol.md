@@ -1249,12 +1249,13 @@ preserve the distinctions documented here.
 ## Remote tool requests
 
 This transport is independent of events and confirmation. The hub implements
-the listener and rejection protocol; this release only parses its configuration
-on the worker and registers no remote tool. It must not be advertised as an
-implemented model-callable capability.
+the listener and rejection protocol. When configured, the worker constructs an
+empty `HubRemoteCallToolSet` with an abstract request base for future operations.
+Omission leaves the set unloaded. No remote tool or skill is registered, and
+construction opens no connection or advertises a model-callable capability.
 
 ```yaml
-remote_tools:
+hub_remote_call:
   endpoint: ws://127.0.0.1:8801/agent/session-1/tools?token=SESSION_TOKEN
   timeout_ms: 120000
 ```

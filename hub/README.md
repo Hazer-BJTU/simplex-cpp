@@ -231,6 +231,7 @@ directory; command-line paths resolve against the working directory.
 | `worker.bin` | `../build/bin/simplex_worker` | worker executable |
 | `worker.systemPromptFile` | `prompts/coding_agent.yaml` | default prompt for new sessions, relative to the worker's installation directory |
 | `worker.threads`, `worker.maxExchanges`, `worker.eventCapacity` | `1`, `512`, `1024` | defaults copied into generated worker configurations |
+| `worker.hubRemoteCall` | `false` | include the optional remote-call toolset config for new sessions |
 | `worker.confirmationTimeoutMs` | `120000` | confirmation deadline written into the worker configuration |
 | `worker.stopTimeoutMs`, `worker.sigtermGraceMs`, `worker.sigkillGraceMs` | `15000`, `5000`, `2000` | the stop escalation ladder |
 | `worker.persistence` | `{enabled: true, readable: false}` | worker snapshot policy |
@@ -279,7 +280,8 @@ or the original session spec have since changed.
 
 Before each launch the hub refreshes only `persistence.directory` (the direct
 session root), `client.endpoint`, `security.confirmation.endpoint`, and
-`remote_tools.endpoint` (including session authentication tokens), and the active mock provider's dynamic
+`hub_remote_call.endpoint` when configured (including session authentication
+tokens), and the active mock provider's dynamic
 `endpoint.base_url`. Provider credentials and other operator fields remain intact.
 Malformed saved YAML or invalid persistence child paths fail startup without
 replacing the file. Updates are published with an atomic rename.
@@ -630,12 +632,14 @@ differ from the main port. This listener serves no panel, REST API, event stream
 or confirmation route. Deployments must make it reachable from workers; the
 Docker worker example uses the same `worker.connectHost` for both ports.
 
-For each launched session, the hub writes `remote_tools.endpoint` with the actual
-bound port, `/agent/<session>/tools`, and the session token, plus `timeout_ms`.
-On restart the URL/token are refreshed, an existing timeout is preserved, and
-missing settings are added to old configurations. A template launcher may also
-use `{tools_endpoint}`. Worker configuration parsing supports these settings,
-but no worker-side tool invokes them in this release.
+Set `worker.hubRemoteCall: true` to include the optional `hub_remote_call` mapping
+in new worker configurations (default `false`). It contains the actual tool port,
+`/agent/<session>/tools`, the session token, and `timeout_ms`. An enabled worker
+constructs the empty intrinsic set; it exposes no callable tool yet.
+On restart only an existing mapping's URL/token is refreshed. Its timeout and
+unknown fields are preserved; an absent mapping remains disabled even if hub
+defaults change. A missing timeout in an enabled mapping is filled from hub
+settings. A template launcher may also use `{tools_endpoint}`.
 
 A worker appends a route such as `files/read` to the URL pathname, opens one
 connection, sends one `tool_request`, and receives one `tool_response`. Every

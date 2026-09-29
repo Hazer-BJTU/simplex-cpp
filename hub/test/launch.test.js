@@ -29,6 +29,7 @@ describe('normalizeSpec', () => {
     it('applies hub defaults', () => {
         const config = testConfig();
         const spec = normalizeSpec(config, {});
+        assert.equal(config.worker.hubRemoteCall, false);
         assert.equal(spec.provider, 'deepseek');
         assert.equal(spec.modalityAssistProvider, 'deepseek');
         assert.equal(normalizeSpec(config, { provider: 'mock' }).modalityAssistProvider, null);
@@ -93,7 +94,7 @@ describe('normalizeSpec', () => {
 
 describe('renderSessionConfig', () => {
     it('renders a worker configuration with endpoints and persistence', () => {
-        const config = testConfig();
+        const config = testConfig({ worker: { hubRemoteCall: true } });
         const { spec, document } = renderSessionConfig({
             config,
             sessionId: 'demo',
@@ -105,8 +106,8 @@ describe('renderSessionConfig', () => {
         assert.equal(Object.hasOwn(document, 'modality_assist_model'), false);
         assert.equal(Object.hasOwn(document.providers, 'deepseek'), false);
         assert.equal(document.client.endpoint, endpoints.events);
-        assert.equal(document.remote_tools.endpoint, endpoints.tools);
-        assert.equal(document.remote_tools.timeout_ms, config.toolRequests.timeoutMs);
+        assert.equal(document.hub_remote_call.endpoint, endpoints.tools);
+        assert.equal(document.hub_remote_call.timeout_ms, config.toolRequests.timeoutMs);
         assert.equal(document.security.confirmation.endpoint, endpoints.confirm);
         assert.equal(document.security.confirmation.timeout_ms, config.worker.confirmationTimeoutMs);
         assert.equal(document.persistence.directory, sessionDir(config, 'demo'));
@@ -206,7 +207,7 @@ describe('renderSessionConfig', () => {
                     // A wildcard listener is refused without one, which is the
                     // hub's own guard rather than this test's business.
                     panel: { token: 'test-token' },
-                    worker: { connectHost },
+                    worker: { connectHost, hubRemoteCall: true },
                     // A launcher that does nothing: this test is about the
                     // configuration the supervisor writes before it spawns.
                     launcher: { kind: 'command', command: ['/bin/true'] },
@@ -220,7 +221,7 @@ describe('renderSessionConfig', () => {
                 assert.equal(started.ok, true, started.error);
                 const document = JSON.parse(
                     readFileSync(hub.supervisor.configPathFor('demo'), 'utf8'));
-                const toolUrl = new URL(document.remote_tools.endpoint);
+                const toolUrl = new URL(document.hub_remote_call.endpoint);
                 assert.equal(toolUrl.hostname, expected);
                 assert.equal(Number(toolUrl.port), hub.toolHttp.server.address().port);
                 assert.equal(toolUrl.pathname, '/agent/demo/tools');
