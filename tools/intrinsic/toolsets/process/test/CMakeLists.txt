@@ -84,7 +84,6 @@ function(intrinsic_process_add_test name)
     target_compile_options(${name} PRIVATE
         -pthread
         $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-        $<$<CONFIG:Release>:-O3 -DNDEBUG>
     )
     target_link_libraries(${name} PRIVATE
         tools_intrinsic_process

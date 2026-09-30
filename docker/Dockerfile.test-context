@@ -87,8 +87,10 @@ COPY . .
 # of the same execution context, which is the image's whole reason to exist.
 # The install is the packaging step — it is what puts the tool declarations at
 # <prefix>/bin/schemas/process, the location a real deployment loads them from.
+# Manual examples are explicitly included here, unlike a release install.
 RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
         -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+        -DSIMPLEX_INSTALL_EXAMPLES=ON \
     && cmake --build /src/build -j"${JOBS}" \
     && if [ "${RUN_TESTS}" = "1" ]; then \
            ctest --test-dir /src/build --output-on-failure; \

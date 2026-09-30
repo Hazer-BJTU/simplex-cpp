@@ -14,7 +14,6 @@ foreach(TEST_SRC ${TEST_SOURCES})
 
     target_compile_options(${TEST_EXE} PRIVATE
         $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-        $<$<CONFIG:Release>:-O3 -DNDEBUG>
     )
 
     target_link_libraries(${TEST_EXE} PRIVATE

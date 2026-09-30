@@ -55,7 +55,6 @@ function(intrinsic_add_test name)
     add_executable(${name} ${name}.cpp)
     target_compile_options(${name} PRIVATE
         $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-        $<$<CONFIG:Release>:-O3 -DNDEBUG>
     )
     target_link_libraries(${name} PRIVATE
         tools_intrinsic

@@ -24,7 +24,7 @@ target_include_directories(llm_deepseek PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc
 target_link_libraries(llm_deepseek PUBLIC llm_chat_completions boost_dll_iface)
 target_compile_options(llm_deepseek PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 set_target_properties(llm_deepseek PROPERTIES
     PREFIX "lib"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/llm")

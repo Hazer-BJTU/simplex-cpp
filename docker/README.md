@@ -90,7 +90,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PWD/stage" \
     -DSIMPLEX_GLIBC_FLOOR=2.34 -DSIMPLEX_OPENSSL_FLOOR=3.0.0 \
     -DSIMPLEX_STRICT_NEEDED=ON -DSIMPLEX_STAGING_DIR="$PWD/stage"
-cmake --build build -j4 && cmake --install build
+cmake --build build -j4 && cmake --install build --strip
 ctest --test-dir build -R portability_floor
 ```
 
@@ -167,15 +167,22 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     -DSIMPLEX_GLIBC_FLOOR=2.34 -DSIMPLEX_OPENSSL_FLOOR=3.0.0 \
     -DSIMPLEX_STRICT_NEEDED=ON -DSIMPLEX_STAGING_DIR=/out/stage
 cmake --build build -j4
-cmake --install build
+cmake --install build --strip
 ```
+
+Release builds use `-Os` by default. Use
+`-DSIMPLEX_RELEASE_OPTIMIZATION=-O3` to restore the previous optimization
+level. `-DSIMPLEX_ENABLE_LTO=ON` enables whole-project link-time optimization
+for Release builds; it is opt-in because it changes link time and peak memory
+use. A few large libraries retain their existing target-local LTO setting
+even when this option is off. `--strip` applies only to installed project
+ELF files; the build tree keeps symbols for tests and debugging.
 
 `cmake --install` produces the release tree:
 
 ```text
 stage/
-├── bin/                  deepseek_chat, llm_deepseek_chat,
-│   │                     tools_deepseek_chat, prompt_template_demo
+├── bin/                  simplex and simplex_worker
 │   ├── schemas/process/  the process tools' YAML declarations plus the
 │   │                     set's skill.yaml (how the five fit together)
 │   ├── schemas/reading/  read_text.yaml and the reading skill.yaml
@@ -189,9 +196,14 @@ Three properties make that tree loadable on a machine that is not this one, and
 all three are decided in `cmake/SimplexRelease.cmake` rather than here:
 
 - **The release set is derived, not enumerated.** Every non-`INTERFACE` target
-  outside a `test/` directory is installed. An explicit list rots quietly: a new
+  outside a `test/` or `example/` directory is installed. An explicit list rots quietly: a new
   module ships nothing until someone remembers to add a line, and nothing fails
   in the meantime.
+- **Examples stay in the build tree.** Release installs omit manual demos by
+  default. `-DSIMPLEX_INSTALL_EXAMPLES=ON` retains them for a manual-test image.
+- **Release symbols are stripped.** `cmake --install build --strip` removes
+  local symbol tables from installed project binaries and shared libraries;
+  the build tree retains symbols for tests and debugging.
 - **`$ORIGIN`-relative RPATHs.** `bin/` gets `$ORIGIN/../lib`, `lib/` gets
   `$ORIGIN` (so a bundled Boost finds the bundled libstdc++ beside it), and each
   plugin gets `$ORIGIN/…/lib` with the count taken from its own directory, so

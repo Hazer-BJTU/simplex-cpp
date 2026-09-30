@@ -7,7 +7,6 @@
 add_executable(test_ws_fetch test_ws_fetch.cpp)
 target_compile_options(test_ws_fetch PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 target_link_libraries(test_ws_fetch PRIVATE
     intercom_iface
@@ -18,7 +17,6 @@ add_test(NAME test_ws_fetch COMMAND test_ws_fetch)
 add_executable(test_ws_client test_ws_client.cpp)
 target_compile_options(test_ws_client PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 target_link_libraries(test_ws_client PRIVATE
     intercom_iface

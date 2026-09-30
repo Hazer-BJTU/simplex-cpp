@@ -9,7 +9,6 @@
 add_executable(test_connection_stream test_connection_stream.cpp)
 target_compile_options(test_connection_stream PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 target_link_libraries(test_connection_stream PRIVATE
     endpoint_lib
@@ -20,7 +19,6 @@ add_test(NAME test_connection_stream COMMAND test_connection_stream)
 add_executable(test_https_stream test_https_stream.cpp)
 target_compile_options(test_https_stream PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
     -Wno-deprecated-declarations
 )
 
@@ -50,7 +48,6 @@ add_test(NAME test_sse_response_handler COMMAND test_sse_response_handler)
 add_executable(test_http_stream test_http_stream.cpp)
 target_compile_options(test_http_stream PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
     -Wno-deprecated-declarations
 )
 target_link_libraries(test_http_stream PRIVATE
@@ -65,7 +62,6 @@ add_test(NAME test_http_stream COMMAND test_http_stream)
 add_executable(test_sse_request test_sse_request.cpp)
 target_compile_options(test_sse_request PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 target_link_libraries(test_sse_request PRIVATE
     endpoint_lib
@@ -78,7 +74,6 @@ add_test(NAME test_sse_request COMMAND test_sse_request)
 add_executable(test_http_request test_http_request.cpp)
 target_compile_options(test_http_request PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 target_link_libraries(test_http_request PRIVATE
     endpoint_lib
@@ -93,7 +88,6 @@ add_test(NAME test_http_request COMMAND test_http_request)
 add_executable(test_complete_once test_complete_once.cpp)
 target_compile_options(test_complete_once PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 target_link_libraries(test_complete_once PRIVATE
     endpoint_lib
@@ -109,7 +103,6 @@ add_test(NAME test_complete_once COMMAND test_complete_once)
 add_executable(test_fetch test_fetch.cpp)
 target_compile_options(test_fetch PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 target_link_libraries(test_fetch PRIVATE
     endpoint_lib

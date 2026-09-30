@@ -17,7 +17,7 @@
 add_executable(llm_deepseek_chat deepseek_chat.cpp)
 target_compile_options(llm_deepseek_chat PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 # llm_chat_completions is named because this demo subscribes to the adapter's
 # reasoning-increment events (llm/compat/chat_completions/events.hpp). The adapter used
 # to be reachable through llm_iface's include directory; now that it lives in

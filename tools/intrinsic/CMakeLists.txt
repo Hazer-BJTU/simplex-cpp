@@ -81,7 +81,7 @@ target_link_libraries(tools_intrinsic PUBLIC
 target_link_libraries(tools_intrinsic PRIVATE yamlconfig_iface textformat_iface)
 target_compile_options(tools_intrinsic PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 set_target_properties(tools_intrinsic PROPERTIES OUTPUT_NAME intrinsic_tools)
 if(LTO_SUPPORT)
     set_target_properties(tools_intrinsic PROPERTIES

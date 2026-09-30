@@ -293,7 +293,19 @@ jobs:
       - name: Stage the release
         # Before ctest, because the floor test scans the staging tree: it is
         # where the bundled runtime lives and where "shipped by us" is decided.
-        run: cmake --install build
+        run: cmake --install build --strip
+
+      - name: Assert the release omits examples and local symbols
+        run: |
+          test ! -e stage/bin/deepseek_chat
+          test ! -e stage/bin/prompt_template_demo
+          test ! -e stage/bin/tools_deepseek_chat
+          test ! -e stage/bin/llm_deepseek_chat
+          test ! -e stage/bin/loop_deepseek_chat
+          if readelf -SW stage/bin/simplex_worker | grep -q '\.symtab'; then
+            echo 'release worker still has a local symbol table'
+            exit 1
+          fi
 
       - name: Assert the release carries the tools' declarations
         # The process tools are DECLARED in YAML files that are loaded at run

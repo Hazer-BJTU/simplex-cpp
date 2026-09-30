@@ -36,7 +36,6 @@ target_include_directories(logging_lib PUBLIC
 )
 target_compile_options(logging_lib PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 # Expose the build's debug status as a PUBLIC compile definition so that
 # logger.hpp — included by consumers — can seed the compile-time constant

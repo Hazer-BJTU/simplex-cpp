@@ -15,7 +15,7 @@ target_include_directories(test_deepseek_dialect PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include")
 target_compile_options(test_deepseek_dialect PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 target_link_libraries(test_deepseek_dialect PRIVATE
     llm_chat_completions Boost::unit_test_framework)
 add_test(NAME test_deepseek_dialect COMMAND test_deepseek_dialect)
@@ -26,7 +26,7 @@ target_include_directories(test_deepseek_model PRIVATE
     "${PROJECT_SOURCE_DIR}/endpoint/test")
 target_compile_options(test_deepseek_model PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 target_link_libraries(test_deepseek_model PRIVATE
     llm_chat_completions endpoint_lib eventbus_iface
     Boost::unit_test_framework)

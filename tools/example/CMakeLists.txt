@@ -39,7 +39,7 @@
 add_executable(tools_deepseek_chat deepseek_chat.cpp agent_loop.cpp)
 target_compile_options(tools_deepseek_chat PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 target_link_libraries(tools_deepseek_chat PRIVATE
     tools_intrinsic_process
     llm_iface

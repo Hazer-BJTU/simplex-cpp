@@ -15,7 +15,6 @@ add_executable(test_event_bus test_event_bus.cpp)
 target_compile_options(test_event_bus PRIVATE
     -pthread
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 target_link_libraries(test_event_bus PRIVATE
     eventbus_iface

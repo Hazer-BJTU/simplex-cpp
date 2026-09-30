@@ -26,7 +26,7 @@ target_include_directories(llm_responses PUBLIC
 target_link_libraries(llm_responses PUBLIC llm_iface endpoint_lib)
 target_compile_options(llm_responses PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 if(LTO_SUPPORT)
     set_target_properties(llm_responses PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
