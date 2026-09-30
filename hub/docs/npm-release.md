@@ -7,9 +7,12 @@ configuration at its executable.
 
 The repository root `VERSION` controls both the worker and Hub versions. A
 `v<VERSION>` tag on `main` runs `.github/workflows/release-worker.yml`. After
-the worker build and cross-system tests pass, that workflow publishes the Hub
-through npm trusted publishing, then publishes the GitHub Release containing
-the worker archive. The Hub package is not uploaded as a second GitHub asset.
+the worker build and cross-system tests pass, that workflow prepares a draft
+GitHub Release with verified worker assets, publishes the Hub through npm
+trusted publishing, then makes the draft public. The Hub package is not
+uploaded as a second GitHub asset. Rerunning a partial release verifies exact
+GitHub asset bytes and npm tarball integrity before continuing; any mismatch
+fails rather than replacing a published artifact.
 
 ## First-time npm setup
 
@@ -51,7 +54,9 @@ Publisher in the package's npm settings:
 The publishing job uses `id-token: write` and requires no npm write token in
 GitHub Secrets. Configure the trust relationship before pushing the release
 tag. Once a version is published, npm does not permit overwriting it; release
-fixes need a new version and tag.
+fixes need a new version and tag. A failed job may be rerun for the same tag
+only when the already-published npm tarball and GitHub assets exactly match
+the tested artifacts. If the files differ, create a new version instead.
 
 ## Package checks
 

@@ -118,12 +118,9 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
 
-  publish-hub:
-    needs: target-test
+  build-hub:
+    needs: validate-tag
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -141,12 +138,58 @@ jobs:
           npm run typecheck
           npm test
           npm run build:release
-      - name: Publish the tested package through npm OIDC
+          mkdir -p hub-release
+          archive=$(npm pack --pack-destination hub-release --ignore-scripts --silent)
+          node scripts/check-release-package.mjs "hub-release/$archive"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hub-release-package
+          path: hub/hub-release/*.tgz
+          retention-days: 7
+
+  prepare-release:
+    needs: [target-test, build-hub]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release
+      - name: Create or verify draft release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node docker/release-worker.mjs prepare worker-release
+
+  publish-hub:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: hub-release-package
+          path: hub/hub-release
+      - name: Publish or verify tested Hub package through npm OIDC
         working-directory: hub
         run: |
-          archive=$(npm pack --pack-destination "$RUNNER_TEMP" --ignore-scripts --silent)
-          node scripts/check-release-package.mjs "$RUNNER_TEMP/$archive"
-          npm publish "$RUNNER_TEMP/$archive" --access public
+          archive=(hub-release/*.tgz)
+          test "${#archive[@]}" -eq 1
+          node scripts/check-release-package.mjs "${archive[0]}"
+          node scripts/publish-release.mjs "${archive[0]}"
 
   publish:
     needs: publish-hub
@@ -161,24 +204,7 @@ jobs:
         with:
           name: worker-release-assets
           path: worker-release
-      - name: Publish verified assets
+      - name: Finalize verified release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          cd worker-release
-          sha256sum -c SHA256SUMS
-          archive=(simplex-worker-*.tar.gz)
-          test "${#archive[@]}" -eq 1
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "release already exists; refusing to overwrite it" >&2
-            exit 1
-          fi
-          gh release create "${GITHUB_REF_NAME}" "${archive[0]}" SHA256SUMS \
-            --repo "${GITHUB_REPOSITORY}" --verify-tag --draft \
-            --title "Simplex ${GITHUB_REF_NAME}" \
-            --notes "Source snapshots are attached automatically by GitHub. The worker asset is for Linux x86_64 (glibc 2.34+, host OpenSSL 3); see README.md inside the archive. The Hub is available separately from npm as @hazer-bjtu/simplex-hub@${GITHUB_REF_NAME#v}."
-          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
-            --dir verified-assets --pattern '*.tar.gz' --pattern SHA256SUMS
-          (cd verified-assets && sha256sum -c SHA256SUMS)
-          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
+        run: node docker/release-worker.mjs finalize worker-release

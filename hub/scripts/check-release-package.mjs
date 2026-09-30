@@ -19,6 +19,9 @@ const allowed = [
     'package/docs/',
 ];
 for (const member of members) {
+    if (member === 'package/docs/panel-redesign-plan.md') {
+        throw new Error('Maintainer design notes must not enter the npm package');
+    }
     if (!allowed.some(prefix => member === prefix ||
         (prefix.endsWith('/') && member.startsWith(prefix)))) {
         throw new Error(`Unexpected file in npm package: ${member}`);

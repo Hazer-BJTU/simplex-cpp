@@ -73,7 +73,7 @@ export interface CreateHubOptions {
     /** Validated hub configuration. */
     config: HubConfig;
     log: Logger;
-    /** Absolute `hub/` directory. */
+    /** Runtime root containing schemas and built panel assets. */
     hubRoot: string;
     version?: string;
     hooks?: HubHooks;

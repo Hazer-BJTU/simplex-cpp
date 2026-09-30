@@ -12,8 +12,9 @@ stage=$(cd -- "$1" && pwd)
 mkdir -p -- "$2"
 output=$(cd -- "$2" && pwd)
 version=$(<"$repo/VERSION")
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "VERSION must contain three numeric components" >&2
+component='(0|[1-9][0-9]*)'
+if [[ ! "$version" =~ ^${component}\.${component}\.${component}$ ]]; then
+    echo "VERSION must contain three numeric components without leading zeros" >&2
     exit 1
 fi
 if [[ "$(uname -m)" != x86_64 ]]; then
@@ -34,7 +35,11 @@ cp -- "$repo/LICENSE" "$tmp/$name/LICENSE"
 cp -a -- "$repo/third_party/license" "$tmp/$name/third_party_licenses"
 cp -- "$repo/docker/WORKER_RELEASE.md" "$tmp/$name/README.md"
 
-tar -C "$tmp" -czf "$output/$name.tar.gz" "$name"
+# Stable metadata makes a rebuilt archive comparable with one uploaded by a
+# previous workflow attempt for the same tag.
+tar -C "$tmp" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+    --pax-option=delete=atime,delete=ctime -cf - "$name" |
+    gzip -n > "$output/$name.tar.gz"
 (
     cd -- "$output"
     sha256sum -- "$name.tar.gz" > SHA256SUMS
