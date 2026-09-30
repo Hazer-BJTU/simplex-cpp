@@ -20,7 +20,7 @@ prerelease from an isolated checkout, leaving the real `0.1.0` for CI:
 ```sh
 git clone https://github.com/Hazer-BJTU/simplex-cpp.git /tmp/simplex-npm-bootstrap
 cd /tmp/simplex-npm-bootstrap/hub
-npm ci --ignore-scripts --allow-remote=all
+npm ci --ignore-scripts --registry=https://registry.npmjs.org
 npm pkg set version=0.0.0-bootstrap.0
 npm run build:release
 archive=$(npm pack --pack-destination /tmp/simplex-npm-bootstrap --ignore-scripts --silent)
@@ -33,10 +33,9 @@ npm publish "/tmp/simplex-npm-bootstrap/$archive" \
 Before the manual publish, inspect the archive with `tar -tzf` and confirm
 that it contains no `data/`, tests, or local configuration. The
 publishing account needs permission to publish under `@hazer-bjtu` and must meet
-npm's authentication requirements. `--allow-remote=all` is needed when npm 12
-sees registry tarball URLs recorded for a different configured registry in the
-lockfile; the lockfile still pins their integrity hashes. Do not manually
-publish `0.1.0`.
+npm's authentication requirements. The lockfile uses the official registry
+host and pins each dependency's integrity hash. Do not manually publish
+`0.1.0`.
 
 After the bootstrap appears on npm, configure its GitHub Actions Trusted
 Publisher in the package's npm settings:
