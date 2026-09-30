@@ -118,8 +118,38 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
 
-  publish:
+  publish-hub:
     needs: target-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - name: Build and test Hub
+        working-directory: hub
+        run: |
+          test "${GITHUB_REF_NAME}" = "v$(cat ../VERSION)"
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run version:check
+          npm run typecheck
+          npm test
+          npm run build:release
+      - name: Publish the tested package through npm OIDC
+        working-directory: hub
+        run: |
+          archive=$(npm pack --pack-destination "$RUNNER_TEMP" --ignore-scripts --silent)
+          node scripts/check-release-package.mjs "$RUNNER_TEMP/$archive"
+          npm publish "$RUNNER_TEMP/$archive" --access public
+
+  publish:
+    needs: publish-hub
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -146,8 +176,8 @@ jobs:
           fi
           gh release create "${GITHUB_REF_NAME}" "${archive[0]}" SHA256SUMS \
             --repo "${GITHUB_REPOSITORY}" --verify-tag --draft \
-            --title "Simplex worker ${GITHUB_REF_NAME}" \
-            --notes "Linux x86_64 worker bundle (glibc 2.34+, host OpenSSL 3). See README.md inside the archive for installation and compatibility."
+            --title "Simplex ${GITHUB_REF_NAME}" \
+            --notes "Source snapshots are attached automatically by GitHub. The worker asset is for Linux x86_64 (glibc 2.34+, host OpenSSL 3); see README.md inside the archive. The Hub is available separately from npm as @hazer/simplex-hub@${GITHUB_REF_NAME#v}."
           gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
             --dir verified-assets --pattern '*.tar.gz' --pattern SHA256SUMS
           (cd verified-assets && sha256sum -c SHA256SUMS)

@@ -148,6 +148,32 @@ jobs:
         working-directory: hub
         run: npm test
 
+      - name: Install the exact Hub npm package
+        working-directory: hub
+        run: |
+          npm run build:release
+          archive=$(npm pack --pack-destination "$RUNNER_TEMP" --ignore-scripts --silent)
+          node scripts/check-release-package.mjs "$RUNNER_TEMP/$archive"
+          npm install -g --prefix "$RUNNER_TEMP/hub-install" \
+            "$RUNNER_TEMP/$archive" --ignore-scripts --no-audit --no-fund
+          test "$("$RUNNER_TEMP/hub-install/bin/simplex-hub" --version)" = "$(cat ../VERSION)"
+          "$RUNNER_TEMP/hub-install/bin/simplex-hub" --help >/dev/null
+          "$RUNNER_TEMP/hub-install/bin/simplex-hub" --mock \
+            --listen 127.0.0.1:8813 --data-dir "$RUNNER_TEMP/packed-hub-data" \
+            >"$RUNNER_TEMP/packed-hub.log" 2>&1 &
+          packed_hub=$!
+          trap 'kill "$packed_hub" 2>/dev/null || true' EXIT
+          ready=false
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:8813/ >"$RUNNER_TEMP/packed-panel.html" 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" = true
+          grep -q '<div id="root">' "$RUNNER_TEMP/packed-panel.html"
+
   # ---------------------------------------------------------------------------
   # hub-panel — the browser half.
   #
