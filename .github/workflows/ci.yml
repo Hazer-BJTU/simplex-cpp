@@ -112,6 +112,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      - name: Check shared project version
+        working-directory: hub
+        run: npm run version:check
+
       - name: Install dependencies
         working-directory: hub
         # npm ci, not install: package-lock.json is committed, so every
@@ -143,6 +147,32 @@ jobs:
         # panel's own asset integrity.
         working-directory: hub
         run: npm test
+
+      - name: Install the exact Hub npm package
+        working-directory: hub
+        run: |
+          npm run build:release
+          archive=$(npm pack --pack-destination "$RUNNER_TEMP" --ignore-scripts --silent)
+          node scripts/check-release-package.mjs "$RUNNER_TEMP/$archive"
+          npm install -g --prefix "$RUNNER_TEMP/hub-install" \
+            "$RUNNER_TEMP/$archive" --ignore-scripts --no-audit --no-fund
+          test "$("$RUNNER_TEMP/hub-install/bin/simplex-hub" --version)" = "$(cat ../VERSION)"
+          "$RUNNER_TEMP/hub-install/bin/simplex-hub" --help >/dev/null
+          "$RUNNER_TEMP/hub-install/bin/simplex-hub" --mock \
+            --listen 127.0.0.1:8813 --data-dir "$RUNNER_TEMP/packed-hub-data" \
+            >"$RUNNER_TEMP/packed-hub.log" 2>&1 &
+          packed_hub=$!
+          trap 'kill "$packed_hub" 2>/dev/null || true' EXIT
+          ready=false
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:8813/ >"$RUNNER_TEMP/packed-panel.html" 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" = true
+          grep -q '<div id="root">' "$RUNNER_TEMP/packed-panel.html"
 
   # ---------------------------------------------------------------------------
   # hub-panel — the browser half.
@@ -339,6 +369,18 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
 
+      - name: Package and check the downloadable worker
+        run: |
+          bash docker/package-worker-release.sh stage worker-release
+          (cd worker-release && sha256sum -c SHA256SUMS)
+          bash docker/check-worker-release.sh worker-release/*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-release-package
+          path: worker-release/
+          retention-days: 1
+
       - name: Pack the build and staging trees
         # tar before upload-artifact: the artifact format does not preserve the
         # executable bit, and a test binary that arrives non-executable fails in
@@ -464,6 +506,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: portable-release
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-release-package
+          path: worker-release
+
+      - name: Check the downloadable archive on this distribution
+        run: |
+          (cd worker-release && sha256sum -c SHA256SUMS)
+          bash docker/check-worker-release.sh worker-release/*.tar.gz
 
       - name: Unpack
         run: tar -xzf portable-release.tar.gz

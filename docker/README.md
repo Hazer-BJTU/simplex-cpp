@@ -173,10 +173,12 @@ cmake --install build --strip
 Release builds use `-Os` by default. Use
 `-DSIMPLEX_RELEASE_OPTIMIZATION=-O3` to restore the previous optimization
 level. `-DSIMPLEX_ENABLE_LTO=ON` enables whole-project link-time optimization
-for Release builds; it is opt-in because it changes link time and peak memory
-use. A few large libraries retain their existing target-local LTO setting
-even when this option is off. `--strip` applies only to installed project
-ELF files; the build tree keeps symbols for tests and debugging.
+for Release builds. The tagged worker release workflow enables it explicitly;
+the CMake option stays off by default for local builds because it changes link
+time and peak memory use. A few large libraries retain their existing
+target-local LTO setting even when this option is off. `--strip` applies only
+to installed project ELF files; the build tree keeps symbols for tests and
+debugging.
 
 `cmake --install` produces the release tree:
 
@@ -226,7 +228,13 @@ then auto-load from a path the release does not control.
 Both CI stages consume exactly this tree. `portable-release` installs into
 `$PWD/stage` and the floor test judges "shipped by us" from it; `staged-runtime`
 unpacks the same build and stage on stock Ubuntu 22.04 and AlmaLinux 9 and runs
-the full suite there.
+the full suite there. CI also packages the untouched stage with
+`docker/package-worker-release.sh` and checks the downloadable archive on both
+target systems. A `v<VERSION>` tag on `main` runs `.github/workflows/release-worker.yml`:
+it repeats the portable Release build with LTO enabled, tests the archive on
+both targets, then publishes the archive and `SHA256SUMS` as a GitHub release.
+The Hub is not part of this worker archive. See `docker/WORKER_RELEASE.md` for
+the instructions included in each download.
 
 
 | Piece | Version | Where | Notes |

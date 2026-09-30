@@ -25,6 +25,12 @@ hub share the direct session-root persistence layout described below.
 
 ## Quick start
 
+For a published installation, run `npm install -g @hazer-bjtu/simplex-hub`, then
+`simplex-hub --help`. The npm package includes
+the web panel but not the C++ worker; set `--worker-bin` to the separately
+installed worker executable. See [npm releases](docs/npm-release.md) for the
+package contents and release process.
+
 ```sh
 cd hub
 npm install

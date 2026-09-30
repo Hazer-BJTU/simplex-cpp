@@ -6,7 +6,7 @@
  * shuts it down cleanly on SIGINT/SIGTERM (worker children are released by the
  * supervisor, not by an abrupt exit).
  */
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigError, hubRoot, loadConfig } from '../src/config.ts';
@@ -175,7 +175,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<
 }
 
 // Only run when executed directly, so tests can import main/parseArguments.
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+// npm exposes the binary through a symlink; Node resolves the module's URL
+// but argv[1] can still name that symlink.
+if (process.argv[1] && existsSync(process.argv[1])
+    && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
     main().then((result) => {
         if (typeof result === 'number') process.exitCode = result;
     }).catch((error: Error) => {

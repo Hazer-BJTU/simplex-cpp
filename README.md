@@ -11,3 +11,4 @@ simplex run --config ./config.yaml --session demo --threads 4
 
 See the [worker guide](core/README.md) for configuration and the
 [hub guide](hub/README.md) for the interactive server and browser panel.
+For release version changes, see [versioning](versioning/README.md).

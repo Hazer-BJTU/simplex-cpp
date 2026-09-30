@@ -30,7 +30,18 @@ if(NOT CMAKE_CXX_COMPILER)
     set(CMAKE_CXX_COMPILER g++-14)
 endif()
 
-project(simplex_cpp VERSION 0.0.1 LANGUAGES CXX)
+# One repository version for the worker and Hub. Keep the input in VERSION so
+# the later tag-based release workflow can compare a tag without parsing CMake.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SIMPLEX_PROJECT_VERSION)
+string(STRIP "${SIMPLEX_PROJECT_VERSION}" SIMPLEX_PROJECT_VERSION)
+if(NOT SIMPLEX_PROJECT_VERSION MATCHES
+        "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
+    message(FATAL_ERROR "VERSION must contain a MAJOR.MINOR.PATCH version")
+endif()
+# file(READ) alone does not make VERSION a CMake reconfigure dependency.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+project(simplex_cpp VERSION "${SIMPLEX_PROJECT_VERSION}" LANGUAGES CXX)
 
 # ---- LTO probe (shared) -----------------------------------------------------
 include(CheckIPOSupported)

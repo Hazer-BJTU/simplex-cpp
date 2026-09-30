@@ -1,16 +1,31 @@
 # versioning
 
-Single source of truth for project version constants. This module owns
-**no compiled code** — it only renders a header template
-(`version.hpp.in`) into a build-time, header-only
-`versioning/version.hpp` via CMake's `configure_file()`.
+The repository root `VERSION` is the single value to edit for a project
+release. It contains exactly `MAJOR.MINOR.PATCH`. CMake
+reads it for the C++ project version and generates the header-only
+`versioning/version.hpp` from `version.hpp.in`. The worker uses that version
+in its prompt signature.
+
+Hub reads its npm package version for `simplex-hub --version` and panel
+metadata. npm requires the version to be present in both `hub/package.json`
+and `hub/package-lock.json`, so these fields are synchronized copies of
+`VERSION`, not separate version decisions. After changing `VERSION`, run:
+
+```bash
+cd hub
+npm run version:sync
+npm run version:check
+```
+
+CI runs `version:check` on the supported Node versions. The synchronization
+script uses only Node built-ins and does not download dependencies.
 
 ## What lives here
 
 | Constant | Source |
 |---|---|
-| `simplex::VERSION_MAJOR/MINOR/PATCH` | top-level `project(simplex_cpp VERSION …)` |
-| `simplex::VERSION_STRING` | `PROJECT_VERSION` |
+| `simplex::VERSION_MAJOR/MINOR/PATCH` | root `VERSION`, read by top-level CMake |
+| `simplex::VERSION_STRING` | root `VERSION`, via `PROJECT_VERSION` |
 | `simplex::TOOLSET_PLUGIN_ABI_VERSION` | `SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
 | `simplex::LOOP_HOOK_PLUGIN_ABI_VERSION` | `SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
 | `simplex::LLM_PLUGIN_ABI_VERSION` | `SIMPLEX_LLM_PLUGIN_ABI_VERSION` in this module's `CMakeLists.txt` |
@@ -20,6 +35,10 @@ loop hooks expose their corresponding constant as `kAbiVersion` in their public
 extension header. For LLM models,
 `llm/include/llm/models.hpp` includes the generated header and aliases
 `simplex::LLM_PLUGIN_ABI_VERSION` as `llm::LLM_PLUGIN_ABI_VERSION`.
+These ABI numbers describe binary compatibility and must change only when the
+corresponding contract changes; they do not follow the project release version.
+The Hub panel protocol and persistence schema versions are likewise separate
+compatibility markers.
 
 ## Consuming the generated header
 
@@ -38,7 +57,7 @@ Then in code:
 ```cpp
 #include "versioning/version.hpp"
 
-std::cout << simplex::VERSION_STRING;             // "0.0.1"
+std::cout << simplex::VERSION_STRING;
 if (plugin->abi_version() != simplex::LLM_PLUGIN_ABI_VERSION) { /* … */ }
 ```
 

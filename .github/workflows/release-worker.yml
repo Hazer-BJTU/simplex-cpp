@@ -1,0 +1,210 @@
+name: Release worker
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Match tag, version, and main
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "v$(cat VERSION)"
+          node versioning/sync_version.mjs --check
+          git rev-parse --verify origin/main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+
+  build:
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3@sha256:0dd632a5fe241db22bac21a600ebc02640049beafad5d34ae049a08215d0206b
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure Release with LTO
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSIMPLEX_ENABLE_LTO=ON \
+            -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+            -DSIMPLEX_BUNDLE_RUNTIME=/opt/simplex-runtime \
+            -DCMAKE_INSTALL_PREFIX="$PWD/stage" \
+            -DSIMPLEX_GLIBC_FLOOR=2.34 \
+            -DSIMPLEX_OPENSSL_FLOOR=3.0.0 \
+            -DSIMPLEX_STRICT_NEEDED=ON \
+            -DSIMPLEX_STAGING_DIR="$PWD/stage"
+      - name: Build, install, and test
+        run: |
+          cmake --build build -j2
+          cmake --install build --strip
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+      - name: Create and verify worker archive
+        run: |
+          bash docker/package-worker-release.sh stage worker-release
+          (cd worker-release && sha256sum -c SHA256SUMS)
+          bash docker/check-worker-release.sh worker-release/*.tar.gz
+      - name: Preserve build tree for target-system tests
+        run: tar -czf release-test-tree.tar.gz build stage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-test-tree
+          path: release-test-tree.tar.gz
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release/
+          retention-days: 7
+
+  target-test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu:22.04, almalinux:9]
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install test prerequisites
+        run: |
+          case "${{ matrix.image }}" in
+            ubuntu:*)
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                cmake binutils ca-certificates
+              ;;
+            almalinux:*)
+              dnf -y install --setopt=install_weak_deps=False \
+                cmake binutils ca-certificates
+              ;;
+            *) exit 1 ;;
+          esac
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-test-tree
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release
+      - name: Test the exact downloadable archive
+        run: |
+          (cd worker-release && sha256sum -c SHA256SUMS)
+          bash docker/check-worker-release.sh worker-release/*.tar.gz
+      - name: Run tests against the installed tree
+        run: |
+          tar -xzf release-test-tree.tar.gz
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+
+  build-hub:
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - name: Build and test Hub
+        working-directory: hub
+        run: |
+          test "${GITHUB_REF_NAME}" = "v$(cat ../VERSION)"
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run version:check
+          npm run typecheck
+          npm test
+          npm run build:release
+          mkdir -p hub-release
+          archive=$(npm pack --pack-destination hub-release --ignore-scripts --silent)
+          node scripts/check-release-package.mjs "hub-release/$archive"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hub-release-package
+          path: hub/hub-release/*.tgz
+          retention-days: 7
+
+  prepare-release:
+    needs: [target-test, build-hub]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release
+      - name: Create or verify draft release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node docker/release-worker.mjs prepare worker-release
+
+  publish-hub:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: hub-release-package
+          path: hub/hub-release
+      - name: Publish or verify tested Hub package through npm OIDC
+        working-directory: hub
+        run: |
+          archive=(hub-release/*.tgz)
+          test "${#archive[@]}" -eq 1
+          node scripts/check-release-package.mjs "${archive[0]}"
+          node scripts/publish-release.mjs "${archive[0]}"
+
+  publish:
+    needs: publish-hub
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release
+      - name: Finalize verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node docker/release-worker.mjs finalize worker-release

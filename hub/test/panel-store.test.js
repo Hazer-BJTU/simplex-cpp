@@ -75,7 +75,7 @@ function session(id = 'demo', extra = {}) {
 function meta(epoch) {
     return {
         name: 'simplex-hub',
-        version: '0.1.0',
+        version: 'test',
         protocol: { name: 'simplex-hub-panel', version: 1 },
         worker_protocol: '1',
         capabilities: ['transcript-replay', 'transcript-epoch', 'global-confirmations'],

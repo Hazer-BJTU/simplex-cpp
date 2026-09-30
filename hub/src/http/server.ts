@@ -156,7 +156,7 @@ export interface HubHttpServer {
 export interface HttpServerOptions {
     config: HubConfig;
     log: Logger;
-    /** Absolute `hub/` directory. */
+    /** Runtime root containing the built panel assets. */
     hubRoot: string;
     /** Optional separate listener; defaults to the panel/event address. */
     listen?: { host: string; port: number };

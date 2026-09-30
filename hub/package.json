@@ -1,21 +1,42 @@
 {
-  "name": "simplex-hub",
+  "name": "@hazer-bjtu/simplex-hub",
   "version": "0.1.0",
-  "private": true,
   "description": "Worker hub and web panel for simplex_worker sessions",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hazer-BJTU/simplex-cpp.git",
+    "directory": "hub"
+  },
+  "homepage": "https://github.com/Hazer-BJTU/simplex-cpp/tree/main/hub",
+  "bugs": "https://github.com/Hazer-BJTU/simplex-cpp/issues",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.18"
   },
   "bin": {
-    "simplex-hub": "./bin/simplex-hub.ts"
+    "simplex-hub": "./dist/bin/simplex-hub.js"
   },
+  "files": [
+    "dist/",
+    "docs/configurations.md",
+    "docs/hub-protocol.md",
+    "docs/npm-release.md",
+    "docs/worker-adapter.md",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node bin/simplex-hub.ts",
     "dev": "node --watch bin/simplex-hub.ts",
     "dev:panel": "vite",
     "build": "vite build",
+    "build:release": "npm run build && node scripts/stage-release.mjs --prepare && tsc -p tsconfig.release.json && node scripts/stage-release.mjs",
+    "version:check": "node ../versioning/sync_version.mjs --check",
+    "version:sync": "node ../versioning/sync_version.mjs --write",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json && tsc -p test/browser/tsconfig.json",
     "test": "node --test test/*.test.js",
     "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.js",

@@ -18,7 +18,7 @@ import type { Scenario } from './mock/provider.ts';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** Absolute path of the `hub/` package directory. */
+/** Runtime asset root: `hub/` in source, `hub/dist/` in the installed package. */
 export const hubRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Configuration error raised for unusable files or values. */
