@@ -22,7 +22,7 @@
 add_executable(test_llm_models test_models.cpp)
 target_compile_options(test_llm_models PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 target_link_libraries(test_llm_models PRIVATE llm_iface Boost::unit_test_framework)
 add_test(NAME test_llm_models COMMAND test_llm_models)
 

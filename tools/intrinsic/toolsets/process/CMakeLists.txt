@@ -85,7 +85,7 @@ target_compile_definitions(tools_intrinsic_process PRIVATE
 install(DIRECTORY schemas/ DESTINATION bin/schemas/process)
 target_compile_options(tools_intrinsic_process PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 set_target_properties(tools_intrinsic_process PROPERTIES
     OUTPUT_NAME intrinsic_process_tools)
 if(LTO_SUPPORT)

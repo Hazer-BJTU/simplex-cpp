@@ -27,7 +27,7 @@ add_test(NAME test_chat_completions_interpreter
 add_executable(test_tool_result_correlation test_tool_result_correlation.cpp)
 target_compile_options(test_tool_result_correlation PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 target_link_libraries(test_tool_result_correlation PRIVATE
     llm_chat_completions tools_iface Boost::unit_test_framework)
 add_test(NAME test_tool_result_correlation
@@ -66,7 +66,7 @@ target_include_directories(test_chat_completions_concurrency PRIVATE
     "${PROJECT_SOURCE_DIR}/endpoint/test")
 target_compile_options(test_chat_completions_concurrency PRIVATE -pthread
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 target_link_libraries(test_chat_completions_concurrency PRIVATE
     llm_chat_completions endpoint_lib eventbus_iface
     Boost::unit_test_framework)

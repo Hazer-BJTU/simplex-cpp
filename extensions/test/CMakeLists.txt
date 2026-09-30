@@ -29,7 +29,6 @@
 
 set(_ext_test_opts
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 
 # --- toy DSO for the dynamic-loading test ------------------------------------

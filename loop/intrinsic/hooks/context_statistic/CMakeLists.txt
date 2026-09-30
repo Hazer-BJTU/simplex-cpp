@@ -4,7 +4,7 @@ target_include_directories(loop_intrinsic_context_statistic PUBLIC
 target_link_libraries(loop_intrinsic_context_statistic PUBLIC loop_intrinsic)
 target_compile_options(loop_intrinsic_context_statistic PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 set_target_properties(loop_intrinsic_context_statistic PROPERTIES
     OUTPUT_NAME intrinsic_loop_context_statistic)
 

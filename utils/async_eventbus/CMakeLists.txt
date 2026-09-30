@@ -27,7 +27,7 @@ set_target_properties(async_eventbus_lib PROPERTIES OUTPUT_NAME async_eventbus)
 target_link_libraries(async_eventbus_lib PRIVATE asio_iface)
 target_compile_options(async_eventbus_lib PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 
 add_library(async_eventbus_iface INTERFACE)
 target_include_directories(async_eventbus_iface INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")

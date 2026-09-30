@@ -37,6 +37,30 @@ include(CheckIPOSupported)
 check_ipo_supported(RESULT LTO_SUPPORT OUTPUT LTO_CHECK_OUTPUT)
 message(STATUS "Check LTO support: ${LTO_SUPPORT}")
 
+# A few dependency-heavy targets already opt into LTO locally. This switch
+# extends it to every Release target so the size/build-time tradeoff can be
+# chosen explicitly without changing the tested default.
+option(SIMPLEX_ENABLE_LTO "Enable whole-project LTO for Release builds" OFF)
+if(SIMPLEX_ENABLE_LTO)
+    if(NOT LTO_SUPPORT)
+        message(FATAL_ERROR "Release LTO is unavailable: ${LTO_CHECK_OUTPUT}")
+    endif()
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+endif()
+
+set(SIMPLEX_RELEASE_OPTIMIZATION "-Os" CACHE STRING
+    "Release optimization level (-O3 or -Os)")
+set_property(CACHE SIMPLEX_RELEASE_OPTIMIZATION PROPERTY STRINGS "-O3" "-Os")
+if(NOT SIMPLEX_RELEASE_OPTIMIZATION MATCHES "^-O(3|s)$")
+    message(FATAL_ERROR
+        "SIMPLEX_RELEASE_OPTIMIZATION must be -O3 or -Os")
+endif()
+# CMake's built-in Release flags include -O3 and -DNDEBUG. Append the chosen
+# optimization level after them for every target, including targets that never
+# declared their own compile options. Module-level Release flag duplicates are
+# deliberately absent so they cannot override this choice.
+add_compile_options($<$<CONFIG:Release>:${SIMPLEX_RELEASE_OPTIMIZATION}>)
+
 # ---- Language standard (shared) --------------------------------------------
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

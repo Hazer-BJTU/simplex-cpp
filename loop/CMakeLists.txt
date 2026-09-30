@@ -14,7 +14,7 @@ target_link_libraries(loop_lib PUBLIC
 set_target_properties(loop_lib PROPERTIES OUTPUT_NAME agent_loop)
 target_compile_options(loop_lib PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 
 if(BUILD_TESTS)
     add_subdirectory(test)

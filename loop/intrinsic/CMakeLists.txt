@@ -9,7 +9,7 @@ target_compile_definitions(loop_intrinsic PRIVATE
     SIMPLEX_LOOP_HOOK_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/hooks")
 target_compile_options(loop_intrinsic PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 set_target_properties(loop_intrinsic PROPERTIES OUTPUT_NAME intrinsic_loop_hooks)
 
 # One call in each concrete hook package's CMakeLists. As with process tools,

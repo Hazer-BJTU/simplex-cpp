@@ -49,7 +49,7 @@ target_link_libraries(yamlconfig_lib PRIVATE simplex_thirdparty_iface yaml-cpp)
 target_link_options(yamlconfig_lib PRIVATE "LINKER:--exclude-libs,ALL")
 target_compile_options(yamlconfig_lib PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 if(LTO_SUPPORT)
     set_target_properties(yamlconfig_lib PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE

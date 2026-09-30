@@ -25,7 +25,7 @@ target_include_directories(eventbus_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/incl
 set_target_properties(eventbus_lib PROPERTIES OUTPUT_NAME eventbus)
 target_compile_options(eventbus_lib PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 
 add_library(eventbus_iface INTERFACE)
 target_include_directories(eventbus_iface INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")

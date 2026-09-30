@@ -20,7 +20,7 @@ set_target_properties(asio_lib PROPERTIES OUTPUT_NAME asio)
 target_link_libraries(asio_lib PRIVATE Boost::headers openssl_iface)
 target_compile_options(asio_lib PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 
 add_library(asio_iface INTERFACE)
 target_compile_definitions(asio_iface INTERFACE BOOST_ASIO_SEPARATE_COMPILATION)

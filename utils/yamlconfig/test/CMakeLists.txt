@@ -15,6 +15,6 @@
 add_executable(test_yaml_json test_yaml_json.cpp)
 target_compile_options(test_yaml_json PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>)
+)
 target_link_libraries(test_yaml_json PRIVATE yamlconfig_iface Boost::unit_test_framework)
 add_test(NAME test_yaml_json COMMAND test_yaml_json)

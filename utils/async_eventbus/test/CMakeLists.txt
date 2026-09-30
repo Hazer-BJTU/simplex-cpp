@@ -27,7 +27,6 @@
 
 set(_ab_test_opts
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
-    $<$<CONFIG:Release>:-O3 -DNDEBUG>
 )
 
 # --- in-process unit tests ----------------------------------------------------
