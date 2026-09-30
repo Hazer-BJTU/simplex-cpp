@@ -16,6 +16,8 @@
     "dev": "node --watch bin/simplex-hub.ts",
     "dev:panel": "vite",
     "build": "vite build",
+    "version:check": "node ../versioning/sync_version.mjs --check",
+    "version:sync": "node ../versioning/sync_version.mjs --write",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json && tsc -p test/browser/tsconfig.json",
     "test": "node --test test/*.test.js",
     "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.js",

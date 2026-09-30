@@ -112,6 +112,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      - name: Check shared project version
+        working-directory: hub
+        run: npm run version:check
+
       - name: Install dependencies
         working-directory: hub
         # npm ci, not install: package-lock.json is committed, so every

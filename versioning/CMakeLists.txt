@@ -10,9 +10,9 @@
 # `simplex_versioning` — that is the single, supported way (the project manages
 # all header paths through interface targets, not directory-scope variables).
 #
-# The project version comes from the top-level project(VERSION ...); this file
-# adds independent LLM, toolset, and loop-hook ABI constants and renders
-# the header.
+# The project version comes from root VERSION through the top-level project()
+# call; this file adds independent LLM, toolset, and loop-hook ABI constants
+# and renders the header.
 # =============================================================================
 
 # ---- Module-owned version constants -----------------------------------------
