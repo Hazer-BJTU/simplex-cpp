@@ -1,0 +1,154 @@
+name: Release worker
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Match tag, version, and main
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "v$(cat VERSION)"
+          node versioning/sync_version.mjs --check
+          git rev-parse --verify origin/main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+
+  build:
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3@sha256:0dd632a5fe241db22bac21a600ebc02640049beafad5d34ae049a08215d0206b
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure Release with LTO
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSIMPLEX_ENABLE_LTO=ON \
+            -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+            -DSIMPLEX_BUNDLE_RUNTIME=/opt/simplex-runtime \
+            -DCMAKE_INSTALL_PREFIX="$PWD/stage" \
+            -DSIMPLEX_GLIBC_FLOOR=2.34 \
+            -DSIMPLEX_OPENSSL_FLOOR=3.0.0 \
+            -DSIMPLEX_STRICT_NEEDED=ON \
+            -DSIMPLEX_STAGING_DIR="$PWD/stage"
+      - name: Build, install, and test
+        run: |
+          cmake --build build -j2
+          cmake --install build --strip
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+      - name: Create and verify worker archive
+        run: |
+          bash docker/package-worker-release.sh stage worker-release
+          (cd worker-release && sha256sum -c SHA256SUMS)
+          bash docker/check-worker-release.sh worker-release/*.tar.gz
+      - name: Preserve build tree for target-system tests
+        run: tar -czf release-test-tree.tar.gz build stage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-test-tree
+          path: release-test-tree.tar.gz
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release/
+          retention-days: 7
+
+  target-test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu:22.04, almalinux:9]
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install test prerequisites
+        run: |
+          case "${{ matrix.image }}" in
+            ubuntu:*)
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                cmake binutils ca-certificates
+              ;;
+            almalinux:*)
+              dnf -y install --setopt=install_weak_deps=False \
+                cmake binutils ca-certificates
+              ;;
+            *) exit 1 ;;
+          esac
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-test-tree
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release
+      - name: Test the exact downloadable archive
+        run: |
+          (cd worker-release && sha256sum -c SHA256SUMS)
+          bash docker/check-worker-release.sh worker-release/*.tar.gz
+      - name: Run tests against the installed tree
+        run: |
+          tar -xzf release-test-tree.tar.gz
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+
+  publish:
+    needs: target-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd worker-release
+          sha256sum -c SHA256SUMS
+          archive=(simplex-worker-*.tar.gz)
+          test "${#archive[@]}" -eq 1
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "release already exists; refusing to overwrite it" >&2
+            exit 1
+          fi
+          gh release create "${GITHUB_REF_NAME}" "${archive[0]}" SHA256SUMS \
+            --repo "${GITHUB_REPOSITORY}" --verify-tag --draft \
+            --title "Simplex worker ${GITHUB_REF_NAME}" \
+            --notes "Linux x86_64 worker bundle (glibc 2.34+, host OpenSSL 3). See README.md inside the archive for installation and compatibility."
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --dir verified-assets --pattern '*.tar.gz' --pattern SHA256SUMS
+          (cd verified-assets && sha256sum -c SHA256SUMS)
+          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
