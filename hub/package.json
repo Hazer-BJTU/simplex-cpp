@@ -1,5 +1,5 @@
 {
-  "name": "@hazer/simplex-hub",
+  "name": "@hazer-bjtu/simplex-hub",
   "version": "0.1.0",
   "description": "Worker hub and web panel for simplex_worker sessions",
   "type": "module",

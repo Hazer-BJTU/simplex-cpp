@@ -177,7 +177,7 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" "${archive[0]}" SHA256SUMS \
             --repo "${GITHUB_REPOSITORY}" --verify-tag --draft \
             --title "Simplex ${GITHUB_REF_NAME}" \
-            --notes "Source snapshots are attached automatically by GitHub. The worker asset is for Linux x86_64 (glibc 2.34+, host OpenSSL 3); see README.md inside the archive. The Hub is available separately from npm as @hazer/simplex-hub@${GITHUB_REF_NAME#v}."
+            --notes "Source snapshots are attached automatically by GitHub. The worker asset is for Linux x86_64 (glibc 2.34+, host OpenSSL 3); see README.md inside the archive. The Hub is available separately from npm as @hazer-bjtu/simplex-hub@${GITHUB_REF_NAME#v}."
           gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
             --dir verified-assets --pattern '*.tar.gz' --pattern SHA256SUMS
           (cd verified-assets && sha256sum -c SHA256SUMS)

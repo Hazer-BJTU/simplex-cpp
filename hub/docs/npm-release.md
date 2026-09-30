@@ -1,6 +1,6 @@
 # Publishing the Hub to npm
 
-The public npm package is `@hazer/simplex-hub`. It includes the Hub server,
+The public npm package is `@hazer-bjtu/simplex-hub`. It includes the Hub server,
 configuration templates, and built browser panel. It does not include the C++
 worker. Install the worker separately and point `--worker-bin` or a saved launch
 configuration at its executable.
@@ -14,22 +14,29 @@ the worker archive. The Hub package is not uploaded as a second GitHub asset.
 ## First-time npm setup
 
 The package must already exist before npm can accept a trusted publisher. For
-the first release, the owner of the `@hazer` npm scope should publish a
+the first release, the owner of the `@hazer-bjtu` npm scope should publish a
 prerelease from an isolated checkout, leaving the real `0.1.0` for CI:
 
 ```sh
 git clone https://github.com/Hazer-BJTU/simplex-cpp.git /tmp/simplex-npm-bootstrap
 cd /tmp/simplex-npm-bootstrap/hub
-npm ci
+npm ci --ignore-scripts --allow-remote=all
 npm pkg set version=0.0.0-bootstrap.0
 npm run build:release
-npm publish --access public --tag bootstrap
+archive=$(npm pack --pack-destination /tmp/simplex-npm-bootstrap --ignore-scripts --silent)
+node scripts/check-release-package.mjs "/tmp/simplex-npm-bootstrap/$archive"
+npm login --registry=https://registry.npmjs.org
+npm publish "/tmp/simplex-npm-bootstrap/$archive" \
+    --registry=https://registry.npmjs.org --access public --tag bootstrap
 ```
 
-Before the manual publish, inspect the archive with `npm pack --dry-run` and
-confirm that it contains no `data/`, tests, or local configuration. The
-publishing account needs permission to publish under `@hazer` and must meet
-npm's authentication requirements. Do not manually publish `0.1.0`.
+Before the manual publish, inspect the archive with `tar -tzf` and confirm
+that it contains no `data/`, tests, or local configuration. The
+publishing account needs permission to publish under `@hazer-bjtu` and must meet
+npm's authentication requirements. `--allow-remote=all` is needed when npm 12
+sees registry tarball URLs recorded for a different configured registry in the
+lockfile; the lockfile still pins their integrity hashes. Do not manually
+publish `0.1.0`.
 
 After the bootstrap appears on npm, configure its GitHub Actions Trusted
 Publisher in the package's npm settings:
