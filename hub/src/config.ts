@@ -134,7 +134,7 @@ export function defaultConfig(): HubConfig {
         dataDir: resolve(homedir(), '.simplex', 'hub'),
         // Empty string disables panel authentication. Non-loopback listeners
         // require a token (validated below): the worker-facing payload channel
-        // is an approval authority (core/docs/worker-protocol.md).
+        // is an approval authority (docs/core/worker-protocol.md).
         panel: { token: '' },
         worker: {
             bin: '../build/bin/simplex_worker',
@@ -149,7 +149,7 @@ export function defaultConfig(): HubConfig {
             confirmationTimeoutMs: 120000,
             hubRemoteCall: true,
             // Transport settings copied into every generated worker config;
-            // the defaults are the worker's own (core/docs/worker-protocol.md).
+            // the defaults are the worker's own (docs/core/worker-protocol.md).
             payloadCapacity: 256,
             signalCapacity: 256,
             writeCapacity: 256,
@@ -457,7 +457,7 @@ export function validateConfig(config: HubConfig): HubConfig {
     if (!localOnly && config.panel.token.length === 0) {
         throw new ConfigError(
             `listen.host ${config.listen.host} is not loopback: set panel.token, because a `
-            + 'payload channel grants tool-approval authority (core/docs/worker-protocol.md)');
+            + 'payload channel grants tool-approval authority (docs/core/worker-protocol.md)');
     }
 
     const worker = config.worker;

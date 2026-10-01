@@ -32,8 +32,8 @@ Options:
   -h, --help                     show this message
   -V, --version                  show the hub version
 
-The worker-facing endpoints are documented in core/docs/worker-protocol.md;
-the panel API is documented in hub/docs/hub-protocol.md.
+The worker-facing endpoints are documented in docs/core/worker-protocol.md;
+the panel API is documented in docs/hub/hub-protocol.md.
 `;
 
 /** Read the hub package version without importing JSON modules. */

@@ -15,7 +15,7 @@ import { workerEvent } from './helpers/worker.js';
 
 describe('event vocabulary', () => {
     it('covers every event core documents', () => {
-        // Mirrors the "Worker events" table in core/docs/worker-protocol.md.
+        // Mirrors the "Worker events" table in docs/core/worker-protocol.md.
         const documented = [
             'ready', 'status', 'options', 'history', 'history_error',
             'input_admitted', 'input_rejected',

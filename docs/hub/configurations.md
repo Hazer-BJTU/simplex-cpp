@@ -93,7 +93,7 @@ are never replaced by startup. Worker templates are bundled from
 
 ## Launch configuration
 
-See [`schemas/local.jsonc`](../schemas/local.jsonc) for a commented example.
+See [`schemas/local.jsonc`](../../hub/schemas/local.jsonc) for a commented example.
 
 | Field | Meaning |
 | --- | --- |

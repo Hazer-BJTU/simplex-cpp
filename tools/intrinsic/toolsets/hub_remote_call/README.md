@@ -57,4 +57,4 @@ side effects before registration. Unknown routes remain not_implemented.
 Schemas and the concise skill are installed in `bin/schemas/hub_remote_call`.
 The loader uses that installation directory, then its source-tree fallback;
 `SIMPLEX_HUB_REMOTE_CALL_SCHEMA_DIR` can override it. The worker wire contract is
-in [the protocol](../../../../core/docs/worker-protocol.md#remote-tool-requests).
+in [the protocol](../../../../docs/core/worker-protocol.md#remote-tool-requests).

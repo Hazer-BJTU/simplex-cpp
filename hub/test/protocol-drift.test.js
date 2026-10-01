@@ -1,7 +1,7 @@
 /**
  * @file protocol drift: the hub's vocabulary against the core document.
  *
- * `core/docs/worker-protocol.md` is the authoritative contract, and the hub
+ * `docs/core/worker-protocol.md` is the authoritative contract, and the hub
  * keeps its own copies of that vocabulary (the event table, the signal
  * operations, the accepted content types and option categories). A copy can
  * drift silently: the hub would keep working, its tests would keep passing, and
@@ -34,7 +34,7 @@ import {
     normalizeOptions,
 } from '../src/protocol/messages.ts';
 
-const DOC_PATH = join(hubRoot, '..', 'core', 'docs', 'worker-protocol.md');
+const DOC_PATH = join(hubRoot, '..', 'docs', 'core', 'worker-protocol.md');
 const available = existsSync(DOC_PATH);
 const skip = available ? false : `core documentation not present at ${DOC_PATH}`;
 
@@ -111,7 +111,7 @@ describe('worker protocol drift', { skip }, () => {
         const rows = firstTable(section(readDocument(), '## Worker events'), 'the worker events table');
         const documented = rows.map((row) => identifier(row[0])).sort();
         assert.deepEqual([...KNOWN_EVENTS].sort(), documented,
-            'the hub\'s event vocabulary and core/docs/worker-protocol.md disagree');
+            'the hub\'s event vocabulary and docs/core/worker-protocol.md disagree');
         // Every hub-supported event needs a rendering hint. Worker-only events
         // use the existing unknown-event display until the follow-up rollout.
         for (const name of documented) {

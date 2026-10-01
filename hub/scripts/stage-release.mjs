@@ -20,5 +20,24 @@ for (const resource of ['schemas', 'web/dist']) {
     rmSync(destination, { recursive: true, force: true });
     cpSync(resolve(root, resource), destination, { recursive: true });
 }
+// Documentation sources live at the repository root; only public references
+// are staged into the npm artifact, alongside the compiled application.
+const docs = resolve(dist, 'docs');
+rmSync(docs, { recursive: true, force: true });
+for (const section of ['core', 'hub']) {
+    mkdirSync(resolve(docs, section), { recursive: true });
+}
+for (const file of ['index.md', 'worker-protocol.md']) {
+    const source = resolve(root, '..', 'docs', 'core', file);
+    const content = readFileSync(source, 'utf8').replaceAll(
+        '../../load/README.md',
+        'https://github.com/Hazer-BJTU/simplex-cpp/blob/main/load/README.md');
+    writeFileSync(resolve(docs, 'core', file), content);
+}
+for (const file of ['configurations.md', 'hub-protocol.md', 'npm-release.md', 'worker-adapter.md']) {
+    const source = resolve(root, '..', 'docs', 'hub', file);
+    const content = readFileSync(source, 'utf8').replaceAll('../../hub/schemas/', '../../schemas/');
+    writeFileSync(resolve(docs, 'hub', file), content);
+}
 const { name, version } = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 writeFileSync(resolve(dist, 'package.json'), `${JSON.stringify({ name, version, type: 'module' }, null, 2)}\n`);

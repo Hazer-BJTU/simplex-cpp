@@ -3,7 +3,7 @@
 How this hub implements the worker-facing contract, and what it deliberately
 leaves to the deployment.
 
-[`core/docs/worker-protocol.md`](../../core/docs/worker-protocol.md) is the
+[`docs/core/worker-protocol.md`](../core/worker-protocol.md) is the
 authoritative wire contract. This page does not restate it: it records which
 module implements each part, which test covers it, where behaviour is
 deliberately different, and what is missing. When the two disagree, the core

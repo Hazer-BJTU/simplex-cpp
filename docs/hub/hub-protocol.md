@@ -5,7 +5,7 @@ with the hub to manage sessions, read worker events, answer confirmations, and
 control worker processes.
 
 This is **not** the worker protocol. The worker-facing contract stays in
-[`core/docs/worker-protocol.md`](../../core/docs/worker-protocol.md); a browser
+[`docs/core/worker-protocol.md`](../core/worker-protocol.md); a browser
 never speaks it, because the worker-facing payload channel is an approval
 authority and must stay a deployment-trusted endpoint. How the hub implements
 the worker side is described in [worker-adapter.md](worker-adapter.md).

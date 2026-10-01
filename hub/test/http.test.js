@@ -53,7 +53,7 @@ describe('http front door', () => {
         assert.equal(body.name, 'simplex-hub');
         assert.equal(body.version, 'test');
         assert.deepEqual(body.protocol, { name: 'simplex-hub-panel', version: 1 });
-        assert.equal(body.worker_protocol, 'core/docs/worker-protocol.md');
+        assert.equal(body.worker_protocol, 'docs/core/worker-protocol.md');
         assert.deepEqual(body.launcher, {
             kind: 'simplex-worker',
             owns_config: false,

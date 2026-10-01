@@ -3,7 +3,7 @@
  *
  * Route: `GET /agent/<session_id>/confirm?token=<session token>`.
  *
- * Per core/docs/worker-protocol.md the worker opens one WebSocket per
+ * Per docs/core/worker-protocol.md the worker opens one WebSocket per
  * confirmation, sends exactly one request, awaits exactly one response, and
  * then closes. Several confirmations may be in flight at once for one session,
  * so this route is deliberately independent of the event connection and of

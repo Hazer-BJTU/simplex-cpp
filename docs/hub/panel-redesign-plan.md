@@ -34,7 +34,7 @@
 - 清晰的模块边界：`http/`（传输）、`panel/`（面板协议）、`worker/`（worker 协议适配）、`state/`（注册表/转录/持久化）、`launch/`（进程监管）。
 - 一个真正版本化的面板协议：`PANEL_PROTOCOL = {name, version: 1}`，每条消息带 `v:1`，未知字段保留、未知类型忽略。
 - **已经存在、但前端从未读取的 `capabilities`**（`src/hub.js:26-32`）：`worker-events`、`confirmations`、`supervisor`、`transcript-replay`、`snapshot-view`。这是现成的扩展接缝。
-- 一道少见的防线：`test/protocol-drift.test.js` 解析 `core/docs/worker-protocol.md`，core 新增事件/信号/选项类别而 hub 不认识时直接失败。
+- 一道少见的防线：`test/protocol-drift.test.js` 解析 `docs/core/worker-protocol.md`，core 新增事件/信号/选项类别而 hub 不认识时直接失败。
 - JSDoc 注释密度很高，TS 迁移时签名基本是现成的。
 
 #### P0：进程崩溃缺陷（已实测复现，与前端无关）
@@ -269,7 +269,7 @@ B1 与 B2 的共同根因是 `void someAsync()` 这种"发射后不管"的调用
 
 **P4 追加**：连"将来"也未必到来。P4 把前端 store 写成 **vanilla Zustand**（`zustand/vanilla`，React 绑定单独放在 `web/src/state/usePanel.ts`），于是 A2/D19/D20/D23 这些规则用 `node --test` 就测得了，不需要 jsdom；组件行为则由 Playwright 在**真实浏览器**里验证，比 jsdom 更真。所以 `vitest` 目前**仍是一个没有任何脚本使用的 devDependency**。留着它的理由是"下一个真正需要隔离 DOM 的组件测试不必重新决策"，但这是明确的取舍而不是疏忽——若确认不需要，删掉它只是 `package.json` 的一行。
 
-现有测试的**长处**值得保留：worker 协议 drift（解析 `core/docs/worker-protocol.md`）、确认身份判定（fail-closed）、pid 复用的 fail-closed 采纳、协议优先停止、重放游标语义、未知事件容错、四条鉴权边界、静态路径封闭、"不注入 HTML"。这些不变量在重构中一条都不能丢。
+现有测试的**长处**值得保留：worker 协议 drift（解析 `docs/core/worker-protocol.md`）、确认身份判定（fail-closed）、pid 复用的 fail-closed 采纳、协议优先停止、重放游标语义、未知事件容错、四条鉴权边界、静态路径封闭、"不注入 HTML"。这些不变量在重构中一条都不能丢。
 
 **当前的空白**（重构要顺带补上）：`bin/` 的 CLI 在 P0 前完全无测试（**两条崩溃路径都在它的可达范围内**）；面板协议没有 drift 测试；并发 start/restart；采纳监控的清理；关闭后转录重开；日志流错误路径；pid 文件陈旧；面板 4 MiB 边界；`hub.stop()` 重入；跨 hub 重启的重放。
 
@@ -351,7 +351,7 @@ Docker（`docker/Dockerfile.hub-test`）加前端构建步骤；`hub/web/dist` �
 
 ### 4.1 先划清一条边界（必须诚实说明）
 
-**真正的流式输出在 Worker 协议里不存在**：`core/docs/worker-protocol.md` 只定义了一次性的 `model_response`，没有 token 级增量事件。C++ 侧不改，hub 就**无法**提供真流式。
+**真正的流式输出在 Worker 协议里不存在**：`docs/core/worker-protocol.md` 只定义了一次性的 `model_response`，没有 token 级增量事件。C++ 侧不改，hub 就**无法**提供真流式。
 
 面板侧能做的：完整回复到达后的渐进呈现动画、工具执行期间的真实状态。**这不能伪装成流式**——否则用户以为模型在逐字输出，实际是等了几秒后一次性吐出。
 
@@ -449,7 +449,7 @@ P2 落地后的状态：
 | `reasoning` | 默认折叠的"思考"区块（现在是 `<details>`，保留思路，改进样式） |
 | 工具调用 | 卡片：图标 + 工具名 + 状态（待确认/执行中/成功/失败）+ 耗时；`run_command` 用 shell 高亮显示命令本身而非 JSON |
 
-> **P5 实测后的修正**：状态做全了（待确认 / 运行中 / ok / failed / 未执行 / 无结果上报，六态而非四态）；"耗时"**没有**做成工具耗时——worker 协议没有 per-tool start/finish 事件（`core/docs/worker-protocol.md` 明说不定义）。卡片显示的是两件可以负责的事：工具自己在输出里报的 `running_milliseconds`（标注为"工具自己报告的"），以及从提议信封到结果信封的墙钟（标注为 proposal → result）。图标留到 P7 的图标体系一起做。 |
+> **P5 实测后的修正**：状态做全了（待确认 / 运行中 / ok / failed / 未执行 / 无结果上报，六态而非四态）；"耗时"**没有**做成工具耗时——worker 协议没有 per-tool start/finish 事件（`docs/core/worker-protocol.md` 明说不定义）。卡片显示的是两件可以负责的事：工具自己在输出里报的 `running_milliseconds`（标注为"工具自己报告的"），以及从提议信封到结果信封的墙钟（标注为 proposal → result）。图标留到 P7 的图标体系一起做。 |
 | 工具结果 | stdout/stderr 分流；错误红色左边框；超长折叠 + "展开全部" |
 
 > **P5 实测后的修正**："分流"在协议层面**不存在**——协议原文是"these are not separate transport streams"，进程工具只是把 stdout/stderr 渲染成同一段文本里的具名段落。所以做的是**按结构读那段文本**（`toolOutput.ts` 识别 `[[field]]: value` 与 `name (N bytes):` 两种段落），识别不了就原样显示，并保留"raw output"开关。而生产者自己的头文件写着这些标记"不是机器协议、不是安全边界"，所以这里只把它们当**显示**线索用，不从里面推导成功/失败/安全性。 |
@@ -511,7 +511,7 @@ P4 之前不做视觉改动；P4–P7 期间旧面板保持可用（Vite 产物�
 修法不是放宽 hub，而是代理不改写 `Host`（`vite.config.ts` 的 `hubProxy`）。同时给 `stub-hub.mjs` 加了同一条校验：一个不检查 `Origin` 的桩服务会让这个错误只在真实 hub 上出现，那正是"测试通过、产品失败"的形状。
 
 **N3 · 操作者自己发的消息，worker 协议不回传。**
-`input_admitted` 与 `input_committed` 的 `data` 都是 `{}`（`core/docs/worker-protocol.md` 的事件表），模型侧的 `model_response` 也不含用户消息。所以**面板是这段话唯一存在的地方**：P4 因此加了一个 outbox 项，按面板自己生成的 `request_id` 与 `input_admitted` 对上；刷新之后它就没有了，重放里只剩一条"用户输入——worker 协议不报告其文本"的占位。这不是前端能修的，也不该假装能修。
+`input_admitted` 与 `input_committed` 的 `data` 都是 `{}`（`docs/core/worker-protocol.md` 的事件表），模型侧的 `model_response` 也不含用户消息。所以**面板是这段话唯一存在的地方**：P4 因此加了一个 outbox 项，按面板自己生成的 `request_id` 与 `input_admitted` 对上；刷新之后它就没有了，重放里只剩一条"用户输入——worker 协议不报告其文本"的占位。这不是前端能修的，也不该假装能修。
 
 **N4（小）· `tool_calls` 与 `model_response.invokes` 是同一批调用的两份表示。**
 一次 `run_command` 会在时间线上出现两张卡。旧面板也是两张，是"输出乱"的一部分。**P5 已修**：按 call id 合并成一张卡，只按 id——因为两者**允许不同**（`tool_calls` 是 dispatch 前的提议，`model_response.invokes` 是消息的一部分），只出现在一边的调用仍然单独成卡而不是被丢掉。回归测试 `draws one card for a batch the response and the event both describe`（单元 + 浏览器各一条）。
@@ -614,7 +614,7 @@ console error 为零——CSP 是否挡住了什么，这一条就是证据。
 ### 6.3 P5 期间新发现的三个问题
 
 **N5 · `tool_results` 的条目不是文档写的 Result object，而 P4 的移植把这件事忘了。**
-`core/docs/worker-protocol.md` 的"Result object"一节写的是 `{query, output, extras}`，但实测（真实 worker 的原始载荷）是 `{content, invoke_return: {query, output}, role, type}`——一个 `invoke_return` **工具消息**，provenance 嵌在 `invoke_return` 里。
+`docs/core/worker-protocol.md` 的"Result object"一节写的是 `{query, output, extras}`，但实测（真实 worker 的原始载荷）是 `{content, invoke_return: {query, output}, role, type}`——一个 `invoke_return` **工具消息**，provenance 嵌在 `invoke_return` 里。
 
 旧面板**知道**这件事，而且在代码里写清楚了（`web/js/render.js:353-362`）：
 
@@ -700,7 +700,7 @@ P2 会让 `src/` 导入共享契约，那一刻 skip 就失效了。而开发工
 
 - 后端崩溃缺陷：`hub/src/http/server.js:74,78`、`hub/src/panel/api.js:617`、`hub/src/launch/supervisor.js:193,210,233,270,345-355`
 - 前端灾难级缺陷：`hub/web/js/app.js:446-457`（A1 订阅）、`hub/src/panel/api.js:130-135,464-470`、`hub/web/js/state.js:150-152,352`（A2 重放）、`hub/web/css/app.css:476` vs `hub/web/js/app.js:1025`（A3 hidden）
-- 协议定义：`hub/docs/hub-protocol.md`、`hub/src/hub.js:23-32`、`hub/src/panel/api.js`
-- Worker 协议（不改动）：`core/docs/worker-protocol.md`、`hub/src/protocol/events.js`
+- 协议定义：`docs/hub/hub-protocol.md`、`hub/src/hub.js:23-32`、`hub/src/panel/api.js`
+- Worker 协议（不改动）：`docs/core/worker-protocol.md`、`hub/src/protocol/events.js`
 - 受影响的测试：`hub/test/panel-assets.test.js`、`hub/test/e2e/panel.test.js`、`hub/test/protocol-drift.test.js`
 - 构建与部署：`hub/package.json`、`hub/src/http/static.js`、`docker/Dockerfile.hub-test`、`.github/workflows/ci.yml`

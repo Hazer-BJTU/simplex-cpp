@@ -5,11 +5,11 @@ import { selection, snapshotConfigs } from '../configurations/session.ts';
  * @file the hub's own client protocol: JSON API plus a panel WebSocket.
  *
  * This is *not* the worker protocol. A browser never speaks
- * core/docs/worker-protocol.md directly: it must not be able to choose
+ * docs/core/worker-protocol.md directly: it must not be able to choose
  * `confirmation.mode: approve` on the worker-facing channel, and the worker
  * socket is a deployment-trusted endpoint. The hub therefore owns the trust
  * boundary and exposes its own versioned protocol, documented in
- * hub/docs/hub-protocol.md.
+ * docs/hub/hub-protocol.md.
  *
  * Every message carries `v: 1`. Unknown message types are ignored and unknown
  * fields are preserved, so a newer panel can talk to an older hub and vice

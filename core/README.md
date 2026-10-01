@@ -98,7 +98,7 @@ never start a run automatically.
 
 ## Communication protocol
 
-See the [formal worker client protocol](docs/worker-protocol.md) for all message
+See the [formal worker client protocol](../docs/core/worker-protocol.md) for all message
 formats, event data, connection roles, confirmation decisions, delivery limits,
 and recovery behavior. Message payloads carry an ordered `content` array of
 text/attachment parts. Each part states its encoding (`type`: `text`, `binary`,
@@ -109,7 +109,7 @@ the encoding. Adapters map the categories their provider can describe and reject
 the rest, so optional `extras` carries provider metadata rather than a
 substitute label.
 It is the reference for independently implemented hubs
-and clients. The [documentation index](docs/index.md) lists the package's formal
+and clients. The [documentation index](../docs/core/index.md) lists the package's formal
 documents and their publishing conventions. The `options` signal returns
 available choices and current selections for model and confirmation, plus a
 reserved tools category, in the normal event metadata envelope. Hubs can query
@@ -255,7 +255,7 @@ The `compact` payload archives the current state as Markdown, generates a
 structured summary without tools, and replaces conversation turns with a final
 `memory.runtime` system-prompt section. The worker publishes the replacement JSON
 snapshot before emitting `compact_finished`. Failed or cancelled attempts retain
-the original conversation. See [the wire contract](docs/worker-protocol.md#compact-conversation-context)
+the original conversation. See [the wire contract](../docs/core/worker-protocol.md#compact-conversation-context)
 for admission rules, failure behavior, and event fields. The hub exposes it as
 **Compact context** in Command mode, gated on the current worker's capabilities.
 
@@ -277,4 +277,4 @@ lookup. The compact instruction is loaded from
 intrinsic `HubRemoteCallToolSet` with the `plan` tool. `construct_runtime()` copies these settings
 into the set before registering it. Omission leaves it unloaded. The set registers the plan tool and skill without opening a startup connection.
 See the [package guide](../tools/intrinsic/toolsets/hub_remote_call/README.md) for
-the request base and [wire protocol](docs/worker-protocol.md#remote-tool-requests).
+the request base and [wire protocol](../docs/core/worker-protocol.md#remote-tool-requests).

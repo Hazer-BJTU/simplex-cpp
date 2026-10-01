@@ -1,10 +1,10 @@
 /**
  * @file panel protocol drift: the hub's vocabulary against its own document.
  *
- * `docs/hub-protocol.md` is the prose contract for the browser protocol, and
+ * `docs/hub/hub-protocol.md` is the prose contract for the browser protocol, and
  * `shared/protocol.ts` is the machine-readable copy the hub and the panel both
  * import. The worker side has had a drift check against
- * `core/docs/worker-protocol.md` for a while; the panel side had none, so the
+ * `docs/core/worker-protocol.md` for a while; the panel side had none, so the
  * document and the code could disagree with nothing to notice.
  *
  * The failure this prevents is quiet: a message type the document promises and
@@ -27,7 +27,7 @@ import {
     PANEL_MESSAGE_TYPES,
 } from '../shared/protocol.ts';
 
-const DOC_PATH = join(hubRoot, 'docs', 'hub-protocol.md');
+const DOC_PATH = join(hubRoot, '..', 'docs', 'hub', 'hub-protocol.md');
 const available = existsSync(DOC_PATH);
 const skip = available ? false : `hub documentation not present at ${DOC_PATH}`;
 

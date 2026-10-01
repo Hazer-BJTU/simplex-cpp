@@ -159,7 +159,7 @@ export function createHub({
             name: 'simplex-hub',
             version,
             protocol: PANEL_PROTOCOL,
-            worker_protocol: 'core/docs/worker-protocol.md',
+            worker_protocol: 'docs/core/worker-protocol.md',
             // A copy per response: the list is a module constant, and handing
             // the same array to every caller lets one of them mutate it for all.
             capabilities: [...CAPABILITIES] as Capability[],
