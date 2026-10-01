@@ -1,4 +1,6 @@
-# Simplex
+<p align="center">
+  <img src="assets/simplex-logo-v4.svg" alt="Simplex — C++ agent harness" width="520">
+</p>
 
 [![CI](https://github.com/Hazer-BJTU/simplex-cpp/actions/workflows/ci.yml/badge.svg)](https://github.com/Hazer-BJTU/simplex-cpp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Hazer-BJTU/simplex-cpp)](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest)
