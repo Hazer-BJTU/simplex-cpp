@@ -45,7 +45,7 @@ const remote = process.env.FAKE_GH_REMOTE;
 const args = process.argv.slice(2);
 let state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile)) : null;
 const command = args[1];
-if (command === 'create') state = { draft: true, assets: [] };
+if (command === 'create') state = { tag_name: 'v0.1.0', draft: true, assets: [] };
 else if (command === 'upload') {
     const name = path.basename(args[3]);
     fs.copyFileSync(args[3], path.join(remote, name));
@@ -60,16 +60,19 @@ fs.writeFileSync(stateFile, JSON.stringify(state));
 `);
     chmodSync(gh, 0o755);
     const server = createServer((request, response) => {
-        if (!request.url.endsWith('/releases/tags/v0.1.0')) {
+        // GitHub's get-by-tag endpoint cannot see a draft release. The
+        // release script must use the authenticated list instead.
+        if (request.url !== '/repos/example/simplex/releases?per_page=100&page=1') {
             response.writeHead(404).end();
             return;
         }
         try {
             const state = JSON.parse(readFileSync(stateFile, 'utf8'));
             response.setHeader('Content-Type', 'application/json');
-            response.end(JSON.stringify(state));
+            response.end(JSON.stringify([state]));
         } catch {
-            response.writeHead(404).end();
+            response.setHeader('Content-Type', 'application/json');
+            response.end('[]');
         }
     });
     await new Promise(done => server.listen(0, '127.0.0.1', done));

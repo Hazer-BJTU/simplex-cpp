@@ -32,17 +32,26 @@ function gh(args) {
 }
 
 async function release() {
-    const url = `${process.env.GITHUB_API_URL || 'https://api.github.com'}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`;
-    const response = await fetch(url, {
-        headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-        },
-    });
-    if (response.status === 404) return null;
-    if (!response.ok) throw new Error(`GitHub release lookup failed: HTTP ${response.status}`);
-    return response.json();
+    // GitHub's get-by-tag REST endpoint returns 404 for unpublished drafts.
+    // The authenticated release list includes drafts, so use it for both
+    // preparation and finalization of the same release.
+    for (let page = 1; ; page++) {
+        const url = `${process.env.GITHUB_API_URL || 'https://api.github.com'}` +
+            `/repos/${repo}/releases?per_page=100&page=${page}`;
+        const response = await fetch(url, {
+            headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+            },
+        });
+        if (!response.ok) throw new Error(`GitHub release lookup failed: HTTP ${response.status}`);
+        const releases = await response.json();
+        if (!Array.isArray(releases)) throw new Error('GitHub release list is not an array');
+        const match = releases.find(item => item.tag_name === tag);
+        if (match) return match;
+        if (releases.length < 100) return null;
+    }
 }
 
 async function verifyAssets(current, allowMissing) {
