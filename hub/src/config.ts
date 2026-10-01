@@ -171,7 +171,7 @@ export function defaultConfig(): HubConfig {
             deepseek: {
                 plugin: 'deepseek',
                 model: 'deepseek-flash',
-                config: { reasoning: { effort: 'high' } },
+                config: { reasoning_effort: 'high' },
                 endpoint: {
                     base_url: 'https://api.deepseek.com',
                     auth: { scheme: 'bearer', api_key: '${DEEPSEEK_API_KEY}' },
