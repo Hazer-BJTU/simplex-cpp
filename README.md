@@ -130,7 +130,7 @@ template** and select them for other sessions.
 Write your request in **Message** mode and select **Send**. The panel displays
 model replies, tool activity, and approval requests. The **Model** control shows
 options advertised by the worker's provider; selections take effect on the next
-request, including a continuation or compaction.
+request.
 
 The **Confirm** control selects how calls requiring confirmation are handled:
 
@@ -147,29 +147,11 @@ the worker to reach a safe interruption point. A model request can be interrupte
 a tool already executing may finish before cancellation completes. Cancellation
 does not undo completed tool effects.
 
-### Commands
-
-Press **Alt + Enter** in the composer to switch between Message and Command
-modes. Commands have no `/` prefix. Type a prefix to see suggestions, use **Tab**
-to complete, and **Enter** to execute. Switching modes preserves your message
-draft.
-
-| Command | Purpose |
-| --- | --- |
-| **Refresh conversation** | Reload the Hub's retained events and request conversation history from the worker. Use this to restore the display after reconnecting. |
-| **Continue run** | Ask the worker to continue from its current internal state without adding a user message. Requires a connected, idle worker and an existing turn that can be continued. |
-| **Compact context** | Archive the current conversation and replace its context with a saved summary. Requires an idle worker, persistence, and a settled conversation. |
-
-A failed model request is shown as a failure notice. When the worker reports that
-continuation is available, use **Continue run** to try again. After successful
-compaction, send a new message to begin the next turn. The default compaction
-retention policy keeps up to five recognized archives after successful cleanup.
-
 ### Stop, restart, and update configuration
 
 Use the session's worker controls to stop or restart its process. A restarted
 worker restores its saved conversation state; restoring state does not itself
-start another agent run. Send a message or use **Continue run** when appropriate.
+start another agent run. Send a new message when you are ready to proceed.
 
 Editing a reusable configuration does not change an existing session's copy.
 To apply changes, stop the worker, wait for disconnection, open
@@ -177,6 +159,31 @@ To apply changes, stop the worker, wait for disconnection, open
 **Apply to …** for that session. Start the worker again afterward. Conversation
 state is retained; prompt-file changes do not replace a system prompt already
 restored from that state.
+
+## Security and trust
+
+**Dynamic plugins execute native code inside the worker process.** Loading a
+shared library can execute code before its plugin interface is validated.
+Plugins share the worker's permissions and can access its memory, credentials,
+files, and network connections. Compatibility checks do not establish that a
+plugin is safe. Load plugins only from sources you trust, and keep plugin search
+directories writable only by trusted users. Provider discovery loads compatible
+provider plugins from its configured directories, so review those directories
+as well as explicitly enabled tool and hook extensions.
+
+**Local tools can modify your machine.** Process and file-editing tools run with
+the worker's OS permissions and can execute commands, change or delete files,
+and access services available to that account. A configured workspace is a
+model hint, not a sandbox. Tool approval helps you review proposed actions but
+does not isolate their execution or constrain native plugins. Automatic approval
+removes that review step, and cancellation cannot roll back completed actions.
+
+Use a dedicated, unprivileged account or an isolated container for work you do
+not want to expose to your normal environment. Limit mounted directories,
+credentials, and network access to what the task needs. Keep backups of important
+files. Protect access to the Hub too: its configuration editor can change the
+commands used to launch workers. Keep the default loopback listener for local
+use; configure authentication and controlled network access before exposing it.
 
 ## Where data is stored
 
@@ -207,7 +214,6 @@ and archives. Reusing its ID afterward creates a fresh session.
 | API key is missing | Export the variable before starting the Hub. If you changed its environment, restart the Hub and worker. |
 | Worker cannot connect | Check the generated endpoints and Hub listener. In a container, `localhost` refers to the container itself. |
 | Saved configuration changes have no effect | Apply the saved files to the stopped session, then restart its worker. |
-| Conversation display looks incomplete | Run **Refresh conversation** with the worker connected. |
 
 For container deployments and advanced settings, see the [Hub guide](hub/README.md).
 The [documentation index](docs/README.md) contains the worker and Hub protocols
