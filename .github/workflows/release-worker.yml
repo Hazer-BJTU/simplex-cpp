@@ -136,8 +136,9 @@ jobs:
           npm ci --no-audit --no-fund --ignore-scripts
           npm run version:check
           npm run typecheck
-          npm test
+          # HTTP tests serve web/dist, so build it before running the suite.
           npm run build:release
+          npm test
           mkdir -p hub-release
           archive=$(npm pack --pack-destination hub-release --ignore-scripts --silent)
           node scripts/check-release-package.mjs "hub-release/$archive"
