@@ -77,12 +77,7 @@ Testing/
 # .vscode
 .vscode/
 
-# Local external API reference documents (large vendor docs, kept untracked)
-docs/
-# Formal core documentation is maintained and published with the project.
-!/core/docs/
-# The hub's protocol and adapter references are published the same way.
-!/hub/docs/
+# Project documentation is tracked under the root docs/ directory.
 
 # Local agent/dev settings (absolute paths and per-machine permissions; not
 # part of the build or the runtime)
@@ -103,3 +98,12 @@ hub/playwright-report/
 
 # Default worker compact archives contain local conversation state.
 /.data/
+
+# Documentation site dependencies and generated output.
+/docs/node_modules/
+/docs/.vitepress/cache/
+/docs/.vitepress/dist/
+/.local-deps/
+/install-local/
+/stage-portable/
+/worker-release/

@@ -15,7 +15,7 @@
  * Nothing here may import a Node built-in or touch the DOM: the browser is one
  * of its consumers.
  *
- * The shapes below mirror `docs/hub-protocol.md`, which stays the prose
+ * The shapes below mirror `docs/hub/hub-protocol.md`, which stays the prose
  * reference, and `test/panel-protocol-drift.test.js` fails when the two
  * diverge. A field is optional only where a hub may legitimately omit it, since
  * tolerating that is what makes an additive change safe.
@@ -349,7 +349,7 @@ export interface HubMetadata {
 // --------------------------------------------------------------- JSON API --
 
 /**
- * The REST responses, from `docs/hub-protocol.md` §"JSON API".
+ * The REST responses, from `docs/hub/hub-protocol.md` §"JSON API".
  *
  * They live here rather than in the browser bundle because they are the same
  * contract as the socket messages above, just delivered over HTTP: the panel
@@ -581,14 +581,14 @@ export type HubMessage =
 /** The `type` of any message the hub may send. */
 export type HubMessageType = HubMessage['type'];
 
-/** Every panel message `type`, in the order `docs/hub-protocol.md` lists them. */
+/** Every panel message `type`, in the order `docs/hub/hub-protocol.md` lists them. */
 export const PANEL_MESSAGE_TYPES = [
     'ping', 'list_sessions', 'subscribe', 'unsubscribe', 'create_session',
     'delete_session', 'worker', 'input', 'history', 'signal', 'confirmation', 'logs',
     'status_snapshot',
 ] as const satisfies readonly PanelMessageType[];
 
-/** Every hub message `type`, in the order `docs/hub-protocol.md` lists them. */
+/** Every hub message `type`, in the order `docs/hub/hub-protocol.md` lists them. */
 export const HUB_MESSAGE_TYPES = [
     'welcome', 'sessions', 'session', 'session_removed', 'subscribed', 'created',
     'event', 'confirmation', 'process', 'connection', 'request', 'logs',

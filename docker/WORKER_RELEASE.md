@@ -7,8 +7,14 @@ Keep the directory together: executables locate plugins and libraries relative
 to their own paths.
 
 Extract the archive, then run `bin/simplex run --help` from its root. Create a
-worker configuration from `bin/config.example.yaml` and start it with
-`bin/simplex run --config /path/to/config.yaml`. The worker connects to a Hub;
+worker configuration from `bin/config.example.yaml`, replace the `YOUR_*`
+provider/model placeholders, and supply the API-key environment variable it
+references. For a manually launched worker, replace the `{{hub.*}}` markers
+with actual session endpoints issued by your Hub, then start it with
+`bin/simplex run --config /path/to/config.yaml --session YOUR_SESSION_ID`.
+Alternatively, add this archive's `bin` directory to `PATH` and let the Hub's
+local launch configuration create the session configuration and start the worker.
+The worker connects to a Hub;
 the Hub and its web panel are separate components and are not in this archive.
 
 Check the downloaded file with `sha256sum -c SHA256SUMS` in the directory that

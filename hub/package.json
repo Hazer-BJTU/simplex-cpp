@@ -22,10 +22,6 @@
   },
   "files": [
     "dist/",
-    "docs/configurations.md",
-    "docs/hub-protocol.md",
-    "docs/npm-release.md",
-    "docs/worker-adapter.md",
     "README.md",
     "LICENSE"
   ],

@@ -71,7 +71,7 @@ class Peer:
 
     def run(self, name, arguments):
         # `modality` is required on every input part: the worker never infers a
-        # media category from the encoding (core/docs/worker-protocol.md).
+        # media category from the encoding (docs/core/worker-protocol.md).
         send(self.sock, {'type': 'payload', 'data': {
             'request_id': os.urandom(8).hex(), 'operation': 'message',
             'content': [{'type': 'text', 'modality': 'text',

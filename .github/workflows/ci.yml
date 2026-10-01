@@ -143,7 +143,7 @@ jobs:
 
       - name: Test
         # Covers the protocol adapters, the session registry, the supervisor,
-        # the panel API, worker-protocol drift against core/docs, and the
+        # the panel API, worker-protocol drift against docs/core, and the
         # panel's own asset integrity.
         working-directory: hub
         run: npm test

@@ -27,7 +27,7 @@ const allowedChanges = new Set([
     'hub/scripts/publish-release.mjs',
     'hub/test/release-worker.test.js',
     'hub/test/publish-release.test.js',
-    'hub/docs/npm-release.md',
+    'docs/hub/npm-release.md',
 ]);
 const changes = git(['diff', '--name-only', tagCommit, 'HEAD']);
 for (const path of changes ? changes.split('\n') : []) {

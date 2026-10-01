@@ -394,7 +394,7 @@ A conversation persisted before `modality` existed is read with the semantics it
 was written under: a stored reference was an image to both adapters (unless its
 `extras.type` asked the old Responses adapter for a provider file part, which is
 refused as ambiguous), and a stored binary part without a label is refused
-rather than guessed — see `core/docs/worker-protocol.md`.
+rather than guessed — see `docs/core/worker-protocol.md`.
 
 `extras` is sender-supplied data and never decides the part kind: the adapter
 builds the provider part from `modality` and from the fields that kind defines

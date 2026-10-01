@@ -8,7 +8,7 @@ and retains process output. The old one-to-one terminal server `simplex_shell`
 is deprecated source only and is no longer built or installed.
 
 The hub implements the server side of
-[`core/docs/worker-protocol.md`](../core/docs/worker-protocol.md). The worker and
+[`docs/core/worker-protocol.md`](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/core/worker-protocol.md). The worker and
 hub share the direct session-root persistence layout described below.
 
 ## Requirements
@@ -28,7 +28,7 @@ hub share the direct session-root persistence layout described below.
 For a published installation, run `npm install -g @hazer-bjtu/simplex-hub`, then
 `simplex-hub --help`. The npm package includes
 the web panel but not the C++ worker; set `--worker-bin` to the separately
-installed worker executable. See [npm releases](docs/npm-release.md) for the
+installed worker executable. See [npm releases](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/npm-release.md) for the
 package contents and release process.
 
 ```sh
@@ -44,7 +44,7 @@ both saved configurations, and press *Start worker*. The local template uses
 `simplex run`; install `simplex` on PATH or edit its executable path.
 
 Configuration files and session data default to `~/.simplex/hub`; use
-`--data-dir` to choose another root. See [Configuration UI and lifecycle](docs/configurations.md)
+`--data-dir` to choose another root. See [Configuration UI and lifecycle](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/configurations.md)
 for editing, endpoint discovery, Docker launch profiles and snapshot reuse.
 
 The default worker template uses `YOUR_*` placeholders for the provider, plugin,
@@ -513,7 +513,7 @@ ABI fingerprint the C++ jobs depend on.
 Between them they also assert things a reader might otherwise assume:
 
 - **Protocol drift.** `test/protocol-drift.test.js` parses
-  `core/docs/worker-protocol.md` and fails when core adds an event, a signal, an
+  `docs/core/worker-protocol.md` and fails when core adds an event, a signal, an
   input operation, or an option category the hub does not know about. A hub that
   silently rendered a new event as "unknown" would otherwise stay green.
 - **Protocol constants.** `test/protocol-constants.test.js` fails if the hub's
@@ -568,11 +568,11 @@ the runner's Ubuntu.
 
 ## Documentation
 
-- [hub/docs/hub-protocol.md](docs/hub-protocol.md) — the panel/API protocol.
-- [hub/docs/worker-adapter.md](docs/worker-adapter.md) — how the hub implements
+- [docs/hub/hub-protocol.md](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/hub-protocol.md) — the panel/API protocol.
+- [docs/hub/worker-adapter.md](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/worker-adapter.md) — how the hub implements
   the worker protocol, requirement by requirement, including the parts it
   deliberately leaves to the deployment.
-- [core/docs/worker-protocol.md](../core/docs/worker-protocol.md) — the worker
+- [docs/core/worker-protocol.md](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/core/worker-protocol.md) — the worker
   contract itself, which remains authoritative.
 
 ## Security notes
@@ -670,7 +670,7 @@ connection, sends one `tool_request`, and receives one `tool_response`. The `pla
 after verifying the live worker and active run. Unknown routes receive
 `not_implemented`. Plans are saved atomically in the session root and pushed to
 the panel, which offers a Plan tab beside Conversation only when the plan is nonempty. See the complete
-[worker protocol](../core/docs/worker-protocol.md#remote-tool-requests).
+[worker protocol](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/core/worker-protocol.md#remote-tool-requests).
 
 `src/worker/tools.ts` owns authentication, framing, resource bounds, and shutdown.
 `src/protocol/tool-requests.ts` owns envelope validation and the dispatch boundary.

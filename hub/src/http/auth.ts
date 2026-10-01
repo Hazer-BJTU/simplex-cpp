@@ -2,7 +2,7 @@
  * @file token comparison and request authentication helpers.
  *
  * The worker-facing payload channel is an approval authority
- * (core/docs/worker-protocol.md): whoever may send a payload may select
+ * (docs/core/worker-protocol.md): whoever may send a payload may select
  * `confirmation.mode: approve`. Correlation IDs are not credentials, so the hub
  * binds every worker connection to a deployment-authorized session with a
  * per-session token carried in the upgrade query string — the only place the

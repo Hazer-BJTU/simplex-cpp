@@ -16,10 +16,13 @@ const allowed = [
     'package/README.md',
     'package/package.json',
     'package/dist/',
-    'package/docs/',
 ];
 for (const member of members) {
-    if (member === 'package/docs/panel-redesign-plan.md') {
+    if (member.startsWith('package/dist/docs/') && !member.endsWith('/')
+        && !member.endsWith('.md')) {
+        throw new Error(`Non-documentation file in packaged docs: ${member}`);
+    }
+    if (member.endsWith('/panel-redesign-plan.md')) {
         throw new Error('Maintainer design notes must not enter the npm package');
     }
     if (!allowed.some(prefix => member === prefix ||
@@ -29,6 +32,14 @@ for (const member of members) {
 }
 for (const required of [
     'package/LICENSE',
+    'package/dist/docs/core/worker-protocol.md',
+    'package/dist/docs/getting-started/installation.md',
+    'package/dist/docs/deployment/hub.md',
+    'package/dist/docs/plugins/development.md',
+    'package/dist/docs/hub/hub-protocol.md',
+    'package/dist/docs/hub/configurations.md',
+    'package/dist/docs/hub/npm-release.md',
+    'package/dist/docs/hub/worker-adapter.md',
     'package/dist/package.json',
     'package/dist/bin/simplex-hub.js',
     'package/dist/src/config.js',

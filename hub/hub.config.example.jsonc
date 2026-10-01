@@ -8,7 +8,7 @@
 
     // Empty token disables panel authentication. A non-loopback listen address
     // requires one: a payload channel is an approval authority
-    // (core/docs/worker-protocol.md).
+    // (docs/core/worker-protocol.md).
     "panel": { "token": "" },
 
     // Independent worker RPC listener. Empty host inherits listen.host.
@@ -28,7 +28,7 @@
         // Enable hub-backed tools such as plan in new sessions.
         "hubRemoteCall": true,
         // Copied into every generated worker config; these are the worker's own
-        // defaults from core/docs/worker-protocol.md.
+        // defaults from docs/core/worker-protocol.md.
         "payloadCapacity": 256,
         "signalCapacity": 256,
         "writeCapacity": 256,

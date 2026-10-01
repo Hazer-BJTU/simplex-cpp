@@ -1,14 +1,14 @@
 /**
  * @file worker event envelopes: validation and protocol vocabulary.
  *
- * The wire contract itself lives in core/docs/worker-protocol.md; this module
+ * The wire contract itself lives in docs/core/worker-protocol.md; this module
  * only encodes the parts the hub must act on — the envelope fields, the event
  * names core currently emits, and the handful of numbers that can exceed
  * JavaScript's safe integer range.
  *
  * Unknown event names and unknown extra fields are preserved rather than
  * rejected: a compatible hub must not disconnect merely because a future worker
- * emits an unfamiliar event (core/docs/worker-protocol.md, "Encoding and
+ * emits an unfamiliar event (docs/core/worker-protocol.md, "Encoding and
  * message envelopes").
  */
 import { validateSessionId } from '../state/session-id.ts';

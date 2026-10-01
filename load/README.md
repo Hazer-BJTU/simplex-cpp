@@ -591,7 +591,7 @@ remain, so this is not a hard disk quota. Cleanup never follows child symlinks o
 recursively removes directories, and failures are reported without undoing the
 committed summary. The same worker policy applies to externally managed workers.
 The old session-ID-appending layout is not migrated or read automatically. See the
-[worker protocol](../core/docs/worker-protocol.md#compact-conversation-context).
+[worker protocol](../docs/core/worker-protocol.md#compact-conversation-context).
 
 ## Remote tool transport configuration
 
@@ -609,4 +609,4 @@ tools can use `HubRemoteCallToolBase`. Omission leaves the set unloaded.
 The plan tool and skill are registered; construction opens no connection. The hub
 accepts authenticated one-shot requests on its dedicated listener and rejects
 unknown routes with `not_implemented`; plan/read and plan/replace are implemented. The envelope and lifecycle contract
-are specified in [the worker protocol](../core/docs/worker-protocol.md#remote-tool-requests).
+are specified in [the worker protocol](../docs/core/worker-protocol.md#remote-tool-requests).

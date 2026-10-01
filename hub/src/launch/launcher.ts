@@ -15,7 +15,7 @@
  *
  * The hub owns the session configuration for every launcher. A launcher that daemonizes must
  * declare `launcher.pidFile`; the supervisor then signals that pid instead of
- * the process it spawned. See hub/docs/worker-adapter.md.
+ * the process it spawned. See docs/hub/worker-adapter.md.
  */
 import { LAUNCHER_KINDS } from '../config.ts';
 import type { HubConfig } from '../config.ts';

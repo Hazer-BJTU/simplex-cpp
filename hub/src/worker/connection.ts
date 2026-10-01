@@ -3,7 +3,7 @@
  *
  * Route: `GET /agent/<session_id>/events?token=<session token>`.
  *
- * Per core/docs/worker-protocol.md the worker is always the WebSocket client,
+ * Per docs/core/worker-protocol.md the worker is always the WebSocket client,
  * one process owns one session, and the event connection is persistent and
  * reconnecting. This module implements the hub's half of that:
  *

@@ -12,7 +12,7 @@
  * not have to pass through the hub or reach the disk.
  *
  * `WorkerConfigDocument` below is a hand-maintained copy of the schema core
- * documents in `core/docs/worker-protocol.md`. It is the one interface here
+ * documents in `docs/core/worker-protocol.md`. It is the one interface here
  * whose other end is C++, so a change to it is a change to that contract.
  */
 import { join } from 'node:path';
