@@ -3,6 +3,16 @@ name: Release worker
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag to finish without rebuilding its artifacts
+        required: true
+        type: string
+      source_run_id:
+        description: Tag workflow run containing the tested release artifacts
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -14,6 +24,7 @@ defaults:
 
 jobs:
   validate-tag:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -208,4 +219,50 @@ jobs:
       - name: Finalize verified release
         env:
           GH_TOKEN: ${{ github.token }}
+        run: node docker/release-worker.mjs finalize worker-release
+
+  recover:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - name: Verify tag and tested source run
+        run: node docker/verify-release-recovery.mjs
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: hub-release-package
+          path: hub/hub-release
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Prepare or verify draft worker assets
+        run: node docker/release-worker.mjs prepare worker-release
+      - name: Publish or verify tested Hub package through npm OIDC
+        working-directory: hub
+        run: |
+          archive=(hub-release/*.tgz)
+          test "${#archive[@]}" -eq 1
+          node scripts/check-release-package.mjs "${archive[0]}"
+          node scripts/publish-release.mjs "${archive[0]}"
+      - name: Finalize verified release
         run: node docker/release-worker.mjs finalize worker-release

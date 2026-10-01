@@ -58,6 +58,25 @@ fixes need a new version and tag. A failed job may be rerun for the same tag
 only when the already-published npm tarball and GitHub assets exactly match
 the tested artifacts. If the files differ, create a new version instead.
 
+## Recovering a failed tag run
+
+First retry failed jobs in the original tag workflow. This reuses the same
+artifacts and can resume an existing draft or npm publication. If release
+machinery itself needs a fix after the tag was pushed, merge that fix to
+`main` without changing `VERSION`, then run the same workflow manually:
+
+```sh
+gh workflow run release-worker.yml --ref main \
+    -f release_tag=v<VERSION> -f source_run_id=<TAG_RUN_ID>
+```
+
+The manual path uses the worker and Hub artifacts from the named tag run. It
+requires that run's tag, source commit, worker build, Hub build, and both
+cross-system tests to match and pass; only release machinery may differ on
+`main`. It verifies draft assets byte-for-byte and npm's tarball integrity
+before continuing. The source run's artifacts must still be retained (seven
+days by default). Do not rebuild or repack the same version after publishing.
+
 ## Package checks
 
 `npm run build:release` builds the browser panel, emits server JavaScript, and
