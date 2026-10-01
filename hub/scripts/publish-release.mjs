@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export async function registryIntegrity(name, version, registry = 'https://registry.npmjs.org') {
@@ -27,7 +28,7 @@ export async function verifyPublished(archive, name, version, registry) {
 }
 
 async function main() {
-    const archive = process.argv[2];
+    const archive = process.argv[2] && resolve(process.argv[2]);
     if (!archive || process.argv.length > 4 ||
         (process.argv[3] && process.argv[3] !== '--verify-only')) {
         throw new Error('Usage: node scripts/publish-release.mjs PACKAGE.tgz [--verify-only]');

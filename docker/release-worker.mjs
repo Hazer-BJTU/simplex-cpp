@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
 const [mode, assetDirectory] = process.argv.slice(2);
-const tag = process.env.GITHUB_REF_NAME;
+const tag = process.env.RELEASE_TAG || process.env.GITHUB_REF_NAME;
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GH_TOKEN;
 if (!['prepare', 'finalize'].includes(mode) || !assetDirectory || !tag || !repo || !token) {
@@ -54,6 +54,15 @@ async function release() {
     }
 }
 
+async function waitFor(check) {
+    for (let attempt = 0; attempt < 10; attempt++) {
+        const current = await release();
+        if (current && await check(current)) return current;
+        if (attempt < 9) await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    return null;
+}
+
 async function verifyAssets(current, allowMissing) {
     const remote = current.assets.filter(asset => names.includes(asset.name));
     for (const name of names) {
@@ -85,9 +94,9 @@ if (mode === 'prepare') {
                 '--title', `Simplex ${tag}`, '--notes', notes]);
         } catch (error) {
             // A retry or concurrent run may have created the draft already.
-            if (!(await release())) throw error;
+            if (!(await waitFor(() => true))) throw error;
         }
-        current = await release();
+        current = await waitFor(() => true);
     }
     if (!current) throw new Error('GitHub draft release was not created');
     const missing = await verifyAssets(current, current.draft);
@@ -97,13 +106,14 @@ if (mode === 'prepare') {
             gh(['release', 'upload', tag, join(directory, name), '--repo', repo]);
         } catch (error) {
             // Verify the server state before deciding whether the upload failed.
-            current = await release();
-            if (!current || (await verifyAssets(current, true)).includes(name)) throw error;
+            current = await waitFor(async item =>
+                !(await verifyAssets(item, true)).includes(name));
+            if (!current) throw error;
         }
     }
-    current = await release();
-    if (!current) throw new Error('GitHub release disappeared');
-    await verifyAssets(current, false);
+    current = await waitFor(async item =>
+        (await verifyAssets(item, true)).length === 0);
+    if (!current) throw new Error('GitHub release assets were not visible after upload');
     console.log('Verified GitHub release assets');
 } else {
     if (!current) throw new Error('GitHub draft release is missing');
@@ -112,11 +122,11 @@ if (mode === 'prepare') {
         try {
             gh(['release', 'edit', tag, '--repo', repo, '--draft=false']);
         } catch (error) {
-            if ((await release())?.draft !== false) throw error;
+            if (!(await waitFor(item => item.draft === false))) throw error;
         }
     }
-    current = await release();
-    if (!current || current.draft) throw new Error('GitHub release is still a draft');
+    current = await waitFor(item => item.draft === false);
+    if (!current) throw new Error('GitHub release is still a draft');
     await verifyAssets(current, false);
     console.log('Verified published GitHub release');
 }

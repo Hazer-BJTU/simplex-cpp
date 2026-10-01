@@ -59,6 +59,8 @@ else process.exit(2);
 fs.writeFileSync(stateFile, JSON.stringify(state));
 `);
     chmodSync(gh, 0o755);
+    let hiddenDraftPolls = 2;
+    let hiddenAssetPolls = 2;
     const server = createServer((request, response) => {
         // GitHub's get-by-tag endpoint cannot see a draft release. The
         // release script must use the authenticated list instead.
@@ -69,7 +71,17 @@ fs.writeFileSync(stateFile, JSON.stringify(state));
         try {
             const state = JSON.parse(readFileSync(stateFile, 'utf8'));
             response.setHeader('Content-Type', 'application/json');
-            response.end(JSON.stringify([state]));
+            if (hiddenDraftPolls > 0) {
+                hiddenDraftPolls--;
+                response.end('[]');
+            } else {
+                if (state.assets.length && hiddenAssetPolls > 0) {
+                    hiddenAssetPolls--;
+                    response.end(JSON.stringify([{ ...state, assets: [] }]));
+                } else {
+                    response.end(JSON.stringify([state]));
+                }
+            }
         } catch {
             response.setHeader('Content-Type', 'application/json');
             response.end('[]');
