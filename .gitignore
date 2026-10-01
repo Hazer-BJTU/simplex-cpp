@@ -98,3 +98,12 @@ hub/playwright-report/
 
 # Default worker compact archives contain local conversation state.
 /.data/
+
+# Documentation site dependencies and generated output.
+/docs/node_modules/
+/docs/.vitepress/cache/
+/docs/.vitepress/dist/
+/.local-deps/
+/install-local/
+/stage-portable/
+/worker-release/

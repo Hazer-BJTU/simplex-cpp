@@ -1,21 +1,17 @@
 # Simplex documentation
 
-Formal project documentation is maintained here. Package README files remain
-beside their implementation and provide package-specific usage and development notes.
+Start with [installation](getting-started/installation.md), then
+[configuration](getting-started/configuration.md) and [deployment](deployment/hub.md).
 
-## Worker
+- [Architecture](architecture/overview.md)
+- [Local source builds](building/local.md) and [Docker builds](building/docker.md)
+- [Hub](deployment/hub.md), [Docker](deployment/docker-worker.md), and [remote](deployment/remote-worker.md) deployment
+- [Simplex Loop Worker Protocol](core/worker-protocol.md), including the bundled Hub implementation
+- [Plugin configuration](plugins/configuration.md) and [development](plugins/development.md)
+- [Providers](providers/index.md)
+- [CLI reference](reference/cli.md)
+- [Documentation build and publishing](maintaining/documentation.md)
 
-- [Core documentation index](core/index.md)
-- [Worker client protocol](core/worker-protocol.md)
-
-## Hub
-
-- [Panel and HTTP protocol](hub/hub-protocol.md)
-- [Worker adapter](hub/worker-adapter.md)
-- [Configuration management](hub/configurations.md)
-- [npm releases](hub/npm-release.md)
-
-## Historical material
-
-- [Panel redesign notes](hub/panel-redesign-plan.md): archived proposals and
-  implementation notes; not a current usage or protocol reference.
+Package README files remain beside their implementation. Historical
+[panel redesign notes](hub/panel-redesign-plan.md) remain in Git but are excluded
+from the published English site.

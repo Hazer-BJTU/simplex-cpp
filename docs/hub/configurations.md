@@ -5,24 +5,11 @@ configuration** describes how the Hub starts a process. **Worker configuration**
 is the worker's YAML startup document. A session selects one of each and retains
 its own copies. Saving a reusable file does not change an existing session.
 
-## First start
+## Editing the library
 
-1. Install the worker and make `simplex` available on the Hub host's `PATH`.
-   Alternatively, edit the first entry of the launch template's `command` to
-   the absolute path of the installed `simplex` executable.
-2. Export `MODEL_API_KEY` in the environment used to start the Hub, then run
-   `simplex-hub` from the installed npm package. Open the panel URL printed by
-   the Hub. Source-tree development instead uses `npm start` from `hub/`.
-3. Open **Configurations**. Select **Worker configs**, then the saved `default`
-   file. Replace `YOUR_PROVIDER`, `YOUR_PROVIDER_PLUGIN`, `YOUR_MODEL`,
-   `YOUR_PROVIDER_BASE_URL` and `YOUR_REQUEST_PATH` with your provider details.
-   Edit model roles and worker settings in the source editor.
-   Save when ready. API keys may use `${ENV_VAR}`; the worker expands them.
-4. Inspect **Launch configs → local**. It runs `simplex run` on the Hub host.
-   **Preview Hub endpoints** shows the addresses the worker will use, with
-   illustrative session identity fields. These addresses come from the live
-   Hub listeners, not the browser's hostname.
-5. Create a session, select `local` and `default`, then start its worker.
+For initial setup, follow [worker configuration](../getting-started/configuration.md)
+and [Hub deployment](../deployment/hub.md). This page defines the library's
+editing, storage, and API behavior.
 
 **New from template** copies editable source into the editor. Enter a name and
 save to publish it. IDs contain 1–128 letters, digits, underscores or hyphens;
@@ -96,7 +83,7 @@ are never replaced by startup. Worker templates are bundled from
 
 ## Launch configuration
 
-See [`schemas/local.jsonc`](../../hub/schemas/local.jsonc) for a commented example.
+See [`schemas/local.jsonc`](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/hub/schemas/local.jsonc) for a commented example.
 
 | Field | Meaning |
 | --- | --- |
@@ -124,54 +111,20 @@ to a host reachable from the container, such as a configured Docker host gateway
 The Hub must listen on an address reachable from that network. No browser-side
 heuristic can determine that address reliably.
 
-For reverse proxies, an example is:
-
-```json
-"endpoints": {
-    "events": "wss://hub.example/worker",
-    "confirm": "wss://hub.example/worker",
-    "tools": "wss://hub.example/remote"
-}
-```
-
-The Hub appends `/agent/<session>/events`, `/confirm`, or `/tools` to the
-respective prefix and adds the current session token. Configure the proxy to
-forward each route to its corresponding listener. Without an explicit origin,
-the Hub uses the actual bound port, including when configured with port `0`.
-Events and confirmation use the main listener; tools uses its separate listener.
+See [advertised endpoints and reverse proxies](../deployment/hub.md#advertised-endpoints-and-reverse-proxies)
+for origin/prefix examples and listener routing.
 
 ## Docker launch template
 
-Select the saved **docker** launch configuration, or choose **Docker container**
-as the template source when creating a launch file. It assumes a local image
-named `simplex-worker:latest` containing `/bin/sh` and an installed `simplex`
-command on PATH. Change the image name to match your deployment. The in-tree
-`simplex-hub-test:latest` image keeps its build-tree entry point at
-`/src/build/bin/simplex`; when using that image, replace the separate `simplex`
-command argument with this absolute path. The following argument remains `run`. The template
-does not build an image or install the worker; Docker may pull the named image
-if it is absent locally, according to its normal behavior.
+The seeded `docker` configuration uses `simplex-worker:latest`, a local Docker
+daemon, and the installed `simplex run` entry point. Its complete image, network,
+mount, credential, and ownership setup is documented in
+[Docker worker deployment](../deployment/docker-worker.md).
 
-The container invokes `simplex run --config … --session … --threads …`, with
-`--init` and `--rm`. It bind-mounts only the current session directory at the same
-absolute path and overlays the entire `config/` snapshot read-only, including
-`launch.jsonc`, `config.yaml`, and `source.json`. State and memory remain
-on the host after the container exits. `/root/workspace` is created inside the
-container and is disposable; set the worker YAML's `worker.environment.workspace`
-to that path if you want the model to see the corresponding workspace hint.
-
-The template forwards `MODEL_API_KEY` from the Hub process environment. Add
-other `-e NAME` entries for other provider credentials. It runs as container root
-with the Hub's primary GID and umask `0002`, allowing the Hub to clean up ordinary
-worker-created directories. `{gid}` requires a POSIX Hub host, including WSL.
-
-`host.docker.internal:host-gateway` supplies a host gateway on Docker Engine;
-`worker.connectHost` uses that name. Both Hub listeners must be reachable from
-the container. For example, start the Hub with `--listen 0.0.0.0:8800
---panel-token YOUR_TOKEN` (the tool listener inherits that bind address). Keep
-these listeners on a trusted network. A loopback-only listener cannot accept
-connections through the Docker bridge. Explicit endpoint origins remain
-available for proxies or alternative networking setups.
+The in-tree `simplex-hub-test:latest` image uses the build-tree launcher
+`/src/build/bin/simplex`; when selecting that image, replace the separate
+`simplex` command argument with that path and keep `run` as the next argument.
+The template does not build an image or install a worker automatically.
 
 ## Worker templates and managed fields
 

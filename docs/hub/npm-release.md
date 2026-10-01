@@ -85,7 +85,7 @@ days by default). Do not rebuild or repack the same version after publishing.
 
 `npm run build:release` builds the browser panel, emits server JavaScript, and
 stages the runtime templates beside that JavaScript. Public protocol and
-configuration documents from root `docs/core` and `docs/hub` are copied into
+configuration documents and supporting guides from root `docs/` are copied into
 `dist/docs`; historical panel redesign notes are excluded. Node does not type-strip
 `.ts` files inside installed `node_modules`, so the npm package runs compiled
 JavaScript even though development uses TypeScript source directly. The package
