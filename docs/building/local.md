@@ -42,7 +42,7 @@ tar -xzf "$SIMPLEX_DEPS/src/boost.tar.gz" -C "$SIMPLEX_DEPS/src"
   printf 'using gcc : simplex : %s ;\n' "$(command -v g++-14)" > simplex-user-config.jam
   ./b2 --user-config=simplex-user-config.jam toolset=gcc-simplex \
     -j"$JOBS" link=shared runtime-link=shared variant=release \
-    --prefix="$SIMPLEX_DEPS/boost" install
+    --prefix="$SIMPLEX_DEPS/boost" --libdir="$SIMPLEX_DEPS/boost/lib" install
 )
 curl -fL https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp \
   -o "$SIMPLEX_DEPS/third-party/include/nlohmann/json.hpp"
@@ -77,13 +77,21 @@ cmake -S . -B build-local \
 cmake --build build-local -j"$JOBS"
 ctest --test-dir build-local --output-on-failure --no-tests=error --timeout 120
 cmake --install build-local --strip
+export LD_LIBRARY_PATH="$SIMPLEX_DEPS/boost/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ./install-local/bin/simplex run --help
 ```
 
-Keep locally installed shared dependencies available to the runtime loader. If
-your private Boost library directory is not in its search path, configure that
-path for local execution or bundle the required runtime when packaging. Do not
-copy only the executable and expect plugins to work elsewhere.
+This local install does not copy the private Boost shared libraries into
+`install-local/lib`. The installed binaries use executable-relative library
+paths, so the export above makes the explicitly selected Boost `lib` directory
+available at runtime while preserving any existing `LD_LIBRARY_PATH`. Keep it
+set when running the worker, or start the Hub from the same shell so launched
+workers inherit it. Repeat the export in a new shell, using the absolute path
+to your dependency directory.
+
+For a distributable installation, use the [portable release build](docker.md#portable-release-build),
+which bundles the required runtime libraries. Copying only the local executable
+does not produce a self-contained worker.
 
 Release defaults to `SIMPLEX_RELEASE_OPTIMIZATION=-Os`. Set it to `-O3` to trade
 size for a different optimization policy. `SIMPLEX_ENABLE_LTO=ON` enables
