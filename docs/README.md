@@ -14,4 +14,8 @@ beside their implementation and provide package-specific usage and development n
 - [Worker adapter](hub/worker-adapter.md)
 - [Configuration management](hub/configurations.md)
 - [npm releases](hub/npm-release.md)
-- [Panel redesign notes](hub/panel-redesign-plan.md) (maintainer design history)
+
+## Historical material
+
+- [Panel redesign notes](hub/panel-redesign-plan.md): archived proposals and
+  implementation notes; not a current usage or protocol reference.

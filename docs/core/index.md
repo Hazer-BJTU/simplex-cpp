@@ -2,7 +2,8 @@
 
 The core package runs one agent worker per process. A worker initiates a
 WebSocket connection to an external service, accepts user requests, and reports
-agent-loop events. A separate connection carries each tool-confirmation request.
+agent-loop events. Separate one-shot connections carry tool-confirmation and optional remote-tool
+requests.
 The service may be implemented in any language or framework.
 
 ## Protocol reference
@@ -23,6 +24,5 @@ builder for GitHub Pages. Keep page filenames and heading anchors stable. New
 pages must be linked here. The documentation does not require C++ source access
 to interpret a wire message.
 
-No site generator or GitHub Pages deployment workflow is configured by this
-change. When one is selected, its build must preserve or translate the relative
+No site generator or GitHub Pages deployment workflow is configured yet. When one is selected, its build must preserve or translate the relative
 links and validate the published navigation.

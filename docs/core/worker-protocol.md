@@ -30,16 +30,16 @@ endpoints.
 
 ## Connections and configuration
 
-There are two active worker connection roles. An additional, optional remote-tool
-transport supports session plan tools; see [Remote tool requests](#remote-tool-requests).
-The active roles are:
+The worker uses a persistent event connection and optional one-shot connections
+for confirmation and remote tools:
 
 | Role | Worker configuration | Lifetime | Traffic |
 | --- | --- | --- | --- |
 | Events and inputs | `client.endpoint` | Persistent, reconnecting | Hub sends payloads and signals; worker sends events. |
 | Tool confirmation | `security.confirmation.endpoint` | One connection per confirmation | Worker sends one request; hub sends one response; worker closes. |
+| Remote tools | `hub_remote_call.endpoint` | One connection per tool request | Worker appends an operation route and exchanges one request/response; see [Remote tool requests](#remote-tool-requests). |
 
-Both are WebSocket endpoints, not ordinary HTTP POST handlers. They may use
+All are WebSocket endpoints, not ordinary HTTP POST handlers. They may use
 separate paths on the same server or different servers. A hub must allow
 confirmation connections while the event connection is open, including multiple
 simultaneous confirmations from one tool batch. The following is a configuration
@@ -79,7 +79,8 @@ persistence:
 
 The numeric and boolean values above are the defaults. Endpoints have no
 implicit hub address; the event endpoint is required. Omitting the confirmation
-configuration denies calls that require confirmation. Queue capacities,
+configuration denies calls that require confirmation while the policy is `ask`;
+payload-selected `approve` and `deny` policies decide locally. Queue capacities,
 backoff delays, confirmation timeout, and `max_exchanges` must be positive.
 `max_backoff_ms` must be at least `initial_backoff_ms`. The idle timeout is
 nonnegative; zero disables it.
@@ -189,8 +190,8 @@ accepts unknown input types or operations.
 | --- | --- | --- |
 | `session_id` | Worker startup `--session` | 1–128 ASCII letters, digits, `_`, or `-`; selects the persistent session. May survive worker restarts. |
 | `worker_id` | Worker-generated UUID | New for each worker application instance; unchanged by reconnects. |
-| `request_id` | Hub | Nonempty string of at most 128 UTF-8 bytes. Identifies an admitted message/continuation within the worker's bounded duplicate window; for `history`, it only correlates a read-only response and is not cached. |
-| `run_id` | Worker-generated UUID | New for each admitted request, including `continue`. Required to target cancellation. |
+| `request_id` | Hub | Nonempty string of at most 128 UTF-8 bytes. Identifies an admitted message, continuation, or compaction within the worker's bounded duplicate window; for `history`, it only correlates a read-only response and is not cached. |
+| `run_id` | Worker-generated UUID | New for each admitted `message`, `continue`, or `compact` invocation. Read-only `history` queries do not create runs. Required to target cancellation. |
 | `sequence` | Worker | Unsigned 64-bit event counter, starting at 1 and increasing across reconnects within this worker instance. |
 | `confirmation_id` | Worker-generated UUID | Identifies one confirmation exchange, not a whole run or tool batch. |
 | Tool call `id` | Model/tool protocol | Identifies a call within its batch; it is not a request, run, or confirmation ID. |
@@ -556,7 +557,9 @@ A failure or cancellation emits `run_finished` without `compact_finished` and
 without changing the authoritative conversation or loop progress; its status
 object can therefore still describe the preceding ordinary run. `durable: false`
 for this attempt does not invalidate the original snapshot. Retrying compact uses
-a fresh request ID. There is no automatic retry or archive deletion.
+a fresh request ID. There is no automatic retry, and a failed or cancelled
+attempt does not trigger archive cleanup; a later successful compact may remove
+its archive under the retention policy below.
 
 After success, history contains zero turns. `continue` is rejected until a new
 message creates a turn; that message sees the new system-prompt memory.
@@ -760,6 +763,8 @@ the next payload as described under
   "stopping": false,
   "storage_failed": false,
   "rejected_payloads": 0,
+  "capabilities": ["session-history", "context-compact"],
+  "memory_retention": {"max_archives": 5},
   "loop": {
     "status": "completed",
     "phase": "ready",

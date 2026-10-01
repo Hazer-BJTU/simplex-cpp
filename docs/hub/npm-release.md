@@ -18,7 +18,9 @@ fails rather than replacing a published artifact.
 
 The package must already exist before npm can accept a trusted publisher. For
 the first release, the owner of the `@hazer-bjtu` npm scope should publish a
-prerelease from an isolated checkout, leaving the real `0.1.0` for CI:
+prerelease from an isolated checkout, reserving stable versions for CI. The
+existing package has already been bootstrapped; do not repeat this step for
+normal releases. For a new package, the initial procedure is:
 
 ```sh
 git clone https://github.com/Hazer-BJTU/simplex-cpp.git /tmp/simplex-npm-bootstrap
@@ -37,8 +39,8 @@ Before the manual publish, inspect the archive with `tar -tzf` and confirm
 that it contains no `data/`, tests, or local configuration. The
 publishing account needs permission to publish under `@hazer-bjtu` and must meet
 npm's authentication requirements. The lockfile uses the official registry
-host and pins each dependency's integrity hash. Do not manually publish
-`0.1.0`.
+host and pins each dependency's integrity hash. Stable versions are published
+by the release workflow.
 
 After the bootstrap appears on npm, configure its GitHub Actions Trusted
 Publisher in the package's npm settings:
@@ -66,8 +68,10 @@ machinery itself needs a fix after the tag was pushed, merge that fix to
 `main` without changing `VERSION`, then run the same workflow manually:
 
 ```sh
+release_tag="v$(cat VERSION)"
+source_run_id=123456789  # Replace with the original tag workflow run ID.
 gh workflow run release-worker.yml --ref main \
-    -f release_tag=v<VERSION> -f source_run_id=<TAG_RUN_ID>
+    -f release_tag="$release_tag" -f source_run_id="$source_run_id"
 ```
 
 The manual path uses the worker and Hub artifacts from the named tag run. It
@@ -80,7 +84,9 @@ days by default). Do not rebuild or repack the same version after publishing.
 ## Package checks
 
 `npm run build:release` builds the browser panel, emits server JavaScript, and
-stages the runtime templates beside that JavaScript. Node does not type-strip
+stages the runtime templates beside that JavaScript. Public protocol and
+configuration documents from root `docs/core` and `docs/hub` are copied into
+`dist/docs`; historical panel redesign notes are excluded. Node does not type-strip
 `.ts` files inside installed `node_modules`, so the npm package runs compiled
 JavaScript even though development uses TypeScript source directly. The package
 uses a positive `files` list; `hub/data`, test results, test sources, and local

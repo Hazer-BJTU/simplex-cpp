@@ -11,7 +11,8 @@ its own copies. Saving a reusable file does not change an existing session.
    Alternatively, edit the first entry of the launch template's `command` to
    the absolute path of the installed `simplex` executable.
 2. Export `MODEL_API_KEY` in the environment used to start the Hub, then run
-   `npm start` from the `hub` package. Open the panel URL printed by the Hub.
+   `simplex-hub` from the installed npm package. Open the panel URL printed by
+   the Hub. Source-tree development instead uses `npm start` from `hub/`.
 3. Open **Configurations**. Select **Worker configs**, then the saved `default`
    file. Replace `YOUR_PROVIDER`, `YOUR_PROVIDER_PLUGIN`, `YOUR_MODEL`,
    `YOUR_PROVIDER_BASE_URL` and `YOUR_REQUEST_PATH` with your provider details.
@@ -69,6 +70,8 @@ not moved automatically.
         ├── state/
         ├── memory/
         ├── logs/
+        ├── events.jsonl
+        ├── session.lock
         └── plan.json
 ```
 

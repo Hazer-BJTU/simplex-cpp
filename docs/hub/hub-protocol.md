@@ -10,6 +10,8 @@ never speaks it, because the worker-facing payload channel is an approval
 authority and must stay a deployment-trusted endpoint. How the hub implements
 the worker side is described in [worker-adapter.md](worker-adapter.md).
 
+Source and test paths on this page are relative to the `hub/` package.
+
 ## Transport and versioning
 
 | Surface | Path | Notes |
@@ -138,6 +140,13 @@ Most messages embed this object, produced by `Session.describe()`:
 `unknown` is not a failure and not a success. The hub never resends, and a
 client must not present it as either.
 
+`spec` contains the session's resolved launch/model settings. Sessions created
+from the configuration library additionally identify their saved sources with
+`launchConfig` and `workerConfig`; these select session snapshots rather than
+live links to the library. On worker startup, the model and optional
+`modalityAssistProvider` fields are refreshed from the persisted worker
+configuration. `spec` is not a complete copy of that YAML document.
+
 A confirmation prompt object:
 
 ```json
@@ -229,7 +238,7 @@ categories
 (`model`, `tools` — reserved and empty, `confirmation.mode`). The hub validates
 them locally so the panel can report a mistake immediately; the worker is still
 authoritative and its rejection is surfaced unchanged. The worker requires the
-label on every part and never infers it from `type`, so the hub refuses a part
+`modality` field on every part and never infers it from `type`, so the hub refuses a part
 without one rather than assuming text. Today's panel sends `modality: "text"`;
 the attach entry stays disabled until it can ask for the category.
 For `operation: "compact"`, omit content. The hub requires the current worker
@@ -268,7 +277,7 @@ displayed page and offers a refresh after reconnection.
 | `sessions` | `sessions` | full list, on request |
 | `session` | `session` | one session changed |
 | `session_removed` | `session` | deleted |
-| `subscribed` | `session`, `transcript`, `logs`, `latest`, `transcript_epoch` | subscription accepted, with replay |
+| `subscribed` | `session`, `transcript`, `logs`, `latest`, `transcript_epoch`, `plan` | subscription accepted, with replay |
 | `created` | `session` | session created by this client |
 | `event` | `session`, `hub_seq`, `envelope` | one worker event, verbatim |
 | `confirmation` | `session`, `open`, `confirmation`, and `outcome` when closing | prompt opened or retired/answered; sent to **every** connected panel, not only subscribers of that session |
@@ -289,6 +298,13 @@ panel decides how to render them.
 `history` responses are transient control replies. Live subscribers receive
 their full envelopes, but replay contains no history response. Clients issue a
 fresh `history` query to recover the display projection.
+
+`subscribed.plan` and the `plan` message carry
+`{markdown: string, revision: number, updated_at: string | null}`. The initial
+empty plan has revision `0` and a null timestamp. Empty or whitespace-only
+Markdown clears the plan display. The plan is persisted independently of worker
+conversation state and survives compaction. Re-subscribe to recover its latest
+value; replaying worker events alone does not recover it.
 
 **Open confirmations are read from the session description**, not from a field
 on `subscribed`. `SessionDescription.confirmations` is the authoritative list of
@@ -345,7 +361,8 @@ opaque.
 
 ## Trust boundary
 
-Anyone who can reach the panel can submit payloads, and a payload may select
+Any authenticated panel client (or any client when no token is configured) can
+submit payloads, and a payload may select
 `confirmation.mode: approve`, which is equivalent to approving every tool call
 that requires confirmation. Panel access also allows editing launch commands
 that the Hub executes on its host. Treat the panel token as an administrative

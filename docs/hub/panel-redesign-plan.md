@@ -1,3 +1,13 @@
+# Historical Hub panel redesign notes
+
+> **Archived design history, not a current user guide.** The proposal and progress
+> notes below record earlier implementation stages. Their status labels, paths,
+> commands, limitations, and technology choices are historical. In particular,
+> npm releases now ship compiled server JavaScript, and the backend test suite
+> uses Node's test runner. For current behavior, use the
+> [panel protocol](hub-protocol.md), [worker adapter](worker-adapter.md), and
+> [configuration guide](configurations.md).
+
 # Hub 面板重构方案：框架与技术选型
 
 > 状态：**提案，等待确认**。本文只做选型与路线决策，不含代码改动。

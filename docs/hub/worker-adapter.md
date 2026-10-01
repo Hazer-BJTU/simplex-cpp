@@ -9,16 +9,21 @@ module implements each part, which test covers it, where behaviour is
 deliberately different, and what is missing. When the two disagree, the core
 document wins and this page is wrong.
 
+Source and test paths on this page are relative to the `hub/` package.
+
 ## Routes and binding
 
 | Route | Role | Lifetime | Implemented by |
 | --- | --- | --- | --- |
 | `GET /agent/<session_id>/events?token=<t>` | events and inputs | persistent, reconnecting | `src/worker/connection.ts` |
 | `GET /agent/<session_id>/confirm?token=<t>` | one-shot confirmation | one request, one response, then close | `src/worker/confirmation.ts` |
+| `GET /agent/<session_id>/tools/<route>?token=<t>` | remote tool requests | one request and response on the dedicated tool listener | `src/worker/tools.ts`, `src/worker/plan.ts` |
 | anything else | — | rejected during the upgrade | `src/http/server.ts` |
 
-Both are plain `ws://`. A separate `GET /api/*` + `/panel/ws` surface serves the
-browser; the worker never speaks it.
+The main listener (default port 8800) serves events, confirmation, and the
+browser HTTP/API and `/panel/ws` surfaces. Remote tools use a separate listener
+(default port 8801). Both listeners use plain `ws://`; TLS may be terminated by
+a reverse proxy. The worker never speaks the browser protocol.
 
 **Per-session paths plus a per-session token** are how the hub associates a
 connection with a deployment-authorized worker and session without touching the
@@ -94,6 +99,20 @@ Other confirmation rules:
   the connection existed. The prompt is retired on deadline, on disconnect, and
   on hub shutdown; a retired prompt cannot be answered later.
 
+## Remote tools
+
+The remote-tool listener authenticates the session token before accepting an
+upgrade. `plan/read` and `plan/replace` additionally require a live event identity
+and matching active run. They wait briefly for independently delivered event
+admission/status, then reject if that identity cannot be established. Unknown
+routes receive `not_implemented` and perform no operation.
+
+Plans are stored in the session root as `plan.json`. Replacement is published
+before a successful reply and panel broadcast; cancellation or a lost reply does
+not undo it. A fresh panel subscription includes the full plan independently of
+the event transcript. See the [remote-tool contract](../core/worker-protocol.md#remote-tool-requests)
+for limits, correlation, and failure semantics.
+
 ## Events
 
 - `status` is requested immediately after every accepted upgrade. `ready` is
@@ -106,7 +125,8 @@ Other confirmation rules:
   The hub never disconnects because a future worker emits something new.
 - A binary message, an unparseable document, a missing identity, or an
   `session_id` that disagrees with the route increments the session's protocol
-  error counter. Twenty fatal errors close the connection (1008). Non-fatal
+  error counter. A fatal error closes the connection (1008) once the connection has recorded
+  at least twenty issues, including non-fatal ones. Non-fatal
   issues (missing `request_id`, `run_id`, `sequence`, or `data`) are recorded on
   the envelope and the event is still surfaced.
 - A WebSocket ping runs every `limits.pingIntervalMs` (default 30 s) and a
@@ -165,8 +185,10 @@ promise to terminate. It is never used implicitly.
 
 The hub stores sessions, launch specs, tokens, and process identity in
 `hub.json`. Conversation history is deliberately absent — that is the worker's
-own snapshot, and duplicating it would create a second source of truth. The
-panel can *read* `<persistence.directory>/<persistence.state>/state.json` and
+own snapshot. The panel queries a simplified history projection from a connected
+worker advertising `session-history`; those replies are forwarded live without
+being retained in the event transcript. The Hub also provides a local snapshot
+inspection endpoint, which can *read* `<persistence.directory>/<persistence.state>/state.json` and
 `readable.md`; there is no operation to replace, edit, or reset a snapshot,
 because the protocol defines none and inventing one would need a managed
 integration on the worker side.
@@ -195,16 +217,19 @@ the policy.
 ## Known limits
 
 - No delivery acknowledgement exists, so the hub cannot prove that a payload was
-  admitted, executed, or persisted. It shows what it observed and marks the
-  rest unknown.
+  admitted, executed, or persisted from a successful socket write alone.
+  Admission, run, and persistence events report those outcomes when received;
+  missing events leave the corresponding outcome unknown.
 - The hub's in-memory transcript does not survive a restart; the JSONL log does,
   but it is not replayed into the panel.
 - A confirmation's local deadline is advisory, as explained above.
 - Cancellation does not roll back accepted tool calls; the hub says so in the UI
   rather than implying otherwise.
-- `wss://` is not implemented. Terminate TLS at a reverse proxy.
+- The Hub has no native TLS listener. Workers support `wss://`; terminate TLS
+  at a reverse proxy when using it.
 - The panel has no user accounts or roles. One optional shared token guards the
-  browser surface; anyone who can reach the panel can approve tool calls.
+  browser surface; any authenticated panel client (or any client when no token
+  is configured) has approval and launch-configuration authority.
 - Orphan detection for a worker started outside the hub is limited to what the
   protocol allows: the hub can drive and stop it, but it has no process record
   and the panel marks it as unattached.
