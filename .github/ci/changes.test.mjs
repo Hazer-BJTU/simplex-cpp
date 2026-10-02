@@ -33,13 +33,56 @@ function fixture(t) {
 
 test('NUL parsing preserves rename/copy paths, spaces, tabs and newlines', () => {
     assert.deepEqual(parseChangedPaths(Buffer.from(
-        'R100\0core/old.cpp\0docs/new.md\0A\0hub/web/with\ttab\nname.ts\0C75\0a b\0copy\0D\0gone\0')),
+        'R100\0core/old.cpp\0docs/new.md\0A\0hub/web/with\ttab\nname.ts\0C080\0a b\0copy\0D\0gone\0')),
     ['core/old.cpp', 'docs/new.md', 'hub/web/with\ttab\nname.ts', 'a b', 'copy', 'gone']);
+    // Real Git similarity scores are always three digits and may be partial.
+    assert.deepEqual(parseChangedPaths(Buffer.from(
+        'R080\0core/old.cpp\0core/new.cpp\0C090\0src\0dst\0R000\0x\0y\0C100\0p\0q\0')),
+    ['core/old.cpp', 'core/new.cpp', 'src', 'dst', 'x', 'y', 'p', 'q']);
     assert.deepEqual(parseChangedPaths(Buffer.alloc(0)), []);
-    for (const data of ['A\0file', 'A\0', 'R100\0only-one\0', 'U\0file\0', 'R999\0a\0b\0']) {
+    for (const data of [
+        'A\0file', 'A\0', 'R100\0only-one\0', 'U\0file\0',
+        'R999\0a\0b\0', 'R10\0a\0b\0', 'R1000\0a\0b\0', 'R\0a\0b\0',
+        'C101\0a\0b\0', 'R1\0a\0b\0',
+    ]) {
         assert.throws(() => parseChangedPaths(Buffer.from(data)));
     }
     assert.throws(() => parseChangedPaths(Buffer.from([0xff, 0])));
+});
+
+test('real Git partial rename (R0xx) collects both paths and keeps native classification', (t) => {
+    const f = fixture(t);
+    // 1. create and commit a native file.
+    const lines = Array.from({ length: 200 }, (_, index) => `line ${index}: shared content`);
+    f.commit('core/original.cpp', `${lines.join('\n')}\n`);
+    const before = f.git('rev-parse', 'HEAD');
+    // 2. rename it.
+    f.git('mv', 'core/original.cpp', 'core/renamed.cpp');
+    // 3. modify enough content so Git reports a non-100% similarity.
+    const modified = lines.map((line, index) => (index < 40 ? `line ${index}: CHANGED` : line));
+    writeFileSync(join(f.directory, 'core/renamed.cpp'), `${modified.join('\n')}\n`);
+    f.git('add', '--', 'core/renamed.cpp');
+    f.git('commit', '-m', 'rename and modify');
+    const head = f.git('rev-parse', 'HEAD');
+
+    // 4. inspect the real Git output to confirm a partial rename is present.
+    const records = f.git('diff', '--name-status', '-z', '--find-renames', before, head)
+        .split('\0');
+    assert.match(records[0], /^R0\d\d$/);
+    assert.deepEqual(records.slice(1, 3), ['core/original.cpp', 'core/renamed.cpp']);
+
+    // 5. the real collectChangedPaths must return both old and new paths.
+    const paths = collectChangedPaths(f.directory, { base: before, head });
+    assert.deepEqual(paths, ['core/original.cpp', 'core/renamed.cpp']);
+
+    // 6. moving a native input into a docs path still classifies as native.
+    assert.equal(classifyPaths(paths).category, 'native');
+    assert.equal(classifyPaths(['docs/renamed.md']).category, 'independent');
+
+    // A range predating the file's creation sees it as a plain add (not a bogus
+    // rename), so the older path is correctly absent rather than fabricated.
+    assert.deepEqual(collectChangedPaths(f.directory, { base: f.base, head }),
+        ['core/renamed.cpp']);
 });
 
 test('PR merge checkout includes all PR commits and rename/deletion inputs', (t) => {

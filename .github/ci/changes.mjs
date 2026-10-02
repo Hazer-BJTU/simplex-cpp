@@ -56,7 +56,12 @@ export function parseChangedPaths(buffer) {
     const paths = [];
     for (let index = 0; index < fields.length;) {
         const status = fields[index++];
-        const count = /^[RC](100|[1-9]?[0-9])$/.test(status) ? 2
+        // Git prints a three-digit similarity for renames/copies (R100, R080,
+        // C090). Accept R000-R100/C000-C100 explicitly; anything else is
+        // malformed and must fail closed rather than guess at a path count.
+        const similarity = /^[RC](\d{3})$/.exec(status);
+        const renameOrCopy = similarity !== null && Number(similarity[1]) <= 100;
+        const count = renameOrCopy ? 2
             : /^[AMDT]$/.test(status) ? 1 : 0;
         if (!count || index + count > fields.length) {
             throw new Error('malformed or unsupported Git name-status record');
