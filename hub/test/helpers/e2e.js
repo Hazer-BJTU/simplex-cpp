@@ -1,20 +1,20 @@
 /**
  * @file shared preconditions for the end-to-end suite.
  *
- * Both end-to-end files need the same thing: a real `simplex_worker` and the
- * prompt file it loads at startup. Keeping the resolution in one place means
- * the two suites cannot disagree about what "the worker is available" means —
- * and both skip with the same explanation when it is not.
+ * The ordinary real-worker suite needs an executable worker and its prompt.
+ * Local runs may skip when they are unavailable. SIMPLEX_E2E_REQUIRED=1 makes
+ * missing runtime prerequisites fatal in selected CI runs. The separate Docker
+ * lifetime suite remains opt-in through SIMPLEX_DOCKER_WORKER_TEST=1.
  *
  * `SIMPLEX_WORKER_BIN` overrides the in-tree default, which is how CI points
  * the suite at the *staged release* rather than at the build tree. The prompt
  * file is not configurable separately: the worker reads it from its own
  * installation directory.
  */
-import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { hubRoot } from '../../src/config.ts';
 import { startTestHub } from './hub.js';
+import { workerUnavailableReason } from './worker-preconditions.js';
 
 const repoRoot = join(hubRoot, '..');
 
@@ -25,13 +25,19 @@ export const WORKER_BIN = process.env.SIMPLEX_WORKER_BIN
 /** The default role prompt, which the worker reads beside its own executable. */
 export const PROMPT_FILE = join(dirname(WORKER_BIN), 'prompts', 'coding_agent.yaml');
 
+const required = process.env.SIMPLEX_E2E_REQUIRED === '1';
+const unavailable = workerUnavailableReason(WORKER_BIN, { required });
+if (required && unavailable) {
+    throw new Error(`Required real-worker E2E unavailable: ${unavailable}`);
+}
+
 /** True when a real worker can be started. */
-export const e2eAvailable = existsSync(WORKER_BIN) && existsSync(PROMPT_FILE);
+export const e2eAvailable = unavailable === null;
 
 /** `false`, or the reason node:test should skip with. */
 export const e2eSkip = e2eAvailable
     ? false
-    : `real worker not built: ${WORKER_BIN} / ${PROMPT_FILE}`;
+    : `real worker unavailable: ${unavailable}`;
 
 /**
  * Start a hub that runs the real worker against the offline mock provider.

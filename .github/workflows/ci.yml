@@ -30,8 +30,7 @@ permissions:
   contents: read
   packages: read
 
-# Every job here is a container job, and a container job's default shell is the
-# container's /bin/sh — which is dash on the Debian family and bash on the
+# A container job's default shell is its /bin/sh — which is dash on the Debian family and bash on the
 # RHEL family. Steps that use bash-isms (set -o pipefail) therefore pass on
 # AlmaLinux and die on Ubuntu with "Illegal option -o pipefail", which is a
 # distinction no reader should have to hold in their head. Pin the shell once.
@@ -46,7 +45,34 @@ defaults:
     shell: bash
 
 jobs:
+  # Keep the workflow itself unconditional so skipped native work does not hide
+  # required checks. All producer/consumer choices come from this single job.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      category: ${{ steps.selection.outputs.category }}
+      cpp_validation: ${{ steps.selection.outputs.cpp_validation }}
+      portable_build: ${{ steps.selection.outputs.portable_build }}
+      staged_validation: ${{ steps.selection.outputs.staged_validation }}
+      worker_integration: ${{ steps.selection.outputs.worker_integration }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test CI selection and result gate
+        run: node --test .github/ci/*.test.mjs
+      - name: Classify the complete event range
+        id: selection
+        run: node .github/ci/classify.mjs
+
   build-test:
+    needs: changes
+    if: needs.changes.outputs.cpp_validation == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
@@ -273,6 +299,8 @@ jobs:
   # by whichever job sees it, instead of being invisible in a single context.
   # ---------------------------------------------------------------------------
   portable-release:
+    needs: changes
+    if: needs.changes.outputs.portable_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
@@ -456,7 +484,8 @@ jobs:
   # ---------------------------------------------------------------------------
   staged-runtime:
     runs-on: ubuntu-latest
-    needs: portable-release
+    needs: [changes, portable-release]
+    if: needs.changes.outputs.staged_validation == 'true' && needs.portable-release.result == 'success'
     timeout-minutes: 30
     strategy:
       # Both legs report. A failure on one distro must not hide the other's,
@@ -661,7 +690,7 @@ jobs:
           stage/bin/test_loop_extensions --run_test=load_register_publish_and_release
 
   # ---------------------------------------------------------------------------
-  # hub-e2e — the hub against the RELEASE worker, and the panel in a browser.
+  # hub-e2e — the hub against the RELEASE worker (no browser).
   #
   # It reuses portable-release's artifact rather than building the tree again,
   # which makes the subject of the test the staged layout:
@@ -676,11 +705,12 @@ jobs:
   # Proving the floor is staged-runtime's job; this job is about the hub.
   #
   # What it does not prove: a real provider (the hub's offline mock stands in),
-  # wss or a reverse proxy, or any browser other than the one the runner ships.
+  # wss, a reverse proxy, or the browser UI. check:panel remains manual.
   # ---------------------------------------------------------------------------
   hub-e2e:
     runs-on: ubuntu-latest
-    needs: portable-release
+    needs: [changes, portable-release]
+    if: needs.changes.outputs.worker_integration == 'true' && needs.portable-release.result == 'success'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -712,13 +742,6 @@ jobs:
           stage/bin/simplex run --help
           test ! -e stage/bin/simplex_shell
 
-      - name: Assert a browser is available for the panel check
-        # An explicit red step rather than a test that quietly skips. A panel
-        # check with no browser reads as green while asserting nothing, which is
-        # the failure mode this whole workflow is written against. The runner
-        # image exports CHROME_BIN; chromium is the fallback.
-        run: command -v "${CHROME_BIN:-google-chrome}" || command -v chromium
-
       - name: End to end
         working-directory: hub
         env:
@@ -726,6 +749,26 @@ jobs:
           # CMake's absolute build RPATH into paths that do not exist here.
           # The worker reads its prompts from that same stage/bin directory.
           SIMPLEX_WORKER_BIN: ${{ github.workspace }}/stage/bin/simplex_worker
-          # A browser check that cannot find a browser must fail, not skip.
-          PANEL_REQUIRE_BROWSER: '1'
+          # Selected CI must fail on missing worker/runtime prerequisites.
+          SIMPLEX_E2E_REQUIRED: '1'
         run: npm run test:e2e
+
+  # Require this stable check in branch rules. Intentional omissions are valid;
+  # failed/cancelled classification or selected jobs are never valid skips.
+  ci-gate:
+    name: CI gate
+    if: always()
+    needs: [changes, build-test, portable-release, staged-runtime, hub-e2e, hub-test, hub-panel]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify selected job outcomes
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node .github/ci/gate.mjs
