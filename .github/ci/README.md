@@ -23,9 +23,12 @@ Hub integration, including shared protocols, launch config, test helpers,
 fixtures, package locks and build/test configuration. The broad boundary is
 intentional; it can be refined after observing actual runs.
 
-Root `docs/**`, `assets/**`, `README.md`, `LICENSE`, `.gitignore`, and the dedicated
-docs/release workflows do not select native work. Unknown paths select full
-validation. Docs and release workflow behavior is unchanged.
+Root `docs/**`, `assets/**`, `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
+`LICENSE`, `.gitignore`, `.github/ISSUE_TEMPLATE/**`,
+`.github/PULL_REQUEST_TEMPLATE.md`, and the dedicated docs/release workflows do
+not select native work. These community-file exceptions do not exclude other
+`.github/**` files; unknown workflows and automation still select full validation.
+Docs and release workflow behavior is unchanged.
 
 `changes.mjs` separates range resolution from NUL-delimited name-status parsing.
 PRs compare the target merge base to the checked-out PR revision, including all

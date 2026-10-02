@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation and usage guides
+    url: https://hazer-bjtu.github.io/simplex-cpp/
+    about: Check deployment, configuration, protocol and plugin guides before opening a usage question.
+  - name: Report a security vulnerability privately
+    url: https://github.com/Hazer-BJTU/simplex-cpp/security/policy
+    about: Follow the security policy instead of publishing an unpatched vulnerability in an issue.

@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible defect in the worker, Hub, documentation or build.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For an unpatched security vulnerability, use the [private reporting channel](https://github.com/Hazer-BJTU/simplex-cpp/security/policy) instead of this public form.
+        Redact API keys, bearer/session tokens, cookies and private conversation data from all fields and attachments.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      multiple: true
+      options:
+        - Worker
+        - Hub / panel
+        - Docs
+        - Build / installation
+        - Plugins
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions and installation
+      description: Include both worker and Hub versions if used, or a source commit. Write "not applicable" for components not involved.
+      placeholder: |
+        Worker: release archive version (or VERSION and git rev-parse HEAD for a source build)
+        Hub: simplex-hub --version
+        Installation: release / npm / local source build / Docker (image tag and digest)
+        Plugins: names and versions, if relevant
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the worker and Hub environments separately if they differ. For docs-only reports, provide the browser or write "not applicable".
+      placeholder: |
+        OS/distro and CPU architecture:
+        Container or remote deployment, if any:
+        glibc: ldd --version (Linux)
+        OpenSSL: openssl version
+        Node.js and npm: node --version / npm --version
+        Source builds only: GCC version, Boost version and CMake options
+        Browser/version (panel or docs):
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and frequency. Include the exact error when available.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide minimal commands, input and relevant configuration. Replace secrets with placeholders.
+      placeholder: |
+        1. Start with ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, configuration and screenshots
+      description: Attach only relevant, redacted excerpts. Worker state/memory files and screenshots can contain private data. Never include live credentials.

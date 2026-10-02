@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a behavior or capability and explain the problem it solves.
+title: "feat: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the use case before the implementation. Search existing issues for related proposals.
+        Do not include secrets or private conversation data.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      multiple: true
+      options:
+        - Worker
+        - Hub / panel
+        - Plugins
+        - Docs
+        - Build / deployment
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what limitation are you encountering?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the expected user-facing behavior and how you would know it works.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and boundaries
+      description: Mention workarounds, alternatives, compatibility needs or what should stay outside the change.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add relevant examples or links. Redact credentials and private data.

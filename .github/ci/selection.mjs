@@ -5,7 +5,9 @@ const nativeTrees = new Set([
     'third_party', 'cmake',
 ]);
 
-const harmlessRootFiles = new Set(['README.md', 'LICENSE', '.gitignore']);
+const harmlessRootFiles = new Set([
+    'README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'LICENSE', '.gitignore',
+]);
 const outOfScopeWorkflows = new Set([
     '.github/workflows/docs.yml', '.github/workflows/release-worker.yml',
 ]);
@@ -31,6 +33,8 @@ export function categoryForPath(path) {
         return 'integration';
     }
     if (path.startsWith('docs/') || path.startsWith('assets/')
+        || path.startsWith('.github/ISSUE_TEMPLATE/')
+        || path === '.github/PULL_REQUEST_TEMPLATE.md'
         || harmlessRootFiles.has(path) || outOfScopeWorkflows.has(path)) {
         return 'documentation';
     }

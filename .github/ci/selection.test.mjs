@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classifyPaths, decisionsForCategory, validateDecisions } from './selection.mjs';
+import { categoryForPath, classifyPaths, decisionsForCategory, validateDecisions } from './selection.mjs';
 import { checkResults } from './gate.mjs';
 
 const nativeTrees = [
@@ -42,6 +42,28 @@ for (const path of ['hub/web/src/App.tsx', 'hub/test/browser/panel-shell.spec.ts
         assert.deepEqual(classifyPaths([path]), decisionsForCategory('independent'));
     });
 }
+
+for (const path of ['CONTRIBUTING.md', 'SECURITY.md',
+    '.github/ISSUE_TEMPLATE/bug_report.yml', '.github/ISSUE_TEMPLATE/feature_request.yml',
+    '.github/ISSUE_TEMPLATE/config.yml', '.github/PULL_REQUEST_TEMPLATE.md']) {
+    test(`${path} is community documentation and omits native work`, () => {
+        assert.equal(categoryForPath(path), 'documentation');
+        assert.deepEqual(classifyPaths([path]), decisionsForCategory('independent'));
+        assert.deepEqual(classifyPaths([path, 'core/src/application.cpp']),
+            decisionsForCategory('native'));
+        assert.deepEqual(classifyPaths([path, 'hub/src/hub.ts']),
+            decisionsForCategory('integration'));
+    });
+}
+
+test('community exceptions do not exclude other GitHub automation or similarly named paths', () => {
+    for (const path of ['.github/workflows/new.yml', '.github/scripts/maintenance.sh',
+        '.github/ISSUE_TEMPLATE-extra/action.yml', '.github/ISSUE_TEMPLATE.yml',
+        '.github/PULL_REQUEST_TEMPLATE.md.js', 'SECURITY.md.sh', 'CONTRIBUTING.md.cmake']) {
+        assert.equal(categoryForPath(path), 'native');
+        assert.deepEqual(classifyPaths([path]), decisionsForCategory('native'));
+    }
+});
 
 test('mixed changes take the union, unknown files default to native', () => {
     assert.deepEqual(classifyPaths(['docs/index.md', 'hub/src/hub.ts']),
