@@ -6,16 +6,17 @@
     <linearGradient id="graphite" x1="540" y1="325" x2="687" y2="490" gradientUnits="userSpaceOnUse"><stop stop-color="#24313d"/><stop offset="1" stop-color="#394754"/></linearGradient>
   </defs>
   <g id="simplex-symbol">
+    <!-- Side end cuts are collinear with the upper triangle base and lower-left facet top edge. -->
     <path id="upper-blue-ribbon" fill="url(#blue)" d="
       M 524,343
       L 458,319
       C 441,313 437,298 447,282
       L 511,179
       C 524,155 549,154 565,178
-      L 623,275
-      C 627,282 627,287 623,291
-      L 607,301
-      C 603,303 600,302 597,297
+      L 654.17716,327.14111
+      Q 658.28271,334.00729 653.59730,332.26174
+      L 612.27028,316.86540
+      Q 607.58487,315.11986 605.06285,310.80251
       L 538,196
       L 479,295
       L 530,314
@@ -39,10 +40,10 @@
       L 555,330
       Q 556,326 559,327 Z"/>
     <path id="lower-left-ribbon" fill="#222e38" d="
-      M 424,354
-      Q 427,349 432,352
-      L 451,364
-      Q 455,367 452,372
+      M 434.35084,338.72827
+      Q 437.15610,334.58936 441.84221,336.33303
+      L 465.07029,344.97604
+      Q 469.75640,346.71971 466.88255,350.81129
       L 393,456
       L 511,456
       Q 516,456 513,461

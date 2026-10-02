@@ -1,7 +1,6 @@
 ---
 layout: home
 hero:
-  name: Simplex
   text: Understand every detail of an agent harness.
   tagline: A lightweight native C++ worker, extensible agent loop, and a separate Hub for deployment and interaction.
   actions:
