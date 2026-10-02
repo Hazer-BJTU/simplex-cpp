@@ -14,7 +14,8 @@ project for building a minimal agent system from scratch.
 
 [Documentation](https://hazer-bjtu.github.io/simplex-cpp/) ·
 [Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest) ·
-[Documentation source](docs/README.md)
+[Documentation source](docs/README.md) ·
+[Contributing](CONTRIBUTING.md)
 
 ## Architecture
 
@@ -48,4 +49,5 @@ Native plugins execute with the worker's permissions; load only trusted code.
 Local tools can execute commands and modify files. Workspace hints and tool
 approval are not sandboxes, and cancellation does not undo completed effects.
 Use restricted accounts or containers and protect Hub access.
+[Security policy and private reporting](SECURITY.md) ·
 [Security details](https://hazer-bjtu.github.io/simplex-cpp/architecture/security.html).
