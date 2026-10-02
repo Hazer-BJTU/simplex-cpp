@@ -1,40 +1,54 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="430" viewBox="300 120 1400 430" role="img" aria-labelledby="title desc">
   <title id="title">Simplex — C++ Agent Harness</title>
-  <desc id="desc">Refined vector logo. Blue, graphite and charcoal ribbons have straight-cut ends parallel to the opposite frame edges, separated by transparent gaps. An upper grey triangle and two lower facets (grey left, blue right) follow the frame edge directions. Transparent margins separate the facets from the frame and each other. Optically spaced wordmark on a common baseline, with a left-aligned subtitle. Transparent background; all lettering is outlined.</desc>
+  <desc id="desc">Refined vector logo. Blue, graphite and charcoal ribbons have independent curved and bevelled ends, separated by transparent gaps. An upper grey triangle and two lower facets (grey left, blue right) follow the frame edge directions. Transparent margins separate the facets from the frame and each other. Optically spaced wordmark on a common baseline, with a left-aligned subtitle. Transparent background; all lettering is outlined.</desc>
   <defs>
     <linearGradient id="blue" x1="450" y1="180" x2="625" y2="355" gradientUnits="userSpaceOnUse"><stop stop-color="#057ddb"/><stop offset="1" stop-color="#0073cf"/></linearGradient>
     <linearGradient id="graphite" x1="540" y1="325" x2="687" y2="490" gradientUnits="userSpaceOnUse"><stop stop-color="#24313d"/><stop offset="1" stop-color="#394754"/></linearGradient>
   </defs>
   <g id="simplex-symbol">
-    <!-- End cuts follow the opposite frame edges: horizontal, (64, -103), or (58, 97). -->
+    <!-- Side end cuts follow the diagonal ribbon edges facing them across the gaps. -->
     <path id="upper-blue-ribbon" fill="url(#blue)" d="
-      M 538.91257,348.42275
+      M 524,343
       L 458,319
       C 441,313 437,298 447,282
       L 511,179
       C 524,155 549,154 565,178
-      L 636.15464,297
-      L 597,297
+      L 636.72318,297.95083
+      Q 640.82873,304.81701 636.12826,303.11244
+      L 595.71414,288.45678
+      Q 591.01367,286.75221 588.49165,282.43487
       L 538,196
       L 479,295
-      L 514.98518,308.40624 Z"/>
+      L 530,314
+      C 535,316 537,319 535,324
+      L 529,339
+      Q 527,344 524,343 Z"/>
     <path id="lower-right-ribbon" fill="url(#graphite)" d="
-      M 562.52590,328.27862
+      M 559,327
       L 650,360
       Q 657,363 661,370
       L 705,442
       C 719,465 703,490 679,490
-      L 555.43689,490
-      L 576.56311,456
+      L 555,490
+      Q 550,490 553,485
+      L 569,460
+      Q 572,456 577,456
       L 676,456
       L 635,389
-      L 545.49092,355.69430 Z"/>
+      L 549,357
+      Q 545,355 547,351
+      L 555,330
+      Q 556,326 559,327 Z"/>
     <path id="lower-left-ribbon" fill="#222e38" d="
-      M 423.32222,355
-      L 463.94048,355
+      M 419.61289,360.47278
+      Q 422.41815,356.33387 427.11712,358.04259
+      L 450.04758,366.38094
+      Q 454.74655,368.08966 451.87271,372.18123
       L 393,456
-      L 491.83505,456
-      L 512.16495,490
+      L 511,456
+      Q 516,456 513,461
+      L 497,486
+      Q 494,490 489,490
       L 392,490
       C 366,490 351,466 363,444 Z"/>
     <!-- Insets follow the frame's straight-edge directions. Lower inset: 18 units; channel: 14 units. -->
