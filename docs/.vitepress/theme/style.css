@@ -1,0 +1,13 @@
+.simplex-home-logo {
+    display: block;
+    width: min(100%, 520px);
+    height: auto;
+    margin-bottom: 24px;
+}
+
+/* Keep the logo's dark lettering and ribbons readable in the dark theme. */
+.dark .simplex-home-logo {
+    padding: 16px;
+    border-radius: 12px;
+    background: #fff;
+}

@@ -28,6 +28,11 @@ build, development server, preview, and search when updating them.
 The `README.md` indexes and historical panel redesign notes are
 excluded from the site. Keep historical files out of public navigation/search.
 
+The homepage title uses the same `assets/simplex-logo-v4.svg` as the repository
+README. The custom theme imports this source directly, so logo changes are
+bundled into the site with the correct GitHub Pages base path; no separate
+copy needs to be maintained.
+
 The canonical worker reference is `core/worker-protocol.md`, titled **Simplex
 Loop Worker Protocol**. Its Hub implementation examples are part of the same
 page. Protocol drift tests read this source; do not create a second competing
