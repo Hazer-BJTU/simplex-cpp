@@ -12,10 +12,15 @@ import { startTestHub } from './helpers/hub.js';
 describe('worker event connection', () => {
     let ctx;
     const opened = [];
+    const changes = [];
     let counter = 0;
 
     before(async () => {
-        ctx = await startTestHub();
+        ctx = await startTestHub({}, {
+            onConnectionChange: (session, connection) => {
+                changes.push({ id: session.id, connection, snapshot: session.describe() });
+            },
+        });
     });
 
     after(async () => {
@@ -147,15 +152,54 @@ describe('worker event connection', () => {
         assert.equal(session.connected, false);
     });
 
+    for (const abrupt of [false, true]) {
+        it(`notifies observers after ${abrupt ? 'abrupt' : 'graceful'} disconnection bookkeeping`, async () => {
+            const { session, worker } = await pair('disconnect');
+            worker.send(workerEvent({ session: session.id, worker: 'disconnect-worker' }));
+            await until(() => session.identity.state === IDENTITY.live);
+            session.trackRequest('pending-request', 'message');
+            session.trackRequest('admitted-request', 'message');
+            session.noteRequestAdmitted('admitted-request');
+
+            if (abrupt) worker.ws.terminate();
+            else await worker.close();
+            await until(() => changes.some((change) => change.id === session.id
+                && change.connection === null), { label: 'disconnect notification' });
+
+            const notifications = changes.filter((change) => change.id === session.id);
+            assert.equal(notifications.length, 2);
+            assert.notEqual(notifications[0].connection, null);
+            const { connection, snapshot } = notifications[1];
+            assert.equal(connection, null);
+            assert.equal(snapshot.connected, false);
+            assert.equal(snapshot.identity.state, IDENTITY.stale);
+            assert.equal(snapshot.identity.worker_id, 'disconnect-worker');
+            assert.equal(snapshot.worker_capabilities, null);
+            assert.deepEqual(snapshot.requests.map((entry) => [entry.request_id, entry.state]), [
+                ['pending-request', 'unknown'],
+                ['admitted-request', 'admitted'],
+            ]);
+        });
+    }
+
     it('supersedes an existing connection instead of rejecting the reconnect', async () => {
         const { id, session, worker } = await pair('supersede');
         const first = session.connection;
+        worker.send(workerEvent({ session: id, worker: 'same-worker', sequence: 1 }));
+        await until(() => session.identity.state === IDENTITY.live);
+        session.trackRequest('pending-on-replacement', 'message');
         const replacement = await connectWorker(`${ctx.wsBase}/agent/${id}/events?token=${session.token}`);
         opened.push(replacement);
         const closed = await worker.waitForClose();
+        await until(() => first.closedAt !== null, { label: 'superseded close bookkeeping' });
         assert.equal(closed.code, 4001);
         assert.equal(session.connected, true);
         assert.notEqual(session.connection, first);
+        assert.equal(session.identity.state, IDENTITY.live);
+        assert.equal(session.requests.get('pending-on-replacement').state, 'sent');
+        assert.equal(changes.filter((change) => change.id === id).length, 2);
+        assert.equal(changes.some((change) => change.id === id
+            && change.connection === null), false);
         await replacement.waitFor((message) => message.type === 'signal',
             { label: 'status for the replacement connection' });
         replacement.send(workerEvent({ session: id, worker: 'worker-new', sequence: 1 }));

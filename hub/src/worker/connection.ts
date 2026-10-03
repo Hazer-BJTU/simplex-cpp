@@ -114,7 +114,8 @@ export interface WorkerConnectionOptions {
     config: HubConfig;
     log: Logger;
     onEvent?: ((envelope: ForwardedEnvelope, connection: WorkerConnection) => void) | undefined;
-    onClosed?: ((connection: WorkerConnection) => void) | undefined;
+    /** Called after close bookkeeping; detached is true only for the current connection. */
+    onClosed?: ((connection: WorkerConnection, detached: boolean) => void) | undefined;
 }
 
 /**
@@ -129,7 +130,7 @@ export class WorkerConnection {
     readonly config: HubConfig;
     readonly log: Logger;
     onEvent: ((envelope: ForwardedEnvelope, connection: WorkerConnection) => void) | undefined;
-    onClosed: ((connection: WorkerConnection) => void) | undefined;
+    onClosed: ((connection: WorkerConnection, detached: boolean) => void) | undefined;
     readonly openedAt: string;
     closedAt: string | null;
     closeReason: string | null;
@@ -385,9 +386,9 @@ export class WorkerConnection {
         this.closedAt = new Date().toISOString();
         const reason = reasonBuffer?.length ? reasonBuffer.toString('utf8') : '';
         this.closeReason ??= reason || `closed with code ${code}`;
-        this.session.detach(this);
+        const detached = this.session.detach(this);
         this.log.info(`session ${this.session.id}: event connection closed (${code} ${this.closeReason})`);
-        this.onClosed?.(this);
+        this.onClosed?.(this, detached);
     }
 }
 
@@ -424,12 +425,12 @@ export function createWorkerEventRoute({
             config,
             log: log.child(`worker:${session.id}`),
             onEvent,
-            onClosed: (closed) => {
-                // A superseded connection closes *after* its replacement is
-                // already attached, so only the connection the session still
-                // holds may report a disconnect. Without this the panel is told
-                // `connected: false` while a live worker is attached.
-                if (session.connection === closed) onConnectionChange?.(session, null);
+            onClosed: (_closed, detached) => {
+                // Detach has already updated identity and pending requests.
+                // Its result distinguishes a current connection's closure
+                // from a superseded socket closing after its replacement is
+                // attached; the session no longer holds the closed socket.
+                if (detached) onConnectionChange?.(session, null);
             },
         });
         const { previous, replaced } = session.attach(connection);
