@@ -65,6 +65,9 @@ const SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024;
 /** Maximum pending outbound frame bytes for one panel connection. */
 export const PANEL_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
+/** Target serialized size of replay pages, leaving room for other panel traffic. */
+export const PANEL_REPLAY_PAGE_BYTES = 512 * 1024;
+
 /** Log lines returned by one explicit logs request. */
 const LOG_TAIL_DEFAULT = 200;
 const LOG_TAIL_MAX = 2000;
@@ -82,6 +85,8 @@ export interface SnapshotView {
 export interface PanelClient {
     ws: WebSocket;
     subscriptions: Set<string>;
+    /** Generation tokens invalidate pending replay work on replacement/unsubscribe. */
+    replays: Map<string, object>;
     openedAt: string;
     remote: string | undefined;
 }
@@ -150,8 +155,12 @@ export function createPanelApi({
      * graceful close would wait behind the same data its peer is not reading.
      * The panel recovers through reconnect/replay rather than silent drops.
      */
-    function send(client: PanelClient, message: HubMessage): void {
-        if (client.ws.readyState !== client.ws.OPEN) return;
+    function send(
+        client: PanelClient,
+        message: HubMessage,
+        onSent?: (error?: Error) => void,
+    ): boolean {
+        if (client.ws.readyState !== client.ws.OPEN) return false;
         const text = JSON.stringify({ v: PANEL_VERSION, ...message });
         const payloadBytes = Buffer.byteLength(text, 'utf8');
         const headerBytes = payloadBytes <= 125 ? 2 : payloadBytes <= 65535 ? 4 : 10;
@@ -162,9 +171,91 @@ export function createPanelApi({
                 + `outbound backlog ${bufferedBytes} bytes plus frame `
                 + `${payloadBytes + headerBytes} bytes exceeds ${PANEL_MAX_BUFFERED_BYTES} bytes`);
             client.ws.terminate();
-            return;
+            return false;
         }
-        client.ws.send(text);
+        client.ws.send(text, onSent);
+        return true;
+    }
+
+    /** Await a local socket write, not an acknowledgement from the panel. */
+    function sendReplayPage(client: PanelClient, message: HubMessage): Promise<boolean> {
+        return new Promise((resolve) => {
+            const admitted = send(client, message, (error) => resolve(!error));
+            if (!admitted) resolve(false);
+        });
+    }
+
+    /**
+     * Replay in receive order before attaching live session traffic.
+     *
+     * One page is written at a time, so splitting a large transcript cannot
+     * itself flood the outbound queue. New events received during a write are
+     * picked up from the transcript before the final reply. Generation tokens
+     * stop an older subscription after replacement, unsubscribe, or close.
+     */
+    async function replaySubscription(
+        client: PanelClient,
+        session: Session,
+        since: number,
+        requestId?: string,
+        replace = false,
+    ): Promise<void> {
+        const generation = {};
+        client.replays.set(session.id, generation);
+        client.subscriptions.delete(session.id);
+        const transcript = transcripts.get(session.id);
+        let cursor = since;
+        let first = true;
+        const current = () => clients.has(client)
+            && client.replays.get(session.id) === generation
+            && registry.get(session.id) === session;
+        const reply = (events: WorkerEnvelope[], latest: number, more: boolean): HubMessage => ({
+            type: 'subscribed', session: session.describe(),
+            plan: plans.read(session.id),
+            transcript: events,
+            logs: supervisor.logs(session, { limit: LOG_TAIL_DEFAULT }),
+            latest, replay_more: more,
+            ...(replace && first ? { replay_reset: true } : {}),
+            transcript_epoch: meta().transcript_epoch,
+            ...(requestId === undefined ? {} : { request_id: requestId }),
+        });
+
+        while (current()) {
+            const retained = asEnvelopes(transcript.since(cursor));
+            if (retained.length === 0) {
+                // No suspension between enabling live delivery and enqueueing
+                // this final frame: subsequent live events follow it on wire.
+                client.replays.delete(session.id);
+                client.subscriptions.add(session.id);
+                send(client, reply([], transcript.sequence, false));
+                return;
+            }
+            let offset = 0;
+            while (offset < retained.length && current()) {
+                const page: WorkerEnvelope[] = [];
+                // Reserve the largest safe cursor and the longest replay flag
+                // plus the maximum frame header. Count encoded envelopes once.
+                let bytes = Buffer.byteLength(JSON.stringify({
+                    v: PANEL_VERSION, ...reply([], Number.MAX_SAFE_INTEGER, false),
+                }), 'utf8') + 10;
+                while (offset < retained.length) {
+                    const event = retained[offset]!;
+                    const added = Buffer.byteLength(JSON.stringify(event), 'utf8')
+                        + (page.length > 0 ? 1 : 0);
+                    if (page.length > 0 && bytes + added > PANEL_REPLAY_PAGE_BYTES) break;
+                    // A single larger envelope still makes progress, subject
+                    // to the same hard 4 MiB send budget as every other frame.
+                    page.push(event);
+                    bytes += added;
+                    offset += 1;
+                }
+                const next = page.at(-1)!.hub_sequence!;
+                const written = await sendReplayPage(client, reply(page, next, true));
+                if (!written) return;
+                cursor = next;
+                first = false;
+            }
+        }
     }
 
     /** Send to every client subscribed to a session. */
@@ -203,6 +294,10 @@ export function createPanelApi({
         // this directory, so only remove it after the worker has stopped.
         transcripts.remove(session.id);
         rmSync(sessionDir(config, session.id), { recursive: true, force: true });
+        for (const client of clients) {
+            client.replays.delete(session.id);
+            client.subscriptions.delete(session.id);
+        }
         registry.remove(session.id);
         persist({ immediate: true });
         broadcast({ type: 'session_removed', session: session.id });
@@ -713,6 +808,13 @@ export function createPanelApi({
                 send(client, { type: 'sessions', sessions: registry.list().map((s) => s.describe()) });
                 return;
             case 'subscribe': {
+                if (message.paged === true) {
+                    await replaySubscription(client, target, Number(message.since) || 0,
+                        typeof message.request_id === 'string' ? message.request_id : undefined,
+                        message.replace === true);
+                    return;
+                }
+                client.replays.delete(target.id);
                 client.subscriptions.add(target.id);
                 send(client, {
                     type: 'subscribed',
@@ -732,6 +834,7 @@ export function createPanelApi({
                 return;
             }
             case 'unsubscribe':
+                client.replays.delete(message.session);
                 client.subscriptions.delete(message.session);
                 return;
             case 'create_session': {
@@ -915,6 +1018,7 @@ export function createPanelApi({
         const client: PanelClient = {
             ws,
             subscriptions: new Set(),
+            replays: new Map(),
             openedAt: new Date().toISOString(),
             remote: req.socket.remoteAddress ?? undefined,
         };
@@ -938,7 +1042,10 @@ export function createPanelApi({
                 });
             });
         });
-        ws.on('close', () => clients.delete(client));
+        ws.on('close', () => {
+            client.replays.clear();
+            clients.delete(client);
+        });
         ws.on('error', (error: Error) => log.debug(`panel socket error: ${error.message}`));
         send(client, {
             type: 'welcome',

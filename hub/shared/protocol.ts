@@ -61,6 +61,8 @@ export const CAPABILITIES = [
     'supervisor',
     /** A `subscribed` reply replays the transcript after a cursor. */
     'transcript-replay',
+    /** Subscription replay can be sent as paced, byte-bounded pages. */
+    'transcript-pages',
     /** The worker's persisted snapshot can be read, never written. */
     'snapshot-view',
     /**
@@ -430,7 +432,18 @@ export interface ApiErrorBody {
 export type PanelMessage =
     | { v?: number; type: 'ping' }
     | { v?: number; type: 'list_sessions' }
-    | { v?: number; type: 'subscribe'; session: SessionId; since?: number }
+    | {
+        v?: number;
+        type: 'subscribe';
+        session: SessionId;
+        since?: number;
+        /** Opt into paced replies when transcript-pages is advertised. */
+        paged?: boolean;
+        /** Replace the display on the first page rather than merge a delta. */
+        replace?: boolean;
+        /** Correlates all pages with this subscription attempt. */
+        request_id?: string;
+    }
     | { v?: number; type: 'unsubscribe'; session: SessionId }
     | { v?: number; type: 'create_session'; session: SessionId; spec?: SessionSpec }
     | { v?: number; type: 'delete_session'; session: SessionId }
@@ -543,6 +556,12 @@ export type HubMessage =
         transcript: WorkerEnvelope[];
         logs: string[];
         latest: number;
+        /** True while a paged replay is incomplete; latest covers this page only. */
+        replay_more?: boolean;
+        /** The first page replaces the displayed transcript instead of merging it. */
+        replay_reset?: boolean;
+        /** Echoes the subscription request so superseded replies can be ignored. */
+        request_id?: string;
         /** Echoed so a client can detect that its cursor predates a restart. */
         transcript_epoch?: TranscriptEpoch | undefined;
     }

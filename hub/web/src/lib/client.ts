@@ -163,12 +163,14 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
     // These track requests in flight on the current panel connection, not
     // durable worker capabilities. A lost socket invalidates both assumptions.
     const optionsRequested = new Map<SessionId, string>();
+    const subscriptionRequests = new Map<SessionId, string>();
     const socket: PanelSocket = createPanelSocket({
         location: loc,
         token: () => tokens.get(),
         onState: (status) => {
             if (status.state !== 'open') {
                 optionsRequested.clear();
+                subscriptionRequests.clear();
                 for (const [sessionId, view] of store.getState().views) {
                     if (view.cancelPending) store.getState().setCancelPending(sessionId, false);
                 }
@@ -195,9 +197,16 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         return store.getState().lastSeq(sessionId);
     }
 
-    function subscribe(sessionId: SessionId, since?: number): void {
+    function subscribe(sessionId: SessionId, since?: number, replace = false): boolean {
         const cursor = since ?? cursorFor(sessionId);
-        socket.send({ type: 'subscribe', session: sessionId, since: cursor });
+        if (store.getState().hasCapability('transcript-pages')) {
+            const requestId = newRequestId();
+            subscriptionRequests.set(sessionId, requestId);
+            subscribedSessions.delete(sessionId);
+            return socket.send({ type: 'subscribe', session: sessionId, since: cursor,
+                paged: true, replace, request_id: requestId });
+        }
+        return socket.send({ type: 'subscribe', session: sessionId, since: cursor });
     }
 
     const historyRequests = new Map<SessionId, {
@@ -274,6 +283,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 }
                 historyRequests.clear();
                 optionsRequested.clear();
+                subscriptionRequests.clear();
                 subscribedSessions.clear();
                 if (store.getState().selected) {
                     historyNeedsRecovery.add(store.getState().selected!);
@@ -289,15 +299,17 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 if (subscribedSessions.has(message.session)) store.getState().setPlan(message.session, message.plan);
                 return;
             case 'subscribed': {
+                if (message.request_id !== undefined
+                    && subscriptionRequests.get(message.session.session_id) !== message.request_id) return;
                 store.getState().setPlan(message.session.session_id,
                     message.plan ?? { markdown: '', revision: 0, updated_at: null }, true);
                 const effects = store.getState().applySubscribed(message);
                 if (effects.resubscribe) {
                     subscribe(effects.resubscribe.session, effects.resubscribe.since);
-                } else {
+                } else if (message.replay_more !== true) {
                     subscribedSessions.add(message.session.session_id);
                 }
-                if (!effects.resubscribe && message.session.connected) {
+                if (!effects.resubscribe && message.replay_more !== true && message.session.connected) {
                     requestHistory(message.session.session_id);
                     requestModelOptions(message.session.session_id);
                 }
@@ -329,6 +341,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 return;
             case 'session_removed': {
                 subscribedSessions.delete(message.session);
+                subscriptionRequests.delete(message.session);
                 optionsRequested.delete(message.session);
                 historyNeedsRecovery.delete(message.session);
                 const wasSelected = store.getState().selected === message.session;
@@ -546,6 +559,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             writeSessionToUrl(sessionId, loc, hist);
             if (previous) {
                 subscribedSessions.delete(previous);
+                subscriptionRequests.delete(previous);
                 historyRequests.delete(previous);
                 store.getState().endHistory(previous);
                 socket.send({ type: 'unsubscribe', session: previous });
@@ -556,6 +570,8 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         subscribe,
 
         reloadTranscript(sessionId) {
+            if (store.getState().hasCapability('transcript-pages')
+                && subscribe(sessionId, 0, true)) return;
             // A snapshot is the whole transcript, so the store replaces rather
             // than merges. This is also what makes `status_snapshot` — a
             // message the old panel never sent, leaving it with no way back

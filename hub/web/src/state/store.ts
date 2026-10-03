@@ -838,7 +838,7 @@ export function createPanelStore() {
 
             const latest = typeof message.latest === 'number' ? message.latest : 0;
             const before = viewOf(get(), sessionId);
-            if (latest < before.lastSeq) {
+            if (message.replay_reset !== true && latest < before.lastSeq) {
                 // The hub's counter went backwards. Either it restarted without
                 // reporting an epoch, or the session was deleted and recreated:
                 // both mean the cursor is meaningless and the delta in hand
@@ -852,10 +852,20 @@ export function createPanelStore() {
                 return { resubscribe: { session: sessionId, since: 0 } };
             }
 
-            set(withView(get(), sessionId, (view) => {
-                const merged = mergeEnvelopes(view, message.transcript ?? []);
-                return { ...merged, lastSeq: Math.max(merged.lastSeq, latest) };
-            }));
+            if (message.replay_reset === true) {
+                get().applySnapshot({ type: 'snapshot', session: message.session,
+                    transcript: message.transcript });
+            } else {
+                set(withView(get(), sessionId, (view) => {
+                    const merged = mergeEnvelopes(view, message.transcript ?? []);
+                    // Partial replies never authorize skipping unseen history,
+                    // even if a peer reports the full transcript end as latest.
+                    const received = (message.transcript ?? []).reduce((maximum, envelope) =>
+                        Math.max(maximum, hubSequenceOf(envelope) ?? 0), view.lastSeq);
+                    const cursor = message.replay_more === true ? received : latest;
+                    return { ...merged, lastSeq: Math.max(merged.lastSeq, cursor) };
+                }));
+            }
 
             if (Array.isArray(message.logs)) {
                 set(withView(get(), sessionId, (view) => ({

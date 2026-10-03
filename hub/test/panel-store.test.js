@@ -216,6 +216,18 @@ describe('worker-backed display history', () => {
 });
 
 describe('panel store: replay is merged, not substituted (A2)', () => {
+    it('advances a partial replay cursor only for events received', () => {
+        const store = createPanelStore();
+        store.getState().applyWelcome(welcome('epoch-1', [session()]));
+        store.getState().applySubscribed(subscribed('demo', [envelope(1), envelope(2)],
+            { replay_more: true, latest: 1000 }));
+        assert.equal(store.getState().lastSeq('demo'), 2);
+        store.getState().applySubscribed(subscribed('demo', [envelope(3)],
+            { replay_more: false, latest: 3 }));
+        assert.equal(store.getState().lastSeq('demo'), 3);
+        assert.equal(events(store).length, 3);
+    });
+
     it('keeps the transcript a reconnect did not re-send', () => {
         const store = createPanelStore();
         store.getState().applyWelcome(welcome('epoch-1', [session()]));

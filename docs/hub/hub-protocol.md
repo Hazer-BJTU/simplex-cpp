@@ -52,14 +52,22 @@ reason is guaranteed because the peer may have stopped reading. Other panel
 connections, worker event ingestion, and tool confirmations continue normally.
 
 The bundled panel reconnects with backoff and subscribes using its transcript
-cursor and epoch. It also recovers supported worker history and refreshes open
-confirmations through session snapshots. These mechanisms remain bounded by
+cursor and epoch. When the hub advertises `transcript-pages`, initial load,
+reconnect, and explicit refresh use the paced replay described below, so an
+aggregate transcript larger than 4 MiB can recover without a reconnect loop.
+Supported worker history is queried after replay completes; open confirmations
+are refreshed through session snapshots. These mechanisms remain bounded by
 the retained transcript and worker history contract; they are not delivery
 acknowledgements. Never automatically resend an input or confirmation decision
-because of a disconnect: it may already have been processed. If an individual
-snapshot or replay response is itself too large, reconnecting alone cannot
-make it fit. Operator clients can request a narrower transcript using `since`
-or inspect bounded event/log tails through the JSON API (`limit`).
+because of a disconnect: it may already have been processed.
+
+An individual envelope or subscription metadata object larger than the hard
+budget still cannot be sent. Neither can an oversized legacy `subscribed` or
+`snapshot` response requested without paged replay. Reconnecting alone cannot
+make these frames fit. Operator clients should opt into `transcript-pages`,
+choose a narrower `since`, or inspect event/log tails through the JSON API
+(`limit`). The bundled panel falls back to legacy requests for older hubs that
+do not advertise the capability; those builds do not provide paged recovery.
 
 ### Capabilities
 
@@ -69,6 +77,7 @@ or inspect bounded event/log tails through the JSON API (`limit`).
 | `confirmations` | tool confirmations are surfaced and can be answered |
 | `supervisor` | worker processes can be started, stopped, and force-killed |
 | `transcript-replay` | `subscribed` replays the transcript after a cursor |
+| `transcript-pages` | opt-in subscription replay uses paced, byte-bounded pages |
 | `snapshot-view` | the worker's persisted snapshot can be read, never written |
 | `transcript-epoch` | `transcript_epoch` is reported, so a stale cursor is detectable |
 | `global-confirmations` | confirmations reach every client, not only subscribers |
@@ -242,7 +251,7 @@ edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
 
 | Message | Fields | Effect |
 | --- | --- | --- |
-| `subscribe` | `session`, optional `since` | sends `subscribed` with the transcript after `since` |
+| `subscribe` | `session`, optional `since`, `paged`, `replace`, `request_id` | sends `subscribed` with the transcript after `since`; `paged: true` opts into paced replay when `transcript-pages` is advertised |
 | `unsubscribe` | `session` | stops live messages for that session |
 | `list_sessions` | — | answers with `sessions` |
 | `create_session` | `session`, optional `spec` | answers with `created`, or `session_exists` / `invalid_session` |
@@ -296,13 +305,44 @@ displayed page and offers a refresh after reconnection.
 
 ### Hub to client
 
+For a hub advertising `transcript-pages`, send `subscribe` with `paged: true`
+and a fresh `request_id`. It replies with one or more `subscribed` frames:
+
+- Data pages carry `replay_more: true`. `latest` is the last `hub_sequence`
+  included in that page, **not** the end of the whole retained transcript.
+- A final frame carries `replay_more: false` and an empty transcript. Its
+  `latest` is the fully replayed cursor; live session events follow this frame.
+- Each reply echoes `request_id`. Ignore replies to an older subscription or
+  to a session that has been unsubscribed. Replacing a subscription,
+  unsubscribing, or closing the socket invalidates its pending server work.
+- `replace: true` requests a fresh display transcript, usually with `since: 0`.
+  Only its first reply carries `replay_reset: true`; replace the displayed
+  transcript with that page, then merge subsequent pages. The bundled panel
+  uses this instead of a single `status_snapshot` frame for explicit refresh.
+
+Normal pages target at most 512 KiB of serialized JSON plus frame header,
+including subscription metadata and escaped values. An individual envelope
+larger than that target is sent alone if it fits the hard 4 MiB budget. The hub
+awaits each local socket write before sending another page; this paces output
+without promising remote delivery. Live session delivery is enabled only when
+replay catches up. Events received during replay are included in a following
+page rather than overtaking earlier history. Global session/confirmation
+notifications remain available while replay is pending.
+
+Advance a recovery cursor only for pages actually received. Wait for the final
+frame before issuing worker-history queries or treating the subscription as
+ready. Retention can evict older events; existing gap/epoch rules still apply.
+Legacy `subscribe` requests omit `paged` and receive the original single-frame
+reply, with no `replay_more` field. New clients treat that as complete; older
+clients need not understand paging unless they opt into it.
+
 | Message | Fields | Meaning |
 | --- | --- | --- |
 | `welcome` | `hub`, `sessions` | sent once per connection |
 | `sessions` | `sessions` | full list, on request |
 | `session` | `session` | one session changed |
 | `session_removed` | `session` | deleted |
-| `subscribed` | `session`, `transcript`, `logs`, `latest`, `transcript_epoch`, `plan` | subscription accepted, with replay |
+| `subscribed` | `session`, `transcript`, `logs`, `latest`, `transcript_epoch`, `plan`, optional `replay_more`, `replay_reset`, `request_id` | subscription replay page or completed legacy subscription |
 | `created` | `session` | session created by this client |
 | `event` | `session`, `hub_seq`, `envelope` | one worker event, verbatim |
 | `confirmation` | `session`, `open`, `confirmation`, and `outcome` when closing | prompt opened or retired/answered; sent to **every** connected panel, not only subscribers of that session |
