@@ -261,7 +261,9 @@ from different pipes are never joined. Each line retains at most a 64 KiB
 decoded UTF-8 prefix without splitting a code point. Extra bytes are discarded
 until LF or EOF, and the retained line ends with
 `[hub: truncated N UTF-8 bytes]`. The decoder is flushed at pipe completion,
-including an incomplete final character as `�`. CRLF is normalized. After child
+including an incomplete final character as `�`. CRLF is normalized and its
+terminator is excluded from the content budget and truncation count, including
+when CR and LF arrive in separate chunks. After child
 exit, the Hub allows up to one second for pipe EOF, then closes inherited pipes
 and flushes the retained fragments. Process state changes at exit independently
 of this best-effort output drain.
