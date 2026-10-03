@@ -7,16 +7,16 @@
  * which is what a reconnecting panel resumes from. Transient history-query
  * replies are forwarded live without consuming this sequence or its budget.
  *
- * The same stream is appended to a JSONL file. That file is an operator
- * artifact — the authoritative conversation lives in the worker's own
+ * A best-effort copy is appended to a bounded JSONL writer. That file is an
+ * operator artifact — the authoritative conversation lives in the worker's own
  * `state.json` — so a hub restart starts an empty in-memory transcript instead
  * of replaying the file.
  */
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { WriteStream } from 'node:fs';
 import { sessionDir } from '../launch/config-render.ts';
 import { RingBuffer } from '../util/ring.ts';
+import { BoundedWriter } from '../util/bounded-writer.ts';
 import type { Logger } from '../log.ts';
 
 /**
@@ -41,6 +41,8 @@ export interface SessionTranscriptOptions {
     byteLimit?: number;
     /** JSONL path; omit to keep memory only. */
     filePath?: string | null;
+    /** Optional diagnostics for disk omissions and failures. */
+    log?: Logger;
 }
 
 /** One session's bounded event history plus its append-only log. */
@@ -48,11 +50,12 @@ export class SessionTranscript {
     readonly sessionId: string;
     readonly buffer: RingBuffer<TranscriptEnvelope>;
     readonly filePath: string | null;
-    stream: WriteStream | null;
+    readonly writer: BoundedWriter | null;
     sequence: number;
+    /** Envelopes admitted to the file queue, not a durability acknowledgment. */
     written: number;
 
-    constructor({ sessionId, limit, byteLimit = 0, filePath }: SessionTranscriptOptions) {
+    constructor({ sessionId, limit, byteLimit = 0, filePath, log }: SessionTranscriptOptions) {
         this.sessionId = sessionId;
         this.buffer = new RingBuffer<TranscriptEnvelope>({
             limit,
@@ -60,7 +63,21 @@ export class SessionTranscript {
             sizeOf: (envelope) => envelope.bytes ?? 0,
         });
         this.filePath = filePath ?? null;
-        this.stream = null;
+        const logPath = this.filePath;
+        this.writer = logPath ? new BoundedWriter({
+            open: () => {
+                mkdirSync(dirname(logPath), { recursive: true });
+                return createWriteStream(logPath, { flags: 'a' });
+            },
+            // This diagnostic is valid JSONL, not a worker event or replay item.
+            omission: ({ records, bytes }) => JSON.stringify({
+                type: 'hub_log_omission', dropped_records: records, dropped_bytes: bytes,
+            }) + '\n',
+            onDrop: () => log?.warn(`session ${sessionId}: transcript file records omitted`
+                + ' from disk; live replay is unaffected'),
+            onError: (error) => log?.warn(
+                `session ${sessionId}: transcript file disabled: ${error.message}`),
+        }) : null;
         this.sequence = 0;
         this.written = 0;
     }
@@ -78,20 +95,14 @@ export class SessionTranscript {
         return envelope;
     }
 
-    /** Append one line to the JSONL log, creating the file on first use. */
+    /** Append a complete JSONL record if the optional file queue can admit it. */
     write(envelope: TranscriptEnvelope): void {
-        if (!this.filePath) return;
+        if (!this.writer) return;
         try {
-            if (!this.stream) {
-                mkdirSync(dirname(this.filePath), { recursive: true });
-                this.stream = createWriteStream(this.filePath, { flags: 'a' });
-                this.stream.on('error', () => { this.stream = null; });
-            }
-            this.stream.write(`${JSON.stringify(envelope)}\n`);
-            this.written += 1;
+            if (this.writer.write(`${JSON.stringify(envelope)}\n`)) this.written += 1;
         } catch {
-            // Losing the optional log must not disturb the live stream.
-            this.stream = null;
+            // An unserializable envelope must not disturb the live stream.
+            this.writer.write('{"type":"hub_log_omission","reason":"serialization failed"}\n');
         }
     }
 
@@ -121,12 +132,9 @@ export class SessionTranscript {
         return this.buffer.dropped;
     }
 
-    /** Close the JSONL stream. */
+    /** Begin a bounded best-effort flush; later writes cannot reopen the file. */
     close(): void {
-        try {
-            this.stream?.end();
-        } catch { /* already closed */ }
-        this.stream = null;
+        this.writer?.end();
     }
 }
 
@@ -163,6 +171,7 @@ export class TranscriptStore {
                 limit: this.config.limits.transcriptEvents,
                 byteLimit: this.config.limits.transcriptBytes,
                 filePath: join(sessionDir(this.config, sessionId), 'events.jsonl'),
+                log: this.log,
             });
             this.transcripts.set(sessionId, transcript);
         }

@@ -62,6 +62,25 @@ if (endpoint) {
         if (message.type === 'signal' && message.data?.operation === 'status') {
             event('status', { active: false, stopping: false, storage_failed: false, rejected_payloads: 0 });
         }
+        if (message.type === 'signal' && message.data?.operation === 'log_probe') {
+            if (message.data.stage === 'prefix') {
+                process.stdout.write(Buffer.from([0xe4]));
+                process.stderr.write('fixture: independent stderr\n');
+            } else if (message.data.stage === 'long') {
+                process.stdout.write('a'.repeat(256 * 1024));
+                process.stderr.write('fixture: long output written\n');
+            } else if (message.data.stage === 'finish') {
+                process.stdout.write(Buffer.from([0xb8, 0xad, 0x0a]));
+                process.stdout.write(Buffer.concat([
+                    Buffer.from('fixture: stdout EOF'), Buffer.from([0xe4]),
+                ]), () => {
+                    process.stderr.write('fixture: stderr EOF', () => {
+                        socket.close();
+                        setTimeout(() => process.exit(0), 20);
+                    });
+                });
+            }
+        }
         if (message.type === 'signal' && message.data?.operation === 'shutdown') {
             if (ignoreShutdown) {
                 process.stdout.write('fixture: shutdown ignored\n');

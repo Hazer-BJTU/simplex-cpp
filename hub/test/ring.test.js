@@ -81,4 +81,116 @@ describe('LineSplitter', () => {
         splitter.flush();
         assert.equal(lines.length, 2);
     });
+
+    it('keeps interleaved pipe decoders and EOF fragments independent', () => {
+        const lines = [];
+        const stdout = new LineSplitter((line) => lines.push(['stdout', line]));
+        const stderr = new LineSplitter((line) => lines.push(['stderr', line]));
+        stdout.push(Buffer.from([0xe4]));
+        stderr.push(Buffer.from('error\nerr-tail'));
+        stdout.push(Buffer.from([0xb8, 0xad, 0x0a]));
+        stdout.push(Buffer.from('out-tail'));
+        stdout.push(Buffer.from([0xe4]));
+        stdout.flush();
+        stderr.flush();
+        stdout.flush();
+        stderr.flush();
+        assert.deepEqual(lines, [
+            ['stderr', 'error'], ['stdout', '中'],
+            ['stdout', 'out-tail�'], ['stderr', 'err-tail'],
+        ]);
+    });
+
+    it('flushes an incomplete UTF-8 character even without decoded text', () => {
+        const lines = [];
+        const splitter = new LineSplitter((line) => lines.push(line));
+        splitter.push(Buffer.from([0xe4]));
+        splitter.flush();
+        splitter.flush();
+        assert.deepEqual(lines, ['�']);
+    });
+
+    it('bounds a long newline-free stream and reports the omitted bytes', () => {
+        const lines = [];
+        const splitter = new LineSplitter((line) => lines.push(line), 64);
+        for (let index = 0; index < 256; index += 1) {
+            splitter.push('a'.repeat(65536));
+            assert.equal(splitter.pendingBytes, 64);
+            assert.equal(splitter.pending.length, 64);
+        }
+        assert.equal(lines.length, 0);
+        const omitted = 16 * 1024 * 1024 - 64;
+        assert.equal(splitter.truncatedBytes, omitted);
+        splitter.push('\nnext\n');
+        assert.deepEqual(lines, [
+            'a'.repeat(64) + ` [hub: truncated ${omitted} UTF-8 bytes]`, 'next',
+        ]);
+        assert.equal(splitter.pendingBytes, 0);
+    });
+
+    it('never cuts through a UTF-8 code point at the prefix boundary', () => {
+        const lines = [];
+        const splitter = new LineSplitter((line) => lines.push(line), 5);
+        splitter.push(Buffer.from('中中文\n'));
+        splitter.push('abcde\r\n');
+        splitter.push('next');
+        splitter.flush();
+        assert.deepEqual(lines, [
+            '中 [hub: truncated 6 UTF-8 bytes]',
+            'abcde', 'next',
+        ]);
+        assert.equal(splitter.truncatedBytes, 6);
+    });
+
+    it('excludes CRLF from an exact content limit, including split terminators', () => {
+        for (const chunks of [
+            ['abcde\r\n'],
+            ['abcde\r', '\n'],
+            ['abcde', '\r', '\n'],
+        ]) {
+            const lines = [];
+            const splitter = new LineSplitter((line) => lines.push(line), 5);
+            for (const chunk of chunks) {
+                splitter.push(Buffer.from(chunk));
+                assert.equal(splitter.truncatedBytes, 0);
+                assert.ok(splitter.pendingBytes <= 5);
+            }
+            splitter.flush();
+            assert.deepEqual(lines, ['abcde']);
+        }
+    });
+
+    it('excludes split CRLF after real truncation without hiding omitted content', () => {
+        const lines = [];
+        const splitter = new LineSplitter((line) => lines.push(line), 6);
+        splitter.push(Buffer.from('中中文\r'));
+        assert.equal(splitter.pendingBytes, 6);
+        assert.equal(splitter.truncatedBytes, 3);
+        splitter.push(Buffer.from('\nnext\r'));
+        assert.equal(splitter.truncatedBytes, 3);
+        splitter.push(Buffer.from('\n'));
+        splitter.flush();
+        assert.deepEqual(lines, ['中中 [hub: truncated 3 UTF-8 bytes]', 'next']);
+        assert.equal(splitter.truncatedBytes, 3);
+    });
+
+    it('counts a deferred CR as content when it is not followed by LF', () => {
+        const lines = [];
+        const splitter = new LineSplitter((line) => lines.push(line), 5);
+        splitter.push('abcd\r');
+        assert.equal(splitter.pendingBytes, 4);
+        splitter.push('x\r');
+        assert.equal(splitter.truncatedBytes, 1);
+        splitter.push('\n\r');
+        splitter.push('\r\n');
+        splitter.flush();
+        assert.deepEqual(lines, ['abcd\r [hub: truncated 1 UTF-8 bytes]', '\r']);
+        assert.equal(splitter.truncatedBytes, 1);
+    });
+
+    it('rejects invalid line limits', () => {
+        for (const value of [0, -1, 1.5, NaN, Infinity]) {
+            assert.throws(() => new LineSplitter(() => {}, value), RangeError);
+        }
+    });
 });
