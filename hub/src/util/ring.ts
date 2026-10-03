@@ -3,7 +3,7 @@
  *
  * Worker stdout/stderr and the transcript are both unbounded streams owned by
  * another process, so the hub keeps a fixed-size tail of each in memory and
- * writes the full stream somewhere else when it needs to keep it.
+ * optionally writes a best-effort copy to disk.
  */
 
 /** Options accepted by `RingBuffer`. */
@@ -75,39 +75,86 @@ export class RingBuffer<T = string> {
 /**
  * Incremental UTF-8 line splitter.
  *
- * Child output arrives in arbitrary chunks; a line must not be split just
- * because a read boundary fell in the middle of it.
+ * Each independent pipe needs its own instance. The decoded UTF-8 prefix of
+ * one line is limited to 64 KiB by default; excess bytes are counted and
+ * discarded until LF or EOF, then reported in a suffix on the retained line.
+ * This bounds partial lines without turning newline-free output into an
+ * unlimited number of synthetic lines. CRLF is normalized to LF.
  */
 export class LineSplitter {
     readonly onLine: (line: string) => void;
     pending: string;
     decoder: TextDecoder;
+    readonly maxLineBytes: number;
+    pendingBytes = 0;
+    /** Total decoded UTF-8 bytes omitted, including the current partial line. */
+    truncatedBytes = 0;
+    private omittedBytes = 0;
 
-    constructor(onLine: (line: string) => void) {
+    constructor(onLine: (line: string) => void, maxLineBytes = 64 * 1024) {
+        if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0) {
+            throw new RangeError('maxLineBytes must be a positive safe integer');
+        }
         this.onLine = onLine;
+        this.maxLineBytes = maxLineBytes;
         this.pending = '';
         this.decoder = new TextDecoder('utf8');
     }
 
     /** Feed one chunk of bytes, or text that is already decoded. */
     push(chunk: string | Uint8Array): void {
-        this.pending += typeof chunk === 'string'
+        const text = typeof chunk === 'string'
             ? chunk
             : this.decoder.decode(chunk, { stream: true });
-        for (;;) {
-            const index = this.pending.indexOf('\n');
-            if (index === -1) break;
-            const line = this.pending.slice(0, index).replace(/\r$/, '');
-            this.pending = this.pending.slice(index + 1);
-            this.onLine(line);
+        this.consume(text);
+    }
+
+    /** Consume decoded text without appending an unbounded chunk to pending. */
+    private consume(text: string): void {
+        let start = 0;
+        while (start < text.length) {
+            const newline = text.indexOf('\n', start);
+            const end = newline === -1 ? text.length : newline;
+            const segment = text.slice(start, end);
+            const bytes = Buffer.byteLength(segment, 'utf8');
+            let retained = 0;
+            if (this.omittedBytes === 0) {
+                const available = this.maxLineBytes - this.pendingBytes;
+                if (bytes <= available) {
+                    this.pending += segment;
+                    retained = bytes;
+                } else {
+                    const encoded = Buffer.from(segment, 'utf8');
+                    let cut = available;
+                    // Do not retain a partial UTF-8 code point at the boundary.
+                    while (cut > 0 && (encoded[cut]! & 0xc0) === 0x80) cut -= 1;
+                    this.pending += encoded.subarray(0, cut).toString('utf8');
+                    retained = cut;
+                }
+                this.pendingBytes += retained;
+            }
+            this.omittedBytes += bytes - retained;
+            this.truncatedBytes += bytes - retained;
+            if (newline === -1) return;
+            this.emit();
+            start = newline + 1;
         }
     }
 
-    /** Emit whatever is left, without a trailing newline. */
-    flush(): void {
-        if (this.pending.length === 0) return;
-        const line = this.pending.replace(/\r$/, '');
+    /** Emit one line and reset its prefix and omission counters. */
+    private emit(): void {
+        const line = this.omittedBytes > 0
+            ? `${this.pending} [hub: truncated ${this.omittedBytes} UTF-8 bytes]`
+            : this.pending.replace(/\r$/, '');
         this.pending = '';
+        this.pendingBytes = 0;
+        this.omittedBytes = 0;
         this.onLine(line);
+    }
+
+    /** Flush the decoder at EOF, including an incomplete final UTF-8 sequence. */
+    flush(): void {
+        this.consume(this.decoder.decode());
+        if (this.pending.length > 0 || this.omittedBytes > 0) this.emit();
     }
 }

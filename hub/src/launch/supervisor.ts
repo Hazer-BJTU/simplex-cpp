@@ -26,6 +26,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, sta
     from 'node:fs';
 import { join } from 'node:path';
 import { LineSplitter, RingBuffer } from '../util/ring.ts';
+import { BoundedWriter } from '../util/bounded-writer.ts';
 import { sessionDir, workerConfigPath } from './config-render.ts';
 import { prepareSessionConfig } from './config-file.ts';
 import type { NormalizedSpec } from './spec.ts';
@@ -77,6 +78,8 @@ export interface StartResult {
 export interface LogStream {
     write(chunk: string): unknown;
     end(): unknown;
+    readonly droppedRecords?: number;
+    readonly failed?: boolean;
 }
 
 /**
@@ -207,6 +210,8 @@ export class ProcessRecord {
     readonly logPath: string | null;
     readonly logStream: LogStream;
     readonly logs: RingBuffer<string>;
+    /** Independent decoder and partial-line state for each child output pipe. */
+    readonly outputSplitters: LineSplitter[] = [];
     child: ChildProcess | null;
     /** True when this record was reconstructed from a previous hub run. */
     adopted: boolean;
@@ -261,6 +266,10 @@ export class ProcessRecord {
             log_path: this.logPath,
             log_lines: this.logs.size,
             log_dropped: this.logs.dropped,
+            log_truncated_bytes: this.outputSplitters.reduce(
+                (total, splitter) => total + splitter.truncatedBytes, 0),
+            file_log_dropped: this.logStream.droppedRecords ?? 0,
+            file_log_failed: this.logStream.failed ?? false,
         };
     }
 }
@@ -388,13 +397,16 @@ export class WorkerSupervisor {
         const logs = new RingBuffer<string>({
             limit: this.config.limits.logLines,
             byteLimit: this.config.limits.logRingBytes,
+            sizeOf: (line) => Buffer.byteLength(line, 'utf8'),
         });
-        const logStream = createWriteStream(logPath, { flags: 'a' });
-        // An async open or write failure (ENOSPC, EACCES, a rotated-away
-        // directory) emits 'error'; without a listener that is an uncaught
-        // exception, and the worker's output is not worth ending the hub for.
-        logStream.on('error', (error: Error) => {
-            this.log.warn(`session ${session.id}: worker log stream failed: ${error.message}`);
+        const logStream = new BoundedWriter({
+            open: () => createWriteStream(logPath, { flags: 'a' }),
+            omission: ({ records, bytes }) =>
+                `[hub: omitted ${records} worker log records (${bytes} UTF-8 bytes)]\n`,
+            onDrop: () => this.log.warn(`session ${session.id}: worker log records omitted`
+                + ' from disk; see file_log_dropped'),
+            onError: (error) => this.log.warn(
+                `session ${session.id}: worker log disabled: ${error.message}`),
         });
         const record = new ProcessRecord({ sessionId: session.id, invocation, logPath, logStream, logs });
         record.stopPolicy = { ...launchConfig.worker };
@@ -432,19 +444,39 @@ export class WorkerSupervisor {
         record.pid = child.pid;
         record.pidStartTime = readProcessStartTime(child.pid);
 
-        const splitter = new LineSplitter((line) => {
+        const captureLine = (line: string) => {
             logs.push(line);
             logStream.write(`${line}\n`);
-        });
-        child.stdout?.on('data', (chunk: Buffer) => splitter.push(chunk));
-        child.stderr?.on('data', (chunk: Buffer) => splitter.push(chunk));
+        };
+        for (const pipe of [child.stdout, child.stderr]) {
+            if (!pipe) continue;
+            const splitter = new LineSplitter(captureLine);
+            record.outputSplitters.push(splitter);
+            pipe.on('data', (chunk: Buffer) => splitter.push(chunk));
+            pipe.once('end', () => splitter.flush());
+            pipe.once('close', () => splitter.flush());
+        }
+        let outputTimer: NodeJS.Timeout | null = null;
+        const closeOutput = () => {
+            if (outputTimer) clearTimeout(outputTimer);
+            outputTimer = null;
+            for (const splitter of record.outputSplitters) splitter.flush();
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            logStream.end();
+        };
+        child.once('close', closeOutput);
         child.on('error', (error: Error) => {
             record.error = error.message;
             this.log.error(`session ${session.id}: worker process error: ${error.message}`);
         });
         child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
-            splitter.flush();
-            this.finish(record, { exitCode: code, signal });
+            // Exit can precede pipe EOF. Capture the remaining bytes before
+            // closing the file, but do not wait forever for a descendant that
+            // inherited stdout/stderr. The process lifecycle still ends at exit.
+            outputTimer = setTimeout(closeOutput, 1000);
+            outputTimer.unref();
+            this.finish(record, { exitCode: code, signal, closeLog: false });
         });
 
         if (record.pid) record.state = PROCESS_STATE.running;
@@ -457,8 +489,13 @@ export class WorkerSupervisor {
     /** Record process termination and release per-process resources. */
     finish(
         record: ProcessRecord,
-        { exitCode = null, signal = null, error = null }:
-        { exitCode?: number | null; signal?: string | null; error?: string | null },
+        { exitCode = null, signal = null, error = null, closeLog = true }:
+        {
+            exitCode?: number | null;
+            signal?: string | null;
+            error?: string | null;
+            closeLog?: boolean;
+        },
     ): void {
         if (record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed) return;
         record.exitedAt = new Date().toISOString();
@@ -469,7 +506,7 @@ export class WorkerSupervisor {
             ? PROCESS_STATE.failed
             : PROCESS_STATE.exited;
         try {
-            record.logStream.end();
+            if (closeLog) record.logStream.end();
         } catch { /* already closed */ }
         // `finish` is reachable from paths an adopted record's own monitor does
         // not own, so the interval is released here rather than only there.
@@ -660,6 +697,7 @@ export class WorkerSupervisor {
             logs: new RingBuffer<string>({
                 limit: this.config.limits.logLines,
                 byteLimit: this.config.limits.logRingBytes,
+                sizeOf: (line) => Buffer.byteLength(line, 'utf8'),
             }),
         });
         record.pid = entry.pid as number;

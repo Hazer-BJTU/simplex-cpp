@@ -157,9 +157,17 @@ Most messages embed this object, produced by `Session.describe()`:
   "state": "running", "pid": 4242, "started_at": "...", "exited_at": null,
   "exit_code": null, "signal": null, "error": null, "stop_requested": false,
   "command": "/path/simplex_worker", "args": ["--config", "..."], "cwd": "...",
-  "process_group_killed": false, "log_path": "...", "log_lines": 12, "log_dropped": 0
+  "process_group_killed": false, "log_path": "...", "log_lines": 12, "log_dropped": 0,
+  "log_truncated_bytes": 0, "file_log_dropped": 0, "file_log_failed": false
 }
 ```
+
+The three additional log diagnostics are optional for compatibility with older
+hubs. `log_dropped` counts lines evicted from the in-memory ring;
+`log_truncated_bytes` counts decoded UTF-8 bytes removed from oversized lines;
+`file_log_dropped` counts records rejected by disk admission, independently of
+the memory ring. `file_log_failed` means disk logging has been disabled for this
+process. An admitted write is not proof of delivery or durability.
 
 `requests` records payloads the hub sent, keyed by `request_id`, with
 `state` one of:
@@ -244,6 +252,48 @@ Old layouts are not migrated automatically.
 (`<persistence.directory>/<persistence.state>/state.json` and `readable.md`) without
 modifying them. The worker owns that state; there is no operation to replace,
 edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
+
+### Worker output and optional disk logs
+
+Worker stdout and stderr have independent UTF-8 decoders and partial-line
+buffers. Completed lines share the captured log tail in arrival order; fragments
+from different pipes are never joined. Each line retains at most a 64 KiB
+decoded UTF-8 prefix without splitting a code point. Extra bytes are discarded
+until LF or EOF, and the retained line ends with
+`[hub: truncated N UTF-8 bytes]`. The decoder is flushed at pipe completion,
+including an incomplete final character as `�`. CRLF is normalized. After child
+exit, the Hub allows up to one second for pipe EOF, then closes inherited pipes
+and flushes the retained fragments. Process state changes at exit independently
+of this best-effort output drain.
+
+The existing `limits.logLines` and `limits.logRingBytes` bound the captured tail;
+the byte measure uses UTF-8. As with other rings, a single entry may exceed a
+smaller ring budget. The per-line prefix cap still applies.
+
+`logs/worker.log` and `events.jsonl` are optional operator artifacts. Each file
+has at most 1 MiB of admitted UTF-8 data pending in its Writable, with no second
+application queue. A write that returns `false` has been admitted; further
+records are dropped until `drain`. A record that would exceed the byte budget
+is dropped whole, even when it is the only record. The Hub does not pause worker
+pipes or live WebSocket event routing to wait for disk.
+
+When the sink can accept data again, omissions are reported before later
+records: worker logs use `[hub: omitted N worker log records (B UTF-8 bytes)]`;
+transcript files use a separate JSONL record:
+
+```json
+{"type":"hub_log_omission","dropped_records":12,"dropped_bytes":3456}
+```
+
+This diagnostic is not a worker event and has no `hub_sequence`. File omissions
+do not remove envelopes from in-memory replay or change its sequence numbers.
+The first omission emits a Hub warning. An open/write failure emits a warning
+and disables that file writer for the rest of its lifetime; it does not
+repeatedly retry a broken path. The shutdown flush has a one-second deadline,
+after which a stalled file sink is destroyed. Accepted writes may still be
+lost on failure or shutdown, and an omission marker itself is best effort.
+These files are neither audit logs nor authoritative conversation storage;
+the worker's persisted state remains the source of truth.
 
 ## Panel WebSocket
 

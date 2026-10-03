@@ -8,7 +8,7 @@
  * leave.
  */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -86,6 +86,65 @@ describe('worker supervisor', () => {
         const logPath = join(sessionDir(ctx.config, session.id), 'logs', 'worker.log');
         assert.ok(existsSync(logPath));
         await until(() => readFileSync(logPath, 'utf8').includes('fixture: connected'));
+    });
+
+    it('preserves interleaved UTF-8 bytes and both EOF fragments from a real child', async () => {
+        const { ctx, session } = await setup();
+        await ctx.hub.supervisor.start(session);
+        await until(() => session.latest.status !== null);
+        const probe = (stage) => session.connection.send({
+            type: 'signal', data: { operation: 'log_probe', stage },
+        });
+        probe('prefix');
+        await until(() => ctx.hub.supervisor.logs(session).includes('fixture: independent stderr'));
+        // The second stdout fragment is sent only after stderr was captured.
+        probe('finish');
+        await until(() => session.process.state === PROCESS_STATE.exited);
+        await until(() => ctx.hub.supervisor.logs(session).includes('fixture: stderr EOF'));
+        const lines = ctx.hub.supervisor.logs(session);
+        assert.ok(lines.includes('中'));
+        assert.ok(lines.includes('fixture: stdout EOF�'));
+        assert.equal(lines.some((line) => line.includes('�fixture: independent stderr')), false);
+        const logPath = join(sessionDir(ctx.config, session.id), 'logs', 'worker.log');
+        await until(() => readFileSync(logPath, 'utf8').includes('fixture: stdout EOF�\n'));
+        assert.match(readFileSync(logPath, 'utf8'), /fixture: stderr EOF\n/);
+    });
+
+    it('bounds a real child partial line while status routing remains responsive', async () => {
+        const { ctx, session } = await setup();
+        await ctx.hub.supervisor.start(session);
+        await until(() => session.latest.status !== null);
+        session.connection.send({ type: 'signal', data: { operation: 'log_probe', stage: 'long' } });
+        await until(() => session.process.outputSplitters[0].truncatedBytes >= 192 * 1024);
+        assert.equal(session.process.outputSplitters[0].pendingBytes, 64 * 1024);
+        const previousStatus = session.latest.status;
+        session.connection.send({ type: 'signal', data: { operation: 'status' } });
+        await until(() => session.latest.status !== previousStatus);
+        await ctx.hub.supervisor.stop(session);
+        await until(() => ctx.hub.supervisor.logs(session).some((line) => line.includes('[hub: truncated')));
+        assert.ok(session.process.describe().log_truncated_bytes >= 192 * 1024);
+    });
+
+    it('keeps worker control and live events usable after both optional log files fail', async () => {
+        const { ctx, session } = await setup();
+        const directory = sessionDir(ctx.config, session.id);
+        // Directories at the expected file paths force portable async open errors.
+        mkdirSync(join(directory, 'logs', 'worker.log'), { recursive: true });
+        mkdirSync(join(directory, 'events.jsonl'), { recursive: true });
+        const started = await ctx.hub.supervisor.start(session);
+        assert.equal(started.ok, true, started.error);
+        await until(() => session.latest.status !== null);
+        const transcript = ctx.hub.transcripts.get(session.id);
+        await until(() => session.process.logStream.failed && transcript.writer.failed);
+        const previousStatus = session.latest.status;
+        session.connection.send({ type: 'signal', data: { operation: 'status' } });
+        await until(() => session.latest.status !== previousStatus);
+        assert.ok(transcript.toArray().some((item) => item.event === 'status'));
+        assert.equal(session.process.describe().file_log_failed, true);
+        assert.ok(ctx.hub.supervisor.logs(session).some((line) => line.includes('fixture: connected')));
+        assert.ok(transcript.writer.droppedRecords > 0);
+        const stopped = await ctx.hub.supervisor.stop(session);
+        assert.equal(stopped.ok, true);
     });
 
     it('stops a worker with the protocol before signalling it', async () => {

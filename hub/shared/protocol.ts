@@ -267,6 +267,12 @@ export interface ProcessDescription {
     log_path: string | null;
     log_lines: number;
     log_dropped: number;
+    /** Decoded UTF-8 bytes omitted from oversized child output lines. */
+    log_truncated_bytes?: number;
+    /** Records rejected by the optional worker log file's admission policy. */
+    file_log_dropped?: number;
+    /** The optional worker log sink failed or exceeded its close deadline. */
+    file_log_failed?: boolean;
 }
 
 /** One session, as the panel sees it. */
