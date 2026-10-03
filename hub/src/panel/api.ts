@@ -62,6 +62,9 @@ export { PANEL_VERSION };
 /** Largest on-disk artifact the snapshot viewer will read. */
 const SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024;
 
+/** Maximum pending outbound frame bytes for one panel connection. */
+export const PANEL_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+
 /** Log lines returned by one explicit logs request. */
 const LOG_TAIL_DEFAULT = 200;
 const LOG_TAIL_MAX = 2000;
@@ -139,10 +142,29 @@ export function createPanelApi({
         perMessageDeflate: false,
     });
 
-    /** Send one versioned message to a panel client. */
+    /**
+     * Send one versioned message within this client's outbound byte budget.
+     *
+     * Account for the complete UTF-8 JSON and unmasked WebSocket frame header
+     * before enqueueing. Terminate an overloaded connection immediately: a
+     * graceful close would wait behind the same data its peer is not reading.
+     * The panel recovers through reconnect/replay rather than silent drops.
+     */
     function send(client: PanelClient, message: HubMessage): void {
         if (client.ws.readyState !== client.ws.OPEN) return;
-        client.ws.send(JSON.stringify({ v: PANEL_VERSION, ...message }));
+        const text = JSON.stringify({ v: PANEL_VERSION, ...message });
+        const payloadBytes = Buffer.byteLength(text, 'utf8');
+        const headerBytes = payloadBytes <= 125 ? 2 : payloadBytes <= 65535 ? 4 : 10;
+        const bufferedBytes = client.ws.bufferedAmount;
+        if (bufferedBytes + payloadBytes + headerBytes > PANEL_MAX_BUFFERED_BYTES) {
+            clients.delete(client);
+            log.warn(`terminating panel connection from ${client.remote ?? 'unknown'}: `
+                + `outbound backlog ${bufferedBytes} bytes plus frame `
+                + `${payloadBytes + headerBytes} bytes exceeds ${PANEL_MAX_BUFFERED_BYTES} bytes`);
+            client.ws.terminate();
+            return;
+        }
+        client.ws.send(text);
     }
 
     /** Send to every client subscribed to a session. */

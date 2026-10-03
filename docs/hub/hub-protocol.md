@@ -36,6 +36,31 @@ values inside existing enums. Removing or reinterpreting a field needs a version
 bump. `GET /api/meta` reports `protocol.version` and a `capabilities` list so a
 client can check for a feature instead of guessing.
 
+### Outbound backpressure and recovery
+
+Each panel connection has a 4 MiB outbound budget. Before sending, the hub
+checks the connection's pending bytes plus the next message's complete UTF-8
+JSON (including `v` and escaped values) and unmasked WebSocket frame header.
+Compression is disabled. A single frame larger than this budget is also
+rejected, even if the connection has no pending output.
+
+If a send would exceed the budget, the hub immediately terminates that panel
+connection and logs the byte counts. It does not wait for a close handshake or
+silently discard individual messages while leaving the connection open. The
+client normally observes abnormal closure (`1006`); no error frame or close
+reason is guaranteed because the peer may have stopped reading. Other panel
+connections, worker event ingestion, and tool confirmations continue normally.
+
+The bundled panel reconnects with backoff and subscribes using its transcript
+cursor and epoch. It also recovers supported worker history and refreshes open
+confirmations through session snapshots. These mechanisms remain bounded by
+the retained transcript and worker history contract; they are not delivery
+acknowledgements. Never automatically resend an input or confirmation decision
+because of a disconnect: it may already have been processed. If an individual
+snapshot or replay response is itself too large, reconnecting alone cannot
+make it fit. Operator clients can request a narrower transcript using `since`
+or inspect bounded event/log tails through the JSON API (`limit`).
+
 ### Capabilities
 
 | Capability | Meaning |
