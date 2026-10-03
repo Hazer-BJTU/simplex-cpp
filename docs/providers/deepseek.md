@@ -18,6 +18,8 @@ The plugin advertises these local runtime options:
 | `model` | `deepseek-flash`, `deepseek-v4-pro` |
 | `reasoning_effort` | `low`, `high`, `max` |
 
+The nested `reasoning: { effort: high }` form is also accepted; when both forms are present, an explicit top-level `reasoning_effort` takes precedence.
+
 These are the choices returned by `get_options()`, not a statement that every
 account or compatible third-party endpoint accepts them. Startup `model` and
 provider-specific `config` are distinct from the validated runtime option patch.

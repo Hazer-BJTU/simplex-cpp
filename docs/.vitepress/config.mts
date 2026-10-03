@@ -26,6 +26,7 @@ export default defineConfig({
             group('Getting started', [
                 ['Installation', '/getting-started/installation'],
                 ['Configuration', '/getting-started/configuration'],
+                ['Troubleshooting', '/getting-started/troubleshooting'],
             ]),
             group('Architecture', [
                 ['Overview', '/architecture/overview'],

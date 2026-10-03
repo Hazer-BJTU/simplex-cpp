@@ -76,6 +76,12 @@ describe('defaultConfig', () => {
         assert.equal(defaultConfig().worker.threads, 1);
     });
 
+    it('uses the documented top-level DeepSeek reasoning option', () => {
+        assert.deepEqual(defaultConfig().providerProfiles.deepseek.config, {
+            reasoning_effort: 'high',
+        });
+    });
+
     it('defaults to a loopback listener with a 15 second identity hold', () => {
         const config = defaultConfig();
         assert.equal(config.listen.host, '127.0.0.1');
