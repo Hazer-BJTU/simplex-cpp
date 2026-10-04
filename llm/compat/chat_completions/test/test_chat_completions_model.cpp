@@ -14,6 +14,7 @@
 #include "endpoint/http_request_exception.hpp"
 #include "llm/compat/chat_completions/interpreter.hpp"
 #include "llm/compat/chat_completions/model.hpp"
+#include "llm/compat/chat_completions/reader.hpp"
 #include "loopback_server.hpp"
 
 namespace asio = boost::asio;
@@ -121,6 +122,53 @@ BOOST_AUTO_TEST_CASE(preset_reaches_the_built_request_body) {
     // spelling by the interpreter's translate_reasoning_envelope.
     BOOST_CHECK_EQUAL(body["reasoning_effort"], "high");
     BOOST_CHECK(!body.contains("reasoning"));
+}
+
+// ---------------------------------------------------------------------------
+// converse() must reject a malformed assembly before returning tool calls.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(converse_propagates_assembly_failure_without_transport_retry) {
+    const std::string wire = "data: " + nlohmann::json{
+        {"choices", nlohmann::json::array({{
+            {"index", 0},
+            {"delta", {{"tool_calls", nlohmann::json::array({{
+                {"index", 7}, {"type", "function"},
+                {"function", {{"name", "weather"}, {"arguments", "{}"}}},
+            }})}}},
+            {"finish_reason", "tool_calls"},
+        }})},
+    }.dump() + "\n\ndata: [DONE]\n\n";
+    loopback::OneShotServer server([&](asio::ip::tcp::socket& socket) {
+        loopback::serve_fixed_response(socket, http::status::ok, wire);
+    });
+
+    asio::io_context io;
+    auto config = loopback_config(server.wait_listening());
+    // Retry budget remains available. Retrying would lose the assembly error
+    // to a connection failure because the one-shot server has already exited.
+    config["retry"] = {{"max_attempts", 3}, {"initial_backoff_ms", 1}, {"max_backoff_ms", 1}};
+    FixtureModel model(io.get_executor(), std::move(config));
+    BOOST_REQUIRE(model.build());
+    std::optional<model_io::MessageItem> response;
+    std::exception_ptr failure;
+    asio::co_spawn(io, [&]() -> asio::awaitable<void> {
+        try {
+            response = co_await model.converse(model_io::AgentInputState{});
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    }, asio::detached);
+    io.run();
+    server.join();
+
+    BOOST_CHECK(!response);
+    BOOST_REQUIRE(failure);
+    BOOST_CHECK_EXCEPTION(std::rethrow_exception(failure),
+        llm::chat_completions::ChatCompletionsAssemblyException,
+        [](const llm::chat_completions::ChatCompletionsAssemblyException& error) {
+            return std::string(error.what()).find("received index 7 has an empty id")
+                    != std::string::npos;
+        });
 }
 
 // ---------------------------------------------------------------------------

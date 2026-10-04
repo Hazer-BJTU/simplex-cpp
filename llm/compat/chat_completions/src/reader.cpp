@@ -1,6 +1,8 @@
 #include "llm/compat/chat_completions/reader.hpp"
 
 #include <cstdint>
+#include <map>
+#include <string_view>
 #include <utility>
 
 namespace llm::chat_completions {
@@ -95,6 +97,29 @@ void ChatCompletionsReader::_accumulate(
 }
 
 void ChatCompletionsReader::_assemble() {
+    // Fragments may omit identity fields or share an unfinished ID prefix.
+    // Validate only the final successful assembly, before publishing invokes.
+    // Preserve provider failure/length/filter diagnostics on unsuccessful ends.
+    if (_status == ChatCompletionStatus::Completed) {
+        std::map<std::string_view, std::size_t> received_ids;
+        for (const auto& [index, call] : _tool_calls) {
+            if (call.id.empty() || call.name.empty()) {
+                const std::string field = call.id.empty() ? "id" : "name";
+                _status = ChatCompletionStatus::Failed;
+                throw ChatCompletionsAssemblyException(
+                    "Chat Completions tool-call assembly failed: received index "
+                        + std::to_string(index) + " has an empty " + field);
+            }
+            const auto [first, unique] = received_ids.emplace(call.id, index);
+            if (!unique) {
+                _status = ChatCompletionStatus::Failed;
+                throw ChatCompletionsAssemblyException(
+                    "Chat Completions tool-call assembly failed: duplicate id at received indices "
+                        + std::to_string(first->second) + " and " + std::to_string(index));
+            }
+        }
+    }
+
     model_io::MessageItem result;
     result.type = model_io::MessageItemType::ModelResponse;
     result.role = _role.empty() ? "assistant" : _role;
