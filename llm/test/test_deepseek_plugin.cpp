@@ -43,9 +43,9 @@
 BOOST_AUTO_TEST_CASE(dispatcher_loads_and_mints_deepseek_chat_model) {
     llm::LLMDispatcher dispatcher;
     // The plugins/llm directory carries every bundled provider .so — openai
-    // and deepseek today; keep this count in sync when a provider joins.
+    // deepseek and qwen; keep this count in sync when a provider joins.
     BOOST_CHECK_EQUAL(
-        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 3u);
 
     boost::asio::io_context io;
     auto model = dispatcher.create_model(
@@ -134,7 +134,7 @@ std::string capture_and_serve(tcp::socket& socket,
 BOOST_AUTO_TEST_CASE(dlopened_plugin_drives_a_loopback_exchange) {
     llm::LLMDispatcher dispatcher;
     BOOST_REQUIRE_EQUAL(
-        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 3u);
 
     loopback::OneShotServer server([](boost::asio::ip::tcp::socket& socket) {
         loopback::serve_fixed_response(
@@ -222,7 +222,7 @@ BOOST_AUTO_TEST_CASE(dlopened_plugin_drives_a_loopback_exchange) {
 BOOST_AUTO_TEST_CASE(dlopened_plugin_serves_provider_info_with_balance) {
     llm::LLMDispatcher dispatcher;
     BOOST_REQUIRE_EQUAL(
-        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 3u);
 
     const std::string catalogue = nlohmann::json{
         {"object", "list"},
@@ -297,7 +297,7 @@ BOOST_AUTO_TEST_CASE(dlopened_plugin_serves_provider_info_with_balance) {
 BOOST_AUTO_TEST_CASE(dlopened_model_generation_knobs_reach_the_wire) {
     llm::LLMDispatcher dispatcher;
     BOOST_REQUIRE_EQUAL(
-        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 3u);
 
     const auto captured = std::make_shared<std::string>();
     loopback::OneShotServer server([captured](tcp::socket& socket) {
@@ -353,7 +353,7 @@ BOOST_AUTO_TEST_CASE(dlopened_model_generation_knobs_reach_the_wire) {
 BOOST_AUTO_TEST_CASE(dlopened_provider_advertises_const_generation_options) {
     llm::LLMDispatcher dispatcher;
     BOOST_REQUIRE_EQUAL(
-        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 3u);
     boost::asio::io_context io;
     auto model = dispatcher.create_model(
         "deepseek", io.get_executor(), {{"model", "deepseek-flash"}});
@@ -383,7 +383,7 @@ BOOST_AUTO_TEST_CASE(dlopened_provider_advertises_const_generation_options) {
 BOOST_AUTO_TEST_CASE(dlopened_provider_applies_options_atomically) {
     llm::LLMDispatcher dispatcher;
     BOOST_REQUIRE_EQUAL(
-        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 3u);
     boost::asio::io_context io;
     auto model = dispatcher.create_model(
         "deepseek", io.get_executor(), {{"model", "deepseek-flash"}});
@@ -417,7 +417,7 @@ BOOST_AUTO_TEST_CASE(dlopened_provider_applies_options_atomically) {
 BOOST_AUTO_TEST_CASE(current_options_follow_effective_reasoning_precedence) {
     llm::LLMDispatcher dispatcher;
     BOOST_REQUIRE_EQUAL(
-        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 2u);
+        dispatcher.load_models(std::filesystem::path(DEEPSEEK_PLUGIN_DIR)), 3u);
     boost::asio::io_context io;
     auto model = dispatcher.create_model("deepseek", io.get_executor(), {
         {"model", "deepseek-flash"},

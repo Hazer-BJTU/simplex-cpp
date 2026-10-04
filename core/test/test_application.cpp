@@ -58,7 +58,8 @@ enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
                   ProtocolFailure, History, ModelFailure };
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
-void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote_call = false) {
+void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote_call = false,
+              const std::string& assist_provider = "deepseek") {
     Scratch scratch;
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
@@ -68,7 +69,7 @@ void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote
     config.document = Json::object();
     if (with_modality_assist) {
         config.modality_assist_model = load::ModelConfiguration{
-            "deepseek", {{"model", "deepseek-flash"},
+            assist_provider, {{"model", assist_provider == "qwen" ? "qwen3.8-flash" : "deepseek-flash"},
                 {"endpoint", {{"base_url", "https://127.0.0.1:1"}}}}
         };
     }
@@ -339,6 +340,10 @@ sections:
 BOOST_AUTO_TEST_CASE(serial_admission_duplicate_rejection_and_stale_cancel) { scenario(Mode::Normal); }
 BOOST_AUTO_TEST_CASE(optional_modality_model_loads_without_replacing_the_driver) {
     scenario(Mode::Normal, true);
+}
+
+BOOST_AUTO_TEST_CASE(qwen_modality_model_loads_without_replacing_the_driver) {
+    scenario(Mode::Normal, true, false, "qwen");
 }
 
 BOOST_AUTO_TEST_CASE(unavailable_modality_provider_fails_startup) {

@@ -1,16 +1,21 @@
 # Model providers
 
-This release's documented supported provider is **DeepSeek**. Provider pages
+For complete provider-only YAML examples and field descriptions, see the
+[provider configuration tutorial](../tutorials/provider-configuration.md).
+
+
+The documented providers are **DeepSeek** and **Qwen**. Provider pages
 record when their repository implementation and configuration were last reviewed;
 the date is not a claim of live service availability or exhaustive remote testing.
 
 | Provider | Plugin name | Adapter | Last updated |
 | --- | --- | --- | --- |
 | [DeepSeek](deepseek.md) | `deepseek` | Chat Completions | 2026-10-01 |
+| [Qwen](qwen.md) | `qwen` | Chat Completions | 2026-10-04 |
 
 The source tree also builds an `openai` provider using the Responses adapter.
 Its presence in the installation does not imply the same support/verification
-scope as the DeepSeek guide. The Hub's mock provider is a test service rather
+scope as the provider guides. The Hub's mock provider is a test service rather
 than a production model provider.
 
 Provider libraries are discovered independently of named YAML configurations.

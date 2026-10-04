@@ -27,6 +27,9 @@ export default defineConfig({
                 ['Installation', '/getting-started/installation'],
                 ['Configuration', '/getting-started/configuration'],
             ]),
+            group('Tutorials', [
+                ['Provider configuration', '/tutorials/provider-configuration'],
+            ]),
             group('Architecture', [
                 ['Overview', '/architecture/overview'],
                 ['Agent loop', '/architecture/agent-loop'],
@@ -57,6 +60,7 @@ export default defineConfig({
             group('Providers', [
                 ['Support policy', '/providers/index'],
                 ['DeepSeek', '/providers/deepseek'],
+                ['Qwen', '/providers/qwen'],
             ]),
             group('Reference', [
                 ['Command line', '/reference/cli'],

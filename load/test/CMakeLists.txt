@@ -10,7 +10,7 @@ target_compile_definitions(test_load_plugins PRIVATE
     LOAD_TOOL_SCHEMA="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/schemas/tools/extensions/noop_toolset"
     LOAD_FIXTURE_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/fixtures")
 add_dependencies(test_load_plugins
-    llm_openai llm_deepseek tools_extension_noop loop_extension_noop)
+    llm_openai llm_deepseek llm_qwen tools_extension_noop loop_extension_noop)
 
 foreach(name first second unselected)
     add_library(load_hook_fixture_${name} MODULE hook_fixture.cpp)

@@ -1,5 +1,9 @@
 # Configuration
 
+For complete provider-only YAML examples and field descriptions, see the
+[provider configuration tutorial](../tutorials/provider-configuration.md).
+
+
 There are three configuration layers. The Hub startup file controls listeners
 and access; a launch file controls how a worker process starts; worker YAML
 controls model configuration, plugins, transport, and persistence.

@@ -189,7 +189,7 @@ stage/
 │   │                     set's skill.yaml (how the five fit together)
 │   ├── schemas/reading/  read_text.yaml and the reading skill.yaml
 │   ├── schemas/editing/  str_replace_edit.yaml and the editing skill.yaml
-│   └── plugins/llm/      libllm_openai.so, libllm_deepseek.so
+│   └── plugins/llm/      libllm_openai.so, libllm_deepseek.so, libllm_qwen.so
 └── lib/                  the project's shared libraries
                           plus libstdc++.so.6, libgcc_s.so.1, libboost_*.so*
 ```

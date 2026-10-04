@@ -26,13 +26,13 @@
 #      which is what makes cross-boundary catches match by type identity.
 #
 # Inputs (all required, passed via -D on the command line):
-#   DEEPSEEK_SO / OPENAI_SO  full paths to the provider plugin modules
+#   DEEPSEEK_SO / OPENAI_SO / QWEN_SO  full paths to the provider plugin modules
 #   HOST_EXE                 full path to a host built with ENABLE_EXPORTS ON
 #   CHAT_LIB / RESPONSES_LIB full paths to the shared protocol adapters
 # =============================================================================
 cmake_minimum_required(VERSION 3.20)
 
-foreach(_req IN ITEMS DEEPSEEK_SO OPENAI_SO HOST_EXE CHAT_LIB RESPONSES_LIB)
+foreach(_req IN ITEMS DEEPSEEK_SO OPENAI_SO QWEN_SO HOST_EXE CHAT_LIB RESPONSES_LIB)
     if(NOT DEFINED ${_req})
         message(FATAL_ERROR "plugin_boundary_hygiene: ${_req} must be defined")
     endif()
@@ -94,9 +94,10 @@ function(_check_plugin so required_needed)
     set(_failures "${_failures}" PARENT_SCOPE)
 endfunction()
 
-# --- 1 + 2: the two bundled provider plugins ---------------------------------
+# --- 1 + 2: the bundled provider plugins ---------------------------------
 set(_deepseek_needed "libllm_chat_completions.so;libasio.so")
 _check_plugin("${DEEPSEEK_SO}" _deepseek_needed)
+_check_plugin("${QWEN_SO}" _deepseek_needed)
 set(_openai_needed "libllm_responses.so;libasio.so")
 _check_plugin("${OPENAI_SO}" _openai_needed)
 

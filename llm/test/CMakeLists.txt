@@ -35,9 +35,9 @@ target_compile_definitions(test_openai_plugin PRIVATE
 # authoritative copies of the header-only contract classes' typeinfo/vtables
 # (type identity across the boundary, not the name-comparison fallback).
 set_target_properties(test_openai_plugin PROPERTIES ENABLE_EXPORTS ON)
-# Both bundled provider .so share the plugins/llm directory the test counts;
+# All bundled provider .so share the plugins/llm directory the test counts;
 # the dependency keeps a single-target build from racing a missing library.
-add_dependencies(test_openai_plugin llm_openai llm_deepseek)
+add_dependencies(test_openai_plugin llm_openai llm_deepseek llm_qwen)
 add_test(NAME test_openai_plugin COMMAND test_openai_plugin)
 
 # The deepseek plugin test drives one exchange through the dlopened .so
@@ -62,7 +62,7 @@ target_compile_definitions(test_deepseek_plugin PRIVATE
 # authoritative copies of the header-only contract classes' typeinfo/vtables
 # (type identity across the boundary, not the name-comparison fallback).
 set_target_properties(test_deepseek_plugin PROPERTIES ENABLE_EXPORTS ON)
-add_dependencies(test_deepseek_plugin llm_openai llm_deepseek)
+add_dependencies(test_deepseek_plugin llm_openai llm_deepseek llm_qwen)
 add_test(NAME test_deepseek_plugin COMMAND test_deepseek_plugin)
 
 # Structural assertions for the hardened plugin boundary: factory aliases
@@ -80,6 +80,7 @@ add_test(NAME test_deepseek_plugin COMMAND test_deepseek_plugin)
 add_test(NAME llm_plugin_boundary_hygiene COMMAND ${CMAKE_COMMAND}
     -DDEEPSEEK_SO=$<TARGET_FILE:llm_deepseek>
     -DOPENAI_SO=$<TARGET_FILE:llm_openai>
+    -DQWEN_SO=$<TARGET_FILE:llm_qwen>
     -DHOST_EXE=$<TARGET_FILE:test_deepseek_plugin>
     -DCHAT_LIB=$<TARGET_FILE:llm_chat_completions>
     -DRESPONSES_LIB=$<TARGET_FILE:llm_responses>

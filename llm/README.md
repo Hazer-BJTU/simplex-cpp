@@ -30,7 +30,7 @@ llm/
                      (compat/README.md says why this grouping, unlike
                      providers/, appears in the logical path)
   providers/         the bundled provider plugins (openai over the Responses
-                     adapter, deepseek over the Chat Completions one)
+                     adapter, deepseek and qwen over the Chat Completions one)
   example/           manual demos that need a live API key
   test/              module-level tests: the contract, the plugins, and the
                      plugin-boundary ABI assertions
@@ -92,6 +92,8 @@ Two ABI-v2 entry points serve the host between exchanges:
   object — DeepSeek attaches its live balance (`GET /user/balance`) as a
   `"balance"` member beside `"models"`. No retry: a catalogue query is
   cheap to re-issue. `llm_deepseek_chat --list-models` is the smoke entry.
+  Qwen explicitly reports `LLMUnsupportedOperation` for this optional operation;
+  its integration has no verified catalog endpoint.
 - **`set_generation()`** — two tiers over one validated merge core. The typed
   tier takes an `llm::GenerationPreset` (the pair hosts adjust most often:
   `model` + `ReasoningEffort`) and writes the canonical
@@ -634,3 +636,24 @@ signal; runtime selections are not persisted with conversation state.
 
 These virtual interface additions raise the LLM plugin ABI to 9. Rebuild model
 plugins and hosts together; older plugins are rejected by the admission check.
+
+## Qwen provider
+
+`llm/providers/qwen` builds `libllm_qwen.so`, selected as `plugin: qwen`. It uses
+the shared Chat Completions transport, assembly, usage, retries and cancellation.
+The provider-local dialect defines Qianwen endpoint defaults and thinking policy.
+The model subclass serializes option validation and both generation setters,
+then publishes through the base generation mutex. No lock spans asynchronous IO.
+
+The initial advertised models are `qwen3.8-flash` and `qwen3.8-max`, supporting
+text/static-image input and text output. Max defaults to complete assistant
+reasoning replay; Flash defaults to no replay. Both expose string-valued remote
+choices for `model`, `enable_thinking` (`enabled` / `disabled`) and
+`reasoning_effort` (`low` / `medium` / `xhigh`). Native startup thinking is Boolean;
+the provider translates the remote choices. An effort option replaces a startup
+budget atomically; low-level conflicting configurations are rejected.
+
+See the [Qwen guide](../docs/providers/qwen.md) for configuration, default
+precedence, supported controls, image assistance, verification scope and Hub use.
+Provider-local tests exercise the actual dynamically loaded module with offline
+HTTP/SSE peers; no service credentials are required.
