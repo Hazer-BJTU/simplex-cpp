@@ -4,8 +4,12 @@ sections:
     text: |
       Summarize this conversation into concise, structured Markdown for an agent
       that will continue with this summary instead of the conversation history.
-      Merge any existing memory with the current conversation. Preserve:
-      - The user's goals, constraints, and preferences.
+      Carry forward useful, still-relevant content from existing memory and merge
+      it with the current conversation, incorporating the user's later corrections.
+      Preserve:
+      - Habits, preferences, and rules explicitly stated by the user, including
+        those retained in existing memory unless the user has changed them.
+      - The user's goals and constraints.
       - Completed work, important decisions, and their reasons.
       - Current files, relevant paths, process IDs, and known external effects.
       - Unfinished work, next steps, and unresolved questions or failures.
