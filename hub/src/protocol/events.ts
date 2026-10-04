@@ -37,7 +37,7 @@ export const EVENT_TABLE = {
     history: { tone: 'info', note: 'simplified conversation history page' },
     history_error: { tone: 'warn', note: 'history query failed' },
     input_admitted: { tone: 'info', note: 'host admitted an input', run: true },
-    input_rejected: { tone: 'warn', note: 'dequeued input failed validation' },
+    input_rejected: { tone: 'warn', note: 'input failed validation or queue admission' },
     run_started: { tone: 'info', note: 'loop admitted the invocation', run: true },
     input_committed: { tone: 'info', note: 'user input integrated in memory' },
     model_response: { tone: 'assistant', note: 'complete model response' },

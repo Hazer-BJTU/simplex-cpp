@@ -461,6 +461,33 @@ describe('panel store: a refused input is handed back (D19)', () => {
         assert.equal(item.parts[0].raw, 'hello');
     });
 
+    it('settles only the overflowing input and preserves the active run on live and replay paths', () => {
+        for (const replay of [false, true]) {
+            const store = createPanelStore();
+            store.getState().applyWelcome(welcome('epoch-1', [session()]));
+            store.getState().beginInput('demo', 'active', [{ type: 'text', raw: 'first' }], 'message');
+            store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 1,
+                envelope: envelope(1, 'input_admitted', { request_id: 'active', run_id: 'active-run' }) });
+            store.getState().beginInput('demo', 'overflow', [{ type: 'text', raw: 'keep this text' }], 'message');
+            const rejection = envelope(2, 'input_rejected', {
+                request_id: 'overflow', run_id: '',
+                data: { request_id: 'overflow', operation: 'message', code: 'payload_queue_full',
+                    message: 'Worker input queue is full. Wait for current work to finish, then retry.' },
+            });
+            if (replay) store.getState().applySubscribed(subscribed('demo', [rejection]));
+            else store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 2, envelope: rejection });
+            const view = store.getState().views.get('demo');
+            assert.equal(view.items.find((item) => item.kind === 'outbox' && item.requestId === 'active').state,
+                'admitted');
+            const rejected = view.items.find((item) => item.kind === 'outbox' && item.requestId === 'overflow');
+            assert.equal(rejected.state, 'rejected');
+            assert.equal(rejected.parts[0].raw, 'keep this text');
+            assert.equal(view.seenRequests.has('overflow'), true);
+            assert.equal(view.runActive, true);
+            assert.equal(view.lastRunId, 'active-run');
+        }
+    });
+
     it('does not hand back an input the hub accepted', () => {
         const store = createPanelStore();
         store.getState().applyWelcome(welcome('epoch-1', [session()]));
@@ -473,7 +500,7 @@ describe('panel store: a refused input is handed back (D19)', () => {
         assert.equal(store.getState().items('demo').length, 1);
     });
 
-    it('adds no second row for an input it is already showing', () => {
+    it('retains admission identity alongside the text of its own input', () => {
         const store = createPanelStore();
         store.getState().applyWelcome(welcome('epoch-1', [session()]));
         store.getState().beginInput('demo', 'req-9', [{ type: 'text', raw: 'hello' }], 'message');
@@ -484,9 +511,13 @@ describe('panel store: a refused input is handed back (D19)', () => {
             envelope: envelope(1, 'input_admitted', { request_id: 'req-9' }),
         });
 
-        // The outbox item is the input; `input_admitted` carries no payload, so
-        // a separate placeholder for it would just repeat the same message.
-        assert.equal(store.getState().items('demo').length, 1);
+        // Grouping needs the admission envelope even when the outbox provides
+        // the text. Rendering that grouped round still shows only one input.
+        const items = store.getState().items('demo');
+        assert.equal(items.length, 2);
+        assert.equal(items[0].kind, 'outbox');
+        assert.equal(items[1].kind, 'event');
+        assert.equal(items[1].envelope.event, 'input_admitted');
     });
 
     it('shows a placeholder for an input this page never sent', () => {

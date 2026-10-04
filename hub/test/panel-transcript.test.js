@@ -16,6 +16,50 @@ import { parseToolOutput } from '../web/src/app/toolOutput.ts';
 import { buildRounds } from '../web/src/app/rounds.ts';
 import { fenceFor } from '../web/src/app/content.ts';
 
+it('shows queue-full retry guidance without turning an active run into compaction', () => {
+    const rounds = buildRounds([
+        event('e1', 'input_admitted', { operation: 'message' }, { request_id: 'active' }),
+        event('e2', 'run_started', {}, { request_id: 'active' }),
+        event('e3', 'input_rejected', { request_id: 'discarded', operation: 'compact',
+            code: 'payload_queue_full',
+            message: 'Worker input queue is full. Wait for current work to finish, then retry.' },
+        { request_id: 'discarded', run_id: '' }),
+        response('e4', 'The active run continues.', null, { request_id: 'active' }),
+        event('e5', 'run_finished', { status: 'completed' }, { request_id: 'active' }),
+    ], new Map());
+    assert.equal(rounds.length, 2);
+    assert.equal(rounds[0].compacting, false);
+    assert.equal(rounds[0].status, 'completed');
+    assert.equal(rounds[0].problems.length, 0);
+    assert.equal(rounds[1].status, 'rejected');
+    assert.equal(rounds[1].open, false);
+    assert.equal(rounds[1].compacting, true);
+    assert.equal(rounds[1].problems[0].label, 'Input queue full');
+    assert.match(rounds[1].problems[0].text, /finish, then retry/);
+    assert.equal(rounds[0].assistant[0].text, 'The active run continues.');
+});
+
+it('keeps the active answer with its input when another panel message overflows', () => {
+    const outbox = (id, state) => ({ kind: 'outbox', id, requestId: id,
+        parts: [{ type: 'text', raw: id, modality: 'text' }], operation: 'message', state });
+    const rounds = buildRounds([
+        outbox('active', 'admitted'),
+        event('e1', 'run_started', {}, { request_id: 'active' }),
+        outbox('overflow', 'rejected'),
+        event('e2', 'input_rejected', { request_id: 'overflow', operation: 'message',
+            code: 'payload_queue_full', message: 'Wait for current work to finish, then retry.' },
+        { request_id: 'overflow', run_id: '' }),
+        response('e3', 'Answer for the active input', null, { request_id: 'active' }),
+        event('e4', 'run_finished', { status: 'completed' }, { request_id: 'active' }),
+    ], new Map());
+    assert.equal(rounds.length, 2);
+    assert.equal(rounds[0].input.requestId, 'active');
+    assert.equal(rounds[0].assistant[0].text, 'Answer for the active input');
+    assert.equal(rounds[1].input.requestId, 'overflow');
+    assert.equal(rounds[1].assistant.length, 0);
+    assert.equal(rounds[1].status, 'rejected');
+});
+
 /** One transcript event item, as the store builds it. */
 function event(id, eventName, data, extra = {}) {
     const ordinal = Number(id.replace(/\D/g, '')) || 1;

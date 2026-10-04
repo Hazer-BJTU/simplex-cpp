@@ -30,7 +30,20 @@ struct PayloadQueryEvent {
     nlohmann::json payload;
 };
 
-/** Capacities of the two incoming queues. Both must be positive. */
+/**
+ * Payload-queue overflow notification, published by the control worker.
+ * Only correlation metadata is retained; the rejected content is discarded.
+ * request_id is the supplied JSON value or null. operation is a supplied string
+ * or null; the host decides which operation names its protocol recognizes.
+ * Listeners must not block and must marshal host state access to its owner.
+ * This is rejection feedback, not an admission or delivery acknowledgment.
+ */
+struct PayloadRejectedEvent {
+    nlohmann::json request_id;
+    nlohmann::json operation;
+};
+
+/** Payload and control queue capacities. Both must be positive. */
 struct ClientOptions {
     std::size_t payload_capacity = 256;
     std::size_t signal_capacity = 256;
@@ -50,6 +63,10 @@ struct ClientOptions {
  * run() as a protocol error. Once run() returns, both incoming queues are
  * closed and the signal worker has been joined. Keep this object, its payload
  * subscription, its EventBus and its executor alive until run() returns.
+ * Payload overflow increments rejected_payloads() and queues a metadata-only
+ * PayloadRejectedEvent on the bounded control queue. Control queue exhaustion
+ * is fatal, including failure to admit rejection feedback; no unbounded work
+ * is posted and no automatic replay is attempted.
  */
 class Client final : public intercom::StableWebSocketClient {
 private:

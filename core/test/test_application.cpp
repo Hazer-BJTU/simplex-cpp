@@ -26,13 +26,15 @@ struct Model : llm::LLMModel {
     std::atomic<int> maximum{0};
     std::atomic<int> calls{0};
     std::chrono::milliseconds delay{40};
+    bool hold_first = false;
     std::atomic<bool> fail_model{false};
 
     asio::awaitable<model_io::MessageItem> converse(model_io::AgentInputState) override {
         ++calls;
         maximum.store(std::max(maximum.load(), ++active));
         struct Exit { std::atomic<int>& active; ~Exit() { --active; } } exit{active};
-        asio::steady_timer timer(co_await asio::this_coro::executor, delay);
+        asio::steady_timer timer(co_await asio::this_coro::executor,
+            hold_first && calls.load() == 1 ? std::chrono::seconds(10) : delay);
         co_await timer.async_wait(asio::use_awaitable);
         if (fail_model) throw std::runtime_error("scripted model request failed");
         model_io::MessageItem item;
@@ -371,6 +373,134 @@ BOOST_AUTO_TEST_CASE(event_overflow_stops_worker) { scenario(Mode::Overflow); }
 BOOST_AUTO_TEST_CASE(required_snapshot_failure_stops_admission) { scenario(Mode::StorageFailure); }
 BOOST_AUTO_TEST_CASE(blocked_restore_never_executes_model) { scenario(Mode::Blocked); }
 BOOST_AUTO_TEST_CASE(history_query_is_answered_while_model_is_pending) { scenario(Mode::History); }
+
+BOOST_AUTO_TEST_CASE(payload_overflow_rejects_during_model_wait_and_keeps_control_live) {
+    Scratch scratch;
+    asio::io_context io;
+    asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
+    load::Configuration config;
+    config.directory = scratch.root;
+    config.provider = "fixture";
+    config.document = Json::object();
+    config.client = load::websocket_endpoint("ws://127.0.0.1:"
+        + std::to_string(acceptor.local_endpoint().port()) + "/events");
+    config.storage = scratch.root;
+    config.state_directory = scratch.root / "state";
+    config.queues.payload_capacity = 1;
+    config.queues.signal_capacity = 16;
+    auto model = std::make_shared<Model>(io.get_executor());
+    model->hold_first = true;
+    core::Application app(io.get_executor(), config, "overflow", model);
+    int rejected = 0;
+    int finished = 0;
+    bool status_seen = false;
+    bool cancel_sent = false;
+    std::string active_run;
+    std::vector<std::string> admitted;
+    std::uint64_t last_sequence = 0;
+    bool expired = false;
+    asio::steady_timer watchdog(io, std::chrono::seconds(8));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error) {
+            expired = true;
+            app.stop();
+            acceptor.cancel();
+        }
+    });
+    auto peer = [&]() -> asio::awaitable<void> {
+        beast::websocket::stream<asio::ip::tcp::socket> socket(
+            co_await acceptor.async_accept(asio::use_awaitable));
+        co_await socket.async_accept(asio::use_awaitable);
+        auto send = [&](const std::string& type, Json data) -> asio::awaitable<void> {
+            const auto wire = Json{{"type", type}, {"data", std::move(data)}}.dump();
+            co_await socket.async_write(asio::buffer(wire), asio::use_awaitable);
+        };
+        const auto input = [](const std::string& id) {
+            return Json{{"operation", "message"}, {"request_id", id},
+                {"content", Json::array({{{"type", "text"}, {"modality", "text"}, {"raw", id}}})}};
+        };
+        for (;;) {
+            beast::flat_buffer buffer;
+            boost::system::error_code error;
+            co_await socket.async_read(buffer, asio::redirect_error(asio::use_awaitable, error));
+            if (error) break;
+            const auto event = Json::parse(beast::buffers_to_string(buffer.data()));
+            const auto sequence = event.at("sequence").get<std::uint64_t>();
+            BOOST_TEST(sequence > last_sequence);
+            last_sequence = sequence;
+            const auto name = event.at("event").get<std::string>();
+            if (name == "ready") {
+                co_await send("payload", input("active"));
+            } else if (name == "input_admitted") {
+                admitted.push_back(event.at("request_id").get<std::string>());
+            } else if (name == "input_committed" && admitted.size() == 1) {
+                active_run = event.at("run_id").get<std::string>();
+                // The first model stays suspended until the control signal
+                // cancels it. No payload can be dequeued during this interval.
+                while (model->active.load() == 0) {
+                    asio::steady_timer wait(io, std::chrono::milliseconds(1));
+                    co_await wait.async_wait(asio::use_awaitable);
+                }
+                co_await send("payload", input("queued"));
+                co_await send("payload", {{"operation", "compact"}, {"request_id", "discarded"}});
+                co_await send("payload", nullptr);
+                co_await send("payload", {{"operation", "unknown"}, {"request_id", 42}});
+                co_await send("signal", {{"operation", "status"}});
+            } else if (name == "input_rejected") {
+                const auto& data = event.at("data");
+                BOOST_TEST(data.at("code") == "payload_queue_full");
+                BOOST_TEST(data.at("message").get<std::string>().find("then retry") != std::string::npos);
+                BOOST_TEST(event.at("run_id") == "");
+                BOOST_TEST(finished == 0);
+                BOOST_TEST(model->active.load() == 1);
+                if (rejected == 0) {
+                    BOOST_TEST(data.at("request_id") == "discarded");
+                    BOOST_TEST(data.at("operation") == "compact");
+                    BOOST_TEST(event.at("request_id") == "discarded");
+                } else {
+                    BOOST_TEST(!data.contains("operation"));
+                    BOOST_TEST(event.at("request_id") == "");
+                    if (rejected == 1) BOOST_TEST(data.at("request_id").is_null());
+                    else BOOST_TEST(data.at("request_id") == 42);
+                }
+                ++rejected;
+            } else if (name == "status" && event.at("data").at("active") == true) {
+                BOOST_TEST(event.at("request_id") == "active");
+                BOOST_TEST(event.at("run_id") == active_run);
+                BOOST_TEST(event.at("data").at("rejected_payloads") == 3);
+                status_seen = true;
+            } else if (name == "run_finished") {
+                ++finished;
+                BOOST_TEST(event.at("request_id") == (finished == 1 ? "active" : "queued"));
+                BOOST_TEST(event.at("data").at("status") == (finished == 1 ? "cancelled" : "completed"));
+                if (finished == 2) co_await send("signal", {{"operation", "shutdown"}});
+            }
+            if (rejected == 3 && status_seen && !cancel_sent) {
+                cancel_sent = true;
+                co_await send("signal", {{"operation", "cancel"}, {"run_id", active_run}});
+            }
+        }
+        watchdog.cancel();
+    };
+    auto server = asio::co_spawn(io, peer, asio::use_future);
+    auto worker = asio::co_spawn(io, app.run(), asio::use_future);
+    std::jthread other([&] { io.run(); });
+    io.run();
+    other.join();
+    server.get();
+    worker.get();
+    BOOST_TEST(!expired);
+    BOOST_TEST(rejected == 3);
+    BOOST_TEST(finished == 2);
+    BOOST_TEST(status_seen);
+    BOOST_TEST(model->calls.load() == 2);
+    BOOST_TEST(admitted == std::vector<std::string>({"active", "queued"}),
+               boost::test_tools::per_element());
+    const auto state = load::load_state(config.state_directory / "state.json");
+    BOOST_REQUIRE_EQUAL(state.turns.size(), 2u);
+    BOOST_TEST(state.turns[0].user_input.content[0].raw == "active");
+    BOOST_TEST(state.turns[1].user_input.content[0].raw == "queued");
+}
 
 BOOST_AUTO_TEST_CASE(protocol_failure_survives_payload_queue_shutdown) { scenario(Mode::ProtocolFailure); }
 

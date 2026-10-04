@@ -504,22 +504,23 @@ function foldEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
     let next = indexEnvelope(view, envelope);
     if (envelope.event === 'input_admitted' && typeof envelope.request_id === 'string') {
         const requestId = envelope.request_id;
-        const mine = next.items.some(
-            (item) => item.kind === 'outbox' && item.requestId === requestId,
-        );
         next = admitInput(next, requestId, envelope);
-        // The panel's own message already stands for this input, and it is the
-        // only place the text exists — `input_admitted` carries the operation,
-        // but no user content. A second row repeating that is noise. The
-        // placeholder is for history this page never sent: after a reload there
-        // is no outbox item, and an admitted input with no visible text would
-        // be a hole in the conversation.
-        if (mine) return next;
+        // Retain admission even for our own input: its worker/run identity and
+        // position bind the pending message to the right execution. Grouping
+        // renders the outbox text instead of a duplicate admission placeholder.
     }
     next = append(next, eventItem(next, envelope));
     if (envelope.event === 'input_rejected') {
         const rejected = (envelope.data as Record<string, unknown> | null)?.request_id;
-        if (typeof rejected === 'string') next = markSeen(next, rejected);
+        if (typeof rejected === 'string') {
+            next = markSeen(next, rejected);
+            // Settle only the rejected input. Overflow feedback can arrive
+            // while a different request is still running on the worker.
+            next = { ...next, items: next.items.map((item) => (
+                item.kind === 'outbox' && item.requestId === rejected && item.state === 'pending'
+                    ? { ...item, state: 'rejected' as const } : item
+            )) };
+        }
     }
     return next;
 }

@@ -521,12 +521,16 @@ function handle(ws, message) {
             send(ws, {
                 type: 'accepted', action: 'input', session: message.session, request_id: requestId,
             });
+            // Let a test queue several inputs before publishing worker events.
+            if (settings.holdInput) return;
             // Admission carries the operation so replay can distinguish a
             // continuation even after the request record has been pruned.
             const envelope = settings.rejectInput
                 ? append(message.session, 'input_rejected',
                     { request_id: requestId, operation: message.operation ?? 'message',
-                        message: 'no turns to compact' })
+                        ...(settings.rejectInputCode ? { code: settings.rejectInputCode } : {}),
+                        message: settings.rejectInputMessage ?? 'no turns to compact' },
+                    { request_id: requestId, run_id: '' })
                 : append(message.session, 'input_admitted',
                     { operation: message.operation ?? 'message' }, { request_id: requestId });
             broadcast({

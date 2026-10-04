@@ -119,6 +119,8 @@ client:
   endpoint: "{{hub.events_endpoint}}"
   # Positive incoming queue capacities, measured in complete JSON messages.
   payload_capacity: 256
+  # Shared by signals, history queries, and payload-overflow feedback.
+  # Also bounds the worker's metadata-only rejection bridge; exhaustion is fatal.
   signal_capacity: 256
   transport:
     # Positive outgoing queue capacity, measured in complete messages.

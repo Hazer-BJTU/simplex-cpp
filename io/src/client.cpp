@@ -151,12 +151,28 @@ void Client::on_text(std::string message) {
             throw std::runtime_error("IO control queue is full");
         }
     } else if (type == "payload") {
+        // Save only correlation metadata before moving the payload into the
+        // channel. Never retain rejected content or assume a failed channel
+        // send leaves its rvalue argument untouched.
+        nlohmann::json rejection = {
+            {"type", "payload_rejected"},
+            {"request_id", data.is_object()
+                ? data.value("request_id", nlohmann::json()) : nlohmann::json()},
+            {"operation", data.is_object() && data.contains("operation")
+                && data.at("operation").is_string()
+                ? data.at("operation") : nlohmann::json()}
+        };
         if (!_state->payloads.try_send(boost::system::error_code{},
                                        std::move(data))) {
             if (_state->stopping.load()) return;
             _state->rejected_payloads.fetch_add(1);
             logging::Logger::warning(
                 "io client: rejected payload because the queue is full");
+            if (!_state->signals.try_send(boost::system::error_code{},
+                                          std::move(rejection))) {
+                if (_state->stopping.load()) return;
+                throw std::runtime_error("IO control queue is full while reporting payload rejection");
+            }
         }
     } else if (type == "signal") {
         if (!_state->signals.try_send(boost::system::error_code{},
@@ -178,6 +194,11 @@ boost::asio::awaitable<void> Client::process_signals() {
 
         if (control.at("type") == "payload_query") {
             _events.publish(PayloadQueryEvent{std::move(control["data"])});
+            continue;
+        }
+        if (control.at("type") == "payload_rejected") {
+            _events.publish(PayloadRejectedEvent{
+                std::move(control["request_id"]), std::move(control["operation"])});
             continue;
         }
 

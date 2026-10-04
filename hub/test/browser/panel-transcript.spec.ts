@@ -39,6 +39,94 @@ test('shows an honest activity cue through a live run', async ({ page }) => {
     await expect(activity).toHaveCount(0);
 });
 
+test('marks an overflowing input rejected and displays retry guidance', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        rejectInput: true, rejectInputCode: 'payload_queue_full',
+        rejectInputMessage: 'Worker input queue is full. Wait for current work to finish, then retry.',
+    } });
+    const composer = page.getByRole('textbox', { name: 'Message' });
+    await composer.fill('Please retain my message');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.getByTestId('outbox-item')).toHaveAttribute('data-state', 'rejected');
+    await expect(page.getByTestId('outbox-item')).toContainText('not executed');
+    await expect(page.getByText('Input queue full', { exact: true })).toBeVisible();
+    await expect(page.getByText('Worker input queue is full. Wait for current work to finish, then retry.',
+        { exact: true })).toBeVisible();
+});
+
+test('keeps executing A, queued B, and rejected C separate in live and replayed rounds', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.request.post(`${STUB}/__stub/settings`, { data: { holdInput: true } });
+    const composer = page.getByRole('textbox', { name: 'Message' });
+    for (const id of ['A', 'B', 'C']) {
+        await composer.fill(`Input ${id}`);
+        await page.getByRole('button', { name: 'Send', exact: true }).click();
+        await expect(page.getByTestId('outbox-item')).toHaveCount(['A', 'B', 'C'].indexOf(id) + 1);
+    }
+    await expect(page.getByTestId('round-summary')).toHaveCount(0);
+    const received = await (await page.request.get(`${STUB}/__stub/received`)).json();
+    const requests = received.received.filter((message: { type: string }) => message.type === 'input');
+    const [a, b, c] = requests.map((message: { request_id: string }) => message.request_id);
+    const identityA = { request_id: a, run_id: 'run-A' };
+    const identityB = { request_id: b, run_id: 'run-B' };
+    await emit(page, 'input_admitted', { operation: 'message' }, identityA);
+    await emit(page, 'run_started', {}, identityA);
+    await emit(page, 'input_rejected', { request_id: c, operation: 'message',
+        code: 'payload_queue_full', message: 'Wait for current work to finish, then retry.' },
+    { request_id: c, run_id: '' });
+    await emit(page, 'model_response', modelResponse('Answer A', {
+        invokes: [call('call-A', 'run_command', { command: 'echo A' })],
+    }), identityA);
+    await emit(page, 'tool_calls', [call('call-A', 'run_command', { command: 'echo A' })], identityA);
+    await emit(page, 'tool_results', [toolResult('call-A', 'run_command', 'Output A')], identityA);
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 }, identityA);
+
+    const roundA = page.getByTestId('round').filter({ hasText: 'Input A' });
+    const roundB = page.getByTestId('round').filter({ hasText: 'Input B' });
+    const roundC = page.getByTestId('round').filter({ hasText: 'Input C' });
+    await expect(roundA.getByTestId('assistant-message')).toContainText('Answer A');
+    await expect(roundA.getByTestId('tool-card')).toHaveAttribute('data-status', 'ok');
+    await expect(roundA.getByTestId('round-summary')).toContainText('completed');
+    await expect(roundB).toHaveAttribute('data-kind', 'prelude');
+    await expect(roundB.getByTestId('assistant-message')).toHaveCount(0);
+    await expect(roundB.getByTestId('tool-card')).toHaveCount(0);
+    await expect(roundC.getByTestId('outbox-item')).toHaveAttribute('data-state', 'rejected');
+    await expect(roundC).toContainText('Input queue full');
+
+    await emit(page, 'input_admitted', { operation: 'message' }, identityB);
+    await emit(page, 'run_started', {}, identityB);
+    await emit(page, 'model_response', modelResponse('Answer B', {
+        invokes: [call('call-B', 'run_command', { command: 'echo B' })],
+    }), identityB);
+    await emit(page, 'tool_results', [toolResult('call-B', 'run_command', 'Output B')], identityB);
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 }, identityB);
+    await expect(roundA.getByTestId('assistant-message')).toContainText('Answer A');
+    await expect(roundA).not.toContainText('Answer B');
+    await expect(roundB.getByTestId('assistant-message')).toContainText('Answer B');
+    await expect(roundB).not.toContainText('Answer A');
+    await expect(roundC.getByTestId('assistant-message')).toHaveCount(0);
+    await expect(page.getByTestId('round-summary')).toHaveCount(2);
+
+    await page.reload();
+    const runs = page.getByTestId('round').filter({ has: page.getByTestId('round-summary') });
+    await expect(runs).toHaveCount(2);
+    for (const [index, id] of ['A', 'B'].entries()) {
+        const round = runs.nth(index);
+        await expect(round.getByTestId('assistant-message')).toContainText(`Answer ${id}`);
+        await expect(round).not.toContainText(`Answer ${id === 'A' ? 'B' : 'A'}`);
+        await expect(round.getByTestId('tool-card')).toHaveCount(1);
+        await round.getByTestId('tool-details').locator('summary').first().click();
+        await expect(round).toContainText(`Output ${id}`);
+    }
+    const rejected = page.getByTestId('round').filter({ hasText: 'Input queue full' });
+    await expect(rejected).toHaveAttribute('data-kind', 'prelude');
+    await expect(rejected.getByTestId('assistant-message')).toHaveCount(0);
+    await expect(rejected.getByTestId('tool-card')).toHaveCount(0);
+});
+
 test('shows a model failure beside its run with guarded retry guidance', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
@@ -219,6 +307,86 @@ test('a history refresh keeps detailed tool cards beside the final reply', async
         .toContainText('Please run the tool.');
     await expect(page.getByTestId('history-turn')).toHaveCount(0);
     await expect(page.getByTestId('tool-card')).toHaveCount(1);
+});
+
+test('orders another panel’s earlier run before a local outbox through history refresh and reload', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true, historyTurns: [], holdInput: true,
+    } });
+    await emit(page, 'ready', { active: false, capabilities: ['session-history'] },
+        { request_id: '', run_id: '' });
+    await page.goto('/?session=demo');
+    const historyQueries = async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        return (await response.json()).received.filter(
+            (message: { type: string }) => message.type === 'history').length;
+    };
+    await expect.poll(historyQueries).toBe(1);
+    await expect(page.getByTestId('transcript')).not.toContainText('loading conversation history');
+
+    // A was sent elsewhere, but this page creates B before observing A.
+    await page.getByLabel('message').fill('Local input B');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.getByTestId('outbox-item')).toContainText('Local input B');
+    const received = await (await page.request.get(`${STUB}/__stub/received`)).json();
+    const local = received.received.find((message: { type: string }) => message.type === 'input');
+    const a = { request_id: 'remote-A', run_id: 'run-A' };
+    const b = { request_id: local.request_id, run_id: 'run-B' };
+    await emit(page, 'input_admitted', { operation: 'message' }, a);
+    await emit(page, 'run_started', {}, a);
+    await emit(page, 'input_committed', {}, a);
+    await emit(page, 'model_response', modelResponse('Answer A', {
+        invokes: [call('call-A', 'run_command', { command: 'echo A' })],
+    }), a);
+    await emit(page, 'tool_results', [toolResult('call-A', 'run_command', 'Output A')], a);
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 }, a);
+    await emit(page, 'input_admitted', { operation: 'message' }, b);
+    await emit(page, 'run_started', {}, b);
+    await emit(page, 'input_committed', {}, b);
+    await emit(page, 'model_response', modelResponse('Answer B'), b);
+    await emit(page, 'run_finished', { status: 'failed', exchanges: 1,
+        error: 'HTTP 503 after retries', failure: { stage: 'model_request', can_continue: true } }, b);
+
+    const runs = page.getByTestId('round').filter({ has: page.getByTestId('round-summary') });
+    const verifyRuns = async () => {
+        await expect(runs).toHaveCount(2);
+        for (const [index, id] of ['A', 'B'].entries()) {
+            await expect(runs.nth(index).getByTestId('round-summary')).toContainText(`turn ${index + 1}`);
+            await expect(runs.nth(index).getByTestId('assistant-message')).toContainText(`Answer ${id}`);
+            await expect(runs.nth(index)).not.toContainText(`Answer ${id === 'A' ? 'B' : 'A'}`);
+        }
+        await expect(runs.nth(0).getByTestId('run-failure')).toHaveCount(0);
+        // B is the latest admitted run, so its recoverable failure is actionable.
+        await expect(runs.nth(1).getByTestId('run-failure')).toContainText('Continue run');
+        await expect(runs.nth(0).getByTestId('tool-card')).toHaveAttribute('data-status', 'ok');
+    };
+    await verifyRuns();
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyTurns: ['Remote input A', 'Local input B'].map((raw, index) => ({
+            index, user: [{ type: 'text', modality: 'text', raw }],
+            steps: [{ index: 0, content: [{ type: 'text', modality: 'text',
+                raw: `Answer ${index === 0 ? 'A' : 'B'}` }], tool_calls: index === 0 ? 1 : 0 }],
+            omitted_steps: 0,
+        })),
+    } });
+    await page.getByLabel('message').press('Alt+Enter');
+    await page.getByLabel('command input').fill('Refresh');
+    await page.getByLabel('command input').press('Enter');
+    await expect.poll(historyQueries).toBe(2);
+    await expect(runs.nth(0).getByTestId('restored-user-message')).toContainText('Remote input A');
+    await expect(runs.nth(0)).not.toContainText('Local input B');
+    await expect(runs.nth(1).getByTestId('outbox-item')).toContainText('Local input B');
+    await expect(page.getByTestId('history-turn')).toHaveCount(0);
+    await verifyRuns();
+
+    await page.reload();
+    await expect(runs.nth(0).getByTestId('restored-user-message')).toContainText('Remote input A');
+    await expect(runs.nth(1).getByTestId('restored-user-message')).toContainText('Local input B');
+    await expect(runs.nth(0)).not.toContainText('Local input B');
+    await expect(runs.nth(1)).not.toContainText('Remote input A');
+    await expect(page.getByTestId('history-turn')).toHaveCount(0);
+    await verifyRuns();
 });
 
 test('waits for worker history support before querying an older worker', async ({ page }) => {

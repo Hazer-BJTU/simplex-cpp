@@ -85,6 +85,68 @@ function waitForExit(child, timeoutMs = 10000) {
 }
 
 describe('end to end with the real worker', { skip }, () => {
+    it('rejects queue overflow while a model request is pending and still accepts cancellation', { timeout: 60000 }, async () => {
+        const ctx = await startE2eHub({
+            worker: { bin: WORKER_BIN, threads: 2, payloadCapacity: 1, signalCapacity: 16,
+                stopTimeoutMs: 20000 },
+            mock: { enabled: true, slowMs: 10000 },
+        });
+        const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
+        try {
+            const created = await api(ctx.base, '/api/sessions', {
+                method: 'POST', body: { session: 'e2e-overflow',
+                    spec: { provider: 'mock', model: 'mock-slow' } },
+            });
+            assert.equal(created.status, 201);
+            const started = await api(ctx.base, '/api/sessions/e2e-overflow/start', { method: 'POST' });
+            assert.equal(started.body.ok, true, started.body.error);
+            const session = ctx.hub.registry.get('e2e-overflow');
+            await until(() => session.connected && session.workerCapabilities,
+                { timeout: 20000, label: 'worker ready' });
+            panel.send({ v: 1, type: 'subscribe', session: session.id });
+            await panel.waitFor((message) => message.type === 'subscribed');
+            const sendInput = (requestId) => panel.send({ v: 1, type: 'input', session: session.id,
+                request_id: requestId,
+                content: [{ type: 'text', modality: 'text', raw: requestId }] });
+            sendInput('active');
+            const active = await panel.waitFor((message) => message.type === 'event'
+                && message.envelope.event === 'run_started', { timeout: 20000 });
+            await until(() => ctx.hub.mock.requests.length === 1,
+                { timeout: 5000, label: 'suspended model request' });
+            sendInput('queued');
+            sendInput('discarded');
+            const rejection = await panel.waitFor((message) => message.type === 'event'
+                && message.envelope.event === 'input_rejected', { timeout: 5000 });
+            assert.equal(rejection.envelope.request_id, 'discarded');
+            assert.equal(rejection.envelope.run_id, '');
+            assert.equal(rejection.envelope.data.code, 'payload_queue_full');
+            assert.equal(rejection.envelope.data.operation, 'message');
+            assert.match(rejection.envelope.data.message, /finish, then retry/);
+            assert.equal(session.requests.get('discarded').state, 'rejected');
+            assert.equal(session.requests.get('active').state, 'admitted');
+            assert.equal(ctx.hub.mock.requests.length, 1);
+            panel.send({ v: 1, type: 'signal', session: session.id,
+                operation: 'cancel', run_id: active.envelope.run_id });
+            const finished = await panel.waitFor((message) => message.type === 'event'
+                && message.envelope.event === 'run_finished' && message.envelope.request_id === 'active',
+            { timeout: 5000 });
+            assert.equal(finished.envelope.data.status, 'cancelled');
+            await panel.waitFor((message) => message.type === 'event'
+                && message.envelope.event === 'input_admitted' && message.envelope.request_id === 'queued',
+            { timeout: 5000 });
+            const stopped = await api(ctx.base, `/api/sessions/${session.id}/stop`, { method: 'POST' });
+            assert.equal(stopped.body.ok, true, stopped.body.error);
+            const snapshot = JSON.parse(readFileSync(join(sessionDir(ctx.config, session.id),
+                'state/state.json'), 'utf8'));
+            assert.deepEqual(snapshot.turns.map((turn) => turn.user_input.content[0].raw), ['active', 'queued']);
+            assert.equal(panel.messages.some((message) => message.type === 'event'
+                && message.envelope.event === 'input_admitted' && message.envelope.request_id === 'discarded'), false);
+        } finally {
+            await panel.close();
+            await ctx.hub.stop();
+        }
+    });
+
     it('compacts through the hub and prunes archives only after publishing the replacement', { timeout: 180000 }, async () => {
         const ctx = await startE2eHub();
         ctx.config.worker.memoryRetention = { maxArchives: 1 };

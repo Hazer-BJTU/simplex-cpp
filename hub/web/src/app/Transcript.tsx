@@ -227,7 +227,9 @@ function UserMessage({ item }: { item: OutboxItem }) {
                 </button>
             )}
             <p className="mt-1 text-xs text-ink-faint">
-                {item.state === 'admitted' ? 'admitted by the worker' : 'sent, not yet admitted'}
+                {item.state === 'admitted' ? 'admitted by the worker'
+                    : item.state === 'rejected' ? 'rejected by the worker — not executed'
+                    : 'sent, not yet admitted'}
             </p>
         </article>
     );
@@ -547,11 +549,15 @@ export function Transcript() {
         () => buildRounds(items, confirmations, requests),
         [items, confirmations, requests],
     );
+    // buildRounds orders executions by worker admission, even when a pending
+    // local outbox was created before another panel's earlier input arrived.
+    // History mapping, retry guidance, and folding all use this same order.
+    const runs = useMemo(() => rounds.filter((round) => round.kind === 'run'), [rounds]);
 
     // Failure metadata describes the past. A retry hint is current only while
     // that failed run is the latest run of the same connected worker.
     const actionableFailureKey = useMemo(() => {
-        const latestRun = rounds.findLast((round) => round.kind === 'run');
+        const latestRun = runs.at(-1);
         if (!latestRun?.failure || latestRun.compacting || latestRun.failure.stage !== 'model_request'
             || !latestRun.failure.canContinue || view?.runActive) return null;
         if (!session?.connected || session.identity.state !== 'live') return null;
@@ -564,7 +570,7 @@ export function Transcript() {
             || (latestEvent?.kind === 'event'
                 && latestEvent.envelope.worker_id !== worker)) return null;
         return latestRun.key;
-    }, [rounds, session, view?.runActive, items]);
+    }, [runs, session, view?.runActive, items]);
 
     // The worker history is a fallback for turns absent from hub replay. Keep
     // detailed live rounds, including their tool cards, when both sources
@@ -581,8 +587,8 @@ export function Transcript() {
         if (view?.historyLoading || baseline === null || baseline === undefined || !worker) {
             return { olderHistory: history, historyForRun: mapped };
         }
-        const detailed = rounds.filter((round) => round.kind === 'run'
-            && round.protocol.some((item) => item.envelope.event === 'input_committed'
+        const detailed = runs.filter((round) => round.protocol.some((item) =>
+                item.envelope.event === 'input_committed'
                 && item.envelope.worker_id === worker
                 && typeof item.envelope.sequence === 'number'
                 && item.envelope.sequence > compactSequence
@@ -595,7 +601,7 @@ export function Transcript() {
             });
         }
         return { olderHistory: older, historyForRun: mapped };
-    }, [history, rounds, view?.historyLoading, view?.historySequence, view?.historyWorker,
+    }, [history, runs, view?.historyLoading, view?.historySequence, view?.historyWorker,
         view?.latestEvents.compact_finished]);
 
     // Which turns the reader has opened or closed by hand. Absent means the
@@ -606,13 +612,12 @@ export function Transcript() {
     useEffect(() => setHistoryToggled(new Map()), [selected]);
 
     const openByDefault = useMemo(() => {
-        const runs = rounds.filter((round) => round.kind === 'run');
         const open = new Map<string, boolean>();
         runs.forEach((round, position) => {
             open.set(round.key, position >= runs.length - OPEN_ROUNDS);
         });
         return open;
-    }, [rounds]);
+    }, [runs]);
 
     const isOpen = (round: Round): boolean => {
         const chosen = toggled.get(round.key);
