@@ -141,6 +141,19 @@ the [Qwen Chat Completions reference](https://platform.qianwenai.com/docs/api-re
 for the chosen model's current constraints. See the [Qwen guide](../providers/qwen.md)
 for vision input, reasoning replay, and usage accounting.
 
+Simplex intentionally sends `reasoning_effort: xhigh` when both effort and
+budget are omitted for Qwen 3.8. This is not equivalent to omitting both fields
+at the service boundary: the [Chat API reference](https://platform.qianwenai.com/docs/api-reference/chat/openai-chat)
+currently specifies a default budget of `131072` without either field, versus
+`262144` for explicit `xhigh`. The higher ceiling can increase latency and token
+cost; it does not mean every request consumes the full budget. To retain the
+smaller ceiling, set `thinking_budget: 131072` and omit both effort spellings.
+
+An explicit typed `GenerationPreset` effort, like a UI effort selection, replaces
+any prior budget and removes the old envelope effort in one validated update.
+Invalid updates leave all generation settings unchanged. Low-level JSON patches
+still reject an explicit effort/budget conflict.
+
 ## Shared fields and request ownership
 
 | Field | Meaning and default |

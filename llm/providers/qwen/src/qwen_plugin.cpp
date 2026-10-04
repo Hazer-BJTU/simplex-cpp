@@ -106,13 +106,16 @@ public:
         apply_generation_patch(std::move(patch));
     }
 
+    /** An explicit typed effort replaces both effort spellings and any budget atomically. */
     void set_generation(GenerationPreset preset) override {
         nlohmann::json patch = nlohmann::json::object();
         if (preset.model) {
             patch["model"] = *preset.model;
         }
         if (preset.effort) {
-            patch["reasoning"] = {{"effort", to_string(*preset.effort)}};
+            patch["reasoning_effort"] = to_string(*preset.effort);
+            patch["reasoning"] = {{"effort", nullptr}};
+            patch["thinking_budget"] = nullptr;
         }
         set_generation(std::move(patch));
     }

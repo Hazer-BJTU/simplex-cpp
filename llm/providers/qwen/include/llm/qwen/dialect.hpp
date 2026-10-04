@@ -83,6 +83,8 @@ inline void prepare_generation(nlohmann::json& body) {
                 || model.starts_with("qwen3.8-max-");
         }
         if (!body.contains("reasoning_effort") && !body.contains("thinking_budget")) {
+            // Intentional plugin default: explicit xhigh permits 262144 tokens,
+            // above the service's 131072 budget when both controls are absent.
             body["reasoning_effort"] = "xhigh";
         }
     }

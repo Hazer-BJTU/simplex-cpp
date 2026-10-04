@@ -166,6 +166,60 @@ BOOST_FIXTURE_TEST_CASE(budget_precedence_aliases_and_configuration_validation, 
     BOOST_CHECK_THROW(metadata.get(), llm::LLMUnsupportedOperation);
 }
 
+/** Typed selection must replace the effective control, regardless of its source. */
+BOOST_FIXTURE_TEST_CASE(typed_effort_replaces_existing_controls_atomically, Fixture) {
+    const auto state = input();
+    for (const auto& controls : std::vector<Json>{
+        {{"reasoning_effort", "medium"}},
+        {{"reasoning", {{"effort", "medium"}}}},
+        {{"reasoning_effort", "medium"}, {"reasoning", {{"effort", "high"}}}},
+        {{"thinking_budget", 8000}}
+    }) {
+        Json config = {{"model", "qwen3.8-flash"}, {"temperature", 0.7}};
+        config.update(controls);
+        auto instance = model(config);
+
+        // An invalid typed effort must not commit the accompanying model change
+        // or delete the original budget/envelope during candidate validation.
+        const auto before = instance->generation();
+        const auto options_before = instance->get_current_options();
+        const auto wire_before = wire(state, before);
+        BOOST_CHECK_THROW(instance->set_generation(llm::GenerationPreset{
+            .model = "qwen3.8-max", .effort = llm::ReasoningEffort::Minimal
+        }), std::invalid_argument);
+        BOOST_TEST(instance->generation() == before);
+        BOOST_TEST(instance->get_current_options() == options_before);
+        BOOST_TEST(wire(state, instance->generation()) == wire_before);
+
+        instance->set_generation(llm::GenerationPreset{.effort = llm::ReasoningEffort::Low});
+        BOOST_TEST(instance->get_current_options().at("reasoning_effort") == "low");
+        const auto selected = instance->generation();
+        BOOST_TEST(selected.at("reasoning_effort") == "low");
+        BOOST_TEST(!selected.contains("thinking_budget"));
+        BOOST_TEST(!selected.value("reasoning", Json::object()).contains("effort"));
+        BOOST_TEST(selected.at("temperature") == 0.7);
+        auto body = wire(state, selected);
+        BOOST_TEST(body.at("reasoning_effort") == "low");
+        BOOST_TEST(!body.contains("thinking_budget"));
+        BOOST_TEST(!body.contains("reasoning"));
+
+        instance->handle_options({{"reasoning_effort", "medium"}});
+        instance->set_generation(llm::GenerationPreset{.effort = llm::ReasoningEffort::High});
+        BOOST_TEST(instance->get_current_options().at("reasoning_effort") == "xhigh");
+        BOOST_TEST(wire(state, instance->generation()).at("reasoning_effort") == "xhigh");
+
+        // Low-level JSON retains explicit conflict rejection, without mutation.
+        const auto after = instance->generation();
+        const auto after_options = instance->get_current_options();
+        const auto after_wire = wire(state, after);
+        BOOST_CHECK_THROW(instance->set_generation(Json{{"thinking_budget", 100}}),
+                          std::invalid_argument);
+        BOOST_TEST(instance->generation() == after);
+        BOOST_TEST(instance->get_current_options() == after_options);
+        BOOST_TEST(wire(state, instance->generation()) == after_wire);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(dialect_replays_reasoning_only_when_requested_and_preserves_images) {
     auto state = input();
     auto& user = state.turns[0].user_input;
