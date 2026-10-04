@@ -3,7 +3,6 @@
 Start with [installation](getting-started/installation.md), then
 [configuration](getting-started/configuration.md) and [deployment](deployment/hub.md).
 
-- [Provider configuration tutorial](tutorials/provider-configuration.md)
 - [Architecture](architecture/overview.md)
 - [Local source builds](building/local.md) and [Docker builds](building/docker.md)
 - [Hub](deployment/hub.md), [Docker](deployment/docker-worker.md), and [remote](deployment/remote-worker.md) deployment

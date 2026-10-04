@@ -1,8 +1,9 @@
 # Configuration
 
-For complete provider-only YAML examples and field descriptions, see the
-[provider configuration tutorial](../tutorials/provider-configuration.md).
-
+Complete provider examples and shared field descriptions are in
+[Support policy](../providers/index.md#provider-configuration),
+[DeepSeek](../providers/deepseek.md#worker-configuration), and
+[Qwen](../providers/qwen.md#worker-configuration).
 
 There are three configuration layers. The Hub startup file controls listeners
 and access; a launch file controls how a worker process starts; worker YAML
@@ -70,6 +71,81 @@ the first attempt. It does not limit the number of agent-loop exchanges.
 The Hub fills managed endpoints and the session directory at launch. Those
 markers are not worker-side template variables. For a manually started worker,
 replace them with actual URLs and a local persistence path first.
+
+## System prompts
+
+Role prompt YAML files live in `core/prompts/` in the source tree. Builds copy
+and installs ship them under `<worker-install>/bin/prompts/`, beside the
+`simplex_worker` executable. Choose a role in your worker YAML:
+
+```yaml
+worker:
+  system_prompt_file: prompts/general_agent.yaml
+```
+
+This selects `<worker-install>/bin/prompts/general_agent.yaml`. The path is
+relative to the running executable's directory, **not** the worker config file
+or the invocation working directory. In a container, the file must exist in the
+worker's installation inside that container. Omit `system_prompt_file` to use
+`prompts/coding_agent.yaml`.
+
+| File | Purpose and behavior |
+| --- | --- |
+| `prompts/coding_agent.yaml` | Default, concise software-focused role: inspect code and project guidance, make focused changes, verify results, and report evidence. Ask when missing information affects correctness or authorization. |
+| `prompts/general_agent.yaml` | General-purpose role for tasks beyond coding. Covers communication, task analysis, environment checks, comparing approaches, acceptance criteria, verification, and resource cleanup. Explicitly asks for detailed clarification when requirements are unclear or multiple viable approaches exist. Allows a relaxed, lively, humorous tone and feminine expression while requiring clear language, privacy, and confirmation before destructive actions. |
+| `prompts/operations/compact.yaml` | An operation prompt, not a role. Loaded through `worker.compact_prompt_file` and sent as an internal user message for `compact`. Requests a structured handoff summary without tool calls, retaining useful prior memory and the user's explicit habits, preferences, and rules, including later corrections. |
+
+Both roles help the user complete tasks and follow the user's language; their
+instructions guide model behavior and do not change tool permissions or the
+worker's security policy.
+
+### Custom prompt files
+
+Place a custom YAML file under the installed worker's `bin/prompts/` directory
+and set `worker.system_prompt_file`, for example `prompts/my_agent.yaml`. Prompt
+paths must be nonempty relative paths without `..` components; absolute and
+rooted paths are rejected. These checks do not isolate the filesystem or prevent
+symlinks from pointing elsewhere.
+
+A minimal custom role file is:
+
+```yaml
+heading_level: 2
+sections:
+  - name: persona
+    title: Role
+    stability: immutable
+    text: |
+      You are a helpful general-purpose agent. Help the user complete their tasks.
+      Respond clearly in the user's language.
+```
+
+Sections render in list order. Each requires a unique, nonempty `name` and a
+string `text`; `title` is optional and an empty title omits its heading.
+`heading_level` defaults to `2` and accepts integers from `1` to `6`. Section
+`stability` defaults to `immutable`; if mixed, sections must appear in the order
+`immutable`, `growing`, then `volatile`. Names beginning with `skill.` and the
+names `environment.runtime`, `signature.runtime`, and `memory.runtime` are
+reserved for the worker. Prompt text is not expanded from environment variables.
+
+The worker injects active tool skills, configured environment hints, a runtime
+signature, and any restored compaction memory separately. Keep custom role YAML
+focused on base instructions.
+
+### Startup and restored sessions
+
+The selected files are read and validated at every startup. Missing or invalid
+files prevent startup, including when restoring state; there is no embedded
+fallback or hot reload. To select them in the Hub, edit the worker configuration
+in the configuration library. For an existing session, stop the worker, apply
+the saved configuration, then restart.
+
+A new session uses the selected role prompt. A restored session retains the base
+prompt saved in its `AgentInputState`; changing the file or selector does not
+replace that prompt. Current tool skills, environment hints, and the signature
+are refreshed, while compaction memory is preserved. Create a new session to use
+a different role without modifying saved state. The compact operation prompt is
+loaded from the current startup configuration independently of the saved role.
 
 ## Credentials and optional components
 
