@@ -1,9 +1,18 @@
 # Role-based worker prompts
 
 Each YAML filename identifies a role. `coding_agent.yaml` provides the concise,
-general-purpose coding agent and is the default for new worker sessions. CMake copies
-it to `bin/prompts/coding_agent.yaml` and installs it in the same location
-relative to the installation prefix. No prompt text is embedded in the worker.
+general-purpose coding agent and is the default for new worker sessions.
+`general_agent.yaml` provides a general-purpose role with guidance on communication,
+task planning, requirement clarification, privacy and safety. CMake copies both
+roles to `bin/prompts/` and installs them in the same location relative to the
+installation prefix. No prompt text is embedded in the worker.
+
+Select the general-purpose role in the startup YAML:
+
+```yaml
+worker:
+  system_prompt_file: prompts/general_agent.yaml
+```
 
 Select a custom file through `worker.system_prompt_file` in the startup YAML.
 Relative paths are resolved against the executable's own directory, the
@@ -36,8 +45,9 @@ It is host-owned and cannot be declared in a role YAML file.
 internal **user** message for the `compact` payload. It is installed beside the
 worker at `prompts/operations/compact.yaml`; `worker.compact_prompt_file` can
 select another YAML file by the same relative rule. Empty prompts
-are rejected. It requests a concise handoff summary, merging previous memory
-with recent conversation, without executing tools.
+are rejected. It requests a concise handoff summary, carrying forward useful
+existing memory and the user's explicitly stated habits, preferences and rules,
+while incorporating later corrections and recent conversation without executing tools.
 
 After successful compaction, `memory.runtime` is the final Volatile system-prompt
 section. Its latest summary replaces the previous summary. It also identifies

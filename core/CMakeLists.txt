@@ -5,12 +5,14 @@ configure_file(
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/operations/compact.yaml"
     DESTINATION bin/prompts/operations)
 
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/coding_agent.yaml"
-    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/coding_agent.yaml"
-    COPYONLY)
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/coding_agent.yaml"
-    DESTINATION bin/prompts)
+foreach(role_prompt IN ITEMS coding_agent general_agent)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/prompts/${role_prompt}.yaml"
+        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/${role_prompt}.yaml"
+        COPYONLY)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/${role_prompt}.yaml"
+        DESTINATION bin/prompts)
+endforeach()
 
 add_library(core_protocol SHARED src/protocol.cpp)
 target_include_directories(core_protocol PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

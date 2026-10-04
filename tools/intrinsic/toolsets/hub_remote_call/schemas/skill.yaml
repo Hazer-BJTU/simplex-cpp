@@ -3,8 +3,9 @@ title: Session plan
 description: Maintain a Markdown plan visible to the user.
 keywords: [plan, progress]
 text: |
-  Use `plan` for multi-step work: write a short checklist at the start and update
-  it at meaningful milestones. `operation: read` retrieves the current plan;
+  Use `plan` for multi-step work: write a short checklist at the start. Update it
+  at every key milestone to reflect completed work and next steps.
+  `operation: read` retrieves the current plan;
   `operation: replace` requires the complete `markdown` replacement (64 KiB max).
   Read first when unsure of its current contents. Empty markdown clears it and
   hides the plan tab. Plans survive new runs, cancellation, compaction and restarts.
