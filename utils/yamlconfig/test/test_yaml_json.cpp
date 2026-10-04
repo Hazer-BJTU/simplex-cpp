@@ -292,6 +292,45 @@ BOOST_AUTO_TEST_CASE(load_file_round_trips_parse) {
     BOOST_CHECK_EQUAL(yamlconfig::load_file(file.p), yamlconfig::parse(text));
 }
 
+BOOST_AUTO_TEST_CASE(file_conversion_errors_preserve_origin_field_and_mark)
+{
+    for (const std::string scalar : {".nan", ".inf"}) {
+        const scoped_yaml_file file{
+            "config:\n  max_file_bytes: " + scalar + "\n"
+            "  private_note: distinctive-secret\n"
+        };
+        const auto origin = "in " + std::filesystem::weakly_canonical(file.p).string() + ": ";
+        BOOST_CHECK_EXCEPTION((void)yamlconfig::load_file(file.p),
+            yamlconfig::YamlConfigError, [&](const auto& error) {
+                const std::string message = error.what();
+                return message.starts_with(origin)
+                    && message.find(origin, origin.size()) == std::string::npos
+                    && message.find("/config/max_file_bytes") != std::string::npos
+                    && message.find("(line 1, column 18)") != std::string::npos
+                    && message.find("non-finite number") != std::string::npos
+                    && message.find("distinctive-secret") == std::string::npos;
+            });
+    }
+}
+
+BOOST_AUTO_TEST_CASE(file_syntax_and_document_errors_have_one_origin_prefix)
+{
+    for (const std::string contents : {"a: [unclosed\n", "a: 1\n---\nb: 2\n"}) {
+        const scoped_yaml_file file{contents};
+        const auto origin = "in " + std::filesystem::weakly_canonical(file.p).string();
+        BOOST_CHECK_EXCEPTION((void)yamlconfig::load_file(file.p),
+            yamlconfig::YamlConfigError, [&](const auto& error) {
+                const std::string message = error.what();
+                return message.starts_with(origin)
+                    && message.find(origin, origin.size()) == std::string::npos
+                    && (contents.starts_with("a: [")
+                        ? message.find("line") != std::string::npos
+                            && message.find("column") != std::string::npos
+                        : message.find("multiple YAML documents") != std::string::npos);
+            });
+    }
+}
+
 // ---------------------------------------------------------------------------
 // A realistic config, end to end
 // ---------------------------------------------------------------------------

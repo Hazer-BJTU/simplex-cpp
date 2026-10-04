@@ -35,9 +35,11 @@
  *                               (unquoted) type. Duplicate keys: last wins
  *                               (yaml-cpp behaviour, documented here).
  *
- * Errors are one type — YamlConfigError — carrying the in-document path and,
- * when yaml-cpp supplies one, the source mark: e.g.
- *   `at /server/ports/1 (line 3, column 5): non-finite number`
+ * Errors are one type — YamlConfigError — carrying the document origin,
+ * in-document path and, when yaml-cpp supplies one, the source mark: e.g.
+ *   `in /etc/config.yaml: at /server/ports/1 (line 3, column 5): non-finite number`
+ * File loads identify the file; string parses identify YAML text. Marks are
+ * zero-based. Syntax errors need not have a field path; conversion errors do.
  * Parse-level failures (YAML::ParserException, BadFile) are wrapped with the
  * same treatment so callers need a single catch.
  *
@@ -78,8 +80,8 @@ namespace yamlconfig {
 
 /// Everything this header rejects, as one type: unsupported YAML richness,
 /// non-finite numbers, multi-document input, parse failures, unreadable
-/// files, cyclic aliases. The message carries the in-document path (and the
-/// source mark when yaml-cpp supplies one).
+/// files, cyclic aliases. The message identifies the origin, with an
+/// in-document path for conversion errors and a source mark when available.
 class YamlConfigError : public std::runtime_error {
 public:
     explicit YamlConfigError(const std::string& what_arg)
@@ -105,7 +107,8 @@ nlohmann::json parse(std::string_view yaml_text);
  *
  * @param file Path to the config document (one document; empty -> null).
  * @throws YamlConfigError if the file cannot be read (wrapped BadFile), or
- *         for any reason parse() would reject.
+ *         for any reason parse() would reject. Diagnostics identify the file
+ *         once and preserve conversion field paths and available source marks.
  */
 nlohmann::json load_file(const std::filesystem::path& file);
 

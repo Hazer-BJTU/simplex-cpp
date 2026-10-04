@@ -503,3 +503,38 @@ BOOST_FIXTURE_TEST_CASE(valid_configuration_boundaries_cover_line_byte_and_expan
         }
     }
 }
+
+BOOST_FIXTURE_TEST_CASE(nonfinite_yaml_configuration_keeps_file_field_and_mark_diagnostics, Fixture)
+{
+    const auto directory = root / "nonfinite-schemas";
+    std::filesystem::create_directories(directory);
+    const auto file = directory / "read_text.yaml";
+    for (const std::string scalar : {".nan", ".inf"}) {
+        {
+            // Raw YAML is essential: JSON cannot represent these scalar values.
+            std::ofstream out(file);
+            out << "name: read_text\ndescription: Read a regular file.\n"
+                   "argument_schema: {type: object}\nconfig:\n"
+                   "  max_file_bytes: " << scalar << "\n"
+                   "  private_note: distinctive-secret\n";
+            BOOST_REQUIRE(out.good());
+        }
+        SchemaOverride override(directory);
+        ErrorCapture errors;
+        tools::intrinsic::ReadTextTool tool;
+        BOOST_TEST(tool.get_details().name.empty());
+        BOOST_TEST(!tool.build());
+        auto set = std::make_shared<tools::intrinsic::ReadingToolSet>();
+        BOOST_TEST(set->get_tools().empty());
+        model_io::InvokeQuery query;
+        query.name = "read_text";
+        BOOST_TEST(set->dispatch(query) == nullptr);
+        const auto diagnostic = errors.text.str();
+        BOOST_TEST(diagnostic.find(file.string()) != std::string::npos);
+        BOOST_TEST(diagnostic.find("/config/max_file_bytes") != std::string::npos);
+        BOOST_TEST(diagnostic.find("(line 4, column 18)") != std::string::npos);
+        BOOST_TEST(diagnostic.find("non-finite number") != std::string::npos);
+        BOOST_TEST(diagnostic.find("distinctive-secret") == std::string::npos);
+        BOOST_TEST(diagnostic.find("private_note") == std::string::npos);
+    }
+}

@@ -205,8 +205,10 @@ nlohmann::json single_document(std::vector<YAML::Node> documents,
     }
     try {
         return convert(documents.front(), "", 0);
-    } catch (const YamlConfigError&) {
-        throw;            // already carries path + mark
+    } catch (const YamlConfigError& error) {
+        // Conversion failures carry a field path and mark, but no origin.
+        // Add it here exactly once; the public entry points forward our error.
+        throw YamlConfigError(origin + ": " + error.what());
     } catch (const YAML::Exception& e) {
         throw YamlConfigError(origin + mark_suffix(e.mark) + ": " + e.what());
     }
@@ -239,15 +241,14 @@ nlohmann::json parse(std::string_view yaml_text) {
 
 nlohmann::json load_file(const std::filesystem::path& file) {
     const std::string origin = "in " + detail::describe(file);
-    std::vector<YAML::Node> documents;
     try {
-        documents = YAML::LoadAllFromFile(file.string());
+        return detail::single_document(YAML::LoadAllFromFile(file.string()), origin);
+    } catch (const YamlConfigError&) {
+        throw;  // The document boundary already supplied the origin.
     } catch (const YAML::BadFile& e) {
         throw YamlConfigError(origin + ": cannot open file (" + e.what() + ")");
-    }
-    try {
-        return detail::single_document(std::move(documents), origin);
-    } catch (const YAML::ParserException& e) {
+    } catch (const YAML::Exception& e) {
+        // Parsing happens during LoadAllFromFile, before document conversion.
         throw YamlConfigError(origin + detail::mark_suffix(e.mark) + ": " + e.what());
     }
 }
