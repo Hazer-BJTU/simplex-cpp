@@ -2,6 +2,7 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { resolveRange, collectChangedPaths } from './changes.mjs';
 import { classifyPaths, decisionsForCategory, validateDecisions } from './selection.mjs';
+import { verifyVersionOnlyChange } from './version-only.mjs';
 
 let selection;
 let explanation;
@@ -10,8 +11,13 @@ try {
     const range = resolveRange(process.cwd(), process.env.GITHUB_EVENT_NAME,
         event, process.env.GITHUB_SHA);
     const paths = collectChangedPaths(process.cwd(), range);
-    selection = classifyPaths(paths);
+    const transition = verifyVersionOnlyChange(process.cwd(), range, paths);
+    selection = transition
+        ? decisionsForCategory('version-only', transition) : classifyPaths(paths);
     explanation = `${paths.length} changed path(s), ${range.base} → ${range.head}`;
+    if (transition) {
+        explanation += `; content-verified version-only bypass: ${transition.from} → ${transition.to}`;
+    }
     for (const path of paths) {
         console.log(JSON.stringify(path));
     }
@@ -35,5 +41,5 @@ appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     `## CI selection\n\n${explanation.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}\n\n`
     + `Category: **${selection.category}**\n\n`
     + '| Decision | Selected |\n| --- | --- |\n'
-    + Object.entries(selection).filter(([key]) => key !== 'category')
+    + Object.entries(selection).filter(([, value]) => typeof value === 'boolean')
         .map(([key, value]) => `| ${key} | ${value} |\n`).join(''));

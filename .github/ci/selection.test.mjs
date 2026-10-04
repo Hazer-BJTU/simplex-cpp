@@ -90,7 +90,7 @@ test('invalid paths and inconsistent selections cannot be accepted', () => {
 });
 
 function needsFor(category) {
-    const selection = decisionsForCategory(category);
+    const selection = decisionsForCategory(category, { from: '0.1.3', to: '0.1.4' });
     return {
         changes: { result: 'success', outputs: Object.fromEntries(
             Object.entries(selection).map(([key, value]) => [key, String(value)])) },
@@ -103,7 +103,7 @@ function needsFor(category) {
     };
 }
 
-for (const category of ['native', 'integration', 'independent']) {
+for (const category of ['native', 'integration', 'independent', 'version-only']) {
     test(`gate accepts only the planned ${category} outcomes`, () => {
         checkResults(needsFor(category));
         for (const job of Object.keys(needsFor(category))) {
@@ -132,4 +132,32 @@ test('gate rejects missing jobs, malformed outputs and impossible producer/consu
     invalid.changes.outputs.portable_build = 'false';
     assert.throws(() => checkResults(invalid));
     assert.throws(() => checkResults(null));
+});
+
+test('version-only decisions require transition metadata and preserve conservative path rules', () => {
+    assert.equal(classifyPaths(['VERSION', 'hub/package.json', 'hub/package-lock.json']).category,
+        'native');
+    assert.throws(() => decisionsForCategory('version-only'));
+    for (const [from, to] of [['0.1.3', '0.1.3'], ['01.1.3', '0.1.4'],
+        ['0.1.3', 'v0.1.4'], ['0.1.3', '0.1.4\n'], [undefined, '0.1.4']]) {
+        assert.throws(() => decisionsForCategory('version-only', { from, to }));
+    }
+    for (const key of ['version_from', 'version_to', 'category', 'cpp_validation',
+        'portable_build', 'staged_validation', 'worker_integration']) {
+        const needs = needsFor('version-only');
+        delete needs.changes.outputs[key];
+        assert.throws(() => checkResults(needs), `missing ${key}`);
+    }
+    for (const key of ['cpp_validation', 'portable_build', 'staged_validation', 'worker_integration']) {
+        const needs = needsFor('version-only');
+        needs.changes.outputs[key] = 'true';
+        assert.throws(() => checkResults(needs), `inconsistent ${key}`);
+    }
+    const stale = needsFor('independent');
+    stale.changes.outputs.version_from = '0.1.3';
+    stale.changes.outputs.version_to = '0.1.4';
+    assert.throws(() => checkResults(stale));
+    const invalid = needsFor('version-only');
+    invalid.changes.outputs.version_to = '0.1.3';
+    assert.throws(() => checkResults(invalid));
 });

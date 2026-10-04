@@ -7,7 +7,11 @@ export function checkResults(needs) {
         throw new Error('change classification did not succeed');
     }
     const outputs = needs.changes.outputs;
-    const decisions = { category: outputs?.category };
+    const decisions = {
+        category: outputs?.category,
+        version_from: outputs?.version_from,
+        version_to: outputs?.version_to,
+    };
     for (const key of ['cpp_validation', 'portable_build', 'staged_validation', 'worker_integration']) {
         if (!['true', 'false'].includes(outputs?.[key])) {
             throw new Error(`missing or invalid classifier output: ${key}`);
