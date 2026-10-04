@@ -141,6 +141,12 @@ export interface HistoryTurn {
     omitted_user_parts?: number;
 }
 
+/**
+ * Built-in worker data is at most 252 KiB of compact UTF-8 JSON, including
+ * escaping and metadata. Worker events fit 256 KiB; the Hub's parsed/raw copies
+ * and panel wrapper fit 512 KiB. Whole turns/steps preserve the existing cursor;
+ * continued turns repeat user parts and append steps without new user entries.
+ */
 export interface HistoryPage {
     request_id: string;
     revision: number;

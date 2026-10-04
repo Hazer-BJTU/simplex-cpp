@@ -10,7 +10,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, renameSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +19,9 @@ import { hubRoot } from '../../src/config.ts';
 import { persistenceRoot, sessionDir } from '../../src/launch/config-render.ts';
 import { WORKER_BIN, e2eSkip, startE2eHub } from '../helpers/e2e.js';
 import { connectWorker, until } from '../helpers/worker.js';
+import { boundedHistoryPages, HISTORY_PAGE_MAX_BYTES,
+    HISTORY_EVENT_MAX_BYTES, HISTORY_PANEL_MAX_BYTES } from '../helpers/history.ts';
+import { parseHistoryPage } from '../../web/src/state/history.ts';
 
 const skip = e2eSkip;
 
@@ -141,6 +144,87 @@ describe('end to end with the real worker', { skip }, () => {
             assert.deepEqual(snapshot.turns.map((turn) => turn.user_input.content[0].raw), ['active', 'queued']);
             assert.equal(panel.messages.some((message) => message.type === 'event'
                 && message.envelope.event === 'input_admitted' && message.envelope.request_id === 'discarded'), false);
+        } finally {
+            await panel.close();
+            await ctx.hub.stop();
+        }
+    });
+
+    it('restores escaped history and pages complete bounded frames without model requests', async () => {
+        const ctx = await startE2eHub();
+        const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
+        try {
+            const id = 'e2e-bounded-history';
+            const created = await api(ctx.base, '/api/sessions', {
+                method: 'POST', body: { session: id, spec: { provider: 'mock', model: 'mock-text' } },
+            });
+            assert.equal(created.status, 201);
+            // Seed only this test's snapshot before starting its worker. Merge
+            // display fragments into ordinary AgentInputState turns first.
+            const turns = [];
+            for (const page of boundedHistoryPages()) {
+                for (const turn of page.turns) {
+                    turns[turn.index] ??= { user_input: { type: 'user_input', role: 'user',
+                        content: turn.user }, agent_loop_step: [] };
+                    for (const step of turn.steps) {
+                        turns[turn.index].agent_loop_step.push({ model_response: {
+                            type: 'model_response', role: 'assistant',
+                            content: step.content, reasoning: step.reasoning,
+                        } });
+                    }
+                }
+            }
+            const stateDirectory = join(sessionDir(ctx.config, id), 'state');
+            mkdirSync(stateDirectory, { recursive: true });
+            writeFileSync(join(stateDirectory, 'state.json'), JSON.stringify({
+                meta: { schema_version: 1, session_id: id, status: 'active',
+                    created_at: '2026-10-04T00:00:00Z', updated_at: '2026-10-04T00:00:00Z' },
+                system_prompt: { heading_level: 2, sections: [] }, tools: [], turns,
+            }));
+            const started = await api(ctx.base, `/api/sessions/${id}/start`, { method: 'POST' });
+            assert.equal(started.body.ok, true, started.body.error);
+            const session = ctx.hub.registry.get(id);
+            await until(() => session.connected && session.workerCapabilities?.names.includes('session-history'),
+                { timeout: 20000, label: 'history capability' });
+            panel.send({ v: 1, type: 'subscribe', session: id });
+            await panel.waitFor((message) => message.type === 'subscribed'
+                && message.session.session_id === id);
+            const seenSteps = [];
+            const seenUsers = new Map();
+            let start = 0;
+            let step = 0;
+            let revision = null;
+            let pages = 0;
+            do {
+                assert.ok(pages < 10, 'history cursor stalled');
+                const requestId = String(pages) + '\u0004'.repeat(127);
+                panel.send({ v: 1, type: 'history', session: id,
+                    request_id: requestId, start, step, limit: 10 });
+                const reply = await panel.waitFor((message) => message.type === 'event'
+                    && message.envelope.event === 'history'
+                    && message.envelope.data.request_id === requestId, { timeout: 10000 });
+                assert.ok(Buffer.byteLength(JSON.stringify(reply), 'utf8') <= HISTORY_PANEL_MAX_BYTES);
+                assert.ok(Buffer.byteLength(JSON.stringify(reply.envelope.raw), 'utf8') <= HISTORY_EVENT_MAX_BYTES);
+                const page = parseHistoryPage(reply.envelope.data);
+                assert.ok(page, 'real worker page violates panel cursor validation');
+                assert.ok(Buffer.byteLength(JSON.stringify(page), 'utf8') <= HISTORY_PAGE_MAX_BYTES);
+                revision ??= page.revision;
+                assert.equal(page.revision, revision);
+                for (const turn of page.turns) {
+                    seenUsers.set(turn.index, turn.user);
+                    for (const response of turn.steps) seenSteps.push([turn.index, response.index]);
+                }
+                assert.ok(page.next > start || page.next === start && page.next_step > step);
+                start = page.next;
+                step = page.next_step;
+                pages += 1;
+            } while (start < turns.length || step > 0);
+            assert.equal(pages, 4);
+            assert.deepEqual([...seenUsers.keys()], [0, 1, 2, 3]);
+            for (const [index, content] of seenUsers) assert.deepEqual(content, turns[index].user_input.content);
+            assert.deepEqual(seenSteps, [[2, 0], [2, 1]]);
+            assert.equal(ctx.hub.mock.requests.length, 0);
+            assert.equal(panel.closed, null);
         } finally {
             await panel.close();
             await ctx.hub.stop();

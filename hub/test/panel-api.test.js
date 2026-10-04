@@ -10,6 +10,8 @@ import { persistenceRoot } from '../src/launch/config-render.ts';
 import { IDENTITY } from '../src/state/registry.ts';
 import { connectWorker, upgradeStatus, until, workerEvent } from './helpers/worker.js';
 import { startTestHub } from './helpers/hub.js';
+import { boundedHistoryPages, HISTORY_EVENT_MAX_BYTES,
+    HISTORY_PANEL_MAX_BYTES } from './helpers/history.ts';
 
 const FIXTURE = join(import.meta.dirname, 'fixtures', 'fake-worker.js');
 
@@ -110,6 +112,36 @@ describe('panel API', () => {
         const replay = await laterPanel.waitFor((message) => message.type === 'subscribed'
             && message.session.session_id === session.id);
         assert.equal(replay.transcript.some((entry) => entry.event === 'history'), false);
+    });
+
+    it('forwards complete bounded history frames and preserves continuation cursors', async () => {
+        const session = ctx.hub.registry.create('bounded-history');
+        const worker = await identify(session, 'bounded-worker', ['session-history']);
+        const socket = await panel();
+        socket.send({ v: 1, type: 'subscribe', session: session.id });
+        await socket.waitFor((message) => message.type === 'subscribed'
+            && message.session.session_id === session.id);
+        for (const [index, data] of boundedHistoryPages().entries()) {
+            socket.send({ v: 1, type: 'history', session: session.id,
+                request_id: data.request_id, start: data.start, step: data.step, limit: 10 });
+            const query = await worker.waitFor((message) => message.type === 'payload'
+                && message.data.request_id === data.request_id);
+            assert.equal(query.data.start, data.start);
+            assert.equal(query.data.step ?? 0, data.step);
+            const event = workerEvent({ session: session.id, worker: 'bounded-worker',
+                sequence: index + 2, event: 'history', data });
+            assert.ok(Buffer.byteLength(JSON.stringify(event), 'utf8') <= HISTORY_EVENT_MAX_BYTES);
+            worker.send(event);
+            const reply = await socket.waitFor((message) => message.type === 'event'
+                && message.envelope.event === 'history'
+                && message.envelope.data.request_id === data.request_id);
+            assert.ok(Buffer.byteLength(JSON.stringify(reply), 'utf8') <= HISTORY_PANEL_MAX_BYTES);
+            assert.deepEqual(reply.envelope.data, data);
+            assert.deepEqual(reply.envelope.raw.data, data, 'the raw diagnostic copy changed');
+            assert.equal(socket.closed, null);
+        }
+        assert.equal(ctx.hub.transcripts.get(session.id).toArray()
+            .some((entry) => entry.event === 'history'), false);
     });
 
     it('gates compact on current worker capabilities and tracks its durable result', async () => {

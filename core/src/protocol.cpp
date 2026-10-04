@@ -191,54 +191,90 @@ nlohmann::json display_parts(const std::vector<model_io::Content>& parts) {
         result.push_back(display_content(parts[index]));
     return result;
 }
+
+/** Project one indivisible display step; tool payloads never enter the page. */
+nlohmann::json display_step(const model_io::MessageItem& response,
+                            std::size_t index) {
+    nlohmann::json step = {{"index", index},
+        {"content", display_parts(response.content)},
+        {"tool_calls", response.invokes ? response.invokes->size() : 0},
+        {"omitted_parts", response.content.size()
+            - std::min<std::size_t>(response.content.size(), 4)}};
+    if (response.reasoning) step["reasoning"] = display_content(*response.reasoning);
+    return step;
+}
 } // namespace
 
 nlohmann::json history_page(const model_io::AgentInputState& state,
-                            const HistoryRequest& request) {
+                            const HistoryRequest& request,
+                            std::uint64_t revision) {
     if (request.start >= state.turns.size() && request.step != 0)
         throw std::invalid_argument("history step is outside the available turns");
-    auto turns = nlohmann::json::array();
     const auto start = std::min(request.start, state.turns.size());
     const auto end = start + std::min(request.limit, state.turns.size() - start);
+    // Reserve the widest possible returned cursors. Final cursor values and
+    // omission counts can only make this conservative serialized total smaller.
+    // Measure each projected object once, rather than repeatedly serializing
+    // the growing page (which would be quadratic for many small steps).
+    nlohmann::json page = {{"request_id", request.request_id}, {"revision", revision},
+        {"start", start}, {"step", request.step}, {"next", state.turns.size()},
+        {"next_step", std::numeric_limits<std::size_t>::max()},
+        {"total", state.turns.size()}, {"turns", nlohmann::json::array()}};
+    auto& turns = page["turns"];
+    auto page_bytes = page.dump().size();
+    if (page_bytes > history_page_max_bytes)
+        throw std::length_error("history page metadata exceeds the display budget");
     auto next = start;
     std::size_t next_step = 0;
-    std::size_t page_bytes = 0;
     for (auto index = start; index < end; ++index) {
         const auto& turn = state.turns[index];
         const auto first_step = index == start ? request.step : 0;
         if (first_step > turn.agent_loop_step.size())
             throw std::invalid_argument("history step is outside the selected turn");
-        nlohmann::json steps = nlohmann::json::array();
-        std::size_t step_index = first_step;
-        for (; step_index < turn.agent_loop_step.size(); ++step_index) {
-            const auto& response = turn.agent_loop_step[step_index].model_response;
-            nlohmann::json step = {{"index", step_index},
-                {"content", display_parts(response.content)},
-                {"tool_calls", response.invokes ? response.invokes->size() : 0},
-                {"omitted_parts", response.content.size()
-                    - std::min<std::size_t>(response.content.size(), 4)}};
-            if (response.reasoning) step["reasoning"] = display_content(*response.reasoning);
-            const auto bytes = step.dump().size();
-            if (page_bytes + bytes > 256 * 1024 && !steps.empty()) break;
-            page_bytes += bytes;
-            steps.push_back(std::move(step));
-        }
-        turns.push_back({{"index", index}, {"user", display_parts(turn.user_input.content)},
-            {"steps", std::move(steps)},
+        nlohmann::json projected = {{"index", index},
+            {"user", display_parts(turn.user_input.content)},
+            {"steps", nlohmann::json::array()},
             {"omitted_user_parts", turn.user_input.content.size()
                 - std::min<std::size_t>(turn.user_input.content.size(), 4)},
-            {"omitted_steps", turn.agent_loop_step.size() - step_index}});
+            {"omitted_steps", turn.agent_loop_step.size() - first_step}};
+        auto& steps = projected["steps"];
+        auto turn_bytes = projected.dump().size();
+        const auto separator_bytes = turns.empty() ? 0u : 1u;
+        if (page_bytes + separator_bytes + turn_bytes > history_page_max_bytes) {
+            if (turns.empty())
+                throw std::length_error("history turn exceeds the display budget");
+            break;
+        }
+        std::size_t step_index = first_step;
+        for (; step_index < turn.agent_loop_step.size(); ++step_index) {
+            auto step = display_step(
+                turn.agent_loop_step[step_index].model_response, step_index);
+            const auto bytes = step.dump().size() + (steps.empty() ? 0u : 1u);
+            if (page_bytes + separator_bytes + turn_bytes + bytes
+                    > history_page_max_bytes) break;
+            turn_bytes += bytes;
+            steps.push_back(std::move(step));
+        }
+        if (step_index == first_step && step_index < turn.agent_loop_step.size()) {
+            // Do not publish a new turn without its first remaining step: the
+            // current cursor cannot express that boundary without stalling.
+            if (turns.empty())
+                throw std::length_error("history step exceeds the display budget");
+            break;
+        }
+        projected["omitted_steps"] = turn.agent_loop_step.size() - step_index;
+        page_bytes += separator_bytes + turn_bytes;
+        turns.push_back(std::move(projected));
         if (step_index < turn.agent_loop_step.size()) {
             next = index;
             next_step = step_index;
             break;
         }
         next = index + 1;
-        if (page_bytes >= 256 * 1024) break;
     }
-    return {{"request_id", request.request_id}, {"start", start},
-        {"step", request.step}, {"next", next}, {"next_step", next_step},
-        {"total", state.turns.size()}, {"turns", std::move(turns)}};
+    page["next"] = next;
+    page["next_step"] = next_step;
+    return page;
 }
 std::string new_identity() {
     return boost::uuids::to_string(boost::uuids::random_generator()());
