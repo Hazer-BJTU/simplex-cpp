@@ -463,8 +463,29 @@ The `history` event contains `request_id`, `revision`, `start`, `step`, `next`,
 `revision` increases when the displayed state changes within one
 worker instance; it is not persisted and must be scoped by `worker_id`.
 Each turn contains its index, up to four ordered user content parts, and the
-model steps on this page. A page uses a 256 KiB step budget; a long turn may
-therefore span multiple pages, with no fixed step-count cutoff.
+model steps on this page. The complete compact UTF-8 JSON data object, including
+user content, response content, reasoning, paging metadata, `revision`, separators
+and JSON escaping, is limited to **252 KiB (258048 bytes)**. The worker reserves
+another **4 KiB** for its event envelope, giving a **256 KiB (262144 bytes)**
+complete history-event limit. These limits exclude WebSocket frame headers and
+apply to the default unindented JSON encoding, not pretty-printed diagnostics.
+The worker checks its final serialized event before queueing it.
+
+Turns and model steps are admitted whole; a long turn may span multiple pages,
+with no fixed step-count cutoff. A nonterminal page always advances the
+`next`/`next_step` cursor. The user projection is repeated on continuation pages
+of the same turn; merge that turn's steps by their indices rather than adding
+another user entry. A turn with no model steps still consumes the byte budget
+and advances `next`. Requesting `step` equal to the turn's step count returns
+that turn's user projection and advances to the next turn.
+
+The current four-part and per-part limits ensure that one user projection plus
+its first remaining model step fits an empty page, even when every raw byte
+requires a six-byte JSON escape. Pagination adds no further text truncation.
+If a future projection cannot fit such an indivisible entry, the query emits
+`history_error` rather than exceeding the limit, silently omitting content, or
+returning a cursor that cannot advance. Invalid UTF-8 or other projection errors
+also remain query failures; they do not start an agent run.
 Each step contains its index, ordered response content, optional reasoning,
 and a tool-call count. `omitted_steps` counts model steps still to be fetched;
 `omitted_user_parts` counts input parts beyond the display limit. Each content
@@ -476,6 +497,16 @@ modality to 2048 bytes; `truncated: true` marks clipped values. Binary
 contents carry an empty `raw`, `omitted: true`, and their encoded byte length.
 Each projected part carries `type` and `modality`.
 This is display data, not a restorable snapshot.
+
+The built-in Hub preserves both the parsed event and its original `raw` document.
+Its complete panel `event` message therefore fits within **512 KiB (524288
+bytes)** for these worker history pages, including the duplicated data,
+bounded built-in identifiers, Hub metadata and panel wrapper. This is a derived
+upper bound, not a separate Hub admission setting. Arbitrary older/custom worker events remain
+subject to the Hub's general transport and output limits; this worker projection
+does not impose a new limit on their protocol. Existing `session-history`
+capability and cursor fields are unchanged, so compatible clients need no new
+capability negotiation.
 
 Pages reflect state at the time each query runs. Hooks may prune or edit turns
 between pages. If two pages have different `revision` values, discard the

@@ -3,6 +3,8 @@
 
 #include "core/protocol.hpp"
 #include "llm/compat/chat_completions/interpreter.hpp"
+#include <limits>
+#include <set>
 
 using Json = nlohmann::json;
 
@@ -22,6 +24,35 @@ Json text_part() {
     // media category. Text is stated, never implied.
     return {{"type", "text"}, {"raw", "Describe these attachments."},
             {"modality", "text"}};
+}
+
+/** Exercise escaping and maximum-width metadata in both event wrappers. */
+void check_history_size(const Json& page) {
+    BOOST_TEST(page.dump().size() <= core::history_page_max_bytes);
+    Json event = {{"type", "event"}, {"event", "history"},
+        {"session_id", std::string(128, 's')},
+        {"worker_id", "12345678-1234-1234-1234-123456789abc"},
+        {"request_id", std::string(128, '\x01')},
+        {"run_id", "12345678-1234-1234-1234-123456789abc"},
+        {"sequence", std::numeric_limits<std::uint64_t>::max()}, {"data", page}};
+    BOOST_TEST(event.dump().size() <= core::history_event_max_bytes);
+    const auto raw_event = event;
+    event["raw"] = raw_event;
+    event["known"] = true;
+    event["bytes"] = page.dump().size() + core::history_envelope_max_bytes;
+    event["issues"] = Json::array();
+    event["connection"] = {{"opened_at", "2026-10-04T00:00:00.000Z"},
+        {"protocol_errors", 0}};
+    event["hub_sequence"] = std::numeric_limits<std::uint64_t>::max();
+    event["received_at"] = "2026-10-04T00:00:00.000Z";
+    Json forwarded = {{"v", 1}, {"type", "event"},
+        {"session", std::string(128, 's')},
+        {"hub_seq", std::numeric_limits<std::uint64_t>::max()}, {"envelope", event}};
+    BOOST_TEST(forwarded.dump().size() <= 2 * core::history_event_max_bytes);
+}
+
+model_io::Content display_text(std::string raw) {
+    return {model_io::ContentType::Text, std::move(raw), {}, model_io::Modality::Text};
 }
 
 } // namespace
@@ -251,4 +282,140 @@ BOOST_AUTO_TEST_CASE(history_query_pages_within_a_long_turn) {
     BOOST_TEST(second.at("next_step") == 0);
     BOOST_TEST(first.at("turns")[0]["steps"].size()
         + second.at("turns")[0]["steps"].size() == 90);
+    check_history_size(first);
+    check_history_size(second);
+}
+
+BOOST_AUTO_TEST_CASE(history_query_bounds_escaped_user_only_turns_and_metadata) {
+    model_io::AgentInputState state;
+    const std::string raw(4096, '\x01');
+    for (int index = 0; index < 10; ++index) {
+        model_io::UserLoopStep turn;
+        turn.user_input.content.assign(5, display_text(raw));
+        state.turns.push_back(std::move(turn));
+    }
+    const Json original = state;
+    auto request = core::parse_history_request({{"operation", "history"},
+        {"request_id", std::string(128, '\x02')}, {"limit", 10}});
+    std::size_t seen = 0;
+    std::size_t pages = 0;
+    do {
+        const auto page = core::history_page(
+            state, request, std::numeric_limits<std::uint64_t>::max());
+        check_history_size(page);
+        BOOST_TEST(page.at("revision") == std::numeric_limits<std::uint64_t>::max());
+        BOOST_REQUIRE(!page.at("turns").empty());
+        for (const auto& turn : page.at("turns")) {
+            BOOST_TEST(turn.at("index") == seen++);
+            BOOST_TEST(turn.at("omitted_user_parts") == 1);
+            BOOST_TEST(turn.at("omitted_steps") == 0);
+            BOOST_TEST(turn.at("steps").empty());
+            BOOST_TEST(turn.at("user").size() == 4u);
+            for (const auto& part : turn.at("user")) {
+                BOOST_TEST(part.at("raw") == raw);
+                BOOST_TEST(!part.contains("truncated"));
+            }
+        }
+        const auto next = page.at("next").get<std::size_t>();
+        BOOST_REQUIRE(next > request.start);
+        BOOST_TEST(page.at("next_step") == 0);
+        request.start = next;
+        ++pages;
+    } while (request.start < state.turns.size());
+    BOOST_TEST(seen == state.turns.size());
+    BOOST_TEST(pages > 1u);
+    BOOST_TEST(Json(state) == original);
+    check_history_size(core::history_page(state, request));
+}
+
+BOOST_AUTO_TEST_CASE(history_query_preserves_every_step_across_mixed_page_boundaries) {
+    model_io::AgentInputState state;
+    std::string multibyte;
+    for (int index = 0; index < 1500; ++index) multibyte += "\xe4\xb8\xad";
+    for (int index = 0; index < 6; ++index) {
+        model_io::UserLoopStep turn;
+        turn.user_input.content.assign(4, display_text(std::string(4096, '\x01')));
+        // Include empty-step turns, normal small steps, and worst-case steps
+        // with four escaped content parts plus a full escaped reasoning part.
+        for (int step_index = 0; step_index < index % 3; ++step_index) {
+            model_io::AgentLoopStep step;
+            step.model_response.content.assign(5, display_text(
+                index == 2 ? multibyte : std::string(4096, '\x02')));
+            step.model_response.reasoning = display_text(std::string(4097, '\x03'));
+            turn.agent_loop_step.push_back(std::move(step));
+        }
+        state.turns.push_back(std::move(turn));
+    }
+    auto request = core::parse_history_request({{"operation", "history"},
+        {"request_id", "mixed"}, {"limit", 10}});
+    std::set<std::pair<std::size_t, std::size_t>> seen;
+    std::set<std::size_t> seen_turns;
+    bool continued_turn = false;
+    for (std::size_t pages = 0; request.start < state.turns.size(); ++pages) {
+        BOOST_REQUIRE(pages < 20u);
+        const auto page = core::history_page(state, request, 17);
+        check_history_size(page);
+        for (const auto& turn : page.at("turns")) {
+            const auto index = turn.at("index").get<std::size_t>();
+            seen_turns.insert(index);
+            const auto& source = state.turns.at(index);
+            const auto& steps = turn.at("steps");
+            std::size_t expected_step = index == request.start ? request.step : 0;
+            for (const auto& step : steps) {
+                BOOST_TEST(step.at("index") == expected_step);
+                BOOST_TEST(seen.emplace(index, expected_step++).second);
+                BOOST_TEST(step.at("omitted_parts") == 1);
+                BOOST_TEST(step.at("reasoning").at("truncated") == true);
+                for (const auto& part : step.at("content")) {
+                    if (index == 2) {
+                        BOOST_TEST(part.at("raw") == multibyte.substr(0, 4095));
+                        BOOST_TEST(part.at("truncated") == true);
+                    } else {
+                        BOOST_TEST(part.at("raw") == std::string(4096, '\x02'));
+                        BOOST_TEST(!part.contains("truncated"));
+                    }
+                }
+            }
+            BOOST_TEST(turn.at("omitted_steps") == source.agent_loop_step.size() - expected_step);
+        }
+        const auto next = page.at("next").get<std::size_t>();
+        const auto next_step = page.at("next_step").get<std::size_t>();
+        BOOST_REQUIRE(next > request.start || (next == request.start && next_step > request.step));
+        continued_turn = continued_turn || next_step != 0;
+        request.start = next;
+        request.step = next_step;
+    }
+    BOOST_TEST(seen_turns.size() == state.turns.size());
+    BOOST_TEST(seen.size() == 6u);
+    BOOST_TEST(continued_turn);
+}
+
+BOOST_AUTO_TEST_CASE(history_query_fits_one_maximal_entry_and_handles_terminal_cursors) {
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content.assign(4, display_text(std::string(4096, '\x01')));
+    model_io::AgentLoopStep step;
+    step.model_response.content.assign(4, display_text(std::string(4096, '\x02')));
+    step.model_response.reasoning = display_text(std::string(4096, '\x03'));
+    turn.agent_loop_step.push_back(std::move(step));
+    state.turns.push_back(std::move(turn));
+    core::HistoryRequest request{std::string(128, '\x04'), 0, 0, 10};
+    const auto page = core::history_page(state, request);
+    check_history_size(page);
+    BOOST_TEST(page.at("next") == 1);
+    BOOST_TEST(page.at("next_step") == 0);
+    BOOST_TEST(page.at("turns")[0].at("steps").size() == 1u);
+    request.step = 1;
+    const auto end_of_turn = core::history_page(state, request);
+    check_history_size(end_of_turn);
+    BOOST_TEST(end_of_turn.at("next") == 1);
+    BOOST_TEST(end_of_turn.at("turns")[0].at("steps").empty());
+    request.step = 2;
+    BOOST_CHECK_THROW(core::history_page(state, request), std::invalid_argument);
+    request.start = 1;
+    request.step = 0;
+    const auto terminal = core::history_page(state, request);
+    check_history_size(terminal);
+    BOOST_TEST(terminal.at("turns").empty());
+    BOOST_TEST(terminal.at("next") == 1);
 }

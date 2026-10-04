@@ -359,7 +359,23 @@ observed one. A stale id is ignored by the worker, so the default is convenient
 rather than dangerous.
 
 `history` pages are a bounded display projection of the worker's in-memory
-`UserLoopStep` turns. The hub accepts a history query only while the current
+`UserLoopStep` turns. The built-in worker limits the complete compact JSON page
+data to 252 KiB and the complete worker event to 256 KiB, accounting for escaped
+user text, response content, reasoning and metadata. The Hub retains the original
+worker event under `raw` alongside the parsed fields; a full panel `event` frame
+for this projection fits within 512 KiB, including this duplicate and forwarding
+metadata. These byte limits exclude WebSocket frame headers and pretty printing.
+They do not replace the general 4 MiB outbound budget for other events or impose
+the new worker bound on older/custom workers.
+
+Pages can end at a turn boundary or partway through its model steps. Follow both
+`next` and `next_step`; do not assume a response contains the requested number of
+turns. A continued turn repeats its user projection, which the panel keeps once
+while appending its steps. Empty-step turns consume page space and advance the
+turn cursor. A nonterminal page must advance, and `revision` changes still require
+discarding partial results and restarting. No wire fields or capabilities change.
+
+The hub accepts a history query only while the current
 worker connection has advertised `session-history` in `ready` or `status`.
 The current worker's capabilities are exposed as `worker_capabilities` in the
 session description (`null` until known); they do not depend on old events

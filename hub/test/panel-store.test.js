@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createPanelStore, statsFor } from '../web/src/state/store.ts';
 import { parseHistoryPage } from '../web/src/state/history.ts';
+import { boundedHistoryPages, HISTORY_PAGE_MAX_BYTES } from './helpers/history.ts';
 import { emptyView, indexEnvelope } from '../web/src/state/view.ts';
 
 it('invalidates older history on compact replay but preserves newer projections', () => {
@@ -113,6 +114,27 @@ function notes(store, id = 'demo') {
 }
 
 describe('worker-backed display history', () => {
+    it('merges byte-bounded pages across turn and step boundaries without loss', () => {
+        const store = createPanelStore();
+        store.getState().beginHistory('demo');
+        const pages = boundedHistoryPages();
+        for (const [index, data] of pages.entries()) {
+            assert.ok(Buffer.byteLength(JSON.stringify(data), 'utf8') <= HISTORY_PAGE_MAX_BYTES);
+            const parsed = parseHistoryPage(data);
+            assert.ok(parsed);
+            assert.equal(store.getState().applyHistoryPage('demo',
+                envelope(index + 1, 'history', { data }), parsed), true);
+            assert.equal(store.getState().view('demo').historyLoading, index < pages.length - 1);
+        }
+        const history = store.getState().view('demo').history;
+        assert.deepEqual(history.map((turn) => turn.index), [0, 1, 2, 3]);
+        assert.deepEqual(history[2].steps.map((step) => step.index), [0, 1]);
+        assert.equal(history[2].user.length, 4, 'repeated user parts were duplicated');
+        assert.ok(history.every((turn) => turn.omitted_steps === 0));
+        assert.deepEqual(history[2].steps.map((step) => step.content[0].raw.slice(0, 10)),
+            ['Answer 2.0', 'Answer 2.1']);
+    });
+
     it('counts transient pages in worker sequence without advancing hub replay', () => {
         const store = createPanelStore();
         store.getState().applyEvent({ type: 'event', session: 'demo', hub_seq: 1,

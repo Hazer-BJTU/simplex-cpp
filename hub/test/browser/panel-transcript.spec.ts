@@ -7,6 +7,7 @@
  * that model output that *looks* like markup does not become any.
  */
 import { expect, test } from '@playwright/test';
+import { boundedHistoryPages } from '../helpers/history.ts';
 import {
     STUB,
     PROCESS_OUTPUT,
@@ -472,6 +473,34 @@ test('completed live runs do not re-fetch the whole worker history', async ({ pa
     }
     await expect(page.getByTestId('assistant-message')).toHaveCount(3);
     expect(await queries()).toBe(3);
+});
+
+test('loads bounded history pages through mixed turn and step cursors', async ({ page }) => {
+    await open(page);
+    const pages = boundedHistoryPages();
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true,
+        historyTurns: Array.from({ length: 4 }, (_, index) => ({
+            index, user: [], steps: [], omitted_steps: 0,
+        })),
+        // Request IDs belong to the browser. Keep the returned cursors/content
+        // while letting the stub correlate each reply with its actual query.
+        historyResponses: pages.map(({ request_id: _id, ...response }) => response),
+    } });
+    await emit(page, 'status', { active: false, capabilities: ['session-history'] });
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('history-turn')).toHaveCount(4);
+    await expect(page.getByTestId('transcript')).not.toContainText('loading conversation history');
+    for (let index = 0; index < 4; index += 1) {
+        await expect(page.getByTestId('history-turn').nth(index)).toContainText(`User ${index}`);
+    }
+    const longTurn = page.getByTestId('history-turn').nth(2);
+    await expect(longTurn).toContainText('Answer 2.0');
+    await expect(longTurn).toContainText('Answer 2.1');
+    const received = await (await page.request.get(`${STUB}/__stub/received`)).json();
+    const queries = received.received.filter((message: { type: string }) => message.type === 'history');
+    expect(queries.map((query: { start: number; step?: number }) => [query.start, query.step ?? 0]))
+        .toEqual([[0, 0], [2, 0], [2, 1], [3, 0]]);
 });
 
 for (const [name, response] of [

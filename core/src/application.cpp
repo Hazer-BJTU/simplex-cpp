@@ -310,7 +310,13 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         Json message = {{"type", "event"}, {"event", std::move(name)},
             {"session_id", session_id}, {"worker_id", worker_id},
             {"request_id", event_request}, {"run_id", event_run},
-            {"sequence", ++sequence}, {"data", std::move(data)}};
+            {"sequence", sequence + 1}, {"data", std::move(data)}};
+        if (message.at("event") == "history"
+            && message.dump().size() > history_event_max_bytes) {
+            throw std::length_error("history event exceeds the display budget");
+        }
+        // A rejected history projection must not leave a gap before history_error.
+        ++sequence;
         if (!outgoing.try_send(boost::system::error_code{}, std::move(message))) {
             auto error = std::make_exception_ptr(std::runtime_error("application event queue exhausted"));
             fail(error);
@@ -599,8 +605,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     asio::post(self->strand, [self, payload = event.payload] {
                         try {
                             const auto request = parse_history_request(payload);
-                            auto page = history_page(self->state, request);
-                            page["revision"] = self->history_revision;
+                            auto page = history_page(
+                                self->state, request, self->history_revision);
                             self->emit("history", std::move(page));
                         } catch (const std::exception& error) {
                             self->emit("history_error", {
