@@ -200,8 +200,11 @@ accepts unknown input types or operations.
 Before the first admission, event-envelope `request_id` and `run_id` are empty
 strings. Afterwards they identify the active **or most recently admitted** run;
 they are not cleared when it finishes. Consequently, a `status` or `error` event
-may refer to an already finished run. A rejected input does not replace these
-fields: use `input_rejected.data.request_id` to identify the rejected request.
+may refer to an already finished run. `input_rejected` is an exception: its
+envelope names the rejected string request ID (or an empty string for a
+non-string ID), and its `run_id` is empty. The worker's current run identity
+remains unchanged. Use `input_rejected.data.request_id` as the authoritative
+rejected value, including invalid or missing IDs.
 
 Use `(worker_id, sequence)` for event ordering/deduplication and retain
 `session_id` as the session association. A fresh worker may restart its sequence
@@ -597,7 +600,7 @@ new user message into in-memory conversation state. A `continue` request has
 no `input_committed` event.
 
 `input_rejected` is emitted for invalid input, a duplicate ID, an unsafe
-recovery phase, or continuation without a turn:
+recovery phase, continuation without a turn, or payload queue overflow:
 
 ```json
 {"request_id":"req-001","message":"duplicate request_id in the recent admission window"}
@@ -607,6 +610,22 @@ This example is the event's `data`. The rejected request ID is echoed as its
 original JSON value when present, even if it was not a valid string; otherwise
 it is null. Diagnostic messages are human-readable, not stable error codes.
 Rejected requests are not inserted into the duplicate cache.
+
+Overflow is reported independently of the payload consumer, including while
+the current model request is suspended. Its stable code is `payload_queue_full`:
+
+```json
+{"request_id":"req-002","operation":"message","code":"payload_queue_full","message":"Worker input queue is full. Wait for current work to finish, then retry."}
+```
+
+The event's envelope `request_id` is the rejected string ID, or an empty string
+when the supplied ID was not a string. Its `run_id` is empty: a rejection never
+belongs to the currently executing run. The `data.request_id` remains the
+authoritative correlation value. `data.operation` is retained only for recognized
+`message`, `continue`, and `compact` operations. The discarded input never starts
+a run, applies options, or enters conversation state. Previously queued inputs
+retain their FIFO order. Wait for current work to finish before an explicit
+retry; the worker and Hub never automatically resend it.
 
 Only the most recent 4096 admitted request IDs are remembered. The cache is
 per worker, survives reconnects, and is neither persisted nor shared with another
@@ -666,7 +685,7 @@ may occur in nested dataclass records.
 | `compact_finished` | `{ "summary": string, "memory_file": string, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
 | `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
 | `input_admitted` | `{ "operation": string }` | Host admitted `message`, `continue`, or `compact` and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
-| `input_rejected` | `{ "request_id": any JSON value or null, "message": string, "operation"?: "message" \| "continue" \| "compact", "code"?: "invalid_options" }` | Dequeued input failed host validation; no run was started for that input. A recognized operation is retained for transcript replay even after request bookkeeping expires. |
+| `input_rejected` | `{ "request_id": any JSON value or null, "message": string, "operation"?: "message" \| "continue" \| "compact", "code"?: "invalid_options" \| "payload_queue_full" }` | Input failed host validation or payload queue admission; no run was started for that input. A recognized operation is retained for transcript replay even after request bookkeeping expires. |
 | `run_started` | `{}` | Loop admitted the invocation. |
 | `input_committed` | `{}` | New user input was integrated in memory. |
 | `model_response` | Message object | One complete model response was committed in memory. It can contain tool calls and need not be the final answer. |
@@ -1119,8 +1138,9 @@ admission, durable outbox, replay request, or exactly-once execution mechanism.
 
 | Queue / failure | Current behavior |
 | --- | --- |
-| Payload queue full | Incoming payload is dropped and `rejected_payloads` increases. There is no per-request `input_rejected` event for this case. |
+| Payload queue full | Incoming payload is discarded and `rejected_payloads` increases. Metadata-only overflow feedback emits a request-correlated `input_rejected` with code `payload_queue_full`, when the control and event paths remain usable. |
 | Signal queue full | Fatal IO error; worker shutdown is initiated. |
+| Overflow notification path full | Fatal IO/worker error and cleanup; the aggregate rejection count remains incremented. No unbounded notification backlog or automatic replay is created. |
 | Worker event queue full | Fatal worker error, cancellation and cleanup; results are not silently discarded as if delivery succeeded. |
 | Transport write queue full | Sender waits; pressure can eventually fill the worker event queue. |
 | Invalid JSON, malformed envelope, unknown envelope `type`, or binary input | Fatal event-client error; no automatic reconnect for that application/protocol failure. |
@@ -1131,6 +1151,16 @@ Queue capacities count messages, not bytes. There is no public configurable
 application-message byte limit; transport library limits and available memory
 still constrain messages. Hubs should avoid sending a burst without observing
 admission and should keep reading events while waiting for user decisions.
+
+Overflow feedback shares the bounded IO control queue (`client.signal_capacity`)
+with signals and history queries. A second metadata-only application queue, also
+bounded by `client.signal_capacity`, hands notifications to the application strand.
+The notification handler never accesses conversation state from the IO worker
+thread or posts one task per rejection. A strand-owned coroutine emits ordinary
+sequenced events through `worker.event_capacity`; exhausting that event queue
+retains the existing fatal policy. Shutdown or an unusable response connection
+may prevent feedback delivery. These notifications add no ACK, durable outbox,
+delivery guarantee, or exactly-once promise.
 
 Connection establishment failures retry indefinitely, including permanent DNS,
 certificate validation, and HTTP upgrade rejections such as 401/403. Established

@@ -39,6 +39,23 @@ test('shows an honest activity cue through a live run', async ({ page }) => {
     await expect(activity).toHaveCount(0);
 });
 
+test('marks an overflowing input rejected and displays retry guidance', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        rejectInput: true, rejectInputCode: 'payload_queue_full',
+        rejectInputMessage: 'Worker input queue is full. Wait for current work to finish, then retry.',
+    } });
+    const composer = page.getByRole('textbox', { name: 'Message' });
+    await composer.fill('Please retain my message');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.getByTestId('outbox-item')).toHaveAttribute('data-state', 'rejected');
+    await expect(page.getByTestId('outbox-item')).toContainText('not executed');
+    await expect(page.getByText('Input queue full', { exact: true })).toBeVisible();
+    await expect(page.getByText('Worker input queue is full. Wait for current work to finish, then retry.',
+        { exact: true })).toBeVisible();
+});
+
 test('shows a model failure beside its run with guarded retry guidance', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();

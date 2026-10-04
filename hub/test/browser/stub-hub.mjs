@@ -526,7 +526,9 @@ function handle(ws, message) {
             const envelope = settings.rejectInput
                 ? append(message.session, 'input_rejected',
                     { request_id: requestId, operation: message.operation ?? 'message',
-                        message: 'no turns to compact' })
+                        ...(settings.rejectInputCode ? { code: settings.rejectInputCode } : {}),
+                        message: settings.rejectInputMessage ?? 'no turns to compact' },
+                    { request_id: requestId, run_id: '' })
                 : append(message.session, 'input_admitted',
                     { operation: message.operation ?? 'message' }, { request_id: requestId });
             broadcast({

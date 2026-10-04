@@ -16,6 +16,7 @@
 #include "tools/intrinsic/hub_remote_call/toolset.hpp"
 #include "tools/registry.hpp"
 #include <boost/asio/experimental/channel.hpp>
+#include <boost/asio/experimental/concurrent_channel.hpp>
 #include <unordered_set>
 #include <deque>
 #include <iostream>
@@ -209,9 +210,11 @@ const char* failure_stage(loop::RunFailureStage stage) {
 }
 
 
-/** Strand-owned runtime. Only run control and the single-use latch cross threads. */
+/** Strand-owned runtime, with thread-safe run control and a rejection mailbox. */
 struct Application::Impl : std::enable_shared_from_this<Impl> {
     using Queue = asio::experimental::channel<void(boost::system::error_code, Json)>;
+    using RejectionQueue = asio::experimental::concurrent_channel<
+        void(boost::system::error_code, Json)>;
     using Done = asio::experimental::channel<void(boost::system::error_code, bool)>;
 
     Impl(asio::any_io_executor executor, load::Configuration configuration,
@@ -220,7 +223,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
           session_id(std::move(session)), driver_model(std::move(injected)),
           hooks(events), store(std::make_shared<tools::intrinsic::ProcessSessionStore>(strand)),
           client(strand, config.client, events, config.queues, config.transport),
-          outgoing(strand, config.event_capacity), sender_done(strand, 1), client_done(strand, 1) {
+          outgoing(strand, config.event_capacity),
+          rejected_inputs(strand, config.queues.signal_capacity),
+          rejection_done(strand, 1), sender_done(strand, 1), client_done(strand, 1) {
         validate_session_id(session_id);
         if (config.event_capacity == 0) throw std::invalid_argument("event_capacity must be positive");
     }
@@ -238,6 +243,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     std::shared_ptr<tools::intrinsic::ProcessSessionStore> store;
     io::Client client;
     Queue outgoing;
+    /** Bounded metadata bridge from the IO control thread to the state owner. */
+    RejectionQueue rejected_inputs;
+    Done rejection_done;
     Done sender_done;
     Done client_done;
     model_io::AgentInputState state;
@@ -293,19 +301,33 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         cancel();
         client.stop();
         outgoing.close();
+        rejected_inputs.close();
     }
 
     /** Copy only event data. Full queue is fatal, never an invisible drop. */
-    void emit(std::string name, Json data = Json::object()) {
+    void emit(std::string name, Json data,
+              const std::string& event_request, const std::string& event_run) {
         Json message = {{"type", "event"}, {"event", std::move(name)},
             {"session_id", session_id}, {"worker_id", worker_id},
-            {"request_id", request_id}, {"run_id", run_id},
+            {"request_id", event_request}, {"run_id", event_run},
             {"sequence", ++sequence}, {"data", std::move(data)}};
         if (!outgoing.try_send(boost::system::error_code{}, std::move(message))) {
             auto error = std::make_exception_ptr(std::runtime_error("application event queue exhausted"));
             fail(error);
             std::rethrow_exception(error);
         }
+    }
+
+    /** Ordinary events belong to the current run; rejected inputs never do. */
+    void emit(std::string name, Json data = Json::object()) {
+        emit(std::move(name), std::move(data), request_id, run_id);
+    }
+
+    /** Report a rejected request without borrowing the active run's identity. */
+    void reject_input(Json rejection) {
+        const auto& id = rejection.at("request_id");
+        const auto event_request = id.is_string() ? id.get<std::string>() : std::string();
+        emit("input_rejected", std::move(rejection), event_request, "");
     }
 
     Json status() const {
@@ -589,6 +611,40 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     });
                 }
             }));
+        subscriptions.emplace_back(events.subscribe<io::PayloadRejectedEvent>(
+            [weak = weak_from_this()](const io::PayloadRejectedEvent& event) {
+                if (auto self = weak.lock()) {
+                    if (self->shutdown_requested.load()) return;
+                    // concurrent_channel is the only host state touched here.
+                    // Do not post one unbounded strand task per discarded input.
+                    if (!self->rejected_inputs.try_send(boost::system::error_code{},
+                            Json{{"request_id", event.request_id},
+                                 {"operation", event.operation}})) {
+                        if (self->shutdown_requested.load()) return;
+                        throw std::runtime_error("application payload rejection queue exhausted");
+                    }
+                }
+            }));
+    }
+
+    /** Emit overflow feedback on the strand even while consume() awaits a model. */
+    asio::awaitable<void> report_rejected_inputs() {
+        for (;;) {
+            boost::system::error_code error;
+            auto metadata = co_await rejected_inputs.async_receive(
+                asio::redirect_error(asio::use_awaitable, error));
+            if (error || stopping || shutdown_requested.load()) co_return;
+            Json rejection = {
+                {"request_id", std::move(metadata["request_id"])},
+                {"code", "payload_queue_full"},
+                {"message", "Worker input queue is full. Wait for current work to finish, then retry."}
+            };
+            const auto& operation = metadata.at("operation");
+            if (operation == "message" || operation == "continue" || operation == "compact") {
+                rejection["operation"] = operation;
+            }
+            reject_input(std::move(rejection));
+        }
     }
 
     /** One writer drains owned event values without borrowing live state. */
@@ -829,7 +885,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 if (applying_options || dynamic_cast<const InputOptionsError*>(&error)) {
                     rejection["code"] = "invalid_options";
                 }
-                emit("input_rejected", std::move(rejection));
+                reject_input(std::move(rejection));
                 continue;
             }
             request_id = input->request_id;
@@ -916,6 +972,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             ownership = std::make_unique<fileio::SessionLock>(directory / "session.lock");
         }
         initialize();
+        asio::co_spawn(strand, report_rejected_inputs(),
+            [self = shared_from_this()](std::exception_ptr error) {
+                if (error && !self->stopping) self->fail(error);
+                self->rejection_done.try_send(boost::system::error_code{}, true);
+            });
         asio::co_spawn(strand, client.run(), [self = shared_from_this()](std::exception_ptr error) {
             if (error) {
                 // A blocked outbound send can wake before client.run() reports
@@ -946,7 +1007,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             if (!stopping) fail(std::current_exception());
         }
         stopping = true;
+        shutdown_requested.store(true);
         cancel();
+        rejected_inputs.close();
+        co_await rejection_done.async_receive(asio::use_awaitable);
         try {
             if (config.save_shutdown && !storage_failed) {
                 state.meta.updated_at = timestamp();

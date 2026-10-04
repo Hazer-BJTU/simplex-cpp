@@ -227,7 +227,9 @@ function UserMessage({ item }: { item: OutboxItem }) {
                 </button>
             )}
             <p className="mt-1 text-xs text-ink-faint">
-                {item.state === 'admitted' ? 'admitted by the worker' : 'sent, not yet admitted'}
+                {item.state === 'admitted' ? 'admitted by the worker'
+                    : item.state === 'rejected' ? 'rejected by the worker — not executed'
+                    : 'sent, not yet admitted'}
             </p>
         </article>
     );

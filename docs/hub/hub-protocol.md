@@ -182,6 +182,15 @@ process. An admitted write is not proof of delivery or durability.
 `unknown` is not a failure and not a success. The hub never resends, and a
 client must not present it as either.
 
+Worker payload overflow reports `input_rejected.data.code = "payload_queue_full"`
+with the discarded request's ID. The Hub settles that request as `rejected`,
+retains its diagnostic for replay, and leaves other admitted requests alone.
+The panel labels its pending message rejected and displays the worker's advice
+to wait for current work to finish before retrying. The rejection carries an
+empty `run_id`; it does not finish or rename the active run. If the response
+path fails before the rejection is observed, the outcome remains `unknown`.
+Neither the Hub nor panel automatically resends inputs.
+
 `spec` contains the session's resolved launch/model settings. Sessions created
 from the configuration library additionally identify their saved sources with
 `launchConfig` and `workerConfig`; these select session snapshots rather than

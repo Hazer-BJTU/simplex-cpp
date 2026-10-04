@@ -390,6 +390,14 @@ export function buildRounds(
     // while retained, but newer replayable admission events take precedence.
     const continuationIds = new Set<string>();
     const compactIds = new Set<string>();
+    const overflowIds = new Set<string>();
+    for (const item of items) {
+        if (item.kind !== 'event' || item.envelope.event !== 'input_rejected') continue;
+        const rejection = obj(item.envelope.data);
+        if (rejection?.code === 'payload_queue_full' && typeof rejection.request_id === 'string') {
+            overflowIds.add(rejection.request_id);
+        }
+    }
     for (const request of requests.values()) {
         if (request.operation === 'continue') continuationIds.add(request.request_id);
         if (request.operation === 'compact') compactIds.add(request.request_id);
@@ -415,6 +423,9 @@ export function buildRounds(
     }
 
     const closed: Draft[] = [];
+    // Rejected inputs have no run. Place them after the current round without
+    // diverting subsequent model/tool events away from that active round.
+    let deferredRejections: Draft[] = [];
     let runCount = 0;
     let current = newDraft('prelude', 0, 'prelude');
 
@@ -432,6 +443,8 @@ export function buildRounds(
     /** Finish the draft in hand, keeping it only if it holds anything. */
     const flush = (): void => {
         if (hasContent(current)) closed.push(current);
+        closed.push(...deferredRejections);
+        deferredRejections = [];
     };
 
     /** Begin a new run, closing whatever came before it. */
@@ -447,6 +460,7 @@ export function buildRounds(
 
     for (const item of items) {
         if (item.kind === 'outbox') {
+            if (overflowIds.has(item.requestId)) continue;
             // A continuation still opens a run, but has no user message to
             // render. Its request ID remains in the outbox for admission and
             // refusal bookkeeping until the worker answers.
@@ -466,6 +480,7 @@ export function buildRounds(
         }
 
         if (item.kind === 'request') {
+            if (overflowIds.has(item.request.request_id)) continue;
             current.requests.push(item);
             continue;
         }
@@ -622,9 +637,24 @@ export function buildRounds(
         }
 
         if (PROBLEM_EVENTS.has(name)) {
-            const run = ensureRun();
             const rejection = obj(envelope.data);
             const rejectedRequestId = rejection?.request_id;
+            const queueFull = name === 'input_rejected' && rejection?.code === 'payload_queue_full';
+            let run: Draft;
+            if (queueFull) {
+                run = newDraft(`rejected-${item.id}`, 0, 'prelude');
+                run.input = items.find((candidate): candidate is OutboxItem =>
+                    candidate.kind === 'outbox' && candidate.requestId === rejectedRequestId) ?? null;
+                run.requests = items.filter((candidate): candidate is RequestItem =>
+                    candidate.kind === 'request' && candidate.request.request_id === rejectedRequestId);
+                run.compacting = rejection?.operation === 'compact';
+                run.continued = rejection?.operation === 'continue';
+                run.status = 'rejected';
+                run.open = false;
+                deferredRejections.push(run);
+            } else {
+                run = ensureRun();
+            }
             if (name === 'input_rejected' && (rejection?.operation === 'compact'
                 || (typeof rejectedRequestId === 'string' && compactIds.has(rejectedRequestId)))) {
                 run.compacting = true;
@@ -638,7 +668,7 @@ export function buildRounds(
             run.problems.push({
                 key: item.id,
                 label: name === 'input_rejected'
-                    ? 'input rejected'
+                    ? queueFull ? 'Input queue full' : 'input rejected'
                     : name === 'error' ? 'worker diagnostic' : 'markdown export failed',
                 text: str(data.message) || 'the worker reported a problem',
                 tone: name === 'error' ? 'error' : 'warn',

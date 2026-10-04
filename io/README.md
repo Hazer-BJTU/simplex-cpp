@@ -37,10 +37,26 @@ a model response; other payload operations retain FIFO admission.
 Both incoming queues have configurable positive capacities. Routing uses a
 non-blocking channel send so a full payload queue never holds up the WebSocket
 reader or later signals. A rejected payload is logged and counted by
-`rejected_payloads()`; there is no implicit replay or server acknowledgment.
-Applications needing guaranteed admission must add a protocol-level request
-ID and acknowledgment. A full signal queue is fatal because silently dropping
-a cancellation signal would be unsafe.
+`rejected_payloads()`. Its correlation metadata is queued on the control channel
+and published as `io::PayloadRejectedEvent` by the dedicated worker, independently
+of `PayloadSubscription::next()`. The event contains the original JSON
+`request_id` (or null) and a string `operation` (or null). It does not retain the
+discarded content or options, and does not validate host-specific operations.
+Even a scalar payload or invalid operation can overflow without preventing the
+next control signal from being routed.
+
+Subscribe to this event to provide host-level rejection feedback. Listeners
+must finish promptly and hand state access to the host's owning executor.
+Use a bounded bridge, not an unbounded sequence of posted tasks. A throwing
+listener fails the client through the same supervision path as a throwing
+signal handler. If the control queue cannot admit the notification, routing
+fails after incrementing `rejected_payloads()`; it does not silently lose the
+notification and continue. A full signal/control queue is fatal because
+silently dropping control work would be unsafe.
+
+Rejection feedback is not a successful-admission or delivery acknowledgment.
+It can be lost during shutdown or a connection failure. There is no implicit
+replay or automatic resend, and the retained payload queue remains FIFO.
 
 ## Signals
 

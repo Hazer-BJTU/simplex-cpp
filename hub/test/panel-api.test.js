@@ -367,6 +367,41 @@ describe('panel API', () => {
         assert.equal(rejected.request.detail, 'duplicate request_id');
     });
 
+    it('correlates overflow feedback independently of the active request and retains it for replay', async () => {
+        const session = ctx.hub.registry.create('overflow-session');
+        const worker = await identify(session, 'overflow-worker');
+        const socket = await panel();
+        socket.send({ v: 1, type: 'subscribe', session: session.id });
+        await socket.waitFor((message) => message.type === 'subscribed');
+        for (const id of ['active', 'overflow']) {
+            socket.send({ v: 1, type: 'input', session: session.id, request_id: id,
+                content: [{ type: 'text', raw: id, modality: 'text' }] });
+            await socket.waitFor((message) => message.type === 'request'
+                && message.request.request_id === id && message.request.state === 'sent');
+        }
+        worker.send(workerEvent({ session: session.id, worker: 'overflow-worker',
+            sequence: 2, event: 'input_admitted', requestId: 'active', runId: 'active-run' }));
+        await socket.waitFor((message) => message.type === 'request'
+            && message.request.request_id === 'active' && message.request.state === 'admitted');
+        const diagnostic = 'Worker input queue is full. Wait for current work to finish, then retry.';
+        worker.send(workerEvent({ session: session.id, worker: 'overflow-worker',
+            sequence: 3, event: 'input_rejected', requestId: 'overflow', runId: '',
+            data: { request_id: 'overflow', operation: 'message', code: 'payload_queue_full', message: diagnostic } }));
+        const rejected = await socket.waitFor((message) => message.type === 'request'
+            && message.request.request_id === 'overflow' && message.request.state === 'rejected');
+        assert.equal(rejected.request.detail, diagnostic);
+        assert.equal(session.requests.get('active').state, 'admitted');
+        assert.equal(session.lastRunId, 'active-run');
+        const reconnected = await panel();
+        reconnected.send({ v: 1, type: 'subscribe', session: session.id });
+        const replay = await reconnected.waitFor((message) => message.type === 'subscribed');
+        const event = replay.transcript.find((envelope) => envelope.event === 'input_rejected');
+        assert.equal(event.data.request_id, 'overflow');
+        assert.equal(event.data.code, 'payload_queue_full');
+        assert.equal(event.run_id, '');
+        assert.equal(replay.session.requests.find((entry) => entry.request_id === 'overflow').state, 'rejected');
+    });
+
     it('marks an in-flight input unknown when the worker disappears', async () => {
         const session = ctx.hub.registry.create('unknown-session');
         const worker = await identify(session, 'unknown-worker');

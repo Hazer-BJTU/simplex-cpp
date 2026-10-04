@@ -519,7 +519,15 @@ function foldEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
     next = append(next, eventItem(next, envelope));
     if (envelope.event === 'input_rejected') {
         const rejected = (envelope.data as Record<string, unknown> | null)?.request_id;
-        if (typeof rejected === 'string') next = markSeen(next, rejected);
+        if (typeof rejected === 'string') {
+            next = markSeen(next, rejected);
+            // Settle only the rejected input. Overflow feedback can arrive
+            // while a different request is still running on the worker.
+            next = { ...next, items: next.items.map((item) => (
+                item.kind === 'outbox' && item.requestId === rejected && item.state === 'pending'
+                    ? { ...item, state: 'rejected' as const } : item
+            )) };
+        }
     }
     return next;
 }

@@ -83,6 +83,8 @@ export interface NoteItem {
  * when the message is sent, marked admitted when the worker confirms it, and
  * removed if the hub refuses it (in which case the composer gets the text back
  * rather than losing it, which is the whole of defect D19).
+ * A worker rejection retains the text and marks it rejected, so it no longer
+ * appears to await admission. It is never automatically resent.
  */
 export interface OutboxItem {
     readonly kind: 'outbox';
@@ -90,7 +92,7 @@ export interface OutboxItem {
     readonly requestId: string;
     readonly parts: readonly ContentPart[];
     readonly operation: string;
-    readonly state: 'pending' | 'admitted';
+    readonly state: 'pending' | 'admitted' | 'rejected';
     readonly admittedSequence?: number;
     readonly admittedWorker?: string;
 }
