@@ -6,6 +6,8 @@
 #include "tools/intrinsic/reading/schemas.hpp"
 #include "tools/registry.hpp"
 #include "tools/invoke_exception.hpp"
+#include "tools/intrinsic/tool_declaration.hpp"
+#include "llm/compat/chat_completions/interpreter.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
@@ -14,11 +16,35 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <iostream>
+#include <sstream>
 #include <sys/stat.h>
 
 namespace {
 using Json = nlohmann::json;
 namespace asio = boost::asio;
+
+/** Restore an authoritative schema override even when an assertion throws. */
+struct SchemaOverride {
+    std::optional<std::string> previous;
+    explicit SchemaOverride(const std::filesystem::path& path)
+    {
+        if (const auto old = std::getenv("SIMPLEX_READING_SCHEMA_DIR")) previous = old;
+        BOOST_REQUIRE(::setenv("SIMPLEX_READING_SCHEMA_DIR", path.c_str(), 1) == 0);
+    }
+    ~SchemaOverride()
+    {
+        if (previous) ::setenv("SIMPLEX_READING_SCHEMA_DIR", previous->c_str(), 1);
+        else ::unsetenv("SIMPLEX_READING_SCHEMA_DIR");
+    }
+};
+
+/** Capture synchronous initialization diagnostics without changing log policy. */
+struct ErrorCapture {
+    std::ostringstream text;
+    std::streambuf* previous = std::cerr.rdbuf(text.rdbuf());
+    ~ErrorCapture() { std::cerr.rdbuf(previous); }
+};
 
 /** Real registry and isolated file tree, with no confirmation subscriber. */
 struct Fixture {
@@ -49,6 +75,25 @@ struct Fixture {
         output.close();
         BOOST_REQUIRE(output.good());
         return path.string();
+    }
+    std::filesystem::path schema(Json config, bool omit = false)
+    {
+        const auto original = tools::intrinsic::load_tool_declaration(
+            tools::intrinsic::reading::schema_directory() / "read_text.yaml");
+        const auto directory = root / "schemas";
+        std::filesystem::create_directories(directory);
+        Json declaration = {
+            {"name", original.name}, {"description", original.description},
+            {"argument_schema", original.argument_schema},
+            // Deliberately contradictory documentation-only fields. Config
+            // must not make these override the trusted/read-only C++ policy.
+            {"type", "serial_write"}, {"security", "require_confirm"}
+        };
+        if (!omit) declaration["config"] = std::move(config);
+        std::ofstream out(directory / "read_text.yaml");
+        out << declaration;
+        BOOST_REQUIRE(out.good());
+        return directory;
     }
     model_io::InvokeReturn call(Json arguments)
     {
@@ -274,22 +319,187 @@ BOOST_FIXTURE_TEST_CASE(malformed_continuation_run_crosses_display_boundary, Fix
 
 BOOST_FIXTURE_TEST_CASE(missing_schema_override_disables_the_tool_and_skill, Fixture)
 {
-    // Restore the process environment even if construction or an assertion throws.
-    struct Override {
-        std::optional<std::string> previous;
-        explicit Override(const std::string& path)
-        {
-            if (const auto old = std::getenv("SIMPLEX_READING_SCHEMA_DIR")) previous = old;
-            ::setenv("SIMPLEX_READING_SCHEMA_DIR", path.c_str(), 1);
-        }
-        ~Override()
-        {
-            if (previous) ::setenv("SIMPLEX_READING_SCHEMA_DIR", previous->c_str(), 1);
-            else ::unsetenv("SIMPLEX_READING_SCHEMA_DIR");
-        }
-    } override((root / "missing").string());
+    SchemaOverride override(root / "missing");
     tools::intrinsic::ReadTextTool tool;
     BOOST_TEST(tool.get_details().name.empty());
     tools::intrinsic::ReadingToolSet set;
     BOOST_TEST(!set.skill().has_value());
+}
+
+BOOST_FIXTURE_TEST_CASE(configured_limits_are_owned_per_instance_and_hidden_from_models, Fixture)
+{
+    const auto source_skill = tools::intrinsic::reading::schema_directory() / "skill.yaml";
+    const auto directory = schema({{"max_file_bytes", 64}, {"max_output_bytes", 7}});
+    std::filesystem::copy_file(source_skill, directory / "skill.yaml");
+    SchemaOverride override(directory);
+    auto first = std::make_shared<tools::intrinsic::ReadingToolSet>();
+    BOOST_REQUIRE(first->get_tools().size() == 1u);
+    registry.clear();
+    registry.add(first);
+    const auto path = write("abcdefghijklmnop");
+    const auto first_result = call({{"path", path}, {"mode", "bytes"}, {"count", 100}});
+    BOOST_REQUIRE(!tools::is_error(first_result));
+    contains(first_result, "Output clipped to 7 bytes");
+    contains(first_result, "text (truncated, first 7 bytes):\nabcdefg");
+    BOOST_CHECK(first_result.query.type == model_io::InvokeType::ReadOnly);
+    BOOST_CHECK(first_result.query.security == model_io::InvokeSecurity::Trusted);
+
+    // Neither advertised definitions, injected skill, arguments, nor persisted
+    // state should carry the host settings. Also check the actual provider wire.
+    model_io::AgentInputState state;
+    state.tools = registry.get_tools();
+    BOOST_TEST(registry.inject_skills(state.system_prompt) == 1u);
+    auto& turn = state.turns.emplace_back();
+    turn.user_input.role = "user";
+    turn.user_input.content.emplace_back().raw = "Read the file.";
+    auto& step = turn.agent_loop_step.emplace_back();
+    step.model_response.type = model_io::MessageItemType::ModelResponse;
+    step.model_response.role = "assistant";
+    step.model_response.invokes = {first_result.query};
+    model_io::MessageItem result_message;
+    result_message.type = model_io::MessageItemType::InvokeReturn;
+    result_message.role = "tool";
+    result_message.content = {first_result.output};
+    result_message.invoke_return = first_result;
+    step.invoke_returns = {result_message};
+    const auto serialized = Json(state).dump();
+    llm::chat_completions::ChatCompletionsInterpreter interpreter;
+    model_io::ModelEndpoint endpoint;
+    endpoint.base_url = "http://127.0.0.1";
+    const auto body = Json::parse(interpreter.build_request(
+        state, endpoint, Json{{"model", "fixture"}}).body());
+    for (const auto key : {"max_file_bytes", "max_output_bytes"}) {
+        BOOST_TEST(serialized.find(key) == std::string::npos);
+        BOOST_TEST(body.dump().find(key) == std::string::npos);
+        BOOST_TEST(first_result.query.arguments.count(key) == 0u);
+    }
+    BOOST_TEST(!body["tools"][0]["function"].contains("config"));
+    BOOST_TEST(!Json(state.tools[0]).contains("config"));
+
+    // An argument cannot change operator settings, even when it is injected
+    // directly into a query rather than selected through the advertised schema.
+    const auto attempted_override = call({
+        {"path", path}, {"mode", "bytes"}, {"count", 100},
+        {"max_output_bytes", 1000}, {"config", {{"max_output_bytes", 1000}}}
+    });
+    BOOST_REQUIRE(!tools::is_error(attempted_override));
+    contains(attempted_override, "Output clipped to 7 bytes");
+
+    // Rewrite that same YAML. No companion config.yaml and no recompilation.
+    schema({{"max_file_bytes", 12}, {"max_output_bytes", 11}});
+    auto second = std::make_shared<tools::intrinsic::ReadingToolSet>();
+    BOOST_REQUIRE(second->get_tools().size() == 1u);
+    const auto unchanged = call({{"path", path}, {"mode", "bytes"}, {"count", 100}});
+    BOOST_REQUIRE(!tools::is_error(unchanged));
+    contains(unchanged, "Output clipped to 7 bytes");
+    registry.clear();
+    registry.add(second);
+    BOOST_TEST(tools::is_error(call({{"path", path}}))); // 16 bytes exceeds 12.
+    const auto changed = call({{"path", write("abcdefghijkl")}, {"count", 100}});
+    BOOST_REQUIRE(!tools::is_error(changed));
+    contains(changed, "Output clipped to 11 bytes");
+    contains(changed, "text (truncated, first 11 bytes):\nabcdefghijk");
+}
+
+BOOST_FIXTURE_TEST_CASE(configuration_omission_and_empty_mapping_keep_read_defaults, Fixture)
+{
+    for (const bool omit : {false, true}) {
+        const auto directory = schema(Json::object(), omit);
+        SchemaOverride override(directory);
+        registry.clear();
+        registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>());
+        const auto result = call({{"path", write(std::string(65537, 'a'))}});
+        BOOST_REQUIRE(!tools::is_error(result));
+        contains(result, "Output clipped to 65536 bytes");
+        BOOST_TEST(tools::is_error(call({{"path", write(std::string(
+            tools::intrinsic::ReadTextTool::kMaxFileBytes + 1, 'a'))}})));
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(invalid_configuration_names_file_field_and_isolates_registration, Fixture)
+{
+    const std::vector<std::pair<Json, std::string>> invalid = {
+        {nullptr, "/config"}, {Json::array(), "/config"},
+        {Json::array({"max_output_bytes", "distinctive-secret"}), "/config"},
+        {Json{{"max_file_bytes", 0}}, "/config/max_file_bytes"},
+        {Json{{"max_file_bytes", -1}}, "/config/max_file_bytes"},
+        {Json{{"max_file_bytes", 1.5}}, "/config/max_file_bytes"},
+        {Json{{"max_file_bytes", true}}, "/config/max_file_bytes"},
+        {Json{{"max_file_bytes", "distinctive-secret"}}, "/config/max_file_bytes"},
+        {Json{{"max_file_bytes", nullptr}}, "/config/max_file_bytes"},
+        {Json{{"max_file_bytes", 1073741825}}, "/config/max_file_bytes"},
+        {Json{{"max_file_bytes", std::numeric_limits<std::uint64_t>::max()}}, "/config/max_file_bytes"},
+        {Json{{"max_output_bytes", 0}}, "/config/max_output_bytes"},
+        {Json{{"max_output_bytes", 16777217}}, "/config/max_output_bytes"},
+        {Json{{"max_output_bytes", Json::object()}}, "/config/max_output_bytes"},
+        {Json{{"max_file_bytes", 3}, {"unknown", "distinctive-secret"}}, "/config/unknown"}
+    };
+    for (const auto& [config, field] : invalid) {
+        const auto directory = schema(config);
+        SchemaOverride override(directory);
+        ErrorCapture errors;
+        auto invalid_set = std::make_shared<tools::intrinsic::ReadingToolSet>();
+        BOOST_TEST(invalid_set->get_tools().empty());
+        BOOST_TEST(errors.text.str().find((directory / "read_text.yaml").string()) != std::string::npos);
+        BOOST_TEST(errors.text.str().find(field) != std::string::npos);
+        BOOST_TEST(errors.text.str().find("distinctive-secret") == std::string::npos);
+        // The fixture's already-constructed healthy set is unaffected, even
+        // after an empty/degraded set is added to the same real registry.
+        registry.add(invalid_set);
+        BOOST_TEST(registry.get_tools().size() == 1u);
+        BOOST_TEST(!tools::is_error(call({{"path", write("still available")}})));
+    }
+}
+
+/** Also run from an installed tree after changing its YAML byte limits. */
+BOOST_FIXTURE_TEST_CASE(selected_yaml_configuration_controls_read_limits, Fixture)
+{
+    const auto declaration = tools::intrinsic::load_tool_declaration(
+        tools::intrinsic::reading::schema_directory() / "read_text.yaml");
+    const auto file_limit = declaration.config.value("max_file_bytes",
+        tools::intrinsic::ReadTextTool::kMaxFileBytes);
+    const auto output_limit = declaration.config.value("max_output_bytes",
+        tools::intrinsic::ReadTextTool::kMaxOutputBytes);
+    BOOST_TEST(tools::is_error(call({{"path", write(std::string(file_limit + 1, 'a'))}})));
+    if (output_limit < file_limit) {
+        const auto result = call({{"path", write(std::string(output_limit + 1, 'a'))}});
+        BOOST_REQUIRE(!tools::is_error(result));
+        contains(result, "Output clipped to " + std::to_string(output_limit) + " bytes");
+        contains(result, "text (truncated, first " + std::to_string(output_limit) + " bytes)");
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(valid_configuration_boundaries_cover_line_byte_and_expanded_display, Fixture)
+{
+    for (const auto& [file_bytes, output_bytes] :
+         std::vector<std::pair<std::size_t, std::size_t>>{
+             {1, 1}, {32, 4},
+             {tools::intrinsic::ReadTextTool::kMaxConfiguredFileBytes,
+              tools::intrinsic::ReadTextTool::kMaxConfiguredOutputBytes}}) {
+        const auto directory = schema({
+            {"max_file_bytes", file_bytes}, {"max_output_bytes", output_bytes}
+        });
+        SchemaOverride override(directory);
+        registry.clear();
+        auto set = std::make_shared<tools::intrinsic::ReadingToolSet>();
+        BOOST_REQUIRE(set->get_tools().size() == 1u);
+        registry.add(set);
+        const auto path = write(file_bytes == 1 ? "a" : "A\xe2\x82\xac" "B");
+        for (const auto& [mode, format] :
+             std::vector<std::pair<std::string, std::string>>{
+                 {"lines", "plain"}, {"lines", "line_index"},
+                 {"lines", "byte_range"}, {"bytes", "plain"}, {"bytes", "hex_escaped"}}) {
+            const auto result = call({{"path", path}, {"mode", mode}, {"format", format}});
+            BOOST_REQUIRE(!tools::is_error(result));
+            BOOST_CHECK_NO_THROW(Json(result.output.raw).dump());
+            if (output_bytes == 4) {
+                contains(result, "Output clipped to 4 bytes");
+                if (mode == "bytes" && format == "hex_escaped") {
+                    contains(result, "text (truncated, first 4 bytes):\n\\x41");
+                } else if (format == "plain") {
+                    contains(result, "text (truncated, first 4 bytes):\nA\xe2\x82\xac");
+                }
+            }
+        }
+    }
 }

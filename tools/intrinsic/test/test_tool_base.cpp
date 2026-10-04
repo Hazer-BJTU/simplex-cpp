@@ -8,6 +8,9 @@
 #include "tools/invoke_exception.hpp"
 
 #include <memory>
+#include <fstream>
+#include <filesystem>
+#include <unistd.h>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -703,4 +706,52 @@ BOOST_AUTO_TEST_CASE(the_set_runs_a_call_through_the_inherited_phases)
     BOOST_TEST(!tools::is_error(record));
     BOOST_TEST(record.query.id == std::string("call_1"));
     BOOST_TEST(record.output.raw == "[[echoed]]: hello\n");
+}
+
+BOOST_AUTO_TEST_CASE(declared_configuration_failure_cannot_register_a_partial_tool)
+{
+    struct Scratch {
+        std::filesystem::path file = std::filesystem::temp_directory_path()
+            / ("simplex_config_base_" + std::to_string(::getpid()) + ".yaml");
+        ~Scratch() { std::error_code ignored; std::filesystem::remove(file, ignored); }
+    } scratch;
+    {
+        std::ofstream out(scratch.file);
+        out << "name: configured\ndescription: Probe.\nargument_schema: {type: object}\n"
+               "config: {internal_limit: 5}\n";
+        BOOST_REQUIRE(out.good());
+    }
+    class ConfiguredProbe final : public tools::intrinsic::DeclaredTool {
+    public:
+        int initialized = 0;
+        explicit ConfiguredProbe(const std::filesystem::path& file)
+            : DeclaredTool(file)
+        {
+            initialize_configuration([this](const nlohmann::json& config) {
+                initialized = config.at("internal_limit").get<int>();
+                configuration_error("internal_limit", "fault after initialization");
+            });
+        }
+    };
+    auto broken = std::make_shared<ConfiguredProbe>(scratch.file);
+    BOOST_TEST(broken->initialized == 5);
+    BOOST_TEST(broken->get_details().name.empty());
+    BOOST_TEST(!broken->build());
+    ProbeSet set({broken, std::make_shared<ProbeTool>("good")});
+    BOOST_REQUIRE(set.get_tools().size() == 1u);
+    BOOST_TEST(set.get_tools()[0].name == "good");
+    auto query = query_with(nlohmann::json::object());
+    query.name = "configured";
+    BOOST_TEST(set.dispatch(query) == nullptr);
+
+    // Legacy tools may omit config or use {}, but cannot silently accept
+    // nonempty host settings without a concrete initializer.
+    class LegacyProbe final : public tools::intrinsic::DeclaredTool {
+    public:
+        explicit LegacyProbe(const std::filesystem::path& file) : DeclaredTool(file) {}
+    };
+    auto legacy = std::make_shared<LegacyProbe>(scratch.file);
+    ProbeSet legacy_set({legacy, std::make_shared<ProbeTool>("good")});
+    BOOST_REQUIRE(legacy_set.get_tools().size() == 1u);
+    BOOST_TEST(!legacy->build());
 }

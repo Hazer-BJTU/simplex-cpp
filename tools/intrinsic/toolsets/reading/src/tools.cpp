@@ -4,6 +4,7 @@
 #include "textedit/read.hpp"
 #include "textedit/utf8_probe.hpp"
 
+#include <format>
 #include <limits>
 #include <stdexcept>
 
@@ -11,7 +12,31 @@ namespace tools::intrinsic {
 
 ReadTextTool::ReadTextTool()
     : DeclaredTool(reading::schema_directory() / "read_text.yaml")
-{}
+{
+    initialize_configuration([this](const nlohmann::json& config) {
+        for (const auto& [key, value] : config.items()) {
+            if (key != "max_file_bytes" && key != "max_output_bytes") {
+                configuration_error(key, "unknown read_text configuration field");
+            }
+        }
+        const auto limit = [this, &config](
+            const char* key, std::size_t fallback, std::size_t maximum) {
+            const auto found = config.find(key);
+            if (found == config.end()) {
+                return fallback;
+            }
+            if (!found->is_number_integer() || *found < 1 || *found > maximum) {
+                configuration_error(key, std::format(
+                    "must be an integer from 1 to {} bytes", maximum));
+            }
+            return found->get<std::size_t>();
+        };
+        const auto file_bytes = limit("max_file_bytes", kMaxFileBytes, kMaxConfiguredFileBytes);
+        const auto output_bytes = limit("max_output_bytes", kMaxOutputBytes, kMaxConfiguredOutputBytes);
+        max_file_bytes_ = file_bytes;
+        max_output_bytes_ = output_bytes;
+    });
+}
 
 void ReadTextTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -60,14 +85,14 @@ boost::asio::awaitable<model_io::Content> ReadTextTool::invoke(
                 : format == "byte_range" ? textedit::LineReadFormat::ByteRange
                 : textedit::LineReadFormat::Plain;
             auto lines = textedit::read_file_lines_bounded(
-                path, start, count, layout, kMaxOutputBytes, kMaxFileBytes);
+                path, start, count, layout, max_output_bytes_, max_file_bytes_);
             output.field("lines_read", lines.lines_read);
             selected = std::move(lines);
         } else {
             const auto layout = format == "hex_escaped" ? textedit::ByteReadFormat::HexEscaped
                 : textedit::ByteReadFormat::Plain;
             selected = textedit::read_file_bytes_bounded(
-                path, start, count, layout, kMaxOutputBytes, kMaxFileBytes);
+                path, start, count, layout, max_output_bytes_, max_file_bytes_);
         }
 
         // Probe separately: this is advisory evidence, never a read precondition
@@ -81,7 +106,9 @@ boost::asio::awaitable<model_io::Content> ReadTextTool::invoke(
             hints.emplace_back("Invalid UTF-8 bytes replaced for display; use hex_escaped for exact bytes.");
         }
         if (selected.output_truncated) {
-            hints.emplace_back("Output clipped to 65536 bytes; reduce count and reread. For a single long line, use byte mode.");
+            hints.emplace_back(std::format(
+                "Output clipped to {} bytes; reduce count and reread. For a single long line, use byte mode.",
+                max_output_bytes_));
         }
         output.field("total_lines", selected.total_lines)
             .field("total_bytes", selected.total_bytes)

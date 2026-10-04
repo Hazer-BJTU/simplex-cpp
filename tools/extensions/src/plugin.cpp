@@ -145,6 +145,11 @@ model_io::Invocable load_tool(const ToolSetConfig& config, std::string_view tool
     if (declaration.name != tool_name) {
         throw std::runtime_error("tool declaration name does not match its filename");
     }
+    if (!declaration.config.empty()) {
+        throw intrinsic::ToolDeclarationError(
+            "in " + (config.schema_directory / (std::string(tool_name) + ".yaml")).string()
+            + ": at /config: load_tool cannot consume host settings; use load_tool_declaration");
+    }
     return {declaration.name, declaration.description, declaration.argument_schema, {}, {}};
 }
 

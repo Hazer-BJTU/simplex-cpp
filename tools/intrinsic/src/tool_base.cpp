@@ -6,6 +6,7 @@
 
 #include "tools/intrinsic/tool_declaration.hpp"
 #include "tools/invoke_exception.hpp"
+#include "logging/logger.hpp"
 
 namespace tools::intrinsic {
 
@@ -22,7 +23,7 @@ const model_io::Invocable& IntrinsicTool::get_details() const noexcept
 
 DeclaredTool::DeclaredTool(const std::filesystem::path& declaration_file,
                            eventbus::AsyncEventBus* bus)
-    : IntrinsicTool(bus)
+    : IntrinsicTool(bus), declaration_file_(declaration_file)
 {
     // Reported, not thrown: the tool is left UNNAMED, and that is the whole
     // mechanism — IntrinsicToolSet::register_tools() skips a tool with no name,
@@ -38,6 +39,63 @@ DeclaredTool::DeclaredTool(const std::filesystem::path& declaration_file,
     _details.name = std::move(declaration->name);
     _details.description = std::move(declaration->description);
     _details.argument_schema = std::move(declaration->argument_schema);
+    configuration_ = std::move(declaration->config);
+    configuration_ready_ = configuration_.empty();
+}
+
+const nlohmann::json& DeclaredTool::configuration() const noexcept
+{
+    return configuration_;
+}
+
+void DeclaredTool::reject_configuration(std::string_view message)
+{
+    configuration_ready_ = false;
+    _details = {};
+    logging::Logger::error("tool configuration rejected: {} — tool unavailable", message);
+}
+
+void DeclaredTool::configuration_error(
+    std::string_view field, std::string_view reason) const
+{
+    const auto path = field.empty() ? std::string("/config")
+        : std::string("/config/") + std::string(field);
+    throw ToolDeclarationError(std::format(
+        "in {}: at {}: {}", declaration_file_.string(), path, reason));
+}
+
+void DeclaredTool::initialize_configuration(
+    const std::function<void(const nlohmann::json&)>& initialize)
+{
+    if (_details.name.empty() || configuration_initialized_) {
+        return;
+    }
+    configuration_initialized_ = true;
+    try {
+        initialize(configuration());
+        configuration_ready_ = true;
+    } catch (const ToolDeclarationError& failure) {
+        reject_configuration(failure.what());
+    } catch (...) {
+        // A conversion/initializer exception may contain raw configuration.
+        reject_configuration(std::format(
+            "in {}: at /config: configuration initialization failed",
+            declaration_file_.string()));
+    }
+}
+
+bool DeclaredTool::build() noexcept
+{
+    if (_details.name.empty()) {
+        return false;
+    }
+    if (!configuration_ready_) {
+        reject_configuration(std::format(
+            "in {}: at /config: this tool does not support configuration settings",
+            declaration_file_.string()));
+        return false;
+    }
+    return true;
 }
 
 boost::asio::awaitable<std::tuple<bool, std::string>>

@@ -67,7 +67,10 @@ set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 10)
 # v3: model_io::Content gained the Modality member. ToolInterface::invoke()
 #     returns a Content by value and check_result() takes one by value, so a
 #     toolset built against v2 would construct and read a different object.
-set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 3)
+# v4: ToolDeclaration carries owned host configuration; DeclaredTool retains
+#     configuration and its source/validation state. Dynamic tools subclassing
+#     these shared helpers or returning declarations must be rebuilt together.
+set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 4)
 
 # v2: loop hook events hand out MessageItem and AgentInputState references
 #     (loop/events.hpp), both of which contain Content. The same layout change

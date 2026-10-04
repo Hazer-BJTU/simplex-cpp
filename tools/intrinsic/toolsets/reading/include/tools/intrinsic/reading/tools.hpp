@@ -5,7 +5,8 @@
 namespace tools::intrinsic {
 
 /**
- * Read a regular file as text lines or bytes. Stateless, ReadOnly and Trusted;
+ * Read a regular file as text lines or bytes. Immutable per-instance limits;
+ * ReadOnly and Trusted;
  * relative paths use the host working directory, with no workspace sandbox.
  * IO is synchronous and bounded by the textedit file limit. No confirmation,
  * file writes or shared cursors are involved. Concurrent invocations are safe
@@ -13,8 +14,11 @@ namespace tools::intrinsic {
  */
 class ReadTextTool final : public DeclaredTool {
 public:
+    /// Default limits, preserved for callers of the earlier fixed-limit API.
     static constexpr std::size_t kMaxFileBytes = 16 * 1024 * 1024;
     static constexpr std::size_t kMaxOutputBytes = 64 * 1024;
+    static constexpr std::size_t kMaxConfiguredFileBytes = 1024 * 1024 * 1024;
+    static constexpr std::size_t kMaxConfiguredOutputBytes = 16 * 1024 * 1024;
     static constexpr std::uint64_t kDefaultCount = 200;
 
     /// Load the runtime YAML declaration; a missing declaration disables routing.
@@ -28,6 +32,10 @@ public:
     /// File/range errors become the shared InvokeException failure contract.
     boost::asio::awaitable<model_io::Content> invoke(
         const model_io::InvokeQuery& query) override;
+
+private:
+    std::size_t max_file_bytes_ = kMaxFileBytes;
+    std::size_t max_output_bytes_ = kMaxOutputBytes;
 };
 
 } // namespace tools::intrinsic

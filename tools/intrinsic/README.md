@@ -69,8 +69,8 @@ lines (`[[name]]: value`), followed by a blank line and named literal output blo
 Fields and concise hints always precede output, even if added later by the tool.
 Shared field formatting lives in [`utils/textformat`](../../utils/textformat).
 There are no Markdown headings or fences; output is not escaped. `separate()`
-starts a new record. The buffered layout uses dynamic toolset ABI v2; rebuild
-tool plugins together with the host. See [process result examples](toolsets/process/#the-result-shape).
+starts a new record. The shared helpers are covered by the dynamic toolset ABI; rebuild tool plugins
+together with the host (currently ABI v4). See [process result examples](toolsets/process/#the-result-shape).
 
 **`tool_declaration.hpp` — the declaration loader.** A tool's name, description
 and argument schema are the whole of what a model is told about it, and they are
@@ -79,7 +79,12 @@ package next to the sources it describes. `load_tool_declaration()` reads and
 validates one — a mapping, with a non-empty `name`, a non-empty `description`
 and an object-typed `argument_schema` — and `try_load_tool_declaration()` is the
 form a tool uses, which reports the failure through the log and answers nothing
-so the tool is left unnamed and its set skips it.
+so the tool is left unnamed and its set skips it. An optional top-level `config`
+mapping (omitted means `{}`) is retained separately as host-side construction
+settings. Explicit null/scalar/sequence config is invalid. Nested values use the
+shared YAML-to-JSON conversion unchanged; the argument-schema vocabulary does
+not apply. Concrete tools validate all supported keys, types, ranges and defaults.
+Host config never becomes part of Invocable, arguments, skill text or state.
 
 The schema's vocabulary is **closed**, because that subtree goes to a provider
 verbatim: `type` (`string` / `boolean` / `integer` / `array`, the kinds the
@@ -100,10 +105,21 @@ against the implementation is what keeps the readable half honest. See
 **[toolsets/process/](toolsets/process/)** for a toolset that uses it throughout.
 
 **`tool_base.hpp` — `DeclaredTool`.** The `IntrinsicTool` whose Invocable comes
-from such a file: a tool names its declaration and stops there, and everything
-else — validation, the type/security pair, the work — stays in C++. A file that
+from such a file: a tool names its declaration, and a configurable tool calls
+`initialize_configuration()` from its derived constructor body. The callback
+receives a const owned snapshot, validates settings and commits typed members.
+`configuration_error(field, reason)` names the source file and `/config/<field>`;
+initialization failure is logged and clears the tool's advertised name, so even
+a partially initialized derived object cannot register. Other exceptions are
+reported without dumping their values. `build()` refuses nonempty configuration
+that has no initializer; overriding it requires chaining to `DeclaredTool::build()`.
+Everything else — argument validation, type/security, work — stays in C++. A file that
 cannot be loaded leaves the tool unnamed, which is how `register_tools()` skips
-it rather than advertising a schema nobody could find.
+it rather than advertising a schema nobody could find. Each tool reads YAML once;
+existing instances keep their snapshot when the file changes. No generic merging
+with invocation arguments, hot reload or new search paths is introduced.
+[`read_text`](toolsets/reading/README.md#host-configuration) is the first consumer:
+its configured file/output limits preserve the existing defaults.
 
 **`skill_declaration.hpp` — the skill loader, one level up.** A tool's
 declaration says what one call does; nothing in the set of them says how they

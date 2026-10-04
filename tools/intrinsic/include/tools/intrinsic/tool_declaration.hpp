@@ -10,7 +10,8 @@
 // a tool that is least interesting to read and most expensive to get wrong, and
 // the part a reviewer most wants to see whole. This header is the alternative:
 // each of those three comes from a YAML file next to the toolset's sources,
-// loaded once when the tool is built.
+// loaded once when the tool is constructed. A separate optional `config`
+// mapping carries host-side construction settings, never model-facing data.
 //
 // WHAT A DECLARATION FILE LOOKS LIKE
 // ----------------------------------
@@ -20,6 +21,7 @@
 //     Run a program. Waits a short while for it to finish, ...
 //   type: serial_write          # documentation only — see below
 //   security: require_confirm   # documentation only — see below
+//   config: {}                  # optional host-side settings
 //   argument_schema:
 //     type: object
 //     required: [executable]
@@ -90,8 +92,8 @@
 // completely: they are behaviour, they belong to the tool's write_attributes(),
 // and a declaration file that quietly overrode a security decision would be a
 // way to change policy without touching code or its review. The same goes for
-// every other key at the document's top level: what this header does not name,
-// it does not read. (Inside `argument_schema` the rule is the opposite — see
+// every other key at the document's top level except `config`: what this
+// header does not name, it does not read. (Inside `argument_schema` the rule is the opposite — see
 // above — because that is the part that goes on the wire.)
 //
 // That leaves a file able to state something the implementation does not do,
@@ -126,11 +128,11 @@
 namespace tools::intrinsic {
 
 /**
- * One tool's model-facing declaration, as its YAML file states it.
+ * One tool's YAML declaration and separate host-side construction settings.
  *
- * The whole of what a model is told about a tool, and nothing about how it
- * behaves: the type/security pair a call declares and the validation
- * ensure_arguments() performs are the implementation's, not this struct's.
+ * Only name, description and argument_schema are advertised to the model.
+ * The concrete tool validates config; type/security remain C++ policy.
+ * Config is unrestricted implementation data, not an argument schema.
  */
 struct ToolDeclaration {
     /// The tool's name — the key ToolSet::dispatch() routes by.
@@ -141,12 +143,14 @@ struct ToolDeclaration {
 
     /// The JSON Schema of the call's `arguments`, carried verbatim.
     nlohmann::json argument_schema;
+
+    /// Owned host-side mapping; omission means {}. Never part of Invocable.
+    nlohmann::json config = nlohmann::json::object();
 };
 
 /**
  * A declaration that cannot be used: an unreadable file, a YAML syntax error,
- * or a document missing (or malformed in) one of the three things a tool
- * cannot be advertised without.
+ * a missing/malformed model-facing field, or a non-mapping config.
  *
  * Deliberately its own type rather than yamlconfig::YamlConfigError: the
  * message of the one exception a caller here has to catch should not depend on
@@ -174,8 +178,9 @@ public:
  *         `enum`) that agrees with the type and the other clauses, `items` on
  *         every array, a `required` naming only declared properties, and
  *         `anyOf` branches that narrow rather than introduce. `type`/`security`
- *         and any other top-level key are not read at all (see the file
- *         header).
+ *         are not read; optional config must be a mapping and is retained
+ *         without applying the argument-schema vocabulary. Other unrecognized
+ *         top-level keys are ignored (see the file header).
  */
 [[nodiscard]] ToolDeclaration load_tool_declaration(
     const std::filesystem::path& file);
