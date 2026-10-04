@@ -160,12 +160,18 @@ nlohmann::json tool_fragment(
 /** Drive a malformed successful stream and verify its assembly fault lifecycle. */
 void check_assembly_failure(
     asio::io_context& io, ChatCompletionsReader& reader,
-    const std::string& wire, const std::string& detail) {
+    const std::string& wire, const std::string& detail,
+    const std::vector<std::string>& omitted_values = {}) {
     BOOST_CHECK_EXCEPTION(read_all(io, reader, wire), ChatCompletionsAssemblyException,
         [&](const ChatCompletionsAssemblyException& error) {
-            return std::string(error.what()).find("Chat Completions tool-call assembly failed")
+            const std::string message = error.what();
+            for (const auto& value : omitted_values) {
+                BOOST_CHECK_MESSAGE(message.find(value) == std::string::npos,
+                    "Assembly exception exposed a test value: " << value);
+            }
+            return message.find("Chat Completions tool-call assembly failed")
                     != std::string::npos
-                && std::string(error.what()).find(detail) != std::string::npos;
+                && message.find(detail) != std::string::npos;
         });
     BOOST_CHECK(reader.finished());
     BOOST_CHECK(reader.status() == ChatCompletionStatus::Failed);
@@ -221,10 +227,12 @@ BOOST_AUTO_TEST_CASE(reader_assembles_parallel_calls_usage_and_metadata) {
 }
 
 BOOST_AUTO_TEST_CASE(reader_reports_received_index_and_missing_identity_field) {
+    const std::string argument_value = "missing-identity-argument-DO-NOT-PRINT";
+    const std::string arguments = nlohmann::json{{"marker", argument_value}}.dump();
     const std::vector<nlohmann::json> calls = {
-        tool_fragment(7, "", "weather"),
-        tool_fragment(2, "call_2", ""),
-        tool_fragment(11, "", ""),
+        tool_fragment(7, "", "weather", arguments),
+        tool_fragment(2, "call_2", "", arguments),
+        tool_fragment(11, "", "", arguments),
     };
     const std::vector<std::string> details = {
         "received index 7 has an empty id",
@@ -239,7 +247,7 @@ BOOST_AUTO_TEST_CASE(reader_reports_received_index_and_missing_identity_field) {
                 tool_fragment(0, "valid_call", "valid_tool"), calls[index],
             })}}))
                 + sse(chunk(nlohmann::json::object(), "tool_calls")) + done();
-            check_assembly_failure(io, reader, wire, details[index]);
+            check_assembly_failure(io, reader, wire, details[index], {argument_value});
         }
     }
 }
@@ -247,12 +255,18 @@ BOOST_AUTO_TEST_CASE(reader_reports_received_index_and_missing_identity_field) {
 BOOST_AUTO_TEST_CASE(reader_reports_both_received_indices_for_duplicate_assembled_ids) {
     asio::io_context io;
     ChatCompletionsReader reader(io.get_executor());
+    const std::string id_prefix = "duplicate-call-id-";
+    const std::string id_suffix = "DO-NOT-PRINT";
+    const std::string first_argument = "first-call-argument-DO-NOT-PRINT";
+    const std::string second_argument = "second-call-argument-DO-NOT-PRINT";
     const std::string wire = sse(chunk({{"tool_calls", nlohmann::json::array({
-        tool_fragment(3, "call_", "first"), tool_fragment(9, "call_", "second"),
+        tool_fragment(3, id_prefix, "first", nlohmann::json{{"marker", first_argument}}.dump()),
+        tool_fragment(9, id_prefix, "second", nlohmann::json{{"marker", second_argument}}.dump()),
     })}})) + sse(chunk({{"tool_calls", nlohmann::json::array({
-        tool_fragment(9, "same", "", ""), tool_fragment(3, "same", "", ""),
+        tool_fragment(9, id_suffix, "", ""), tool_fragment(3, id_suffix, "", ""),
     })}})) + sse(chunk(nlohmann::json::object(), "tool_calls")) + done();
-    check_assembly_failure(io, reader, wire, "duplicate id at received indices 3 and 9");
+    check_assembly_failure(io, reader, wire, "duplicate id at received indices 3 and 9",
+        {id_prefix + id_suffix, first_argument, second_argument});
 }
 
 BOOST_AUTO_TEST_CASE(reader_accepts_sparse_fragmented_calls_and_shared_id_prefixes) {
