@@ -7,7 +7,8 @@ normal registry prompt injection includes its skill.
 
 Hosts can link `tools_intrinsic_reading` and register
 `std::make_shared<tools::intrinsic::ReadingToolSet>()`. No session store or
-confirmation bus is needed: the stateless tool declares `ReadOnly` / `Trusted`.
+confirmation bus is needed: the tool keeps immutable per-instance limits and
+declares `ReadOnly` / `Trusted`.
 Concurrent calls own their buffers, but external file modifications are not a
 consistent snapshot. IO is synchronous on the invoking thread.
 
@@ -42,8 +43,40 @@ digits. Byte selection may cut a UTF-8 character.
 Relative paths use the host working directory, not the configured workspace
 hint. Symlinks are followed. Non-regular files and embedded NUL paths are
 refused. Reading does not modify contents, though access times can change.
-Files over 16 MiB fail; this initial implementation loads the whole file before
-selection. Input size does not bound combined index/rendering memory.
+Files over the configured limit (default 16 MiB) fail; the implementation
+loads the whole file before selection. Input size does not bound combined
+index/rendering memory.
+
+## Host configuration
+
+`schemas/read_text.yaml` carries optional construction-time settings beside the
+model-facing declaration:
+
+```yaml
+config:
+  max_file_bytes: 16777216
+  max_output_bytes: 65536
+```
+
+Both fields are integer byte counts. `max_file_bytes` accepts 1–1073741824
+(1 GiB); `max_output_bytes` accepts 1–16777216 (16 MiB). Omitted fields retain
+16 MiB / 64 KiB defaults. They need not be ordered: indexed/hex display can be
+larger than source content. Null, booleans, floats, strings, unknown keys, and
+values outside the ranges disable this tool with file/field diagnostics.
+The common loader requires `config` to be a mapping; omission and `{}` are valid.
+
+Each tool reads its selected YAML once and owns its limits. Editing the file
+changes newly constructed tools only; calls do not reread it. Limits apply to
+both line and byte modes. A clipping hint includes the effective output limit.
+The output cap covers rendered text, not metadata/framing. Increasing limits
+increases potential synchronous IO and memory use; even a one-byte output limit
+is valid, though an indexed label or UTF-8 character may not fit.
+
+Configuration is not an invocation argument, provider tool definition, injected
+skill section, or persisted conversation field. Model-supplied properties cannot
+override these limits. The existing schema-directory override remains
+authoritative, including when the selected file has invalid configuration.
+Security/concurrency attributes remain fixed in C++, regardless of YAML metadata.
 
 ## Results and warnings
 
@@ -58,7 +91,7 @@ Concise hints, including suspected non-UTF-8 text warnings, appear with metadata
 before content.
 ToolResult framing adds a final newline when needed; it is not file content.
 
-Rendered content is limited to 65536 bytes as it is produced. Line counts are
+Rendered content is limited as it is produced (default 65536 bytes). Line counts are
 scanned with constant index space; indexed labels and hex escapes are appended
 only until the output limit. Invalid UTF-8 is replaced during bounded rendering,
 so runs of malformed continuation bytes cannot disappear at the boundary. With truncation,
@@ -89,8 +122,8 @@ Resolution order: nonempty `SIMPLEX_READING_SCHEMA_DIR` environment override,
 `<executable>/schemas/reading`, compiled source path. An override is authoritative.
 Installation exports both files to `bin/schemas/reading`; release target discovery
 ships this library and its textedit/fileio dependencies. A missing declaration
-disables that tool and records the capability failure. Missing skill guidance
-does not disable a valid tool.
+or invalid configuration disables that tool and records the capability failure.
+Missing skill guidance does not disable a valid tool.
 
 `test_reading_tools` checks defaults against the loaded schema, all format modes,
 invalid arguments, filesystem failures, encoding repair, clipping, oversize input,
@@ -98,4 +131,4 @@ skill injection and missing declarations through real registry calls. Dense
 newline and malformed continuation runs exercise bounded memory and boundary
 behavior. Core tests verify default registration and guidance injection. CI
 also hides source schemas and runs the staged test executable to prove the
-installed declarations and skill load beside it.
+installed declarations, configuration and skill load beside it.

@@ -40,7 +40,12 @@ public:
 [[nodiscard]] ToolSetConfig load_config(const std::filesystem::path& directory,
                                         std::string_view expected_name);
 
-/** Convenience paths and validated loaders for per-tool declarations and skill. */
+/**
+ * Load only the model-facing declaration. Nonempty per-tool config is refused
+ * because Invocable cannot carry it. For configurable tools, use
+ * intrinsic::load_tool_declaration() and validate its separate config mapping;
+ * toolset-level ToolSetConfig::config remains an independent contract.
+ */
 [[nodiscard]] model_io::Invocable load_tool(const ToolSetConfig& config,
                                             std::string_view tool_name);
 [[nodiscard]] std::optional<ToolSetSkill> load_skill(const ToolSetConfig& config);

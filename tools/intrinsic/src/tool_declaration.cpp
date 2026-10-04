@@ -652,6 +652,13 @@ ToolDeclaration load_tool_declaration(const std::filesystem::path& file)
     declaration.description = require_string_at(document, "description", file, "",
                                                 "the tool's description");
     declaration.argument_schema = require_argument_schema(document, file);
+    if (const auto config = document.find("config"); config != document.end()) {
+        if (!config->is_object()) {
+            fail(file, "/config", "config must be a mapping");
+        }
+        // No schema vocabulary checks: this is host-side implementation data.
+        declaration.config = *config;
+    }
     return declaration;
 }
 

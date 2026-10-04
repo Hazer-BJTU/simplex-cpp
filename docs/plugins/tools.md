@@ -85,3 +85,22 @@ that outlives the tool without an explicitly owned cleanup path.
 
 Finally enable the descriptor in `plugins.extensions.tools.enable`, restart the
 worker, and check discovery and invocation logs.
+
+## Per-tool host settings
+
+Intrinsic declarations can include an optional host-side `config` mapping.
+See [intrinsic tool configuration](configuration.md#intrinsic-tool-configuration)
+for the lifecycle and `read_text` example. A `DeclaredTool` implementation calls
+`initialize_configuration()` in its derived constructor body, validates every
+key/type/range, and commits typed settings only after validation. Use
+`configuration_error(field, reason)` for diagnostics naming the YAML file and
+`/config/<field>`, without dumping values. The initializer catches failures and
+clears the tool's advertised name so registration skips partial initialization.
+Custom `build()` overrides must first call `DeclaredTool::build()`; the base also
+refuses nonempty settings that no concrete initializer consumed.
+
+`tools::extensions::load_tool()` returns only `Invocable` and therefore refuses
+nonempty per-tool settings. A dynamic tool needing these settings can use
+`intrinsic::load_tool_declaration()` and validate its separate `config` member;
+its existing toolset-level configuration is not implicitly merged. Rebuild tool
+plugins against toolset ABI **4** after this shared helper layout change.

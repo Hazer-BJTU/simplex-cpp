@@ -1135,3 +1135,51 @@ BOOST_AUTO_TEST_CASE(try_load_answers_a_good_file_and_reports_a_bad_one)
     const fs::path missing = scratch.directory / "absent.yaml";
     BOOST_TEST(!try_load_tool_declaration(missing).has_value());
 }
+
+// ---- host-side configuration, separate from the model contract --------------
+
+BOOST_AUTO_TEST_CASE(configuration_is_optional_owned_and_preserves_yaml_types)
+{
+    Scratch scratch;
+    const auto omitted = load_tool_declaration(scratch.write("omitted.yaml", kMinimal));
+    BOOST_TEST(omitted.config == nlohmann::json::object());
+    const auto empty = load_tool_declaration(scratch.write(
+        "empty.yaml", std::string(kMinimal) + "config: {}\n"));
+    BOOST_TEST(empty.config == nlohmann::json::object());
+    const auto file = scratch.write("nested.yaml", std::string(kMinimal) + R"(
+config:
+  count: 5
+  flag: false
+  fraction: 1.5
+  literal: "5"
+  nested:
+    arbitrary_keyword: [true, 2, "text", null, {key: value}]
+)");
+    const auto loaded = load_tool_declaration(file);
+    const nlohmann::json expected = {
+        {"count", 5}, {"flag", false}, {"fraction", 1.5}, {"literal", "5"},
+        {"nested", {{"arbitrary_keyword", nlohmann::json::array(
+            {true, 2, "text", nullptr, {{"key", "value"}}})}}}
+    };
+    BOOST_TEST(loaded.config == expected);
+    BOOST_TEST(loaded.config["count"].is_number_integer());
+    BOOST_TEST(loaded.config["fraction"].is_number_float());
+    BOOST_TEST(loaded.argument_schema == omitted.argument_schema);
+    (void)scratch.write("nested.yaml", std::string(kMinimal) + "config: {}\n");
+    BOOST_TEST(loaded.config == expected);
+    BOOST_TEST(load_tool_declaration(file).config.empty());
+}
+
+BOOST_AUTO_TEST_CASE(configuration_rejects_non_mapping_shapes_without_dumping_values)
+{
+    Scratch scratch;
+    for (const std::string value : {"null", "", "[]", "[1, 2]", "42", "false", "distinctive-secret"}) {
+        const auto file = scratch.write("config.yaml", std::string(kMinimal) + "config: " + value + "\n");
+        const auto message = refusal([&] { (void)load_tool_declaration(file); });
+        BOOST_TEST(mentions(message, file.string()));
+        BOOST_TEST(mentions(message, "/config"));
+        BOOST_TEST(mentions(message, "must be a mapping"));
+        BOOST_TEST(!mentions(message, "distinctive-secret"));
+        BOOST_TEST(!try_load_tool_declaration(file));
+    }
+}

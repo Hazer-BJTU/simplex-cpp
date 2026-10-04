@@ -663,7 +663,25 @@ jobs:
           unset SIMPLEX_READING_SCHEMA_DIR
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_reading_tools --log_level=error \
-            --run_test=defaults_schema_skill_and_attributes_match,installed_declarations_take_precedence_when_present,all_read_modes_preserve_expected_selection
+            --run_test=defaults_schema_skill_and_attributes_match,installed_declarations_take_precedence_when_present,all_read_modes_preserve_expected_selection,selected_yaml_configuration_controls_read_limits
+          # Change only installed YAML while source schemas remain hidden.
+          # A fresh instance must use the new limits without rebuilding.
+          cp stage/bin/schemas/reading/read_text.yaml "$parked/read_text.yaml"
+          trap 'cp "$parked/read_text.yaml" stage/bin/schemas/reading/read_text.yaml; rm -f "$parked/read_text.yaml"; mv "$parked/schemas" "$sources"; rmdir "$parked"' EXIT
+          # Use utilities already present in both minimal runtime images.
+          # Check exact lines before and after editing so a schema change cannot
+          # silently leave this reload check exercising the default limits.
+          declaration=stage/bin/schemas/reading/read_text.yaml
+          grep -Fxq '  max_file_bytes: 16777216' "$declaration"
+          grep -Fxq '  max_output_bytes: 65536' "$declaration"
+          sed -i \
+            -e 's/^  max_file_bytes: 16777216$/  max_file_bytes: 64/' \
+            -e 's/^  max_output_bytes: 65536$/  max_output_bytes: 7/' \
+            "$declaration"
+          grep -Fxq '  max_file_bytes: 64' "$declaration"
+          grep -Fxq '  max_output_bytes: 7' "$declaration"
+          stage/bin/test_reading_tools --log_level=error \
+            --run_test=selected_yaml_configuration_controls_read_limits
 
       - name: Assert a release binary finds the STAGED editing declarations
         run: |

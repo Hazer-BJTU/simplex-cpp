@@ -208,3 +208,28 @@ BOOST_AUTO_TEST_CASE(plugin_execute_preserves_original_ownership_across_suspensi
     BOOST_TEST(call.get().output.raw == "ownership preserved");
     BOOST_TEST(fs::exists(marker));
 }
+
+BOOST_AUTO_TEST_CASE(model_only_helper_does_not_discard_per_tool_configuration)
+{
+    Scratch scratch;
+    scratch.write("config.yaml", valid_config);
+    const auto config = tools::extensions::load_config(scratch.root / "noop_toolset", "noop_toolset");
+    const std::string declaration =
+        "name: noop_probe\ndescription: No-op.\nargument_schema: {type: object}\n";
+    for (const std::string mapping : {"", "config: {}\n"}) {
+        scratch.write("noop_probe.yaml", declaration + mapping);
+        BOOST_TEST(tools::extensions::load_tool(config, "noop_probe").name == "noop_probe");
+    }
+    scratch.write("noop_probe.yaml", declaration + "config: {host_only: distinctive-secret}\n");
+    BOOST_CHECK_EXCEPTION((void)tools::extensions::load_tool(config, "noop_probe"),
+        tools::intrinsic::ToolDeclarationError, [&](const auto& error) {
+            const std::string message = error.what();
+            return message.find("noop_probe.yaml") != std::string::npos
+                && message.find("/config") != std::string::npos
+                && message.find("distinctive-secret") == std::string::npos;
+        });
+    const auto loaded = tools::intrinsic::load_tool_declaration(
+        config.schema_directory / "noop_probe.yaml");
+    BOOST_TEST(loaded.config.at("host_only") == "distinctive-secret");
+    BOOST_TEST(config.config.empty());
+}

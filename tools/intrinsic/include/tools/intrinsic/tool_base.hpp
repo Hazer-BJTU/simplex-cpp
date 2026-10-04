@@ -83,6 +83,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -282,7 +283,8 @@ private:
  * The base for a tool whose name, description and argument schema are DECLARED
  * in a YAML file rather than written into its constructor.
  *
- * A derived tool names its file and stops there. Everything else — what it
+ * A derived tool names its file; a tool with host settings also calls
+ * initialize_configuration() from its constructor body. Everything else — what it
  * validates in ensure_arguments(), the type/security pair it declares in
  * write_attributes(), and what invoke() does — is unchanged from IntrinsicTool
  * and stays in C++: the declaration says what the model is told, the
@@ -293,6 +295,15 @@ private:
  * `security` among it).
  */
 class DeclaredTool : public IntrinsicTool {
+public:
+    /**
+     * Refuse registration after declaration/configuration failure. Tools that
+     * accept nonempty config must initialize it in their derived constructor.
+     * A custom build() must call this base implementation before acquiring
+     * resources. Empty config preserves the existing no-configuration behavior.
+     */
+    bool build() noexcept override;
+
 protected:
     /**
      * @param declaration_file the YAML file this tool is declared in. Taken as
@@ -304,11 +315,42 @@ protected:
      *
      * A file that cannot be loaded is reported through the log and leaves the
      * tool with no name — which is what keeps it out of a set's catalogue.
-     * Construction does not throw (tool_declaration.hpp,
+     * Declaration failures do not throw (tool_declaration.hpp,
      * try_load_tool_declaration).
      */
     DeclaredTool(const std::filesystem::path& declaration_file,
                  eventbus::AsyncEventBus* bus = nullptr);
+
+    /// Read-only owned snapshot. Valid until destruction; no hot reload or merge
+    /// with model arguments. Use only during construction to derive settings.
+    [[nodiscard]] const nlohmann::json& configuration() const noexcept;
+
+    /**
+     * Run the concrete tool's validator/initializer once, from its constructor
+     * body after its members exist. Missing declarations skip initialization.
+     * Success enables registration; failure is logged and clears the advertised
+     * declaration so no partly initialized tool can enter a registry.
+     * The callback validates all keys and types before committing typed settings.
+     * Report expected invalid data with configuration_error() for file/field
+     * diagnostics. Unexpected exceptions are reported without their values.
+     */
+    void initialize_configuration(
+        const std::function<void(const nlohmann::json&)>& initialize);
+
+    /// Throw ToolDeclarationError naming the selected file and /config/<field>.
+    /// field is a relative field path (or empty for the whole config mapping);
+    /// reason must describe the constraint without dumping configuration values.
+    [[noreturn]] void configuration_error(
+        std::string_view field, std::string_view reason) const;
+
+private:
+    /// Owned separately from model_io::Invocable and never serialized with it.
+    nlohmann::json configuration_ = nlohmann::json::object();
+    std::filesystem::path declaration_file_;
+    bool configuration_initialized_ = false;
+    bool configuration_ready_ = false;
+
+    void reject_configuration(std::string_view message);
 };
 
 } // namespace tools::intrinsic
