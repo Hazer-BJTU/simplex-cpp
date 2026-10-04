@@ -9,6 +9,54 @@ complete local Git diff and derives all native producer/consumer decisions.
 | Native/runtime or unknown | Run | Run | Run | Run |
 | Hub integration | Skip | Run | Skip | Run |
 | Independent docs/panel | Skip | Skip | Skip | Skip |
+| Content-verified version-only | Skip | Skip | Skip | Skip |
+
+## Verified version-only bypass
+
+`version-only.mjs` checks content before applying the ordinary path rules. The
+bypass applies only when the complete PR/main comparison changes **exactly**
+`VERSION`, `hub/package.json`, and `hub/package-lock.json`. All three must be
+existing regular files modified in place with unchanged modes. Additions,
+deletions, copies, renames, symlinks and mode/type changes cannot qualify.
+
+Both revisions must contain synchronized, valid `MAJOR.MINOR.PATCH` versions
+(no leading zeros), and the old and new versions must differ. As in the repository
+version checker, surrounding whitespace in `VERSION` is ignored. Only these JSON
+values may change:
+
+- `hub/package.json.version`
+- `hub/package-lock.json.version`
+- `hub/package-lock.json.packages[""].version`
+
+Every other JSON value must be unchanged, including scripts, engines, dependency
+versions, lockfile format, integrity and resolution data. JSON whitespace and
+object key order are ignored; strings compare by decoded value, while array order
+and value types are preserved. Number tokens must keep the same spelling: for
+example, `1` to `1.0` conservatively rejects the bypass. This also prevents
+JavaScript integer rounding from concealing changes to large numeric values.
+Duplicate decoded keys at any depth, malformed JSON, invalid UTF-8 and a JSON BOM
+are rejected. The verifier reads Git blobs without executing their contents;
+metadata reads are bounded to 16 MiB and JSON nesting to 128 levels.
+
+False eligibility uses the existing path rules, which still classify `VERSION`
+as native and Hub manifests as integration. Unreadable or ambiguous metadata
+selects the full-validation fallback. Extra paths, including documentation, make
+the bypass ineligible. A final version bump cannot hide earlier implementation
+changes in the same event range. `versioning/**` and CI automation remain native.
+
+For eligible changes, all four worker-dependent job groups are skipped together;
+no consumer downloads a missing artifact or substitutes an older worker. The
+unconditional `changes` job still runs classifier/gate/workflow regression tests
+and `node versioning/sync_version.mjs --check`. Full Hub and panel suites still
+run. The summary states **content-verified version-only bypass** and the version
+transition. `version_from` and `version_to` outputs are mandatory for this category;
+the gate rejects missing/invalid transitions, inconsistent decisions and failed
+or cancelled retained jobs.
+
+This exemption applies only to ordinary pull requests and pushes to `main`.
+Tag-triggered release verification, LTO builds, packaging, npm publishing,
+recovery and documentation workflows are unchanged. A release tag still validates
+the actual tagged version through the complete release workflow.
 
 ## Rules and range handling
 
@@ -105,7 +153,7 @@ node --test hub/test/worker-preconditions.test.js
 ```
 
 For real rollout verification, compare docs-only, panel-only, Hub-integration,
-native and mixed PR/main changes. Use the selection summary and the Actions job
-list to confirm the table, intentional consumer skips and retained full native
-matrices. Record total runner minutes and wall time separately; local classifier
+native, verified version-only and mixed PR/main changes. Use the selection summary
+and the Actions job list to confirm the table, intentional consumer skips and
+retained full native matrices. Record total runner minutes and wall time separately; local classifier
 tests demonstrate scheduling decisions, not measured production cost savings.

@@ -1,4 +1,6 @@
 /** Pure path rules and job decisions for ordinary PR/main CI. */
+import { isProjectVersion } from './version-only.mjs';
+
 const nativeTrees = new Set([
     'core', 'dataclass', 'endpoint', 'extensions', 'intercom', 'io', 'llm',
     'load', 'loop', 'process', 'textedit', 'tools', 'utils', 'versioning',
@@ -52,26 +54,42 @@ export function classifyPaths(paths) {
     return decisionsForCategory(category);
 }
 
-export function decisionsForCategory(category) {
-    if (!['native', 'integration', 'independent'].includes(category)) {
+export function decisionsForCategory(category, transition) {
+    if (!['native', 'integration', 'independent', 'version-only'].includes(category)) {
         throw new Error(`unknown CI category: ${category}`);
     }
-    return {
+    const usesWorkerBuild = category === 'native' || category === 'integration';
+    const decisions = {
         category,
         cpp_validation: category === 'native',
-        portable_build: category !== 'independent',
+        portable_build: usesWorkerBuild,
         staged_validation: category === 'native',
-        worker_integration: category !== 'independent',
+        worker_integration: usesWorkerBuild,
     };
+    if (category === 'version-only') {
+        if (!isProjectVersion(transition?.from) || !isProjectVersion(transition?.to)
+            || transition.from === transition.to) {
+            throw new Error('version-only selection requires a valid version transition');
+        }
+        decisions.version_from = transition.from;
+        decisions.version_to = transition.to;
+    }
+    return decisions;
 }
 
 /** Validate output before writing it or trusting it at the final gate. */
 export function validateDecisions(decisions) {
-    const expected = decisionsForCategory(decisions.category);
+    const expected = decisionsForCategory(decisions.category, {
+        from: decisions.version_from, to: decisions.version_to,
+    });
     for (const [key, value] of Object.entries(expected)) {
         if (decisions[key] !== value) {
             throw new Error(`inconsistent CI selection: ${key}`);
         }
+    }
+    if (decisions.category !== 'version-only'
+        && (decisions.version_from || decisions.version_to)) {
+        throw new Error('unexpected version transition for ordinary path selection');
     }
     return decisions;
 }

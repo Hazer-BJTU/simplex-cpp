@@ -52,6 +52,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       category: ${{ steps.selection.outputs.category }}
+      version_from: ${{ steps.selection.outputs.version_from }}
+      version_to: ${{ steps.selection.outputs.version_to }}
       cpp_validation: ${{ steps.selection.outputs.cpp_validation }}
       portable_build: ${{ steps.selection.outputs.portable_build }}
       staged_validation: ${{ steps.selection.outputs.staged_validation }}
@@ -66,6 +68,8 @@ jobs:
           node-version: '24'
       - name: Test CI selection, result gate and workflow consistency
         run: node --test .github/ci/*.test.mjs
+      - name: Check project version format and synchronization
+        run: node versioning/sync_version.mjs --check
       - name: Classify the complete event range
         id: selection
         run: node .github/ci/classify.mjs
