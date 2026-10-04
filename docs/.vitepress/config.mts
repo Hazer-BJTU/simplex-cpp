@@ -57,6 +57,7 @@ export default defineConfig({
             group('Providers', [
                 ['Support policy', '/providers/index'],
                 ['DeepSeek', '/providers/deepseek'],
+                ['Qwen', '/providers/qwen'],
             ]),
             group('Reference', [
                 ['Command line', '/reference/cli'],

@@ -75,12 +75,15 @@ BOOST_AUTO_TEST_CASE(provider_discovery_ignores_model_selection_and_credentials)
         {"future_field", true}
     };
     auto providers = load::load_providers(configuration, scratch.root);
-    BOOST_TEST(providers.usable_count() == 2u);
+    BOOST_TEST(providers.usable_count() == 3u);
     BOOST_TEST(providers.contains("deepseek"));
     BOOST_TEST(providers.contains("openai"));
+    BOOST_TEST(providers.contains("qwen"));
     boost::asio::io_context io;
     BOOST_CHECK(providers.create_model(
         "deepseek", io.get_executor(), {{"model", "test-model"}}));
+    BOOST_CHECK(providers.create_model(
+        "qwen", io.get_executor(), {{"model", "qwen3.8-flash"}}));
     BOOST_CHECK(providers.create_model(
         "openai", io.get_executor(), {{"model", "test-model"}}));
 }
@@ -266,7 +269,7 @@ BOOST_AUTO_TEST_CASE(yaml_entrypoint_uses_file_parent_and_reports_source) {
 
 BOOST_AUTO_TEST_CASE(shipped_template_loads_plugins_without_credentials_or_network) {
     const auto loaded = load::load_plugins(LOAD_TEMPLATE);
-    BOOST_TEST(loaded.providers.usable_count() == 2u);
+    BOOST_TEST(loaded.providers.usable_count() == 3u);
     BOOST_TEST(loaded.extensions.tools.empty());
     BOOST_TEST(loaded.extensions.loop_hooks.empty());
 
@@ -303,4 +306,34 @@ BOOST_AUTO_TEST_CASE(shipped_template_loads_plugins_without_credentials_or_netwo
     BOOST_TEST(defaults.transport.write_capacity == config.transport.write_capacity);
     BOOST_TEST(defaults.event_capacity == config.event_capacity);
     BOOST_TEST(defaults.max_exchanges == config.max_exchanges);
+}
+
+BOOST_AUTO_TEST_CASE(qwen_role_configuration_creates_independent_models) {
+    Scratch scratch;
+    Json document = {
+        {"providers", {{"primary", {
+            {"plugin", "qwen"}, {"model", "qwen3.8-flash"},
+            {"config", {{"enable_thinking", false}, {"reasoning_effort", "medium"}}}
+        }}}},
+        {"driver_model", "primary"},
+        {"client", {{"endpoint", "ws://127.0.0.1:1/events"}}}
+    };
+    auto config = load::parse_configuration(document, scratch.root);
+    BOOST_TEST(!config.modality_assist_model);
+    document["modality_assist_model"] = "primary";
+    config = load::parse_configuration(document, scratch.root);
+    BOOST_REQUIRE(config.modality_assist_model);
+    auto providers = load::load_providers(document, scratch.root);
+    boost::asio::io_context io;
+    auto driver = providers.create_model(config.provider, io.get_executor(), config.model);
+    auto assistant = providers.create_model(config.modality_assist_model->provider,
+        io.get_executor(), config.modality_assist_model->model);
+    BOOST_REQUIRE(driver);
+    BOOST_REQUIRE(assistant);
+    BOOST_TEST(driver.get() != assistant.get());
+    const auto original = assistant->get_current_options();
+    BOOST_TEST(original.at("enable_thinking") == "disabled");
+    BOOST_TEST(original.at("reasoning_effort") == "medium");
+    driver->handle_options({{"model", "qwen3.8-max"}, {"enable_thinking", "enabled"}});
+    BOOST_TEST(assistant->get_current_options() == original);
 }

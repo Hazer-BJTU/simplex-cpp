@@ -6,7 +6,7 @@ foreach(name configuration confirmation application protocol compact)
 endforeach()
 target_link_libraries(test_core_protocol PRIVATE llm_chat_completions)
 target_link_libraries(test_core_application PRIVATE fileio_lib)
-add_dependencies(test_core_application llm_deepseek)
+add_dependencies(test_core_application llm_deepseek llm_qwen)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Export the test executable's resolver override for interposition in Asio.

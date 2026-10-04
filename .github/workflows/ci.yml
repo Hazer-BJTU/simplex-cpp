@@ -618,6 +618,12 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
 
+      - name: Load the staged Qwen provider
+        run: |
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          export SIMPLEX_QWEN_TEST_PLUGIN_DIR="$PWD/stage/bin/plugins/llm"
+          build/bin/test_qwen_plugin --run_test=options_defaults_and_atomic_updates
+
       - name: Assert a release binary finds the STAGED tool declarations
         # The last step cannot answer this, and that is the whole reason this one
         # exists: the suite runs from build/, and this job checks the sources out
