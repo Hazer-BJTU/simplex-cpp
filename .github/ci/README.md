@@ -80,7 +80,19 @@ this new requirement.
 
 ## Validation and measurement
 
-Run classifier/range/gate regression tests without any package dependencies:
+All workflows use `actions/checkout@v4` and `actions/setup-node@v4`, matching the
+existing native CI and release baseline. A future upgrade should update every
+workflow together after validating the runner and container requirements.
+`workflows.test.mjs` checks that each action uses the same reference throughout
+the workflow directory; it runs in the `changes` job before classification.
+
+The Hub's `test/configurations.test.js` checks exact equality between the
+canonical `load/schemas/config.example.yaml` and bundled `hub/schemas/worker.yaml`.
+The always-selected `hub-test` job runs this check on both supported Node versions.
+Update both files together when changing the worker configuration template.
+
+Run CI selection, range, gate and workflow consistency checks without any package
+dependencies:
 
 ```sh
 node --test .github/ci/*.test.mjs

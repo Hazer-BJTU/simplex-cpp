@@ -64,7 +64,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Test CI selection and result gate
+      - name: Test CI selection, result gate and workflow consistency
         run: node --test .github/ci/*.test.mjs
       - name: Classify the complete event range
         id: selection
