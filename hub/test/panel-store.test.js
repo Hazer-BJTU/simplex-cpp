@@ -500,7 +500,7 @@ describe('panel store: a refused input is handed back (D19)', () => {
         assert.equal(store.getState().items('demo').length, 1);
     });
 
-    it('adds no second row for an input it is already showing', () => {
+    it('retains admission identity alongside the text of its own input', () => {
         const store = createPanelStore();
         store.getState().applyWelcome(welcome('epoch-1', [session()]));
         store.getState().beginInput('demo', 'req-9', [{ type: 'text', raw: 'hello' }], 'message');
@@ -511,9 +511,13 @@ describe('panel store: a refused input is handed back (D19)', () => {
             envelope: envelope(1, 'input_admitted', { request_id: 'req-9' }),
         });
 
-        // The outbox item is the input; `input_admitted` carries no payload, so
-        // a separate placeholder for it would just repeat the same message.
-        assert.equal(store.getState().items('demo').length, 1);
+        // Grouping needs the admission envelope even when the outbox provides
+        // the text. Rendering that grouped round still shows only one input.
+        const items = store.getState().items('demo');
+        assert.equal(items.length, 2);
+        assert.equal(items[0].kind, 'outbox');
+        assert.equal(items[1].kind, 'event');
+        assert.equal(items[1].envelope.event, 'input_admitted');
     });
 
     it('shows a placeholder for an input this page never sent', () => {

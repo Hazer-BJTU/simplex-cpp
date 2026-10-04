@@ -191,6 +191,13 @@ empty `run_id`; it does not finish or rename the active run. If the response
 path fails before the rejection is observed, the outcome remains `unknown`.
 Neither the Hub nor panel automatically resends inputs.
 
+The panel keeps queued inputs separate from executing runs. Sending an input or
+receiving a Hub request record does not open a run. Worker admission and
+execution events bind the input by `request_id`; subsequent results follow
+`run_id`, scoped to `worker_id`. A queued or rejected input cannot take over
+another run's model replies, tool results, or completion. The same association
+applies to live events and transcript replay.
+
 `spec` contains the session's resolved launch/model settings. Sessions created
 from the configuration library additionally identify their saved sources with
 `launchConfig` and `workerConfig`; these select session snapshots rather than

@@ -180,6 +180,12 @@ interface Draft {
     key: string;
     index: number;
     kind: 'prelude' | 'run';
+    /** Wire identities are scoped to a worker; pending inputs have no run ID. */
+    requestId: string;
+    workerId: string;
+    runId: string;
+    /** Includes continuations/compactions, which do not render a user bubble. */
+    localInput: OutboxItem | null;
     input: OutboxItem | null;
     admitted: EventItem | null;
     continued: boolean;
@@ -211,6 +217,10 @@ function newDraft(key: string, index: number, kind: 'prelude' | 'run'): Draft {
         key,
         index,
         kind,
+        requestId: '',
+        workerId: '',
+        runId: '',
+        localInput: null,
         input: null,
         admitted: null,
         continued: false,
@@ -380,6 +390,152 @@ function track(draft: Draft, envelope: WorkerEnvelope): void {
     if (draft.lastAt === null || at > draft.lastAt) draft.lastAt = at;
 }
 
+/**
+ * Associate inputs and execution independently of their arrival order.
+ *
+ * A locally sent input or Hub request record gets its own pending draft. It
+ * becomes a numbered run only when a worker execution event identifies it.
+ * Incoming run IDs take precedence over request IDs, and both are scoped by
+ * worker ID so a restarted worker cannot inherit an earlier run's results.
+ * Rejections use data.request_id and never select the active run, including
+ * envelopes from older workers that still echo the last admitted run ID.
+ */
+class RoundGrouping {
+    readonly drafts: Draft[] = [];
+    private readonly byRun = new Map<string, Draft>();
+    private readonly byRequest = new Map<string, Draft>();
+    private readonly inputs = new Map<string, Draft[]>();
+    private current: Draft | null = null;
+    private loose: Draft | null = null;
+    private runCount = 0;
+
+    private identity(worker: string, id: string): string {
+        return JSON.stringify([worker, id]);
+    }
+
+    private create(requestId = ''): Draft {
+        const draft = newDraft(`round-${this.drafts.length}`, 0, 'prelude');
+        draft.requestId = requestId;
+        this.drafts.push(draft);
+        if (requestId) {
+            const candidates = this.inputs.get(requestId) ?? [];
+            candidates.push(draft);
+            this.inputs.set(requestId, candidates);
+        }
+        return draft;
+    }
+
+    /** A new request cannot move the current execution cursor. */
+    pending(requestId: string): Draft {
+        return this.inputs.get(requestId)?.at(-1) ?? this.create(requestId);
+    }
+
+    /** A repeated local ID is a new attempt, not an edit of an earlier run. */
+    input(item: OutboxItem): Draft {
+        const draft = this.inputs.get(item.requestId)?.findLast((candidate) =>
+            candidate.kind === 'prelude' && !candidate.status && !candidate.localInput)
+            ?? this.create(item.requestId);
+        draft.localInput = item;
+        draft.workerId = item.admittedWorker ?? '';
+        return draft;
+    }
+
+    private unbound(requestId: string, envelope: WorkerEnvelope): Draft | undefined {
+        const workerId = str(envelope.worker_id);
+        return this.inputs.get(requestId)?.findLast((draft) =>
+            draft.kind === 'prelude' && !draft.status
+            && (!draft.workerId || draft.workerId === workerId)
+            && (draft.localInput?.admittedSequence === undefined
+                || (typeof envelope.sequence === 'number'
+                    && envelope.sequence >= draft.localInput.admittedSequence)));
+    }
+
+    /** A known run is authoritative; a different run must not reuse its draft. */
+    known(envelope: WorkerEnvelope): Draft | undefined {
+        const worker = str(envelope.worker_id);
+        const run = str(envelope.run_id);
+        if (run) {
+            const draft = this.byRun.get(this.identity(worker, run));
+            if (draft) return draft;
+        }
+        const request = str(envelope.request_id);
+        if (!request) return undefined;
+        const draft = this.byRequest.get(this.identity(worker, request));
+        return draft && (!run || !draft.runId || draft.runId === run) ? draft : undefined;
+    }
+
+    private bind(draft: Draft, envelope: WorkerEnvelope): void {
+        draft.workerId ||= str(envelope.worker_id);
+        draft.runId ||= str(envelope.run_id);
+        draft.requestId ||= str(envelope.request_id);
+        if (draft.runId) this.byRun.set(this.identity(draft.workerId, draft.runId), draft);
+        if (draft.requestId) this.byRequest.set(this.identity(draft.workerId, draft.requestId), draft);
+    }
+
+    /** Select the identified run, creating it for a replay beginning mid-run. */
+    execution(envelope: WorkerEnvelope): Draft {
+        const request = str(envelope.request_id);
+        let draft = this.known(envelope);
+        // Request IDs may be reused after the admission window. Never reopen a
+        // rejection; a fresh admission after completion also starts a new run.
+        if (draft?.status === 'rejected'
+            || (envelope.event === 'input_admitted' && draft?.status)) draft = undefined;
+        if (!draft) {
+            draft = this.unbound(request, envelope);
+            if (!draft && !request && !str(envelope.run_id)
+                && this.current?.workerId === str(envelope.worker_id)) draft = this.current;
+            draft ??= this.create(request);
+        }
+        this.bind(draft, envelope);
+        if (draft.kind !== 'run') {
+            draft.kind = 'run';
+            draft.index = ++this.runCount;
+            draft.open = true;
+            this.current = draft;
+            this.loose = null;
+        }
+        return draft;
+    }
+
+    /** Keep even unidentifiable refusals visible without changing execution. */
+    rejected(item: EventItem): Draft {
+        const value = obj(item.envelope.data)?.request_id;
+        const request = typeof value === 'string' ? value : '';
+        const worker = str(item.envelope.worker_id);
+        const draft = this.unbound(request, item.envelope) ?? this.create(request);
+        // Do not overwrite execution lookup for an already admitted request
+        // when an older worker rejects a duplicate carrying that same ID.
+        draft.workerId = worker;
+        draft.status = 'rejected';
+        draft.open = false;
+        return draft;
+    }
+
+    /** Bookkeeping may refer to an already completed run; it cannot open one. */
+    bookkeeping(envelope?: WorkerEnvelope): Draft {
+        if (envelope) {
+            const known = this.known(envelope);
+            if (known) return known;
+            const worker = str(envelope.worker_id);
+            if (this.current && (!worker || this.current.workerId === worker)
+                && !str(envelope.run_id) && !str(envelope.request_id)) return this.current;
+        } else if (this.current) {
+            return this.current;
+        }
+        this.loose ??= this.create();
+        return this.loose;
+    }
+
+    /** Settling one run must not close another run or promote a queued input. */
+    finished(draft: Draft): void {
+        draft.open = false;
+        if (this.current === draft) {
+            this.current = null;
+            this.loose = null;
+        }
+    }
+}
+
 /** Build the rounds of a transcript. */
 export function buildRounds(
     items: readonly TranscriptItem[],
@@ -390,14 +546,6 @@ export function buildRounds(
     // while retained, but newer replayable admission events take precedence.
     const continuationIds = new Set<string>();
     const compactIds = new Set<string>();
-    const overflowIds = new Set<string>();
-    for (const item of items) {
-        if (item.kind !== 'event' || item.envelope.event !== 'input_rejected') continue;
-        const rejection = obj(item.envelope.data);
-        if (rejection?.code === 'payload_queue_full' && typeof rejection.request_id === 'string') {
-            overflowIds.add(rejection.request_id);
-        }
-    }
     for (const request of requests.values()) {
         if (request.operation === 'continue') continuationIds.add(request.request_id);
         if (request.operation === 'compact') compactIds.add(request.request_id);
@@ -422,66 +570,29 @@ export function buildRounds(
         if (prompt.call?.name) byName.set(prompt.call.name, prompt);
     }
 
-    const closed: Draft[] = [];
-    // Rejected inputs have no run. Place them after the current round without
-    // diverting subsequent model/tool events away from that active round.
-    let deferredRejections: Draft[] = [];
-    let runCount = 0;
-    let current = newDraft('prelude', 0, 'prelude');
-
-    const hasContent = (draft: Draft): boolean => draft.input !== null
-        || draft.admitted !== null
-        || draft.continued
-        || draft.compacting
-        || draft.assistant.length > 0
-        || draft.calls.length > 0
-        || draft.protocol.length > 0
-        || draft.problems.length > 0
-        || draft.notes.length > 0
-        || draft.requests.length > 0;
-
-    /** Finish the draft in hand, keeping it only if it holds anything. */
-    const flush = (): void => {
-        if (hasContent(current)) closed.push(current);
-        closed.push(...deferredRejections);
-        deferredRejections = [];
-    };
-
-    /** Begin a new run, closing whatever came before it. */
-    const startRun = (): Draft => {
-        flush();
-        runCount += 1;
-        current = newDraft(`run-${runCount}`, runCount, 'run');
-        return current;
-    };
-
-    /** The run in hand, starting one if the prelude is what came before. */
-    const ensureRun = (): Draft => (current.kind === 'run' ? current : startRun());
+    const groups = new RoundGrouping();
 
     for (const item of items) {
         if (item.kind === 'outbox') {
-            if (overflowIds.has(item.requestId)) continue;
-            // A continuation still opens a run, but has no user message to
-            // render. Its request ID remains in the outbox for admission and
-            // refusal bookkeeping until the worker answers.
-            if (current.kind === 'run'
-                && (current.input || current.admitted || current.continued || current.compacting)) startRun();
-            else ensureRun();
-            if (item.operation === 'continue') current.continued = true;
-            else if (item.operation === 'compact') current.compacting = true;
-            else current.input = item;
+            const pending = groups.input(item);
+            if (item.operation === 'continue') pending.continued = true;
+            else if (item.operation === 'compact') pending.compacting = true;
+            else pending.input = item;
             continue;
         }
 
         if (item.kind === 'note') {
-            current.notes.push(item);
-            current.timeline.push({ kind: 'note', key: item.id });
+            const draft = groups.bookkeeping();
+            draft.notes.push(item);
+            draft.timeline.push({ kind: 'note', key: item.id });
             continue;
         }
 
         if (item.kind === 'request') {
-            if (overflowIds.has(item.request.request_id)) continue;
-            current.requests.push(item);
+            const pending = groups.pending(item.request.request_id);
+            pending.requests.push(item);
+            if (item.request.operation === 'continue') pending.continued = true;
+            if (item.request.operation === 'compact') pending.compacting = true;
             continue;
         }
 
@@ -489,28 +600,27 @@ export function buildRounds(
         const name = str(envelope.event);
 
         if (name === 'input_admitted') {
-            // A second admission while a run already holds one is a new turn.
-            if (current.kind !== 'run' || current.admitted !== null) startRun();
+            const run = groups.execution(envelope);
             const operation = str(obj(envelope.data)?.operation);
             if (operation === 'compact') {
-                current.compacting = true;
+                run.compacting = true;
             } else if (operation === 'continue'
                 || (!operation && continuationIds.has(envelope.request_id))) {
-                current.continued = true;
-            } else if (current.input === null) {
-                current.admitted = item;
+                run.continued = true;
+            } else if (run.input === null) {
+                run.admitted = item;
             }
-            current.open = true;
-            track(current, envelope);
-            current.protocol.push(item);
-            current.timeline.push({ kind: 'protocol', key: item.id });
+            run.open = true;
+            track(run, envelope);
+            run.protocol.push(item);
+            run.timeline.push({ kind: 'protocol', key: item.id });
             continue;
         }
 
         if (name === 'compact_finished') {
             const result = parseCompactResult(envelope.data);
             if (result) {
-                const run = ensureRun();
+                const run = groups.execution(envelope);
                 run.compacting = true;
                 run.compactResult = result;
                 track(run, envelope);
@@ -522,7 +632,7 @@ export function buildRounds(
         if (name === 'run_started') {
             // Follows its admission inside the same turn, so this continues the
             // run in hand rather than opening another.
-            const run = ensureRun();
+            const run = groups.execution(envelope);
             run.open = true;
             track(run, envelope);
             run.protocol.push(item);
@@ -532,7 +642,7 @@ export function buildRounds(
 
         if (name === 'run_finished') {
             const summary = obj(envelope.data) ?? {};
-            const run = ensureRun();
+            const run = groups.execution(envelope);
             run.status = str(summary.status) || 'finished';
             if (run.status === 'failed') {
                 const failure = obj(summary.failure) ?? {};
@@ -553,22 +663,21 @@ export function buildRounds(
             run.calls = run.calls.map((call) => (call.result
                 ? call
                 : { ...call, status: statusOf(null, call.prompt, true) }));
-            // Whatever follows belongs to the next turn, not to this one, so
-            // the draft is closed here rather than at the next opener.
-            flush();
-            current = newDraft('between', 0, 'prelude');
+            groups.finished(run);
             continue;
         }
 
         if (PROTOCOL_EVENTS.has(name)) {
-            track(current, envelope);
-            current.protocol.push(item);
-            current.timeline.push({ kind: 'protocol', key: item.id });
+            const draft = name === 'input_committed'
+                ? groups.execution(envelope) : groups.bookkeeping(envelope);
+            track(draft, envelope);
+            draft.protocol.push(item);
+            draft.timeline.push({ kind: 'protocol', key: item.id });
             continue;
         }
 
         if (name === 'model_response') {
-            const run = ensureRun();
+            const run = groups.execution(envelope);
             track(run, envelope);
             const message = obj(envelope.data) ?? {};
             const cost = costLine(message.cost);
@@ -589,7 +698,7 @@ export function buildRounds(
         }
 
         if (name === 'tool_calls') {
-            const run = ensureRun();
+            const run = groups.execution(envelope);
             track(run, envelope);
             const claimed = new Set(run.assistant.flatMap((block) => [...block.callIds]));
             for (const key of addCalls(run, prompts, batchOf(envelope), envelope)) {
@@ -601,7 +710,7 @@ export function buildRounds(
         }
 
         if (name === 'tool_results') {
-            const run = ensureRun();
+            const run = groups.execution(envelope);
             track(run, envelope);
             for (const result of resultsOf(envelope)) {
                 const call = matchCall(run, result);
@@ -640,21 +749,8 @@ export function buildRounds(
             const rejection = obj(envelope.data);
             const rejectedRequestId = rejection?.request_id;
             const queueFull = name === 'input_rejected' && rejection?.code === 'payload_queue_full';
-            let run: Draft;
-            if (queueFull) {
-                run = newDraft(`rejected-${item.id}`, 0, 'prelude');
-                run.input = items.find((candidate): candidate is OutboxItem =>
-                    candidate.kind === 'outbox' && candidate.requestId === rejectedRequestId) ?? null;
-                run.requests = items.filter((candidate): candidate is RequestItem =>
-                    candidate.kind === 'request' && candidate.request.request_id === rejectedRequestId);
-                run.compacting = rejection?.operation === 'compact';
-                run.continued = rejection?.operation === 'continue';
-                run.status = 'rejected';
-                run.open = false;
-                deferredRejections.push(run);
-            } else {
-                run = ensureRun();
-            }
+            const run = name === 'input_rejected'
+                ? groups.rejected(item) : groups.bookkeeping(envelope);
             if (name === 'input_rejected' && (rejection?.operation === 'compact'
                 || (typeof rejectedRequestId === 'string' && compactIds.has(rejectedRequestId)))) {
                 run.compacting = true;
@@ -679,7 +775,7 @@ export function buildRounds(
 
         // An event name this build has never heard of: core is allowed to add
         // them, and a panel that dropped one would lose part of the turn.
-        const run = ensureRun();
+        const run = groups.execution(envelope);
         track(run, envelope);
         run.problems.push({
             key: item.id,
@@ -690,8 +786,12 @@ export function buildRounds(
         run.timeline.push({ kind: 'problem', key: item.id });
     }
 
-    flush();
-    return closed.map((draft) => ({
+    return groups.drafts.filter((draft) => draft.input !== null
+        || draft.admitted !== null || draft.continued || draft.compacting
+        || draft.assistant.length > 0 || draft.calls.length > 0
+        || draft.protocol.length > 0 || draft.problems.length > 0
+        || draft.notes.length > 0 || draft.requests.length > 0
+    ).map((draft) => ({
         key: draft.key,
         index: draft.index,
         kind: draft.kind,

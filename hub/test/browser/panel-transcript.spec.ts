@@ -56,6 +56,77 @@ test('marks an overflowing input rejected and displays retry guidance', async ({
         { exact: true })).toBeVisible();
 });
 
+test('keeps executing A, queued B, and rejected C separate in live and replayed rounds', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.request.post(`${STUB}/__stub/settings`, { data: { holdInput: true } });
+    const composer = page.getByRole('textbox', { name: 'Message' });
+    for (const id of ['A', 'B', 'C']) {
+        await composer.fill(`Input ${id}`);
+        await page.getByRole('button', { name: 'Send', exact: true }).click();
+        await expect(page.getByTestId('outbox-item')).toHaveCount(['A', 'B', 'C'].indexOf(id) + 1);
+    }
+    await expect(page.getByTestId('round-summary')).toHaveCount(0);
+    const received = await (await page.request.get(`${STUB}/__stub/received`)).json();
+    const requests = received.received.filter((message: { type: string }) => message.type === 'input');
+    const [a, b, c] = requests.map((message: { request_id: string }) => message.request_id);
+    const identityA = { request_id: a, run_id: 'run-A' };
+    const identityB = { request_id: b, run_id: 'run-B' };
+    await emit(page, 'input_admitted', { operation: 'message' }, identityA);
+    await emit(page, 'run_started', {}, identityA);
+    await emit(page, 'input_rejected', { request_id: c, operation: 'message',
+        code: 'payload_queue_full', message: 'Wait for current work to finish, then retry.' },
+    { request_id: c, run_id: '' });
+    await emit(page, 'model_response', modelResponse('Answer A', {
+        invokes: [call('call-A', 'run_command', { command: 'echo A' })],
+    }), identityA);
+    await emit(page, 'tool_calls', [call('call-A', 'run_command', { command: 'echo A' })], identityA);
+    await emit(page, 'tool_results', [toolResult('call-A', 'run_command', 'Output A')], identityA);
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 }, identityA);
+
+    const roundA = page.getByTestId('round').filter({ hasText: 'Input A' });
+    const roundB = page.getByTestId('round').filter({ hasText: 'Input B' });
+    const roundC = page.getByTestId('round').filter({ hasText: 'Input C' });
+    await expect(roundA.getByTestId('assistant-message')).toContainText('Answer A');
+    await expect(roundA.getByTestId('tool-card')).toHaveAttribute('data-status', 'ok');
+    await expect(roundA.getByTestId('round-summary')).toContainText('completed');
+    await expect(roundB).toHaveAttribute('data-kind', 'prelude');
+    await expect(roundB.getByTestId('assistant-message')).toHaveCount(0);
+    await expect(roundB.getByTestId('tool-card')).toHaveCount(0);
+    await expect(roundC.getByTestId('outbox-item')).toHaveAttribute('data-state', 'rejected');
+    await expect(roundC).toContainText('Input queue full');
+
+    await emit(page, 'input_admitted', { operation: 'message' }, identityB);
+    await emit(page, 'run_started', {}, identityB);
+    await emit(page, 'model_response', modelResponse('Answer B', {
+        invokes: [call('call-B', 'run_command', { command: 'echo B' })],
+    }), identityB);
+    await emit(page, 'tool_results', [toolResult('call-B', 'run_command', 'Output B')], identityB);
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 1 }, identityB);
+    await expect(roundA.getByTestId('assistant-message')).toContainText('Answer A');
+    await expect(roundA).not.toContainText('Answer B');
+    await expect(roundB.getByTestId('assistant-message')).toContainText('Answer B');
+    await expect(roundB).not.toContainText('Answer A');
+    await expect(roundC.getByTestId('assistant-message')).toHaveCount(0);
+    await expect(page.getByTestId('round-summary')).toHaveCount(2);
+
+    await page.reload();
+    const runs = page.getByTestId('round').filter({ has: page.getByTestId('round-summary') });
+    await expect(runs).toHaveCount(2);
+    for (const [index, id] of ['A', 'B'].entries()) {
+        const round = runs.nth(index);
+        await expect(round.getByTestId('assistant-message')).toContainText(`Answer ${id}`);
+        await expect(round).not.toContainText(`Answer ${id === 'A' ? 'B' : 'A'}`);
+        await expect(round.getByTestId('tool-card')).toHaveCount(1);
+        await round.getByTestId('tool-details').locator('summary').first().click();
+        await expect(round).toContainText(`Output ${id}`);
+    }
+    const rejected = page.getByTestId('round').filter({ hasText: 'Input queue full' });
+    await expect(rejected).toHaveAttribute('data-kind', 'prelude');
+    await expect(rejected.getByTestId('assistant-message')).toHaveCount(0);
+    await expect(rejected.getByTestId('tool-card')).toHaveCount(0);
+});
+
 test('shows a model failure beside its run with guarded retry guidance', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
