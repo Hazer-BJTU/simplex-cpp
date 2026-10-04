@@ -187,3 +187,75 @@ it('uses run IDs for delayed results and scopes reused identities to the worker'
     assert.equal(rounds[2].assistant[0].text, 'Replacement answer');
     assert.equal(rounds[2].status, 'failed');
 });
+
+function crossPanelTranscript() {
+    return [
+        envelope(1, 'input_admitted', 'A', { operation: 'message' }),
+        envelope(2, 'run_started', 'A', {}),
+        envelope(3, 'input_committed', 'A', {}),
+        envelope(4, 'model_response', 'A', response('Answer A', 'call-A')),
+        envelope(5, 'tool_results', 'A', [result('call-A', 'Output A')]),
+        envelope(6, 'run_finished', 'A', { status: 'completed' }),
+        envelope(7, 'input_admitted', 'B', { operation: 'message' }),
+        envelope(8, 'run_started', 'B', {}),
+        envelope(9, 'input_committed', 'B', {}),
+        envelope(10, 'model_response', 'B', response('Answer B', 'call-B')),
+        envelope(11, 'tool_results', 'B', [result('call-B', 'Output B')]),
+        envelope(12, 'run_finished', 'B', { status: 'failed', exchanges: 1,
+            error: 'HTTP 503 after retries', failure: { stage: 'model_request', can_continue: true } }),
+    ];
+}
+
+for (const replay of [false, true]) {
+    it(`orders a remote A before locally queued B through ${replay ? 'reconnect replay' : 'live delivery'}, history refresh and reload`, () => {
+        // A was sent by another panel. Our B outbox exists before A's admission
+        // reaches this panel, so draft creation and execution orders differ.
+        const store = storeWithInputs(['B']);
+        const events = crossPanelTranscript();
+        if (replay) {
+            for (const page of [events.slice(0, 6), events.slice(6)]) {
+                store.getState().applySubscribed({ type: 'subscribed', session,
+                    transcript: page, logs: [], latest: page.at(-1).hub_sequence,
+                    replay_more: page.at(-1).sequence < 12 });
+            }
+        } else {
+            for (const event of events) {
+                store.getState().applyEvent({ type: 'event', session: 'demo',
+                    hub_seq: event.hub_sequence, envelope: event });
+            }
+        }
+        const history = ['A', 'B'].map((id, index) => ({ index,
+            user: [{ type: 'text', modality: 'text', raw: id }],
+            steps: [{ index: 0, content: [{ type: 'text', modality: 'text', raw: `Answer ${id}` }],
+                tool_calls: 1 }], omitted_steps: 0,
+        }));
+        const checkOrder = (panel) => {
+            const runs = roundsFor(panel).filter((round) => round.kind === 'run');
+            assert.deepEqual(runs.map((round) => round.index), [1, 2]);
+            assert.deepEqual(runs.map((round) => round.assistant[0].text), ['Answer A', 'Answer B']);
+            assert.deepEqual(runs.map((round) => round.calls[0].result.text), ['Output A', 'Output B']);
+            assert.equal(runs[0].admitted.envelope.request_id, 'A');
+            assert.equal(runs.at(-1).status, 'failed');
+            assert.equal(runs.at(-1).failure.canContinue, true);
+            return runs;
+        };
+        checkOrder(store);
+        // Simulate both the in-place refresh and a fresh page with no outbox.
+        const reloaded = createPanelStore();
+        reloaded.getState().applySubscribed({ type: 'subscribed', session,
+            transcript: events, logs: [], latest: 12 });
+        for (const panel of [store, reloaded]) {
+            panel.getState().beginHistory('demo');
+            assert.equal(panel.getState().applyHistoryPage('demo',
+                envelope(13, 'history', 'history', {}, { run_id: '' }), {
+                    request_id: 'history', start: 0, step: 0, next: 2, next_step: 0,
+                    revision: 1, total: 2, turns: history,
+                }), true);
+            const runs = checkOrder(panel);
+            const view = panel.getState().views.get('demo');
+            assert.equal(view.historyLoading, false);
+            assert.deepEqual(view.history.map((turn) => turn.user[0].raw), ['A', 'B']);
+            assert.equal(runs[1].input?.requestId ?? runs[1].admitted.envelope.request_id, 'B');
+        }
+    });
+}

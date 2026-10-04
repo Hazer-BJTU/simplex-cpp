@@ -197,6 +197,9 @@ execution events bind the input by `request_id`; subsequent results follow
 `run_id`, scoped to `worker_id`. A queued or rejected input cannot take over
 another run's model replies, tool results, or completion. The same association
 applies to live events and transcript replay.
+Executed rounds follow worker admission order, even if another panel's earlier
+input is observed after a local outbox was created. History matching, latest-run
+selection, and default folding use that same execution order.
 
 `spec` contains the session's resolved launch/model settings. Sessions created
 from the configuration library additionally identify their saved sources with

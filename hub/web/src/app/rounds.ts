@@ -401,7 +401,7 @@ function track(draft: Draft, envelope: WorkerEnvelope): void {
  * envelopes from older workers that still echo the last admitted run ID.
  */
 class RoundGrouping {
-    readonly drafts: Draft[] = [];
+    private readonly drafts: Draft[] = [];
     private readonly byRun = new Map<string, Draft>();
     private readonly byRequest = new Map<string, Draft>();
     private readonly inputs = new Map<string, Draft[]>();
@@ -534,9 +534,25 @@ class RoundGrouping {
             this.loose = null;
         }
     }
+
+    /**
+     * Return executed rounds in worker admission order, not outbox creation
+     * order. A local pending input can precede an earlier admission from another
+     * panel. Keep non-run slots in place, but fill run slots by their execution
+     * index so history matching and latest-run selection share the same order.
+     * A replay starting mid-run uses its first retained execution event.
+     */
+    ordered(): Draft[] {
+        const runs = this.drafts.filter((draft) => draft.kind === 'run')
+            .sort((left, right) => left.index - right.index);
+        let nextRun = 0;
+        return this.drafts.map((draft) => (
+            draft.kind === 'run' ? runs[nextRun++]! : draft
+        ));
+    }
 }
 
-/** Build the rounds of a transcript. */
+/** Build transcript rounds, returning executed runs in admission order. */
 export function buildRounds(
     items: readonly TranscriptItem[],
     confirmations: ReadonlyMap<string, ConfirmationPrompt>,
@@ -786,7 +802,7 @@ export function buildRounds(
         run.timeline.push({ kind: 'problem', key: item.id });
     }
 
-    return groups.drafts.filter((draft) => draft.input !== null
+    return groups.ordered().filter((draft) => draft.input !== null
         || draft.admitted !== null || draft.continued || draft.compacting
         || draft.assistant.length > 0 || draft.calls.length > 0
         || draft.protocol.length > 0 || draft.problems.length > 0
