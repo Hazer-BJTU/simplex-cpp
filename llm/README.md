@@ -475,6 +475,17 @@ truncated stream is surfaced as `ChatCompletionsApiException` by the model
 (DeepSeek's `insufficient_system_resource` therefore reads as a failed
 exchange).
 
+On a successful terminal event, the reader validates fully assembled tool-call
+IDs and names before publishing the response. Empty IDs/names and duplicate
+IDs throw `llm::chat_completions::ChatCompletionsAssemblyException`, identifying
+the received stream index or both duplicate indices. These assembly errors are
+not retried by the default endpoint policy; invalid calls never reach tool dispatch.
+Diagnostics do not include tool arguments or the duplicate ID's value. Sparse
+indices (for example 0 and 2) are valid, and ID/name/argument fragments continue
+to assemble by index. Unsuccessful terminal responses keep their original
+provider failure or limit status. The loop's independent identity validation
+remains a safeguard for other model implementations.
+
 Audio output, legacy request-side `functions`, hosted tools, log probabilities,
 and multiple choices are outside this initial layer. Their raw chunk remains
 available in `ChatCompletionsDelta::extras`, and a future provider dialect can

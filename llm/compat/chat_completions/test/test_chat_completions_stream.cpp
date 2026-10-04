@@ -17,6 +17,7 @@
 
 namespace asio = boost::asio;
 using llm::chat_completions::ChatCompletionStatus;
+using llm::chat_completions::ChatCompletionsAssemblyException;
 using llm::chat_completions::ChatCompletionsDelta;
 using llm::chat_completions::ChatCompletionsReader;
 using llm::chat_completions::ChatCompletionsStreamHandler;
@@ -149,6 +150,30 @@ std::string parallel_tool_stream() {
            done();
 }
 
+/** One received call; empty fields exercise final assembly, not JSON decoding. */
+nlohmann::json tool_fragment(
+    std::size_t index, std::string id, std::string name, std::string arguments = "{}") {
+    return {{"index", index}, {"id", std::move(id)}, {"type", "function"},
+            {"function", {{"name", std::move(name)}, {"arguments", std::move(arguments)}}}};
+}
+
+/** Drive a malformed successful stream and verify its assembly fault lifecycle. */
+void check_assembly_failure(
+    asio::io_context& io, ChatCompletionsReader& reader,
+    const std::string& wire, const std::string& detail) {
+    BOOST_CHECK_EXCEPTION(read_all(io, reader, wire), ChatCompletionsAssemblyException,
+        [&](const ChatCompletionsAssemblyException& error) {
+            return std::string(error.what()).find("Chat Completions tool-call assembly failed")
+                    != std::string::npos
+                && std::string(error.what()).find(detail) != std::string::npos;
+        });
+    BOOST_CHECK(reader.finished());
+    BOOST_CHECK(reader.status() == ChatCompletionStatus::Failed);
+    BOOST_CHECK(reader.end_state() == ChatCompletionsReader::EndState::Faulted);
+    BOOST_CHECK(reader.handler()->get_state() == ChatCompletionsStreamHandler::State::ERROR);
+    BOOST_CHECK(!reader.response().invokes);
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(decoder_preserves_parallel_call_fragments_and_done) {
@@ -193,6 +218,118 @@ BOOST_AUTO_TEST_CASE(reader_assembles_parallel_calls_usage_and_metadata) {
     BOOST_REQUIRE(response.extras);
     BOOST_CHECK_EQUAL((*response.extras)["completion_id"], "chatcmpl_1");
     BOOST_CHECK_EQUAL((*response.extras)["finish_reason"], "tool_calls");
+}
+
+BOOST_AUTO_TEST_CASE(reader_reports_received_index_and_missing_identity_field) {
+    const std::vector<nlohmann::json> calls = {
+        tool_fragment(7, "", "weather"),
+        tool_fragment(2, "call_2", ""),
+        tool_fragment(11, "", ""),
+    };
+    const std::vector<std::string> details = {
+        "received index 7 has an empty id",
+        "received index 2 has an empty name",
+        "received index 11 has an empty id",
+    };
+    for (std::size_t index = 0; index < calls.size(); ++index) {
+        BOOST_TEST_CONTEXT(details[index]) {
+            asio::io_context io;
+            ChatCompletionsReader reader(io.get_executor());
+            const std::string wire = sse(chunk({{"tool_calls", nlohmann::json::array({
+                tool_fragment(0, "valid_call", "valid_tool"), calls[index],
+            })}}))
+                + sse(chunk(nlohmann::json::object(), "tool_calls")) + done();
+            check_assembly_failure(io, reader, wire, details[index]);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(reader_reports_both_received_indices_for_duplicate_assembled_ids) {
+    asio::io_context io;
+    ChatCompletionsReader reader(io.get_executor());
+    const std::string wire = sse(chunk({{"tool_calls", nlohmann::json::array({
+        tool_fragment(3, "call_", "first"), tool_fragment(9, "call_", "second"),
+    })}})) + sse(chunk({{"tool_calls", nlohmann::json::array({
+        tool_fragment(9, "same", "", ""), tool_fragment(3, "same", "", ""),
+    })}})) + sse(chunk(nlohmann::json::object(), "tool_calls")) + done();
+    check_assembly_failure(io, reader, wire, "duplicate id at received indices 3 and 9");
+}
+
+BOOST_AUTO_TEST_CASE(reader_accepts_sparse_fragmented_calls_and_shared_id_prefixes) {
+    asio::io_context io;
+    ChatCompletionsReader reader(io.get_executor());
+    // The gap never creates index 1. Shared prefixes are valid until assembly;
+    // out-of-order fragments still join by their received index.
+    const std::string wire = sse(chunk({{"tool_calls", nlohmann::json::array({
+        tool_fragment(2, "call_", "ti", "{\"zone\":"),
+        tool_fragment(0, "call_", "wea", "{\"city\":"),
+    })}})) + sse(chunk({{"tool_calls", nlohmann::json::array({
+        tool_fragment(0, "a", "ther", "\"Paris\"}"),
+        tool_fragment(2, "b", "me", "\"UTC\"}"),
+    })}})) + sse(chunk(nlohmann::json::object(), "tool_calls")) + done();
+    read_all(io, reader, wire);
+    BOOST_CHECK(reader.status() == ChatCompletionStatus::Completed);
+    BOOST_CHECK(reader.end_state() == ChatCompletionsReader::EndState::Completed);
+    BOOST_REQUIRE(reader.response().invokes);
+    const auto& calls = *reader.response().invokes;
+    BOOST_REQUIRE_EQUAL(calls.size(), 2u);
+    BOOST_CHECK_EQUAL(calls[0].id, "call_a");
+    BOOST_CHECK_EQUAL(calls[0].name, "weather");
+    BOOST_CHECK_EQUAL(calls[0].arguments["city"], "Paris");
+    BOOST_REQUIRE(calls[0].extras);
+    BOOST_CHECK_EQUAL((*calls[0].extras)["index"], 0);
+    BOOST_CHECK_EQUAL(calls[1].id, "call_b");
+    BOOST_CHECK_EQUAL(calls[1].name, "time");
+    BOOST_CHECK_EQUAL(calls[1].arguments["zone"], "UTC");
+    BOOST_REQUIRE(calls[1].extras);
+    BOOST_CHECK_EQUAL((*calls[1].extras)["index"], 2);
+}
+
+BOOST_AUTO_TEST_CASE(clear_allows_a_valid_exchange_after_an_assembly_failure) {
+    asio::io_context io;
+    ChatCompletionsReader reader(io.get_executor());
+    check_assembly_failure(io, reader,
+        sse(chunk({{"tool_calls", nlohmann::json::array({tool_fragment(7, "", "weather")})}}))
+            + sse(chunk(nlohmann::json::object(), "tool_calls")) + done(),
+        "received index 7 has an empty id");
+    reader.clear();
+    read_all(io, reader, parallel_tool_stream());
+    BOOST_CHECK(reader.status() == ChatCompletionStatus::Completed);
+    BOOST_CHECK(reader.end_state() == ChatCompletionsReader::EndState::Completed);
+    BOOST_REQUIRE(reader.response().invokes);
+    BOOST_REQUIRE_EQUAL(reader.response().invokes->size(), 2u);
+    BOOST_CHECK_EQUAL(reader.response().invokes->front().id, "call_a");
+}
+
+BOOST_AUTO_TEST_CASE(incomplete_calls_do_not_replace_unsuccessful_finish_reasons) {
+    for (const auto& reason : {"length", "content_filter", "unknown"}) {
+        BOOST_TEST_CONTEXT(reason) {
+            asio::io_context io;
+            ChatCompletionsReader reader(io.get_executor());
+            read_all(io, reader,
+                sse(chunk({{"tool_calls", nlohmann::json::array({tool_fragment(4, "", "weather")})}}))
+                    + sse(chunk(nlohmann::json::object(), reason)) + done());
+            const auto expected = std::string_view(reason) == "length"
+                ? ChatCompletionStatus::LengthLimited
+                : std::string_view(reason) == "content_filter"
+                    ? ChatCompletionStatus::ContentFiltered : ChatCompletionStatus::Failed;
+            BOOST_CHECK(reader.status() == expected);
+            BOOST_CHECK(reader.end_state() == ChatCompletionsReader::EndState::Completed);
+            BOOST_REQUIRE(reader.response().extras);
+            BOOST_CHECK_EQUAL((*reader.response().extras)["finish_reason"], reason);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(incomplete_calls_do_not_replace_provider_error_details) {
+    asio::io_context io;
+    ChatCompletionsReader reader(io.get_executor());
+    read_all(io, reader,
+        sse(chunk({{"tool_calls", nlohmann::json::array({tool_fragment(4, "", "weather")})}}))
+            + sse({{"error", {{"message", "provider failure"}, {"type", "server_error"}}}}));
+    BOOST_CHECK(reader.status() == ChatCompletionStatus::Failed);
+    BOOST_REQUIRE(reader.error_details());
+    BOOST_CHECK_EQUAL((*reader.error_details())["message"], "provider failure");
 }
 
 BOOST_AUTO_TEST_CASE(text_and_refusal_stream_into_one_model_response) {

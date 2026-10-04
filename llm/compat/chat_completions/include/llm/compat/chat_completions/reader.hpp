@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 #include "dataclass/model_io.hpp"
@@ -14,6 +15,35 @@
 
 namespace llm::chat_completions {
 
+/**
+ * Invalid tool identities in a successfully ended Chat Completions stream.
+ * what() identifies the received index/indices without including argument
+ * contents or the duplicate ID's value. This is an assembly failure rather
+ * than an HTTP transport failure, so endpoint::complete propagates it directly.
+ */
+class ChatCompletionsAssemblyException final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+/**
+ * Accumulates Chat Completions fragments by their received tool-call indices.
+ *
+ * Indices need not be contiguous. ID/name fragments are concatenated and are
+ * checked only when the terminal event declares a successful completion.
+ * Empty IDs/names or duplicate assembled IDs throw
+ * ChatCompletionsAssemblyException with the offending received index/indices.
+ * No invalid final response is published: status() reports Failed, and the
+ * inherited next()/consume() fault path closes the handler and propagates the
+ * exception.
+ * The default endpoint retry policy does not retry these assembly failures.
+ * Diagnostics omit argument contents and the duplicate ID's value.
+ *
+ * Unsuccessful terminal responses retain their provider status and partial
+ * assembly for inspection rather than replacing the original failure with an
+ * identity diagnostic. clear() resets both successful and failed assemblies
+ * for a fresh exchange, under the base reader's serialization contract.
+ */
 class ChatCompletionsReader final
     : public endpoint::ModelResponseReader<ChatCompletionsDelta> {
 public:
