@@ -662,15 +662,18 @@ jobs:
           # A fresh instance must use the new limits without rebuilding.
           cp stage/bin/schemas/reading/read_text.yaml "$parked/read_text.yaml"
           trap 'cp "$parked/read_text.yaml" stage/bin/schemas/reading/read_text.yaml; rm -f "$parked/read_text.yaml"; mv "$parked/schemas" "$sources"; rmdir "$parked"' EXIT
-          python3 - <<'PYCONFIG'
-          from pathlib import Path
-          path = Path('stage/bin/schemas/reading/read_text.yaml')
-          text = path.read_text()
-          assert 'max_file_bytes: 16777216' in text and 'max_output_bytes: 65536' in text
-          text = text.replace('max_file_bytes: 16777216', 'max_file_bytes: 64')
-          text = text.replace('max_output_bytes: 65536', 'max_output_bytes: 7')
-          path.write_text(text)
-          PYCONFIG
+          # Use utilities already present in both minimal runtime images.
+          # Check exact lines before and after editing so a schema change cannot
+          # silently leave this reload check exercising the default limits.
+          declaration=stage/bin/schemas/reading/read_text.yaml
+          grep -Fxq '  max_file_bytes: 16777216' "$declaration"
+          grep -Fxq '  max_output_bytes: 65536' "$declaration"
+          sed -i \
+            -e 's/^  max_file_bytes: 16777216$/  max_file_bytes: 64/' \
+            -e 's/^  max_output_bytes: 65536$/  max_output_bytes: 7/' \
+            "$declaration"
+          grep -Fxq '  max_file_bytes: 64' "$declaration"
+          grep -Fxq '  max_output_bytes: 7' "$declaration"
           stage/bin/test_reading_tools --log_level=error \
             --run_test=selected_yaml_configuration_controls_read_limits
 
