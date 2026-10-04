@@ -1,9 +1,5 @@
 # Qwen
 
-For complete provider-only YAML examples and field descriptions, see the
-[provider configuration tutorial](../tutorials/provider-configuration.md).
-
-
 **Last updated: 2026-10-04.** The bundled `qwen` plugin targets the Qianwen AI
 platform's OpenAI-compatible Chat Completions endpoint. It supports text and
 static images as input and text as output. Audio, video, PDF input, image
@@ -31,7 +27,10 @@ and [Flash guide](https://platform.qianwenai.com/docs/developer-guides/getting-s
 ## Worker configuration
 
 Start with the installed `bin/config.example.yaml`, retaining its client,
-persistence and other worker settings. Replace its provider and role selection:
+persistence and other worker settings. Replace its provider and role selection
+with this complete provider example. Shared endpoint, authentication, and retry
+semantics are described in
+[Support policy](index.md#shared-fields-and-request-ownership).
 
 ```yaml
 providers:
@@ -43,10 +42,29 @@ providers:
       auth:
         scheme: bearer
         api_key: ${QWEN_API_KEY}
-    model: qwen3.8-flash
+        header_name: x-api-key  # Used only with scheme: custom_header.
+        extras: {}             # Metadata; not sent by this plugin.
+      user_agent: simplex-cpp/qwen
+      extra_headers: {}
+      extras: {}               # Metadata; not generation parameters.
+    model: qwen3.8-flash        # Also advertised: qwen3.8-max.
     config:
       enable_thinking: true
-      reasoning_effort: medium
+      preserve_thinking: false # Flash default; Max defaults to true.
+      reasoning_effort: xhigh  # low, medium, or xhigh.
+      # Alternatives: remove reasoning_effort before enabling either one.
+      # reasoning:
+      #   effort: xhigh
+      # thinking_budget: 16384 # Cannot coexist with either effort spelling.
+      tool_stream: true       # Explicit choice; no local default is injected.
+      modalities: [text]      # Output modality; image input remains supported.
+      tool_choice: auto       # "required" is rejected locally.
+      # Optional passthrough examples; values are not plugin defaults:
+      # max_tokens: 8192
+      # temperature: 1.0
+      # top_p: 1.0
+      # stop: ["END"]
+      # response_format: {type: json_object}
     retry:
       max_attempts: 3
       initial_backoff_ms: 500
@@ -105,19 +123,38 @@ translates `enabled` / `disabled` into Boolean `enable_thinking` on the wire.
 Startup `config.enable_thinking` uses YAML `true` / `false` instead. The current
 options report effective values, including defaults, without network access.
 
-For Qwen 3.8, omitted effort defaults to `xhigh`. Startup/low-level `high` and
-`max` normalize to `xhigh`; the panel advertises only canonical values.
-An explicit top-level `reasoning_effort` takes precedence over the shared
-`reasoning: { effort: ... }` envelope. Do not copy DeepSeek's `thinking` object.
+The endpoint, authentication scheme, and user agent above are the plugin's
+transport defaults. The following family defaults apply to `qwen3.8-flash`,
+`qwen3.8-max`, and their hyphen-suffixed snapshots. Other model names are accepted,
+but omitted thinking controls are not filled in using these family defaults.
 
-Advanced startup settings include Boolean `preserve_thinking`, Boolean
-`tool_stream`, and integer `thinking_budget` (0–262144 for Qwen 3.8). Effort and
-budget cannot both be configured. When only a budget is set, current options
-report its band: 0–4096 as `low`, 4097–16384 as `medium`, and larger values as
-`xhigh`. An explicit runtime effort selection removes the budget atomically;
-other option patches keep it. A rejected patch leaves all previous settings
-intact. When thinking is disabled, the effort selection is retained for use
-when thinking is enabled again.
+| Control | Type and behavior |
+| --- | --- |
+| `enable_thinking` | Boolean; defaults to `true` for the two supported families. YAML uses `true`/`false`, not the UI option labels `enabled`/`disabled`. |
+| `preserve_thinking` | Boolean; defaults to `false` for Flash and `true` for Max. Controls replay of previous assistant reasoning as well as the outgoing request field. |
+| `reasoning_effort` | `low`, `medium`, or `xhigh`; defaults to `xhigh` when neither effort nor budget is supplied. For these families, startup aliases `high` and `max` normalize to `xhigh`. |
+| `reasoning.effort` | Shared compatibility spelling; the top-level effort takes precedence and the envelope is removed. |
+| `thinking_budget` | Nonnegative integer, at most `262144` for the supported families. Mutually exclusive with an explicit effort, including `reasoning.effort`. Suppresses the default effort. |
+| `tool_stream` | Boolean; omitted unless configured. Remote model support still applies. |
+| `modalities` | If supplied, must be exactly `[text]`. This restriction concerns generated output, not image input. |
+| `tool_choice` | `required` is rejected locally. Other values are forwarded for server validation. |
+
+Put Qwen controls directly under `config`; the Python SDK's `extra_body` wrapper
+and DeepSeek's `thinking` object are rejected. Audio output settings are also
+rejected. `n` is removed before transmission. For other model families, an explicit
+effort must be a nonempty string and a budget must be a nonnegative integer;
+the server determines which values it supports.
+
+Sampling, output limits, and structured-output fields are passed through. Check
+the [Qwen Chat Completions reference](https://platform.qianwenai.com/docs/api-reference/chat/openai-chat)
+for the chosen model's current constraints.
+
+When only a budget is set, current options report its band: 0–4096 as `low`,
+4097–16384 as `medium`, and larger values as `xhigh`. An explicit runtime
+effort selection removes the budget atomically; other option patches keep it.
+A rejected patch leaves all previous settings intact. When thinking is
+disabled, the effort selection is retained for use when thinking is enabled
+again.
 
 Max replays stored assistant reasoning by default; Flash does so only with
 `preserve_thinking: true`. Reasoning stays in `reasoning_content`, separate from
@@ -125,11 +162,9 @@ visible assistant text. `preserve_thinking: false` suppresses replay without
 removing reasoning from local state. Preserve complete provider reasoning when
 using Max's default mode. The native fields and their interaction are documented
 in the [Chat API reference](https://platform.qianwenai.com/docs/api-reference/chat/openai-chat).
-Put these fields directly in `config`: SDK examples using `extra_body` do not
-mean an `extra_body` object should be sent in the HTTP request.
 
-The plugin rejects `tool_choice: required`; ordinary automatic tool selection
-and supported explicit tool choices use the shared adapter. Consult the
+Ordinary automatic tool selection and supported explicit tool choices use the
+shared adapter. Consult the
 [function-calling guide](https://platform.qianwenai.com/docs/developer-guides/tool-calling/function-calling)
 for provider restrictions on tool choices and streaming complex arguments.
 
@@ -141,10 +176,9 @@ currently specifies a default budget of `131072` without either field, versus
 cost; it does not mean every request consumes the full budget. To retain the
 smaller ceiling, set `thinking_budget: 131072` and omit both effort spellings.
 
-An explicit typed `GenerationPreset` effort, like a UI effort selection, replaces
-any prior budget and removes the old envelope effort in one validated update.
-Invalid updates leave all generation settings unchanged. Low-level JSON patches
-still reject an explicit effort/budget conflict.
+An explicit typed `GenerationPreset` effort follows the same replacement rules
+as a UI effort selection, including removal of the old envelope effort. Low-level
+JSON patches still reject an explicit effort/budget conflict.
 
 ## Images and usage
 
