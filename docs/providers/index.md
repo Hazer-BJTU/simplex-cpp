@@ -1,5 +1,9 @@
 # Model providers
 
+For complete provider-only YAML examples and field descriptions, see the
+[provider configuration tutorial](../tutorials/provider-configuration.md).
+
+
 The documented providers are **DeepSeek** and **Qwen**. Provider pages
 record when their repository implementation and configuration were last reviewed;
 the date is not a claim of live service availability or exhaustive remote testing.

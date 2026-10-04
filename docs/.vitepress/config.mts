@@ -27,6 +27,9 @@ export default defineConfig({
                 ['Installation', '/getting-started/installation'],
                 ['Configuration', '/getting-started/configuration'],
             ]),
+            group('Tutorials', [
+                ['Provider configuration', '/tutorials/provider-configuration'],
+            ]),
             group('Architecture', [
                 ['Overview', '/architecture/overview'],
                 ['Agent loop', '/architecture/agent-loop'],

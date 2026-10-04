@@ -1,5 +1,9 @@
 # Qwen
 
+For complete provider-only YAML examples and field descriptions, see the
+[provider configuration tutorial](../tutorials/provider-configuration.md).
+
+
 **Last updated: 2026-10-04.** The bundled `qwen` plugin targets the Qianwen AI
 platform's OpenAI-compatible Chat Completions endpoint. It supports text and
 static images as input and text as output. Audio, video, PDF input, image

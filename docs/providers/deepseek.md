@@ -1,5 +1,9 @@
 # DeepSeek
 
+For complete provider-only YAML examples and field descriptions, see the
+[provider configuration tutorial](../tutorials/provider-configuration.md).
+
+
 **Last updated: 2026-10-01.** This page describes the bundled implementation,
 not a remotely queried model catalog. Check your account's available models
 before deployment.
