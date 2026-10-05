@@ -4,6 +4,28 @@ The Hub runs independently of workers. It owns the configuration library,
 session routing tokens, launch supervision, event transcript, and plan storage.
 Worker conversation state remains worker-owned.
 
+## Install a local worker
+
+After installing the Hub npm package, run the standalone installer on the Hub
+host before starting the server:
+
+```sh
+simplex-hub install-worker --directory "$HOME/.simplex/worker" --update-path
+# Open a new shell or source ~/.bashrc before starting/restarting the Hub.
+```
+
+This uses the latest stable official GitHub release by default; `--version`
+selects a specific stable tag. The installer does not load startup configuration
+or bind listeners. It installs locally, not into Docker containers or remote
+hosts. See [installation](../getting-started/installation.md) for supported hosts,
+replacement/version decisions, failure recovery, and optional PATH persistence.
+
+Stop workers using the destination before replacing its installation. The Hub's
+saved `local` launcher calls `simplex` through its inherited PATH; updating
+`.bashrc` cannot change an already-running Hub. Restart from an updated shell,
+or replace `launcher.command[0]` with the absolute installed `bin/simplex` path.
+The installer does not rewrite saved launch configurations.
+
 ## Startup
 
 ```sh

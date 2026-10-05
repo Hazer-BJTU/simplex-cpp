@@ -15,8 +15,13 @@ import { createHub } from '../src/hub.ts';
 import type { Hub } from '../src/hub.ts';
 import { createLogger, isLogLevel } from '../src/log.ts';
 import type { Logger } from '../src/log.ts';
+import { runInstallCommand } from '../src/install/command.ts';
 
 const USAGE = `Usage: simplex-hub [options]
+
+Standalone commands:
+  install-worker [options]       install/update the worker without starting the Hub
+                                (see install-worker --help)
 
 Options:
   -c, --config <file>            hub configuration file (default: hub.config.jsonc)
@@ -124,6 +129,13 @@ export function parseArguments(argv: string[]): ParsedArguments {
 export async function main(argv: string[] = process.argv.slice(2)): Promise<
     number | { hub: Hub; address: Awaited<ReturnType<Hub['start']>>; stop: (signal: string) => Promise<void> }
 > {
+    if (argv[0] === 'install-worker') {
+        try {
+            return await runInstallCommand(argv.slice(1));
+        } catch (error) {
+            throw new ConfigError(`install-worker: ${(error as Error).message}`);
+        }
+    }
     const { overrides, run } = parseArguments(argv);
     if (run.help) {
         process.stdout.write(USAGE);
