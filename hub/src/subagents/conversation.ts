@@ -269,6 +269,19 @@ export class ConversationProjection {
                 return;
             }
         }
+        const turn = this.turn(raw, () => { refresh.truncated = true; });
+        if (!turn) { this.failed(); return; }
+        if (raw.omitted_user_parts) refresh.truncated = true;
+        if (page.next_step && refresh.pages >= MAX_REFRESH_PAGES) {
+            // An unfinished older turn must not discard the fully validated
+            // newest tail. If the latest turn itself is unfinished, keep the
+            // prior projection instead. Invalid pages were rejected above.
+            if (refresh.turns.length) {
+                refresh.pending = null;
+                this.finish(refresh, true);
+            } else this.failed();
+            return;
+        }
         const remaining = raw.omitted_steps;
         if (page.next_step && integer(remaining)
             && Number.isSafeInteger(refresh.step + steps.length + remaining)) {
@@ -281,9 +294,6 @@ export class ConversationProjection {
                 return;
             }
         }
-        const turn = this.turn(raw, () => { refresh.truncated = true; });
-        if (!turn) { this.failed(); return; }
-        if (raw.omitted_user_parts) refresh.truncated = true;
         if (refresh.pending) refresh.pending.steps.push(...turn.steps);
         else {
             const known = this.value.turns.find(item => item.index === turn.index);
@@ -298,9 +308,6 @@ export class ConversationProjection {
             refresh.truncated = true;
         }
         if (page.next_step) {
-            // A partial turn cannot replace a known latest result. If work runs
-            // out before reaching its final step, retain the prior projection.
-            if (refresh.pages >= MAX_REFRESH_PAGES) { this.failed(); return; }
             this.fit([refresh.pending], () => { refresh.truncated = true; });
             refresh.step = page.next_step;
             this.query();

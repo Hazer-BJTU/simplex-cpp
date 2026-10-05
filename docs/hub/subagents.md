@@ -211,8 +211,10 @@ fragments. Older turns and steps are evicted first when `conversationBytes` is
 reached; oversized visible text keeps a UTF-8-safe prefix. A refresh makes at
 most 64 page requests per attempt, with a three-second request deadline and at
 most three attempts per refresh trigger. Budget exhaustion marks the projection
-incomplete/truncated; an unfinished or invalid refresh preserves the previously
-published results. The projection follows
+incomplete/truncated. If the page limit interrupts an older turn, that unfinished
+turn is discarded and the fully validated newest tail is published. If the latest
+turn itself remains unfinished, or a revision/cursor validation fails, the refresh
+preserves the previously published results. The projection follows
 **current** worker history after compact, not an archival pre-compact chat log.
 It reports `revision`, `worker_id`, `refreshed_at`, `stale`, `incomplete` and
 `truncated`; worker history itself clips content, so recovery is not lossless.

@@ -140,6 +140,65 @@ it('jumps to the final steps of a heavily fragmented turn instead of losing its 
     assert.ok(statSync(path).size <= 128 * 1024);
 });
 
+it('publishes the completed newest tail when page 64 interrupts a fragmented older turn', async t => {
+    const { view, sent, page, path } = await projection(t, 128 * 1024);
+    for (let count = 1; count <= 64; count += 1) {
+        const { start, step } = sent.at(-1);
+        const unfinished = start === 1;
+        page({ total: 34, next: unfinished ? start : start + 1, next_step: unfinished ? step + 1 : 0,
+            turns: [{ index: start, user: [part(`question ${start}`)],
+                omitted_steps: unfinished ? 31 - step : 0,
+                steps: [{ index: step, content: [part(`answer ${start} step ${step}`)] }] }] });
+        assert.ok(sent.length <= 64);
+    }
+    assert.equal(sent.at(-1).start, 1);
+    assert.equal(sent.at(-1).step, 30);
+    assert.equal(view.value.stale, false);
+    assert.equal(view.value.incomplete, true);
+    assert.equal(view.value.truncated, true);
+    assert.equal(view.value.turns.length, 32);
+    assert.equal(view.value.turns[0].index, 2);
+    assert.equal(view.value.turns.at(-1).steps[0].content[0].raw, 'answer 33 step 0');
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).turns, view.value.turns);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(sent.length, 64, 'a valid bounded tail must not schedule identical retries');
+});
+
+it('preserves prior results when the latest turn is still fragmented at the page limit', async t => {
+    const { view, sent, page } = await projection(t, 128 * 1024);
+    const known = [{ index: 0, user: [part('question')],
+        steps: [{ index: 0, content: [part('previously published answer')] }] }];
+    view.value.turns = structuredClone(known);
+    for (let count = 1; count <= 64; count += 1) {
+        const { step } = sent.at(-1);
+        page({ next: 0, next_step: step + 1,
+            turns: [{ index: 0, user: [part('question')],
+                steps: [{ index: step, content: [part('unfinished answer')] }] }] });
+    }
+    assert.deepEqual(view.value.turns, known);
+    assert.equal(view.value.stale, true);
+    assert.equal(view.value.incomplete, true);
+    assert.equal(sent.length, 64);
+    view.stop();
+});
+
+it('invalidates the refresh when an older fragment changes revision at the page limit', async t => {
+    const { view, sent, page } = await projection(t, 128 * 1024);
+    for (let count = 1; count <= 64; count += 1) {
+        const { start, step } = sent.at(-1);
+        const unfinished = start === 1;
+        page({ total: 34, revision: count === 64 ? 2 : 1,
+            next: unfinished ? start : start + 1, next_step: unfinished ? step + 1 : 0,
+            turns: [{ index: start, user: [part(`question ${start}`)],
+                omitted_steps: unfinished ? 31 - step : 0,
+                steps: [{ index: step, content: [part('answer')] }] }] });
+    }
+    assert.equal(view.value.turns.length, 0, 'a revision mismatch cannot publish the collected tail');
+    assert.equal(view.value.stale, true);
+    assert.equal(view.value.incomplete, true);
+    view.stop();
+});
+
 it('keeps readable UTF-8 text from an oversized final answer within the file budget', async t => {
     const { view, page, path } = await projection(t);
     page({ turns: [{ index: 0, user: [part('问题'.repeat(1000))],
