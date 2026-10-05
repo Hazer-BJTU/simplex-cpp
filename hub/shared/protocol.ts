@@ -80,6 +80,8 @@ export const CAPABILITIES = [
     'session-history',
     /** Worker context compaction through an input operation. */
     'context-compact',
+    /** Headless delegation routes and operator-owned safety policy. */
+    'headless-subagents',
 ] as const;
 
 /** One advertised capability. */
@@ -99,6 +101,8 @@ export const ERROR_CODES = [
     'invalid_session',
     'session_exists',
     'session_busy',
+    'headless_restricted',
+    'invalid_policy',
     'input_not_sent',
     'signal_not_sent',
     'unknown_confirmation',
@@ -281,8 +285,21 @@ export interface ProcessDescription {
     file_log_failed?: boolean;
 }
 
+/** Minimal operator-visible lifecycle; no raw headless events or conversation. */
+export interface SubagentDescription {
+    parent: string;
+    lifecycle: 'preparing' | 'starting' | 'ready' | 'stopping' | 'stopped' | 'cleanup-pending';
+    policy: 'ask' | 'deny' | 'approve';
+    health: 'healthy' | 'degraded' | 'unknown';
+    reason: string;
+    observed_at: string | null;
+    active: boolean;
+}
+
 /** One session, as the panel sees it. */
 export interface SessionDescription {
+    kind?: 'ordinary' | 'headless';
+    subagent?: SubagentDescription;
     session_id: SessionId;
     created_at: string;
     spec: SessionSpec;
@@ -459,6 +476,7 @@ export type PanelMessage =
     | { v?: number; type: 'unsubscribe'; session: SessionId }
     | { v?: number; type: 'create_session'; session: SessionId; spec?: SessionSpec }
     | { v?: number; type: 'delete_session'; session: SessionId }
+    | { v?: number; type: 'subagent_policy'; session: SessionId; policy: 'ask' | 'deny' | 'approve' }
     | {
         v?: number;
         type: 'worker';
@@ -616,7 +634,7 @@ export type HubMessageType = HubMessage['type'];
 export const PANEL_MESSAGE_TYPES = [
     'ping', 'list_sessions', 'subscribe', 'unsubscribe', 'create_session',
     'delete_session', 'worker', 'input', 'history', 'signal', 'confirmation', 'logs',
-    'status_snapshot',
+    'status_snapshot', 'subagent_policy',
 ] as const satisfies readonly PanelMessageType[];
 
 /** Every hub message `type`, in the order `docs/hub/hub-protocol.md` lists them. */

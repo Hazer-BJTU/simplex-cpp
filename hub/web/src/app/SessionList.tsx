@@ -106,7 +106,7 @@ function SessionRow({ session, selected, onSelect }: {
                 </span>
                 <span className={`mt-0.5 block truncate text-xs
                     ${selected ? 'text-accent-ink' : process.tone}`}>
-                    {process.label}
+                    {process.label}{session.kind === 'headless' ? ` · subagent of ${session.subagent?.parent} · ${session.subagent?.lifecycle}` : ''}
                 </span>
                 {stats.items > 0 && (
                     <span className={`mt-0.5 block text-xs

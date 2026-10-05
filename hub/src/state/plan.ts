@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { sessionDir } from '../launch/config-render.ts';
 import type { SessionPlan } from '../../shared/protocol.ts';
 import { validateSessionId } from './session-id.ts';
 
@@ -34,7 +35,7 @@ export class PlanStore {
 
     private path(session: string): string {
         validateSessionId(session);
-        return join(this.dataDir, 'sessions', session, 'plan.json');
+        return join(sessionDir(this, session), 'plan.json');
     }
 
     read(session: string): SessionPlan {
@@ -68,7 +69,7 @@ export class PlanStore {
         if (previous.revision === Number.MAX_SAFE_INTEGER) throw new Error('plan revision exhausted');
         const plan = { markdown, revision: previous.revision + 1, updated_at: new Date().toISOString() };
         const path = this.path(session);
-        mkdirSync(join(this.dataDir, 'sessions', session), { recursive: true });
+        mkdirSync(sessionDir(this, session), { recursive: true });
         const temporary = `${path}.${randomUUID()}.tmp`;
         let published = false;
         try {

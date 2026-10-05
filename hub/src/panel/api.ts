@@ -28,6 +28,8 @@ import { authorizePanel, presentedToken, safeEqual } from '../http/auth.ts';
 import { readJsonBody, sendError, sendJson } from '../http/server.ts';
 import type { UpgradeContext, UpgradeHandler } from '../http/server.ts';
 import type { RouteHandler } from '../http/router.ts';
+import type { SubagentService } from '../subagents/service.ts';
+import { isSubagentId } from '../state/session-id.ts';
 import { sessionDir } from '../launch/config-render.ts';
 import { sessionStateDirectory } from '../launch/config-file.ts';
 import { normalizeSpec } from '../launch/spec.ts';
@@ -123,6 +125,7 @@ export interface PanelApiOptions {
     log: Logger;
     registry: SessionRegistry;
     supervisor: WorkerSupervisor;
+    subagents?: SubagentService;
     transcripts: TranscriptStore;
     state: HubState;
     plans: PlanStore;
@@ -137,7 +140,7 @@ export interface PanelApiOptions {
  * the rest of the hub reports through.
  */
 export function createPanelApi({
-    config, log, registry, supervisor, transcripts, state, plans, meta, onSessionsChanged,
+    config, log, registry, supervisor, subagents, transcripts, state, plans, meta, onSessionsChanged,
 }: PanelApiOptions): PanelApi {
     const configurations = new ConfigurationStore(config);
     const clients = new Set<PanelClient>();
@@ -310,6 +313,7 @@ export function createPanelApi({
     const hooks: PanelHooks = {
         onEvent: (envelope, connection) => {
             const session = connection.session;
+            if (session.kind === 'headless') return;
             if (envelope.event === 'history') {
                 // A history reply is control traffic. Forward it live, but do
                 // not spend retained transcript slots or JSONL space on it.
@@ -412,12 +416,16 @@ export function createPanelApi({
     // ---------------------------------------------------------------------
 
     /** Load a session or send a 404. */
-    function requireSession(res: Parameters<typeof sendError>[0], sessionId: string): Session | null {
+    function requireSession(res: Parameters<typeof sendError>[0], sessionId: string, allowHeadless = false): Session | null {
         if (!isValidSessionId(sessionId)) {
             sendError(res, 400, 'invalid_session', 'session id must be 1-128 [A-Za-z0-9_-]');
             return null;
         }
         const session = registry.get(sessionId);
+        if (session?.kind === 'headless' && !allowHeadless) {
+            sendError(res, 403, 'headless_restricted', 'headless workers are controlled by their direct parent');
+            return null;
+        }
         if (!session) {
             sendError(res, 404, 'unknown_session', `unknown session "${sessionId}"`);
             return null;
@@ -493,6 +501,7 @@ export function createPanelApi({
         body: { request_id?: unknown; operation?: unknown; content?: unknown; options?: unknown },
     ): { ok: true; request_id: string } | SendFailure {
         const connection = session.connection;
+        if (session.closing) return { ok: false, error: 'worker lifecycle is stopping' };
         if (!connection?.isOpen) return { ok: false, error: 'the worker is not connected' };
         if (body.operation === 'compact'
             && (session.workerCapabilities?.workerId !== session.identity.workerId
@@ -528,6 +537,7 @@ export function createPanelApi({
         request_id?: string; start?: number; step?: number; limit?: number;
     }): { ok: true; request_id: string } | SendFailure {
         const connection = session.connection;
+        if (session.closing) return { ok: false, error: 'worker lifecycle is stopping' };
         if (!connection?.isOpen) return { ok: false, error: 'the worker is not connected' };
         if (session.workerCapabilities?.workerId !== session.identity.workerId
             || !session.workerCapabilities.names.includes('session-history')) {
@@ -554,6 +564,7 @@ export function createPanelApi({
         body: { operation: string; run_id?: unknown },
     ): { ok: true } | SendFailure {
         const connection = session.connection;
+        if (session.closing) return { ok: false, error: 'worker lifecycle is stopping' };
         if (!connection?.isOpen) return { ok: false, error: 'the worker is not connected' };
         const runId = typeof body.run_id === 'string'
             ? body.run_id
@@ -624,6 +635,17 @@ export function createPanelApi({
             broadcastSession(session);
             sendJson(res, 200, { session: session.describe() });
         },
+        'POST /api/sessions/:id/subagent-policy': async ({ req, res, params }) => {
+            const session = requireSession(res, params.id as string, true);
+            if (!session) return;
+            const body = await readJsonBody(req, 4096) as { policy?: unknown };
+            if (registry.get(session.id) !== session || session.kind !== 'headless' || !subagents) {
+                sendError(res, 400, 'invalid_policy', 'policy endpoint requires a live headless session');
+                return;
+            }
+            subagents.setPolicy(session, body.policy);
+            sendJson(res, 200, { session: session.describe() });
+        },
         'GET /api/sessions': ({ res }) => {
             sendJson(res, 200, {
                 sessions: registry.list().map((session) => session.describe()),
@@ -634,7 +656,7 @@ export function createPanelApi({
             const parsed = await readJsonBody(req, config.limits.maxMessageBytes) as
                 { session?: unknown; spec?: unknown };
             const id = parsed.session;
-            if (!isValidSessionId(id)) {
+            if (!isValidSessionId(id) || isSubagentId(id)) {
                 sendError(res, 400, 'invalid_session', 'session id must be 1-128 [A-Za-z0-9_-]');
                 return;
             }
@@ -665,7 +687,7 @@ export function createPanelApi({
         },
 
         'GET /api/sessions/:id': ({ res, params }) => {
-            const session = requireSession(res, params.id as string);
+            const session = requireSession(res, params.id as string, true);
             if (!session) return;
             sendJson(res, 200, { session: session.describe() });
         },
@@ -799,6 +821,11 @@ export function createPanelApi({
         // The session is present for every type past this point; the branch
         // above returns for the types where it may be absent.
         const target = session as Session;
+        if (target?.kind === 'headless' && !['confirmation', 'subagent_policy', 'unsubscribe'].includes(type)) {
+            send(client, { type: 'error', error: 'headless_restricted',
+                message: 'headless workers have no direct panel conversation/control interface', request: message });
+            return;
+        }
 
         switch (message.type) {
             case 'ping':
@@ -839,7 +866,7 @@ export function createPanelApi({
                 return;
             case 'create_session': {
                 const created = message.session;
-                if (!isValidSessionId(created)) {
+                if (!isValidSessionId(created) || isSubagentId(created)) {
                     send(client, {
                         type: 'error', error: 'invalid_session',
                         message: 'session id must be 1-128 [A-Za-z0-9_-]', request: message,
@@ -960,6 +987,15 @@ export function createPanelApi({
                     type: 'accepted', action: 'signal',
                     operation: message.operation, session: target.id,
                 });
+                return;
+            }
+            case 'subagent_policy': {
+                if (!subagents || target.kind !== 'headless') {
+                    send(client, { type: 'error', error: 'invalid_policy', message: 'headless session required' });
+                    return;
+                }
+                subagents.setPolicy(target, message.policy);
+                send(client, { type: 'accepted', action: 'subagent_policy', session: target.id });
                 return;
             }
             case 'confirmation': {

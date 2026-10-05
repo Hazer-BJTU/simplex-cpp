@@ -42,3 +42,15 @@ Conversation text and tool results can be sent to the configured provider.
 Readable archives and JSON snapshots may contain sensitive task data. Limit
 filesystem access and retention accordingly. External references are untrusted
 input; rendering a URL is not permission to fetch or execute it.
+
+## Headless delegation
+
+The Hub supports clean-fork/send/receive remote routes for directly owned headless
+workers. Each child uses a flat `<dataDir>/subagents/<generated-id>/` root, an
+independent operator-controlled ask/deny/approve policy, and a bounded primary
+conversation projection. It retains no event transcript or reasoning/tool history.
+Parent process shutdown/crash cascades; socket disconnect alone preserves the
+family. Confirmed child shutdown deletes its persistence. Clean-fork shares any
+explicit external workspace and is not a sandbox. No C++ subagent tool ships yet.
+See the [complete subagent contract](../hub/subagents.md) for configuration snapshots,
+launch support, request deduplication, recovery and cleanup limits.

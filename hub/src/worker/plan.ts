@@ -1,5 +1,5 @@
 /** Authorization and execution of fixed plan routes. No model-selected paths. */
-import { setTimeout as delay } from 'node:timers/promises';
+import { authorizeTool, rejectedTool, ToolFailure } from './tool-context.ts';
 import type { ToolRequest, ToolResponse } from '../protocol/tool-requests.ts';
 import { dispatchToolRequest } from '../protocol/tool-requests.ts';
 import { validMarkdown, type PlanStore } from '../state/plan.ts';
@@ -14,23 +14,13 @@ export async function dispatchPlan(
     const reject = (code: string, message: string): ToolResponse => ({
         ...response, data: { ...response.data, error: { code, message } },
     });
-    const session = registry.get(request.session_id);
-    const deadline = Date.now() + holdMs;
-    // Events and RPCs travel on independent sockets. Wait for admission/status
-    // rather than rejecting a valid call whose run announcement is still queued.
-    while (true) {
-        if (signal.aborted) throw new Error('request closed');
-        if (!session || registry.get(request.session_id) !== session || session.token !== token) {
-            return reject('unauthorized', 'session is no longer authorized');
-        }
-        if (session.identity.state === 'live' && session.identity.workerId !== request.worker_id) {
-            return reject('unauthorized', 'worker identity mismatch');
-        }
-        if (session.connected && session.identity.state === 'live'
-            && session.identity.workerId === request.worker_id && session.activeRunId === request.run_id) break;
-        if (Date.now() >= deadline) return reject('unauthorized', 'active worker run was not verified');
-        await delay(Math.min(10, Math.max(1, deadline - Date.now())), undefined, { signal });
+    let context;
+    try { context = await authorizeTool(route, request, registry, token, holdMs, signal); }
+    catch (error) {
+        if (error instanceof ToolFailure) return rejectedTool(route, request, error);
+        throw error;
     }
+    const session = context.caller;
     const args = request.arguments;
     if (Object.keys(args).some((key) => key !== 'operation' && key !== 'markdown')
         || args.operation !== (route === 'plan/read' ? 'read' : 'replace')
@@ -40,6 +30,7 @@ export async function dispatchPlan(
     }
     // No await between the authorization check, disk commit and publication.
     try {
+        context.validate();
         const result = route === 'plan/read'
             ? { plan: plans.read(session.id), changed: false }
             : plans.replace(session.id, args.markdown as string);

@@ -1,0 +1,257 @@
+# Headless subagents
+
+The bundled Hub supports delegation through the **Simplex Loop Worker Protocol**
+remote-tool channel. A protocol client can create a clean worker, send tasks and
+inspect outcomes. This is a Hub capability (`headless-subagents`); the C++ worker
+does not yet ship an intrinsic subagent tool. Its existing event, payload,
+confirmation, history and remote-tool interfaces are sufficient.
+
+## Ownership and visibility
+
+An ordinary session is interactive. A headless session has a Hub-generated
+`subagent-<UUID>` ID, a fresh token and an immutable `cascading_parent` reference:
+parent session ID, supervised lifecycle ID and worker ID. Only the live parent
+worker, during an observed active run, can control its **direct** children.
+A child may create children of its own; ancestors cannot send to grandchildren.
+The generated namespace is reserved and cannot be chosen in the session form/API.
+
+The panel shows headless entries with their parent, process state, connection,
+active/idle run, observed health, pending approvals and safety policy. Selecting
+one opens a status/security view. There is no composer, transcript, configuration
+replacement, manual restart or direct message/continue/compact/stop control.
+The same restrictions apply to REST and panel WebSocket callers.
+
+![Headless status and safety policy view](./assets/headless-subagent.png)
+
+Health is an observation, not a watchdog for model progress. A live identified
+channel is healthy; disconnect/storage or protocol diagnostics are degraded;
+unverified/recovered/terminated workers are unknown. `observed_at` reports the
+last worker event. A long, quiet model request is not itself a health failure.
+
+## Clean-fork
+
+`subagent/clean-fork` accepts an empty argument object. It reserves quota, creates
+private ownership/configuration files, commits a durable operation receipt, then
+schedules automatic startup. It returns immediately:
+
+```json
+{"subagent_id":"subagent-12345678-1234-4123-8123-123456789abc","lifecycle":"preparing"}
+```
+
+Read the child's state rather than assuming the process is connected. Lifecycle
+states are `preparing`, `starting`, `ready`, `stopping`, `stopped` and
+`cleanup-pending`. Failure reasons accompany status; startup failure/timeout
+initiates supervised shutdown and cleanup.
+
+The Hub captures `config/startup-worker.yaml` and `config/startup-launch.jsonc`
+for each supervised launch. Clean-fork uses that incarnation's startup snapshot,
+not the current configuration library or its public session description. It
+preserves providers/model roles, prompts, plugin admission/configuration,
+generation settings, explicit launcher environment and deployment options.
+Runtime payload options do not change the startup snapshot. The host environment
+continues to be inherited by the launcher; it is not copied into the snapshot.
+
+The child receives fresh event/confirmation/remote-tool URLs and persistence root.
+Even if the parent disabled confirmation/remote tools, those channels are enabled
+for the child as lifecycle-owned overrides. Its relative state/memory directories
+remain unchanged; first startup uses `restore: if_present`. No parent state,
+memory, conversation, plan, event or process log is copied.
+
+Supported relative workspace paths, plugin discovery directories, extension
+`schema_directory`/`config_file`, worker executable and launcher working directory
+retain their resolved meaning after relocation. Prompt files remain relative to
+the worker installation. Arbitrary plugin-specific path fields cannot be inferred;
+use absolute paths for additional external resources.
+
+Initially supported launches are native `simplex-worker` executables and
+foreground Docker templates with `--rm`, `--init`, a `{session}`-based `--name`,
+`{session_dir}:{session_dir}` bind and child config/session placeholders.
+Daemonizing/PID-file launches, detached Docker and arbitrary wrapper commands are
+rejected as `unsupported_launch`. Extra native flags may not override config or
+session identity. Externally attached workers without a supervised startup
+snapshot cannot be forked.
+
+This isolates identity and conversational persistence. Shared host workspace
+mounts/resources stay shared. A fresh Docker-local `/root/workspace` is fresh
+because a new container is created. Clean-fork provides no filesystem sandbox.
+
+## Remote routes
+
+Use the existing dedicated tool listener and per-session token:
+
+```text
+ws://<tools-host>:<tools-port>/agent/<caller>/tools/subagent/<operation>?token=<caller-token>
+```
+
+The request/response envelope is unchanged. Echo `worker_id`, `session_id`,
+`run_id`, `request_id`; executable routes verify current connection, live worker,
+active run, lifecycle and direct-parent ownership. Independently delivered event
+admission can be held briefly, bounded by `confirmIdentityHoldMs` and the RPC
+socket deadline. Unknown routes continue to return `not_implemented`.
+
+| Route | Arguments | Result |
+| --- | --- | --- |
+| `subagent/clean-fork` | `{}` | generated ID and initial lifecycle |
+| `subagent/receive` | `{}` | direct children, including retained terminal states |
+| `subagent/receive` | `subagent_id`, optional `cursor` (0), `limit` (5, range 1–10) | status, bounded request outcomes and current primary conversation page |
+| `subagent/send` | `subagent_id`, `operation: message`, `content`, optional `options` | child request ID and socket dispatch state |
+| `subagent/send` | `subagent_id`, `operation: continue` or `compact`, optional `options` | child request ID and dispatch state; content is forbidden |
+| `subagent/send` | `subagent_id`, `operation: stop` | operation ID and stopping state; content/options are forbidden |
+
+All unspecified arguments are rejected. `content` follows normal worker payload
+content rules. `options.model` and the empty reserved `options.tools` are accepted;
+`options.confirmation` is forbidden. The Hub always sends `confirmation.mode: ask`
+and applies the user's independent child policy at the confirmation boundary.
+Compact requires that child's current `context-compact` capability. Continue
+resumes worker state and creates no empty user turn. Stop is process shutdown
+with escalation, not cancellation of a single run. It immediately closes family
+admission and is idempotent.
+
+Argument objects are limited to 64 KiB serialized UTF-8. Responses are limited to
+256 KiB. Receive returns the latest 20 request outcomes, reducing that tail if
+needed (`requests_truncated`). Conversation cursors are offsets in the current
+bounded turn array; `next`/`total` describe that array, while each turn retains its
+worker `index`. A refresh/compaction can change the array/revision; restart cursor
+0 to read a new revision. Oversized whole turns are omitted, the cursor advances,
+and `truncated` is true. Configuration, tokens, raw events, reasoning, tools and
+restorable AgentInputState are never returned.
+
+Request outcomes distinguish `intent`, `sent`, `admitted`, `rejected`, `unknown`
+and `finished`. `sent` means socket queue admission only. `finished` carries the
+worker's run status; compact may include its published `summary`. Busy/invalid
+input is reported by the child's rejection. Connection loss before a definitive
+outcome produces `unknown`; it does not trigger retransmission. Receive is a
+snapshot query and never waits for a model run to finish.
+
+Stable rejection codes include `unauthorized`, `invalid_arguments`,
+`policy_forbidden`, `unsupported_launch`, `unsupported_operation`,
+`lifecycle_closed`, `disconnected`, `limit_exceeded`, `request_conflict`,
+`recovery_required`, `delivery_unknown`, `storage_error`, `result_too_large` and `not_implemented`.
+Do not depend on diagnostic wording.
+
+## Duplicate requests and lost replies
+
+Mutating subagent operations persist receipts keyed by caller lifecycle, worker,
+run and request IDs. Their canonical route/argument hash detects changed
+arguments or changed routes under the same key. Identical repeats within the
+retention window return the recorded commit result with `replayed: true`; receive gives
+the current status. Read-only receive has no receipt. Existing plan semantics
+remain unchanged.
+
+Creation commits its ownership and receipt before launching. Send records intent
+and a retry receipt **before** writing the worker socket. A crash in between is
+unknown, even if the message never reached the worker. It is never replayed
+automatically. The send receipt conservatively retains `unknown`, even when the
+first reply reports `sent`; receive provides the subsequently observed outcome.
+Stop records its receipt before supervised work starts.
+
+Before commit, deadline/disconnection prevents a queued operation from starting.
+After commit, a lost RPC peer does not roll back work; lifecycle work finishes
+under the supervisor. Use discovery/receive to recover a lost reply.
+
+Receipts expire after `receiptTtlMs` or when `maxReceipts` newer receipts displace
+them. Request outcome tails are bounded to 200 entries and 512 KiB on disk.
+Duplicate suppression is bounded, **not exactly-once execution**. Do not reuse
+expired request IDs expecting deduplication.
+
+## Safety approvals
+
+Each child begins with independent **ask** policy. Authenticated operators can
+select ask/deny/approve in the headless status view or send:
+
+```json
+{"type":"subagent_policy","session":"subagent-12345678-1234-4123-8123-123456789abc","policy":"deny"}
+```
+
+REST equivalent: `POST /api/sessions/<id>/subagent-policy` with `{"policy":"deny"}`.
+Worker models have no route to change this policy. Every mode requires a verified
+live worker and active run before answering a confirmation. Ask prompts are
+broadcast globally and labeled with child and parent. Deny/approve answer only
+newly verified requests; an existing ask prompt remains individually actionable
+after a policy change. Disconnection, expiry, stale identity and stopping never
+approve a request. Worker Trusted/DefaultDeny behavior is unchanged.
+
+## Persistence and lifetime
+
+```text
+<dataDir>/sessions/<ordinary-id>/
+<dataDir>/subagents/<generated-id>/
+  metadata.json
+  config/config.yaml
+  config/launch.jsonc
+  config/startup-worker.yaml
+  config/startup-launch.jsonc
+  state/                         # or configured relative directory
+  memory/                        # or configured relative directory
+  conversation.json
+  operations.json
+  plan.json                      # if used
+  logs/                          # bounded process stdout/stderr diagnostics
+```
+
+Children are flat, regardless of depth. Headless metadata is authoritative here;
+ordinary `hub.json` does not duplicate these records. Hub-owned metadata, receipts, conversation and configuration files use atomic
+replacement and mode 0600. Worker-written state/memory follow the launcher umask. Cleanup refuses linked roots/path escapes; it never
+recursively deletes a configured external workspace.
+
+Headless events are consumed transiently for authorization, status and outcomes.
+There is no retained event ring, `events.jsonl`, ordinary replay/subscription or
+raw latest-envelope cache. Process stdout/stderr logs are separate, bounded
+operator diagnostics and can still contain sensitive output.
+
+`conversation.json` stores committed user content and visible assistant content
+with turn/step association. It excludes reasoning, tool calls/results and extras.
+Live commits update it; paginated worker history reconciles reconnects, restarts
+and event gaps. Refresh validates request/worker/connection identity, both cursors,
+revision, ordering and concurrent changes before replacing the projection.
+Queries have finite deadlines/retries and a 64-page limit. The projection follows
+**current** worker history after compact, not an archival pre-compact chat log.
+It reports `revision`, `worker_id`, `refreshed_at`, `stale`, `incomplete` and
+`truncated`; worker history itself clips content, so recovery is not lossless.
+
+Stopping/restarting/force-killing a parent, observing its process crash, or shutting
+down the Hub freezes all descendant admission synchronously and attempts every
+cleanup. Sibling failures do not skip later siblings. A mere WebSocket disconnect
+does not stop children. A worker incarnation change invalidates its old family.
+
+Deletion waits for confirmed actual process/container termination and owned output
+pipes/log writer closure. A Docker CLI exit alone is insufficient; the Hub inspects
+and signals the named container. Failure leaves cleanup-pending metadata and a
+periodic retry. Successful shutdown deletes **all** child persistence, including
+conversation. Parents must receive desired output first. Only small terminal
+status/outcome records remain in memory for one receipt TTL, capped at 128.
+
+On restart the Hub restores processes and validates the parent graph/lifecycle
+before adopting a family. Stale parents, cycles and stopping intent trigger
+cleanup rather than resurrection. A crash between spawn and process publication
+can leave uncertain startup evidence: preserve it as cleanup-pending instead of
+deleting potentially live data. Invalid ownership metadata is quarantined for
+operator inspection and blocks additional forks. Never delete such directories
+until the process/container is independently confirmed stopped. Owned output
+tasks have a five-second join deadline per cleanup attempt; an incomplete fence
+retains the directory and is retried rather than blocking sibling cleanup forever.
+
+## Resource configuration
+
+The Hub JSONC configuration accepts:
+
+```json
+{
+  "subagents": {
+    "maxLive": 16,
+    "maxChildren": 4,
+    "maxDepth": 3,
+    "startupTimeoutMs": 30000,
+    "maxReceipts": 200,
+    "receiptTtlMs": 3600000,
+    "conversationBytes": 1048576
+  }
+}
+```
+
+Reservations and cleanup-pending children count against capacity. Only confirmed
+resource removal releases quota. All limits are positive safe integers;
+conversationBytes must be at least 4096. Supported maxima are 128 live workers,
+32 direct children, depth 16 and 1000 receipts. Keep deployment limits conservative:
+recursive delegation starts real processes/containers and shares configured
+credentials and external resources.

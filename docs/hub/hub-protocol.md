@@ -83,6 +83,7 @@ do not advertise the capability; those builds do not provide paged recovery.
 | `global-confirmations` | confirmations reach every client, not only subscribers |
 | `session-history` | panel can query a worker's simplified conversation history |
 | `context-compact` | panel can request worker context compaction and display the result |
+| `headless-subagents` | authenticated parent delegation and headless operator safety controls |
 
 These describe the hub **build**, not its configuration. `supervisor` means
 "this hub starts and signals worker processes", which stays true for every
@@ -123,6 +124,15 @@ Worker routes use different, per-session tokens; a panel token never works
 there.
 
 ## Session description
+
+Descriptions include `kind` (`ordinary` or `headless`). A headless description
+also includes `subagent` with parent, lifecycle, policy, health/reason,
+`observed_at` and active-run flag. Its spec/invocation are redacted; no raw event
+cache or full conversation is exposed. See [headless subagents](subagents.md).
+Headless sessions permit description/listing, `confirmation` and
+`subagent_policy`; subscription, replay, logs/snapshot, direct input/history,
+signals, worker control and configuration replacement are rejected on both APIs.
+
 
 Most messages embed this object, produced by `Session.describe()`:
 
@@ -231,6 +241,7 @@ confirmation connection existed.
 | Method and path | Body | Response |
 | --- | --- | --- |
 | `GET /api/meta` | — | hub metadata and capabilities |
+| `POST /api/sessions/:id/subagent-policy` | `policy` | authenticated operator changes headless ask/deny/approve policy |
 | `GET /api/sessions` | — | `{sessions: [session...]}` |
 | `POST /api/sessions` | `{session, spec?}` | `201 {session}`; `400 invalid_session`; `409 session_exists` |
 | `GET /api/sessions/:id` | — | `{session}`; `404 unknown_session` |
@@ -335,6 +346,7 @@ the worker's persisted state remains the source of truth.
 | `logs` | `session`, optional `limit` | answers with up to 2000 captured worker lines |
 | `status_snapshot` | `session`, optional `since` | answers with a fresh `snapshot` |
 | `ping` | — | answers with `pong` |
+| `subagent_policy` | `session`, `policy`: `ask`\|`deny`\|`approve` | updates only new headless confirmation requests; existing prompts remain actionable |
 
 `input` accepts the same content parts as the worker protocol (`type` of
 `text`, `binary`, or `external_ref`, a required `modality` of `text`, `image`,
@@ -503,6 +515,8 @@ opaque.
 | `invalid_session` | the session id is not 1–128 `[A-Za-z0-9_-]` |
 | `session_exists` | the id is taken |
 | `session_busy` | a worker is running or connected; stop it first |
+| `headless_restricted` | direct panel conversation/control is unavailable for headless workers |
+| `invalid_policy` | safety policy operation requires a headless session |
 | `input_not_sent` | validation failed or the worker is not connected |
 | `signal_not_sent` | same, for signals |
 | `unknown_confirmation` | that prompt is no longer open |

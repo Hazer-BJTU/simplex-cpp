@@ -40,6 +40,9 @@ export interface BoundedWriterOptions {
  * then destroys a stalled sink after a finite deadline. It never blocks callers.
  */
 export class BoundedWriter {
+    /** Resolves only after the sink closes, including failure/timeout destruction. */
+    readonly closed: Promise<void>;
+    private resolveClosed!: () => void;
     readonly maxBytes: number;
     readonly closeTimeoutMs: number;
     droppedRecords = 0;
@@ -56,6 +59,7 @@ export class BoundedWriter {
     private closeTimer: NodeJS.Timeout | null = null;
 
     constructor(options: BoundedWriterOptions) {
+        this.closed = new Promise(resolve => { this.resolveClosed = resolve; });
         this.options = options;
         this.maxBytes = options.maxBytes ?? LOG_WRITE_MAX_BYTES;
         this.closeTimeoutMs = options.closeTimeoutMs ?? LOG_WRITE_CLOSE_MS;
@@ -107,6 +111,7 @@ export class BoundedWriter {
                     this.clearTimer();
                 });
                 this.stream.once('close', () => {
+                    this.resolveClosed();
                     if (!this.finished && !this.failed) {
                         this.fail(new Error('log sink closed before finishing'));
                     }
@@ -147,7 +152,8 @@ export class BoundedWriter {
         this.failed = true;
         this.abandonedBytes = this.pendingBytes;
         this.clearTimer();
-        this.stream?.destroy();
+        if (this.stream) this.stream.destroy();
+        else this.resolveClosed();
         try { this.options.onError?.(error); } catch { /* diagnostics are optional */ }
     }
 
@@ -155,6 +161,7 @@ export class BoundedWriter {
     end(): void {
         if (this.closing) return;
         this.closing = true;
+        if (!this.stream) this.resolveClosed();
         if (this.failed) return;
         if (!this.blocked || this.pendingLoss.records === 0) {
             this.flushOmission();

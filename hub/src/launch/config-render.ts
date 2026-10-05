@@ -16,6 +16,7 @@
  * whose other end is C++, so a change to it is a change to that contract.
  */
 import { join } from 'node:path';
+import { validateSessionId, isSubagentId } from '../state/session-id.ts';
 import { normalizeSpec } from './spec.ts';
 import type { NormalizedSpec } from './spec.ts';
 import type { HubConfig, ProviderProfile } from '../config.ts';
@@ -26,7 +27,10 @@ export type RenderConfig = Pick<HubConfig, 'dataDir' | 'worker' | 'providerProfi
 
 /** Directory holding one session's generated files. */
 export function sessionDir(config: { dataDir: string }, sessionId: string): string {
-    return join(config.dataDir, 'sessions', sessionId);
+    validateSessionId(sessionId);
+    // The generated subagent namespace is reserved by the creation API.
+    // One resolver serves configuration, plans, logs and lifecycle cleanup.
+    return join(config.dataDir, isSubagentId(sessionId) ? 'subagents' : 'sessions', sessionId);
 }
 
 /** Path of the generated worker configuration for a session. */

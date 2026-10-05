@@ -12,8 +12,15 @@
     "panel": { "token": "" },
 
     // Independent worker RPC listener. Empty host inherits listen.host.
-    // Plan read/replace routes are implemented; unknown routes are rejected.
+    // Plan and headless subagent routes are implemented; unknown routes reject.
     "toolRequests": { "host": "", "port": 8801, "timeoutMs": 120000, "maxConnections": 128 },
+
+    // Headless reservations and cleanup-pending workers count against these bounds.
+    "subagents": {
+        "maxLive": 16, "maxChildren": 4, "maxDepth": 3,
+        "startupTimeoutMs": 30000, "maxReceipts": 200,
+        "receiptTtlMs": 3600000, "conversationBytes": 1048576
+    },
 
     "worker": {
         // Relative to this file; the default assumes an in-tree build tree.

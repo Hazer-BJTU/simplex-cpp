@@ -53,6 +53,16 @@ export interface HubConfig {
     /** Dedicated worker tool-request listener; empty host inherits listen.host. */
     toolRequests: { host: string; port: number; timeoutMs: number; maxConnections: number };
     dataDir: string;
+    /** Resource bounds for Hub-managed headless worker families. */
+    subagents: {
+        maxLive: number;
+        maxChildren: number;
+        maxDepth: number;
+        startupTimeoutMs: number;
+        maxReceipts: number;
+        receiptTtlMs: number;
+        conversationBytes: number;
+    };
     /** Empty token disables panel authentication on a loopback listener. */
     panel: { token: string };
     worker: {
@@ -132,6 +142,11 @@ export function defaultConfig(): HubConfig {
         listen: { host: '127.0.0.1', port: 8800 },
         toolRequests: { host: '', port: 8801, timeoutMs: 120000, maxConnections: 128 },
         dataDir: resolve(homedir(), '.simplex', 'hub'),
+        subagents: {
+            maxLive: 16, maxChildren: 4, maxDepth: 3,
+            startupTimeoutMs: 30000, maxReceipts: 200,
+            receiptTtlMs: 3600000, conversationBytes: 1024 * 1024,
+        },
         // Empty string disables panel authentication. Non-loopback listeners
         // require a token (validated below): the worker-facing payload channel
         // is an approval authority (docs/core/worker-protocol.md).
@@ -439,6 +454,18 @@ export function validateConfig(config: HubConfig): HubConfig {
     const port = config.listen?.port;
     check(Number.isInteger(port) && port >= 0 && port <= 65535,
         'listen.port must be an integer between 0 and 65535');
+    for (const [key, value] of Object.entries(config.subagents ?? {})) {
+        check(Number.isSafeInteger(value) && value > 0 && value <= 2147483647,
+            `subagents.${key} must be an integer between 1 and 2147483647`);
+    }
+    check(isPlainObject(config.subagents)
+        && Object.keys(defaultConfig().subagents).every(key => Object.hasOwn(config.subagents, key)),
+        'subagents must contain all resource limits');
+    check(config.subagents.conversationBytes >= 4096,
+        'subagents.conversationBytes must be at least 4096');
+    check(config.subagents.maxLive <= 128 && config.subagents.maxChildren <= 32
+        && config.subagents.maxDepth <= 16 && config.subagents.maxReceipts <= 1000,
+        'subagent limits exceed supported maxima (128 live, 32 children, depth 16, 1000 receipts)');
     const tools = config.toolRequests;
     check(typeof tools?.host === 'string', 'toolRequests.host must be a string');
     check(Number.isInteger(tools?.port) && tools.port >= 0 && tools.port <= 65535,

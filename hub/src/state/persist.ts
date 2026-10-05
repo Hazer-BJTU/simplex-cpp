@@ -42,6 +42,7 @@ export interface StoredSession {
     /** Written verbatim: a spec the hub has not normalized yet is still stored. */
     spec: object;
     created_at: string;
+    lifecycle_id?: string;
     process: StoredProcess | null;
 }
 
@@ -85,6 +86,8 @@ export interface PersistableSession {
      * and a normalized one reach here. */
     spec?: object | undefined;
     createdAt: string;
+    kind?: string;
+    lifecycleId?: string;
     process?: PersistableProcess | null | undefined;
 }
 
@@ -143,11 +146,12 @@ export class HubState {
         return {
             version: STATE_VERSION,
             saved_at: new Date().toISOString(),
-            sessions: sessions.map((session) => ({
+            sessions: sessions.filter(session => session.kind !== 'headless').map((session) => ({
                 id: session.id,
                 token: session.token,
                 spec: session.spec ?? {},
                 created_at: session.createdAt,
+                lifecycle_id: session.lifecycleId ?? '',
                 process: session.process && session.process.pid
                     ? {
                         pid: session.process.pid,

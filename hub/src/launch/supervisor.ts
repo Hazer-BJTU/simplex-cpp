@@ -18,6 +18,9 @@
  * supervisor therefore refuses to start a session whose recorded process is
  * still alive, and a restart always waits for the exit before spawning.
  */
+import { randomUUID } from 'node:crypto';
+import { captureStartup, resolvedStartupLaunch } from '../subagents/fork.ts';
+import { dockerRunning, signalContainer, dockerName } from '../subagents/docker.ts';
 import { sessionLaunch, launchEndpoints } from '../configurations/session.ts';
 import { createLauncher } from './launcher.ts';
 import { spawn } from 'node:child_process';
@@ -78,6 +81,7 @@ export interface StartResult {
 export interface LogStream {
     write(chunk: string): unknown;
     end(): unknown;
+    readonly closed?: Promise<void>;
     readonly droppedRecords?: number;
     readonly failed?: boolean;
 }
@@ -185,6 +189,8 @@ export interface ProcessRecordOptions {
 /** One supervised worker process, plus its captured output. */
 export class ProcessRecord {
     stopPolicy?: Pick<HubConfig['worker'], 'stopTimeoutMs' | 'sigtermGraceMs' | 'sigkillGraceMs'>;
+    /** Fence covering both output pipes and the optional disk writer. */
+    ownedIo: Promise<void> = Promise.resolve();
     readonly sessionId: string;
     state: ProcessState;
     pid: number | null;
@@ -322,11 +328,18 @@ export class WorkerSupervisor {
         return workerConfigPath(this.config, sessionId);
     }
 
+    /** Installed by the family coordinator; freezes admission before any await. */
+    cascade: ((session: Session, stopSelf: () => Promise<StopResult>) => Promise<StopResult>) | undefined;
+    beforeStart: ((session: Session) => void) | undefined;
+
     /** Start a worker for a session. */
     async start(session: Session, rawSpec?: unknown): Promise<StartResult> {
         if (this.isRunning(session)) {
             return { ok: false, error: 'a worker process is already running for this session' };
         }
+        this.beforeStart?.(session);
+        session.closing = false;
+        session.lifecycleId = randomUUID();
         const specSource: unknown = rawSpec ?? session.spec ?? {};
         const directory = sessionDir(this.config, session.id);
         // Filesystem failures are answered rather than thrown: this runs from a
@@ -343,10 +356,12 @@ export class WorkerSupervisor {
         let launcher = this.launcher;
         let endpoints = this.endpointsFor(session.id, session.token);
         let launchSpec = specSource;
+        let startupLaunch = null;
         let rendered: { spec: NormalizedSpec; document: unknown };
         try {
             const saved = sessionLaunch(this.config, session.id);
             if (saved) {
+                startupLaunch = saved.launch;
                 launchConfig = saved.config;
                 launcher = createLauncher({ config: launchConfig });
                 endpoints = launchEndpoints(endpoints, saved.launch);
@@ -382,6 +397,16 @@ export class WorkerSupervisor {
             const message = error instanceof Error ? error.message : String(error);
             return { ok: false, error: `cannot build the launcher invocation: ${message}`,
                 config: session.spec };
+        }
+
+        try {
+            const launch = resolvedStartupLaunch(launchConfig, startupLaunch, invocation.env);
+            launch.worker!.threads = rendered.spec.threads;
+            // Preserve per-session appended flags in the immutable launch snapshot.
+            launch.launcher.args = [...launch.launcher.args, ...rendered.spec.extraArgs];
+            captureStartup(this.config, session, readFileSync(configPath, 'utf8'), launch);
+        } catch {
+            return { ok: false, error: 'cannot capture authoritative startup snapshot' };
         }
 
         const logDirectory = join(directory, 'logs');
@@ -456,6 +481,9 @@ export class WorkerSupervisor {
             pipe.once('end', () => splitter.flush());
             pipe.once('close', () => splitter.flush());
         }
+        const pipesClosed = Promise.all([child.stdout, child.stderr].map(pipe =>
+            !pipe || pipe.closed ? Promise.resolve() : new Promise<void>(resolve => pipe.once('close', resolve))));
+        record.ownedIo = pipesClosed.then(async () => { await logStream.closed; });
         let outputTimer: NodeJS.Timeout | null = null;
         const closeOutput = () => {
             if (outputTimer) clearTimeout(outputTimer);
@@ -524,6 +552,15 @@ export class WorkerSupervisor {
 
     /** Wait for a record to reach a terminal state. */
     async waitForExit(record: ProcessRecord, timeoutMs: number): Promise<boolean> {
+        const container = dockerName(record);
+        if (container) {
+            const until = Date.now() + timeoutMs;
+            do {
+                if (await dockerRunning(container) === false) return true;
+                if (Date.now() >= until) return false;
+                await delay(Math.min(EXIT_POLL_MS, Math.max(1, until - Date.now())));
+            } while (true);
+        }
         if (record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed) return true;
         const outcome = await Promise.race([
             record.exited.then(() => true),
@@ -583,14 +620,21 @@ export class WorkerSupervisor {
     /**
      * Stop a worker: protocol first, then SIGTERM, then SIGKILL.
      */
-    async stop(
+    async stop(session: Session, options: { timeoutMs?: number; processGroup?: boolean } = {}): Promise<StopResult> {
+        return this.cascade ? this.cascade(session, () => this.stopProcess(session, options))
+            : this.stopProcess(session, options);
+    }
+
+    /** Internal transport/process stop; family coordination wraps the public entry. */
+    async stopProcess(
         session: Session,
         { timeoutMs = (session.process as ProcessRecord | null)?.stopPolicy?.stopTimeoutMs ?? this.config.worker.stopTimeoutMs, processGroup }:
         { timeoutMs?: number; processGroup?: boolean } = {},
     ): Promise<StopResult> {
         const record = session.process as ProcessRecord | null;
         if (!record) return { ok: true, how: 'not-started', forced: false };
-        if (record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed) {
+        if ((record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed)
+            && (!dockerName(record) || await dockerRunning(dockerName(record)!) === false)) {
             return { ok: true, how: 'already-exited', forced: false };
         }
         record.stopRequested = true;
@@ -608,7 +652,9 @@ export class WorkerSupervisor {
         }
 
         this.log.warn(`session ${session.id}: graceful stop timed out; sending SIGTERM`);
-        this.signalProcess(record, 'SIGTERM');
+        const container = dockerName(record);
+        if (container) await signalContainer(container, 'TERM');
+        else this.signalProcess(record, 'SIGTERM');
         if (await this.waitForExit(record, record.stopPolicy?.sigtermGraceMs ?? this.config.worker.sigtermGraceMs)) {
             return { ok: true, how: 'sigterm', forced: true };
         }
@@ -617,7 +663,8 @@ export class WorkerSupervisor {
         this.log.warn(
             `session ${session.id}: SIGTERM ignored; sending SIGKILL`
             + (group ? ' to the process group' : ''));
-        this.signalProcess(record, 'SIGKILL', { processGroup: group });
+        if (container) await signalContainer(container, 'KILL');
+        else this.signalProcess(record, 'SIGKILL', { processGroup: group });
         const exited = await this.waitForExit(record, record.stopPolicy?.sigkillGraceMs ?? this.config.worker.sigkillGraceMs);
         if (!exited) {
             this.log.error(`session ${session.id}: worker did not exit after SIGKILL`);
@@ -645,17 +692,26 @@ export class WorkerSupervisor {
      * SIGTERM, and by default kills the process group, which also reaches
      * descendants the worker itself would not have promised to terminate.
      */
-    async forceKill(
+    async forceKill(session: Session, options: { processGroup?: boolean } = {}): Promise<StopResult | { ok: false; error: string }> {
+        if (!session.process) return { ok: false, error: 'no worker process is recorded for this session' };
+        return this.cascade ? this.cascade(session, () => this.forceKillProcess(session, options))
+            : this.forceKillProcess(session, options);
+    }
+
+    async forceKillProcess(
         session: Session,
         { processGroup = true }: { processGroup?: boolean } = {},
-    ): Promise<StopResult | { ok: false; error: string }> {
+    ): Promise<StopResult> {
         const record = session.process as ProcessRecord | null;
-        if (!record) return { ok: false, error: 'no worker process is recorded for this session' };
-        if (record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed) {
+        if (!record) return { ok: true, how: 'not-started', forced: false };
+        if ((record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed)
+            && (!dockerName(record) || await dockerRunning(dockerName(record)!) === false)) {
             return { ok: true, how: 'already-exited', forced: false };
         }
         record.stopRequested = true;
-        this.signalProcess(record, 'SIGKILL', { processGroup });
+        const container = dockerName(record);
+        if (container) await signalContainer(container, 'KILL');
+        else this.signalProcess(record, 'SIGKILL', { processGroup });
         const exited = await this.waitForExit(record, record.stopPolicy?.sigkillGraceMs ?? this.config.worker.sigkillGraceMs);
         return {
             ok: exited,
@@ -680,7 +736,8 @@ export class WorkerSupervisor {
     adopt(session: Session, stored: unknown): boolean {
         if (typeof stored !== 'object' || stored === null) return false;
         const entry = stored as Record<string, unknown>;
-        if (!isSameProcess(entry.pid, entry.pid_start_time)) return false;
+        const container = dockerName({ command: String(entry.command ?? ''), args: Array.isArray(entry.args) ? entry.args : [] });
+        if (!isSameProcess(entry.pid, entry.pid_start_time) && !container) return false;
         const record = new ProcessRecord({
             sessionId: session.id,
             invocation: {
@@ -711,8 +768,14 @@ export class WorkerSupervisor {
         // The exit of a process this hub did not spawn can only be observed by
         // polling; it is rare and cheap enough to justify keeping the panel
         // honest about a worker that dies while the hub is running.
-        if (typeof record.pidStartTime === 'string' && record.pidStartTime.length > 0) {
+        if (container || (typeof record.pidStartTime === 'string' && record.pidStartTime.length > 0)) {
             record.monitor = setInterval(() => {
+                if (container) {
+                    void dockerRunning(container).then(running => {
+                        if (running === false) this.finish(record, { exitCode: null });
+                    });
+                    return;
+                }
                 if (!isSameProcess(record.pid, record.pidStartTime)) {
                     if (record.monitor) clearInterval(record.monitor);
                     record.monitor = null;
@@ -735,7 +798,8 @@ export class WorkerSupervisor {
         const results: Array<StopResult & { session: string }> = [];
         for (const session of this.registry.list()) {
             if (!this.isRunning(session)) continue;
-            results.push({ session: session.id, ...(await this.stop(session, options)) });
+            try { results.push({ session: session.id, ...(await this.stop(session, options)) }); }
+            catch { results.push({ session: session.id, ok: false, how: 'cleanup-failed', forced: false }); }
         }
         return results;
     }

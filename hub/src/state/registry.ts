@@ -18,6 +18,7 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { validateSessionId } from './session-id.ts';
+import type { SubagentDescription } from '../../shared/protocol.ts';
 import type { Logger } from '../log.ts';
 import type {
     ConfirmationPrompt,
@@ -143,6 +144,13 @@ export interface SessionOptions {
  */
 export class Session {
     readonly id: string;
+    kind: 'ordinary' | 'headless' = 'ordinary';
+    /** Changes on each supervised start, retained across a Hub restart. */
+    lifecycleId = '';
+    closing = false;
+    subagent: SubagentDescription | undefined;
+    lastObservedAt: string | null = null;
+    lastObservedEvent: string | null = null;
     /**
      * The session's access token.
      *
@@ -389,7 +397,9 @@ export class Session {
         }
 
         this.stats.events += 1;
-        this.lastEvent = envelope;
+        this.lastObservedAt = typeof envelope.received_at === 'string' ? envelope.received_at : null;
+        this.lastObservedEvent = envelope.event;
+        if (this.kind !== 'headless') this.lastEvent = envelope;
         if (envelope.event === 'ready' || envelope.event === 'status') {
             const data = envelope.data;
             const names = typeof data === 'object' && data !== null
@@ -402,7 +412,7 @@ export class Session {
                 };
             }
         }
-        if (Object.hasOwn(this.latest, envelope.event)) {
+        if (this.kind !== 'headless' && Object.hasOwn(this.latest, envelope.event)) {
             (this.latest as Record<string, RegistryEnvelope | null>)[envelope.event] = envelope;
         }
         if (typeof envelope.run_id === 'string' && envelope.run_id.length > 0) {
@@ -419,8 +429,10 @@ export class Session {
         };
         return {
             session_id: this.id,
+            kind: this.kind,
+            ...(this.subagent ? { subagent: { ...this.subagent } } : {}),
             created_at: this.createdAt,
-            spec: this.spec,
+            spec: this.kind === 'headless' ? {} : this.spec,
             connected: this.connected,
             worker_capabilities: this.connected
                 && this.workerCapabilities?.workerId === this.identity.workerId
@@ -428,13 +440,14 @@ export class Session {
             identity,
             stats: { ...this.stats },
             last_run_id: this.lastRunId,
-            last_event_at: typeof this.lastEvent?.received_at === 'string'
-                ? this.lastEvent.received_at
-                : null,
-            last_event: this.lastEvent?.event ?? null,
+            last_event_at: this.lastObservedAt,
+            last_event: this.lastObservedEvent,
             confirmations: this.describePrompts(),
-            process: this.process?.describe() ?? null,
-            requests: this.describeRequests(),
+            process: this.kind === 'headless' && this.process ? {
+                ...this.process.describe(), command: 'worker', args: [], cwd: '',
+                error: this.process.state === 'failed' ? 'worker process failed' : null, log_path: null,
+            } : this.process?.describe() ?? null,
+            requests: this.kind === 'headless' ? [] : this.describeRequests(),
         };
     }
 }

@@ -24,6 +24,7 @@
  * new `worker_id`, so comparing against the last known one would deny every
  * legitimate confirmation after a restart.
  */
+import { authorizeTool } from './tool-context.ts';
 import { WebSocketServer } from 'ws';
 import type { RawData, WebSocket } from 'ws';
 import type { Duplex } from 'node:stream';
@@ -238,6 +239,13 @@ export class PendingConfirmation {
         }
         if (typeof reason !== 'string') {
             return { ok: false, error: 'reason must be a string' };
+        }
+        if (this.session.kind === 'headless' && (this.session.closing || !this.session.connected
+            || this.session.identity.state !== 'live'
+            || this.session.identity.workerId !== this.request.worker_id
+            || this.session.activeRunId !== this.request.run_id)) {
+            this.retire('stale', 'subagent run is no longer authorized');
+            return { ok: false, error: 'subagent run is no longer authorized' };
         }
         this.state = PROMPT_STATE.decided;
         this.decision = decision;
@@ -483,6 +491,11 @@ export function createWorkerConfirmationRoute({
                 return;
             }
             const request = parsed.request;
+            if (session.kind === 'headless' && session.closing) {
+                sendDecision(ws, request, 'denied', 'subagent lifecycle is stopping', slog);
+                await completeClose(ws);
+                return;
+            }
 
             // A second application frame violates the single-request contract.
             ws.on('message', () => {
@@ -505,6 +518,20 @@ export function createWorkerConfirmationRoute({
                 return;
             }
 
+            if (session.kind === 'headless') {
+                const abort = new AbortController();
+                const closed = () => abort.abort();
+                ws.once('close', closed);
+                try {
+                    await authorizeTool('confirmation', { ...request, request_id: request.confirmation_id, arguments: {} },
+                        registry, session.token, holdMs, abort.signal);
+                } catch {
+                    sendDecision(ws, request, 'denied', 'active subagent run was not verified', slog);
+                    await completeClose(ws);
+                    return;
+                } finally { ws.off('close', closed); }
+            }
+
             prompt = new PendingConfirmation({
                 request,
                 session,
@@ -513,6 +540,13 @@ export function createWorkerConfirmationRoute({
                 log: slog,
                 onSettled: (settledPrompt, outcome) => onSettled?.(settledPrompt, outcome),
             });
+            // Revalidate after the identity hold. Policy cannot bypass identity.
+            if (registry.get(session.id) !== session || session.closing
+                || !session.connected || session.identity.workerId !== request.worker_id) {
+                sendDecision(ws, request, 'denied', 'worker identity is no longer live', slog);
+                await completeClose(ws);
+                return;
+            }
             prompt.markVerified();
             session.addPrompt(prompt);
             const closed = new Promise<null>((resolve) => ws.once('close', () => resolve(null)));
@@ -525,16 +559,24 @@ export function createWorkerConfirmationRoute({
                 if (ws.readyState === ws.OPEN) ws.close(1001, 'confirmation deadline');
             });
             slog.info(`confirmation ${prompt.id} awaiting a decision (worker ${request.worker_id})`);
-            onPrompt?.(prompt);
+            const policy = session.kind === 'headless' ? session.subagent?.policy ?? 'ask' : 'ask';
+            if (policy === 'ask') onPrompt?.(prompt);
+            else prompt.decide(policy === 'approve' ? 'approved' : 'denied', `operator headless policy: ${policy}`);
 
             const outcome = await Promise.race([prompt.wait(), closed]);
             if (outcome === null) {
-                cleanup('disconnected', 'the worker closed the confirmation connection');
+                cleanup('disconnected', 'the confirmation was retired or its connection closed');
+                if (ws.readyState === ws.OPEN) ws.close(1001, 'confirmation retired');
+                await completeClose(ws);
                 return;
             }
             prompt.onSettled = null;
             settled = true;
-            sendDecision(ws, request, outcome.decision, outcome.reason, slog);
+            const stillAuthorized = session.kind !== 'headless' || (!session.closing && session.connected
+                && session.identity.state === 'live' && session.identity.workerId === request.worker_id
+                && session.activeRunId === request.run_id);
+            sendDecision(ws, request, stillAuthorized ? outcome.decision : 'denied',
+                stillAuthorized ? outcome.reason : 'subagent run is no longer authorized', slog);
             onSettled?.(prompt, { phase: 'decided', detail: outcome.decision });
             await completeClose(ws);
         } catch (error) {
@@ -575,7 +617,7 @@ export function createWorkerConfirmationRoute({
                 return;
             }
             const session = registry.get(sessionId);
-            if (!session) {
+            if (!session || (session.kind === 'headless' && session.closing)) {
                 log.warn(`rejected confirmation upgrade: unknown session "${sessionId}"`);
                 rejectUpgrade(socket, 404, 'Not Found');
                 return;

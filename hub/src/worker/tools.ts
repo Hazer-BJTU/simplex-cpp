@@ -3,6 +3,8 @@
  * It shares session credentials with confirmation but owns no confirmation UI,
  * event subscription, persistent queue, replay, or automatic retry mechanism.
  */
+import { authorizeTool, rejectedTool, succeededTool, ToolFailure } from './tool-context.ts';
+import type { ToolContext } from './tool-context.ts';
 import { dispatchPlan } from './plan.ts';
 import type { PlanStore } from '../state/plan.ts';
 import { WebSocketServer } from 'ws';
@@ -24,10 +26,12 @@ export interface ToolRouteOptions {
     log: Logger;
     plans: PlanStore;
     onPlanChanged: (session: string) => void;
+    /** Fixed internal handlers, keyed by literal URL route. */
+    handlers?: ReadonlyMap<string, (context: ToolContext) => Record<string, unknown> | Promise<Record<string, unknown>>>;
 }
 
 /** Bind this adapter only to the dedicated tool listener. */
-export function createWorkerToolRoute({ registry, config, log, plans, onPlanChanged }: ToolRouteOptions): UpgradeHandler & {
+export function createWorkerToolRoute({ registry, config, log, plans, onPlanChanged, handlers }: ToolRouteOptions): UpgradeHandler & {
     close(): void;
 } {
     const wss = new WebSocketServer({
@@ -93,11 +97,28 @@ export function createWorkerToolRoute({ registry, config, log, plans, onPlanChan
                     };
                     void pending.then(cleanup, cleanup);
                     response = await pending;
+                } else if (handlers?.has(route)) {
+                    try {
+                        const context = await authorizeTool(route, request, registry, token,
+                            Math.min(config.limits.confirmIdentityHoldMs, config.toolRequests.timeoutMs), abort.signal);
+                        const result = await handlers.get(route)!(context);
+                        response = succeededTool(context, result);
+                    } catch (error) {
+                        response = rejectedTool(route, request, error instanceof ToolFailure ? error
+                            : new ToolFailure('storage_error', 'remote operation storage or lifecycle failure'));
+                    }
                 } else {
                     response = dispatchToolRequest(route, request);
                 }
                 if (abort.signal.aborted || ws.readyState !== ws.OPEN) return;
-                ws.send(JSON.stringify(response), (error) => {
+                const encoded = JSON.stringify(response);
+                if (Buffer.byteLength(encoded) > 256 * 1024) {
+                    ws.send(JSON.stringify(rejectedTool(route, request,
+                        new ToolFailure('result_too_large', 'remote result exceeds response budget'))));
+                    ws.close(1000, 'tool result bounded');
+                    return;
+                }
+                ws.send(encoded, (error) => {
                     if (error) ws.terminate();
                     else ws.close(1000, 'tool request completed');
                 });

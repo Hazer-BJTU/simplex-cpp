@@ -28,3 +28,9 @@ export function validateSessionId(id: unknown): string {
     }
     return id;
 }
+
+/** Reserved Hub-generated namespace; never accepted by manual session creation. */
+export function isSubagentId(value: unknown): value is string {
+    return typeof value === 'string'
+        && /^subagent-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+}

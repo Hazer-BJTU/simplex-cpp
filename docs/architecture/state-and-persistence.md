@@ -66,3 +66,15 @@ The Hub's event transcript is an execution record. Its in-memory replay buffer
 starts afresh after Hub restart; JSONL is not automatically replayed into it.
 A connected worker can return bounded display-history pages to restore the
 panel. Neither these pages nor the Hub's transcript replaces `state.json`.
+
+## Headless delegation
+
+The Hub supports clean-fork/send/receive remote routes for directly owned headless
+workers. Each child uses a flat `<dataDir>/subagents/<generated-id>/` root, an
+independent operator-controlled ask/deny/approve policy, and a bounded primary
+conversation projection. It retains no event transcript or reasoning/tool history.
+Parent process shutdown/crash cascades; socket disconnect alone preserves the
+family. Confirmed child shutdown deletes its persistence. Clean-fork shares any
+explicit external workspace and is not a sandbox. No C++ subagent tool ships yet.
+See the [complete subagent contract](../hub/subagents.md) for configuration snapshots,
+launch support, request deduplication, recovery and cleanup limits.

@@ -19,6 +19,8 @@
  * read squeezed between them.
  */
 import { useEffect, useState } from 'react';
+import { HeadlessPanel } from './HeadlessPanel.tsx';
+import { usePanel } from '../state/usePanel.ts';
 import { ConversationPanels } from './ConversationPanels.tsx';
 import { Approvals } from './Approvals.tsx';
 import { CommandPalette } from './CommandPalette.tsx';
@@ -30,6 +32,8 @@ import { StatusBar } from './StatusBar.tsx';
 import { TooltipProvider } from '../ui/overlays.tsx';
 
 export function App() {
+    const session = usePanel(state => state.selected ? state.sessions.get(state.selected) : undefined);
+    const headless = session?.kind === 'headless';
     // The session list is a drawer below `md`. On a wide screen this state is
     // simply irrelevant: the sidebar is visible either way.
     const [sessionsOpen, setSessionsOpen] = useState(false);
@@ -63,12 +67,11 @@ export function App() {
                         id="conversation"
                         className="flex min-w-0 flex-1 flex-col bg-surface focus:outline-none"
                     >
-                        <SessionHeader />
+                        {!headless && <SessionHeader />}
                         <Approvals />
-                        <ConversationPanels />
-                        <Composer />
+                        {headless && session ? <HeadlessPanel session={session} /> : <><ConversationPanels /><Composer /></>}
                     </main>
-                    <Inspector />
+                    {!headless && <Inspector />}
                 </div>
                 <CommandPalette />
             </div>
