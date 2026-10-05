@@ -81,7 +81,7 @@ function connect() {
         }, 60);
     });
     socket.on('error', () => {});
-    socket.on('close', () => { if (!stopping) setTimeout(connect, 100); });
+    socket.on('close', () => { if (!stopping) setTimeout(connect, Number(process.env.SIMPLEX_FIXTURE_RECONNECT_MS ?? 100)); });
 }
 connect();
 process.on('SIGTERM', () => process.exit(0));

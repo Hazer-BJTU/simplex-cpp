@@ -222,7 +222,9 @@ conversation. Parents must receive desired output first. Only small terminal
 status/outcome records remain in memory for one receipt TTL, capped at 128.
 
 On restart the Hub restores processes and validates the parent graph/lifecycle
-before adopting a family. Stale parents, cycles and stopping intent trigger
+before adopting a family. Previously ready children keep their lifecycle while
+awaiting reconnection; only unfinished startups receive a startup deadline.
+Stale parents, cycles and stopping intent trigger
 cleanup rather than resurrection. A crash between spawn and process publication
 can leave uncertain startup evidence: preserve it as cleanup-pending instead of
 deleting potentially live data. Invalid ownership metadata is quarantined for

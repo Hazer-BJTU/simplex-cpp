@@ -357,7 +357,10 @@ export function createHub({
                     const selected = snapshotSelection(config, entry.id);
                     if (selected) session.spec = { ...session.spec, ...selected };
                     if (entry.process) supervisor.adopt(session, entry.process);
-                    if ((entry.process as { state?: unknown } | null)?.state === 'stopping') stopping.push(session);
+                    if ((entry.process as { state?: unknown } | null)?.state === 'stopping') {
+                        session.closing = true;
+                        stopping.push(session);
+                    }
                     restored += 1;
                 }
                 if (restored > 0) log.info(`restored ${restored} session(s) from ${state.path}`);

@@ -239,6 +239,7 @@ it('cleans other siblings after a stop failure and waits for delayed owned IO', 
     release();
     assert.equal((await stopped).ok, false);
     assert.equal(one.subagent.lifecycle, 'cleanup-pending');
+    await assert.rejects(ctx.hub.supervisor.start(ctx.parent), /descendant cleanup/);
     assert.equal(existsSync(sessionDir(ctx.config, one.id)), true);
     assert.equal(existsSync(sessionDir(ctx.config, two.id)), false);
     failing = false;
@@ -308,7 +309,7 @@ it('restores surviving families after an actual Hub process crash and then casca
     });
     await launch();
     await api('/api/sessions', { session: 'recovery-parent',
-        spec: { env: { SIMPLEX_FIXTURE_ACTIVE_SESSION: 'recovery-parent' } } });
+        spec: { env: { SIMPLEX_FIXTURE_ACTIVE_SESSION: 'recovery-parent', SIMPLEX_FIXTURE_RECONNECT_MS: '500' } } });
     await api('/api/sessions/recovery-parent/start', {});
     await until(async () => (await api('/api/sessions/recovery-parent')).session.connected);
     const storedParent = JSON.parse(readFileSync(join(config.dataDir, 'hub.json'), 'utf8')).sessions[0];
@@ -332,6 +333,10 @@ it('restores surviving families after an actual Hub process crash and then casca
     const conversationPath = join(sessionDir(config, childId), 'conversation.json');
     await until(() => JSON.parse(readFileSync(conversationPath, 'utf8')).turns[0]?.steps.length);
     process.kill('SIGKILL'); await new Promise(resolve => process.once('exit', resolve));
+    // A previously ready child must not get a new startup deadline merely
+    // because its event socket has not reconnected after the Hub restart.
+    config.subagents.startupTimeoutMs = 25;
+    writeFileSync(file, JSON.stringify(config));
     await launch();
     await until(async () => (await api(`/api/sessions/${childId}`)).session.connected, { timeout: 5000 });
     const recovered = (await api(`/api/sessions/${childId}`)).session;

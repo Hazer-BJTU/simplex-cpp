@@ -89,7 +89,11 @@ export class SubagentService {
         this.options = options;
         options.supervisor.cascade = (session, stopSelf) => this.cascade(session, stopSelf);
         options.supervisor.beforeStart = session => {
-            if (this.closing || this.stops.has(session.id)) throw new Error('session lifecycle is stopping');
+            const childrenRemain = session.closing && [...this.children.values()].some(record =>
+                !record.removed && record.parent.session_id === session.id);
+            if (this.closing || this.stops.has(session.id) || childrenRemain) {
+                throw new Error('session lifecycle is stopping or requires descendant cleanup');
+            }
         };
     }
 
@@ -617,8 +621,10 @@ export class SubagentService {
                     session.createdAt = typeof raw.created_at === 'string' ? raw.created_at : session.createdAt;
                     session.lifecycleId = typeof raw.lifecycle_id === 'string' ? raw.lifecycle_id : '';
                     session.subagent = { parent: parent.session_id as string, policy: detail.policy as 'ask' | 'deny' | 'approve',
-                        lifecycle: detail.lifecycle === 'stopping' || detail.lifecycle === 'cleanup-pending' ? 'cleanup-pending' : 'starting',
+                        lifecycle: detail.lifecycle === 'stopping' || detail.lifecycle === 'cleanup-pending'
+                            ? 'cleanup-pending' : detail.lifecycle === 'ready' ? 'ready' : 'starting',
                         health: 'unknown', reason: 'restoring supervised family', observed_at: null, active: false };
+                    session.closing = session.subagent.lifecycle === 'cleanup-pending';
                     const record: ChildRecord = { session, parent: parent as unknown as ParentRef,
                         conversation: new ConversationProjection(session, ownedPath(this.options.config.dataDir, id, 'conversation.json'), this.options.config.subagents.conversationBytes),
                         removed: false, startup: null, startupTimer: null, terminalTimer: null,
@@ -652,6 +658,7 @@ export class SubagentService {
                     || !this.options.supervisor.isRunning(parent) || !this.options.supervisor.isRunning(record.session)
                     || record.session.subagent!.lifecycle === 'cleanup-pending') {
                     record.session.subagent!.lifecycle = 'cleanup-pending';
+                    record.session.closing = true;
                 } else {
                     this.publish(record);
                     if (record.session.subagent!.lifecycle === 'starting') this.armStartupDeadline(record);
