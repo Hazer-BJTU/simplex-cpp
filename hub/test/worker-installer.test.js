@@ -445,7 +445,7 @@ test('a failed rollback retains recovery files until restoration becomes possibl
     const tree = join(tx.work, 'new');
     await mkdir(tree);
     await writeFile(join(tree, 'new'), 'new');
-    const previous = join(tx.work, 'previous');
+    const previous = join(tx.preparation, 'previous');
     // Replace the backup slot with an invalid object after retaining the actual
     // old tree elsewhere, simulating a cleanup/restore failure deterministically.
     await assert.rejects(tx.replace(tree, async () => {
@@ -479,4 +479,116 @@ test('cancelling streamed preparation leaves the old worker and releases its loc
     const tx = new InstallationTransaction(f.destination);
     await tx.open();
     await tx.close();
+});
+
+test('committed cleanup failures warn without blocking PATH, no-op or later replacement', async t => {
+    const f = await fixture(t);
+    await install(f);
+    await writeFile(join(f.destination, 'stale'), 'previous installation');
+    let retained;
+    let rejected = 0;
+    const removeObsolete = async path => {
+        if (!retained && await exists(join(path, 'previous'))) retained = path;
+        if (path === retained) {
+            rejected++;
+            throw Object.assign(new Error('injected EACCES during old backup removal'), { code: 'EACCES' });
+        }
+        await rm(path, { recursive: true, force: true });
+    };
+    const replacement = await install(f, ['--reinstall', '--update-path'], { removeObsolete });
+    assert.equal(replacement.code, 0);
+    assert.match(replacement.output, /Installed worker 0.2.0 successfully/);
+    assert.match(replacement.output, /Warning:.*retained at.*EACCES/);
+    assert.ok(replacement.output.includes(retained));
+    assert.match(replacement.output, /PATH block updated/);
+    assert.match(replacement.output, /Manual PATH: export PATH=/);
+    assert.match(replacement.output, /Verify:.*run --help/);
+    assert.match(await readFile(join(f.home, '.bashrc'), 'utf8'), /managed worker PATH/);
+    assert.equal(await exists(join(f.destination, 'stale')), false);
+    assert.equal(await readFile(join(retained, 'previous/stale'), 'utf8'), 'previous installation');
+
+    // Startup cleanup encounters the same error. A no-op must still inspect the
+    // live tree and honor an explicit PATH update without downloading anything.
+    await writeFile(join(f.home, '.bashrc'), '# retained user settings\n');
+    const current = await install(f, ['--update-path'], {
+        removeObsolete, fetcher: async () => { throw new Error('must not download current version'); },
+    });
+    assert.equal(current.code, 0);
+    assert.match(current.output, /already current/);
+    assert.match(current.output, /Warning:.*retained at/);
+    assert.match(current.output, /PATH block updated/);
+    assert.match(await readFile(join(f.home, '.bashrc'), 'utf8'), /^# retained user settings\n/);
+    assert.equal(await exists(join(retained, 'previous/stale')), true);
+
+    // A new transaction uses another backup/staging directory, so retained
+    // debris cannot collide with the next publication or cause the old tree to win.
+    await writeFile(join(f.destination, 'second-stale'), 'remove this');
+    assert.equal((await install(f, ['--reinstall'], { removeObsolete })).code, 0);
+    assert.equal(await exists(join(f.destination, 'second-stale')), false);
+    assert.equal(await exists(join(retained, 'previous/stale')), true);
+    assert.ok(rejected >= 3);
+    assert.equal(await exists(join(new InstallationTransaction(f.destination).work, 'transaction.json')), false);
+});
+
+test('colon directories install but never produce a misleading PATH command', async t => {
+    const f = await fixture(t);
+    f.destination = join(f.home, 'worker:demo');
+    await writeFile(join(f.home, '.bashrc'), '# unchanged\n');
+    const installed = await install(f, ['--update-path']);
+    assert.equal(installed.code, 1);
+    assert.match(installed.output, /Worker is installed, but PATH update failed:.*PATH cannot represent/);
+    assert.doesNotMatch(installed.output, /PATH block updated|export PATH=/);
+    assert.match(installed.output, /Verify:.*worker:demo\/bin\/simplex.*run --help/);
+    assert.match(installed.output, /launcher.command\[0\]/);
+    assert.equal(await readFile(join(f.home, '.bashrc'), 'utf8'), '# unchanged\n');
+    assert.equal(await exists(join(f.destination, 'bin/simplex')), true);
+    const skipped = await install(f, ['--no-update-path']);
+    assert.equal(skipped.code, 0);
+    assert.doesNotMatch(skipped.output, /export PATH=/);
+    assert.throws(() => editBashrc('', f.destination), /PATH cannot represent/);
+
+    // Verify actual shell lookup: the existing PATH stays intact, and the
+    // absolute worker command remains usable even though PATH cannot name it.
+    const script = `source ${bashQuote(join(f.home, '.bashrc'))}\nprintf '%s\\n' "$PATH"\ncommand -v bash\n${bashQuote(join(f.destination, 'bin/simplex'))} run --help`;
+    const { stdout } = await exec('bash', ['--noprofile', '--norc', '-c', script], {
+        env: { PATH: '/usr/bin:/bin', HOME: f.home },
+    });
+    assert.equal(stdout.split('\n')[0], '/usr/bin:/bin');
+    assert.match(stdout, /\/usr\/bin\/bash\nworker help/);
+});
+
+test('managed shell blocks use LF and preserve the exact PATH with CRLF input', async t => {
+    const { root } = await sandbox(t);
+    const contents = '# existing comment\r\n# second comment\r\n';
+    const edited = editBashrc(contents, '/installed/worker');
+    assert.ok(edited.startsWith(contents));
+    const block = edited.slice(contents.length);
+    assert.doesNotMatch(block, /\r/);
+    const old = `${contents}${START}\r\nexport PATH='/old/bin':"$PATH"\r\n${END}\r\n# tail\r\n`;
+    const repaired = editBashrc(old, '/installed/worker');
+    assert.ok(repaired.startsWith(contents));
+    assert.ok(repaired.endsWith('# tail\r\n'));
+    assert.equal(editBashrc(repaired, '/installed/worker'), repaired);
+    for (const text of [edited, repaired]) {
+        const { stdout } = await exec('bash', ['--noprofile', '--norc', '-c', `${text}printf '%s' "$PATH"`], {
+            env: { PATH: '/usr/bin:/bin', HOME: root },
+        });
+        assert.equal(stdout, '/installed/worker/bin:/usr/bin:/bin');
+        assert.deepEqual(stdout.split(':'), ['/installed/worker/bin', '/usr/bin', '/bin']);
+        assert.doesNotMatch(stdout, /\r/);
+    }
+});
+
+test('recovery rejects an invalid attempt path and preserves the live tree and journal', async t => {
+    const { destination } = await sandbox(t);
+    await mkdir(destination);
+    await writeFile(join(destination, 'keep'), 'keep');
+    const tx = new InstallationTransaction(destination);
+    await mkdir(tx.work, { mode: 0o700 });
+    for (const attempt of ['../other', '/absolute', 'attempt-not-a-uuid', 42]) {
+        await writeFile(join(tx.work, 'transaction.json'), JSON.stringify({ hadDestination: true, attempt }));
+        await assert.rejects(new InstallationTransaction(destination).open(), /Invalid installation recovery journal/);
+        assert.equal(await readFile(join(destination, 'keep'), 'utf8'), 'keep');
+        assert.equal(await exists(join(tx.work, 'transaction.json')), true);
+    }
 });

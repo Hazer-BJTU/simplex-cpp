@@ -50,6 +50,10 @@ downgrades require `--allow-downgrade`; unknown non-empty directories require
 forbidden. Stop workers before replacing their complete installation tree;
 custom files inside it are removed. Failed preparation preserves the old tree;
 replacement has rollback and recovery on the next installation attempt.
+After publication commits, obsolete backup cleanup failures are warnings and
+do not block PATH handling or later invocations; each attempt uses independent
+staging/backup directories. Genuine rollback failures retain recovery files and
+remain errors.
 
 `--update-path` replaces only the marked PATH block in `~/.bashrc`.
 `--no-update-path` skips it; unspecified behavior prompts only in a terminal.
@@ -57,6 +61,10 @@ Non-interactive use prints a manual command. Malformed markers and symlinked
 `.bashrc` files require manual editing. A failed PATH update leaves the worker
 installed and returns a nonzero code. Restart the Hub from an updated shell or
 use the absolute installed `bin/simplex` in a saved local launch configuration.
+Managed shell blocks use LF, preserving unrelated lines' original endings.
+A directory containing `:` can be installed but cannot be added to PATH;
+`--update-path` fails without changing `.bashrc`, and the installer provides
+absolute command/launcher instructions instead of an invalid export.
 Downloads install executable code/plugins; release checksums detect corruption,
 not independently authenticated publisher identity. See the
 [installation guide](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/getting-started/installation.md)

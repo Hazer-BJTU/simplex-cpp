@@ -11,15 +11,19 @@ export function bashQuote(value: string): string {
     return `'${value.replaceAll("'", "'\\''")}'`;
 }
 export function pathCommand(directory: string): string {
+    if (join(directory, 'bin').includes(':')) {
+        throw new Error('Installation directory contains ":", which PATH cannot represent; use the absolute bin/simplex path');
+    }
     return `export PATH=${bashQuote(join(directory, 'bin'))}:"$PATH"`;
 }
 
 /** Remove complete duplicates, replace at the first block, reject ambiguous markers. */
 export function editBashrc(contents: string, directory: string): string {
-    const newline = contents.includes('\r\n') ? '\r\n' : '\n';
     const lines = contents.match(/[^\n]*\n|[^\n]+$/g) ?? [];
     const output: string[] = [];
-    const block = [START, pathCommand(directory), END].join(newline) + newline;
+    // Bash treats a CR before LF as assignment data, even when the old file
+    // uses CRLF. Only the managed block uses LF; unrelated lines stay byte-for-byte.
+    const block = [START, pathCommand(directory), END].join('\n') + '\n';
     let inside = false;
     let inserted = false;
     for (const raw of lines) {
@@ -38,7 +42,7 @@ export function editBashrc(contents: string, directory: string): string {
     }
     if (inside) throw new Error('Unterminated simplex-hub PATH block in .bashrc');
     let text = output.join('');
-    if (!inserted) text += `${text && !text.endsWith('\n') ? newline : ''}${block}`;
+    if (!inserted) text += `${text && !text.endsWith('\n') ? '\n' : ''}${block}`;
     return text;
 }
 
@@ -48,6 +52,8 @@ export function editBashrc(contents: string, directory: string): string {
  * different worker directories. Preserve existing permissions on atomic rewrite.
  */
 export async function updateBashrc(home: string, directory: string): Promise<void> {
+    // Reject unrepresentable PATH entries before locking or changing shell files.
+    pathCommand(directory);
     const actualHome = await realpath(home);
     const path = join(actualHome, '.bashrc');
     const release = await acquireLock(join(dirname(path), '.simplex-hub-bashrc.lock'));

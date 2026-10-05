@@ -1,7 +1,7 @@
 /** Standalone worker installer; does not load Hub configuration or start listeners. */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readdir } from 'node:fs/promises';
+import { mkdir, readdir } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { prepareArchive } from './archive.ts';
@@ -32,6 +32,7 @@ Replacement removes custom/stale files inside the installation root.
 Stop workers using this installation before replacing it. Keep session data elsewhere.
 Linux x86_64, glibc >= 2.34, Bash, util-linux flock, ldd and host OpenSSL 3 are required.
 PATH changes apply to new shells; restart the Hub from an updated shell.
+Directories containing ":" can be installed but cannot be added to PATH; use an absolute command.
 Downloads install executable code/plugins. SHA256 detects corruption, not publisher identity.
 `;
 
@@ -113,6 +114,8 @@ export interface InstallDependencies {
     output?: Writable;
     interactive?: boolean;
     signal?: AbortSignal;
+    /** Narrow filesystem seam for cleanup failure testing; publication/recovery use real filesystem operations. */
+    removeObsolete?: (path: string) => Promise<void>;
 }
 
 /** PATH failure returns a failure code but never rolls back a successful worker installation. */
@@ -127,7 +130,8 @@ export async function installWorker(argv: string[], dependencies: InstallDepende
     const destination = await destinationPath(options.directory, home);
     const release = await (dependencies.release ?? ((source, version) =>
         resolveRelease(source, version, dependencies.fetcher, dependencies.signal)))(options.source, options.version);
-    const transaction = new InstallationTransaction(destination);
+    const transaction = new InstallationTransaction(destination,
+        message => print(`Warning: ${message}`), dependencies.removeObsolete);
     await transaction.open();
     try {
         const installed = await readInstalled(destination);
@@ -145,7 +149,8 @@ export async function installWorker(argv: string[], dependencies: InstallDepende
             print(`Worker ${release.version} is already current; no replacement needed.`);
         } else {
             print('Preparing the complete release; stop workers using this installation before replacement.');
-            const tree = await prepareArchive(release, transaction.work, dependencies.fetcher, dependencies.signal);
+            await mkdir(transaction.preparation, { mode: 0o700 });
+            const tree = await prepareArchive(release, transaction.preparation, dependencies.fetcher, dependencies.signal);
             await (dependencies.checkStartup ?? smokeCheck)(tree);
             await atomicWrite(join(tree, METADATA), `${JSON.stringify({ source: 'github', version: release.version,
                 installedAt: new Date().toISOString() }, null, 2)}\n`);
@@ -158,7 +163,7 @@ export async function installWorker(argv: string[], dependencies: InstallDepende
         await transaction.close();
     }
     const interactive = dependencies.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
-    const update = dependencies.signal?.aborted ? false : options.updatePath ?? (interactive
+    const update = dependencies.signal?.aborted ? false : options.updatePath ?? (interactive && !destination.includes(':')
         ? await confirmPath(dependencies.input ?? process.stdin, output, dependencies.signal) : false);
     let code = dependencies.signal?.aborted ? 130 : 0;
     if (update) {
@@ -170,7 +175,11 @@ export async function installWorker(argv: string[], dependencies: InstallDepende
             code = 1;
         }
     } else print('~/.bashrc was not changed. Existing shells and running Hubs keep their current PATH.');
-    print(`Manual PATH: ${pathCommand(destination)}`);
+    try {
+        print(`Manual PATH: ${pathCommand(destination)}`);
+    } catch (error) {
+        print(`PATH not available for this directory: ${(error as Error).message}`);
+    }
     print(`Verify: ${bashQuote(join(destination, 'bin/simplex'))} run --help`);
     print(`Without PATH changes, use ${join(destination, 'bin/simplex')} as launcher.command[0] in your saved local launch configuration.`);
     return code;

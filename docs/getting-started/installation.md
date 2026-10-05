@@ -68,6 +68,13 @@ directory recovers before proceeding. Do not remove recovery files while an
 installation is active or a rollback needs recovery. Concurrent installation
 attempts fail clearly instead of replacing each other's files.
 
+Once installation has committed, failure to delete obsolete backups or staging
+files produces a warning identifying the retained directory. PATH handling and
+final verification instructions still run. Later invocations retry that cleanup
+and use independent staging/backup directories, so retained debris does not block
+a current-version check or another installation. An incomplete rollback remains
+a hard error: its journal and recovery files are preserved for restoration.
+
 ### Optional Bash PATH update
 
 `--update-path` writes one marked block to the current user's `~/.bashrc`.
@@ -76,6 +83,8 @@ changes. Unrelated shell configuration and existing file permissions are
 preserved. Complete duplicate blocks are consolidated; malformed markers or a
 symlinked `.bashrc` require manual correction instead of an ambiguous rewrite.
 PATH editing has its own lock, independent of the worker destination.
+The managed shell block always uses LF, even in a CRLF file; unrelated lines keep
+their original endings so the generated assignment cannot append `\r` to PATH.
 
 `--no-update-path` leaves `.bashrc` unchanged. Without either flag, an interactive
 terminal asks once; non-interactive use skips the update and prints a safely
@@ -88,6 +97,13 @@ inherits the updated PATH. Existing shells and already-running Hubs retain their
 environment. Other shells require manual PATH configuration. Without changing
 PATH, put the absolute `<installation>/bin/simplex` path in `launcher.command[0]`
 of your saved local launch configuration.
+
+Installation directories containing `:` are supported, but PATH cannot represent
+them because colons separate search entries. `--update-path` therefore reports
+a PATH failure and leaves `.bashrc` unchanged; `--no-update-path` installs normally.
+The installer prints an absolute verification command and saved-launcher guidance
+instead of an unusable PATH export. Use the absolute `bin/simplex` path for these
+installations.
 
 Downloads install executable code and dynamic plugins. Checksums detect
 corruption; a checksum downloaded from the same release does not independently
