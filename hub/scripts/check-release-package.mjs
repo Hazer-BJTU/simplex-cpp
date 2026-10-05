@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /** Verify the packed artifact rather than trusting the working tree layout. */
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 if (process.argv.length !== 3) {
     process.stderr.write('Usage: node scripts/check-release-package.mjs PACKAGE.tgz\n');
@@ -43,6 +46,8 @@ for (const required of [
     'package/dist/package.json',
     'package/dist/bin/simplex-hub.js',
     'package/dist/src/config.js',
+    ...['command', 'source', 'archive', 'transaction', 'version', 'files', 'host', 'bashrc']
+        .map(name => `package/dist/src/install/${name}.js`),
     'package/dist/schemas/local.jsonc',
     'package/dist/schemas/worker.yaml',
     'package/dist/web/dist/index.html',
@@ -53,3 +58,20 @@ if (!members.some(member => /^package\/dist\/web\/dist\/assets\/[^/]+\.js$/.test
     throw new Error('The built panel JavaScript is missing from the npm package');
 }
 process.stdout.write(`Validated ${members.length} npm package files\n`);
+
+// The preceding npm ci/build fills npm's cache. Install only the exact locked
+// production dependencies offline beside the actual artifact, so a missing
+// emitted module/dependency cannot be masked by the source tree's node_modules.
+const root = mkdtempSync(join(tmpdir(), 'simplex-packed-runtime-'));
+try {
+    execFileSync('tar', ['-xzf', archive, '-C', root]);
+    const installed = join(root, 'package');
+    copyFileSync(fileURLToPath(new URL('../package-lock.json', import.meta.url)),
+        join(installed, 'package-lock.json'));
+    execFileSync('npm', ['ci', '--omit=dev', '--ignore-scripts', '--offline', '--no-audit', '--no-fund'],
+        { cwd: installed, stdio: 'inherit', timeout: 120_000 });
+    execFileSync(process.execPath, [fileURLToPath(new URL('./check-worker-installer.mjs', import.meta.url)), installed],
+        { stdio: 'inherit', timeout: 60_000 });
+} finally {
+    rmSync(root, { recursive: true, force: true });
+}

@@ -16,20 +16,51 @@ hub share the direct session-root persistence layout described below.
 - Node.js 22.18 or newer (developed on 24). The floor is a functional
   requirement rather than a conservative one: the hub loads
   [`shared/protocol.ts`](shared/protocol.ts) directly through Node's TypeScript
-  type stripping, which became the default in 22.18. Nothing is compiled on the
-  server side.
-- A built worker binary — `build/bin/simplex_worker` plus its `plugins/` and
-  `prompts/` directories. Build it with the repository's normal CMake flow.
-- Runtime dependencies: `ws` for WebSockets and `yaml` for preserving operator
-  configuration and comments. Everything else in `package.json` is a development dependency.
+  type stripping, which became the default in 22.18. Source development uses
+  type stripping; the npm release includes emitted JavaScript.
+- A worker installation: use `simplex-hub install-worker`, download a binary
+  release manually, or build it with the repository's normal CMake flow.
+- Runtime dependencies: `ws` for WebSockets, `yaml` for operator configuration,
+  and `tar` for validated worker archive extraction. Everything else in
+  `package.json` is a development dependency.
 
 ## Quick start
 
-For a published installation, run `npm install -g @hazer-bjtu/simplex-hub`, then
-`simplex-hub --help`. The npm package includes
-the web panel but not the C++ worker; set `--worker-bin` to the separately
-installed worker executable. See [npm releases](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/npm-release.md) for the
+For a published installation:
+
+```sh
+npm install -g @hazer-bjtu/simplex-hub
+simplex-hub install-worker --update-path
+# Open a new Bash shell or source ~/.bashrc before starting the Hub.
+simplex-hub --help
+```
+
+The package includes the web panel but not the C++ worker. The standalone
+installer fetches the latest stable official GitHub release into
+`~/.simplex/worker`, verifies the checksum and complete tree, and checks startup
+without Hub configuration or credentials. Linux x86_64, glibc >= 2.34, host
+OpenSSL 3, Bash, util-linux `flock`, and `ldd` are required. See [npm releases](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/npm-release.md) for the
 package contents and release process.
+
+Use `--directory DIR` and `--version vX.Y.Z` to select the installation and
+release; `--source github` is the only supported source. Same-version installs
+check required files and skip replacement unless `--reinstall` is set. Known
+downgrades require `--allow-downgrade`; unknown non-empty directories require
+`--overwrite`. These flags are independent, and dangerous targets remain
+forbidden. Stop workers before replacing their complete installation tree;
+custom files inside it are removed. Failed preparation preserves the old tree;
+replacement has rollback and recovery on the next installation attempt.
+
+`--update-path` replaces only the marked PATH block in `~/.bashrc`.
+`--no-update-path` skips it; unspecified behavior prompts only in a terminal.
+Non-interactive use prints a manual command. Malformed markers and symlinked
+`.bashrc` files require manual editing. A failed PATH update leaves the worker
+installed and returns a nonzero code. Restart the Hub from an updated shell or
+use the absolute installed `bin/simplex` in a saved local launch configuration.
+Downloads install executable code/plugins; release checksums detect corruption,
+not independently authenticated publisher identity. See the
+[installation guide](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/getting-started/installation.md)
+and `simplex-hub install-worker --help` for the full contract.
 
 ```sh
 cd hub
