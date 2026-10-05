@@ -1,6 +1,6 @@
 /** Real process/socket coverage of the Hub-only delegation protocol. */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, it } from 'node:test';
 import { parse, stringify } from 'yaml';
@@ -149,6 +149,54 @@ it('does not clean up on worker disconnect and refreshes primary dialogue after 
     assert.equal(record.conversation.value.turns.length, 1);
     assert.equal(record.conversation.value.incomplete, false);
 });
+
+for (const failure of ['send', 'timeout']) {
+    it(`reports ${failure} conversation storage failure without disabling unrelated sessions`, async () => {
+        const ctx = await setup();
+        const child = await fork(ctx);
+        await send(ctx, child);
+        const projection = ctx.hub.subagents.children.get(child.id).conversation;
+        await until(() => !projection.value.stale && projection.value.turns.length === 1);
+        const root = sessionDir(ctx.config, child.id);
+        const backup = `${root}-durable`;
+        const path = join(root, 'conversation.json');
+        const connection = child.connection;
+        const original = connection.sendPayload;
+        let queries = 0;
+        connection.sendPayload = () => {
+            queries += 1;
+            if (failure === 'send') throw new Error('injected send failure');
+            return { ok: true }; // A history query that never receives a reply.
+        };
+        // Schedule successfully, then make all later private writes fail. The
+        // linked directory keeps the last durable file readable, even under root.
+        projection.connectionChanged(connection);
+        const durable = readFileSync(path, 'utf8');
+        renameSync(root, backup);
+        symlinkSync(backup, root, 'dir');
+        try {
+            await until(() => projection.storageFailed && queries === (failure === 'send' ? 3 : 1), { timeout: 4000 });
+            assert.equal(child.subagent.health, 'degraded');
+            assert.equal(child.subagent.reason, 'primary conversation storage is unavailable');
+            assert.equal(projection.value.stale, true);
+            assert.equal(projection.value.incomplete, true);
+            assert.equal(readFileSync(path, 'utf8'), durable);
+            // The Hub remains responsive, including another worker's remote tools.
+            assert.equal((await fetch(`${ctx.base}/api/sessions`)).status, 200);
+            assert.equal((await rpc(ctx, 'plan/read', { operation: 'read' })).status, 'succeeded');
+            projection.stop();
+            const before = queries;
+            await new Promise(resolve => setTimeout(resolve, 80));
+            assert.equal(queries, before);
+        } finally {
+            connection.sendPayload = original;
+            rmSync(root);
+            renameSync(backup, root);
+        }
+        assert.equal((await ctx.hub.supervisor.stop(child)).ok, true);
+        assert.equal(existsSync(root), false);
+    });
+}
 it('stops descendants on a parent process crash and reports terminal state without restoring directories', async () => {
     const ctx = await setup();
     const child = await fork(ctx);

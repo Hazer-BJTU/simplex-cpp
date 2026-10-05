@@ -31,13 +31,25 @@ interface Refresh {
     pages: number;
     generation: number;
     turns: DialogueTurn[];
+    pending: DialogueTurn | null;
+    discovering: boolean;
     truncated: boolean;
     timer: NodeJS.Timeout | null;
 }
 const object = (value: unknown): Record<string, unknown> | null =>
     value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown> : null;
+const MAX_REFRESH_PAGES = 64;
+const MAX_TURN_STEPS = 32;
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/** Clip only at UTF-8 boundaries so a byte budget does not corrupt visible text. */
+function prefix(raw: string, maxBytes: number): string {
+    const bytes = Buffer.from(raw);
+    let end = Math.min(bytes.length, maxBytes);
+    while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+    return bytes.subarray(0, end).toString('utf8');
+}
 
 /** Keep visible content, with explicit truncation. Do not pass through extras. */
 export function dialogueParts(value: unknown, mark: () => void): DialoguePart[] {
@@ -51,13 +63,18 @@ export function dialogueParts(value: unknown, mark: () => void): DialoguePart[] 
         if (part.truncated === true || part.omitted === true) mark();
         const bytes = Buffer.from(part.raw);
         if (bytes.length > 4096) mark();
-        const text = bytes.subarray(0, 4096).toString('utf8');
+        const text = prefix(part.raw, 4096);
         parts.push({ type: part.type as string, modality: part.modality.slice(0, 32), raw: text });
     }
     return parts;
 }
 
-/** One worker-backed current-history projection; retries are finite and correlated. */
+/**
+ * Worker-backed current history with a bounded newest tail. Refreshes validate
+ * revision/cursors before publication; failed refreshes preserve known results.
+ * Storage failure is observable in memory even when its diagnostic cannot be
+ * persisted. The optional observer must not be required for safe shutdown.
+ */
 export class ConversationProjection {
     value: Conversation = {
         revision: null, worker_id: null, turns: [], truncated: false,
@@ -71,10 +88,18 @@ export class ConversationProjection {
     private latestConnection: WorkerConnection | null = null;
     private pendingUsers = new Map<string, unknown>();
     private lastSequence: number | string | null = null;
+    storageFailed = false;
+    private readonly onStorageFailure: (error: unknown) => void;
     readonly session: Session;
     readonly path: string;
     readonly maxBytes: number;
-    constructor(session: Session, path: string, maxBytes: number) {
+    constructor(
+        session: Session,
+        path: string,
+        maxBytes: number,
+        onStorageFailure: (error: unknown) => void = () => {},
+    ) {
+        this.onStorageFailure = onStorageFailure;
         this.session = session;
         this.path = path;
         this.maxBytes = maxBytes;
@@ -153,9 +178,9 @@ export class ConversationProjection {
     private turn(raw: unknown, mark: () => void): DialogueTurn | null {
         const turn = object(raw);
         if (!turn || !integer(turn.index) || !Array.isArray(turn.user) || !Array.isArray(turn.steps)) return null;
-        if (turn.steps.length > 512) mark();
+        if (turn.steps.length > MAX_TURN_STEPS) mark();
         return { index: turn.index, user: dialogueParts(turn.user, mark),
-            steps: turn.steps.slice(0, 512).flatMap(rawStep => {
+            steps: turn.steps.slice(-MAX_TURN_STEPS).flatMap(rawStep => {
                 const step = object(rawStep);
                 if (!step || !integer(step.index) || !Array.isArray(step.content)) return [];
                 if (step.omitted_parts) mark();
@@ -163,11 +188,18 @@ export class ConversationProjection {
             }) };
     }
 
+    /** Timer callbacks cannot rely on the Hub's synchronous observer boundary. */
+    private callback(task: () => void): void {
+        if (this.stopped || this.session.closing) return;
+        try { task(); }
+        catch { this.failed(); }
+    }
+
     private schedule(connection: WorkerConnection, reset = false): void {
         this.latestConnection = connection;
         if (reset) this.attempts = 0;
         if (this.stopped || this.scheduled || this.refresh || this.session.closing) return;
-        this.scheduled = setTimeout(() => {
+        this.scheduled = setTimeout(() => this.callback(() => {
             this.scheduled = null;
             const current = this.latestConnection;
             if (!current || this.session.connection !== current || !current.isOpen || this.session.closing) return;
@@ -176,9 +208,9 @@ export class ConversationProjection {
             if (this.attempts++ >= 3) return;
             this.refresh = { connection: current, worker: this.session.identity.workerId!, request: '',
                 start: 0, step: 0, revision: null, total: null, pages: 0, generation: this.generation,
-                turns: [], truncated: false, timer: null };
+                turns: [], pending: null, discovering: true, truncated: false, timer: null };
             this.query();
-        }, 25);
+        }), 25);
         this.scheduled.unref();
     }
 
@@ -186,11 +218,13 @@ export class ConversationProjection {
         const refresh = this.refresh;
         if (!refresh) return;
         refresh.request = newRequestId();
-        refresh.timer = setTimeout(() => this.failed(), 3000);
+        refresh.timer = setTimeout(() => this.callback(() => this.failed()), 3000);
         refresh.timer.unref();
-        const result = refresh.connection.sendPayload(buildPayload({ operation: 'history',
-            requestId: refresh.request, start: refresh.start, step: refresh.step, limit: 10 }));
-        if (!result.ok) this.failed();
+        try {
+            const result = refresh.connection.sendPayload(buildPayload({ operation: 'history',
+                requestId: refresh.request, start: refresh.start, step: refresh.step, limit: 1 }));
+            if (!result.ok) this.failed();
+        } catch { this.failed(); }
     }
 
     private history(envelope: ForwardedEnvelope, connection: WorkerConnection): void {
@@ -204,60 +238,94 @@ export class ConversationProjection {
         refresh.timer = null;
         if (!integer(page.revision) || !integer(page.total) || !integer(page.next) || !integer(page.next_step)
             || page.start !== refresh.start || page.step !== refresh.step || !Array.isArray(page.turns)
-            || (refresh.revision !== null && refresh.revision !== page.revision)
+            || page.turns.length > 1 || (refresh.revision !== null && refresh.revision !== page.revision)
             || (refresh.total !== null && refresh.total !== page.total)
-            || page.next > page.total || (page.next === page.total && page.next_step !== 0)
-            || (page.next < page.total && (page.next < refresh.start
-                || (page.next === refresh.start && page.next_step <= refresh.step)))
-            || refresh.generation !== this.generation) { this.failed(); return; }
+            || page.next > page.total || refresh.generation !== this.generation) { this.failed(); return; }
         refresh.revision = page.revision;
         refresh.total = page.total;
-        let expectedTurn = refresh.start;
-        let expectedStep = refresh.step;
-        for (const raw of page.turns) {
-            const source = object(raw);
-            const turn = this.turn(raw, () => { refresh.truncated = true; });
-            if (!turn || turn.index !== expectedTurn || turn.index >= page.total
-                || turn.steps.some((step, index) => step.index !== expectedStep + index)) { this.failed(); return; }
-            if (source?.omitted_user_parts) refresh.truncated = true;
-            const previous = refresh.turns.at(-1);
-            if (previous?.index === turn.index) previous.steps.push(...turn.steps);
-            else {
-                // History omits request IDs; retain a known live association
-                // only for the same worker, index and visible user content.
-                const known = this.value.turns.find(item => item.index === turn.index);
-                if ((!this.value.worker_id || this.value.worker_id === refresh.worker)
-                    && known?.request_id && JSON.stringify(known.user) === JSON.stringify(turn.user)) {
-                    turn.request_id = known.request_id;
-                }
-                refresh.turns.push(turn);
-            }
-            expectedTurn += 1;
-            expectedStep = 0;
+        refresh.pages += 1;
+        if (page.total === 0) {
+            if (page.next || page.next_step || page.turns.length) { this.failed(); return; }
+            this.finish(refresh, false);
+            return;
         }
-        const last = refresh.turns.at(-1);
-        // The two cursors must describe exactly the assembled page, including
-        // a continuation inside its final turn. Never silently skip a turn.
-        if (page.next_step === 0) {
-            if (page.next !== refresh.start + page.turns.length) { this.failed(); return; }
-        } else if (!page.turns.length || !last || page.next !== last.index
-            || page.next_step !== (last.steps.at(-1)?.index ?? -1) + 1) {
+        const raw = object(page.turns[0]);
+        const steps = raw?.steps;
+        if (!raw || raw.index !== refresh.start || !Array.isArray(steps)
+            || steps.some((rawStep, index) => {
+                const step = object(rawStep);
+                return !step || step.index !== refresh.step + index || !Array.isArray(step.content);
+            }) || (page.next_step === 0 ? page.next !== refresh.start + 1
+                : page.next !== refresh.start || !steps.length || page.next_step !== refresh.step + steps.length)) {
             this.failed(); return;
         }
-        refresh.pages += 1;
-        const budgetReached = Buffer.byteLength(JSON.stringify(refresh.turns)) > this.maxBytes - 2048 || refresh.pages >= 64;
-        if (page.next === page.total || budgetReached) {
-            this.value = { revision: page.revision, worker_id: refresh.worker,
-                turns: refresh.turns, truncated: refresh.truncated || this.value.truncated || budgetReached,
-                incomplete: budgetReached && page.next !== page.total, stale: false,
-                refreshed_at: new Date().toISOString() };
-            this.cancelRefresh();
-            this.persist();
-        } else {
-            refresh.start = page.next;
+        // Discover the revision/count once, then visit newest turns first.
+        // Never publish the discovery page as an old prefix of a large history.
+        if (refresh.discovering) {
+            refresh.discovering = false;
+            if (page.total > 1) {
+                refresh.start = page.total - 1;
+                this.query();
+                return;
+            }
+        }
+        const remaining = raw.omitted_steps;
+        if (page.next_step && integer(remaining)
+            && Number.isSafeInteger(refresh.step + steps.length + remaining)) {
+            const tailStart = refresh.step + steps.length + remaining - MAX_TURN_STEPS;
+            if (tailStart > page.next_step) {
+                refresh.truncated = true;
+                refresh.step = tailStart;
+                refresh.pending = null;
+                this.query();
+                return;
+            }
+        }
+        const turn = this.turn(raw, () => { refresh.truncated = true; });
+        if (!turn) { this.failed(); return; }
+        if (raw.omitted_user_parts) refresh.truncated = true;
+        if (refresh.pending) refresh.pending.steps.push(...turn.steps);
+        else {
+            const known = this.value.turns.find(item => item.index === turn.index);
+            if ((!this.value.worker_id || this.value.worker_id === refresh.worker)
+                && known?.request_id && JSON.stringify(known.user) === JSON.stringify(turn.user)) {
+                turn.request_id = known.request_id;
+            }
+            refresh.pending = turn;
+        }
+        if (refresh.pending.steps.length > MAX_TURN_STEPS) {
+            refresh.pending.steps = refresh.pending.steps.slice(-MAX_TURN_STEPS);
+            refresh.truncated = true;
+        }
+        if (page.next_step) {
+            // A partial turn cannot replace a known latest result. If work runs
+            // out before reaching its final step, retain the prior projection.
+            if (refresh.pages >= MAX_REFRESH_PAGES) { this.failed(); return; }
+            this.fit([refresh.pending], () => { refresh.truncated = true; });
             refresh.step = page.next_step;
             this.query();
+            return;
         }
+        refresh.turns.unshift(refresh.pending);
+        refresh.pending = null;
+        let evicted = false;
+        this.fit(refresh.turns, () => { evicted = true; refresh.truncated = true; });
+        if (refresh.start === 0 || evicted || refresh.pages >= MAX_REFRESH_PAGES) {
+            this.finish(refresh, refresh.start !== 0 || refresh.truncated);
+        } else {
+            refresh.start -= 1;
+            refresh.step = 0;
+            this.query();
+        }
+    }
+
+    /** Publish only a validated tail that includes the latest completed turn. */
+    private finish(refresh: Refresh, incomplete: boolean): void {
+        this.value = { revision: refresh.revision, worker_id: refresh.worker,
+            turns: refresh.turns, truncated: refresh.truncated || incomplete,
+            incomplete, stale: false, refreshed_at: new Date().toISOString() };
+        this.cancelRefresh();
+        this.persist();
     }
 
     private failed(): void {
@@ -269,18 +337,49 @@ export class ConversationProjection {
         if (connection) this.schedule(connection);
     }
 
+    /** Evict old turns/steps first; even an oversized latest answer keeps a prefix. */
+    private fit(turns: DialogueTurn[], mark: () => void): void {
+        for (const turn of turns) {
+            if (turn.steps.length > MAX_TURN_STEPS) {
+                turn.steps = turn.steps.slice(-MAX_TURN_STEPS);
+                mark();
+            }
+        }
+        const budget = this.maxBytes - 1024;
+        while (Buffer.byteLength(JSON.stringify(turns)) > budget && turns.length) {
+            mark();
+            if (turns.length > 1) { turns.shift(); continue; }
+            const turn = turns[0]!;
+            if (turn.steps.length > 1) { turn.steps.shift(); continue; }
+            // The final answer takes priority over verbose input and attachments.
+            if (turn.user.length > 1) { turn.user.pop(); continue; }
+            const input = turn.user[0];
+            if (input && Buffer.byteLength(input.raw) > 256) {
+                input.raw = prefix(input.raw, 256);
+                continue;
+            }
+            const content = turn.steps[0]?.content;
+            if (content && content.length > 1) { content.pop(); continue; }
+            const part = content?.[0];
+            if (part?.raw.length) {
+                part.raw = prefix(part.raw, Math.floor(Buffer.byteLength(part.raw) / 2));
+            } else { turns.shift(); }
+        }
+    }
+
+    /** Storage failure reporting never attempts to persist its own failure state. */
     private persist(): void {
         if (this.stopped || this.session.closing) return;
-        while (Buffer.byteLength(JSON.stringify(this.value)) > this.maxBytes - 1) {
-            if (this.value.turns.length <= 1) {
-                const turn = this.value.turns[0];
-                if (turn?.steps.length) turn.steps.shift();
-                else this.value.turns.shift();
-            } else this.value.turns.shift();
-            this.value.truncated = true;
+        this.fit(this.value.turns, () => { this.value.truncated = true; this.value.incomplete = true; });
+        try {
+            writePrivate(this.path, this.value, this.maxBytes);
+            this.storageFailed = false;
+        } catch (error) {
+            this.storageFailed = true;
+            this.value.stale = true;
             this.value.incomplete = true;
+            try { this.onStorageFailure(error); } catch { /* observers cannot fail a timer */ }
         }
-        writePrivate(this.path, this.value, this.maxBytes);
     }
 
     private cancelRefresh(): void {

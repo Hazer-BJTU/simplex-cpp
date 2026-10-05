@@ -5,7 +5,7 @@ import { it } from 'node:test';
 import { startTestHub } from '../helpers/hub.js';
 import { connectWorker, until } from '../helpers/worker.js';
 import { sessionDir } from '../../src/launch/config-render.ts';
-import { dockerRunning, dockerName } from '../../src/subagents/docker.ts';
+import { dockerRunning } from '../../src/subagents/docker.ts';
 
 const enabled = process.env.SIMPLEX_DOCKER_WORKER_TEST === '1';
 it('clean-forks Docker workers and cleans a root-written child after its launcher is killed',
@@ -55,11 +55,13 @@ it('clean-forks Docker workers and cleans a root-written child after its launche
             { timeout: 15000 });
         const root = sessionDir(ctx.config, child.id);
         assert.equal(existsSync(`${root}/state/state.json`), true);
-        const name = dockerName(child.process);
-        assert.equal(await dockerRunning(name), true);
+        const management = child.process.dockerManagement;
+        assert.equal(await dockerRunning(management), true);
         process.kill(child.process.pid, 'SIGKILL');
         await until(() => child.subagent.lifecycle === 'stopped', { timeout: 15000 });
-        assert.equal(await dockerRunning(name), false);
+        // Cleanup removed the startup cwd; use the existing data root only for
+        // this post-cleanup diagnostic, preserving the original CLI/environment.
+        assert.equal(await dockerRunning({ ...management, cwd: ctx.config.dataDir }), false);
         assert.equal(existsSync(root), false);
         assert.equal(existsSync(sessionDir(ctx.config, parent.id)), true);
         assert.equal((await ctx.hub.supervisor.stop(parent)).ok, true);

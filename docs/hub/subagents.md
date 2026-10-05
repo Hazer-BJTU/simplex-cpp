@@ -204,10 +204,22 @@ with turn/step association. It excludes reasoning, tool calls/results and extras
 Live commits update it; paginated worker history reconciles reconnects, restarts
 and event gaps. Refresh validates request/worker/connection identity, both cursors,
 revision, ordering and concurrent changes before replacing the projection.
-Queries have finite deadlines/retries and a 64-page limit. The projection follows
+Each refresh discovers the history revision/count, then reads **newest turns
+first**, retaining an ordered tail rather than an old prefix. It keeps at most
+32 final steps per turn, using the worker's omitted-step count to skip older
+fragments. Older turns and steps are evicted first when `conversationBytes` is
+reached; oversized visible text keeps a UTF-8-safe prefix. A refresh makes at
+most 64 page requests per attempt, with a three-second request deadline and at
+most three attempts per refresh trigger. Budget exhaustion marks the projection
+incomplete/truncated; an unfinished or invalid refresh preserves the previously
+published results. The projection follows
 **current** worker history after compact, not an archival pre-compact chat log.
 It reports `revision`, `worker_id`, `refreshed_at`, `stale`, `incomplete` and
 `truncated`; worker history itself clips content, so recovery is not lossless.
+Conversation-file publication failures preserve the previous durable file,
+mark the in-memory projection stale/incomplete, and report degraded child health
+without requiring another disk write. Timers and send failures cannot propagate
+storage errors out of the refresh worker; shutdown cancels pending retries.
 
 Stopping/restarting/force-killing a parent, observing its process crash, or shutting
 down the Hub freezes all descendant admission synchronously and attempts every
@@ -216,7 +228,14 @@ does not stop children. A worker incarnation change invalidates its old family.
 
 Deletion waits for confirmed actual process/container termination and owned output
 pipes/log writer closure. A Docker CLI exit alone is insufficient; the Hub inspects
-and signals the named container. Failure leaves cleanup-pending metadata and a
+and signals the named container using the resolved startup Docker executable,
+working directory, and effective environment, including `DOCKER_HOST`,
+`DOCKER_CONTEXT` and `DOCKER_CONFIG`. This private management snapshot is persisted
+with the process and restored after a Hub restart; public process descriptions
+omit it. Because the environment may contain credentials, headless metadata and
+ordinary `hub.json` are written with mode 0600. Missing/invalid recovered context
+never falls back to the current Hub environment: termination remains unconfirmed
+and storage stays cleanup-pending for operator intervention. Failure leaves cleanup-pending metadata and a
 periodic retry. Successful shutdown deletes **all** child persistence, including
 conversation. Parents must receive desired output first. Only small terminal
 status/outcome records remain in memory for one receipt TTL, capped at 128.

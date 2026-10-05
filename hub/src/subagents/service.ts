@@ -10,6 +10,7 @@ import type { ToolContext } from '../worker/tool-context.ts';
 import { ToolFailure } from '../worker/tool-context.ts';
 import { newRequestId, buildPayload } from '../protocol/messages.ts';
 import { childDirectories, ownedPath, readPrivate, writePrivate, removeChildDirectory } from './storage.ts';
+import { dockerName } from './docker.ts';
 import { cleanFork } from './fork.ts';
 import { ConversationProjection } from './conversation.ts';
 import { isValidSessionId } from '../state/session-id.ts';
@@ -110,6 +111,15 @@ export class SubagentService {
                 error: record.error, uncertain_start: record.uncertainStart,
             }, MAX_OPERATION_BYTES);
         }
+        this.options.changed(session);
+    }
+
+    /** Report degraded storage without depending on another successful disk write. */
+    private projectionStorageFailed(session: Session): void {
+        if (session.closing || this.children.get(session.id)?.removed) return;
+        session.subagent!.health = 'degraded';
+        session.subagent!.reason = 'primary conversation storage is unavailable';
+        this.options.log.warn(`subagent ${session.id}: primary conversation storage failed`);
         this.options.changed(session);
     }
 
@@ -231,8 +241,11 @@ export class SubagentService {
             const result = { subagent_id: id, lifecycle: 'preparing' };
             this.commitReceipt(context, result, receipt);
             committed = true;
-            record.conversation = new ConversationProjection(session,
-                ownedPath(this.options.config.dataDir, id, 'conversation.json'), this.options.config.subagents.conversationBytes);
+            record.conversation = new ConversationProjection(
+                session, ownedPath(this.options.config.dataDir, id, 'conversation.json'),
+                this.options.config.subagents.conversationBytes,
+                () => this.projectionStorageFailed(session),
+            );
             // Startup belongs to the supervisor once the durable receipt exists.
             record.startup = Promise.resolve().then(() => this.start(record)).finally(() => { record.startup = null; });
             void record.startup.catch(() => this.fail(record, 'worker startup failed'));
@@ -401,9 +414,10 @@ export class SubagentService {
         state.observed_at = envelope.received_at ?? null;
         state.active = !!session.activeRunId;
         const dataStatus = object(envelope.data);
-        state.health = envelope.issues?.length || (envelope.event === 'status' && dataStatus?.storage_failed === true)
+        state.health = record.conversation?.storageFailed || envelope.issues?.length || (envelope.event === 'status' && dataStatus?.storage_failed === true)
             ? 'degraded' : 'healthy';
-        state.reason = state.health === 'healthy' ? 'live identified worker event channel'
+        state.reason = record.conversation?.storageFailed ? 'primary conversation storage is unavailable'
+            : state.health === 'healthy' ? 'live identified worker event channel'
             : 'worker reported storage or protocol diagnostics';
         if (state.lifecycle === 'starting' && ['ready', 'status'].includes(envelope.event)) {
             state.lifecycle = 'ready';
@@ -542,6 +556,7 @@ export class SubagentService {
                         process.outputSplitters.length = 0;
                         process.child = null;
                         process.error = null;
+                        process.dockerManagement = null;
                     }
                     session.spec = {};
                     session.requests.clear();
@@ -626,7 +641,11 @@ export class SubagentService {
                         health: 'unknown', reason: 'restoring supervised family', observed_at: null, active: false };
                     session.closing = session.subagent.lifecycle === 'cleanup-pending';
                     const record: ChildRecord = { session, parent: parent as unknown as ParentRef,
-                        conversation: new ConversationProjection(session, ownedPath(this.options.config.dataDir, id, 'conversation.json'), this.options.config.subagents.conversationBytes),
+                        conversation: new ConversationProjection(
+                            session, ownedPath(this.options.config.dataDir, id, 'conversation.json'),
+                            this.options.config.subagents.conversationBytes,
+                            () => this.projectionStorageFailed(session),
+                        ),
                         removed: false, startup: null, startupTimer: null, terminalTimer: null,
                         uncertainStart: raw.uncertain_start === true || (!raw.process && object(raw.subagent)?.lifecycle !== 'preparing'),
                         error: typeof raw.error === 'string' ? raw.error.slice(0, 512) : '' };
@@ -656,6 +675,8 @@ export class SubagentService {
                 }
                 if (cyclic || !parent || parent.lifecycleId !== record.parent.lifecycle_id
                     || !this.options.supervisor.isRunning(parent) || !this.options.supervisor.isRunning(record.session)
+                    || (record.session.process && dockerName(record.session.process as ProcessRecord)
+                        && !(record.session.process as ProcessRecord).dockerManagement)
                     || record.session.subagent!.lifecycle === 'cleanup-pending') {
                     record.session.subagent!.lifecycle = 'cleanup-pending';
                     record.session.closing = true;

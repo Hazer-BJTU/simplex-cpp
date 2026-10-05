@@ -20,7 +20,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import { captureStartup, resolvedStartupLaunch } from '../subagents/fork.ts';
-import { dockerRunning, signalContainer, dockerName } from '../subagents/docker.ts';
+import { captureDockerManagement, restoreDockerManagement, dockerRunning, signalContainer, dockerName } from '../subagents/docker.ts';
+import type { DockerManagement } from '../subagents/docker.ts';
 import { sessionLaunch, launchEndpoints } from '../configurations/session.ts';
 import { createLauncher } from './launcher.ts';
 import { spawn } from 'node:child_process';
@@ -191,6 +192,7 @@ export class ProcessRecord {
     stopPolicy?: Pick<HubConfig['worker'], 'stopTimeoutMs' | 'sigtermGraceMs' | 'sigkillGraceMs'>;
     /** Fence covering both output pipes and the optional disk writer. */
     ownedIo: Promise<void> = Promise.resolve();
+    dockerManagement: DockerManagement | null = null;
     readonly sessionId: string;
     state: ProcessState;
     pid: number | null;
@@ -435,13 +437,15 @@ export class WorkerSupervisor {
         });
         const record = new ProcessRecord({ sessionId: session.id, invocation, logPath, logStream, logs });
         record.stopPolicy = { ...launchConfig.worker };
+        try { record.dockerManagement = captureDockerManagement(invocation); }
+        catch { logStream.end(); return { ok: false, error: 'cannot capture Docker management context' }; }
         session.process = record;
 
         let child: ChildProcess;
         try {
-            child = spawn(invocation.command, invocation.args, {
-                cwd: invocation.cwd,
-                env: { ...process.env, ...invocation.env },
+            child = spawn(record.dockerManagement?.executable ?? invocation.command, invocation.args, {
+                cwd: record.dockerManagement?.cwd ?? invocation.cwd,
+                env: record.dockerManagement?.env ?? { ...process.env, ...invocation.env },
                 // A dedicated process group makes an explicit force-kill able
                 // to reach descendants; it is never used implicitly.
                 detached: true,
@@ -556,7 +560,7 @@ export class WorkerSupervisor {
         if (container) {
             const until = Date.now() + timeoutMs;
             do {
-                if (await dockerRunning(container) === false) return true;
+                if (await dockerRunning(record.dockerManagement) === false) return true;
                 if (Date.now() >= until) return false;
                 await delay(Math.min(EXIT_POLL_MS, Math.max(1, until - Date.now())));
             } while (true);
@@ -634,7 +638,7 @@ export class WorkerSupervisor {
         const record = session.process as ProcessRecord | null;
         if (!record) return { ok: true, how: 'not-started', forced: false };
         if ((record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed)
-            && (!dockerName(record) || await dockerRunning(dockerName(record)!) === false)) {
+            && (!dockerName(record) || await dockerRunning(record.dockerManagement) === false)) {
             return { ok: true, how: 'already-exited', forced: false };
         }
         record.stopRequested = true;
@@ -653,7 +657,7 @@ export class WorkerSupervisor {
 
         this.log.warn(`session ${session.id}: graceful stop timed out; sending SIGTERM`);
         const container = dockerName(record);
-        if (container) await signalContainer(container, 'TERM');
+        if (container) await signalContainer(record.dockerManagement, 'TERM');
         else this.signalProcess(record, 'SIGTERM');
         if (await this.waitForExit(record, record.stopPolicy?.sigtermGraceMs ?? this.config.worker.sigtermGraceMs)) {
             return { ok: true, how: 'sigterm', forced: true };
@@ -663,7 +667,7 @@ export class WorkerSupervisor {
         this.log.warn(
             `session ${session.id}: SIGTERM ignored; sending SIGKILL`
             + (group ? ' to the process group' : ''));
-        if (container) await signalContainer(container, 'KILL');
+        if (container) await signalContainer(record.dockerManagement, 'KILL');
         else this.signalProcess(record, 'SIGKILL', { processGroup: group });
         const exited = await this.waitForExit(record, record.stopPolicy?.sigkillGraceMs ?? this.config.worker.sigkillGraceMs);
         if (!exited) {
@@ -705,12 +709,12 @@ export class WorkerSupervisor {
         const record = session.process as ProcessRecord | null;
         if (!record) return { ok: true, how: 'not-started', forced: false };
         if ((record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed)
-            && (!dockerName(record) || await dockerRunning(dockerName(record)!) === false)) {
+            && (!dockerName(record) || await dockerRunning(record.dockerManagement) === false)) {
             return { ok: true, how: 'already-exited', forced: false };
         }
         record.stopRequested = true;
         const container = dockerName(record);
-        if (container) await signalContainer(container, 'KILL');
+        if (container) await signalContainer(record.dockerManagement, 'KILL');
         else this.signalProcess(record, 'SIGKILL', { processGroup });
         const exited = await this.waitForExit(record, record.stopPolicy?.sigkillGraceMs ?? this.config.worker.sigkillGraceMs);
         return {
@@ -757,6 +761,7 @@ export class WorkerSupervisor {
                 sizeOf: (line) => Buffer.byteLength(line, 'utf8'),
             }),
         });
+        record.dockerManagement = container ? restoreDockerManagement(entry.docker_management, container) : null;
         record.pid = entry.pid as number;
         record.pidStartTime = entry.pid_start_time as string;
         record.startedAt = typeof entry.started_at === 'string' ? entry.started_at : record.startedAt;
@@ -771,7 +776,7 @@ export class WorkerSupervisor {
         if (container || (typeof record.pidStartTime === 'string' && record.pidStartTime.length > 0)) {
             record.monitor = setInterval(() => {
                 if (container) {
-                    void dockerRunning(container).then(running => {
+                    void dockerRunning(record.dockerManagement).then(running => {
                         if (running === false) this.finish(record, { exitCode: null });
                     });
                     return;

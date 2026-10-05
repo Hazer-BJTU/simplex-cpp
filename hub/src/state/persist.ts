@@ -12,8 +12,10 @@
  * (`<persistence.directory>/<persistence.state>/state.json`), and duplicating it here
  * would create a second source of truth.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import type { DockerManagement } from '../subagents/docker.ts';
 import type { Logger } from '../log.ts';
 
 /** Bumped when the stored shape changes incompatibly. */
@@ -24,6 +26,7 @@ const SAVE_DEBOUNCE_MS = 200;
 
 /** A process as it is written to `hub.json`. Snake case is the on-disk format. */
 export interface StoredProcess {
+    docker_management?: DockerManagement;
     pid: number;
     pid_start_time: string | null;
     started_at: string;
@@ -67,6 +70,7 @@ export interface LoadedState {
 
 /** The slice of a session this module persists. */
 export interface PersistableProcess {
+    dockerManagement?: DockerManagement | null;
     pid: number | null;
     pidStartTime: string | null;
     startedAt: string;
@@ -154,6 +158,7 @@ export class HubState {
                 lifecycle_id: session.lifecycleId ?? '',
                 process: session.process && session.process.pid
                     ? {
+                        ...(session.process.dockerManagement ? { docker_management: session.process.dockerManagement } : {}),
                         pid: session.process.pid,
                         pid_start_time: session.process.pidStartTime,
                         started_at: session.process.startedAt,
@@ -184,16 +189,18 @@ export class HubState {
 
     /** Write state immediately, atomically. */
     save(sessions: PersistableSession[]): boolean {
+        const temporary = `${this.path}.${randomUUID()}.tmp`;
         try {
             mkdirSync(dirname(this.path), { recursive: true });
-            const temporary = `${this.path}.tmp`;
-            writeFileSync(temporary, `${JSON.stringify(this.document(sessions), null, 2)}\n`);
+            writeFileSync(temporary, `${JSON.stringify(this.document(sessions), null, 2)}\n`, { mode: 0o600, flag: 'wx' });
             renameSync(temporary, this.path);
             return true;
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             this.log.error(`could not save ${this.path}: ${message}`);
             return false;
+        } finally {
+            try { rmSync(temporary, { force: true }); } catch { /* best-effort temporary cleanup */ }
         }
     }
 
