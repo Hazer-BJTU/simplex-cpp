@@ -45,6 +45,7 @@ export default defineConfig({
             group('Protocol', [
                 ['Simplex Loop Worker Protocol', '/core/worker-protocol'],
                 ['Hub panel protocol', '/hub/hub-protocol'],
+                ['Headless subagents', '/hub/subagents'],
             ]),
             group('Plugins', [
                 ['Principles', '/plugins/overview'],

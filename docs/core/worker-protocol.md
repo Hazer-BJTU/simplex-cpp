@@ -1411,6 +1411,21 @@ implicitly approve a tool or mutate the active AgentInputState. These rules are
 the extension boundary for adding operations beyond the plan routes.
 
 
+### Subagent routes
+
+The bundled Hub additionally implements `subagent/clean-fork`, `subagent/send`
+and `subagent/receive` over the same one-shot remote transport. They require the
+caller's live identity/active run and direct-parent ownership. Clean-fork starts
+an independent headless worker from the caller's startup configuration; send
+supports message/continue/compact/stop; receive returns bounded status and primary
+conversation, without tools or reasoning. Mutations use bounded durable receipts
+and never automatically retransmit unknown payloads. A future worker tool may
+adopt these routes; no C++ subagent tool is included yet.
+
+The [Hub subagent contract](../hub/subagents.md) defines the complete argument,
+result, authorization, duplicate, configuration, approval and lifetime semantics.
+Headless workers otherwise use the existing worker protocol unchanged.
+
 ### Plan routes
 
 The `plan` tool selects `plan/read` for `{"operation":"read"}` and `plan/replace`
@@ -1539,7 +1554,7 @@ Other confirmation rules:
 ### Remote tools
 
 The remote-tool listener authenticates the session token before accepting an
-upgrade. `plan/read` and `plan/replace` additionally require a live event identity
+upgrade. Plan and subagent routes additionally require a live event identity
 and matching active run. They wait briefly for independently delivered event
 admission/status, then reject if that identity cannot be established. Unknown
 routes receive `not_implemented` and perform no operation.

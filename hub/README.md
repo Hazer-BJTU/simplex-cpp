@@ -719,3 +719,15 @@ they must not derive executable commands or filesystem paths from route strings.
 The session token alone is insufficient for plan operations: worker/run identity
 is verified using the event connection. There is no implicit retry, replay cache,
 confirmation bypass, or durable remote-call queue.
+
+## Headless delegation
+
+The Hub supports clean-fork/send/receive remote routes for directly owned headless
+workers. Each child uses a flat `<dataDir>/subagents/<generated-id>/` root, an
+independent operator-controlled ask/deny/approve policy, and a bounded primary
+conversation projection. It retains no event transcript or reasoning/tool history.
+Parent process shutdown/crash cascades; socket disconnect alone preserves the
+family. Confirmed child shutdown deletes its persistence. Clean-fork shares any
+explicit external workspace and is not a sandbox. No C++ subagent tool ships yet.
+See the [complete subagent contract](../docs/hub/subagents.md) for configuration snapshots,
+launch support, request deduplication, recovery and cleanup limits.

@@ -216,3 +216,15 @@ Create a session through REST or the panel WebSocket with:
 REST uses `POST /api/sessions`; WebSocket adds `"type": "create_session"`.
 Revision mismatches return HTTP `409` without overwriting source. Keep the local
 draft, reload the saved source and reconcile changes before trying again.
+
+## Headless delegation
+
+The Hub supports clean-fork/send/receive remote routes for directly owned headless
+workers. Each child uses a flat `<dataDir>/subagents/<generated-id>/` root, an
+independent operator-controlled ask/deny/approve policy, and a bounded primary
+conversation projection. It retains no event transcript or reasoning/tool history.
+Parent process shutdown/crash cascades; socket disconnect alone preserves the
+family. Confirmed child shutdown deletes its persistence. Clean-fork shares any
+explicit external workspace and is not a sandbox. No C++ subagent tool ships yet.
+See the [complete subagent contract](subagents.md) for configuration snapshots,
+launch support, request deduplication, recovery and cleanup limits.

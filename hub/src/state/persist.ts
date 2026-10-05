@@ -12,8 +12,10 @@
  * (`<persistence.directory>/<persistence.state>/state.json`), and duplicating it here
  * would create a second source of truth.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import type { DockerManagement } from '../subagents/docker.ts';
 import type { Logger } from '../log.ts';
 
 /** Bumped when the stored shape changes incompatibly. */
@@ -24,6 +26,7 @@ const SAVE_DEBOUNCE_MS = 200;
 
 /** A process as it is written to `hub.json`. Snake case is the on-disk format. */
 export interface StoredProcess {
+    docker_management?: DockerManagement;
     pid: number;
     pid_start_time: string | null;
     started_at: string;
@@ -42,6 +45,7 @@ export interface StoredSession {
     /** Written verbatim: a spec the hub has not normalized yet is still stored. */
     spec: object;
     created_at: string;
+    lifecycle_id?: string;
     process: StoredProcess | null;
 }
 
@@ -66,6 +70,7 @@ export interface LoadedState {
 
 /** The slice of a session this module persists. */
 export interface PersistableProcess {
+    dockerManagement?: DockerManagement | null;
     pid: number | null;
     pidStartTime: string | null;
     startedAt: string;
@@ -85,6 +90,8 @@ export interface PersistableSession {
      * and a normalized one reach here. */
     spec?: object | undefined;
     createdAt: string;
+    kind?: string;
+    lifecycleId?: string;
     process?: PersistableProcess | null | undefined;
 }
 
@@ -143,13 +150,15 @@ export class HubState {
         return {
             version: STATE_VERSION,
             saved_at: new Date().toISOString(),
-            sessions: sessions.map((session) => ({
+            sessions: sessions.filter(session => session.kind !== 'headless').map((session) => ({
                 id: session.id,
                 token: session.token,
                 spec: session.spec ?? {},
                 created_at: session.createdAt,
+                lifecycle_id: session.lifecycleId ?? '',
                 process: session.process && session.process.pid
                     ? {
+                        ...(session.process.dockerManagement ? { docker_management: session.process.dockerManagement } : {}),
                         pid: session.process.pid,
                         pid_start_time: session.process.pidStartTime,
                         started_at: session.process.startedAt,
@@ -180,16 +189,18 @@ export class HubState {
 
     /** Write state immediately, atomically. */
     save(sessions: PersistableSession[]): boolean {
+        const temporary = `${this.path}.${randomUUID()}.tmp`;
         try {
             mkdirSync(dirname(this.path), { recursive: true });
-            const temporary = `${this.path}.tmp`;
-            writeFileSync(temporary, `${JSON.stringify(this.document(sessions), null, 2)}\n`);
+            writeFileSync(temporary, `${JSON.stringify(this.document(sessions), null, 2)}\n`, { mode: 0o600, flag: 'wx' });
             renameSync(temporary, this.path);
             return true;
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             this.log.error(`could not save ${this.path}: ${message}`);
             return false;
+        } finally {
+            try { rmSync(temporary, { force: true }); } catch { /* best-effort temporary cleanup */ }
         }
     }
 

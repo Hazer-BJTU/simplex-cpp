@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join, resolve, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { sessionDir } from '../launch/config-render.ts';
 import { mergeConfig } from '../config.ts';
 import type { HubConfig } from '../config.ts';
 import type { WorkerEndpoints } from '../launch/invocation.ts';
@@ -29,7 +30,7 @@ export function snapshotConfigs(store: ConfigurationStore, sessionId: string, se
     const worker = store.read('worker', selected.workerConfig);
     store.validate('launch', launch.text);
     store.validate('worker', worker.text);
-    const root = join(store.config.dataDir, 'sessions', sessionId);
+    const root = sessionDir(store.config, sessionId);
     const destination = join(root, 'config');
     if (existsSync(destination) && !replace) throw configError('Session configuration already exists', 409);
     mkdirSync(root, { recursive: true });
@@ -56,7 +57,7 @@ export function snapshotConfigs(store: ConfigurationStore, sessionId: string, se
  * A missing or invalid source file belongs to legacy/incomplete snapshots and
  * leaves the persisted spec unchanged. */
 export function snapshotSelection(config: HubConfig, id: string): ConfigSelection | null {
-    const path = join(config.dataDir, 'sessions', id, 'config', 'source.json');
+    const path = join(sessionDir(config, id), 'config', 'source.json');
     if (!existsSync(path)) return null;
     try {
         const source: unknown = JSON.parse(readFileSync(path, 'utf8'));
@@ -67,11 +68,11 @@ export function snapshotSelection(config: HubConfig, id: string): ConfigSelectio
 }
 
 export function sessionLaunch(config: HubConfig, id: string): { config: HubConfig; launch: LaunchDocument } | null {
-    const path = join(config.dataDir, 'sessions', id, 'config', 'launch.jsonc');
+    const path = join(sessionDir(config, id), 'config', 'launch.jsonc');
     if (!existsSync(path)) return null;
     const launch = launchDocument(readFileSync(path, 'utf8'), config);
     const resolved = mergeConfig(config, { launcher: launch.launcher, worker: launch.worker ?? {} });
-    const directory = join(config.dataDir, 'sessions', id, 'config');
+    const directory = join(sessionDir(config, id), 'config');
     if (resolved.launcher.cwd) resolved.launcher.cwd = resolve(directory, resolved.launcher.cwd);
     if (launch.worker?.bin && !isAbsolute(launch.worker.bin)) resolved.worker.bin = resolve(directory, launch.worker.bin);
     return { config: resolved, launch };

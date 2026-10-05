@@ -392,6 +392,18 @@ const server = createServer((req, res) => {
         json(res, 200, { sessions });
         return;
     }
+    const policy = /^\/api\/sessions\/([^/]+)\/subagent-policy$/.exec(url.pathname);
+    if (policy && req.method === 'POST') {
+        void body(req).then(payload => {
+            const session = sessionOf(decodeURIComponent(policy[1]));
+            if (!session?.subagent) { json(res, 404, { error: 'unknown_session' }); return; }
+            session.subagent.policy = payload.policy;
+            rest.push({ session: session.session_id, action: 'subagent-policy', policy: payload.policy });
+            broadcast({ type: 'session', session });
+            json(res, 200, { ok: true });
+        });
+        return;
+    }
     const snapshot = /^\/api\/sessions\/([^/]+)\/snapshot$/.exec(url.pathname);
     if (snapshot) {
         // Deliberately slow, so a test can switch sessions while the fetch is

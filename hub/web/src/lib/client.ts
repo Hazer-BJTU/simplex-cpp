@@ -198,6 +198,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
     }
 
     function subscribe(sessionId: SessionId, since?: number, replace = false): boolean {
+        if (store.getState().sessions.get(sessionId)?.kind === 'headless') return false;
         const cursor = since ?? cursorFor(sessionId);
         if (store.getState().hasCapability('transcript-pages')) {
             const requestId = newRequestId();
@@ -219,6 +220,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         const state = store.getState();
         const session = state.sessions.get(sessionId);
         const worker = session?.identity.worker_id;
+        if (session?.kind === 'headless') return;
         if (!session?.connected || !worker || !subscribedSessions.has(sessionId)) return;
         const cached = state.views.get(sessionId)?.modelCatalog;
         if (!force && (optionsRequested.get(sessionId) === worker || cached?.worker_id === worker)) return;

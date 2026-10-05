@@ -14,6 +14,7 @@
  */
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { isSubagentId } from './session-id.ts';
 import { sessionDir } from '../launch/config-render.ts';
 import { RingBuffer } from '../util/ring.ts';
 import { BoundedWriter } from '../util/bounded-writer.ts';
@@ -164,6 +165,7 @@ export class TranscriptStore {
 
     /** Transcript for a session, created on first use. */
     get(sessionId: string): SessionTranscript {
+        if (isSubagentId(sessionId)) throw new Error('headless workers do not retain an event transcript');
         let transcript = this.transcripts.get(sessionId);
         if (!transcript) {
             transcript = new SessionTranscript({

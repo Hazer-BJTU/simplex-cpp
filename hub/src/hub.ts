@@ -6,6 +6,7 @@
  * Each role registers itself here, so this file is the map of what the hub currently implements — and the only
  * place that knows the whole object graph.
  */
+import { SubagentService } from './subagents/service.ts';
 import { randomUUID } from 'node:crypto';
 import { authorizePanel } from './http/auth.ts';
 import { createHttpServer, sendError, sendJson } from './http/server.ts';
@@ -21,7 +22,7 @@ import { HubState } from './state/persist.ts';
 import { PlanStore } from './state/plan.ts';
 import { SessionRegistry } from './state/registry.ts';
 import type { Session } from './state/registry.ts';
-import { isValidSessionId } from './state/session-id.ts';
+import { isSubagentId, isValidSessionId } from './state/session-id.ts';
 import { TranscriptStore } from './state/transcript.ts';
 import { createWorkerToolRoute } from './worker/tools.ts';
 import type { WorkerEndpoints } from './launch/invocation.ts';
@@ -86,6 +87,7 @@ export interface Hub {
     toolHttp: ReturnType<typeof createHttpServer>;
     registry: SessionRegistry;
     supervisor: WorkerSupervisor;
+    subagents: SubagentService;
     transcripts: TranscriptStore;
     panel: PanelApi;
     config: HubConfig;
@@ -183,6 +185,7 @@ export function createHub({
 
     /** Panel API first: the worker routes report through its hooks. */
     let panel: PanelApi | null = null;
+    let subagents: SubagentService | null = null;
 
     /**
      * Run one observer without letting its failure reach the caller.
@@ -208,10 +211,14 @@ export function createHub({
         log,
         onEvent: (envelope: ForwardedEnvelope, connection: WorkerConnection) => {
             connection.log.debug(`event ${envelope.event} (seq ${String(envelope.sequence)})`);
-            safely('panel onEvent', () => panel?.hooks.onEvent(envelope, connection));
+            safely('subagent onEvent', () => subagents?.onEvent(envelope, connection));
+            if (connection.session.kind !== 'headless') {
+                safely('panel onEvent', () => panel?.hooks.onEvent(envelope, connection));
+            }
             safely('extra onEvent', () => extraHooks.onEvent?.(envelope, connection));
         },
         onConnectionChange: (session: Session, connection: WorkerConnection | null) => {
+            safely('subagent connection', () => subagents?.onConnection(session, connection));
             safely('panel onConnectionChange',
                 () => panel?.hooks.onConnectionChange(session, connection));
             safely('extra onConnectionChange',
@@ -235,11 +242,6 @@ export function createHub({
     });
     http.useUpgrade(confirmations);
 
-    const toolRequests = createWorkerToolRoute({ registry, config, log, plans,
-        onPlanChanged: (session) => safely('plan update', () => panel?.broadcastPlan(session)),
-    });
-    toolHttp.useUpgrade(toolRequests);
-
     /** Started by `start()` when configured; read lazily by the supervisor. */
     let mock: MockProvider | null = null;
     const supervisor = new WorkerSupervisor({
@@ -252,16 +254,30 @@ export function createHub({
         // would be written into the worker configuration as `null`.
         mockProvider: () => (mock?.baseUrl ? { baseUrl: mock.baseUrl } : null),
         onProcessChange: (session: Session, record: ProcessRecord) => {
+            safely('subagent process', () => subagents?.onProcess(session, record));
             safely('panel onProcessChange', () => panel?.hooks.onProcessChange(session, record));
             safely('extra onProcessChange', () => extraHooks.onProcessChange?.(session, record));
         },
     });
+
+    subagents = new SubagentService({ config, registry, supervisor, log,
+        changed: session => panel?.broadcastSession(session),
+        removed: id => panel?.broadcast({ type: 'session_removed', session: id }),
+    });
+    const family = subagents;
+    const handlers = new Map(['subagent/clean-fork', 'subagent/receive', 'subagent/send']
+        .map(route => [route, family.dispatch.bind(family)] as const));
+    const toolRequests = createWorkerToolRoute({ registry, config, log, plans, handlers,
+        onPlanChanged: session => safely('plan update', () => panel?.broadcastPlan(session)),
+    });
+    toolHttp.useUpgrade(toolRequests);
 
     panel = createPanelApi({
         config,
         log,
         registry,
         supervisor,
+        subagents: family,
         transcripts,
         state,
         plans,
@@ -289,6 +305,7 @@ export function createHub({
         toolHttp,
         registry,
         supervisor,
+        subagents: family,
         transcripts,
         panel,
         config,
@@ -318,12 +335,13 @@ export function createHub({
                 }
                 const stored = state.load();
                 let restored = 0;
+                const stopping: Session[] = [];
                 for (const raw of stored.sessions) {
                     // Entries come from a file that may have been edited by hand, so
                     // each one is narrowed here rather than trusted from the type.
                     if (typeof raw !== 'object' || raw === null) continue;
                     const entry = raw as Record<string, unknown>;
-                    if (!isValidSessionId(entry.id) || registry.get(entry.id)) continue;
+                    if (!isValidSessionId(entry.id) || isSubagentId(entry.id) || registry.get(entry.id)) continue;
                     const session = registry.create(entry.id, (entry.spec ?? {}) as SessionSpec);
                     // Tokens must survive a restart, or a worker that is still
                     // running would be locked out by its own hub.
@@ -331,6 +349,7 @@ export function createHub({
                         session.token = entry.token;
                     }
                     if (typeof entry.created_at === 'string') session.createdAt = entry.created_at;
+                    session.lifecycleId = typeof entry.lifecycle_id === 'string' ? entry.lifecycle_id : '';
                     session.spec = (entry.spec ?? {}) as SessionSpec;
                     // Snapshot publication and hub.json are separate atomic
                     // writes. The published source wins after a crash between
@@ -338,9 +357,15 @@ export function createHub({
                     const selected = snapshotSelection(config, entry.id);
                     if (selected) session.spec = { ...session.spec, ...selected };
                     if (entry.process) supervisor.adopt(session, entry.process);
+                    if ((entry.process as { state?: unknown } | null)?.state === 'stopping') {
+                        session.closing = true;
+                        stopping.push(session);
+                    }
                     restored += 1;
                 }
                 if (restored > 0) log.info(`restored ${restored} session(s) from ${state.path}`);
+                await family.restore();
+                await Promise.allSettled(stopping.map(session => supervisor.stop(session)));
                 state.schedule(registry.list());
                 return address;
             } catch (error) {
@@ -359,6 +384,7 @@ export function createHub({
         },
         /** Release listeners and owned resources, stopping workers first. */
         stop: async () => {
+            await family.shutdown();
             const stopped = await supervisor.stopAll();
             state.flush(registry.list());
             await mock?.stop();

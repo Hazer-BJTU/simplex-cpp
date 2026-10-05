@@ -285,6 +285,9 @@ export class WorkerConnection {
 
     /** Handle one inbound text message. */
     onMessage(data: RawData, isBinary: boolean): void {
+        // A superseded socket must not replace the new connection's identity
+        // or contribute late events to a family being stopped.
+        if (this.session.connection !== this) return;
         if (isBinary) {
             this.noteProtocolError('binary worker message');
             return;
@@ -463,7 +466,7 @@ export function createWorkerEventRoute({
                 return;
             }
             const session = registry.get(sessionId);
-            if (!session) {
+            if (!session || (session.kind === 'headless' && session.closing)) {
                 log.warn(`rejected event upgrade: unknown session "${sessionId}"`);
                 rejectUpgrade(socket, 404, 'Not Found');
                 return;

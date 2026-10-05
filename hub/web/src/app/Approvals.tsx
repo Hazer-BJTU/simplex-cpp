@@ -59,6 +59,17 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
     const [open, setOpen] = useState(autoOpen);
     const [sentAt, setSentAt] = useState<number | null>(null);
     const [localError, setLocalError] = useState('');
+    const parent = usePanel(state => {
+        const chain: string[] = [];
+        const seen = new Set<string>([prompt.session_id]);
+        let id = state.sessions.get(prompt.session_id)?.subagent?.parent;
+        while (id && !seen.has(id)) {
+            seen.add(id);
+            chain.push(id);
+            id = state.sessions.get(id)?.subagent?.parent;
+        }
+        return chain.join(' ← ');
+    });
     const notice = usePanel((state) => state.notice);
 
     // Opening the first unanswered prompt is what makes an approval from
@@ -109,7 +120,7 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
             >
                 <Glyph name="approval" />
                 <span className="font-semibold">approval required</span>
-                <span className="font-mono">{prompt.session_id}</span>
+                <span className="font-mono">{prompt.session_id}{parent ? ` · parent ${parent}` : ''}</span>
                 <span className="font-mono font-medium">{prompt.call?.name ?? '(unnamed)'}</span>
                 <span className="max-w-96 truncate font-mono text-xs text-warn">
                     {summary}
