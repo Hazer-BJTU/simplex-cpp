@@ -195,6 +195,11 @@ jobs:
         with:
           name: hub-release-package
           path: hub/hub-release
+      - name: Prepare locked runtime dependency cache
+        working-directory: hub
+        # Each job has its own runner; the build job's npm cache is unavailable.
+        # The archive checker still installs offline into an isolated directory.
+        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
       - name: Publish or verify tested Hub package through npm OIDC
         working-directory: hub
         run: |
@@ -257,6 +262,10 @@ jobs:
           github-token: ${{ github.token }}
       - name: Prepare or verify draft worker assets
         run: node docker/release-worker.mjs prepare worker-release
+      - name: Prepare locked runtime dependency cache
+        working-directory: hub
+        # Recovery also runs without the original build runner's npm cache.
+        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
       - name: Publish or verify tested Hub package through npm OIDC
         working-directory: hub
         run: |

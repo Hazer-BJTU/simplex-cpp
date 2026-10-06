@@ -7,9 +7,26 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { after, test } from 'node:test';
+import { parse } from 'yaml';
 
 const directory = mkdtempSync(join(tmpdir(), 'simplex-gh-test-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
+
+test('publish and recovery runners populate locked runtime dependencies before offline artifact validation', () => {
+    const workflow = parse(readFileSync(new URL('../../.github/workflows/release-worker.yml', import.meta.url), 'utf8'));
+    for (const job of ['publish-hub', 'recover']) {
+        const steps = workflow.jobs[job].steps;
+        const validation = steps.findIndex(step => step.run?.includes('scripts/check-release-package.mjs'));
+        const preparation = steps.findIndex(step => /^npm ci\b/m.test(step.run ?? ''));
+        assert.ok(preparation >= 0 && preparation < validation,
+            `${job} must prepare its own dependency cache before validating the archive`);
+        const step = steps[preparation];
+        assert.equal(step['working-directory'], 'hub');
+        assert.match(step.run, /--omit=dev\b/);
+        assert.match(step.run, /--ignore-scripts\b/);
+        assert.doesNotMatch(step.run, /--offline\b/);
+    }
+});
 
 function run(script, env) {
     return new Promise(resolve => {
