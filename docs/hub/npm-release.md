@@ -20,6 +20,17 @@ populating its own npm cache. Package validation then installs those locked
 dependencies offline beside the unpacked artifact and tests its emitted code in
 isolation; it does not depend on source-tree modules or a previous runner's cache.
 
+Registry probes have a 10-second timeout covering headers and response bodies.
+Preflight retries transient failures up to three times; an unavailable registry
+does not authorize publishing, while a 404 allows the initial publish. The npm
+publish command runs once. Afterwards, up to ten probes with three-second intervals
+wait for a matching published integrity hash. Network failures, timeouts, HTTP
+408/425/429/5xx, and unreadable responses can be retried; authentication failures,
+decoded metadata mismatches and integrity differences fail immediately. A lost
+publish response can still succeed if verification finds the exact tested tarball.
+Exhausted probes leave publication unconfirmed; a later run checks the registry
+again before attempting publication.
+
 ## First-time npm setup
 
 The package must already exist before npm can accept a trusted publisher. For
