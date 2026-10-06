@@ -161,6 +161,24 @@ struct ValueClauses {
     }
 };
 
+/// JSON Schema string lengths count Unicode code points, not UTF-8 bytes or
+/// grapheme clusters. Validate the UTF-8 with the existing JSON serializer, then
+/// count leading bytes: each valid code point has exactly one non-continuation
+/// byte, including supplementary-plane characters encoded with four bytes.
+std::size_t string_length(const json& value, const std::filesystem::path& file,
+                          const std::string& path)
+{
+    try {
+        (void)value.dump();
+    } catch (const json::type_error&) {
+        fail(file, path, "string must contain valid UTF-8");
+    }
+    const auto& text = value.get_ref<const std::string&>();
+    return static_cast<std::size_t>(std::count_if(text.begin(), text.end(), [](unsigned char byte) {
+        return (byte & 0xc0) != 0x80;
+    }));
+}
+
 /// Whether `value` — a clause's own value, or a `default` — satisfies the
 /// clauses stated alongside it. `path` names the value being judged.
 void check_value_against_clauses(const json& value, std::string_view kind,
@@ -190,19 +208,19 @@ void check_value_against_clauses(const json& value, std::string_view kind,
              std::format("{} is above the maximum this declaration states ({})",
                          value.dump(), clauses.maximum->dump()));
     }
-    if (clauses.min_length != nullptr) {
-        const auto shortest = static_cast<std::size_t>(
-            clauses.min_length->get<std::int64_t>());
-        if (value.get<std::string>().size() < shortest) {
+    if (clauses.min_length != nullptr || clauses.max_length != nullptr) {
+        const auto length = string_length(value, file, path);
+        if (clauses.min_length != nullptr
+            && length < clauses.min_length->get<std::size_t>()) {
             fail(file, path,
                  std::format("{} is shorter than the minLength this "
                              "declaration states ({})",
                              value.dump(), clauses.min_length->dump()));
         }
-    }
-    if (clauses.max_length != nullptr
-        && value.get_ref<const std::string&>().size() > clauses.max_length->get<std::size_t>()) {
-        fail(file, path, "value exceeds maxLength");
+        if (clauses.max_length != nullptr
+            && length > clauses.max_length->get<std::size_t>()) {
+            fail(file, path, "value exceeds maxLength");
+        }
     }
     if (clauses.pattern != nullptr
         && !std::regex_search(value.get_ref<const std::string&>(),

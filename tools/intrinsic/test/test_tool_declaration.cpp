@@ -8,6 +8,8 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 #include <unistd.h>
 
@@ -682,6 +684,55 @@ argument_schema:
       minLength: -1
       description: the program to run
 )"), "minLength must not be negative"));
+}
+
+BOOST_AUTO_TEST_CASE(string_lengths_count_unicode_code_points_for_defaults_and_enums)
+{
+    Scratch scratch;
+    // A combining sequence has two code points even when rendered as one
+    // glyph. Supplementary-plane emoji have one code point and four UTF-8 bytes.
+    const std::vector<std::pair<std::string, std::size_t>> cases = {
+        {"", 0}, {"A", 1}, {"中", 1}, {"🌻", 1}, {"中🌻", 2}, {"e\u0301", 2}
+    };
+    for (const auto& [text, length] : cases) {
+        const nlohmann::json property = {
+            {"type", "string"}, {"description", "Unicode text"},
+            {"minLength", length}, {"maxLength", length},
+            {"default", text}, {"enum", nlohmann::json::array({text})}
+        };
+        nlohmann::json document = {{"name", "unicode"}, {"description", "Unicode bounds"},
+            {"argument_schema", {{"type", "object"}, {"properties", {{"text", property}}}}}};
+        const auto loaded = load_tool_declaration(scratch.write("unicode.yaml", document.dump()));
+        BOOST_TEST(loaded.argument_schema == document.at("argument_schema"));
+
+        auto& declared = document["argument_schema"]["properties"]["text"];
+        // Check defaults and enum members separately, so an enum mismatch
+        // cannot mask either string-length rule.
+        declared.erase("enum");
+        declared["default"] = text + "中";
+        auto message = refusal_of(scratch, document.dump());
+        BOOST_TEST(mentions(message, "/argument_schema/properties/text/default"));
+        BOOST_TEST(mentions(message, "exceeds maxLength"));
+
+        declared.erase("default");
+        declared["enum"] = nlohmann::json::array({text + "🌻"});
+        message = refusal_of(scratch, document.dump());
+        BOOST_TEST(mentions(message, "/argument_schema/properties/text/enum/0"));
+        BOOST_TEST(mentions(message, "exceeds maxLength"));
+
+        declared["minLength"] = length + 1;
+        declared["maxLength"] = length + 1;
+        declared["enum"] = nlohmann::json::array({text});
+        message = refusal_of(scratch, document.dump());
+        BOOST_TEST(mentions(message, "/argument_schema/properties/text/enum/0"));
+        BOOST_TEST(mentions(message, "shorter than the minLength"));
+
+        declared.erase("enum");
+        declared["default"] = text;
+        message = refusal_of(scratch, document.dump());
+        BOOST_TEST(mentions(message, "/argument_schema/properties/text/default"));
+        BOOST_TEST(mentions(message, "shorter than the minLength"));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(integer_maximum_is_checked_against_other_clauses)

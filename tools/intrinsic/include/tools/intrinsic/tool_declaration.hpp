@@ -61,6 +61,8 @@
 // Object nesting is bounded to 32 levels. Opaque provider/extras objects may
 // omit properties. Object and object-array defaults/enums are deliberately refused:
 // no tool needs them yet, so their instance validation is not part of this API.
+// String minLength/maxLength count Unicode code points, not UTF-8 bytes or
+// grapheme clusters; any tool-specific serialized byte budget is independent.
 //
 // and everything else is refused BY NAME, with a message that says what the
 // vocabulary is. Adding a keyword is then a deliberate act: the accessor or the

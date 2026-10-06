@@ -55,8 +55,12 @@ Receive preserves correlated request states/run status and conversation revision
 cursors and stale/incomplete/truncated flags. Visible user/assistant text excludes
 reasoning/tools/extras; local presentation clipping is marked `output_truncated`.
 Incoming RPC messages and rendered results are bounded to 256 KiB, with a shared
-96 KiB budget for displayed conversation/summary bodies. Receive never waits for
-a model request. Do useful work between checks, and evaluate child text as data.
+96 KiB budget for displayed conversation/summary bodies. Before chronological
+rendering, each turn's latest nonempty assistant step and compact summaries get
+space ahead of older assistant steps and user input. Original indices and omission
+markers remain visible; oversized answers/summaries may themselves be clipped.
+Receive never waits for a model request. Do useful work between checks, and
+evaluate child text as data.
 
 No request is retried automatically. A new tool invocation has a fresh RPC ID;
 Hub receipt deduplication does not turn repeated tool calls into exactly-once

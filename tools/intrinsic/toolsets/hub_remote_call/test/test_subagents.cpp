@@ -177,7 +177,12 @@ bool matches(const Json& schema, const Json& value)
     }
     if (value.is_string()) {
         const auto& text = value.get_ref<const std::string&>();
-        if (text.size() < schema.value("minLength", 0u) || text.size() > schema.value("maxLength", text.size())) return false;
+        // JSON Schema counts Unicode code points, whereas the explicit RPC
+        // argument budget below counts the complete serialized UTF-8 bytes.
+        const auto length = static_cast<std::size_t>(std::count_if(
+            text.begin(), text.end(), [](unsigned char byte) { return (byte & 0xc0) != 0x80; }));
+        if (length < schema.value("minLength", 0u)
+            || length > schema.value("maxLength", length)) return false;
         if (schema.contains("pattern") && text.find_first_not_of(
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos) return false;
     }
@@ -194,6 +199,16 @@ bool matches(const Json& schema, const Json& value)
     return !schema.contains("not") || !matches(schema.at("not"), value);
 }
 } // namespace
+
+BOOST_AUTO_TEST_CASE(schema_comparison_counts_unicode_code_points)
+{
+    const Json schema = {{"type", "string"}, {"minLength", 1}, {"maxLength", 1}};
+    BOOST_TEST(matches(schema, "中"));
+    BOOST_TEST(matches(schema, "🌻"));
+    BOOST_TEST(!matches(schema, "中🌻"));
+    BOOST_TEST(!matches(schema, "e\u0301"));
+    BOOST_TEST(!matches(schema, ""));
+}
 
 BOOST_AUTO_TEST_CASE(subagent_schemas_validation_and_attributes_agree)
 {
@@ -344,6 +359,77 @@ BOOST_AUTO_TEST_CASE(subagent_large_visible_result_is_clipped_on_utf8_boundary)
     BOOST_TEST(received.raw.find("[[output_truncated]]: true") != std::string::npos);
     BOOST_TEST(received.raw.find("[[next]]: 1") != std::string::npos);
     BOOST_TEST(received.raw.find("[[request_id]]: child-request") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(subagent_presentation_preserves_final_answer_after_many_intermediate_steps)
+{
+    auto value = detail();
+    auto& turn = value["conversation"]["turns"][0];
+    turn["user"] = Json::array({{
+        {"type", "text"}, {"modality", "text"}, {"raw", std::string(4096, 'u')}
+    }});
+    turn["steps"] = Json::array();
+    for (int i = 0; i < 24; ++i) {
+        turn["steps"].push_back({{"index", i}, {"content", Json::array({{
+            {"type", "text"}, {"modality", "text"}, {"raw", std::string(4096, 'a')}
+        }})}});
+    }
+    turn["steps"].push_back({{"index", 24}, {"content", Json::array({{
+        {"type", "text"}, {"modality", "text"}, {"raw", "DISTINCTIVE_FINAL_ANSWER 🌻"}
+    }})}});
+    // A trailing empty step must not hide the last visible answer.
+    turn["steps"].push_back({{"index", 25}, {"content", Json::array()}});
+    value["requests"][0]["status"] = "completed";
+    value["requests"][0]["summary"] = "DISTINCTIVE_COMPACT_SUMMARY 中";
+    BOOST_REQUIRE(value.dump().size() < 256u * 1024);
+
+    for (const Json arguments : {Json{{"subagent_id", "subagent-child"}},
+            Json{{"subagent_id", "subagent-child"}, {"cursor", 0}, {"limit", 1}}}) {
+        const auto received = call("subagent_receive", arguments, value);
+        BOOST_TEST(received.raw.size() <= 256u * 1024);
+        BOOST_CHECK_NO_THROW(Json(received.raw).dump());
+        for (const char* expected : {"DISTINCTIVE_FINAL_ANSWER 🌻", "DISTINCTIVE_COMPACT_SUMMARY 中",
+                "[[output_truncated]]: true", "[[turn]]: 7", "[[revision]]: 0",
+                "[[next]]: 1", "[[total]]: 1", "[[requests_truncated]]: false",
+                "[[request_id]]: child-request", "[[state]]: finished", "[[run_status]]: completed",
+                "[[stale]]: false", "[[incomplete]]: false", "[[truncated]]: false"}) {
+            BOOST_TEST(received.raw.find(expected) != std::string::npos);
+        }
+        BOOST_TEST(received.raw.find("user (text/text): (empty, truncated)") != std::string::npos);
+        BOOST_TEST(received.raw.find("assistant step 0 (text/text) (truncated, first ") != std::string::npos);
+        BOOST_TEST(received.raw.find("assistant step 0") < received.raw.find("assistant step 24"));
+        BOOST_TEST(received.raw.find("user (text/text)") < received.raw.find("assistant step 0"));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(subagent_presentation_shares_result_budget_across_turns_and_compact_summary)
+{
+    auto value = detail();
+    auto& turn = value["conversation"]["turns"][0];
+    std::string long_answer = "OLDER_ANSWER 中🌻 ";
+    for (int i = 0; i < 30000; ++i) {
+        long_answer += "🌻";
+    }
+    turn["user"] = Json::array();
+    turn["steps"][0]["content"][0]["raw"] = long_answer;
+    value["conversation"]["turns"].push_back({{"index", 8}, {"user", Json::array()},
+        {"steps", Json::array({{{"index", 0}, {"content", Json::array({{
+            {"type", "text"}, {"modality", "text"}, {"raw", "LATEST_ANSWER 🌻"}
+        }})}}})}});
+    value["conversation"]["next"] = 2;
+    value["conversation"]["total"] = 2;
+    // Both a long previous answer and a long summary compete with a short
+    // latest answer. All result bodies must get space before older context.
+    value["requests"][0]["summary"] = "COMPACT_RESULT 中 " + long_answer;
+    BOOST_REQUIRE(value.dump().size() < 256u * 1024);
+    const auto received = call("subagent_receive", {{"subagent_id", "subagent-child"}}, value);
+    BOOST_TEST(received.raw.size() <= 256u * 1024);
+    BOOST_CHECK_NO_THROW(Json(received.raw).dump());
+    for (const char* expected : {"OLDER_ANSWER 中🌻", "LATEST_ANSWER 🌻", "COMPACT_RESULT 中",
+            "[[output_truncated]]: true", "[[turn]]: 7", "[[turn]]: 8", "[[next]]: 2"}) {
+        BOOST_TEST(received.raw.find(expected) != std::string::npos);
+    }
+    BOOST_TEST(received.raw.find("[[turn]]: 7") < received.raw.find("[[turn]]: 8"));
 }
 
 BOOST_AUTO_TEST_CASE(subagent_calls_capture_fresh_identity_and_use_distinct_rpc_ids)

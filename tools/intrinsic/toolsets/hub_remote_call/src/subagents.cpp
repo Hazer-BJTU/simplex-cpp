@@ -6,6 +6,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 #include <boost/asio/this_coro.hpp>
 
@@ -102,26 +104,62 @@ void validate_options(const Json& options)
     }
 }
 
-/** UTF-8-safe presentation clipping; the parsed input has already been validated. */
-std::string prefix(const std::string& text, std::size_t bytes)
+/** UTF-8-safe prefix length; the parsed input has already been validated. */
+std::size_t prefix_length(const std::string& text, std::size_t bytes)
 {
     auto end = std::min(bytes, text.size());
     while (end > 0 && end < text.size()
             && (static_cast<unsigned char>(text[end]) & 0xc0) == 0x80) {
         --end;
     }
-    return text.substr(0, end);
+    return end;
+}
+
+std::string prefix(const std::string& text, std::size_t bytes)
+{
+    return text.substr(0, prefix_length(text, bytes));
 }
 
 /**
- * Metadata is whitelisted and small; user/assistant bodies share a 96 KiB
- * presentation budget. The complete rendered document has a final 256 KiB
- * check, so even hostile but syntactically valid replies cannot escape the cap.
+ * Metadata is whitelisted and small; user/assistant/summary bodies share a
+ * preallocated 96 KiB budget. Latest assistant outputs and compact summaries
+ * get space before older content, without changing chronological display order.
+ * The parsed reply owns the strings for the lifetime of this local presentation;
+ * the pointer keys avoid copying large bodies just to plan their allocation.
+ * The complete rendered document has a final 256 KiB check.
  */
 struct Presentation {
     ToolResult output;
-    std::size_t body_left = 96 * 1024;
+    std::unordered_map<const std::string*, std::size_t> body_limits;
     bool clipped = false;
+
+    /**
+     * Share the budget among result bodies first. Allocate short results whole,
+     * then share what remains among larger ones, so one long answer or summary
+     * cannot starve the other results. Older assistant/user bodies use only the
+     * remaining space. All allocations end at UTF-8 boundaries.
+     */
+    void allocate_bodies(
+        std::vector<const std::string*> results,
+        const std::vector<const std::string*>& context)
+    {
+        std::size_t remaining = 96 * 1024;
+        std::stable_sort(results.begin(), results.end(), [](const auto* left, const auto* right) {
+            return left->size() < right->size();
+        });
+        for (std::size_t i = 0; i < results.size(); ++i) {
+            const auto* text = results[i];
+            const auto allowance = remaining / (results.size() - i);
+            const auto bytes = prefix_length(*text, allowance);
+            body_limits.emplace(text, bytes);
+            remaining -= bytes;
+        }
+        for (const auto* text : context) {
+            const auto bytes = prefix_length(*text, remaining);
+            body_limits.emplace(text, bytes);
+            remaining -= bytes;
+        }
+    }
 
     void field(std::string_view key, const Json& value)
     {
@@ -141,10 +179,9 @@ struct Presentation {
 
     void block(std::string_view label, const std::string& text)
     {
-        auto body = prefix(text, body_left);
+        auto body = text.substr(0, body_limits.at(&text));
         const bool truncated = body.size() != text.size();
         clipped |= truncated;
-        body_left -= body.size();
         output.block(label, std::move(body), truncated);
     }
 
@@ -155,6 +192,57 @@ struct Presentation {
         return output.render();
     }
 };
+
+/** Collect only the body strings that the formatter will display. */
+void collect_content_bodies(const Json& parts, std::vector<const std::string*>& bodies)
+{
+    require(parts.is_array(), "invalid visible content");
+    for (const auto& part : parts) {
+        bodies.push_back(&part.at("raw").get_ref<const std::string&>());
+    }
+}
+
+/**
+ * Pagination addresses whole turns, so clipping a final answer cannot be
+ * repaired by requesting another page. Reserve each turn's latest nonempty
+ * assistant step and compact summaries before intermediate steps and user input.
+ * The subsequent formatter still validates all route-specific shapes and emits
+ * the original indices, order and explicit per-body truncation markers.
+ */
+void plan_bodies(Presentation& result, const Json& page, const Json& requests)
+{
+    std::vector<const std::string*> answers;
+    std::vector<const std::string*> intermediate;
+    std::vector<const std::string*> users;
+    require(requests.is_array(), "invalid request outcomes");
+    for (const auto& request : requests) {
+        if (request.contains("summary")) {
+            answers.push_back(&request.at("summary").get_ref<const std::string&>());
+        }
+    }
+    if (!page.is_null()) {
+        const auto& turns = page.at("turns");
+        require(turns.is_array(), "invalid conversation turns");
+        for (auto turn = turns.rbegin(); turn != turns.rend(); ++turn) {
+            const auto& steps = turn->at("steps");
+            require(steps.is_array(), "invalid conversation steps");
+            bool found_answer = false;
+            for (auto step = steps.rbegin(); step != steps.rend(); ++step) {
+                std::vector<const std::string*> bodies;
+                collect_content_bodies(step->at("content"), bodies);
+                const bool nonempty = std::any_of(bodies.begin(), bodies.end(), [](const auto* body) {
+                    return !body->empty();
+                });
+                auto& destination = !found_answer && nonempty ? answers : intermediate;
+                destination.insert(destination.end(), bodies.begin(), bodies.end());
+                found_answer |= nonempty;
+            }
+            collect_content_bodies(turn->at("user"), users);
+        }
+    }
+    intermediate.insert(intermediate.end(), users.begin(), users.end());
+    result.allocate_bodies(std::move(answers), intermediate);
+}
 
 void status(Presentation& result, const Json& child)
 {
@@ -293,6 +381,9 @@ void conversation(Presentation& result, const Json& page, const Json& arguments)
 model_io::Content format_result(const std::string& route, const Json& value, const Json& arguments)
 {
     Presentation result;
+    if (route == "subagent/receive" && arguments.contains("subagent_id")) {
+        plan_bodies(result, value.at("conversation"), value.at("requests"));
+    }
     if (route == "subagent/clean-fork") {
         require(identifier(value.at("subagent_id"))
                 && value.at("lifecycle") == "preparing", "invalid fork result");

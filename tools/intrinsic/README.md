@@ -100,6 +100,10 @@ enum, an array without `items` are all refusals — and so is any keyword the
 loader does not know, by name. A declaration that would reach a model as a
 contract nothing here could check fails at load time instead.
 
+`minLength` and `maxLength` count Unicode code points, including supplementary-plane
+characters, rather than UTF-8 bytes or displayed glyphs. Explicit tool argument
+and transport byte budgets remain separate constraints.
+
 What the loader does **not** read is as much a part of the design as what it
 does: an `InvokeType`/`InvokeSecurity` pair may be written in the file for the
 reader, and it is ignored, because those are behaviour — `write_attributes()`
