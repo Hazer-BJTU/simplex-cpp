@@ -26,12 +26,22 @@ asio::awaitable<std::string> cancellable_exchange(
     asio::any_io_executor executor, endpoint::ResolvedEndpoint endpoint,
     std::string request, std::chrono::milliseconds timeout,
     std::stop_token stop, endpoint::ssl_context& context) {
+    return cancellable_exchange(std::move(executor), std::move(endpoint),
+        std::move(request), timeout, stop, context, 16 * 1024 * 1024);
+}
+
+asio::awaitable<std::string> cancellable_exchange(
+    asio::any_io_executor executor, endpoint::ResolvedEndpoint endpoint,
+    std::string request, std::chrono::milliseconds timeout,
+    std::stop_token stop, endpoint::ssl_context& context,
+    std::size_t max_reply_bytes) {
     co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
     if (timeout.count() <= 0) throw std::invalid_argument("exchange timeout must be positive");
+    if (max_reply_bytes == 0) throw std::invalid_argument("exchange reply limit must be positive");
     auto strand = asio::make_strand(executor);
     auto operation = std::make_shared<Operation>(strand);
     auto supervise = [operation, strand, endpoint, request = std::move(request),
-                      timeout, stop, &context]() mutable -> asio::awaitable<std::string> {
+                      timeout, stop, &context, max_reply_bytes]() mutable -> asio::awaitable<std::string> {
         std::stop_callback on_stop(stop, [operation, strand] {
             asio::post(strand, [operation] { operation->abort(); });
         });
@@ -44,14 +54,15 @@ asio::awaitable<std::string> cancellable_exchange(
             operation->timer_done.try_send(boost::system::error_code{}, true);
         });
         auto exchange = [operation, strand, endpoint, request = std::move(request),
-                         stop, &context]() mutable -> asio::awaitable<std::string> {
+                         stop, &context, max_reply_bytes]() mutable -> asio::awaitable<std::string> {
             if (stop.stop_requested() || operation->expired)
                 throw boost::system::system_error(asio::error::operation_aborted);
             operation->stream.emplace(co_await connect_websocket(strand, endpoint, context));
+            operation->stream->read_message_max(max_reply_bytes);
             if (stop.stop_requested() || operation->expired)
                 throw boost::system::system_error(asio::error::operation_aborted);
             co_await operation->stream->write(std::move(request));
-            boost::beast::flat_buffer buffer;
+            boost::beast::flat_buffer buffer(max_reply_bytes);
             co_await operation->stream->read(buffer);
             if (!operation->stream->got_text())
                 throw WsProtocolException("binary reply", endpoint.host, endpoint.target);

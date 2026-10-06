@@ -1,0 +1,13 @@
+name: subagent_fork
+description: >-
+  Create one clean direct subagent from this worker's startup configuration.
+  Returns its ID immediately; receive until ready and connected, then send a
+  self-contained task. No conversation or memory is inherited. External
+  workspaces may be shared. Trusted, serial_write. No automatic retry:
+  after an uncertain result, list children before creating another.
+type: serial_write
+security: trusted
+argument_schema:
+  type: object
+  additionalProperties: false
+  properties: {}

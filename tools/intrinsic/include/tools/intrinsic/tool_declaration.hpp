@@ -49,12 +49,20 @@
 //
 //   argument_schema  type: object, properties, required,
 //                    additionalProperties: false, anyOf
-//   a property       type (string | boolean | integer | array), description,
-//                    default, enum, minimum, maximum, minLength, items
-//   items            type: string — the only array accessor here reads strings
-//   an anyOf branch  required, optional not: {required: [property]},
-//                    properties (whose entries may narrow a property
-//                    with enum, minimum, maximum or minLength)
+//   a property       type (string | boolean | integer | array | object),
+//                    description, default, enum, minimum, maximum, minLength,
+//                    maxLength, pattern, minItems, items; objects may also state
+//                    properties, required and boolean additionalProperties
+//   items            type: string, or a recursively checked object schema
+//   an anyOf branch  required, optional not: {required: [property]} or
+//                    not: {anyOf: [{required: [property]}, ...]}, and properties
+//                    whose entries narrow with checked value clauses
+//
+// Object nesting is bounded to 32 levels. Opaque provider/extras objects may
+// omit properties. Object and object-array defaults/enums are deliberately refused:
+// no tool needs them yet, so their instance validation is not part of this API.
+// String minLength/maxLength count Unicode code points, not UTF-8 bytes or
+// grapheme clusters; any tool-specific serialized byte budget is independent.
 //
 // and everything else is refused BY NAME, with a message that says what the
 // vocabulary is. Adding a keyword is then a deliberate act: the accessor or the
@@ -77,13 +85,11 @@
 //       - required: [close_input]
 //         properties: {close_input: {enum: [true]}}
 //
-// Every branch must require at least one property `required` does not already
-// name — one that requires nothing (or only what the schema requires anyway)
-// would be satisfied by every call the schema allows and would say nothing.
-// With that rule in place, a call naming only the required properties is
-// INVALID whenever a declaration carries `anyOf`, which is what makes the
-// cross-check in the process toolset's suite able to assert the refusal instead
-// of padding the call until it passes (toolsets/process/test/test_tools.cpp).
+// Every branch adds a required property or a checked absence predicate. Without
+// either, the branch adds no constraint and is refused. Existing process schemas
+// use additional requirements; list/query tools can also describe empty argument
+// objects through explicit exclusions. Concrete tools still validate arguments
+// at invocation time; schema checks do not grant runtime authorization.
 //
 // WHAT IS DELIBERATELY NOT LOADED
 // -------------------------------

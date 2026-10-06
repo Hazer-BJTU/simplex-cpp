@@ -115,7 +115,7 @@ BOOST_AUTO_TEST_CASE(toolset_registers_plan_and_owns_settings)
     BOOST_TEST(set->name() == "hub_remote_call");
     BOOST_TEST(set->endpoint().target == "/agent/session/tools/?token=secret");
     BOOST_TEST(set->timeout().count() == 500);
-    BOOST_TEST(set->tool_count() == 1u);
+    BOOST_TEST(set->tool_count() == 4u);
     BOOST_TEST(set->get_tools().at(0).name == "plan");
     BOOST_REQUIRE(set->skill());
     tools::ToolRegistry registry;

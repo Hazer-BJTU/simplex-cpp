@@ -709,6 +709,19 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_load_system_prompt --run_test=default_prompt_is_loaded_beside_the_executable
 
+      - name: Verify installed plan and subagent declarations without source fallback
+        run: |
+          set -euo pipefail
+          sources=tools/intrinsic/toolsets/hub_remote_call/schemas
+          parked=$(mktemp -d)
+          mv "$sources" "$parked/schemas"
+          trap 'mv "$parked/schemas" "$sources"; rmdir "$parked"' EXIT
+          cp build/bin/test_hub_remote_call_tools stage/bin/
+          unset SIMPLEX_HUB_REMOTE_CALL_SCHEMA_DIR
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          stage/bin/test_hub_remote_call_tools --log_level=error \
+            --run_test=toolset_registers_plan_and_owns_settings,subagent_schemas_validation_and_attributes_agree
+
       - name: Verify installed dynamic toolsets and loop hooks
         run: |
           set -euo pipefail

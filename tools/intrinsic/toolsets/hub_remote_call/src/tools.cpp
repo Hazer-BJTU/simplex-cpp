@@ -2,6 +2,7 @@
 #include "tools/intrinsic/hub_remote_call/toolset.hpp"
 #include "tools/invoke_exception.hpp"
 #include "tools/intrinsic/hub_remote_call/schemas.hpp"
+#include "tools/intrinsic/hub_remote_call/subagents.hpp"
 
 #include <boost/asio/this_coro.hpp>
 #include <boost/uuid/random_generator.hpp>
@@ -66,8 +67,16 @@ HubRemoteCallToolSet::HubRemoteCallToolSet(
     : endpoint_(std::move(endpoint)), timeout_(timeout)
 {
     validate_connection(endpoint_, timeout_);
-    register_tools({std::make_shared<PlanTool>(endpoint_, timeout_, std::move(identity))});
+    register_tools({
+        std::make_shared<PlanTool>(endpoint_, timeout_, identity),
+        std::make_shared<SubagentForkTool>(endpoint_, timeout_, identity),
+        std::make_shared<SubagentSendTool>(endpoint_, timeout_, identity),
+        std::make_shared<SubagentReceiveTool>(endpoint_, timeout_, identity)
+    });
     declare_capability_group("plan", {"plan"});
+    declare_capability_group("subagents", {
+        "subagent_fork", "subagent_send", "subagent_receive"
+    });
     load_skill(hub_remote_call::schema_directory() / "skill.yaml");
 }
 
@@ -132,7 +141,8 @@ boost::asio::awaitable<Json> HubRemoteCallToolBase::request(
     try {
         wire = co_await intercom::cancellable_exchange(
             co_await boost::asio::this_coro::executor,
-            std::move(target), envelope.dump(), timeout_);
+            std::move(target), envelope.dump(), timeout_, {},
+            endpoint::get_global_ssl_context(), 256 * 1024);
     } catch (const boost::system::system_error& error) {
         throw InvokeException(InvokeException::Stage::Invoke,
             "hub remote call transport failed", query, error.code());

@@ -139,6 +139,18 @@ public:
         return std::holds_alternative<std::monostate>(_alternative);
     }
 
+    /// Bound one assembled incoming message before allocating its full payload.
+    /// Call only from the session owner before starting a read operation.
+    void read_message_max(std::size_t bytes) {
+        _check("read_message_max");
+        std::visit([bytes](auto& stream) {
+            if constexpr (!std::is_same_v<std::decay_t<decltype(stream)>,
+                    std::monostate>) {
+                stream->read_message_max(bytes);
+            }
+        }, _alternative);
+    }
+
     /// Whether the held session is the TLS flavour. Diagnostics/tests.
     /// @throws WsException{Stage::Unknown} when empty.
     bool is_tls() const {

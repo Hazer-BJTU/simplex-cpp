@@ -8,6 +8,8 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 #include <unistd.h>
 
@@ -395,8 +397,7 @@ argument_schema:
       description: the program to run
 )"), "must declare its type"));
 
-    // A type that is not even a string, and the two kinds this tree has no
-    // accessor for — nothing here reads a float or a nested object.
+    // A type that is not a string, and number (no tool reads a float argument).
     BOOST_TEST(mentions(refusal_of(scratch, R"(
 name: probe
 description: a probe
@@ -417,16 +418,6 @@ argument_schema:
       type: number
       description: the program to run
 )"), "\"number\""));
-    BOOST_TEST(mentions(refusal_of(scratch, R"(
-name: probe
-description: a probe
-argument_schema:
-  type: object
-  properties:
-    executable:
-      type: object
-      description: the program to run
-)"), "\"object\""));
 }
 
 BOOST_AUTO_TEST_CASE(a_keyword_outside_the_vocabulary_is_refused)
@@ -434,7 +425,7 @@ BOOST_AUTO_TEST_CASE(a_keyword_outside_the_vocabulary_is_refused)
     Scratch scratch;
     // A keyword the loader does not know is one it cannot check, and one a
     // provider would be handed as part of the contract while the implementation
-    // ignored it. `pattern` is one an author is likely to reach for.
+    // ignored it. Misspelled keywords are still rejected by name.
     const std::string pattern = refusal_of(scratch, R"(
 name: probe
 description: a probe
@@ -444,10 +435,10 @@ argument_schema:
     executable:
       type: string
       description: the program to run
-      pattern: "^[a-z]+$"
+      patern: "^[a-z]+$"
 )");
     BOOST_TEST(mentions(pattern,
-                        "/argument_schema/properties/executable/pattern"));
+                        "/argument_schema/properties/executable/patern"));
     BOOST_TEST(mentions(pattern, "not part of the argument-schema vocabulary"));
 
     BOOST_TEST(mentions(refusal_of(scratch, R"(
@@ -458,6 +449,60 @@ argument_schema:
   additionalProperties: true
   properties: {}
 )"), "/argument_schema/additionalProperties"));
+}
+
+BOOST_AUTO_TEST_CASE(structured_payload_schemas_are_preserved_and_malformed_constraints_are_refused)
+{
+    Scratch scratch;
+    using Json = nlohmann::json;
+    const Json payload = {
+        {"type", "array"}, {"description", "Content parts"}, {"minItems", 1},
+        {"items", {{"type", "object"}, {"additionalProperties", false},
+            {"required", Json::array({"raw"})},
+            {"properties", {{"raw", {{"type", "string"}, {"description", "Text"}, {"minLength", 1}}},
+                {"extras", {{"type", "object"}, {"description", "Opaque metadata"}}}}}}}
+    };
+    const Json document = {
+        {"name", "probe"}, {"description", "Structured arguments"},
+        {"argument_schema", {{"type", "object"}, {"additionalProperties", false},
+            {"properties", {{"payload", payload},
+                {"target", {{"type", "string"}, {"description", "ASCII identifier"},
+                    {"minLength", 1}, {"maxLength", 128}, {"pattern", "^[A-Za-z0-9_-]+$"}}}}},
+            {"anyOf", Json::array({{{"required", Json::array({"target"})}},
+                {{"required", Json::array()}, {"not", {{"anyOf", Json::array({
+                    {{"required", Json::array({"payload"})}}
+                })}}}}})}}}
+    };
+    const auto file = scratch.write("structured.yaml", document.dump());
+    BOOST_TEST(load_tool_declaration(file).argument_schema == document.at("argument_schema"));
+    for (const auto& [pointer, value] : std::vector<std::pair<std::string, Json>>{
+            {"/argument_schema/properties/payload/minItems", -1},
+            {"/argument_schema/properties/payload/minItems", 1.5},
+            {"/argument_schema/properties/payload/items/required", Json::array({"missing"})},
+            {"/argument_schema/properties/payload/items/additionalProperties", "false"},
+            {"/argument_schema/properties/payload/items/properties/raw/typo", true},
+            {"/argument_schema/properties/target/maxLength", 0},
+            {"/argument_schema/properties/target/pattern", "["},
+            {"/argument_schema/properties/target/pattern", 1},
+            {"/argument_schema/properties/target/default", "invalid/target"},
+            {"/argument_schema/anyOf/1/not/anyOf/0/required", Json::array({"missing"})},
+            {"/argument_schema/properties/payload/default", Json::array()},
+            {"/argument_schema/properties/payload/enum", Json::array({Json::array()})},
+        }) {
+        auto invalid = document;
+        invalid[Json::json_pointer(pointer)] = value;
+        const auto broken = scratch.write("broken-structured.yaml", invalid.dump());
+        BOOST_TEST_CONTEXT(pointer) {
+            BOOST_CHECK_THROW(load_tool_declaration(broken), ToolDeclarationError);
+        }
+    }
+    auto deep = document;
+    Json nested = {{"type", "string"}, {"description", "Leaf"}};
+    for (int i = 0; i < 40; ++i) {
+        nested = {{"type", "object"}, {"description", "Nested"}, {"properties", {{"child", nested}}}};
+    }
+    deep["argument_schema"]["properties"]["deep"] = nested;
+    BOOST_CHECK_THROW(load_tool_declaration(scratch.write("deep.yaml", deep.dump())), ToolDeclarationError);
 }
 
 BOOST_AUTO_TEST_CASE(closed_arguments_and_excluded_branch_property_are_checked)
@@ -639,6 +684,55 @@ argument_schema:
       minLength: -1
       description: the program to run
 )"), "minLength must not be negative"));
+}
+
+BOOST_AUTO_TEST_CASE(string_lengths_count_unicode_code_points_for_defaults_and_enums)
+{
+    Scratch scratch;
+    // A combining sequence has two code points even when rendered as one
+    // glyph. Supplementary-plane emoji have one code point and four UTF-8 bytes.
+    const std::vector<std::pair<std::string, std::size_t>> cases = {
+        {"", 0}, {"A", 1}, {"中", 1}, {"🌻", 1}, {"中🌻", 2}, {"e\u0301", 2}
+    };
+    for (const auto& [text, length] : cases) {
+        const nlohmann::json property = {
+            {"type", "string"}, {"description", "Unicode text"},
+            {"minLength", length}, {"maxLength", length},
+            {"default", text}, {"enum", nlohmann::json::array({text})}
+        };
+        nlohmann::json document = {{"name", "unicode"}, {"description", "Unicode bounds"},
+            {"argument_schema", {{"type", "object"}, {"properties", {{"text", property}}}}}};
+        const auto loaded = load_tool_declaration(scratch.write("unicode.yaml", document.dump()));
+        BOOST_TEST(loaded.argument_schema == document.at("argument_schema"));
+
+        auto& declared = document["argument_schema"]["properties"]["text"];
+        // Check defaults and enum members separately, so an enum mismatch
+        // cannot mask either string-length rule.
+        declared.erase("enum");
+        declared["default"] = text + "中";
+        auto message = refusal_of(scratch, document.dump());
+        BOOST_TEST(mentions(message, "/argument_schema/properties/text/default"));
+        BOOST_TEST(mentions(message, "exceeds maxLength"));
+
+        declared.erase("default");
+        declared["enum"] = nlohmann::json::array({text + "🌻"});
+        message = refusal_of(scratch, document.dump());
+        BOOST_TEST(mentions(message, "/argument_schema/properties/text/enum/0"));
+        BOOST_TEST(mentions(message, "exceeds maxLength"));
+
+        declared["minLength"] = length + 1;
+        declared["maxLength"] = length + 1;
+        declared["enum"] = nlohmann::json::array({text});
+        message = refusal_of(scratch, document.dump());
+        BOOST_TEST(mentions(message, "/argument_schema/properties/text/enum/0"));
+        BOOST_TEST(mentions(message, "shorter than the minLength"));
+
+        declared.erase("enum");
+        declared["default"] = text;
+        message = refusal_of(scratch, document.dump());
+        BOOST_TEST(mentions(message, "/argument_schema/properties/text/default"));
+        BOOST_TEST(mentions(message, "shorter than the minLength"));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(integer_maximum_is_checked_against_other_clauses)

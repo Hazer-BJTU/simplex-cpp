@@ -1,0 +1,38 @@
+name: subagent_receive
+description: >-
+  Query a snapshot of direct subagents. With no arguments, list children; with
+  subagent_id, read status, recent request outcomes and a primary-conversation
+  page. This does not wait for completion. Check request IDs/run status and
+  stale/incomplete/truncated flags. Cursors address a bounded current projection;
+  restart at cursor 0 when revision or worker changes. Trusted, read_only.
+type: read_only
+security: trusted
+argument_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    subagent_id:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: Direct child to inspect; omission lists direct children.
+    cursor:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+      default: 0
+      description: Offset in the current projected turn array; requires subagent_id.
+    limit:
+      type: integer
+      minimum: 1
+      maximum: 10
+      default: 5
+      description: Maximum turns to return; requires subagent_id.
+  anyOf:
+    - required: [subagent_id]
+    - required: []
+      not:
+        anyOf:
+          - required: [cursor]
+          - required: [limit]

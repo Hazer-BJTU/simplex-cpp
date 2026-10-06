@@ -58,6 +58,8 @@ protected:
      * Transport, malformed replies and correlation errors raise InvokeException
      * at Stage::Invoke, correlated to query. Diagnostics never include the
      * endpoint query (which can contain a session token) or raw response bytes.
+     * Incoming assembled messages are bounded to the Hub's 256 KiB reply budget
+     * before JSON parsing, including fragmented messages.
      * There are no retries or run-cancellation hooks. The bounded exchange joins
      * its transport cleanup before returning; system DNS can delay that cleanup
      * beyond the reply-validity deadline, as documented by cancellable_exchange.

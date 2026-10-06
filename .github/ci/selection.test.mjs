@@ -76,6 +76,18 @@ test('mixed changes take the union, unknown files default to native', () => {
     assert.equal(classifyPaths([]).category, 'independent');
 });
 
+test('worker subagent declarations and implementations select their real-worker Hub E2E', () => {
+    for (const path of [
+        'tools/intrinsic/toolsets/hub_remote_call/src/subagents.cpp',
+        'tools/intrinsic/toolsets/hub_remote_call/schemas/subagent_send.yaml',
+        'hub/test/e2e/worker-subagent-tools.test.js',
+    ]) {
+        const selection = classifyPaths([path]);
+        assert.equal(selection.portable_build, true);
+        assert.equal(selection.worker_integration, true);
+    }
+});
+
 test('invalid paths and inconsistent selections cannot be accepted', () => {
     for (const path of ['', '/tmp/file', '../core/file', 'docs/../core/file', 'docs//file', null]) {
         assert.throws(() => classifyPaths([path]));

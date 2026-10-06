@@ -235,6 +235,10 @@ sections:
             BOOST_TEST(state.turns.size() == 2u);
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "plan"; }) == with_hub_remote_call);
+            for (const std::string name : {"subagent_fork", "subagent_send", "subagent_receive"}) {
+                BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
+                    [&](const auto& tool) { return tool.name == name; }) == with_hub_remote_call);
+            }
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "modality_assist"; })
                 == with_modality_assist);
