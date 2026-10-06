@@ -14,6 +14,12 @@ uploaded as a second GitHub asset. Rerunning a partial release verifies exact
 GitHub asset bytes and npm tarball integrity before continuing; any mismatch
 fails rather than replacing a published artifact.
 
+Publish and recovery jobs run on separate runners from the build job. Each first
+downloads the lockfile's production dependencies with lifecycle scripts disabled,
+populating its own npm cache. Package validation then installs those locked
+dependencies offline beside the unpacked artifact and tests its emitted code in
+isolation; it does not depend on source-tree modules or a previous runner's cache.
+
 ## First-time npm setup
 
 The package must already exist before npm can accept a trusted publisher. For
