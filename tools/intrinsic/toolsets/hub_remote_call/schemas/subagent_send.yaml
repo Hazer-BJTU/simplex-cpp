@@ -1,0 +1,77 @@
+name: subagent_send
+description: >-
+  Send a task or lifecycle operation to a direct child. message requires content;
+  continue resumes existing state without a new user message; compact summarizes
+  context; stop terminates the child family and deletes its persistence after
+  cleanup. Receive needed output before stop. Dispatch is not completion:
+  inspect the returned request ID using subagent_receive. Trusted, serial_write.
+  Never resend uncertain work automatically. Arguments are at most 64 KiB UTF-8.
+type: serial_write
+security: trusted
+argument_schema:
+  type: object
+  additionalProperties: false
+  required: [subagent_id]
+  properties:
+    subagent_id:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: Hub-generated ID of a direct child of this worker.
+    operation:
+      type: string
+      enum: [message, continue, compact, stop]
+      description: Required action; message sends new content, stop terminates the process family.
+    content:
+      type: array
+      minItems: 1
+      description: Required only for message. Use text for a self-contained task.
+      items:
+        type: object
+        additionalProperties: false
+        required: [type, modality, raw]
+        properties:
+          type:
+            type: string
+            enum: [text, binary, external_ref]
+            description: Encoding of raw.
+          modality:
+            type: string
+            enum: [text, image, audio, video, document]
+            description: Media category; provider support remains authoritative.
+          raw:
+            type: string
+            minLength: 1
+            description: UTF-8 text, base64 bytes, or URI according to type; no local upload.
+          extras:
+            type: object
+            description: Optional content metadata. Provider support remains authoritative.
+    options:
+      type: object
+      additionalProperties: false
+      description: Optional payload options. Child confirmation policy cannot be changed here.
+      properties:
+        model:
+          type: object
+          description: Provider-owned option keys, checked by the child's provider.
+        tools:
+          type: object
+          additionalProperties: false
+          properties: {}
+          description: Reserved; must be empty.
+  anyOf:
+    - required: [operation, content]
+      properties:
+        operation: {enum: [message]}
+    - required: [operation]
+      properties:
+        operation: {enum: [continue, compact]}
+      not: {required: [content]}
+    - required: [operation]
+      properties:
+        operation: {enum: [stop]}
+      not:
+        anyOf:
+          - required: [content]
+          - required: [options]

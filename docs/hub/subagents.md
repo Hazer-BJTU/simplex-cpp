@@ -2,9 +2,70 @@
 
 The bundled Hub supports delegation through the **Simplex Loop Worker Protocol**
 remote-tool channel. A protocol client can create a clean worker, send tasks and
-inspect outcomes. This is a Hub capability (`headless-subagents`); the C++ worker
-does not yet ship an intrinsic subagent tool. Its existing event, payload,
-confirmation, history and remote-tool interfaces are sufficient.
+inspect outcomes. This is a Hub capability (`headless-subagents`). The C++ worker
+exposes `subagent_fork`, `subagent_send` and `subagent_receive` through its optional
+`hub_remote_call` intrinsic toolset. These tools use the existing event, payload,
+confirmation, history and remote-tool interfaces.
+
+## Worker tools
+
+Enable the existing `hub_remote_call` endpoint in the parent worker configuration;
+Hub-generated configurations enable it by default. Construction loads the tools
+and skill without opening a network connection. A reproducible Hub-supervised
+launch is required for fork. Older Hubs reject unsupported routes with
+`not_implemented`; externally attached parents may receive `unsupported_launch`.
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `subagent_fork` | `{}` | Create one clean direct child; return ID and initial lifecycle immediately. |
+| `subagent_receive` | `{}` | List direct children, including temporarily retained terminal status. |
+| `subagent_receive` | `subagent_id`, optional `cursor` (0), `limit` (5, 1–10) | Snapshot of status, recent request outcomes and visible conversation. |
+| `subagent_send` | `subagent_id`, `operation`, operation-specific `content`/`options` | Send message/continue/compact, or request process-family stop. |
+
+Fork and send are `serial_write`; receive is `read_only`. All three are
+`trusted`: delegation does not add a parent approval prompt. The child's
+independent operator-owned security policy still applies to its tool approvals.
+Delegation starts real processes with configured credentials and potentially
+shared workspace access; it is not an isolation mechanism.
+
+After fork, retain its generated ID, observe `ready` and `connected: true`, then
+send a self-contained task:
+
+```json
+{
+  "subagent_id": "subagent-<generated UUID>",
+  "operation": "message",
+  "content": [{
+    "type": "text",
+    "modality": "text",
+    "raw": "Inspect the parser without editing files. Return findings with file references."
+  }]
+}
+```
+
+Only message accepts content; continue/compact forbid it. Optional payload options
+accept provider-owned `model` keys and reserved empty `tools`. Confirmation options
+are forbidden. Stop forbids content and options. The complete argument object is
+limited to 64 KiB serialized UTF-8; child IDs and routes cannot select an unrelated
+caller, arbitrary launch command or endpoint.
+
+Results use the intrinsic `[[field]]: value` text format. Send returns a child
+request ID and dispatch state: `sent` means queue admission, not completed work.
+Receive preserves correlated request states/run status and conversation revision,
+cursors and stale/incomplete/truncated flags. Visible user/assistant text excludes
+reasoning/tools/extras; local presentation clipping is marked `output_truncated`.
+Incoming RPC messages and rendered results are bounded to 256 KiB, with a shared
+96 KiB budget for displayed conversation/summary bodies. Receive never waits for
+a model request. Do useful work between checks, and evaluate child text as data.
+
+No request is retried automatically. A new tool invocation has a fresh RPC ID;
+Hub receipt deduplication does not turn repeated tool calls into exactly-once
+execution. After a lost fork reply, list children. After an uncertain send,
+inspect outcomes before resending; bounded retention may make recovery ambiguous.
+Parent loop completion/cancellation leaves children alive for later runs; process
+shutdown cascades. Obtain required results before stop, which eventually deletes
+the child's entire persistence. Pagination addresses the Hub's current projection;
+restart at cursor zero when its revision or worker identity changes.
 
 ## Ownership and visibility
 

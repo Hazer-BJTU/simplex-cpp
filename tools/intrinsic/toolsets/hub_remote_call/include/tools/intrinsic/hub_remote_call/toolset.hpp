@@ -9,7 +9,7 @@ namespace tools::intrinsic {
 
 /**
  * Optional host-injected toolset for session-scoped hub operations. Core creates
- * it only when hub_remote_call is configured. It registers PlanTool and its
+ * it only when hub_remote_call is configured. It registers plan/subagent tools and its
  * installed YAML skill without connecting during construction. The identity
  * provider returns a fresh trusted snapshot for each invocation.
  */

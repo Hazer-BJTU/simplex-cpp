@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <format>
 #include <initializer_list>
+#include <regex>
 #include <string>
 #include <string_view>
 
@@ -83,34 +84,20 @@ std::string require_string_at(const json& object, std::string_view key,
 // code that really decides whether the call runs — the accessors in
 // tool_base.hpp, called from ensure_arguments() — knows nothing about them.
 //
-// So every keyword is one this loader KNOWS and CHECKS, and the vocabulary is
-// what this tree's tools can actually express:
-//
-//   type         string | boolean | integer | array — the kinds the argument
-//                accessors read. Not `number` (nothing here reads a float) and
-//                not `object` (no accessor reads a nested object).
-//   description  the prose a model reads; required, because a property nobody
-//                explained is a property a model has to guess at.
-//   default      what the implementation settles when the property is absent.
-//   enum         the values a caller may send, all of the declared kind.
-//   minimum      a lower bound, on an integer.
-//   maximum      an upper bound, on an integer.
-//   minLength    a shortest length, on a string.
-//   items        what an array's elements are; `{type: string}` is the only
-//                array this tree reads (optional_string_list).
-//
-// and `anyOf` at the top of the schema, whose branches may require properties
-// and narrow them with the same value clauses (see the file header). Anything
-// else is refused by name, which is the point: extending the vocabulary is a
-// deliberate act — the accessor or the implementation rule it describes comes
-// first, and then the check for it below.
+// The checked vocabulary includes strings, booleans, integers, string arrays
+// and nested objects/object arrays used by remote payloads. Object members are
+// checked recursively (at most 32 levels); opaque provider/extras objects may
+// omit properties. String patterns and bounds, array minimum sizes, and fixed
+// anyOf absence predicates are validated rather than passed through unchecked.
+// Structured defaults/enums remain unsupported until a tool needs their validation.
 
 constexpr std::string_view kSchemaVocabulary =
     "type, properties, required, additionalProperties, anyOf";
 constexpr std::string_view kPropertyVocabulary =
-    "type, description, default, enum, minimum, maximum, minLength, items";
-constexpr std::string_view kNarrowingVocabulary = "enum, minimum, maximum, minLength";
-constexpr std::string_view kTypeVocabulary = "string, boolean, integer, array";
+    "type, description, default, enum, minimum, maximum, minLength, maxLength, pattern, "
+    "minItems, items, properties, required, additionalProperties";
+constexpr std::string_view kNarrowingVocabulary = "enum, minimum, maximum, minLength, maxLength, pattern, minItems";
+constexpr std::string_view kTypeVocabulary = "string, boolean, integer, array, object";
 
 /// Whether `value` is a JSON instance of `kind`. No coercion, and the same rule
 /// the implementation's accessors apply to a call: a "5" is not an integer, and
@@ -122,6 +109,7 @@ constexpr std::string_view kTypeVocabulary = "string, boolean, integer, array";
     if (kind == "boolean") return value.is_boolean();
     if (kind == "integer") return value.is_number_integer();
     if (kind == "array") return value.is_array();
+    if (kind == "object") return value.is_object();
     return false;
 }
 
@@ -142,9 +130,8 @@ constexpr std::string_view kTypeVocabulary = "string, boolean, integer, array";
                          type->type_name()));
     }
     const std::string word = type->get<std::string>();
-    if (!is_one_of(word, {"string", "boolean", "integer", "array"})) {
-        // The list is the accessors' list, so this is also the answer to "why
-        // may I not write `number`?": nothing in this tree reads one.
+    if (!is_one_of(word, {"string", "boolean", "integer", "array", "object"})) {
+        // Number remains unsupported: no argument boundary reads floats.
         fail(file, path + "/type",
              std::format("\"{}\" is not a kind of argument this project's tools "
                          "take; the vocabulary is {}", word, kTypeVocabulary));
@@ -160,13 +147,17 @@ struct ValueClauses {
     const json* minimum = nullptr;        ///< `minimum`, when stated
     const json* maximum = nullptr;        ///< `maximum`, when stated
     const json* min_length = nullptr;     ///< `minLength`, when stated
+    const json* max_length = nullptr;
+    const json* pattern = nullptr;
+    const json* min_items = nullptr;
 
     /// Nothing stated about the values, so any value of the declared kind is a
     /// value the declaration allows.
     [[nodiscard]] bool says_nothing() const noexcept
     {
         return allowed_values == nullptr && minimum == nullptr && maximum == nullptr
-               && min_length == nullptr;
+               && min_length == nullptr && max_length == nullptr
+               && pattern == nullptr && min_items == nullptr;
     }
 };
 
@@ -208,6 +199,18 @@ void check_value_against_clauses(const json& value, std::string_view kind,
                              "declaration states ({})",
                              value.dump(), clauses.min_length->dump()));
         }
+    }
+    if (clauses.max_length != nullptr
+        && value.get_ref<const std::string&>().size() > clauses.max_length->get<std::size_t>()) {
+        fail(file, path, "value exceeds maxLength");
+    }
+    if (clauses.pattern != nullptr
+        && !std::regex_search(value.get_ref<const std::string&>(),
+            std::regex(clauses.pattern->get<std::string>()))) {
+        fail(file, path, "value does not match pattern");
+    }
+    if (clauses.min_items != nullptr && value.size() < clauses.min_items->get<std::size_t>()) {
+        fail(file, path, "array has fewer than minItems elements");
     }
 }
 
@@ -282,6 +285,30 @@ void check_value_against_clauses(const json& value, std::string_view kind,
         }
         clauses.min_length = &*length;
     }
+    for (const char* key : {"maxLength", "minItems"}) {
+        const auto bound = schema.find(key);
+        if (bound == schema.end()) continue;
+        if (kind != (std::string_view(key) == "maxLength" ? "string" : "array")
+            || !bound->is_number_integer() || bound->get<std::int64_t>() < 0) {
+            fail(file, path + "/" + key, "bound must be a nonnegative integer on its corresponding kind");
+        }
+        if (std::string_view(key) == "maxLength") clauses.max_length = &*bound;
+        else clauses.min_items = &*bound;
+    }
+    if (clauses.min_length && clauses.max_length && *clauses.min_length > *clauses.max_length) {
+        fail(file, path + "/maxLength", "maxLength must not be below minLength");
+    }
+    if (const auto pattern = schema.find("pattern"); pattern != schema.end()) {
+        if (kind != "string" || !pattern->is_string()) {
+            fail(file, path + "/pattern", "pattern must be a string on a string property");
+        }
+        try {
+            (void)std::regex(pattern->get<std::string>());
+        } catch (const std::regex_error&) {
+            fail(file, path + "/pattern", "invalid ECMAScript regular expression");
+        }
+        clauses.pattern = &*pattern;
+    }
 
     if (clauses.allowed_values != nullptr) {
         // Each member against its sibling clauses: an enum that lists a
@@ -297,18 +324,28 @@ void check_value_against_clauses(const json& value, std::string_view kind,
     return clauses;
 }
 
-/// The `items` of an array property: what an element is. This tree has one
-/// array accessor and it reads strings (optional_string_list), so `{type:
-/// string}` is the whole of what an element may be declared as — and saying so
-/// is required, because an array with no element rule is one a model can only
-/// guess about.
+/// Array items are either the existing string-list shape or a recursively
+/// checked object schema for structured payload content.
+void check_object_fields(const json& schema, const std::filesystem::path& file,
+                         const std::string& path, std::size_t depth);
+
 void check_items(const json& items, const std::filesystem::path& file,
-                 const std::string& path)
+                 const std::string& path, std::size_t depth)
 {
     if (!items.is_object()) {
         fail(file, path,
              std::format("items must be a mapping describing the elements "
                          "({{type: string}}), got {}", items.type_name()));
+    }
+    const std::string kind = require_kind(items, file, path);
+    if (kind == "object") {
+        for (const auto& entry : items.items()) {
+            if (!is_one_of(entry.key(), {"type", "properties", "required", "additionalProperties"})) {
+                fail(file, path + "/" + entry.key(), "unknown object item schema keyword");
+            }
+        }
+        check_object_fields(items, file, path, depth);
+        return;
     }
     for (const auto& entry : items.items()) {
         if (entry.key() != "type") {
@@ -318,7 +355,6 @@ void check_items(const json& items, const std::filesystem::path& file,
                              "the whole of it", entry.key()));
         }
     }
-    const std::string kind = require_kind(items, file, path);
     if (kind != "string") {
         fail(file, path + "/type",
              std::format("an array's elements must be strings, got {}: "
@@ -331,7 +367,7 @@ void check_items(const json& items, const std::filesystem::path& file,
 /// reads, its value clauses, what it settles when absent, and — for an array —
 /// what its elements are.
 void check_property(const json& property, const std::filesystem::path& file,
-                    const std::string& path)
+                    const std::string& path, std::size_t depth = 0)
 {
     if (!property.is_object()) {
         fail(file, path, std::format("every property must be a mapping, got {}",
@@ -339,7 +375,8 @@ void check_property(const json& property, const std::filesystem::path& file,
     }
     for (const auto& entry : property.items()) {
         if (!is_one_of(entry.key(), {"type", "description", "default", "enum",
-                                     "minimum", "maximum", "minLength", "items"})) {
+                                     "minimum", "maximum", "minLength", "maxLength", "pattern",
+                                     "minItems", "items", "properties", "required", "additionalProperties"})) {
             fail(file, path + "/" + entry.key(),
                  std::format("\"{}\" is not part of the argument-schema "
                              "vocabulary this project supports ({}); a keyword "
@@ -359,16 +396,32 @@ void check_property(const json& property, const std::filesystem::path& file,
                  std::format("only an array property takes items, and this one "
                              "declares type: {}", kind));
         }
-        check_items(*items, file, path + "/items");
+        check_items(*items, file, path + "/items", depth + 1);
     } else if (kind == "array") {
         fail(file, path + "/items",
              "an array property must declare what its elements are "
              "(items: {type: string})");
     }
 
+    if (kind == "object") {
+        check_object_fields(property, file, path, depth + 1);
+    } else {
+        for (const char* key : {"properties", "required", "additionalProperties"}) {
+            if (property.contains(key)) fail(file, path + "/" + key, "object keyword requires type: object");
+        }
+    }
+
     const ValueClauses clauses = check_clauses(property, kind, file, path);
+    const bool structured = kind == "object"
+        || (kind == "array" && property.at("items").at("type") == "object");
+    if (structured && property.contains("enum")) {
+        fail(file, path + "/enum", "structured enums are not supported; omit enum for object arguments");
+    }
     if (const auto fallback = property.find("default");
         fallback != property.end()) {
+        if (structured) {
+            fail(file, path + "/default", "structured defaults are not supported; omit default for object arguments");
+        }
         // The default is what the implementation settles, so it has to be a
         // value the same declaration would let a caller send: of the kind, in
         // the enum, inside the numeric bounds. Anything else is a schema that describes
@@ -415,6 +468,58 @@ void check_required_list(const json& names, const json& properties,
     }
 }
 
+/** Validate nested declared objects; omitted properties leaves an open payload object. */
+void check_object_fields(const json& schema, const std::filesystem::path& file,
+                         const std::string& path, std::size_t depth)
+{
+    if (depth > 32) fail(file, path, "argument schema nesting exceeds 32 levels");
+    const json none = json::object();
+    const auto found = schema.find("properties");
+    const auto& properties = found == schema.end() ? none : *found;
+    if (!properties.is_object()) fail(file, path + "/properties", "properties must be a mapping");
+    if (schema.contains("additionalProperties") && !schema.at("additionalProperties").is_boolean()) {
+        fail(file, path + "/additionalProperties", "additionalProperties must be a boolean");
+    }
+    for (const auto& entry : properties.items()) {
+        check_property(entry.value(), file, path + "/properties/" + entry.key(), depth);
+    }
+    if (schema.contains("required")) {
+        check_required_list(schema.at("required"), properties, file, path + "/required");
+    }
+}
+
+/** A fixed absence predicate: one property or any of several single properties. */
+void check_exclusion(const json& excluded, const json& properties,
+                     const json& branch_required, const json& root_required,
+                     const std::filesystem::path& file, const std::string& path)
+{
+    if (!excluded.is_object() || excluded.size() != 1) {
+        fail(file, path, "not must contain only required or anyOf absence predicates");
+    }
+    if (excluded.contains("anyOf")) {
+        const auto& alternatives = excluded.at("anyOf");
+        if (!alternatives.is_array() || alternatives.empty()) fail(file, path, "absence anyOf must be nonempty");
+        for (std::size_t i = 0; i < alternatives.size(); ++i) {
+            if (!alternatives[i].is_object() || !alternatives[i].contains("required")) {
+                fail(file, path, "absence alternatives must contain a required list");
+            }
+            check_exclusion(alternatives[i], properties, branch_required, root_required,
+                file, path + "/anyOf/" + std::to_string(i));
+        }
+        return;
+    }
+    if (!excluded.contains("required")) fail(file, path, "not must contain a required list");
+    check_required_list(excluded.at("required"), properties, file, path + "/required");
+    if (excluded.at("required").size() != 1) fail(file, path + "/required", "not must exclude exactly one declared property");
+    const auto name = excluded.at("required")[0];
+    const auto contains = [&](const json& names) {
+        return std::find(names.begin(), names.end(), name) != names.end();
+    };
+    if (contains(branch_required) || contains(root_required)) {
+        fail(file, path + "/required", "a branch cannot both require and exclude a property");
+    }
+}
+
 /// Whether `names` — an already-checked required list — holds `name`.
 [[nodiscard]] bool names_contain(const json& names, std::string_view name)
 {
@@ -429,10 +534,7 @@ void check_required_list(const json& names, const json& properties,
 ///
 /// A branch is checked as a NARROWING of the schema, never a schema of its own:
 /// it may name properties the schema declares (it cannot introduce one), it
-/// must require at least one property the schema does not already require (a
-/// branch satisfied by every call the schema allows would make the `anyOf` say
-/// nothing at all — and that is exactly the property the tests lean on when
-/// they ask whether a call naming only the required properties is valid), and
+/// must add a requirement or a checked absence predicate, and
 /// its property entries may only tighten a value (`enum`, `minimum`,
 /// `maximum`, `minLength`), because the type and the description come from the property
 /// itself.
@@ -464,29 +566,14 @@ void check_branch(const json& branch, const json& properties,
     }
     check_required_list(*names, properties, file, path + "/required");
     if (const auto excluded = branch.find("not"); excluded != branch.end()) {
-        const std::string here = path + "/not";
-        if (!excluded->is_object() || excluded->size() != 1
-            || !excluded->contains("required")) {
-            fail(file, here, "not must contain only a required list of excluded properties");
-        }
-        check_required_list(excluded->at("required"), properties, file,
-                            here + "/required");
-        if (excluded->at("required").size() != 1) {
-            fail(file, here + "/required",
-                 "not must exclude exactly one declared property");
-        }
-        const std::string forbidden = excluded->at("required")[0].get<std::string>();
-        if (names_contain(*names, forbidden) || names_contain(required, forbidden)) {
-            fail(file, here + "/required",
-                 "a branch cannot both require and exclude a property");
-        }
+        check_exclusion(*excluded, properties, *names, required, file, path + "/not");
     }
     bool adds_a_requirement = false;
     for (const json& name : *names) {
         adds_a_requirement = adds_a_requirement
                              || !names_contain(required, name.get<std::string>());
     }
-    if (!adds_a_requirement) {
+    if (!adds_a_requirement && !branch.contains("not")) {
         fail(file, path + "/required",
              "an alternative must require a property the schema does not "
              "already require, or it is satisfied by every call that satisfies "
@@ -516,7 +603,8 @@ void check_branch(const json& branch, const json& properties,
                                  entry.value().type_name()));
             }
             for (const auto& clause : entry.value().items()) {
-                if (!is_one_of(clause.key(), {"enum", "minimum", "maximum", "minLength"})) {
+                if (!is_one_of(clause.key(), {"enum", "minimum", "maximum", "minLength",
+                        "maxLength", "pattern", "minItems"})) {
                     fail(file, here + "/" + clause.key(),
                          std::format("\"{}\" is not something an alternative "
                                      "may narrow ({}): the type and the "

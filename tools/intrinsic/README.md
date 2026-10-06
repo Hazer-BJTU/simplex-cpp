@@ -87,10 +87,14 @@ not apply. Concrete tools validate all supported keys, types, ranges and default
 Host config never becomes part of Invocable, arguments, skill text or state.
 
 The schema's vocabulary is **closed**, because that subtree goes to a provider
-verbatim: `type` (`string` / `boolean` / `integer` / `array`, the kinds the
-argument accessors read), a `description` on every property, `default`, `enum`,
-`minimum`, `maximum`, `minLength`, `items`, and a top-level `anyOf` for a rule that spans
-properties. Each is checked against the kind it applies to and against the
+verbatim: `type` (`string` / `boolean` / `integer` / `array` / `object`), a
+`description` on every named property, scalar/string-list `default` and `enum`,
+`minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `minItems`, `items`, and
+a top-level `anyOf` for rules spanning properties. Object members and object-array
+items are checked recursively, to at most 32 levels. Opaque provider/extras objects
+can omit properties; object defaults/enums are not supported. Alternatives add
+requirements or explicit absence predicates (`not` with one required property,
+or an `anyOf` of such predicates). Each is checked against its kind and against the
 others — an enum member below the declared minimum, a default outside its own
 enum, an array without `items` are all refusals — and so is any keyword the
 loader does not know, by name. A declaration that would reach a model as a
@@ -242,6 +246,7 @@ and the shared async runtime.
 
 ## Optional hub remote calls
 
-[`hub_remote_call`](toolsets/hub_remote_call/README.md) is a host-injected set with a plan tool and an abstract request-tool base. Core loads it only when the optional
+[`hub_remote_call`](toolsets/hub_remote_call/README.md) is a host-injected set with
+plan, subagent fork/send/receive tools and an abstract request-tool base. Core loads it only when the optional
 `hub_remote_call` configuration is present. It owns endpoint/deadline settings,
-registers the plan tool and skill, and opens no connection during construction.
+registers separate plan/subagents capability groups and their skill, and opens no connection during construction.

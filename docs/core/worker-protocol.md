@@ -1419,8 +1419,13 @@ caller's live identity/active run and direct-parent ownership. Clean-fork starts
 an independent headless worker from the caller's startup configuration; send
 supports message/continue/compact/stop; receive returns bounded status and primary
 conversation, without tools or reasoning. Mutations use bounded durable receipts
-and never automatically retransmit unknown payloads. A future worker tool may
-adopt these routes; no C++ subagent tool is included yet.
+and never automatically retransmit unknown payloads. The optional C++
+`hub_remote_call` toolset exposes them as
+`subagent_fork`, `subagent_send` and `subagent_receive`, respectively. Fork/send
+use trusted serial-write scheduling; receive uses trusted read-only scheduling.
+No additional worker endpoint or configuration section is needed. These tools
+preserve dispatch/completion distinctions, have no automatic retries, and display
+bounded primary conversation with pagination and completeness metadata.
 
 The [Hub subagent contract](../hub/subagents.md) defines the complete argument,
 result, authorization, duplicate, configuration, approval and lifetime semantics.

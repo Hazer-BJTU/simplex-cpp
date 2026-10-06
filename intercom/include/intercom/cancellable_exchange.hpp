@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <stop_token>
 #include <string>
 #include "intercom/websocket_stream.hpp"
@@ -20,6 +21,8 @@ namespace intercom {
  * throws operation_aborted; expiry throws timed_out. A binary reply is fatal.
  * Keep the TLS context alive until completion. Inherited Asio cancellation is
  * shielded: use stop to request shutdown without abandoning cleanup.
+ * The default preserves Beast's 16 MiB assembled-message limit. Use the overload
+ * below to impose a smaller per-exchange receive budget.
  */
 boost::asio::awaitable<std::string> cancellable_exchange(
     boost::asio::any_io_executor executor,
@@ -28,4 +31,19 @@ boost::asio::awaitable<std::string> cancellable_exchange(
     std::chrono::milliseconds timeout,
     std::stop_token stop = {},
     endpoint::ssl_context& context = endpoint::get_global_ssl_context());
+
+/**
+ * The same lifetime contract with an explicit positive receive budget.
+ * max_reply_bytes bounds the assembled message and buffer during read, including
+ * fragmented replies. Keeping this overload separate preserves the original
+ * exchange symbol and source contract for existing callers.
+ */
+boost::asio::awaitable<std::string> cancellable_exchange(
+    boost::asio::any_io_executor executor,
+    endpoint::ResolvedEndpoint endpoint,
+    std::string request,
+    std::chrono::milliseconds timeout,
+    std::stop_token stop,
+    endpoint::ssl_context& context,
+    std::size_t max_reply_bytes);
 } // namespace intercom

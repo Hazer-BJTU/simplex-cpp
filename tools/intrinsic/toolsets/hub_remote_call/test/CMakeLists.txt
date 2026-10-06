@@ -1,6 +1,7 @@
-add_executable(test_hub_remote_call_tools test_tools.cpp)
+add_executable(test_hub_remote_call_tools
+    test_tools.cpp test_subagents.cpp test_subagent_loop.cpp)
 target_link_libraries(test_hub_remote_call_tools PRIVATE
-    tools_intrinsic_hub_remote_call Boost::unit_test_framework)
+    tools_intrinsic_hub_remote_call loop_lib Boost::unit_test_framework)
 target_compile_definitions(test_hub_remote_call_tools PRIVATE
     HUB_REMOTE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/request_fixture.yaml")
 add_test(NAME test_hub_remote_call_tools COMMAND test_hub_remote_call_tools)
