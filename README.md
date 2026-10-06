@@ -39,20 +39,35 @@ project for building a minimal agent system from scratch.
 
 ## Install
 
-Download and extract the worker from [GitHub Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest).
-Keep the extracted directory intact and add its `bin` directory to `PATH`.
-The prebuilt worker requires Linux x86_64, glibc 2.34+, and OpenSSL 3.
+Install the Hub with Node.js 22.18+, then use it to download the latest stable
+worker from the official GitHub Releases:
 
-Install the Hub with Node.js 22.18+:
-
-```sh
+```bash
 npm install -g @hazer-bjtu/simplex-hub
+simplex-hub install-worker --update-path
+```
+
+The installer verifies the release checksum, installs into `~/.simplex/worker`,
+and updates a managed PATH block in `~/.bashrc`. Use `--directory DIR` to choose
+another installation root. The prebuilt worker requires Linux x86_64,
+glibc 2.34+, OpenSSL 3, and Bash; the installer also requires `flock` and `ldd`.
+
+Open a new Bash shell or reload `~/.bashrc`, then start the Hub:
+
+```bash
+source ~/.bashrc
 export MODEL_API_KEY='your-api-key'
 simplex-hub
 ```
 
 Open <http://127.0.0.1:8800>. Configure a model and launch a worker using the
 [deployment guide](https://hazer-bjtu.github.io/simplex-cpp/deployment/hub.html).
+
+Alternatively, download and extract the worker manually from
+[GitHub Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest).
+Keep the extracted directory intact and add its `bin` directory to `PATH`.
+See the [installation guide](https://hazer-bjtu.github.io/simplex-cpp/getting-started/installation.html)
+for version selection, replacement behavior, and manual checksum verification.
 
 ## Security
 
