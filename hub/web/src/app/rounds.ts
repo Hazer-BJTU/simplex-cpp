@@ -585,6 +585,19 @@ class RoundGrouping {
     }
 }
 
+/** Retention must not transfer a disclosure or spinner to another execution. */
+function presentationKey(draft: Draft): string {
+    if (draft.localInput) return `input-${draft.localInput.id}`;
+    if (draft.kind === 'run') {
+        // Admission distinguishes reused execution IDs. Older uncorrelated
+        // output needs its first retained event instead of one shared null key.
+        const boundary = draft.admitted?.envelope.sequence
+            ?? (!draft.runId && !draft.requestId ? draft.protocol[0]?.id ?? draft.key : null);
+        return JSON.stringify(['run', draft.workerId, draft.runId, draft.requestId, boundary]);
+    }
+    return draft.notes[0]?.id ?? draft.problems[0]?.key ?? draft.protocol[0]?.id ?? draft.key;
+}
+
 /** Build transcript rounds, returning executed runs in admission order. */
 export function buildRounds(
     items: readonly TranscriptItem[],
@@ -850,13 +863,7 @@ export function buildRounds(
         || draft.protocol.length > 0 || draft.problems.length > 0
         || draft.notes.length > 0 || draft.requests.length > 0
     ).map((draft) => ({
-        // Retention/replay can change array positions. Scope visible identity
-        // to the input/execution so trimming cannot remount surviving tools or
-        // transfer a disclosure's local state to an unrelated turn.
-        key: draft.localInput ? `input-${draft.localInput.id}`
-            : draft.kind === 'run' ? JSON.stringify(['run', draft.workerId, draft.runId,
-                draft.requestId, draft.admitted?.envelope.sequence ?? null])
-            : draft.notes[0]?.id ?? draft.problems[0]?.key ?? draft.protocol[0]?.id ?? draft.key,
+        key: presentationKey(draft),
         index: draft.index,
         kind: draft.kind,
         input: draft.input,

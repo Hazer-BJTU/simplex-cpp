@@ -86,3 +86,20 @@ it('retention does not transfer a surviving execution to another round DOM key',
     }
     assert.equal(after[0].index, 1); // The visible ordinal still reflects retained order.
 });
+
+it('older uncorrelated executions have distinct presentation keys', () => {
+    const project = createRoundProjection();
+    const items = [];
+    for (let n = 0; n < 2; n++) {
+        const call = event(n * 2 + 1, 'tool_calls', '', [{ id: `legacy-${n}`, name: 'tool', arguments: {} }]);
+        const finished = event(n * 2 + 2, 'run_finished', '', { status: 'completed' });
+        call.envelope.run_id = finished.envelope.run_id = '';
+        items.push(call, finished);
+    }
+    const before = project(items, new Map(), new Map());
+    assert.equal(before.length, 2);
+    assert.equal(new Set(before.map(round => round.key)).size, 2);
+    const after = project(items.slice(2), new Map(), new Map());
+    assert.equal(after[0].key, before[1].key);
+    assert.equal(after[0].calls, before[1].calls);
+});
