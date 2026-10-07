@@ -79,7 +79,7 @@ async function ratio(page: Page, selector: string): Promise<{
 const TEXT = [
     ['primary text on the panel surface', '[data-testid="session-title"]'],
     ['body text in a response', '[data-testid="assistant-message"] .md p'],
-    ['muted metadata', '[data-testid="transcript-stats"]'],
+    ['muted metadata', '[data-testid="assistant-message"] > p'],
     ['a status pill', '[data-testid="session-row"] span:has-text("worker attached")'],
     ['an empty state', '[data-testid="transcript"] p, [data-testid="sessions-empty"] p'],
 ];

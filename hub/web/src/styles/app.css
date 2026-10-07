@@ -561,3 +561,49 @@ select option:checked {
         flex: 1 1 45%;
     }
 }
+
+/* Shared reading measure; scrolling lives outside this aligned content. */
+:root {
+    --reading-width: 52rem;
+    --reading-gutter: clamp(0.75rem, 2vw, 1.5rem);
+    --conversation-font-size: 1rem;
+    --conversation-line-height: 1.6;
+}
+.reading-width {
+    width: 100%;
+    max-width: var(--reading-width);
+    min-width: 0;
+    margin-inline: auto;
+}
+.reading-scroll { padding: 1.5rem var(--reading-gutter); }
+.conversation-space > * + * { margin-top: 1.75rem; }
+.conversation-space .md,
+.conversation-space [data-testid="outbox-item"] > p:first-child,
+.conversation-space [data-testid="restored-user-message"] > p {
+    font-size: var(--conversation-font-size);
+    line-height: var(--conversation-line-height);
+}
+.composer-shell {
+    flex-shrink: 0;
+    padding: 0.5rem var(--reading-gutter) max(0.75rem, env(safe-area-inset-bottom));
+    padding-right: calc(var(--reading-gutter) + var(--conversation-scrollbar, 0px));
+    background: var(--surface);
+}
+.composer-surface {
+    position: relative;
+    border: 1px solid var(--line-strong);
+    border-radius: 0.875rem;
+    background: var(--surface);
+}
+.composer-surface:focus-within { border-color: var(--ink-muted); }
+.composer-surface:has(:focus-visible) { outline: 1px solid var(--ink-muted); }
+.composer-footer { min-height: 2rem; }
+/* Leave conversation and decisions reachable above a software keyboard. */
+@media (max-height: 600px) {
+    .composer-input { max-height: 20dvh !important; min-height: 3rem !important; }
+}
+
+.tool-disclosure > summary { list-style: none; }
+.tool-disclosure > summary::-webkit-details-marker { display: none; }
+.tool-disclosure-arrow { transition: transform 120ms ease; }
+.tool-disclosure[open] > summary .tool-disclosure-arrow { transform: rotate(90deg); }

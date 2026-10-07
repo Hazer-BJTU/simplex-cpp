@@ -572,7 +572,7 @@ test('the palette reaches everything the buttons do, from the keyboard', async (
     expect(page.url()).toContain('session=beta');
 });
 
-test('the palette toggles technical details without a mouse', async ({ page }) => {
+test('the palette no longer offers the technical-details mode', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
     await emit(page, 'run_started', {});
@@ -581,8 +581,8 @@ test('the palette toggles technical details without a mouse', async ({ page }) =
 
     await page.keyboard.press('ControlOrMeta+k');
     await page.getByLabel('filter commands').fill('technical');
-    await page.getByTestId('palette-command').first().click();
-    await expect(page.getByTestId('protocol-line').first()).toBeVisible();
+    await expect(page.getByTestId('palette-command')).toHaveCount(0);
+    await expect(page.getByTestId('protocol-line')).toHaveCount(0);
 });
 
 test('a snapshot that arrives after a session switch is discarded (D25)', async ({ page }) => {

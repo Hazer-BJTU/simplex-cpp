@@ -42,7 +42,6 @@ function input(overrides = {}) {
         running: false,
         runActive: false,
         inspectorOpen: false,
-        showDetails: false,
         confirmMode: 'ask',
         pingMs: null,
         ...overrides,
@@ -87,7 +86,7 @@ describe('command palette', () => {
 
     it('offers nothing about a session when none is selected', () => {
         const offered = ids(input({ selected: null }));
-        assert.deepEqual(offered, ['session:demo', 'hub:ping', 'view:details']);
+        assert.deepEqual(offered, ['session:demo', 'hub:ping']);
     });
 
     it('describes the drawer by what it will do, not what it is', () => {
@@ -99,12 +98,9 @@ describe('command palette', () => {
         assert.equal(open.label, 'Hide the context drawer');
     });
 
-    it('says which way the technical-details switch will go', () => {
-        const off = buildCommands(input()).find((command) => command.id === 'view:details');
-        assert.equal(off.label, 'Show technical details');
-        const on = buildCommands(input({ showDetails: true }))
-            .find((command) => command.id === 'view:details');
-        assert.equal(on.label, 'Hide technical details');
+    it('keeps diagnostics in the Inspector without a global details mode', () => {
+        assert.ok(!ids(input()).includes('view:details'));
+        assert.ok(ids(input()).includes('view:inspector'));
     });
 
     it('reports the last round trip beside the heartbeat', () => {

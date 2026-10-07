@@ -141,10 +141,8 @@ test('the page reports no console errors while loading and using a session', asy
     await emit(page, 'run_finished', { status: 'completed' });
     await page.getByTestId('session-row').click();
     await expect(page.getByTestId('transcript')).toContainText('hello');
-    // The switch changes what is rendered, so it is part of what must not
-    // produce a console error.
-    await page.getByTestId('details-toggle').check();
-    await expect(page.getByTestId('protocol-line').first()).toBeVisible();
+    await expect(page.getByTestId('details-toggle')).toHaveCount(0);
+    await expect(page.getByTestId('protocol-line')).toHaveCount(0);
 
     expect(errors).toEqual([]);
 });

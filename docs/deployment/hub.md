@@ -87,6 +87,31 @@ Each session retains copies of the selected files. The
 [configuration library reference](../hub/configurations.md) describes managed
 endpoint fields, launcher options, snapshot replacement, and the configuration API.
 
+## Panel controls and diagnostics
+
+The conversation and input share a centered reading area. Tools show compact
+summaries; open a tool to inspect its arguments and results. Reasoning and
+**Error details** expand independently. Raw protocol events and per-turn token
+counters are not rendered in the conversation; **Inspector** retains connection,
+worker, process, replay and snapshot diagnostics. The small input-area usage
+indicator always describes the last response that reported token usage.
+
+**Alt+Enter** switches the same input between Message and Command, preserving
+the message draft and selection. Suggestions appear above the input. **Confirm**
+and **Model** configure the next request, including Continue and Compact; they
+do not change an active run. Attach remains disabled.
+
+During a request, **Send** becomes **Cancel run** in the same position. One click
+shows **Cancelling…** until the worker responds or its connection changes. Tools
+may still finish before an interruptible boundary; this does not stop the worker
+process. The session header's **Stop** controls that process separately. A lost
+connection does not establish that execution stopped.
+
+Approval dialogs identify their source session and, for subagents, their parent.
+Long arguments scroll while decision buttons stay reachable. A locally expired
+approval disables those buttons while awaiting the Hub's authoritative outcome.
+Light/dark themes, keyboard focus and reduced-motion settings apply throughout.
+
 ## Advertised endpoints and reverse proxies
 
 For explicit advertised addresses, set `worker.connectHost` or per-channel

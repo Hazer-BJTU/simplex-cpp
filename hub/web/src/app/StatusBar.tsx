@@ -75,15 +75,11 @@ export function StatusBar({ onOpenSessions }: {
     const client = useClient();
     const connection = usePanel((state) => state.connection);
     const notice = usePanel((state) => state.notice);
-    const hub = usePanel((state) => state.hub);
-    const epoch = usePanel((state) => state.epoch);
     const authRequired = usePanel((state) => state.authRequired);
     // Actions, not state: Zustand keeps these identities stable, so reading
     // them here never causes a re-render.
     const clearRefusal = usePanel((state) => state.clearRefusal);
     const dismissNotice = usePanel((state) => state.dismissNotice);
-    const showDetails = usePanel((state) => state.showDetails);
-    const toggleDetails = usePanel((state) => state.toggleDetails);
 
     const described = describeConnection(
         connection.state, connection.attempt, connection.nextDelayMs,
@@ -104,31 +100,12 @@ export function StatusBar({ onOpenSessions }: {
                 </Tooltip>
                 <h1 className="hidden text-sm font-semibold text-ink sm:inline">simplex hub</h1>
                 <Pill tone={described.tone} icon={described.icon}>{described.label}</Pill>
-                {hub && (
-                    <span className="hidden truncate text-xs text-ink-muted lg:inline">
-                        {hub.name} {hub.version} · panel protocol v{hub.protocol.version}
-                        {epoch ? ` · transcript ${epoch.slice(0, 8)}` : ''}
-                    </span>
-                )}
                 <span className="flex-1" />
                 {connection.ignoredFrames > 0 && (
                     <span className="hidden text-xs text-ink-muted sm:inline">
                         {connection.ignoredFrames} message(s) from a newer hub were ignored
                     </span>
                 )}
-                <label
-                    className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-ink-muted"
-                    title="show the protocol's own events, in the order they arrived"
-                >
-                    <input
-                        type="checkbox"
-                        data-testid="details-toggle"
-                        checked={showDetails}
-                        onChange={(event) => toggleDetails()}
-                        className="h-3.5 w-3.5 accent-interactive"
-                    />
-                    <span className="hidden sm:inline">technical details</span>
-                </label>
                 <ThemeToggle />
             </div>
 

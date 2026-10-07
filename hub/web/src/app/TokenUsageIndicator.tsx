@@ -4,7 +4,7 @@ import { formatCacheRate, formatTokens, tokenUsageBand, type TokenUsage } from '
 export function TokenUsageIndicator({ usage }: { usage: TokenUsage }) {
     return (
         <div aria-label="Latest token usage"
-            className="mx-auto mb-1 max-w-4xl px-1 text-[10px] text-ink-muted tabular-nums">
+            className="reading-width mb-1 px-1 text-[10px] text-ink-muted tabular-nums">
             <div className="flex justify-end gap-2">
                 <span>prompt {formatTokens(usage.prompt)}</span>
                 <span>generated {formatTokens(usage.generated)}</span>

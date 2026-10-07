@@ -101,7 +101,7 @@ await page.waitForTimeout(3000);
 console.log('--- transcript as rendered ---');
 console.log(await page.getByTestId('transcript').innerText());
 console.log('--- panel counters ---');
-console.log(await page.getByTestId('transcript-stats').innerText());
+console.log(await page.getByTestId('round-summary').allTextContents());
 await page.screenshot({ path: `${SHOTS}/p8-real-hub.png` });
 
 // A reload is the harshest test of the replay path: a fresh page, an empty
@@ -109,7 +109,7 @@ await page.screenshot({ path: `${SHOTS}/p8-real-hub.png` });
 await page.reload();
 await page.getByTestId('tool-card').first().waitFor({ timeout: 20_000 });
 console.log('--- after a reload ---');
-console.log(await page.getByTestId('transcript-stats').innerText());
+console.log(await page.getByTestId('round-summary').allTextContents());
 
 const state = await get(`/api/sessions/${SESSION}`);
 console.log('--- hub-side counters ---');

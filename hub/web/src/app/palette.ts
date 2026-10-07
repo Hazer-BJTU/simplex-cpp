@@ -26,7 +26,6 @@ export type PaletteAction =
     }
     | { readonly kind: 'refresh-conversation'; readonly session: SessionId }
     | { readonly kind: 'inspector'; readonly open: boolean; readonly tab?: InspectorTab | undefined }
-    | { readonly kind: 'toggle-details' }
     | { readonly kind: 'ping' };
 
 /** One entry. */
@@ -46,7 +45,6 @@ export interface PaletteInput {
     readonly running: boolean;
     readonly runActive: boolean;
     readonly inspectorOpen: boolean;
-    readonly showDetails: boolean;
     readonly confirmMode: ConfirmMode;
     readonly pingMs: number | null;
 }
@@ -148,12 +146,6 @@ export function buildCommands(input: PaletteInput): CommandSpec[] {
         label: 'Ping the hub',
         hint: input.pingMs === null ? undefined : `${input.pingMs}ms`,
         action: { kind: 'ping' },
-    });
-    commands.push({
-        id: 'view:details',
-        group: 'view',
-        label: input.showDetails ? 'Hide technical details' : 'Show technical details',
-        action: { kind: 'toggle-details' },
     });
 
     return commands;
