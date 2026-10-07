@@ -433,7 +433,9 @@ metadata remain worker-owned; a content array is not an arbitrary MessageItem.
 ```
 
 `continue` starts a new invocation on the existing conversation without appending
-a user message. It requires at least one existing turn. It is useful after
+a user-supplied message. It requires an existing turn or settled `memory.runtime`.
+In the memory-only case the host inserts a private continuation instruction;
+this is not a new user interaction and never appears in the history user projection. It is useful after
 cancellation or an exchange limit when the recovery phase permits continuation;
 it is not restricted to those outcomes. Each invocation receives a fresh model
 exchange budget. A `continue` request carrying `content` or the legacy `text`
@@ -487,7 +489,11 @@ If a future projection cannot fit such an indivisible entry, the query emits
 returning a cursor that cannot advance. Invalid UTF-8 or other projection errors
 also remain query failures; they do not start an agent run.
 Each step contains its index, ordered response content, optional reasoning,
-and a tool-call count. `omitted_steps` counts model steps still to be fetched;
+and a tool-call count. Newly committed task steps also include `commit_sequence`
+(a decimal string) and `execution: {worker_id, request_id, run_id}`. These identify
+the response independently of the turn's input provenance; legacy steps may omit
+them. See [automatic context compaction](#automatic-context-compaction) for replay
+reconciliation across Continue requests and worker restarts. `omitted_steps` counts model steps still to be fetched;
 `omitted_user_parts` counts input parts beyond the display limit. Each content
 list includes at most four parts;
 `omitted_parts` on a model step counts its remaining parts.
@@ -540,7 +546,8 @@ with the existing JSON-preview clipping and binary omission policy. They are not
 lossless restorable snapshots. Export failure prevents the model request.
 
 The worker appends its startup-loaded compact instruction to a private state copy
-and runs one model exchange without tools. Extension hooks, temporary input,
+and runs without tools or token/exchange caps. A successful tool-free response
+naturally completes after one exchange; this exemption cannot recursively compact. Extension hooks, temporary input,
 model-response events, and automatic saves are excluded from this private run.
 Tool calls returned despite the instruction are rejected before dispatch. Empty
 or whitespace-only text summaries fail; reasoning and non-text content are not
@@ -596,8 +603,9 @@ a fresh request ID. There is no automatic retry, and a failed or cancelled
 attempt does not trigger archive cleanup; a later successful compact may remove
 its archive under the retention policy below.
 
-After success, history contains zero turns. `continue` is rejected until a new
-message creates a turn; that message sees the new system-prompt memory.
+After success, history contains zero turns. An explicit `continue` can resume from
+settled memory using the private continuation prompt. A new message uses the new
+system-prompt memory normally. Restoration itself never starts a model request.
 The hub exposes this operation as **Compact context** in the composer's Command
 mode. Both hub and current worker advertise `context-compact`. The panel retires
 outstanding history queries, refreshes the new revision, and renders the summary
@@ -864,16 +872,17 @@ all delivery or durability ambiguity.
 
 For `failed`, `failure` contains `stage` and `can_continue`. The stage is
 `model_request` when the model conversation request raised before a response
-was committed; other failures use `other`. `can_continue: true` means a turn
-exists and the settled loop phase is `ready`, so a `continue` request may be
-admitted without adding a user message. It does not promise that the next
+was committed; other failures use `other`. `can_continue: true` means a turn or valid host memory
+exists and the settled loop phase is `ready`, so an explicit `continue` request
+may be admitted. Memory-only continuation uses a private host instruction. It does not promise that the next
 request will succeed or that the provider is healthy. `false` calls for
 inspection before retrying. Older workers may omit `failure`; clients should
 treat that as unclassified and avoid automatic retry advice. `error` remains
 the technical diagnostic, which clients may show on demand.
 
-`exchanges` counts model responses committed in this invocation, not network
-attempts, provider retries, tool calls, or lifetime exchanges. Individual tool
+`exchanges` counts model responses committed across this logical request, including
+automatic summary responses, not network attempts, provider retries, tool calls,
+or lifetime exchanges. Individual tool
 failures may be ordinary tool results and need not produce a failed run.
 
 `durable: true` means a successful final/cancellation JSON snapshot was recorded
@@ -1690,3 +1699,96 @@ the policy.
 - Orphan detection for a worker started outside the hub is limited to what the
   protocol allows: the hub can drive and stop it, but it has no process record
   and the panel marks it as unattached.
+
+## Automatic context compaction
+
+Workers advertise `auto-compact`. This is startup policy, not a new payload
+operation. Set `worker.auto_compact_threshold` (default `0`, disabled) to a positive
+integer. After a continuing exchange settles all tool results and step hooks, the
+latest usable `prompt + generated` strictly above the threshold, or exhaustion of
+`max_exchanges`, returns an internal `AutoCompactRequired` boundary. Cache hits are
+already included in prompt usage. Missing/partial/overflowing usage is unavailable;
+exchange exhaustion remains effective. A tool-free final answer wins over limits.
+Usage arrives after the request: this cannot preempt provider context rejection.
+
+The worker runs its existing transactional compact operation with the dedicated
+`auto_compact.yaml` prompt, then privately resumes the original task with
+`auto_compact_continue.yaml`. Compact is exempt from both invocation limits,
+forbids tools, retains summary/reduction validation, and never recursively compacts.
+Persistence is required at startup. A failed summary, archive or required snapshot
+ends execution; required-save failure retains the existing worker fail-stop policy.
+
+All segments share the original request/run IDs, active flag, stop source and
+confirmation scope. Options apply once, on admission. The event order is:
+
+```text
+input_admitted → run_started → ordinary model/tool events
+  → tool_calls(auto_compact)
+  → compact_finished(origin=automatic, durable=true)
+  → tool_results(auto_compact)
+  → ordinary continuation model/tool events
+  → … → one final run_finished
+```
+
+`tool_calls` uses the existing InvokeQuery array, fresh ID
+`host-auto-compact-<UUID>`, name `auto_compact`, and extras
+`{ "origin": "worker", "operation": "auto_compact" }`. Arguments contain
+`reason` (`token_threshold` or `exchange_limit`), `threshold`, `max_exchanges`,
+`segment_exchanges`, nullable `last_exchange_tokens`, `cycle`, `succeeded`, and
+`limit`. `tool_results` uses the normal MessageItem/InvokeReturn shape with that ID,
+a concise result and record extras `status` (`completed`, `cancelled`, `failed`). Failures also include record extras
+`error: { stage: "auto_compact", message }`, so existing tool cards show failure;
+cancelled cards remain distinct from successful or skipped calls.
+This is diagnostic presentation only: no advertised tool, ToolRegistry dispatch,
+approval request, or fictitious tool history is added to model state.
+
+Automatic `compact_finished` adds `origin: "automatic"`, `cycle` and `call_id` to
+the existing durable result. Hubs invalidate old history but do not render a
+manual-compact round or duplicate summary card. Missing origin retains manual
+semantics. Failed/cancelled attempts settle their tool result before the final run
+outcome when transport permits. If cancellation follows durable replacement, the
+compact remains successful and the outer request reports cancellation.
+
+Final `run_finished.exchanges` counts committed task plus summary responses;
+`task_exchanges` and `compact_exchanges` provide the breakdown. Status and final
+results include `auto_compact: { attempts, succeeded, limit, threshold }`.
+Failed results add `failure.operation` (`task`, `compact`, `auto_compact`) while
+preserving `failure.stage` and the original diagnostic. Local loop counters remain
+per invocation. Local hook completion events still run for every invocation.
+
+Two guards prevent repeated compaction: `auto_compact_too_frequent` when the first
+exchange after a successful compact immediately triggers again, and
+`auto_compact_limit` when another attempt would exceed positive
+`worker.max_auto_compactions` (default 5). The last permitted continuation may still
+complete. Guards run before another archive/card, preserve committed effects, and
+report limits/usage in the failure. They do not silently change settings or retry.
+A new admitted request resets the budget; reconnect does not. Archive retention is
+independent. Cancellation never leaves a persisted pending compaction/continuation.
+
+Private continuation MessageItem metadata uses `simplex.internal_input` and
+`simplex.source` (worker/request/run IDs); public user Content extras cannot forge
+it. There is no wire `input_committed` for that instruction. History keeps the turn
+with `user: []`, `internal_input: "auto_compact_continue"`, `source`, and its model
+steps. `source` is input provenance: it never changes when a later explicit
+Continue appends responses to the same turn. Each newly committed task step stores
+`simplex.execution` in its own extras, before recovery checkpoints or tool dispatch.
+History projects it as `execution: {worker_id, request_id, run_id}`. This identity
+belongs to that response, including after cancellation, failure, or worker restart.
+No model-provider or tool-plugin ABI changes are needed for these extras.
+
+History steps and `model_response` data also include optional `commit_sequence` as
+a decimal string (zero/legacy history may omit it). Panels deduplicate using both
+per-response execution and commit sequence; a sequence alone is not a lineage
+identity. The history query's event cursor bounds replay from the queried worker
+incarnation only. Replayed responses from earlier incarnations retain their own
+execution IDs. Missing responses are restored within the matching execution round,
+keeping live tool cards; unmatched executions remain standalone history. Legacy
+steps without execution metadata use conservative input-source matching and cannot
+fully correlate later Continue responses. Internal user bubbles remain hidden.
+Subagent projections retain assistant answers and original request correlation;
+automatic compact never completes a delegated send before final `run_finished`.
+
+New snapshots can contain `loop.status: "auto_compact_required"`. This is a past
+boundary, not a pending action. Old snapshots/configurations remain readable;
+older binaries may reject this new status. Dynamic loop-hook ABI is now 3 because
+`RunResult` gained boundary metadata; rebuild hook plugins against this contract.

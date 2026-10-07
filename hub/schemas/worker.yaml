@@ -150,6 +150,14 @@ security:
 
 worker:
   max_exchanges: 512
+  # Opt-in: latest prompt + generated tokens strictly above this value triggers
+  # compaction after tool settlement; exchange exhaustion also triggers it.
+  # Final tool-free answers always complete normally. Zero disables automation.
+  auto_compact_threshold: 0
+  # Finite attempts per user request, independent of memory archive retention.
+  max_auto_compactions: 5
+  # auto_compact_prompt_file: prompts/operations/auto_compact.yaml
+  # auto_compact_continue_prompt_file: prompts/operations/auto_compact_continue.yaml
   # Bounded host event queue. Overflow safely stops the worker.
   event_capacity: 1024
   # Used only for a new session; restored prompts are retained.

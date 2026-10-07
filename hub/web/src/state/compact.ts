@@ -1,5 +1,6 @@
 /** The successful, durably published context replacement reported by a worker. */
 export interface CompactResult {
+    readonly origin?: 'automatic';
     readonly summary: string;
     readonly memory_file: string;
     readonly removed_turns: number;
@@ -19,6 +20,7 @@ export function parseCompactResult(value: unknown): CompactResult | null {
         || !Number.isSafeInteger(data.revision) || data.revision < 0
         || data.durable !== true) return null;
     return {
+        ...(data.origin === 'automatic' ? { origin: 'automatic' as const } : {}),
         summary: data.summary,
         memory_file: data.memory_file,
         removed_turns: data.removed_turns,

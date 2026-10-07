@@ -24,7 +24,7 @@
  * - **A success flag.** The protocol has none: a result is a failure only when
  *   the tool framework annotated one, and "not executed" is a third state.
  */
-import type { ConfirmationPrompt, RequestRecord, WorkerEnvelope } from '../../../shared/protocol.ts';
+import type { ConfirmationPrompt, HistoryTurn, RequestRecord, WorkerEnvelope } from '../../../shared/protocol.ts';
 import { parseCompactResult, type CompactResult } from '../state/compact.ts';
 import type {
     EventItem,
@@ -58,6 +58,7 @@ export type CallStatus =
     | 'failed'
     /** The loop did not dispatch it; not an execution and not a failure. */
     | 'skipped'
+    | 'cancelled'
     /** The run finished without a result for this call. */
     | 'unknown';
 
@@ -92,6 +93,8 @@ export interface AssistantBlock {
     readonly clock: string;
     /** Keys of the calls this response proposed. */
     readonly callIds: readonly string[];
+    /** A display-only fallback; live tool cards stay in the execution round. */
+    readonly historyStep?: HistoryTurn['steps'][number];
 }
 
 /** Something the worker or the panel reported as a problem. */
@@ -105,6 +108,7 @@ export interface Problem {
 /** Settled run failure, with optional classification from newer workers. */
 export interface RunFailure {
     readonly stage: 'model_request' | 'other';
+    readonly operation?: 'compact' | 'auto_compact';
     readonly canContinue: boolean;
     readonly error: string;
 }
@@ -265,6 +269,7 @@ function statusOf(
 ): CallStatus {
     if (prompt && prompt.settled_at === null) return 'pending';
     if (result) {
+        if (result.cancelled) return 'cancelled';
         if (result.skipped) return 'skipped';
         return result.error ? 'failed' : 'ok';
     }
@@ -637,6 +642,12 @@ export function buildRounds(
             const result = parseCompactResult(envelope.data);
             if (result) {
                 const run = groups.execution(envelope);
+                if (result.origin === 'automatic') {
+                    // The paired host tool card owns progress; this event only
+                    // invalidates history and must not turn the run into compact.
+                    track(run, envelope);
+                    continue;
+                }
                 run.compacting = true;
                 run.compactResult = result;
                 track(run, envelope);
@@ -664,6 +675,8 @@ export function buildRounds(
                 const failure = obj(summary.failure) ?? {};
                 run.failure = {
                     stage: failure.stage === 'model_request' ? 'model_request' : 'other',
+                    ...(failure.operation === 'compact' || failure.operation === 'auto_compact'
+                        ? { operation: failure.operation } : {}),
                     canContinue: failure.can_continue === true,
                     error: str(summary.error),
                 };

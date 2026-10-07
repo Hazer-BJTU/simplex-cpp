@@ -46,6 +46,13 @@ struct Configuration {
     std::chrono::milliseconds hub_remote_call_timeout{120000};
     std::size_t event_capacity = 1024;
     std::size_t max_exchanges = 512;
+    /** Zero disables automatic compaction; otherwise also converts exchange limits. */
+    std::uint64_t auto_compact_threshold = 0;
+    /** Finite attempt budget per admitted request, independent of archive retention. */
+    std::size_t max_auto_compactions = 5;
+    /** Dedicated startup-loaded handoff and private continuation instructions. */
+    std::string auto_compact_prompt;
+    std::string auto_compact_continue_prompt;
     /** Parsed prompt for a new session, read from the installation directory;
      * restored snapshots retain their own prompt instead. */
     model_io::PromptTemplate system_prompt;

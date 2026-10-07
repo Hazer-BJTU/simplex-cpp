@@ -22,7 +22,8 @@ function fixture(t) {
     chmodSync(worker, 0o755);
     write('prompts/coding_agent.yaml');
     const runtime = [
-        'prompts/operations/compact.yaml', 'plugins/llm/libllm_deepseek.so',
+        'prompts/operations/compact.yaml', 'prompts/operations/auto_compact.yaml',
+        'prompts/operations/auto_compact_continue.yaml', 'plugins/llm/libllm_deepseek.so',
         ...['poll_process', 'read_process', 'run_command', 'send_process', 'spawn_process', 'skill']
             .map((name) => `schemas/process/${name}.yaml`),
     ];

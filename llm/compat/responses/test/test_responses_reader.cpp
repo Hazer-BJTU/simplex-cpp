@@ -1127,3 +1127,20 @@ BOOST_AUTO_TEST_CASE(pump_surfaces_rejection_and_wakes_the_consumer) {
     BOOST_CHECK(reader.finished());
     BOOST_CHECK(reader.status() == StreamStatus::Aborted);
 }
+
+BOOST_AUTO_TEST_CASE(partial_usage_does_not_become_a_complete_token_cost) {
+    for (const auto& usage : nlohmann::json::array({
+        {{"input_tokens", 100}}, {{"output_tokens", 2}},
+        {{"input_tokens_details", {{"cached_tokens", 10}}}},
+        {{"input_tokens", 0}, {"output_tokens", 0}}})) {
+        asio::io_context io;
+        ResponsesReader reader(io.get_executor());
+        const auto wire = sse({{"type", "response.completed"},
+            {"response", {{"id", "usage"}, {"usage", usage}, {"output", nlohmann::json::array()}}}});
+        read_all(io, reader, wire);
+        BOOST_TEST(reader.response().cost.has_value() ==
+            (usage.contains("input_tokens") && usage.contains("output_tokens")));
+        BOOST_REQUIRE(reader.response().extras);
+        BOOST_TEST(reader.response().extras->at("usage") == usage);
+    }
+}

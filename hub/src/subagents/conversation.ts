@@ -8,6 +8,8 @@ export interface DialoguePart { type: string; modality: string; raw: string }
 export interface DialogueTurn {
     index: number;
     request_id?: string;
+    internal_input?: 'auto_compact_continue';
+    source?: { worker_id: string; request_id: string; run_id: string };
     user: DialoguePart[];
     steps: { index: number; content: DialoguePart[] }[];
 }
@@ -179,7 +181,14 @@ export class ConversationProjection {
         const turn = object(raw);
         if (!turn || !integer(turn.index) || !Array.isArray(turn.user) || !Array.isArray(turn.steps)) return null;
         if (turn.steps.length > MAX_TURN_STEPS) mark();
-        return { index: turn.index, user: dialogueParts(turn.user, mark),
+        const source = object(turn.source);
+        const internal = turn.internal_input === 'auto_compact_continue'
+            && source && typeof source.worker_id === 'string'
+            && typeof source.request_id === 'string' && typeof source.run_id === 'string';
+        if (turn.internal_input !== undefined && (!internal || turn.user.length !== 0)) return null;
+        return { index: turn.index, user: internal ? [] : dialogueParts(turn.user, mark),
+            ...(internal ? { internal_input: 'auto_compact_continue' as const,
+                source: source as NonNullable<DialogueTurn['source']>, request_id: source.request_id as string } : {}),
             steps: turn.steps.slice(-MAX_TURN_STEPS).flatMap(rawStep => {
                 const step = object(rawStep);
                 if (!step || !integer(step.index) || !Array.isArray(step.content)) return [];
@@ -294,11 +303,19 @@ export class ConversationProjection {
                 return;
             }
         }
-        if (refresh.pending) refresh.pending.steps.push(...turn.steps);
+        if (refresh.pending) {
+            if (refresh.pending.internal_input !== turn.internal_input
+                || refresh.pending.source?.worker_id !== turn.source?.worker_id
+                || refresh.pending.source?.request_id !== turn.source?.request_id
+                || refresh.pending.source?.run_id !== turn.source?.run_id) {
+                this.failed(); return;
+            }
+            refresh.pending.steps.push(...turn.steps);
+        }
         else {
             const known = this.value.turns.find(item => item.index === turn.index);
             if ((!this.value.worker_id || this.value.worker_id === refresh.worker)
-                && known?.request_id && JSON.stringify(known.user) === JSON.stringify(turn.user)) {
+                && !turn.request_id && known?.request_id && JSON.stringify(known.user) === JSON.stringify(turn.user)) {
                 turn.request_id = known.request_id;
             }
             refresh.pending = turn;

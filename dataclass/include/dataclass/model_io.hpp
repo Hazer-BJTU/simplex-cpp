@@ -958,11 +958,16 @@ enum class LoopStatus {
     ExchangeLimit,
     /// The invocation failed; inspect the diagnostic and recovery phase.
     Failed,
+    /// Settled compaction boundary; historical status, never a queued action.
+    AutoCompactRequired,
 };
 
 /** Writes the stable JSON name; invalid enum values throw instead of becoming defaults. */
 inline void to_json(nlohmann::json& j, LoopStatus value) {
     switch (value) {
+        case LoopStatus::AutoCompactRequired:
+            j = "auto_compact_required";
+            return;
         case LoopStatus::Idle:
             j = "idle";
             return;
@@ -1010,6 +1015,10 @@ inline void from_json(const nlohmann::json& j, LoopStatus& value) {
     }
     if (name == "failed") {
         value = LoopStatus::Failed;
+        return;
+    }
+    if (name == "auto_compact_required") {
+        value = LoopStatus::AutoCompactRequired;
         return;
     }
     throw std::invalid_argument("unknown LoopStatus name: " + name);

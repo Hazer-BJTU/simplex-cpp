@@ -139,7 +139,8 @@ struct EditOnStepFinished {
  * Edits the live state after terminal bookkeeping and before RunFinished.
  *
  * Runs once for every admitted invocation, including Failed, Cancelled and
- * ExchangeLimit. Rejected inputs and entry-time recovery failures do not publish it.
+ * ExchangeLimit or AutoCompactRequired. These are invocation boundaries, not
+ * necessarily the end of the host logical request. Rejected inputs and entry-time recovery failures do not publish it.
  * Uses the EditOnStepFinished edit/rollback contract. Applications include final
  * history compaction and updating host summaries or persistence metadata.
  * result is read-only and describes the outcome before this hook; editing state

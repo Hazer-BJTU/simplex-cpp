@@ -259,3 +259,51 @@ for (const replay of [false, true]) {
         }
     });
 }
+
+it('keeps automatic compact progress in the original run on live and replay paths', () => {
+    const events = [
+        envelope(1, 'input_admitted', 'A', { operation: 'message' }),
+        envelope(2, 'run_started', 'A', {}),
+        envelope(3, 'input_committed', 'A', {}),
+        envelope(4, 'tool_calls', 'A', [{ id: 'host-1', name: 'auto_compact', arguments: {} }]),
+        envelope(5, 'compact_finished', 'A', { origin: 'automatic', summary: 'handoff',
+            memory_file: '/memory/1/state.md', revision: 3, removed_turns: 1, durable: true }),
+        envelope(6, 'tool_results', 'A', [result('host-1', 'Context compacted')]),
+        envelope(7, 'model_response', 'A', { ...response('continued answer', 'next'), commit_sequence: '3' }),
+        envelope(8, 'run_finished', 'A', { status: 'completed', exchanges: 3 }),
+    ];
+    for (const replay of [false, true]) {
+        const store = storeWithInputs(replay ? [] : ['A']);
+        if (replay) store.getState().applySubscribed({ type: 'subscribed', session,
+            transcript: events, logs: [], latest: 8, replay_more: false });
+        else for (const event of events) store.getState().applyEvent({ type: 'event', session: 'demo',
+            hub_seq: event.sequence, envelope: event });
+        const rounds = roundsFor(store).filter(round => round.kind === 'run');
+        assert.equal(rounds.length, 1);
+        assert.equal(rounds[0].compacting, false);
+        assert.equal(rounds[0].compactResult, null);
+        assert.equal(rounds[0].timeline.some(item => item.kind === 'compact'), false);
+        assert.equal(rounds[0].calls[0].result.text, 'Context compacted');
+        assert.equal(rounds[0].assistant[0].text, 'continued answer');
+        assert.equal(rounds[0].status, 'completed');
+    }
+});
+
+it('shows failed and cancelled host compaction cards with their actual outcomes', () => {
+    for (const status of ['failed', 'cancelled']) {
+        const store = storeWithInputs(['A']);
+        const returned = result('host-1', `Compaction ${status}`);
+        returned.invoke_return.extras = { status,
+            ...(status === 'failed' ? { error: { stage: 'auto_compact', message: 'summary failed' } } : {}) };
+        const events = [envelope(1, 'input_admitted', 'A', { operation: 'message' }),
+            envelope(2, 'tool_calls', 'A', [{ id: 'host-1', name: 'auto_compact', arguments: {} }]),
+            envelope(3, 'tool_results', 'A', [returned]),
+            envelope(4, 'run_finished', 'A', { status, error: 'summary failed',
+                failure: { stage: 'model_request', operation: 'auto_compact', can_continue: true } })];
+        for (const event of events) store.getState().applyEvent({ type: 'event', session: 'demo',
+            hub_seq: event.sequence, envelope: event });
+        const run = roundsFor(store).find(round => round.kind === 'run');
+        assert.equal(run.calls[0].status, status);
+        if (status === 'failed') assert.equal(run.failure.operation, 'auto_compact');
+    }
+});

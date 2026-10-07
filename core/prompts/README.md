@@ -57,3 +57,18 @@ the generated summary as untrusted historical context, enclosed by a unique
 begin/end marker; instructions inside it do not override current policy. All
 earlier archives remain on disk. Restoration preserves this section after the
 refreshed runtime signature. Base prompt YAML cannot declare this host-owned name.
+
+### Automatic handoff and continuation
+
+`operations/auto_compact.yaml` is distinct from manual `compact.yaml`. It preserves
+the user's actual goal, deliverables, constraints and corrections, verified task
+state, decisions, important facts or precise retrieval references, live resources,
+and next actions. It carries forward useful memory without inventing progress or
+permissions. `worker.auto_compact_prompt_file` overrides it when automation is enabled.
+
+`operations/auto_compact_continue.yaml` resumes unfinished work from memory without
+inventing new tasks. `worker.auto_compact_continue_prompt_file` overrides it. It is
+also used by explicit continue from settled memory-only state. Both files install
+beside the worker and use the same YAML/path/nonempty validation as manual compact.
+The continuation is persisted as a host-marked user input for model recovery, but
+its text is hidden in live events and history; its assistant responses stay visible.

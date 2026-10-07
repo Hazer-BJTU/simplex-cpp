@@ -21,7 +21,9 @@ it('preserves all startup roles/options, relative external paths and launch envi
     const child = new Session({ id: 'subagent-12345678-1234-4123-8123-123456789abc' });
     const source = join(sessionDir(config, parent.id), 'config');
     const settings = {
-        worker: { environment: { workspace: '../../shared-workspace', software: ['bash'] } },
+        worker: { auto_compact_threshold: 123456, max_auto_compactions: 3,
+            auto_compact_prompt_file: 'prompts/custom.yaml',
+            environment: { workspace: '../../shared-workspace', software: ['bash'] } },
         plugins: { providers: { directories: ['../../providers'] }, extensions: {
             tools: { directories: ['../../tool-plugins'], enable: [{ name: 'tools', schema_directory: '../schemas' }] },
             loop_hooks: { directories: ['../../hooks'], enable: [{ name: 'hook', config_file: '../hook.yaml' }] },
@@ -39,6 +41,9 @@ it('preserves all startup roles/options, relative external paths and launch envi
     cleanFork(config, parent, child);
     const root = sessionDir(config, child.id);
     const saved = parse(readFileSync(join(root, 'config/config.yaml'), 'utf8'));
+    assert.equal(saved.worker.auto_compact_threshold, 123456);
+    assert.equal(saved.worker.max_auto_compactions, 3);
+    assert.equal(saved.worker.auto_compact_prompt_file, 'prompts/custom.yaml');
     assert.deepEqual(saved.providers, settings.providers);
     assert.deepEqual(saved.models, settings.models);
     assert.deepEqual(saved.prompts, settings.prompts);

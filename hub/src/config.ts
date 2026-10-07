@@ -88,6 +88,8 @@ export interface HubConfig {
          */
         systemPromptFile: string;
         maxExchanges: number;
+        autoCompactThreshold: number;
+        maxAutoCompactions: number;
         eventCapacity: number;
         confirmationTimeoutMs: number;
         /** Include the optional hub remote-call toolset in new worker configs. */
@@ -160,6 +162,8 @@ export function defaultConfig(): HubConfig {
             connectHost: '',
             systemPromptFile: 'prompts/coding_agent.yaml',
             maxExchanges: 512,
+            autoCompactThreshold: 0,
+            maxAutoCompactions: 5,
             eventCapacity: 1024,
             confirmationTimeoutMs: 120000,
             hubRemoteCall: true,
@@ -501,6 +505,10 @@ export function validateConfig(config: HubConfig): HubConfig {
     check(worker.connectHost === '' || !/[/:?#\s]/.test(worker.connectHost),
         'worker.connectHost must be a bare host or address, without a scheme, port or path');
     checkPromptFile(worker.systemPromptFile, 'worker.systemPromptFile');
+    check(Number.isSafeInteger(worker.autoCompactThreshold) && worker.autoCompactThreshold >= 0
+        && worker.autoCompactThreshold <= 2147483647, 'worker.autoCompactThreshold must be an integer in 0..2147483647');
+    check(Number.isSafeInteger(worker.maxAutoCompactions) && worker.maxAutoCompactions > 0
+        && worker.maxAutoCompactions <= 2147483647, 'worker.maxAutoCompactions must be an integer in 1..2147483647');
     check(Number.isInteger(worker.maxExchanges) && worker.maxExchanges > 0,
         'worker.maxExchanges must be a positive integer');
     check(Number.isInteger(worker.eventCapacity) && worker.eventCapacity > 0,

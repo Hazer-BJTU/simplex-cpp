@@ -1,0 +1,9 @@
+sections:
+  - name: auto_compact_continue
+    title: ""
+    text: |
+      Continue the user's unfinished task using the current memory and retained
+      state. Preserve the user's explicit constraints, preferences, and rules.
+      Verify uncertain results before repeating work with external effects.
+      If the task is already complete, provide the final response without
+      inventing additional work.

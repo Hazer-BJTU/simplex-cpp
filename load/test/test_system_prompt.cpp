@@ -41,6 +41,10 @@ struct Scratch {
     /** Stage both shipped prompt files, which every parse loads eagerly. */
     void stage_defaults() const {
         install("prompts/coding_agent.yaml", structured);
+        install("prompts/operations/auto_compact_continue.yaml",
+            "sections:\n  - name: resume\n    text: Continue from memory.\n");
+        install("prompts/operations/auto_compact.yaml",
+            "sections:\n  - name: handoff\n    text: Preserve goals and task state.\n");
         install("prompts/operations/compact.yaml",
             "sections:\n  - name: compact\n    text: Summarize without tools.\n");
     }
@@ -103,7 +107,8 @@ BOOST_AUTO_TEST_CASE(prompt_files_must_stay_inside_the_installation_directory) {
         "\\outside.yaml", "\\rooted\\prompt.yaml", "C:\\absolute\\prompt.yaml",
         "C:prompt.yaml", "..\\outside.yaml", "prompts\\..\\..\\outside.yaml",
     };
-    for (const auto& key : {"system_prompt_file", "compact_prompt_file"}) {
+    for (const auto& key : {"system_prompt_file", "compact_prompt_file",
+                            "auto_compact_prompt_file", "auto_compact_continue_prompt_file"}) {
         for (const auto& path : invalid) {
             document["worker"] = {{key, path}};
             BOOST_CHECK_THROW(load::parse_configuration(
@@ -244,4 +249,21 @@ BOOST_AUTO_TEST_CASE(compact_prompt_uses_installation_relative_paths_and_rejects
     scratch.install("prompts/operations/compact.yaml", "sections: []\n");
     BOOST_CHECK_THROW(load::parse_configuration(document, scratch.root, scratch.installation()),
         std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(auto_operation_prompts_are_independent_and_validate_nonempty_text) {
+    Scratch scratch;
+    scratch.stage_defaults();
+    auto document = configuration();
+    document["worker"]["auto_compact_threshold"] = 100;
+    auto config = load::parse_configuration(document, scratch.root, scratch.installation());
+    BOOST_TEST(config.auto_compact_prompt == "Preserve goals and task state.\n");
+    BOOST_TEST(config.auto_compact_continue_prompt == "Continue from memory.\n");
+    scratch.install("prompts/handoff.yaml", "sections:\n  - name: handoff\n    text: Custom handoff.\n");
+    document["worker"]["auto_compact_prompt_file"] = "prompts/handoff.yaml";
+    config = load::parse_configuration(document, scratch.root, scratch.installation());
+    BOOST_TEST(config.auto_compact_prompt == "Custom handoff.\n");
+    BOOST_TEST(config.compact_prompt == "Summarize without tools.\n");
+    scratch.install("prompts/handoff.yaml", "sections: []\n");
+    BOOST_CHECK_THROW(load::parse_configuration(document, scratch.root, scratch.installation()), std::invalid_argument);
 }
