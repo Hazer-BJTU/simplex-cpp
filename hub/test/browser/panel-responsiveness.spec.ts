@@ -165,6 +165,28 @@ test('worker disconnect recovers an in-flight approval while the panel socket st
     expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
 });
 
+test('an unknown approval outcome can be checked in the open dialog without sending another decision', async ({ page }) => {
+    await open(page, '?session=demo');
+    await approval(page);
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: 'Approve', exact: true }).click();
+    await page.route('**/api/sessions/demo', route => route.abort());
+    // A legacy rejection lacks attempt correlation, so check the authoritative
+    // snapshot instead of treating it as permission to submit another decision.
+    await page.request.post(`${STUB}/__stub/message`, { data: {
+        type: 'error', error: 'confirmation_rejected', message: 'unknown outcome',
+        request: { type: 'confirmation', session: 'demo', confirmation_id: 'first' },
+    } });
+    await expect(dialog).toContainText('Could not check the decision outcome');
+    await expect(dialog.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Check outcome', exact: true })).toBeEnabled();
+    await page.unroute('**/api/sessions/demo');
+    await dialog.getByRole('button', { name: 'Check outcome', exact: true }).click();
+    await expect(dialog).toContainText('still lists this prompt as open');
+    await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
+});
+
 test('a reader retains their anchor and offset across Plan and approval-region resizing', async ({ page }) => {
     await open(page, '?session=demo');
     await page.request.post(`${STUB}/__stub/plan`, { data: { plan: { markdown: '# Work', revision: 1, updated_at: null } } });

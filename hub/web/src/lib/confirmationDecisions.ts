@@ -105,7 +105,7 @@ export function createConfirmationDecisions(options: {
             }
         } catch {
             if (attempts.get(key) === attempt && attempt.abort === abort && !stopped) {
-                fail(key, attempt, 'Could not check the decision outcome. Review again to check before retrying.', false);
+                fail(key, attempt, 'Could not check the decision outcome. Use Check outcome or Review to check before retrying.', false);
             }
         } finally {
             clearTimeout(deadline);

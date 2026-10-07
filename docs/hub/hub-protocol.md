@@ -355,8 +355,10 @@ this ID. A transport acknowledgement is separate from the authoritative
 its geometry unchanged, and never automatically resends a security decision.
 After eight seconds without settlement, it queries `GET /api/sessions/:id`.
 A still-open prompt permits an explicit retry; absence only means the prompt
-is no longer open, not that a tool succeeded. If this check fails, Review
-retries the check before enabling a decision. Panel or worker disconnects
+is no longer open, not that a tool succeeded. If this check fails, **Check
+outcome** (in the existing primary action slot) or **Review** retries the check
+before enabling a decision. The check has its own
+eight-second network deadline. Panel or worker disconnects
 invalidate the attempt's connection assumptions; reconnect checks the outcome
 before retry. Prompt creation and worker identity fence late responses.
 

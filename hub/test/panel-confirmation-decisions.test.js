@@ -128,3 +128,22 @@ it('expiry and stopping the client fence all later submissions and async work', 
     assert.equal(s.controller.states.getState().size, 0);
     assert.equal(s.controller.submit('demo', 'id', 'denied'), false);
 });
+
+it('authoritative reconnect snapshots replace reused prompt IDs and changed verification flags', t => {
+    const s = setup(t);
+    s.controller.submit('demo', 'id', 'approved');
+    const changed = { ...s.prompt, verified: true, identity_state: 'live' };
+    function welcome(prompt, worker) {
+        s.panel.getState().applyWelcome({ type: 'welcome', sessions: [{ ...s.session,
+            identity: { worker_id: worker, state: 'live' }, confirmations: [prompt] }],
+            subscriptions: [], hub: { name: 'hub', version: 'test', capabilities: [], transcript_epoch: null } });
+    }
+    welcome(changed, 'worker');
+    assert.equal(s.panel.getState().confirmation('demo', 'id').verified, true);
+    const replacement = { ...changed, worker_id: 'next', received_at: '2026-10-07T01:00:00Z' };
+    welcome(replacement, 'next');
+    assert.equal(s.panel.getState().confirmation('demo', 'id'), replacement);
+    assert.equal(s.state(), undefined);
+    assert.equal(s.controller.submit('demo', 'id', 'denied'), true);
+    assert.equal(s.sent.at(-1).prompt.worker_id, 'next');
+});

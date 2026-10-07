@@ -60,7 +60,9 @@ const Approval = memo(function Approval({ prompt, autoOpen, onDefer, onReview }:
     const key = confirmationKey(prompt);
     const submission = useStore(client.confirmations.states, state => state.get(key));
     const waiting = submission?.phase === 'pending' || submission?.phase === 'checking';
-    const blocked = waiting || (submission?.phase === 'failed' && !submission.retryable);
+    const unknown = submission?.phase === 'failed' && !submission.retryable;
+    const blocked = waiting || unknown;
+    const primaryLabel = unknown || submission?.phase === 'checking' ? 'Check outcome' : 'Approve';
     const [localError, setLocalError] = useState('');
     const deadline = prompt.deadline_at ? Date.parse(prompt.deadline_at) : NaN;
     const [expired, setExpired] = useState(Number.isFinite(deadline) && deadline <= Date.now());
@@ -102,6 +104,10 @@ const Approval = memo(function Approval({ prompt, autoOpen, onDefer, onReview }:
     }, [autoOpen]);
 
     function decide(decision: 'approved' | 'denied') {
+        if (decision === 'approved' && unknown) {
+            client.confirmations.review(prompt);
+            return;
+        }
         if (blocked || prompt.settled_at !== null || (Number.isFinite(deadline) && deadline <= Date.now())) return;
         setLocalError('');
         const sent = client.sendConfirmation(
@@ -153,11 +159,11 @@ const Approval = memo(function Approval({ prompt, autoOpen, onDefer, onReview }:
                     <Button size="sm" variant="ghost" onClick={() => { onReview(key); client.confirmations.review(prompt); setOpen(true); }}>
                         Review
                     </Button>
-                    <Button size="sm" variant="primary" aria-label="Approve" disabled={expired || blocked} onClick={() => decide('approved')}>
-                        <DecisionLabel waiting={waiting && submission?.decision === 'approved'}>Approve</DecisionLabel>
+                    <Button size="sm" variant="primary" aria-label={primaryLabel} disabled={expired || waiting} onClick={() => decide('approved')}>
+                        <DecisionLabel waiting={waiting && (submission?.decision === 'approved' || submission?.phase === 'checking')}>{primaryLabel}</DecisionLabel>
                     </Button>
                     <Button size="sm" variant="danger" aria-label="Deny" disabled={expired || blocked} onClick={() => decide('denied')}>
-                        <DecisionLabel waiting={waiting && submission?.decision === 'denied'}>Deny</DecisionLabel>
+                        <DecisionLabel waiting={waiting && submission?.decision === 'denied' && submission?.phase !== 'checking'}>Deny</DecisionLabel>
                     </Button>
                 </div>
             </div>
@@ -180,10 +186,10 @@ const Approval = memo(function Approval({ prompt, autoOpen, onDefer, onReview }:
                         <>
                             <DialogButton onClick={() => { onDefer(key); setOpen(false); }}>Later</DialogButton>
                             <DialogButton variant="danger" aria-label="Deny" disabled={expired || blocked} onClick={() => decide('denied')}>
-                                <DecisionLabel waiting={waiting && submission?.decision === 'denied'}>Deny</DecisionLabel>
+                                <DecisionLabel waiting={waiting && submission?.decision === 'denied' && submission?.phase !== 'checking'}>Deny</DecisionLabel>
                             </DialogButton>
-                            <DialogButton variant="primary" aria-label="Approve" disabled={expired || blocked} onClick={() => decide('approved')}>
-                                <DecisionLabel waiting={waiting && submission?.decision === 'approved'}>Approve</DecisionLabel>
+                            <DialogButton variant="primary" aria-label={primaryLabel} disabled={expired || waiting} onClick={() => decide('approved')}>
+                                <DecisionLabel waiting={waiting && (submission?.decision === 'approved' || submission?.phase === 'checking')}>{primaryLabel}</DecisionLabel>
                             </DialogButton>
                         </>
                     }

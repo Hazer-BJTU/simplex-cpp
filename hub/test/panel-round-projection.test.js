@@ -68,3 +68,21 @@ it('does not traverse arbitrary wire JSON or mutate caller-owned arguments', () 
     assert.equal(project(items, new Map(), new Map())[0].calls[1].args, dangerous);
     assert.equal({}.x, undefined);
 });
+
+it('retention does not transfer a surviving execution to another round DOM key', () => {
+    const project = createRoundProjection();
+    const items = [];
+    for (let n = 0; n < 6; n++) {
+        items.push(event(n * 3 + 1, 'input_admitted', `request-${n}`, { operation: 'message' }),
+            event(n * 3 + 2, 'tool_calls', `request-${n}`, [{ id: `call-${n}`, name: 'tool', arguments: {} }]),
+            event(n * 3 + 3, 'run_finished', `request-${n}`, { status: 'completed' }));
+    }
+    const before = project(items, new Map(), new Map());
+    const after = project(items.slice(6), new Map(), new Map());
+    for (const round of after) {
+        const original = before.find(value => value.calls[0].id === round.calls[0].id);
+        assert.equal(round.key, original.key);
+        assert.equal(round.calls, original.calls);
+    }
+    assert.equal(after[0].index, 1); // The visible ordinal still reflects retained order.
+});

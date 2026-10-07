@@ -34,15 +34,17 @@ test('large transcript, output burst, approvals and local pane switching', async
     if (restored) {
         await page.request.post(`${STUB}/__stub/settings`, { data: { historyEnabled: true,
             historyTurns: Array.from({ length: restored }, (_, index) => ({ index,
-                user: [{ type: 'text', raw: `Restored input ${index}` }],
-                steps: [{ index: 0, content: [{ type: 'text', raw: `Restored answer ${index}\n\n\`\`\`typescript\n${code}\n\`\`\`` }], tool_calls: 2 }],
+                user: [{ type: 'text', modality: 'text', raw: `Restored input ${index}` }],
+                steps: [{ index: 0, content: [{ type: 'text', modality: 'text', raw: `Restored answer ${index}\n\n\`\`\`typescript\n${code}\n\`\`\`` }], tool_calls: 2 }],
                 omitted_steps: 0,
             })),
         } });
         await emit(page, 'ready', { capabilities: ['session-history'] });
     }
     await page.goto('/?session=demo&panel_profile=1');
-    await expect(page.getByTestId('round').last()).toContainText(`Response ${turns - 1}`);
+    // The ready/history handshake can add a non-execution prelude after the
+    // fixture. Select the latest execution rather than the last section.
+    await expect(page.locator('[data-testid="round"][data-kind="run"]').last()).toContainText(`Response ${turns - 1}`);
     if (restored) await expect(page.getByTestId('history-turn')).toHaveCount(restored);
     const profiler = await page.context().newCDPSession(page);
     await profiler.send('Profiler.enable');
@@ -50,7 +52,14 @@ test('large transcript, output burst, approvals and local pane switching', async
     await page.evaluate(() => {
         const target = window as unknown as { __simplexPanelProfile: { reset(): void }; __benchmark: unknown };
         target.__simplexPanelProfile.reset();
-        const state = { longTasks: [] as number[], gaps: [] as number[], active: true };
+        const state = { longTasks: [] as number[], gaps: [] as number[],
+            interactions: [] as { name: string; duration: number; processingDelay: number; id: number }[], active: true };
+        new PerformanceObserver(list => {
+            for (const entry of list.getEntries() as PerformanceEventTiming[]) {
+                if (entry.interactionId) state.interactions.push({ name: entry.name, duration: entry.duration,
+                    processingDelay: entry.processingStart - entry.startTime, id: entry.interactionId });
+            }
+        }).observe({ type: 'event', durationThreshold: 16 } as PerformanceObserverInit);
         new PerformanceObserver(list => state.longTasks.push(...list.getEntries().map(entry => entry.duration)))
             .observe({ type: 'longtask', buffered: false });
         let last = performance.now();
