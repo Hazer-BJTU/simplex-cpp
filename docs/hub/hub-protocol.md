@@ -360,7 +360,10 @@ outcome** (in the existing primary action slot) or **Review** retries the check
 before enabling a decision. The check has its own
 eight-second network deadline. Panel or worker disconnects
 invalidate the attempt's connection assumptions; reconnect checks the outcome
-before retry. Prompt creation and worker identity fence late responses.
+before retry. This also revokes retry permission from an earlier rejection or
+still-open check. A socket becoming open alone never restores that permission;
+the fresh authoritative check must finish first. Prompt creation and worker
+identity fence late responses.
 
 
 `input` accepts the same content parts as the worker protocol (`type` of

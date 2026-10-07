@@ -57,8 +57,10 @@ immediate protocol ingestion from visual publication:
   Hidden Plan Markdown likewise waits until the pane becomes visible.
 - Round projection always executes the reference full fold. Weak caches reuse
   immutable parsing, and structural sharing retains unchanged rendering records.
-  Only the latest projection is strongly retained. Stable execution keys survive
-  retained-tail trimming; disclosure maps discard keys for removed content.
+  Only the latest projection and its retained source-to-key map are strongly
+  retained. Shared event/outbox evidence preserves an execution's DOM identity
+  when trimming only its beginning; reused wire IDs without that evidence do
+  not inherit another execution's key. Disclosure maps discard removed content.
 - Markdown, completed rounds and tool cards skip unchanged rendering. Large
   argument/output bodies mount on expansion. A shared time formatter avoids
   creating an `Intl.DateTimeFormat` for every historical event on every update.
@@ -76,7 +78,9 @@ whether the prompt remains open; failure keeps the outcome unknown. **Check
 outcome** or **Review** can check again without resending a decision. Only an
 explicit action retries after authoritative reconciliation. Panel and worker
 links are tracked independently; reconnect checks unknown outcomes without
-replaying security decisions. Attempt IDs fence late rejection replies.
+replaying security decisions. Either link's loss also revokes an already granted
+retry permission; socket-open notifications cannot restore it before a fresh
+check finishes. Attempt IDs fence late rejection replies.
 
 ### Reproducible reports
 

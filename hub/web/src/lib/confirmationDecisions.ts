@@ -120,7 +120,11 @@ export function createConfirmationDecisions(options: {
             if (!current(attempt) || (session?.identity.worker_id
                 && session.identity.worker_id !== attempt.prompt.worker_id)) {
                 clear(key);
-            } else if (!connected(attempt) && attempt.state.phase !== 'failed') {
+            } else if (!connected(attempt)
+                && (attempt.state.phase !== 'failed' || attempt.state.retryable)) {
+                // A retry permission belongs to the connection on which the
+                // prompt was checked. Losing either link invalidates it too;
+                // repeated notifications while disconnected remain a no-op.
                 fail(key, attempt, 'Connection lost; the decision outcome is unknown. Reconnect to check it.', false);
             } else if (attempt.state.phase === 'failed' && !attempt.state.retryable && connected(attempt)
                 && (previous.connection.state !== next.connection.state

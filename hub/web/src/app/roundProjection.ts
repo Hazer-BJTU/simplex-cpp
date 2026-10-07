@@ -32,18 +32,45 @@ function share(previous: unknown, next: unknown, depth = 0): unknown {
 
 /**
  * One visible transcript's projection. Always run the full correctness fold
- * (including admission/replay ordering), reuse immutable parsing and unchanged
- * records afterwards. Only the latest rounds are strongly retained; weak parse
- * caches expire with their source events. No cross-session or string-key cache.
+ * (including admission/replay ordering), then stabilize presentation separately.
+ * A surviving source event/outbox keeps the execution's DOM key even after its
+ * admission or input is removed. Wire IDs alone cannot establish continuity:
+ * reused IDs without retained evidence receive a new key. Only the latest
+ * rounds and their retained source-to-key map are kept; parsing caches are weak.
  */
 export function createRoundProjection() {
     const derivations = new RoundDerivations();
     let previous: readonly Round[] = [];
+    let retainedKeys = new Map<string, string>();
+    let generation = 0;
     return (items: readonly TranscriptItem[], prompts: ReadonlyMap<string, ConfirmationPrompt>,
         requests: ReadonlyMap<string, RequestRecord>): readonly Round[] => {
         const fresh = buildRounds(items, prompts, requests, derivations);
         const byKey = new Map(previous.map(round => [round.key, round]));
-        const next = fresh.map(round => share(byKey.get(round.key), round) as Round);
+        const used = new Set<string>();
+        const nextKeys = new Map<string, string>();
+        const next = fresh.map(round => {
+            const sources = round.sourceKeys;
+            let inherited: string | undefined;
+            for (const source of sources) {
+                const previousKey = retainedKeys.get(source);
+                if (previousKey !== undefined && !used.has(previousKey)) {
+                    inherited = previousKey;
+                    break;
+                }
+            }
+            let key = inherited ?? round.key;
+            // A split cannot assign one DOM key to two rounds. Nor may a new
+            // execution inherit an old key solely because wire IDs were reused.
+            if (used.has(key) || (inherited === undefined && byKey.has(key))) {
+                key = JSON.stringify(['presentation', round.key, ++generation]);
+            }
+            used.add(key);
+            for (const source of sources) nextKeys.set(source, key);
+            const stable = key === round.key ? round : { ...round, key };
+            return share(byKey.get(key), stable) as Round;
+        });
+        retainedKeys = nextKeys;
         const unchanged = next.length === previous.length
             && next.every((round, index) => round === previous[index]);
         if (!unchanged) previous = next;

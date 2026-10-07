@@ -147,3 +147,66 @@ it('authoritative reconnect snapshots replace reused prompt IDs and changed veri
     assert.equal(s.controller.submit('demo', 'id', 'denied'), true);
     assert.equal(s.sent.at(-1).prompt.worker_id, 'next');
 });
+
+for (const link of ['panel', 'worker']) {
+    for (const permission of ['rejection', 'reconciliation']) {
+        for (const outcome of ['open', 'settled', 'replacement']) {
+            it(`invalidates ${permission} retry permission on ${link} loss before checking ${outcome}`, async t => {
+                let checks = 0;
+                let resolve;
+                const s = setup(t, { timeoutMs: 1000, snapshot: () => {
+                    checks += 1;
+                    return new Promise(done => { resolve = done; });
+                } });
+                assert.equal(s.controller.submit('demo', 'id', 'approved'), true);
+                s.controller.rejected({ type: 'error', error: 'confirmation_rejected', message: 'refused',
+                    request: { type: 'confirmation', session: 'demo', confirmation_id: 'id',
+                        ...(permission === 'rejection' ? { request_id: s.sent[0].requestId } : {}) } });
+                if (permission === 'reconciliation') {
+                    resolve({ ...s.session, confirmations: [s.prompt] });
+                    await delay(0);
+                }
+                assert.equal(s.state().retryable, true);
+                const initialChecks = checks;
+                function connection(connected) {
+                    if (link === 'panel') s.panel.getState().setConnection({
+                        state: connected ? 'open' : 'closed', attempt: 0, nextDelayMs: null,
+                    });
+                    else s.panel.getState().applyConnection({ type: 'connection', session: 'demo',
+                        connected, identity: s.session.identity });
+                }
+                connection(false);
+                assert.equal(s.state().retryable, false);
+                const disconnected = s.state();
+                connection(false);
+                assert.equal(s.state(), disconnected); // No repeated failure publications.
+                assert.equal(s.controller.submit('demo', 'id', 'denied'), false);
+                connection(true); // Socket open precedes welcome; retained prompts are stale.
+                assert.equal(checks, initialChecks + 1);
+                assert.equal(s.state().phase, 'checking');
+                assert.equal(s.controller.submit('demo', 'id', 'denied'), false);
+                assert.equal(s.sent.length, 1);
+                const replacement = { ...s.prompt, received_at: '2026-10-07T02:00:00Z' };
+                resolve({ ...s.session, confirmations: [outcome === 'open' ? s.prompt
+                    : outcome === 'settled' ? { ...s.prompt, settled_at: '2026-10-07T02:00:00Z' }
+                    : replacement] });
+                await delay(0);
+                if (outcome === 'open') {
+                    assert.equal(s.state().retryable, true);
+                    assert.equal(s.sent.length, 1); // Reconciliation never resends.
+                    assert.equal(s.controller.submit('demo', 'id', 'denied'), true);
+                } else {
+                    assert.equal(s.state(), undefined);
+                    assert.equal(s.panel.getState().confirmation('demo', 'id'), null);
+                    assert.equal(s.controller.submit('demo', 'id', 'denied'), false);
+                    assert.equal(s.sent.length, 1);
+                    if (outcome === 'replacement') {
+                        s.add(replacement); // A fresh authoritative prompt has its own state.
+                        assert.equal(s.state(replacement), undefined);
+                        assert.equal(s.controller.submit('demo', 'id', 'denied'), true);
+                    }
+                }
+            });
+        }
+    }
+}

@@ -211,3 +211,93 @@ test('a reader retains their anchor and offset across Plan and approval-region r
     await expect(page.getByTestId('approvals')).toHaveCount(0);
     expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
 });
+
+for (const link of ['panel', 'worker']) {
+    test(`a retryable approval loses permission on ${link} disconnect until a fresh check finishes`, async ({ page }) => {
+        await open(page, '?session=demo');
+        await approval(page);
+        const dialog = page.getByRole('dialog');
+        await dialog.getByRole('button', { name: 'Approve', exact: true }).click();
+        const decisions = (await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions;
+        await page.request.post(`${STUB}/__stub/message`, { data: {
+            type: 'error', error: 'confirmation_rejected', message: 'retry permitted', request: decisions[0],
+        } });
+        await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+        let held: import('@playwright/test').Route | undefined;
+        await page.route('**/api/sessions/demo', route => { held = route; });
+        if (link === 'panel') {
+            await page.request.post(`${STUB}/__stub/down`);
+            await expect(page.getByText('connected', { exact: true })).not.toBeVisible();
+        } else await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+        await expect(dialog.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
+        if (link === 'panel') await page.request.post(`${STUB}/__stub/up`);
+        else await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
+        await expect.poll(() => held !== undefined).toBe(true);
+        await expect(dialog.getByRole('button', { name: 'Check outcome', exact: true })).toBeDisabled();
+        await expect(dialog.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
+        expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
+        const snapshot = await (await page.request.get(`${STUB}/api/sessions/demo`)).json();
+        await held!.fulfill({ json: snapshot });
+        await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+        await expect(dialog).toContainText('still lists this prompt as open');
+        expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
+    });
+}
+
+test('partial retention preserves a manually expanded round, tool disclosure and visible reading anchor', async ({ page }) => {
+    await open(page, '?session=demo');
+    await page.request.post(`${STUB}/__stub/settings`, { data: { holdInput: true } });
+    await page.getByLabel('message', { exact: true }).fill('Input that will be trimmed');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.getByTestId('outbox-item')).toHaveCount(1);
+    const received = (await (await page.request.get(`${STUB}/__stub/received`)).json()).received;
+    const local = received.find((message: { type: string }) => message.type === 'input');
+    const identity = { request_id: local.request_id, run_id: 'retained-run' };
+    const events: { event: string; data: unknown; extra: { request_id: string; run_id: string } }[] = [
+        { event: 'input_admitted', data: { operation: 'message' }, extra: identity },
+        { event: 'tool_calls', data: [call('retained-call', 'run_command', { command: 'echo retained' })], extra: identity },
+        { event: 'model_response', data: modelResponse('Surviving paragraph.\n\n'.repeat(100)), extra: identity },
+        { event: 'run_finished', data: { status: 'completed' }, extra: identity },
+    ];
+    for (let index = 0; index < 4; index++) {
+        const extra = { request_id: `later-${index}`, run_id: `later-run-${index}` };
+        events.push({ event: 'input_admitted', data: { operation: 'message' }, extra },
+            { event: 'run_finished', data: { status: 'completed' }, extra });
+    }
+    // 1 local outbox + 1,999 events exactly fills the actual store cap. The
+    // next two appends remove only the outbox, then the admission of this run.
+    const last = { request_id: 'later-3', run_id: 'later-run-3' };
+    events.push(...Array.from({ length: 1987 }, () => ({ event: 'persisted', data: {}, extra: last })));
+    await page.request.post(`${STUB}/__stub/emit-batch`, { data: { events } });
+    const round = page.getByTestId('round').first();
+    await expect(round.getByTestId('round-summary')).toContainText('turn 1');
+    await round.getByTestId('round-summary').click(); // Older than the default three open rounds.
+    const details = round.getByTestId('tool-details');
+    await details.locator('summary').click();
+    await expect(details).toHaveAttribute('open', '');
+    await round.evaluate(element => { (window as unknown as { __retainedRound: Element }).__retainedRound = element; });
+    await details.evaluate(element => { (window as unknown as { __retainedDetails: Element }).__retainedDetails = element; });
+    const scroller = page.getByTestId('transcript');
+    await scroller.hover();
+    const delta = await scroller.evaluate(node => {
+        const message = node.querySelector('[data-testid="assistant-message"]')!;
+        return message.getBoundingClientRect().top - node.getBoundingClientRect().top + 240;
+    });
+    await page.mouse.wheel(0, delta);
+    await expect(page.getByRole('button', { name: 'jump to latest' })).toBeVisible();
+    const message = round.getByTestId('assistant-message');
+    const offset = () => message.evaluate(element => element.getBoundingClientRect().top
+        - element.closest('[data-testid="transcript"]')!.getBoundingClientRect().top);
+    await expect.poll(offset).toBeLessThan(-100);
+    const before = await offset();
+    for (let removed = 1; removed <= 2; removed++) {
+        await emit(page, 'persisted', {}, last);
+        await expect(scroller).toContainText(`${removed} earlier item${removed > 1 ? 's' : ''} dropped`);
+        expect(await round.evaluate(element => element === (window as unknown as { __retainedRound: Element }).__retainedRound)).toBe(true);
+        expect(await details.evaluate(element => element === (window as unknown as { __retainedDetails: Element }).__retainedDetails)).toBe(true);
+        await expect(details).toHaveAttribute('open', '');
+        await expect.poll(async () => Math.abs(await offset() - before)).toBeLessThanOrEqual(2);
+    }
+    await expect(round.getByTestId('outbox-item')).toHaveCount(0);
+    await expect(round.getByTestId('admitted-placeholder')).toHaveCount(0);
+});

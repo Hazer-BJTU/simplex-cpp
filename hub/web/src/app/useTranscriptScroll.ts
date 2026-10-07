@@ -22,8 +22,11 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
         let anchor: { element: Element; offset: number } | undefined;
 
         function offset(element: Element): number {
-            const transform = getComputedStyle(element).transform;
-            const translation = transform === 'none' ? 0 : new DOMMatrixReadOnly(transform).m42;
+            let translation = 0;
+            for (let ancestor: Element | null = element; ancestor && ancestor !== node; ancestor = ancestor.parentElement) {
+                const transform = getComputedStyle(ancestor).transform;
+                if (transform !== 'none') translation += new DOMMatrixReadOnly(transform).m42;
+            }
             // Entrance transforms do not change layout and must not be treated
             // as history growth that needs compensating scroll writes.
             return element.getBoundingClientRect().top - node!.getBoundingClientRect().top - translation;
@@ -38,7 +41,17 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             for (const element of content!.querySelectorAll('[data-testid="round"], [data-testid="history-turn"]')) {
                 const bounds = element.getBoundingClientRect();
                 if (bounds.bottom > top) {
-                    anchor = { element, offset: offset(element) };
+                    // An outbox can be trimmed above the message currently
+                    // being read within this same round. Prefer the visible
+                    // message/tool crossing the viewport edge over its parent.
+                    let visible = element;
+                    for (const child of element.querySelectorAll(
+                        '[data-testid="assistant-message"], [data-testid="tool-card"], [data-testid="outbox-item"]',
+                    )) {
+                        const childBounds = child.getBoundingClientRect();
+                        if (childBounds.top <= top && childBounds.bottom > top && visible.contains(child)) visible = child;
+                    }
+                    anchor = { element: visible, offset: offset(visible) };
                     break;
                 }
             }

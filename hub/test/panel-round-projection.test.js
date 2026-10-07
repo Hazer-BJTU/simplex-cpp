@@ -16,7 +16,9 @@ it('matches the reference through append, late approval, request updates, replay
     let items = [], prompts = new Map(), requests = new Map();
     function verify() {
         const rounds = project(items, prompts, requests);
-        assert.deepEqual(rounds, buildRounds(items, prompts, requests));
+        // Projection owns DOM identity; all other data matches the reference.
+        const withoutKeys = values => values.map(({ key, ...round }) => round);
+        assert.deepEqual(withoutKeys(rounds), withoutKeys(buildRounds(items, prompts, requests)));
         return rounds;
     }
     // Cross-panel admission precedes our local outbox's execution.
@@ -102,4 +104,49 @@ it('older uncorrelated executions have distinct presentation keys', () => {
     const after = project(items.slice(2), new Map(), new Map());
     assert.equal(after[0].key, before[1].key);
     assert.equal(after[0].calls, before[1].calls);
+});
+
+for (const operation of ['message', 'continue', 'compact']) {
+    it(`preserves ${operation} identity when its outbox/admission and part of its response are trimmed`, () => {
+        const project = createRoundProjection();
+        const outbox = { kind: 'outbox', id: 'local', requestId: 'request', operation,
+            parts: [{ type: 'text', raw: 'input' }], state: 'admitted', admittedWorker: 'worker', admittedSequence: 1 };
+        let items = [outbox, event(1, 'input_admitted', 'request', { operation }),
+            event(2, 'model_response', 'request', { content: [{ type: 'text', raw: 'Earlier response' }] }),
+            event(3, 'tool_calls', 'request', [{ id: 'call', name: 'tool', arguments: {} }]),
+            event(4, 'model_response', 'request', { content: [{ type: 'text', raw: 'Surviving response' }] })];
+        const original = project(items, new Map(), new Map())[0];
+        for (let trim = 0; trim < 3; trim++) {
+            items = items.slice(1);
+            const current = project(items, new Map(), new Map())[0];
+            assert.equal(current.key, original.key);
+            assert.equal(current.calls, original.calls);
+            assert.deepEqual(current.sourceKeys, buildRounds(items, new Map())[0].sourceKeys);
+        }
+        // A retained assistant response alone still preserves the round key.
+        items = items.slice(1);
+        assert.equal(project(items, new Map(), new Map())[0].key, original.key);
+    });
+}
+
+it('distinguishes reused wire IDs through partial retention and after all old evidence is replaced', () => {
+    const project = createRoundProjection();
+    const first = [event(1, 'input_admitted', 'same', { operation: 'message' }),
+        event(2, 'model_response', 'same', { content: [{ type: 'text', raw: 'First' }] }),
+        event(3, 'run_finished', 'same', { status: 'completed' })];
+    const second = [event(4, 'input_admitted', 'same', { operation: 'message' }),
+        event(5, 'model_response', 'same', { content: [{ type: 'text', raw: 'Second' }] })];
+    const before = project([...first, ...second], new Map(), new Map());
+    assert.equal(before.length, 2);
+    assert.notEqual(before[0].key, before[1].key);
+    const after = project(second.slice(1), new Map(), new Map());
+    assert.equal(after[0].key, before[1].key);
+    // Shared wire IDs with no retained source do not grant DOM continuity.
+    const replacement = project([event(6, 'model_response', 'same', {
+        content: [{ type: 'text', raw: 'New fragment' }],
+    })], new Map(), new Map());
+    assert.notEqual(replacement[0].key, after[0].key);
+    const newEpoch = [{ ...second[1], epoch: 'replacement-epoch' }];
+    assert.notEqual(project(newEpoch, new Map(), new Map())[0].key, replacement[0].key);
+    assert.deepEqual(project([], new Map(), new Map()), []);
 });
