@@ -97,6 +97,15 @@ PANEL_BENCHMARK=1 PANEL_VIEWPORT_WIDTH=360 \
   npx playwright test panel-performance.spec.ts --output=performance-results/narrow
 ```
 
+To repeat the baseline comparison, create a detached worktree at `abc05ee`,
+copy the current `panel-performance.spec.ts` and `stub-hub.mjs` into its
+`hub/test/browser/` directory, and install dependencies there. Run the same
+commands in each worktree with separate output paths; stop each preview before
+starting the other. The production application stays at the compared revision,
+while both use exactly the same workload. The copied harness intentionally makes
+the baseline report dirty. Keep reports outside a disposable worktree and remove
+that worktree with `git worktree remove` after reviewing the artifacts.
+
 The opt-in **Panel performance report** workflow runs all four fixtures, three
 samples each. Its artifacts retain metrics, Chrome CPU profiles, Playwright
 traces, recordings, and the matching production bundle/source maps for 14 days.
@@ -119,7 +128,7 @@ are a repeatable paint approximation, not a browser INP score.
 ### Reference comparison
 
 On 2026-10-07, three samples of the same fixture were compared at baseline
-`abc05ee` and optimized revision `06fc9c4`. The baseline differs only in the copied
+`abc05ee` and optimized revision `a48ee5e`. The baseline differs only in the copied
 benchmark/stub harness needed to run the identical newer workload. Environment:
 Linux x86_64, Intel Core Ultra 9 275HX, Node 24.15.0, Chromium 153.0.8010.12,
 1280 × 720, no CPU throttling. Each sample starts with 320 turns / 1,920 events,
@@ -129,14 +138,14 @@ Initial page hydration is outside the measured interval.
 
 | Measure (range across three samples) | Baseline | Optimized |
 | --- | ---: | ---: |
-| Total round-projection CPU time | 7,425.6–7,970.6 ms | 426.1–447.3 ms |
+| Total round-projection CPU time | 7,425.6–7,970.6 ms | 453.1–533.5 ms |
 | Markdown renders | 20,729–20,784 | 200 |
-| Long tasks ≥50 ms | 198–215 | 0–2 |
-| p95 animation-frame interval | 183.3–199.9 ms | 50.0 ms |
-| p95 local pane handler-to-paint | 31.1–32.7 ms | 27.1–31.4 ms |
-| p95 input handler-to-paint | 29.5–36.8 ms | 29.0–30.3 ms |
+| Long tasks ≥50 ms | 198–215 | 0–1 |
+| p95 animation-frame interval | 183.3–199.9 ms | 49.9–50.0 ms |
+| p95 local pane handler-to-paint | 31.1–32.7 ms | 26.3–31.2 ms |
+| p95 input handler-to-paint | 29.5–36.8 ms | 28.7–34.2 ms |
 | End-of-sample DOM nodes | 5,817 | 5,770 |
-| End-of-sample JS heap (decimal MB) | 64.0–76.6 | 44.7–53.5 |
+| End-of-sample JS heap (decimal MB) | 64.0–76.6 | 37.3–53.5 |
 
 The 200 optimized Markdown renders correspond to the 200 new response documents;
 unchanged history is not reparsed. Local timing already met the reference target
