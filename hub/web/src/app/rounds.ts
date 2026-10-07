@@ -58,6 +58,7 @@ export type CallStatus =
     | 'failed'
     /** The loop did not dispatch it; not an execution and not a failure. */
     | 'skipped'
+    | 'cancelled'
     /** The run finished without a result for this call. */
     | 'unknown';
 
@@ -105,6 +106,7 @@ export interface Problem {
 /** Settled run failure, with optional classification from newer workers. */
 export interface RunFailure {
     readonly stage: 'model_request' | 'other';
+    readonly operation?: 'compact' | 'auto_compact';
     readonly canContinue: boolean;
     readonly error: string;
 }
@@ -265,6 +267,7 @@ function statusOf(
 ): CallStatus {
     if (prompt && prompt.settled_at === null) return 'pending';
     if (result) {
+        if (result.cancelled) return 'cancelled';
         if (result.skipped) return 'skipped';
         return result.error ? 'failed' : 'ok';
     }
@@ -637,6 +640,12 @@ export function buildRounds(
             const result = parseCompactResult(envelope.data);
             if (result) {
                 const run = groups.execution(envelope);
+                if (result.origin === 'automatic') {
+                    // The paired host tool card owns progress; this event only
+                    // invalidates history and must not turn the run into compact.
+                    track(run, envelope);
+                    continue;
+                }
                 run.compacting = true;
                 run.compactResult = result;
                 track(run, envelope);
@@ -664,6 +673,8 @@ export function buildRounds(
                 const failure = obj(summary.failure) ?? {};
                 run.failure = {
                     stage: failure.stage === 'model_request' ? 'model_request' : 'other',
+                    ...(failure.operation === 'compact' || failure.operation === 'auto_compact'
+                        ? { operation: failure.operation } : {}),
                     canContinue: failure.can_continue === true,
                     error: str(summary.error),
                 };

@@ -235,3 +235,28 @@ BOOST_AUTO_TEST_CASE(optional_remote_tool_endpoint_and_deadline) {
         BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
     }
 }
+
+BOOST_AUTO_TEST_CASE(auto_compact_configuration_is_opt_in_and_requires_durability) {
+    const auto defaults = load::parse_configuration(configuration(), "/tmp");
+    BOOST_TEST(defaults.auto_compact_threshold == 0);
+    BOOST_TEST(defaults.max_auto_compactions == 5);
+    BOOST_TEST(!defaults.auto_compact_continue_prompt.empty());
+    auto value = configuration();
+    value["worker"]["auto_compact_threshold"] = 100;
+    auto enabled = load::parse_configuration(value, "/tmp");
+    BOOST_TEST(enabled.auto_compact_threshold == 100);
+    BOOST_TEST(enabled.auto_compact_prompt.find("user's actual goal") != std::string::npos);
+    BOOST_TEST(enabled.auto_compact_prompt.find("retrieval paths") != std::string::npos);
+    value["persistence"]["enabled"] = false;
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    for (const auto& bad : Json::array({-1, true, "100", 1.5, 2147483648ULL})) {
+        auto invalid = configuration();
+        invalid["worker"]["auto_compact_threshold"] = bad;
+        BOOST_CHECK_THROW(load::parse_configuration(invalid, "/tmp"), std::invalid_argument);
+    }
+    for (const auto& bad : Json::array({0, -1, true, "5", 1.5, 2147483648ULL})) {
+        auto invalid = configuration();
+        invalid["worker"]["max_auto_compactions"] = bad;
+        BOOST_CHECK_THROW(load::parse_configuration(invalid, "/tmp"), std::invalid_argument);
+    }
+}

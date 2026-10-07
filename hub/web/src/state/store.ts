@@ -949,6 +949,11 @@ export function createPanelStore() {
                     && page.step === view.history[page.start]?.steps.length) {
                     const previous = view.history[page.start];
                     if (!previous || page.turns.length === 0) return view;
+                    const incoming = page.turns[0]!;
+                    if (previous.internal_input !== incoming.internal_input
+                        || previous.source?.worker_id !== incoming.source?.worker_id
+                        || previous.source?.request_id !== incoming.source?.request_id
+                        || previous.source?.run_id !== incoming.source?.run_id) return view;
                     history = [...view.history.slice(0, -1), {
                         ...previous,
                         steps: [...previous.steps, ...page.turns[0]!.steps],

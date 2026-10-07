@@ -76,7 +76,7 @@ set(SIMPLEX_TOOLSET_PLUGIN_ABI_VERSION 4)
 #     (loop/events.hpp), both of which contain Content. The same layout change
 #     therefore reaches every hook implementation, not only the ones that name
 #     Content directly.
-set(SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION 2)
+set(SIMPLEX_LOOP_HOOK_PLUGIN_ABI_VERSION 3)
 
 # ---- Toolchain identity for the plugin admission fingerprint -----------------
 # Rendered into version.hpp and hashed by extensions/plugin_magic.hpp

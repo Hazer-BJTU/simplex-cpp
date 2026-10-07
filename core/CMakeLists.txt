@@ -1,9 +1,11 @@
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/operations/compact.yaml"
-    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/operations/compact.yaml"
-    COPYONLY)
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/operations/compact.yaml"
-    DESTINATION bin/prompts/operations)
+foreach(operation_prompt IN ITEMS compact auto_compact auto_compact_continue)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/prompts/operations/${operation_prompt}.yaml"
+        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/operations/${operation_prompt}.yaml"
+        COPYONLY)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/operations/${operation_prompt}.yaml"
+        DESTINATION bin/prompts/operations)
+endforeach()
 
 foreach(role_prompt IN ITEMS coding_agent general_agent)
     configure_file(

@@ -136,6 +136,7 @@ export interface ResultView {
     readonly error: { readonly stage: string; readonly message: string } | null;
     /** `extras.loop_skipped`: not executed, which is not the same as failed. */
     readonly skipped: boolean;
+    readonly cancelled?: boolean;
 }
 
 /** Read one call object. */
@@ -180,6 +181,7 @@ export function resultView(value: unknown): ResultView {
             ? { stage: str(error.stage) || 'unknown', message: str(error.message) }
             : null,
         skipped: extras.loop_skipped === true,
+        ...(extras.status === 'cancelled' ? { cancelled: true } : {}),
     };
 }
 

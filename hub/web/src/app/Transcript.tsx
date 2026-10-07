@@ -33,6 +33,7 @@ import type {
 } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { statsOf, type NoteItem, type OutboxItem, type TranscriptItem } from '../state/view.ts';
+import { uncoveredInternalHistory } from './history-rounds.ts';
 import { parseCompactResult } from '../state/compact.ts';
 import { useClient } from './ClientContext.tsx';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
@@ -178,8 +179,11 @@ function RunFailureNotice({ failure, actionable, compacting }: {
     compacting: boolean;
 }) {
     const model = failure.stage === 'model_request';
+    const automatic = failure.operation === 'auto_compact';
     let guidance = 'Inspect the error and worker state before trying again.';
-    if (compacting) {
+    if (automatic) {
+        guidance = 'Automatic context compaction stopped. Inspect the error and configured limits before continuing the task.';
+    } else if (compacting) {
         guidance = 'Context compaction did not finish. Inspect the error and refresh the worker state before trying Compact context again.';
     } else if (model && actionable) {
         guidance = 'The worker kept the conversation state. Use Continue run in Command mode to try again.';
@@ -191,7 +195,7 @@ function RunFailureNotice({ failure, actionable, compacting }: {
         <div data-testid="run-failure" role="alert"
             className="rounded-lg border border-danger-line bg-danger-soft px-3 py-2 text-sm
                 text-danger">
-            <p className="font-medium">{compacting ? 'Context compaction failed' : model ? 'Model request failed' : 'Run failed'}</p>
+            <p className="font-medium">{automatic ? 'Automatic context compaction stopped' : compacting ? 'Context compaction failed' : model ? 'Model request failed' : 'Run failed'}</p>
             <p className="mt-1">{guidance}</p>
             {failure.error && (
                 <details className="mt-2">
@@ -250,6 +254,7 @@ function AdmittedPlaceholder() {
 
 /** Recover the user's text for a detailed run replayed from hub events. */
 function RestoredUserMessage({ turn }: { turn: HistoryTurn }) {
+    if (turn.internal_input) return null;
     const text = turn.user.map(contentText).filter(Boolean).join('\n\n');
     return (
         <article data-testid="restored-user-message" className="ml-auto w-fit max-w-full
@@ -274,15 +279,15 @@ function HistoryRound({ turn, open, onToggle }: {
                 aria-expanded={open}
                 className="w-full min-w-0 break-words [overflow-wrap:anywhere] text-left
                     text-xs text-ink-muted hover:text-ink">
-                turn {turn.index + 1} · {user.slice(0, 100) || '(empty input)'}
+                turn {turn.index + 1} · {user.slice(0, 100) || (turn.internal_input ? 'continued from memory' : '(empty input)')}
                 {user.length > 100 ? '…' : ''}
             </button>
             {open && <div className="min-w-0 space-y-3">
-                <div className="ml-auto w-fit max-w-full rounded-lg bg-accent px-3 py-2 text-accent-ink">
+                {!turn.internal_input && <div className="ml-auto w-fit max-w-full rounded-lg bg-accent px-3 py-2 text-accent-ink">
                     <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
                         {user || '(empty input)'}
                     </p>
-                </div>
+                </div>}
                 {turn.steps.map((step) => {
                     const answer = step.content.map(contentText).filter(Boolean).join('\n\n');
                     return (
@@ -593,11 +598,15 @@ export function Transcript() {
                 && typeof item.envelope.sequence === 'number'
                 && item.envelope.sequence > compactSequence
                 && item.envelope.sequence <= baseline));
-        const count = Math.min(detailed.length, history.length);
-        const older = history.slice(0, history.length - count);
+        const ordinary = history.filter((turn) => !turn.internal_input);
+        const internal = history.filter((turn) => turn.internal_input);
+        const count = Math.min(detailed.length, ordinary.length);
+        const older = ordinary.slice(0, ordinary.length - count);
+        older.push(...uncoveredInternalHistory(internal, runs, baseline));
+        older.sort((a, b) => a.index - b.index);
         if (count > 0) {
             detailed.slice(-count).forEach((round, index) => {
-                mapped.set(round.key, history[older.length + index]!);
+                mapped.set(round.key, ordinary[ordinary.length - count + index]!);
             });
         }
         return { olderHistory: older, historyForRun: mapped };

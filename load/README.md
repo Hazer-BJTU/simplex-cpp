@@ -610,3 +610,19 @@ The plan tool and skill are registered; construction opens no connection. The hu
 accepts authenticated one-shot requests on its dedicated listener and rejects
 unknown routes with `not_implemented`; plan/read and plan/replace are implemented. The envelope and lifecycle contract
 are specified in [the worker protocol](../docs/core/worker-protocol.md#remote-tool-requests).
+
+### Automatic compaction startup settings
+
+| Worker field | Default | Meaning |
+| --- | --- | --- |
+| `auto_compact_threshold` | `0` | Nonnegative integer; zero disables, positive enables latest-exchange token and exchange-cap triggers. |
+| `max_auto_compactions` | `5` | Positive finite attempt budget for one admitted request; unrelated to archive retention. |
+| `auto_compact_prompt_file` | `prompts/operations/auto_compact.yaml` | Dedicated automatic handoff, loaded when enabled or explicitly configured. |
+| `auto_compact_continue_prompt_file` | `prompts/operations/auto_compact_continue.yaml` | Private resumption, also needed for explicit memory-only continuation. |
+
+Numeric fields accept integers up to 2147483647, not booleans, fractions, strings,
+negative values or overflow. Automation requires `persistence.enabled`. Prompt
+paths follow the installation-relative role/manual-prompt rules. The continuation
+prompt is loaded at startup even when automation is disabled. Startup settings
+never change mid-request through payload options. Hub-generated YAML defaults to
+disabled; reused YAML and clean forks preserve operator settings and overrides.

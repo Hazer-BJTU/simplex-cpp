@@ -339,6 +339,8 @@ LoopStatus progress_status(RunStatus status) {
             return LoopStatus::Cancelled;
         case RunStatus::ExchangeLimit:
             return LoopStatus::ExchangeLimit;
+        case RunStatus::AutoCompactRequired:
+            return LoopStatus::AutoCompactRequired;
         case RunStatus::Failed:
             return LoopStatus::Failed;
     }
@@ -444,7 +446,7 @@ boost::asio::awaitable<RunResult> run(
 
         // Each exchange is followed by a complete tool batch, if requested.
         result.status = RunStatus::ExchangeLimit;
-        for (std::size_t step = 0; step < options.max_exchanges; ++step) {
+        for (std::size_t step = 0; !options.max_exchanges || step < *options.max_exchanges; ++step) {
             if (stop.stop_requested()) {
                 result.status = RunStatus::Cancelled;
                 break;
@@ -496,6 +498,11 @@ boost::asio::awaitable<RunResult> run(
             integrate_response(model, state, response);
             state.loop->phase = LoopPhase::Ready;
             state.loop->completed_exchanges = ++result.completed_exchanges;
+            result.last_exchange_tokens.reset();
+            if (response.cost && response.cost->generated <=
+                std::numeric_limits<std::uint64_t>::max() - response.cost->prompt) {
+                result.last_exchange_tokens = response.cost->prompt + response.cost->generated;
+            }
             const bool has_calls = response.invokes && !response.invokes->empty();
             std::string hook_error;
             try {
@@ -545,6 +552,18 @@ boost::asio::awaitable<RunResult> run(
             if (stop.stop_requested()) {
                 result.status = RunStatus::Cancelled;
                 break;
+            }
+            if (options.auto_compact_threshold != 0) {
+                const bool tokens = result.last_exchange_tokens
+                    && *result.last_exchange_tokens > options.auto_compact_threshold;
+                const bool exchanges = options.max_exchanges
+                    && result.completed_exchanges >= *options.max_exchanges;
+                if (tokens || exchanges) {
+                    result.status = RunStatus::AutoCompactRequired;
+                    result.auto_compact_reason = tokens
+                        ? AutoCompactReason::TokenThreshold : AutoCompactReason::ExchangeLimit;
+                    break;
+                }
             }
         }
     } catch (const RecoveryRequired&) {

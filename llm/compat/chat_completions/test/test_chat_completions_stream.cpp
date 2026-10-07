@@ -680,3 +680,19 @@ BOOST_AUTO_TEST_CASE(deepseek_live_reasoning_and_fragmented_tool_call_shape) {
     BOOST_CHECK_EQUAL((*response.extras)["usage"]["completion_tokens_details"]
                                     ["reasoning_tokens"], 25);
 }
+
+BOOST_AUTO_TEST_CASE(partial_usage_preserves_diagnostics_without_inventing_a_total) {
+    for (const auto& usage : nlohmann::json::array({
+        {{"prompt_tokens", 100}}, {{"completion_tokens", 2}},
+        {{"prompt_tokens_details", {{"cached_tokens", 10}}}},
+        {{"prompt_tokens", 0}, {"completion_tokens", 0}}})) {
+        asio::io_context io;
+        ChatCompletionsReader reader(io.get_executor());
+        const auto wire = sse({{"choices", nlohmann::json::array()}, {"usage", usage}}) + done();
+        read_all(io, reader, wire);
+        BOOST_TEST(reader.response().cost.has_value() ==
+            (usage.contains("prompt_tokens") && usage.contains("completion_tokens")));
+        BOOST_REQUIRE(reader.response().extras);
+        BOOST_TEST(reader.response().extras->at("usage") == usage);
+    }
+}

@@ -33,6 +33,8 @@ export interface NormalizedSpec {
     modalityAssistProvider: string | null;
     threads: number;
     maxExchanges: number;
+    autoCompactThreshold: number;
+    maxAutoCompactions: number;
     eventCapacity: number;
     systemPromptFile: string;
     workspace: string;
@@ -83,6 +85,14 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
         }
         return resolved as number;
     };
+    const autoCompactThreshold = raw.autoCompactThreshold ?? config.worker.autoCompactThreshold;
+    const maxAutoCompactions = raw.maxAutoCompactions ?? config.worker.maxAutoCompactions;
+    if (!Number.isSafeInteger(autoCompactThreshold) || (autoCompactThreshold as number) < 0
+        || (autoCompactThreshold as number) > 2147483647
+        || !Number.isSafeInteger(maxAutoCompactions) || (maxAutoCompactions as number) <= 0
+        || (maxAutoCompactions as number) > 2147483647) {
+        throw new ConfigError('invalid auto compact threshold or attempt budget');
+    }
     const restore = raw.restore ?? 'if_present';
     if (!(RESTORE_POLICIES as readonly unknown[]).includes(restore)) {
         throw new ConfigError(`spec.restore must be one of ${RESTORE_POLICIES.join(', ')}`);
@@ -100,6 +110,8 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
         model: typeof raw.model === 'string' ? raw.model : '',
         modalityAssistProvider: assist,
         threads: positive(raw.threads, config.worker.threads, 'threads'),
+        autoCompactThreshold: autoCompactThreshold as number,
+        maxAutoCompactions: maxAutoCompactions as number,
         maxExchanges: positive(raw.maxExchanges, config.worker.maxExchanges, 'maxExchanges'),
         eventCapacity: positive(raw.eventCapacity, config.worker.eventCapacity, 'eventCapacity'),
         // Relative to the worker's installation directory, and stored exactly

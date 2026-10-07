@@ -4,6 +4,9 @@
 
 #include <boost/asio/any_io_executor.hpp>
 
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -26,7 +29,8 @@ enum class RunStatus {
     Completed, // A final model response was committed without tool calls.
     Cancelled, // A stop request was observed and required results were committed.
     ExchangeLimit, // The exchange budget ended after settling the last tool batch.
-    Failed     // Inspect error and state.loop before deciding how to continue.
+    Failed,    // Inspect error and state.loop before deciding how to continue.
+    AutoCompactRequired // Settled boundary; the host may compact before continuing.
 };
 
 /** Where a failed invocation originated; not a claim that retry will succeed. */
@@ -53,6 +57,9 @@ private:
     model_io::LoopPhase phase_;
 };
 
+/** Typed boundary reason; never inferred from a diagnostic string. */
+enum class AutoCompactReason { None, TokenThreshold, ExchangeLimit };
+
 /**
  * Summary returned to the caller after a run, including edit-hook failures.
  *
@@ -71,15 +78,22 @@ struct RunResult {
     /// Diagnostic text on failure; tool-level failures remain in tool results.
     std::string error;
 
+    /// Latest committed exchange usage, absent when unavailable or overflowing.
+    std::optional<std::uint64_t> last_exchange_tokens;
+    AutoCompactReason auto_compact_reason = AutoCompactReason::None;
+
     /// ModelRequest only when converse() raised before committing its response.
     RunFailureStage failure_stage = RunFailureStage::Other;
 };
 
 /** Limits one invocation; it does not change model generation configuration. */
 struct Options {
-    /// Must be positive. The last exchange's tool batch is settled even when
-    /// that exchange consumes the remaining budget.
-    std::size_t max_exchanges = 32;
+    /// A present cap must be positive; nullopt is reserved for uncapped hosts.
+    /// The last exchange's tool batch always settles before a boundary return.
+    std::optional<std::size_t> max_exchanges = 32;
+    /// Zero disables automatic compaction, including exchange-cap conversion.
+    /// Positive values compare strictly against the latest prompt + generated.
+    std::uint64_t auto_compact_threshold = 0;
 };
 
 } // namespace loop

@@ -397,6 +397,8 @@ jobs:
         run: |
           test -s stage/bin/prompts/coding_agent.yaml
           test -s stage/bin/prompts/operations/compact.yaml
+          test -s stage/bin/prompts/operations/auto_compact.yaml
+          test -s stage/bin/prompts/operations/auto_compact_continue.yaml
 
       - name: Test
         run: ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
@@ -705,6 +707,8 @@ jobs:
           set -euo pipefail
           test -s stage/bin/prompts/coding_agent.yaml
           test -s stage/bin/prompts/operations/compact.yaml
+          test -s stage/bin/prompts/operations/auto_compact.yaml
+          test -s stage/bin/prompts/operations/auto_compact_continue.yaml
           cp build/bin/test_load_system_prompt stage/bin/
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_load_system_prompt --run_test=default_prompt_is_loaded_beside_the_executable

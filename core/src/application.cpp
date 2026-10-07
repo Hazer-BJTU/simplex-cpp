@@ -195,6 +195,7 @@ std::string run_status(loop::RunStatus status) {
         case loop::RunStatus::Completed: return "completed";
         case loop::RunStatus::Cancelled: return "cancelled";
         case loop::RunStatus::ExchangeLimit: return "exchange_limit";
+        case loop::RunStatus::AutoCompactRequired: return "auto_compact_required";
         case loop::RunStatus::Failed: return "failed";
     }
     throw std::invalid_argument("invalid run status");
@@ -227,6 +228,13 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
           rejected_inputs(strand, config.queues.signal_capacity),
           rejection_done(strand, 1), sender_done(strand, 1), client_done(strand, 1) {
         validate_session_id(session_id);
+        if (config.max_auto_compactions == 0 || config.max_exchanges == 0) {
+            throw std::invalid_argument("worker execution budgets must be positive");
+        }
+        if (config.auto_compact_threshold && (!config.persistence || config.memory.empty()
+            || config.auto_compact_prompt.empty() || config.auto_compact_continue_prompt.empty())) {
+            throw std::invalid_argument("automatic compaction requires persistence, memory and operation prompts");
+        }
         if (config.event_capacity == 0) throw std::invalid_argument("event_capacity must be positive");
     }
 
@@ -265,6 +273,13 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     bool active = false;
     bool storage_failed = false;
     bool run_saved = false;
+    // All counters belong to one admitted request, not an individual loop call.
+    std::size_t task_exchanges = 0;
+    std::size_t compact_exchanges = 0;
+    std::size_t compact_attempts = 0;
+    std::size_t compact_successes = 0;
+    std::string failure_operation = "task";
+    enum class CompactMode { Manual, Automatic };
     std::exception_ptr failure;
     std::uint64_t sequence = 0;
     std::uint64_t history_revision = 0;
@@ -339,8 +354,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     Json status() const {
         Json value = {{"active", active}, {"stopping", stopping},
             {"storage_failed", storage_failed}, {"rejected_payloads", client.rejected_payloads()},
-            {"capabilities", Json::array({"session-history", "context-compact"})}};
+            {"capabilities", Json::array({"session-history", "context-compact", "auto-compact"})}};
         value["memory_retention"] = {{"max_archives", config.memory_retention.max_archives}};
+        value["auto_compact"] = compact_counters();
         if (state.loop) value["loop"] = *state.loop;
         return value;
     }
@@ -527,16 +543,20 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
 
     /** Install persistence, event forwarding, and strand-routed controls. */
     void install_observers() {
-        subscriptions.emplace_back(events.subscribe<loop::RunStarted>([this](const auto&) {
-            emit("run_started");
-        }));
         subscriptions.emplace_back(events.subscribe<loop::InputCommitted>([this](const auto&) {
             ++history_revision;
-            emit("input_committed");
+            const auto& message = state.turns.back().user_input;
+            if (!message.extras || message.extras->value("simplex.internal_input", "")
+                != "auto_compact_continue") {
+                emit("input_committed");
+            }
         }));
         subscriptions.emplace_back(events.subscribe<loop::ModelCommitted>([this](const auto& event) {
             ++history_revision;
-            emit("model_response", event.state.turns.back().agent_loop_step.back().model_response);
+            const auto& step = event.state.turns.back().agent_loop_step.back();
+            Json projected = step.model_response;
+            projected["commit_sequence"] = std::to_string(step.commit_sequence);
+            emit("model_response", std::move(projected));
         }));
         subscriptions.emplace_back(events.subscribe<loop::BeforeToolBatch>([this](const auto& event) {
             emit("tool_calls", event.calls);
@@ -682,8 +702,14 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * other required snapshot failures. Cancellation during the synchronous
      * commit does not roll back an already published snapshot.
      */
-    asio::awaitable<loop::RunResult> compact() {
+    asio::awaitable<loop::RunResult> compact(
+        CompactMode mode, const std::string& call_id = {}) {
         const auto stop = run_stop.get_token();
+        if (stop.stop_requested()) {
+            loop::RunResult cancelled;
+            cancelled.status = loop::RunStatus::Cancelled;
+            co_return cancelled;
+        }
         const auto memory_directory = std::filesystem::absolute(
             config.memory).lexically_normal();
         const auto archive_directory = reserve_archive(memory_directory, run_id);
@@ -706,13 +732,19 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         instruction.type = model_io::MessageItemType::UserInput;
         instruction.role = "user";
         model_io::Content content;
-        content.raw = config.compact_prompt;
+        content.raw = mode == CompactMode::Manual
+            ? config.compact_prompt : config.auto_compact_prompt;
         instruction.content.push_back(std::move(content));
-        emit("run_started");
         auto result = co_await loop::run(
             *driver_model, no_tools, compact_events, strand, draft, true,
-            std::move(instruction), {1}, stop);
+            std::move(instruction), {std::nullopt, 0}, stop);
+        add_exchanges(compact_exchanges, result.completed_exchanges);
         if (result.status != loop::RunStatus::Completed) {
+            if (result.status != loop::RunStatus::Cancelled
+                && result.status != loop::RunStatus::Failed) {
+                result.status = loop::RunStatus::Failed;
+                result.error = "compact returned an unexpected loop boundary";
+            }
             co_return result;
         }
         // A model may complete concurrently with cancellation. Until the
@@ -790,6 +822,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         Json completed = {{"summary", summary}, {"memory_file", archive_file.string()},
             {"removed_turns", removed_turns}, {"revision", history_revision + 1},
             {"durable", true}};
+        if (mode == CompactMode::Automatic) {
+            completed["origin"] = "automatic";
+            completed["cycle"] = compact_attempts;
+            completed["call_id"] = call_id;
+        }
         if (stop.stop_requested()) {
             result.status = loop::RunStatus::Cancelled;
             co_return result;
@@ -830,6 +867,147 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         co_return result;
     }
 
+    /** Checked counters cannot silently wrap the final wire exchange total. */
+    static void add_exchanges(std::size_t& total, std::size_t count) {
+        if (count > std::numeric_limits<std::size_t>::max() - total) {
+            throw std::overflow_error("logical run exchange counter exhausted");
+        }
+        total += count;
+    }
+
+    Json compact_counters() const {
+        return {{"attempts", compact_attempts}, {"succeeded", compact_successes},
+            {"limit", config.max_auto_compactions},
+            {"threshold", config.auto_compact_threshold}};
+    }
+
+    /** Only settled host memory allows continuing an otherwise empty session. */
+    bool can_continue_memory() const {
+        if (!state.turns.empty() || !state.loop
+            || state.loop->phase != model_io::LoopPhase::Ready
+            || !state.loop->pending_results.empty()
+            || config.auto_compact_continue_prompt.empty()) return false;
+        for (const auto& section : state.system_prompt) {
+            if (section.name == "memory.runtime"
+                && section.text.find_first_not_of(" \t\r\n") != std::string::npos) return true;
+        }
+        return false;
+    }
+
+    /** Host-only provenance is stored on the message, never on user content. */
+    model_io::MessageItem continuation() const {
+        model_io::MessageItem message;
+        message.type = model_io::MessageItemType::UserInput;
+        message.role = "user";
+        model_io::Content content;
+        content.raw = config.auto_compact_continue_prompt;
+        message.content.push_back(std::move(content));
+        message.extras = Json{{"simplex.internal_input", "auto_compact_continue"},
+            {"simplex.source", {{"worker_id", worker_id},
+                {"request_id", request_id}, {"run_id", run_id}}}};
+        return message;
+    }
+
+    /** Record a host failure/cancellation without replaying loop finish hooks. */
+    void finish_controller(const loop::RunResult& result) {
+        if (state.loop && state.loop->phase == model_io::LoopPhase::Ready) {
+            state.loop->status = result.status == loop::RunStatus::Cancelled
+                ? model_io::LoopStatus::Cancelled : model_io::LoopStatus::Failed;
+            state.loop->error = result.error;
+            ++history_revision;
+            run_saved = false;
+        }
+    }
+
+    /**
+     * One logical request owns every segment, summary and private continuation.
+     * Cancellation is never reset. Guards run only after tools have settled;
+     * a rejected cycle creates neither an archive nor a synthetic pending call.
+     */
+    asio::awaitable<loop::RunResult> run_with_auto_compact(
+        bool has_message, model_io::MessageItem message) {
+        if (!has_message && can_continue_memory()) {
+            has_message = true;
+            message = continuation();
+        }
+        for (;;) {
+            failure_operation = "task";
+            run_saved = false;
+            auto result = co_await loop::run(*driver_model, registry, events, strand,
+                state, has_message, std::move(message),
+                {config.max_exchanges, config.auto_compact_threshold}, run_stop.get_token());
+            add_exchanges(task_exchanges, result.completed_exchanges);
+            if (result.status != loop::RunStatus::AutoCompactRequired) co_return result;
+            if (run_stop.stop_requested() || storage_failed) {
+                result.status = loop::RunStatus::Cancelled;
+                finish_controller(result);
+                co_return result;
+            }
+            Json trigger = {{"reason", result.auto_compact_reason == loop::AutoCompactReason::TokenThreshold
+                    ? "token_threshold" : "exchange_limit"},
+                {"threshold", config.auto_compact_threshold}, {"max_exchanges", config.max_exchanges},
+                {"segment_exchanges", result.completed_exchanges},
+                {"last_exchange_tokens", result.last_exchange_tokens
+                    ? Json(*result.last_exchange_tokens) : Json(nullptr)},
+                {"succeeded", compact_successes}, {"limit", config.max_auto_compactions}};
+            failure_operation = "auto_compact";
+            if ((compact_successes && result.completed_exchanges == 1)
+                || compact_attempts >= config.max_auto_compactions) {
+                result.status = loop::RunStatus::Failed;
+                result.error = compact_successes && result.completed_exchanges == 1
+                    ? "auto_compact_too_frequent: requested again after one exchange; review limits/context size: "
+                    : "auto_compact_limit: per-request attempt budget exhausted; review limits/context size: ";
+                result.error += trigger.dump();
+                finish_controller(result);
+                co_return result;
+            }
+            ++compact_attempts;
+            trigger["cycle"] = compact_attempts;
+            model_io::InvokeQuery query;
+            query.id = "host-auto-compact-" + new_identity();
+            query.name = "auto_compact";
+            query.type = model_io::InvokeType::SerialWrite;
+            query.security = model_io::InvokeSecurity::Trusted;
+            query.arguments = std::move(trigger);
+            query.extras = Json{{"origin", "worker"}, {"operation", "auto_compact"}};
+            emit("tool_calls", Json::array({query}));
+            try {
+                result = co_await compact(CompactMode::Automatic, query.id);
+            } catch (const std::exception& error) {
+                result.status = loop::RunStatus::Failed;
+                result.failure_stage = loop::RunFailureStage::Other;
+                result.error = error.what();
+            }
+            if (result.status == loop::RunStatus::Completed) ++compact_successes;
+            model_io::InvokeReturn record;
+            record.query = query;
+            record.output.raw = result.status == loop::RunStatus::Completed
+                ? "Context compacted."
+                : "Automatic compaction " + run_status(result.status) + ": " + result.error;
+            record.extras = Json{{"status", run_status(result.status)}};
+            if (result.status == loop::RunStatus::Failed) {
+                (*record.extras)["error"] = {{"stage", "auto_compact"}, {"message", result.error}};
+            }
+            model_io::MessageItem returned;
+            returned.type = model_io::MessageItemType::InvokeReturn;
+            returned.role = "tool";
+            returned.content.push_back(record.output);
+            returned.invoke_return = std::move(record);
+            emit("tool_results", Json::array({returned}));
+            if (result.status != loop::RunStatus::Completed) {
+                finish_controller(result);
+                co_return result;
+            }
+            if (run_stop.stop_requested()) {
+                result.status = loop::RunStatus::Cancelled;
+                finish_controller(result);
+                co_return result;
+            }
+            has_message = true;
+            message = continuation();
+        }
+    }
+
     /** Serialized payload admission and loop execution; never overlaps runs. */
     asio::awaitable<void> consume() {
         auto payloads = client.subscribe_payload();
@@ -857,7 +1035,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                         throw std::invalid_argument("compact configuration is incomplete");
                     }
                 }
-                if (!input->has_message && state.turns.empty()) {
+                if (!input->has_message && state.turns.empty()
+                    && !(input->operation == InputOperation::Continue && can_continue_memory())) {
                     throw std::invalid_argument(input->operation == InputOperation::Compact
                         ? "no turns to compact" : "no turn to continue");
                 }
@@ -919,20 +1098,26 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 state.meta.updated_at = timestamp();
             }
             run_saved = false;
+            task_exchanges = compact_exchanges = compact_attempts = compact_successes = 0;
+            failure_operation = input->operation == InputOperation::Compact ? "compact" : "task";
             emit("input_admitted", {{"operation", operation_name(input->operation)}});
+            emit("run_started");
             loop::RunResult result;
             try {
                 if (input->operation == InputOperation::Compact) {
-                    result = co_await compact();
+                    result = co_await compact(CompactMode::Manual);
                 } else {
-                    result = co_await loop::run(*driver_model, registry, events, strand, state,
-                        input->has_message, std::move(input->message),
-                        {config.max_exchanges}, run_stop.get_token());
+                    result = co_await run_with_auto_compact(
+                        input->has_message, std::move(input->message));
                 }
             } catch (const std::exception& error) {
                 result.status = loop::RunStatus::Failed;
                 result.error = error.what();
+                if (input->operation != InputOperation::Compact) finish_controller(result);
             }
+            std::size_t total_exchanges = task_exchanges;
+            add_exchanges(total_exchanges, compact_exchanges);
+            result.completed_exchanges = total_exchanges;
             // An earlier RunFinished observer can throw and prevent our slot
             // from running. The returned state is still final: complete a
             // required save here before reporting durability or admitting input.
@@ -953,12 +1138,14 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             } else {
                 Json finished = {{"status", run_status(result.status)},
                     {"error", result.error}, {"exchanges", result.completed_exchanges},
-                    {"durable", run_saved}};
+                    {"durable", run_saved}, {"task_exchanges", task_exchanges},
+                    {"compact_exchanges", compact_exchanges}, {"auto_compact", compact_counters()}};
                 if (result.status == loop::RunStatus::Failed) {
                     finished["failure"] = {
                         {"stage", failure_stage(result.failure_stage)},
-                        {"can_continue", !state.turns.empty() && state.loop
-                            && state.loop->phase == model_io::LoopPhase::Ready}
+                        {"operation", failure_operation},
+                        {"can_continue", can_continue_memory() || (!state.turns.empty() && state.loop
+                            && state.loop->phase == model_io::LoopPhase::Ready)}
                     };
                 }
                 emit("run_finished", std::move(finished));

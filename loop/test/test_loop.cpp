@@ -45,6 +45,7 @@ struct Model : llm::LLMModel {
     }
 
     int exchanges = 0;
+    std::optional<model_io::TokenCost> cost;
     int call_count = 1;
     bool calls = true;
     bool fail_model = false;
@@ -63,6 +64,7 @@ struct Model : llm::LLMModel {
         Item response;
         response.type = Kind::ModelResponse;
         response.role = "assistant";
+        response.cost = cost;
         if (exchanges++ == 0 && calls) {
             model_io::InvokeQuery query;
             query.id = "call";
@@ -163,7 +165,8 @@ struct Fixture {
         bool has_message = true,
         Item message = input(),
         std::size_t budget = 5,
-        std::stop_token stop = {}) {
+        std::stop_token stop = {},
+        std::uint64_t threshold = 0) {
         auto task = loop::run(
             model,
             registry,
@@ -172,7 +175,7 @@ struct Fixture {
             state,
             has_message,
             std::move(message),
-            {budget},
+            {budget, threshold},
             stop);
         auto future = asio::co_spawn(io, std::move(task), asio::use_future);
         io.restart();
@@ -975,4 +978,73 @@ BOOST_AUTO_TEST_CASE(step_checkpoint_sees_only_validated_edits) {
     });
     BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
     BOOST_TEST(!saved);
+}
+
+BOOST_AUTO_TEST_CASE(auto_compaction_checks_settled_latest_usage_and_final_answer_precedence) {
+    for (const auto threshold : {119u, 120u, 121u}) {
+        Fixture f;
+        f.model.cost = model_io::TokenCost{100, 20, 80};
+        const auto result = f.run(true, input(), 5, {}, threshold);
+        BOOST_CHECK(result.status == (threshold < 120
+            ? loop::RunStatus::AutoCompactRequired : loop::RunStatus::Completed));
+        BOOST_TEST(f.set->tool->count == 1);
+        BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Ready);
+        BOOST_TEST(f.state.loop->pending_results.empty());
+        BOOST_CHECK(result.last_exchange_tokens == 120);
+        if (threshold < 120) {
+            BOOST_CHECK(result.auto_compact_reason == loop::AutoCompactReason::TokenThreshold);
+            BOOST_CHECK(f.state.loop->status == model_io::LoopStatus::AutoCompactRequired);
+            BOOST_TEST(nlohmann::json(f.state.loop->status) == "auto_compact_required");
+            BOOST_CHECK(nlohmann::json("auto_compact_required").get<model_io::LoopStatus>()
+                == model_io::LoopStatus::AutoCompactRequired);
+        }
+    }
+    Fixture final;
+    final.model.calls = false;
+    final.model.cost = model_io::TokenCost{100, 20, 80};
+    BOOST_CHECK(final.run(true, input(), 1, {}, 1).status == loop::RunStatus::Completed);
+}
+
+BOOST_AUTO_TEST_CASE(auto_compaction_exchange_fallback_and_cancellation_precedence) {
+    Fixture absent;
+    const auto result = absent.run(true, input(), 1, {}, 100);
+    BOOST_CHECK(result.status == loop::RunStatus::AutoCompactRequired);
+    BOOST_CHECK(result.auto_compact_reason == loop::AutoCompactReason::ExchangeLimit);
+    BOOST_CHECK(!result.last_exchange_tokens);
+    Fixture disabled;
+    BOOST_CHECK(disabled.run(true, input(), 1).status == loop::RunStatus::ExchangeLimit);
+    Fixture cancelled;
+    std::stop_source stop;
+    cancelled.set->tool->after_effect = [&] { stop.request_stop(); };
+    BOOST_CHECK(cancelled.run(true, input(), 1, stop.get_token(), 1).status
+        == loop::RunStatus::Cancelled);
+    BOOST_TEST(cancelled.set->tool->count == 1);
+    BOOST_TEST(cancelled.state.loop->pending_results.empty());
+}
+
+BOOST_AUTO_TEST_CASE(auto_compaction_captures_usage_before_pruning_and_finish_failure_wins) {
+    Fixture pruned;
+    pruned.model.cost = model_io::TokenCost{100, 20, 0};
+    auto edit = pruned.bus.subscribe<loop::EditOnStepFinished>([](const auto& event) {
+        event.state.turns.back().agent_loop_step.clear();
+    });
+    BOOST_CHECK(pruned.run(true, input(), 5, {}, 100).status == loop::RunStatus::AutoCompactRequired);
+    Fixture failed;
+    auto finish = failed.bus.subscribe<loop::EditOnRunFinished>([](const auto&) {
+        throw std::runtime_error("finish failed");
+    });
+    BOOST_CHECK(failed.run(true, input(), 1, {}, 100).status == loop::RunStatus::Failed);
+}
+
+BOOST_AUTO_TEST_CASE(uncapped_invocation_and_overflow_usage) {
+    Fixture f;
+    auto future = asio::co_spawn(f.io, loop::run(f.model, f.registry, f.bus,
+        f.io.get_executor(), f.state, true, input(), {std::nullopt, 0}), asio::use_future);
+    f.io.run();
+    BOOST_CHECK(future.get().status == loop::RunStatus::Completed);
+    Fixture overflow;
+    overflow.model.cost = model_io::TokenCost{UINT64_MAX, 1, 0};
+    const auto result = overflow.run(true, input(), 1, {}, 100);
+    BOOST_CHECK(!result.last_exchange_tokens);
+    BOOST_CHECK(result.auto_compact_reason == loop::AutoCompactReason::ExchangeLimit);
 }

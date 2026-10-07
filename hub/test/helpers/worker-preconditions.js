@@ -14,7 +14,8 @@ export function workerUnavailableReason(worker, { required = false } = {}) {
         // These are actual inputs of the offline mock/compact/process E2E.
         // Do not require optional Docker or browser acceptance prerequisites.
         prerequisites.push(
-            [join(bin, 'prompts', 'operations', 'compact.yaml'), constants.R_OK],
+            ...['compact', 'auto_compact', 'auto_compact_continue'].map(name =>
+                [join(bin, 'prompts', 'operations', `${name}.yaml`), constants.R_OK]),
             [join(bin, 'plugins', 'llm', 'libllm_deepseek.so'), constants.R_OK],
             ...['poll_process', 'read_process', 'run_command', 'send_process',
                 'spawn_process', 'skill'].map((name) => [

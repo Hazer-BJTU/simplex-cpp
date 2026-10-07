@@ -278,3 +278,32 @@ intrinsic `HubRemoteCallToolSet` with the `plan` tool. `construct_runtime()` cop
 into the set before registering it. Omission leaves it unloaded. The set registers the plan tool and skill without opening a startup connection.
 See the [package guide](../tools/intrinsic/toolsets/hub_remote_call/README.md) for
 the request base and [wire protocol](../docs/core/worker-protocol.md#remote-tool-requests).
+
+## Automatic context compaction
+
+Set `worker.auto_compact_threshold` to a positive integer to enable automatic
+compaction for message/continue requests. Omitted or zero preserves the existing
+exchange-limit behavior. Persistence must be enabled. Ordinary segments share one
+logical request, cancellation source and confirmation scope; only the final
+outcome emits wire `run_finished`. Local loop hooks still finalize each segment.
+
+The controller archives, summarizes with `auto_compact.yaml`, durably replaces
+history with memory, and resumes using `auto_compact_continue.yaml`. Neither
+summary inference nor its temporary input is exposed as ordinary dialogue. A
+synthetic `auto_compact` tool card reports progress without invoking ToolRegistry
+or approval. Summary inference has no token/exchange limits, cannot call tools,
+and cannot recursively compact. Existing summary/reduction/storage checks apply.
+
+A first-exchange retrigger after a successful compact fails explicitly.
+`worker.max_auto_compactions` (positive, default 5) bounds attempts per request;
+the continuation after the last allowed attempt may still complete. This budget
+is independent of archive retention. Failures preserve settled tool effects and
+memory. No controller work resumes on restart or after cancellation. An explicit
+continue from settled memory-only state inserts the private continuation prompt;
+an entirely empty session still rejects continue.
+
+The final exchange count includes task and summary responses, with separate
+`task_exchanges`, `compact_exchanges` and `auto_compact` counters. Final durability
+is recalculated for the latest segment: an intermediate compact save does not
+imply that a later response was saved. See the
+[protocol contract](../docs/core/worker-protocol.md#automatic-context-compaction).

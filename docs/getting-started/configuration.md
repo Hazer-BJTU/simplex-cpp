@@ -185,3 +185,28 @@ The complete commented template is maintained in
 [load/schemas/config.example.yaml](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/load/schemas/config.example.yaml).
 Unknown host fields are tolerated, but malformed recognized fields are errors;
 plugin configuration has its own stricter validation rules.
+
+## Optional automatic compaction
+
+```yaml
+worker:
+  max_exchanges: 512
+  auto_compact_threshold: 100000 # example; choose for your provider and task
+  max_auto_compactions: 5
+  # auto_compact_prompt_file: prompts/operations/auto_compact.yaml
+  # auto_compact_continue_prompt_file: prompts/operations/auto_compact_continue.yaml
+```
+
+Omit the threshold or use zero to disable. Positive thresholds require persistence
+and trigger after settled continuing exchanges; the exchange cap is a fallback.
+Final answers complete normally. Both prompts are installation-relative YAML:
+the first preserves goals, important facts/retrieval references and task state;
+the second resumes privately from memory. Neither replaces the role/system prompt.
+The same cancel action stops the whole task, including summary inference.
+
+Avoid tiny thresholds or exchange caps. Immediate retrigger after one continuation
+exchange fails clearly, and at most five automatic compaction attempts are allowed
+per request by default. A new request resets this budget. `max_auto_compactions`
+is separate from `persistence.memory_retention.max_archives`. The next explicit
+continue can resume from memory even when compaction left no turns; restart does
+not resume automatically. See the [complete lifecycle contract](../core/worker-protocol.md#automatic-context-compaction).

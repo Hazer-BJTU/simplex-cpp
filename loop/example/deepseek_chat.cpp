@@ -269,6 +269,7 @@ const char* status_name(loop::RunStatus status) {
         case loop::RunStatus::Completed: return "completed";
         case loop::RunStatus::Cancelled: return "cancelled";
         case loop::RunStatus::ExchangeLimit: return "exchange limit";
+        case loop::RunStatus::AutoCompactRequired: return "auto compact required";
         case loop::RunStatus::Failed: return "failed";
     }
     return "unknown";

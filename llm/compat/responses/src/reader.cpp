@@ -483,7 +483,10 @@ void ResponsesReader::_assemble() {
                 has_cost = true;
             }
         }
-        if (has_cost) result.cost = cost;
+        // A partial usage block is not a complete exchange total. Preserve raw
+        // diagnostics below, but do not expose missing counts as measured zero.
+        if (has_cost && get_uint64(*_usage, "input_tokens")
+            && get_uint64(*_usage, "output_tokens")) result.cost = cost;
     }
 
     nlohmann::json extras = nlohmann::json::object();

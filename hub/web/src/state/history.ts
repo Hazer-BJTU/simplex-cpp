@@ -37,9 +37,18 @@ export function parseHistoryPage(value: unknown): HistoryPage | null {
             || !parts(turn.user) || !Array.isArray(turn.steps)
             || !index(turn.omitted_steps)
             || turn.omitted_user_parts !== undefined && !index(turn.omitted_user_parts)) return null;
+        if (turn.internal_input !== undefined) {
+            const source = turn.source;
+            if (turn.internal_input !== 'auto_compact_continue' || turn.user.length !== 0
+                || !record(source)
+                || !['worker_id', 'request_id', 'run_id'].every((key) =>
+                    typeof source[key] === 'string' && (source[key] as string).length > 0)) return null;
+        }
         let expectedStep = turnOffset === 0 ? value.step as number : 0;
         for (const step of turn.steps) {
             if (!record(step) || !index(step.index) || step.index !== expectedStep
+                || step.commit_sequence !== undefined && (typeof step.commit_sequence !== 'string'
+                    || !/^[1-9][0-9]{0,19}$/.test(step.commit_sequence))
                 || !parts(step.content) || !index(step.tool_calls)
                 || step.omitted_parts !== undefined && !index(step.omitted_parts)
                 || step.reasoning !== undefined && !part(step.reasoning)) return null;

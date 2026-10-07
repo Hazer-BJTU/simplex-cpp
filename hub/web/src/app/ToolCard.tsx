@@ -63,6 +63,7 @@ const STATUS: Record<CallStatus, { label: string; tone: string; icon: GlyphName 
     running: { label: 'running', tone: 'bg-info-soft text-info ring-info-line', icon: 'spinner' },
     ok: { label: 'ok', tone: 'bg-ok-soft text-ok ring-ok-line', icon: 'ok' },
     failed: { label: 'failed', tone: 'bg-danger-soft text-danger ring-danger-line', icon: 'error' },
+    cancelled: { label: 'cancelled', tone: 'bg-subtle text-ink-muted ring-line', icon: 'cancel' },
     skipped: { label: 'not run', tone: 'bg-subtle text-ink-muted ring-line', icon: 'cancel' },
     unknown: {
         label: 'no result reported',
@@ -77,6 +78,7 @@ const BORDER: Record<CallStatus, string> = {
     running: 'border-l-info-line',
     ok: 'border-l-ok-line',
     failed: 'border-l-danger-line',
+    cancelled: 'border-l-line-strong',
     skipped: 'border-l-line-strong',
     unknown: 'border-l-line-strong',
 };

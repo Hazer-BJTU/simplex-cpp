@@ -74,6 +74,8 @@ export interface WorkerConfigDocument {
     security: { confirmation: { endpoint: string; timeout_ms: number } };
     worker: {
         max_exchanges: number;
+        auto_compact_threshold: number;
+        max_auto_compactions: number;
         event_capacity: number;
         system_prompt_file: string;
         environment: { workspace: string; platform: string; software: string[] };
@@ -164,6 +166,8 @@ export function renderWorkerConfig({
         },
         worker: {
             max_exchanges: spec.maxExchanges,
+            auto_compact_threshold: spec.autoCompactThreshold,
+            max_auto_compactions: spec.maxAutoCompactions,
             event_capacity: spec.eventCapacity,
             system_prompt_file: spec.systemPromptFile,
             environment: {

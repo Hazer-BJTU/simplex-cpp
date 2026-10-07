@@ -28,12 +28,13 @@ namespace loop {
  * @param message Owned input candidate, edited by BeforeInput when has_message
  *        is true. Must have type UserInput without invokes/invoke_return fields.
  *        Pass an empty MessageItem when continuing an existing turn.
- * @param options Positive model-exchange budget for this invocation.
+ * @param options Optional positive exchange cap and opt-in latest-token threshold.
+ *        A null cap is explicitly uncapped; zero threshold disables compaction.
  * @param stop Thread-safe stop token. While converse() is suspended, a request
  *        emits terminal cancellation on that exchange's serialized executor.
  *        The loop waits for the exchange to exit; it never detaches it. A tool
  *        batch already started is joined and its results committed before exit.
- * @return Completion, cancellation, budget exhaustion, or failure summary.
+ * @return Completion, cancellation, budget exhaustion, compaction boundary, or failure.
  *
  * Only one invocation is active per process, including hooks and drain work.
  * Model, registry, events and state are borrowed until completion. Tool results

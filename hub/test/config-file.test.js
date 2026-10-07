@@ -40,6 +40,9 @@ describe('session configuration files', () => {
         initial.providers.deepseek.model = 'operator-model';
         initial.providers.deepseek.endpoint.auth.api_key = '${OPERATOR_KEY}';
         initial.worker.max_exchanges = 47;
+        initial.worker.auto_compact_threshold = 123456;
+        initial.worker.max_auto_compactions = 3;
+        initial.worker.auto_compact_prompt_file = 'prompts/custom-handoff.yaml';
         initial.hub_remote_call.timeout_ms = 750;
         initial.persistence.state = 'custom/snapshots';
         initial.persistence.memory = 'custom/archives';
@@ -51,6 +54,9 @@ describe('session configuration files', () => {
         input.endpoints = { events: 'ws://new/events?token=new', confirm: 'ws://new/confirm?token=new', tools: 'ws://new/tools?token=new' };
         const reused = prepareSessionConfig(input);
         assert.equal(reused.spec.threads, 3);
+        assert.equal(reused.spec.autoCompactThreshold, 123456);
+        assert.equal(reused.spec.maxAutoCompactions, 3);
+        assert.equal(reused.document.worker.auto_compact_prompt_file, 'prompts/custom-handoff.yaml');
         assert.equal(reused.spec.provider, 'deepseek');
         assert.equal(reused.spec.model, 'operator-model');
         assert.equal(reused.spec.modalityAssistProvider, 'modality_assist');

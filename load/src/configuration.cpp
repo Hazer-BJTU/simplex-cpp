@@ -282,6 +282,8 @@ Configuration parse_configuration(
     const auto& worker = object(document, "worker");
     result.event_capacity = number(worker, "event_capacity", 1024);
     result.max_exchanges = number(worker, "max_exchanges", 512);
+    result.auto_compact_threshold = number(worker, "auto_compact_threshold", 0, true);
+    result.max_auto_compactions = number(worker, "max_auto_compactions", 5);
     if (worker.contains("system_prompt")) {
         throw std::invalid_argument("worker.system_prompt is no longer supported; use system_prompt_file");
     }
@@ -293,6 +295,20 @@ Configuration parse_configuration(
     if (result.compact_prompt.find_first_not_of(" \t\r\n") == std::string::npos) {
         throw std::invalid_argument("compact_prompt_file must contain instructions");
     }
+    const auto operation_prompt = [&](const char* key, const char* path) {
+        auto instruction = read_system_prompt(installed_file(worker, key, installation, path))
+            .render().markdown;
+        if (instruction.find_first_not_of(" \t\r\n") == std::string::npos) {
+            throw std::invalid_argument(std::string(key) + " must contain instructions");
+        }
+        return instruction;
+    };
+    if (result.auto_compact_threshold || worker.contains("auto_compact_prompt_file")) {
+        result.auto_compact_prompt = operation_prompt(
+            "auto_compact_prompt_file", "prompts/operations/auto_compact.yaml");
+    }
+    result.auto_compact_continue_prompt = operation_prompt(
+        "auto_compact_continue_prompt_file", "prompts/operations/auto_compact_continue.yaml");
     const auto& environment = object(worker, "environment");
     const auto workspace = text(environment, "workspace");
     if (workspace.find('\0') != std::string::npos) {
@@ -319,6 +335,9 @@ Configuration parse_configuration(
 
     const auto& storage = object(document, "persistence");
     result.persistence = flag(storage, "enabled", true);
+    if (result.auto_compact_threshold && !result.persistence) {
+        throw std::invalid_argument("auto_compact_threshold requires persistence.enabled");
+    }
     auto location = text(storage, "directory", "./data/session");
     if (location.empty() || location.find('\0') != std::string::npos) {
         throw std::invalid_argument("persistence.directory must be nonempty without NUL");

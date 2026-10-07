@@ -263,3 +263,27 @@ it('contains timeout storage failure and cancels subsequent work without recreat
     assert.equal(sent.length, before);
     assert.equal(existsSync(directory), false);
 });
+
+it('preserves automatic continuation answers and correlation without the internal input', async t => {
+    const { view, page } = await projection(t);
+    const source = { worker_id: 'worker', request_id: 'parent-send', run_id: 'run' };
+    page({ turns: [{ index: 0, internal_input: 'auto_compact_continue', source,
+        user: [], steps: [{ index: 0, content: [part('completed delegated work')] }] }] });
+    assert.equal(view.value.turns[0].request_id, 'parent-send');
+    assert.deepEqual(view.value.turns[0].user, []);
+    assert.equal(view.value.turns[0].steps[0].content[0].raw, 'completed delegated work');
+    assert.deepEqual(view.value.turns[0].source, source);
+});
+
+it('rejects changed internal source correlation between history fragments', async t => {
+    const { view, page } = await projection(t);
+    const source = { worker_id: 'worker', request_id: 'original', run_id: 'run' };
+    page({ next: 0, next_step: 1, turns: [{ index: 0, user: [],
+        internal_input: 'auto_compact_continue', source,
+        steps: [{ index: 0, content: [part('first')] }], omitted_steps: 1 }] });
+    page({ turns: [{ index: 0, user: [], internal_input: 'auto_compact_continue',
+        source: { ...source, request_id: 'unrelated' },
+        steps: [{ index: 1, content: [part('second')] }] }] });
+    assert.equal(view.value.turns.length, 0);
+    assert.equal(view.value.incomplete, true);
+});

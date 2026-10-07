@@ -93,3 +93,9 @@ Executable-relative discovery also works after relocating the complete install
 tree. The staged-runtime CI job copies the integration test executables into
 this layout and exercises the installed modules and YAML, separately from tests
 in the build tree.
+
+`RunResult` now includes automatic-compaction reason and latest exchange usage.
+The loop-hook ABI is **3**; rebuild dynamic hooks. Completion callbacks describe
+one loop invocation, including an `AutoCompactRequired` boundary, not necessarily
+the end of the application's logical user request. Hooks must not initiate their
+own compaction from the persisted status.

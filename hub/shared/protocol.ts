@@ -132,10 +132,13 @@ export interface ContentPart {
 
 /** Bounded display projection, never a restorable worker snapshot. */
 export interface HistoryTurn {
+    internal_input?: 'auto_compact_continue';
+    source?: { worker_id: string; request_id: string; run_id: string };
     index: number;
     user: ContentPart[];
     steps: {
         index: number;
+        commit_sequence?: string;
         content: ContentPart[];
         reasoning?: ContentPart;
         tool_calls: number;
@@ -181,6 +184,8 @@ export interface SessionSpec {
     modalityAssistProvider?: string | null;
     threads?: number;
     maxExchanges?: number;
+    autoCompactThreshold?: number;
+    maxAutoCompactions?: number;
     eventCapacity?: number;
     /** Prompt file relative to the worker's installation directory; the worker
      * refuses absolute paths and parent traversal. */

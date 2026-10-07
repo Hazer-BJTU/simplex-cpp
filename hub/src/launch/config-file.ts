@@ -142,6 +142,14 @@ export function prepareSessionConfig(options: RenderSessionConfigOptions): {
         throw new Error('modality_assist_model must name a providers mapping');
     }
     spec.maxExchanges = result.worker?.max_exchanges ?? spec.maxExchanges;
+    spec.autoCompactThreshold = result.worker?.auto_compact_threshold ?? 0;
+    spec.maxAutoCompactions = result.worker?.max_auto_compactions ?? 5;
+    if (!Number.isSafeInteger(spec.autoCompactThreshold) || spec.autoCompactThreshold < 0
+        || spec.autoCompactThreshold > 2147483647
+        || !Number.isSafeInteger(spec.maxAutoCompactions) || spec.maxAutoCompactions <= 0
+        || spec.maxAutoCompactions > 2147483647) {
+        throw new Error('invalid auto compact threshold or attempt budget');
+    }
     spec.eventCapacity = result.worker?.event_capacity ?? spec.eventCapacity;
     spec.systemPromptFile = result.worker?.system_prompt_file ?? spec.systemPromptFile;
     spec.workspace = result.worker?.environment?.workspace ?? '';

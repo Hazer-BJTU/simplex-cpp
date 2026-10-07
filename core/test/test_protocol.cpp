@@ -419,3 +419,26 @@ BOOST_AUTO_TEST_CASE(history_query_fits_one_maximal_entry_and_handles_terminal_c
     BOOST_TEST(terminal.at("turns").empty());
     BOOST_TEST(terminal.at("next") == 1);
 }
+
+BOOST_AUTO_TEST_CASE(history_hides_only_host_owned_internal_input_and_keeps_responses) {
+    model_io::AgentInputState state;
+    model_io::UserLoopStep turn;
+    turn.user_input.content.push_back(display_text("PRIVATE RESUME"));
+    turn.user_input.extras = Json{{"simplex.internal_input", "auto_compact_continue"},
+        {"simplex.source", {{"worker_id", "worker"}, {"run_id", "run"}, {"request_id", "request"}}}};
+    model_io::AgentLoopStep step;
+    step.model_response.type = model_io::MessageItemType::ModelResponse;
+    step.model_response.content.push_back(display_text("visible answer"));
+    turn.agent_loop_step.push_back(step);
+    state.turns.push_back(turn);
+    core::HistoryRequest request;
+    request.request_id = "query";
+    const auto page = core::history_page(state, request, 1);
+    BOOST_TEST(page.dump().find("PRIVATE RESUME") == std::string::npos);
+    BOOST_TEST(page["turns"][0]["user"].empty());
+    BOOST_TEST(page["turns"][0]["source"]["run_id"] == "run");
+    BOOST_TEST(page["turns"][0]["steps"][0]["content"][0]["raw"] == "visible answer");
+    state.turns[0].user_input.content[0].extras = state.turns[0].user_input.extras;
+    state.turns[0].user_input.extras.reset();
+    BOOST_TEST(core::history_page(state, request, 1)["turns"][0]["user"][0]["raw"] == "PRIVATE RESUME");
+}

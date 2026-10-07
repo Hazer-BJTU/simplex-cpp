@@ -27,21 +27,21 @@ auto result = co_await loop::run(
 
 All dependencies are injected explicitly. The loop does not load a model, register tools, inject skills, or read a global bus. Referenced dependencies and `state` must remain alive until `run()` returns; the input and options enter the lazy coroutine frame by value. The host owns the model, registry, and bus lifetimes.
 
-With `has_message = false`, the message argument is ignored (you may pass `{}`). The loop continues the last turn without creating user input or rerunning existing tool calls. It returns `Failed` if there is no turn. `max_exchanges` must be greater than zero; each model response counts as one exchange. If the final allowed response contains tool calls, the loop fully settles that batch before reporting `ExchangeLimit`.
+With `has_message = false`, the message argument is ignored (you may pass `{}`). The loop continues the last turn without creating user input or rerunning existing tool calls. It returns `Failed` if there is no turn. `max_exchanges`, when present, must be greater than zero; `std::nullopt` explicitly removes the cap; each model response counts as one exchange. If the final allowed response contains tool calls, the loop fully settles that batch before reporting `ExchangeLimit`.
 
 ## State and recovery
 
-`AgentInputState` is the only persistable state. Its optional `loop` field records the current status, phase, exchange count, error, and `pending_results` when result projection fails. This field is host metadata, not a provider request parameter. Commit sequences changed the C++ layout, so the model plugin ABI is now version 6; older plugins must be rebuilt. Older JSON without these fields remains readable. `RunResult` only summarizes the current invocation and does not need separate persistence.
+`AgentInputState` is the only persistable state. Its optional `loop` field records the current status, phase, exchange count, error, and `pending_results` when result projection fails. This field is host metadata, not a provider request parameter. Commit sequences changed the C++ layout, so affected native plugins must be rebuilt against the current ABI constants in `versioning/CMakeLists.txt`. Older JSON without these fields remains readable. `RunResult` only summarizes the current invocation and does not need separate persistence.
 
 Each committed model response increments `LoopProgress::committed_response_sequence` and writes the sequence to its `AgentLoopStep`. The sequence survives across `run()` calls and never decreases when old steps are pruned; older JSON without a sequence reads it as zero. A hook that maintains cumulative statistics can store both its last accounted sequence and its totals in `external_status`. It can then reconcile an edit rollback and detect gaps if unaccounted responses were pruned.
 
 The normal flow is input commit → model request → response commit → registry batch → result commit → next request. A model response without tool calls completes the run.
 
-Return statuses are `Completed`, `Cancelled`, `ExchangeLimit`, and `Failed`. Diagnostics use logging; tool output and error records go into the dataclass. Logs are not a recovery source. On a normal exit, the loop stores `loop.status` and `loop.error`, runs the writable `EditOnRunFinished` hook, and synchronously publishes the read-only `RunFinished` event. Invalid parameters or a stop requested before admission do not publish run events or overwrite previous run information.
+Return statuses are `Completed`, `Cancelled`, `ExchangeLimit`, `AutoCompactRequired`, and `Failed`. Diagnostics use logging; tool output and error records go into the dataclass. Logs are not a recovery source. On a normal exit, the loop stores `loop.status` and `loop.error`, runs the writable `EditOnRunFinished` hook, and synchronously publishes the read-only `RunFinished` event. Invalid parameters or a stop requested before admission do not publish run events or overwrite previous run information.
 
 Every `model.integrate()` operates on a candidate state and commits with nonthrowing move assignment only after success. Complete tool returns first move into `state.loop.pending_results`, then project together into a candidate conversation. A projection failure cannot leave half-written tool messages: the next `run()` projects those results before accepting new input or requesting a model response. This buffer contains only uncommitted results; it is cleared after a successful projection and is not a second copy of the execution history.
 
-`LoopProgress::status` uses `model_io::LoopStatus` (`Idle`, `Running`, `Completed`, `Cancelled`, `ExchangeLimit`, `Failed`); `phase` uses `model_io::LoopPhase` (`Ready`, `Model`, `Tools`, `Projection`, `Blocked`). JSON retains the lowercase names, such as `exchange_limit` and `projection`. Deserialization rejects unknown names or incorrect types. On recovery, `Tools` or `Blocked` means tool results are uncertain: `run()` throws `loop::RecoveryRequired` and leaves investigation and repair to the host. It neither replays nor resolves the tools automatically. `Projection` must have pending results; continuation requires validating the count, order, IDs, and names of every tool call and result. Imported unanswered calls are also ineligible for automatic replay. Callers must not tamper with history or recovery markers.
+`LoopProgress::status` uses `model_io::LoopStatus` (`Idle`, `Running`, `Completed`, `Cancelled`, `ExchangeLimit`, `Failed`, `AutoCompactRequired`); `phase` uses `model_io::LoopPhase` (`Ready`, `Model`, `Tools`, `Projection`, `Blocked`). JSON retains the lowercase names, such as `exchange_limit` and `projection`. Deserialization rejects unknown names or incorrect types. On recovery, `Tools` or `Blocked` means tool results are uncertain: `run()` throws `loop::RecoveryRequired` and leaves investigation and repair to the host. It neither replays nor resolves the tools automatically. `Projection` must have pending results; continuation requires validating the count, order, IDs, and names of every tool call and result. Imported unanswered calls are also ineligible for automatic replay. Callers must not tamper with history or recovery markers.
 
 The host can catch `RecoveryRequired`, inspect `phase()` to distinguish `Tools` from `Blocked`, and compare persisted state with external tool effects. It must not treat this exception as an automatically retryable model failure. Currently `LoopProgress` lives alongside the conversation in the sole `AgentInputState`. A future design could move host recovery metadata into another persistable dataclass and expose only conversation data at the model boundary, avoiding model plugin ABI changes whenever the recovery protocol changes. This implementation retains the current state contract.
 
@@ -138,7 +138,7 @@ The `state` references in `EditOnStepFinished` and `EditOnRunFinished` both refe
 
 `EditOnStepFinished` runs once per settled tool batch after all `ToolResultsCommitted` subscribers return successfully. This includes batches with skipped results due to stop and the final batch at the exchange limit. It is not published for a response without calls, recovery of old results on entry, or failure of an earlier observation hook. Uses include pruning tool history, summarizing older turns, and preparing the next model context. The edited state is used by the next model request.
 
-`EditOnRunFinished` runs once per admitted invocation after terminal state is saved, covering `Completed`, `Cancelled`, `ExchangeLimit`, and `Failed`. It can organize final history, update host summaries, or adjust persistence metadata. Its read-only `result` describes the outcome on entry to the hook. Rejected parameter errors, stop before admission, and failed entry recovery do not publish it. If this hook fails, the loop rolls back its edits, appends a diagnostic prefixed `EditOnRunFinished:`, changes the outcome to `Failed`, and still publishes one `RunFinished`. Final persistence therefore usually belongs in read-only `RunFinished`, after the edit transaction has been validated.
+`EditOnRunFinished` runs once per admitted invocation after terminal state is saved, covering `Completed`, `Cancelled`, `ExchangeLimit`, `AutoCompactRequired`, and `Failed`. It can organize final history, update host summaries, or adjust persistence metadata. Its read-only `result` describes the outcome on entry to the hook. Rejected parameter errors, stop before admission, and failed entry recovery do not publish it. If this hook fails, the loop rolls back its edits, appends a diagnostic prefixed `EditOnRunFinished:`, changes the outcome to `Failed`, and still publishes one `RunFinished`. Final persistence therefore usually belongs in read-only `RunFinished`, after the edit transaction has been validated.
 
 Both edit events follow these integrity and transaction rules:
 
@@ -219,3 +219,26 @@ or for a response with no calls. RunFinished remains the final read-only event;
 because it logs observer errors, a host must separately latch required storage
 failures. These notifications do not themselves perform IO or guarantee crash
 durability. The core worker supplies that policy.
+
+## Automatic compaction boundary
+
+`Options::auto_compact_threshold` defaults to zero (disabled). A positive value
+returns `AutoCompactRequired` after a continuing exchange whose `prompt +
+generated` exceeds the threshold, or whose exchange budget is exhausted.
+`RunResult::auto_compact_reason` distinguishes these causes; token usage takes
+precedence when both apply. `last_exchange_tokens` is optional, never cumulative,
+and excludes cache hits already counted in prompt tokens. Incomplete or overflowing
+usage is unavailable; the exchange cap remains the fallback. Accounting-hook
+errors still fail normally.
+
+Triggers run after complete tool settlement and step hooks. Usage is captured
+before pruning hooks. Cancellation and errors take precedence at a continuing
+boundary; a tool-free answer completes even above the threshold. Finish-hook
+failure overrides a proposed compaction. Local finish hooks/events run once per
+actual invocation, including `AutoCompactRequired`. The host decides whether to
+compact; the library never reads prompts or starts a second run itself.
+
+Persisted `auto_compact_required` records a past boundary, not a pending command.
+Old snapshots remain readable; older workers may reject this new status.
+The expanded `RunResult` changes the dynamic loop-hook contract: ABI **3** is
+required. Existing enum values and the dataclass layout remain unchanged.

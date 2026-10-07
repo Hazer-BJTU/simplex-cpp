@@ -564,3 +564,18 @@ which panels treat as empty. Plan updates are not transcript events.
 
 Plans persist in `<dataDir>/sessions/<session>/plan.json`. Only the current active
 worker can read/replace them via the dedicated tool listener; panels are read-only.
+
+## Automatic worker compaction
+
+A worker advertising `auto-compact` keeps one active request across task segments,
+summary work and private continuation. The Hub waits for the single final
+`run_finished`; `compact_finished` is not a delegated-request completion signal.
+Its `origin: "automatic"` invalidates history without creating a manual compact
+round. The paired host-generated `auto_compact` tool card reports progress and
+needs no confirmation. Existing cancellation remains available throughout.
+
+History turns marked `internal_input: "auto_compact_continue"` contain no user
+text, but keep assistant responses and worker/request/run source correlation.
+Panels hide the internal user bubble and match decimal-string `commit_sequence`
+response identities against replay rather than assigning these turns by position.
+See [worker automatic compaction](../core/worker-protocol.md#automatic-context-compaction).

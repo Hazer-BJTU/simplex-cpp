@@ -237,6 +237,18 @@ nlohmann::json history_page(const model_io::AgentInputState& state,
             {"omitted_user_parts", turn.user_input.content.size()
                 - std::min<std::size_t>(turn.user_input.content.size(), 4)},
             {"omitted_steps", turn.agent_loop_step.size() - first_step}};
+        // Only host-owned MessageItem metadata can hide an internal input.
+        // Content extras supplied by a user never participate in this check.
+        const auto& metadata = turn.user_input.extras;
+        if (metadata && metadata->is_object()
+            && metadata->value("simplex.internal_input", "") == "auto_compact_continue") {
+            projected["user"] = nlohmann::json::array();
+            projected["omitted_user_parts"] = 0;
+            projected["internal_input"] = "auto_compact_continue";
+            if (metadata->contains("simplex.source")) {
+                projected["source"] = metadata->at("simplex.source");
+            }
+        }
         auto& steps = projected["steps"];
         auto turn_bytes = projected.dump().size();
         const auto separator_bytes = turns.empty() ? 0u : 1u;
@@ -249,6 +261,8 @@ nlohmann::json history_page(const model_io::AgentInputState& state,
         for (; step_index < turn.agent_loop_step.size(); ++step_index) {
             auto step = display_step(
                 turn.agent_loop_step[step_index].model_response, step_index);
+            const auto commit = turn.agent_loop_step[step_index].commit_sequence;
+            if (commit != 0) step["commit_sequence"] = std::to_string(commit);
             const auto bytes = step.dump().size() + (steps.empty() ? 0u : 1u);
             if (page_bytes + separator_bytes + turn_bytes + bytes
                     > history_page_max_bytes) break;
