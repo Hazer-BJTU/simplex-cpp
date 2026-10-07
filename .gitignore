@@ -95,6 +95,7 @@ hub/hub-release/
 # are for the person debugging that run, not for the repository.
 hub/test-results/
 hub/playwright-report/
+hub/performance-results/
 
 # Default worker compact archives contain local conversation state.
 /.data/

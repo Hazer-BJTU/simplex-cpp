@@ -646,6 +646,26 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
     const [historyToggled, setHistoryToggled] = useState<ReadonlyMap<number, boolean>>(new Map());
     useEffect(() => setHistoryToggled(new Map()), [selected]);
 
+    // Disclosure state follows retained content, not every key ever seen in
+    // this session. Keep the active pane's memory bounded after tail trimming.
+    useEffect(() => {
+        setToggled(current => {
+            if (!current.size) return current;
+            const live = new Set(rounds.map(round => round.key));
+            const kept = new Map([...current].filter(([key]) => live.has(key)));
+            return kept.size === current.size ? current : kept;
+        });
+    }, [rounds]);
+    useEffect(() => {
+        if (view?.historyLoading) return;
+        setHistoryToggled(current => {
+            if (!current.size) return current;
+            const live = new Set(history.map(turn => turn.index));
+            const kept = new Map([...current].filter(([index]) => live.has(index)));
+            return kept.size === current.size ? current : kept;
+        });
+    }, [history, view?.historyLoading]);
+
     const openByDefault = useMemo(() => {
         const open = new Map<string, boolean>();
         runs.forEach((round, position) => {

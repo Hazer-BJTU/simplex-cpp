@@ -545,7 +545,7 @@ export interface AcceptedMessage {
     type: 'accepted';
     action: string;
     session: SessionId;
-    /** Present for `input`. */
+    /** Present for input/history and correlated confirmation submissions. */
     request_id?: string;
     /** Present for `signal`. */
     operation?: string;

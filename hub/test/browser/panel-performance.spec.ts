@@ -1,4 +1,6 @@
 /** Repeated production-build measurements, deliberately not timing gates in CI. */
+import { execFileSync } from 'node:child_process';
+import { cpus, platform, arch } from 'node:os';
 import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { STUB, call, emit, modelResponse, toolResult } from './harness.ts';
@@ -9,9 +11,13 @@ test.use({ video: 'on', trace: 'on' });
 test('large transcript, output burst, approvals and local pane switching', async ({ page }, testInfo) => {
     test.setTimeout(120_000);
     await page.request.post(`${STUB}/__stub/reset`);
+    const turns = Number(process.env.PANEL_FIXTURE_TURNS ?? 320);
+    const restored = Number(process.env.PANEL_HISTORY_TURNS ?? 0);
+    const width = Number(process.env.PANEL_VIEWPORT_WIDTH ?? 1280);
+    await page.setViewportSize({ width, height: 720 });
     const events = [];
     const code = Array.from({ length: 120 }, (_, index) => `const value${index} = ${index};`).join('\n');
-    for (let index = 0; index < 320; index++) {
+    for (let index = 0; index < turns; index++) {
         const extra = { request_id: `load-request-${index}`, run_id: `load-run-${index}` };
         const text = `Response ${index}\n\n\`\`\`typescript\n${code}\n\`\`\``;
         events.push(
@@ -25,8 +31,19 @@ test('large transcript, output burst, approvals and local pane switching', async
     }
     await page.request.post(`${STUB}/__stub/emit-batch`, { data: { events, seedOnly: true } });
     await page.request.post(`${STUB}/__stub/plan`, { data: { plan: { markdown: '# Plan\n\n- [ ] Work', revision: 1, updated_at: null } } });
+    if (restored) {
+        await page.request.post(`${STUB}/__stub/settings`, { data: { historyEnabled: true,
+            historyTurns: Array.from({ length: restored }, (_, index) => ({ index,
+                user: [{ type: 'text', raw: `Restored input ${index}` }],
+                steps: [{ index: 0, content: [{ type: 'text', raw: `Restored answer ${index}\n\n\`\`\`typescript\n${code}\n\`\`\`` }], tool_calls: 2 }],
+                omitted_steps: 0,
+            })),
+        } });
+        await emit(page, 'ready', { capabilities: ['session-history'] });
+    }
     await page.goto('/?session=demo&panel_profile=1');
-    await expect(page.getByTestId('round').last()).toContainText('Response 319');
+    await expect(page.getByTestId('round').last()).toContainText(`Response ${turns - 1}`);
+    if (restored) await expect(page.getByTestId('history-turn')).toHaveCount(restored);
     const profiler = await page.context().newCDPSession(page);
     await profiler.send('Profiler.enable');
     await profiler.send('Profiler.start');
@@ -72,7 +89,30 @@ test('large transcript, output burst, approvals and local pane switching', async
         ...burst,
     ] } });
     await expect(page.getByTestId('transcript')).toContainText('Burst message 79');
-    await page.getByLabel('message', { exact: true }).fill('Typing remains local during output');
+    await page.request.post(`${STUB}/__stub/stream`, { data: { interval: 8,
+        events: Array.from({ length: 120 }, (_, index) => ({ event: 'model_response',
+            data: modelResponse(`Stream response ${index}`), extra: { request_id: 'stress', run_id: 'stress-run' } })),
+    } });
+    const typingPaint: number[] = [];
+    const input = page.getByLabel('message', { exact: true });
+    await input.focus();
+    for (let index = 0; index < 10; index++) {
+        await page.evaluate(() => {
+            const target = window as unknown as { __inputLatency: number | undefined };
+            target.__inputLatency = undefined;
+            document.addEventListener('input', () => {
+                const start = performance.now();
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                    target.__inputLatency = performance.now() - start;
+                }));
+            }, { once: true });
+        });
+        await page.keyboard.press('x');
+        await page.waitForFunction(() => typeof (window as unknown as { __inputLatency?: number }).__inputLatency === 'number');
+        typingPaint.push(await page.evaluate(() => (window as unknown as { __inputLatency: number }).__inputLatency));
+    }
+    await expect(page.getByTestId('transcript')).toContainText('Stream response 119');
+
     await page.getByTestId('approval-banner').first().getByRole('button', { name: 'Approve', exact: true }).click();
     await page.waitForTimeout(2000);
     await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'perf-0' } });
@@ -88,10 +128,13 @@ test('large transcript, output burst, approvals and local pane switching', async
             heap: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize };
     });
     const { profile } = await profiler.send('Profiler.stop');
-    await writeFile(testInfo.outputPath('panel-cpu-profile.json'), JSON.stringify(profile));
-    await testInfo.attach('panel-cpu-profile.json', { body: JSON.stringify(profile), contentType: 'application/json' });
-    const output = { fixture: { turns: 320, events: 1920, codeLines: 120, approvals: 8, burst: 81 },
-        localPaint, report, browser: page.context().browser()?.version(),
+    await writeFile(testInfo.outputPath('panel.cpuprofile'), JSON.stringify(profile));
+    await testInfo.attach('panel.cpuprofile', { body: JSON.stringify(profile), contentType: 'application/json' });
+    const output = { fixture: { turns, events: turns * 6, restored, codeLines: 120, approvals: 8, burst: 81, stream: 120 },
+        localPaint, typingPaint, report,
+        revision: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+        dirty: execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).length > 0,
+        host: { platform: platform(), arch: arch(), cpu: cpus()[0]?.model, node: process.version }, browser: page.context().browser()?.version(),
         build: 'Vite production', viewport: page.viewportSize(), cpuThrottling: 1 };
     await writeFile(testInfo.outputPath('panel-performance.json'), JSON.stringify(output, null, 2));
     await testInfo.attach('panel-performance.json', { body: JSON.stringify(output, null, 2), contentType: 'application/json' });

@@ -169,8 +169,12 @@ export function createConfirmationDecisions(options: {
             for (const [key, attempt] of attempts) {
                 if (attempt.prompt.session_id === session && attempt.prompt.confirmation_id === id
                     && attempt.state.phase === 'pending') {
-                    if (request?.request_id === attempt.requestId) fail(key, attempt, message.message, true);
-                    else void reconcile(key, attempt); // Legacy or stale rejection: check rather than assume.
+                    if (typeof request?.request_id === 'string' && request.request_id !== attempt.requestId) continue;
+                    if (request?.request_id === attempt.requestId && message.error !== 'unknown_confirmation') {
+                        fail(key, attempt, message.message, true);
+                    } else {
+                        void reconcile(key, attempt); // Legacy/retired prompt: check rather than assume.
+                    }
                 }
             }
         },

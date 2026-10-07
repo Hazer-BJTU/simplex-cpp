@@ -111,7 +111,7 @@ const Approval = memo(function Approval({ prompt, autoOpen, onDefer, onReview }:
             // Nothing left the machine, so nothing is in flight and the button
             // stays usable. This is the case the old panel turned into a
             // permanently disabled dialog.
-            setLocalError('the panel is not connected, so nothing was sent');
+            setLocalError('The panel or worker is disconnected; no decision was sent.');
             return;
         }
     }
@@ -198,6 +198,9 @@ const Approval = memo(function Approval({ prompt, autoOpen, onDefer, onReview }:
                     <ApprovalBody
                         prompt={prompt}
                         summary={summary}
+                        status={waiting ? submission?.phase === 'checking'
+                            ? 'Checking the decision outcome with the Hub.'
+                            : 'Decision sent; waiting for the Hub to confirm.' : ''}
                         error={localError || submission?.error || ''}
                     />
                 </DialogContent>
@@ -207,14 +210,18 @@ const Approval = memo(function Approval({ prompt, autoOpen, onDefer, onReview }:
 });
 
 /** The dialog's contents: what is being asked, and by whom. */
-const ApprovalBody = memo(function ApprovalBody({ prompt, summary, error }: {
+const ApprovalBody = memo(function ApprovalBody({ prompt, summary, status, error }: {
     prompt: ConfirmationPrompt;
     summary: string;
+    status: string;
     error: string;
 }) {
     const [argumentsOpen, setArgumentsOpen] = useState(false);
+    const argumentsText = useMemo(() => argumentsOpen
+        ? JSON.stringify(prompt.call?.arguments ?? {}, null, 2) : '', [argumentsOpen, prompt.call?.arguments]);
     return (
         <div className="space-y-2">
+            <span role="status" aria-live="polite" className="sr-only">{status}</span>
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-sunken
                 px-2 py-1 font-mono text-xs text-ink">
                 {summary}
@@ -225,7 +232,7 @@ const ApprovalBody = memo(function ApprovalBody({ prompt, summary, error }: {
                     className="cursor-pointer select-none">arguments as the worker sent them</summary>
                 <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded
                     bg-sunken px-2 py-1 font-mono text-ink">
-                    {argumentsOpen ? JSON.stringify(prompt.call?.arguments ?? {}, null, 2) : null}
+                    {argumentsText}
                 </pre>
             </details>
 

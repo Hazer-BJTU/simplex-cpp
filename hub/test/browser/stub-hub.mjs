@@ -31,6 +31,7 @@ let epoch = 'stub-epoch-1';
  */
 let settings = { force_kill_process_group: false };
 let historyResponseIndex = 0;
+const streams = new Set();
 
 /** One session description, as `describe()` builds it on the real hub. */
 function makeSession(id, createdAt = '2026-01-01T00:00:00.000Z') {
@@ -200,6 +201,8 @@ const server = createServer((req, res) => {
             }
             switch (url.pathname) {
                 case '/__stub/reset': {
+                    for (const timer of streams) clearInterval(timer);
+                    streams.clear();
                     sequence = 0;
                     workerSequence = 0;
                     transcripts.clear();
@@ -253,6 +256,25 @@ const server = createServer((req, res) => {
                         broadcast({ type: 'plan', session: session.session_id, plan: payload.plan });
                     }
                     json(res, 200, { ok: true });
+                    return;
+                }
+                case '/__stub/stream': {
+                    let index = 0;
+                    const events = payload.events ?? [];
+                    const timer = setInterval(() => {
+                        const item = events[index++];
+                        if (!item) {
+                            clearInterval(timer);
+                            streams.delete(timer);
+                            return;
+                        }
+                        const envelope = append(payload.session ?? 'demo', item.event,
+                            item.data ?? {}, item.extra ?? {});
+                        broadcast({ type: 'event', session: envelope.session_id,
+                            hub_seq: envelope.hub_sequence, envelope });
+                    }, Math.max(1, payload.interval ?? 8));
+                    streams.add(timer);
+                    json(res, 200, { count: events.length });
                     return;
                 }
                 case '/__stub/emit-batch': {

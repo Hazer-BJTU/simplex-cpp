@@ -54,9 +54,9 @@ it('scopes rejection by submission ID and reconciles late/global responses witho
     assert.notEqual(s.sent[1].requestId, s.sent[0].requestId);
     s.controller.rejected({ type: 'error', error: 'confirmation_rejected', message: 'late',
         request: { type: 'confirmation', session: 'demo', confirmation_id: 'id', request_id: s.sent[0].requestId } });
-    assert.equal(s.state().phase, 'checking');
+    assert.equal(s.state().phase, 'pending');
     await delay(0);
-    assert.equal(s.state().retryable, true);
+    assert.equal(s.state().retryable, false);
     assert.notEqual(s.state().error, 'late');
 });
 
