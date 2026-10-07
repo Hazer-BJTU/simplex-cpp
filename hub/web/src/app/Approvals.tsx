@@ -25,7 +25,7 @@
  *   decision again, and a refusal leaves a usable button rather than a stuck
  *   dialog. The "waiting" line is information, not a lock.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ConfirmationPrompt } from '../../../shared/protocol.ts';
 import { usePanel } from '../state/usePanel.ts';
 import { Badge, Button } from '../ui/Button.tsx';
@@ -161,10 +161,10 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                     <Button size="sm" variant="ghost" onClick={() => { onReview(); setOpen(true); }}>
                         Review
                     </Button>
-                    <Button size="sm" variant="ghost" disabled={expired} onClick={() => decide('approved')}>
+                    <Button size="sm" variant="primary" disabled={expired} onClick={() => decide('approved')}>
                         Approve
                     </Button>
-                    <Button size="sm" variant="ghost" disabled={expired} onClick={() => decide('denied')}>
+                    <Button size="sm" variant="danger" disabled={expired} onClick={() => decide('denied')}>
                         Deny
                     </Button>
                 </div>
@@ -294,10 +294,27 @@ export function Approvals() {
         });
     }, [prompts]);
 
-    if (prompts.length === 0) return null;
+    const list = useRef<HTMLElement>(null);
+    const hasPrompts = prompts.length > 0;
+    useLayoutEffect(() => {
+        const node = list.current;
+        if (!node) return;
+        // The list can scroll independently of the transcript. Account for its
+        // own scrollbar before adding the shared conversation gutter.
+        const update = () => node.style.setProperty(
+            '--approval-scrollbar', `${node.offsetWidth - node.clientWidth}px`,
+        );
+        update();
+        const observer = new ResizeObserver(update);
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, [hasPrompts]);
+
+    if (!hasPrompts) return null;
 
     return (
         <section
+            ref={list}
             aria-label="pending approvals"
             data-testid="approvals"
             className="approval-list animate-enter"

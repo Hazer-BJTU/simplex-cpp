@@ -1,5 +1,8 @@
 import { expect, test, type Locator } from '@playwright/test';
-import { STUB, emit, open } from './harness.ts';
+import { STUB, emit, modelResponse, open } from './harness.ts';
+
+// Exercise actual scrollbar width rather than Chromium's hidden headless bars.
+test.use({ launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] } });
 
 /** Check the actual label and icon bounds, not only the button's outer box. */
 async function expectContainedLabel(button: Locator): Promise<void> {
@@ -64,3 +67,57 @@ for (const width of [360, 768, 1440]) {
         await expect(page.getByRole('dialog')).toContainText('long-command/');
     });
 }
+
+test.describe('classic scrollbar alignment', () => {
+
+    for (const width of [768, 1440]) {
+        test(`approval actions and reading edges remain distinct and aligned at ${width}px`, async ({ page }) => {
+            await page.setViewportSize({ width, height: 960 });
+            await open(page, '?session=demo');
+            await page.addStyleTag({ content: `
+                .reading-scroll { overflow-y: scroll !important; }
+                .reading-scroll::-webkit-scrollbar, .approval-list::-webkit-scrollbar { width: 16px; }
+            ` });
+            await emit(page, 'model_response', modelResponse('Long transcript.\n\n'.repeat(100)));
+            const list = page.getByTestId('approvals');
+            async function expectAligned(): Promise<void> {
+                await expect.poll(async () => {
+                    const reading = (await page.getByTestId('reading-surface').boundingBox())!;
+                    const composer = (await page.getByTestId('composer-surface').boundingBox())!;
+                    const approval = (await list.locator('.reading-width').boundingBox())!;
+                    return Math.abs(reading.x - approval.x) + Math.abs(reading.width - approval.width)
+                        + Math.abs(composer.x - approval.x) + Math.abs(composer.width - approval.width);
+                }).toBeLessThan(1);
+            }
+            // Start without an approval scrollbar, then overflow the list itself.
+            for (let index = 0; index < 7; index++) {
+                await page.request.post(`${STUB}/__stub/confirm`, { data: {
+                    session: 'demo', confirmation_id: `alignment-${index}`,
+                    call: { name: 'run_command', arguments: { command: 'echo review' } },
+                } });
+                await expect(page.getByRole('dialog')).toBeVisible();
+                await page.keyboard.press('Escape');
+                await expect(page.getByRole('dialog')).toHaveCount(0);
+                if (index === 0) {
+                    expect(await list.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(0);
+                    await expectAligned();
+                    const row = page.getByTestId('approval-banner').first();
+                    const review = row.getByRole('button', { name: 'Review', exact: true });
+                    const approve = row.getByRole('button', { name: 'Approve', exact: true });
+                    const deny = row.getByRole('button', { name: 'Deny', exact: true });
+                    const background = (button: Locator) => button.evaluate(node => getComputedStyle(node).backgroundColor);
+                    const color = (button: Locator) => button.evaluate(node => getComputedStyle(node).color);
+                    expect(await background(approve)).not.toBe(await background(review));
+                    expect(await color(deny)).not.toBe(await color(review));
+                }
+            }
+            await expect.poll(() => list.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(16);
+            await expectAligned();
+            // Re-measure after the independent scrollbar disappears again.
+            await page.addStyleTag({ content: '.approval-list { max-height: none; }' });
+            await expect.poll(() => list.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(0);
+            await expectAligned();
+        });
+    }
+
+});
