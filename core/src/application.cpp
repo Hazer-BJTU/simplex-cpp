@@ -32,6 +32,46 @@ using Json = nlohmann::json;
 
 namespace {
 /**
+ * Attach host execution identity inside the loop's integration transaction.
+ * Input provenance stays untouched when Continue appends to an existing turn.
+ * The provider still owns integration policy; only the newly appended step's
+ * extras are annotated, before observers, recovery checkpoints or tools run.
+ * This borrowed adapter lives until run() has joined its model coroutine.
+ */
+class ExecutionModel final : public llm::LLMModel {
+public:
+    ExecutionModel(asio::any_io_executor executor, llm::LLMModel& provider,
+                   Json execution)
+        : LLMModel(std::move(executor), Json::object()), provider_(provider),
+          execution_(std::move(execution)) {}
+
+    llm::LLMModelType model_type() const noexcept override {
+        return provider_.model_type();
+    }
+
+    asio::awaitable<model_io::MessageItem> converse(
+        model_io::AgentInputState conversation) override {
+        co_return co_await provider_.converse(std::move(conversation));
+    }
+
+    void integrate(model_io::AgentInputState& state,
+                   const model_io::MessageItem& item) override {
+        provider_.integrate(state, item);
+        if (item.type != model_io::MessageItemType::ModelResponse) return;
+        if (state.turns.empty() || state.turns.back().agent_loop_step.empty()) {
+            throw std::logic_error("model did not append a response step");
+        }
+        auto& extras = state.turns.back().agent_loop_step.back().extras;
+        if (!extras || !extras->is_object()) extras = Json::object();
+        (*extras)["simplex.execution"] = execution_;
+    }
+
+private:
+    llm::LLMModel& provider_;
+    Json execution_;
+};
+
+/**
  * Append configured environment hints after tool skills and before user Volatile
  * sections. These statements describe the environment; they do not change the
  * working directory, restrict access, or verify installed software. Empty
@@ -930,10 +970,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             has_message = true;
             message = continuation();
         }
+        ExecutionModel execution_model(strand, *driver_model,
+            {{"worker_id", worker_id}, {"request_id", request_id}, {"run_id", run_id}});
         for (;;) {
             failure_operation = "task";
             run_saved = false;
-            auto result = co_await loop::run(*driver_model, registry, events, strand,
+            auto result = co_await loop::run(execution_model, registry, events, strand,
                 state, has_message, std::move(message),
                 {config.max_exchanges, config.auto_compact_threshold}, run_stop.get_token());
             add_exchanges(task_exchanges, result.completed_exchanges);

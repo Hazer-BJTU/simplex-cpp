@@ -263,6 +263,11 @@ nlohmann::json history_page(const model_io::AgentInputState& state,
                 turn.agent_loop_step[step_index].model_response, step_index);
             const auto commit = turn.agent_loop_step[step_index].commit_sequence;
             if (commit != 0) step["commit_sequence"] = std::to_string(commit);
+            const auto& metadata = turn.agent_loop_step[step_index].extras;
+            if (metadata && metadata->is_object()
+                && metadata->contains("simplex.execution")) {
+                step["execution"] = metadata->at("simplex.execution");
+            }
             const auto bytes = step.dump().size() + (steps.empty() ? 0u : 1u);
             if (page_bytes + separator_bytes + turn_bytes + bytes
                     > history_page_max_bytes) break;

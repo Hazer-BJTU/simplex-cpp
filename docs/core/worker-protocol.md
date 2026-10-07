@@ -489,7 +489,11 @@ If a future projection cannot fit such an indivisible entry, the query emits
 returning a cursor that cannot advance. Invalid UTF-8 or other projection errors
 also remain query failures; they do not start an agent run.
 Each step contains its index, ordered response content, optional reasoning,
-and a tool-call count. `omitted_steps` counts model steps still to be fetched;
+and a tool-call count. Newly committed task steps also include `commit_sequence`
+(a decimal string) and `execution: {worker_id, request_id, run_id}`. These identify
+the response independently of the turn's input provenance; legacy steps may omit
+them. See [automatic context compaction](#automatic-context-compaction) for replay
+reconciliation across Continue requests and worker restarts. `omitted_steps` counts model steps still to be fetched;
 `omitted_user_parts` counts input parts beyond the display limit. Each content
 list includes at most four parts;
 `omitted_parts` on a model step counts its remaining parts.
@@ -1765,11 +1769,22 @@ Private continuation MessageItem metadata uses `simplex.internal_input` and
 `simplex.source` (worker/request/run IDs); public user Content extras cannot forge
 it. There is no wire `input_committed` for that instruction. History keeps the turn
 with `user: []`, `internal_input: "auto_compact_continue"`, `source`, and its model
-steps. Hubs omit empty internal user bubbles and associate responses by source,
-not positional user-turn assumptions. History steps and `model_response` data add
-optional `commit_sequence` as a decimal string, a stable response identity across
-compactions (zero/legacy history may omit it). The panel uses this identity to
-retain answers missing from replay while preserving existing live tool cards.
+steps. `source` is input provenance: it never changes when a later explicit
+Continue appends responses to the same turn. Each newly committed task step stores
+`simplex.execution` in its own extras, before recovery checkpoints or tool dispatch.
+History projects it as `execution: {worker_id, request_id, run_id}`. This identity
+belongs to that response, including after cancellation, failure, or worker restart.
+No model-provider or tool-plugin ABI changes are needed for these extras.
+
+History steps and `model_response` data also include optional `commit_sequence` as
+a decimal string (zero/legacy history may omit it). Panels deduplicate using both
+per-response execution and commit sequence; a sequence alone is not a lineage
+identity. The history query's event cursor bounds replay from the queried worker
+incarnation only. Replayed responses from earlier incarnations retain their own
+execution IDs. Missing responses are restored within the matching execution round,
+keeping live tool cards; unmatched executions remain standalone history. Legacy
+steps without execution metadata use conservative input-source matching and cannot
+fully correlate later Continue responses. Internal user bubbles remain hidden.
 Subagent projections retain assistant answers and original request correlation;
 automatic compact never completes a delegated send before final `run_finished`.
 

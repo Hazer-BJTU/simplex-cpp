@@ -8,6 +8,7 @@ import { connectWorker, until } from '../helpers/worker.js';
 import { sessionDir } from '../../src/launch/config-render.ts';
 import { createPanelStore } from '../../web/src/state/store.ts';
 import { buildRounds } from '../../web/src/app/rounds.ts';
+import { reconcileInternalHistory } from '../../web/src/app/history-rounds.ts';
 
 it('keeps auto compact and private continuation inside one real worker run',
     { skip: e2eSkip, timeout: 60000 }, async () => {
@@ -90,3 +91,97 @@ it('keeps auto compact and private continuation inside one real worker run',
             rmSync(ctx.config.dataDir, { recursive: true, force: true });
         }
     });
+
+for (const restart of [false, true]) {
+    it(`restores per-response execution after failed automatic continuation, restart=${restart}`,
+        { skip: e2eSkip, timeout: 60000 }, async () => {
+            const ctx = await startE2eHub();
+            const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
+            let exchanges = 0;
+            let resume = false;
+            ctx.hub.mock.scenarioDelta = () => {
+                if (resume) return { text: 'Answer from explicit Continue.' };
+                exchanges += 1;
+                if (exchanges === 3) return { text: 'Goal: finish the task. State: initial work done. Next: continue.' };
+                if (exchanges >= 5) throw new Error('injected continuation failure');
+                return { toolCall: { index: 0, id: `call-${exchanges}`, type: 'function',
+                    function: { name: 'unregistered_fixture', arguments: '{}' } } };
+            };
+            const api = async (path, body) => {
+                const res = await fetch(`${ctx.base}${path}`, { method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                assert.ok(res.ok);
+                return res.json();
+            };
+            try {
+                await api('/api/sessions', { session: 'auto-resume', spec: {
+                    provider: 'mock', model: 'mock-auto', autoCompactThreshold: 100000,
+                    maxExchanges: 2, maxAutoCompactions: 2,
+                } });
+                assert.equal((await api('/api/sessions/auto-resume/start', {})).ok, true);
+                const session = ctx.hub.registry.get('auto-resume');
+                await until(() => session.connected, { timeout: 20000 });
+                panel.send({ v: 1, type: 'subscribe', session: session.id });
+                await panel.waitFor(message => message.type === 'subscribed');
+                panel.send({ v: 1, type: 'input', session: session.id, request_id: 'A',
+                    content: [{ type: 'text', modality: 'text', raw: 'Detailed task. '.repeat(3000) }] });
+                const failed = await panel.waitFor(message => message.type === 'event'
+                    && message.envelope.event === 'run_finished' && message.envelope.request_id === 'A',
+                { timeout: 30000 });
+                assert.equal(failed.envelope.data.status, 'failed');
+                assert.equal(failed.envelope.data.auto_compact.succeeded, 1);
+                if (restart) {
+                    assert.equal((await api(`/api/sessions/${session.id}/stop`, {})).ok, true);
+                    await until(() => !session.connected, { timeout: 20000 });
+                    assert.equal((await api(`/api/sessions/${session.id}/start`, {})).ok, true);
+                    await until(() => session.connected && session.identity.workerId !== failed.envelope.worker_id,
+                        { timeout: 20000 });
+                }
+                resume = true;
+                panel.send({ v: 1, type: 'input', session: session.id, request_id: 'B', operation: 'continue' });
+                const finished = await panel.waitFor(message => message.type === 'event'
+                    && message.envelope.event === 'run_finished' && message.envelope.request_id === 'B',
+                { timeout: 30000 });
+                assert.equal(finished.envelope.data.status, 'completed');
+                panel.send({ v: 1, type: 'history', session: session.id, request_id: 'inspect-resume' });
+                const history = await panel.waitFor(message => message.type === 'event'
+                    && message.envelope.event === 'history'
+                    && message.envelope.data.request_id === 'inspect-resume');
+                const turn = history.envelope.data.turns[0];
+                assert.equal(turn.source.request_id, 'A');
+                assert.deepEqual(turn.user, []);
+                assert.equal(turn.steps.length, 2);
+                for (const [index, event] of [failed, finished].entries()) {
+                    assert.deepEqual(turn.steps[index].execution, { worker_id: event.envelope.worker_id,
+                        request_id: event.envelope.request_id, run_id: event.envelope.run_id });
+                }
+                assert.equal(turn.steps[0].execution.worker_id === turn.steps[1].execution.worker_id, !restart);
+                const snapshot = JSON.parse(readFileSync(join(sessionDir(ctx.config, session.id), 'state/state.json'), 'utf8'));
+                assert.deepEqual(snapshot.turns[0].agent_loop_step.map(step => step.extras['simplex.execution']),
+                    turn.steps.map(step => step.execution));
+                const events = panel.messages.filter(message => message.type === 'event').map(message => message.envelope);
+                for (const missing of [null, turn.steps[0].commit_sequence, turn.steps[1].commit_sequence]) {
+                    const replay = events.filter(event => event.event !== 'history'
+                        && !(event.event === 'model_response' && event.data.commit_sequence === missing));
+                    const store = createPanelStore();
+                    store.getState().applySubscribed({ type: 'subscribed', session: session.describe(),
+                        transcript: replay, logs: [], latest: replay.at(-1).hub_sequence });
+                    const view = store.getState().views.get(session.id);
+                    const runs = buildRounds(view.items, view.confirmations, view.requests)
+                        .filter(round => round.kind === 'run');
+                    const restored = reconcileInternalHistory([turn], runs,
+                        history.envelope.sequence, history.envelope.worker_id);
+                    assert.equal(restored.history.length, 0);
+                    assert.deepEqual(restored.rounds.map(round => round.assistant.length), [3, 1]);
+                    assert.equal(restored.rounds[1].assistant[0].text, 'Answer from explicit Continue.');
+                    assert.equal(restored.rounds[0].calls.length, 4); // three model calls plus automatic compact
+                    assert.equal(restored.rounds[1].input, null);
+                    assert.equal(JSON.stringify(events).includes("Continue the user's unfinished task"), false);
+                }
+            } finally {
+                await panel.close();
+                await ctx.hub.stop();
+                rmSync(ctx.config.dataDir, { recursive: true, force: true });
+            }
+        });
+}

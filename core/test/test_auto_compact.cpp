@@ -13,7 +13,7 @@ using Json = nlohmann::json;
 using State = model_io::AgentInputState;
 
 namespace {
-enum class Mode { Success, Frequent, Budget, LastBudgetSuccess, SummaryFailure, SummaryEmpty, SummaryTools, Cancel, CancelResume, MemoryContinue };
+enum class Mode { Success, Frequent, Budget, LastBudgetSuccess, SummaryFailure, SummaryEmpty, SummaryTools, Cancel, CancelResume, MemoryContinue, ResumeFailure, ResumeCancel };
 
 /** No credentials or shell effects: unknown fixture calls settle through the registry. */
 struct Model : llm::LLMModel {
@@ -52,7 +52,11 @@ struct Model : llm::LLMModel {
             result.cost = model_io::TokenCost{500, 10, 100};
         } else {
             ++ordinary;
-            if (mode == Mode::CancelResume && ordinary == 3) {
+            if (mode == Mode::ResumeFailure && ordinary == 4) {
+                throw std::runtime_error("continuation provider unavailable");
+            }
+            if ((mode == Mode::CancelResume && ordinary == 3)
+                || (mode == Mode::ResumeCancel && ordinary == 4)) {
                 waiting = true;
                 asio::steady_timer wait(co_await asio::this_coro::executor, std::chrono::seconds(20));
                 co_await wait.async_wait(asio::use_awaitable);
@@ -63,7 +67,8 @@ struct Model : llm::LLMModel {
                 BOOST_TEST(state.turns.back().user_input.extras->at("simplex.internal_input") == "auto_compact_continue");
             }
             const bool final = mode == Mode::MemoryContinue
-                || ((mode == Mode::Success || mode == Mode::LastBudgetSuccess) && ordinary == 5);
+                || ((mode == Mode::Success || mode == Mode::LastBudgetSuccess
+                    || mode == Mode::ResumeFailure || mode == Mode::ResumeCancel) && ordinary == 5);
             content.raw = final ? "Final answer" : std::string(20000, 'X');
             // Prompt cost deliberately exceeds the threshold even on final answers.
             // Every second exchange triggers; summary usage never triggers recursion.
@@ -116,6 +121,8 @@ void exercise(Mode mode, bool save_run) {
     }
     core::Application app(io.get_executor(), config, "test", model);
     std::vector<Json> events;
+    const bool resumed = mode == Mode::ResumeFailure || mode == Mode::ResumeCancel;
+    int histories = 0;
     auto peer = [&]() -> asio::awaitable<void> {
         beast::websocket::stream<asio::ip::tcp::socket> socket(
             co_await acceptor.async_accept(asio::use_awaitable));
@@ -142,7 +149,9 @@ void exercise(Mode mode, bool save_run) {
                 co_await send("payload", std::move(input));
             } else if ((name == "tool_calls" && mode == Mode::Cancel
                 && event.at("data").at(0).at("name") == "auto_compact")
-                || (name == "compact_finished" && mode == Mode::CancelResume)) {
+                || (name == "compact_finished" && mode == Mode::CancelResume)
+                || (name == "model_response" && mode == Mode::ResumeCancel
+                    && event.at("data").at("commit_sequence") == "4")) {
                 while (!model->waiting) {
                     asio::steady_timer wait(co_await asio::this_coro::executor, std::chrono::milliseconds(1));
                     co_await wait.async_wait(asio::use_awaitable);
@@ -157,7 +166,11 @@ void exercise(Mode mode, bool save_run) {
                     BOOST_TEST(event.at("data").at("turns").at(0).at("internal_input") == "auto_compact_continue");
                     BOOST_TEST(event.at("data").at("turns").at(0).at("source").at("request_id") == "original");
                 }
-                co_await send("signal", {{"operation", "shutdown"}});
+                if (resumed && ++histories == 1) {
+                    co_await send("payload", {{"operation", "continue"}, {"request_id", "explicit-continue"}});
+                } else {
+                    co_await send("signal", {{"operation", "shutdown"}});
+                }
             } else if (name == "input_rejected" || name == "error") {
                 BOOST_FAIL(event.dump());
             }
@@ -175,6 +188,32 @@ void exercise(Mode mode, bool save_run) {
     asio::post(io, [&] { watchdog.cancel(); });
     runner.join();
     BOOST_TEST(!timed_out);
+    if (resumed) {
+        std::vector<Json> finishes, histories;
+        for (const auto& event : events) {
+            if (event.at("event") == "run_finished") finishes.push_back(event);
+            if (event.at("event") == "history") histories.push_back(event.at("data"));
+        }
+        BOOST_REQUIRE_EQUAL(finishes.size(), 2u);
+        BOOST_REQUIRE_EQUAL(histories.size(), 2u);
+        BOOST_TEST(finishes[0]["data"]["status"] ==
+            (mode == Mode::ResumeFailure ? "failed" : "cancelled"));
+        BOOST_TEST(finishes[1]["data"]["status"] == "completed");
+        const auto restored = load::load_state(config.state_directory / "state.json");
+        BOOST_REQUIRE_EQUAL(restored.turns.size(), 1u);
+        const auto& turn = histories.back().at("turns").at(0);
+        BOOST_TEST(turn.at("source").at("request_id") == "original");
+        BOOST_TEST(turn.at("user").empty());
+        BOOST_REQUIRE_EQUAL(turn.at("steps").size(), 2u);
+        for (std::size_t index = 0; index < 2; ++index) {
+            const auto& execution = turn.at("steps").at(index).at("execution");
+            BOOST_TEST(execution.at("request_id") == finishes[index].at("request_id"));
+            BOOST_TEST(execution.at("run_id") == finishes[index].at("run_id"));
+            BOOST_TEST(execution.at("worker_id") == finishes[index].at("worker_id"));
+            BOOST_TEST(restored.turns[0].agent_loop_step[index].extras->at("simplex.execution") == execution);
+        }
+        return;
+    }
     int starts = 0, finishes = 0, inputs = 0, calls = 0, results = 0;
     Json finished;
     std::string run;
@@ -243,3 +282,10 @@ BOOST_AUTO_TEST_CASE(explicit_continue_from_memory_is_private) { exercise(Mode::
 BOOST_AUTO_TEST_CASE(cancel_after_replacement_keeps_memory_and_settled_compact_card) { exercise(Mode::CancelResume, true); }
 BOOST_AUTO_TEST_CASE(invalid_summary_keeps_original_state_and_stops) { exercise(Mode::SummaryEmpty, true); }
 BOOST_AUTO_TEST_CASE(summary_cannot_call_tools_or_recurse) { exercise(Mode::SummaryTools, true); }
+
+BOOST_AUTO_TEST_CASE(failed_internal_turn_retains_each_execution_on_explicit_continue) {
+    exercise(Mode::ResumeFailure, true);
+}
+BOOST_AUTO_TEST_CASE(cancelled_internal_turn_retains_each_execution_on_explicit_continue) {
+    exercise(Mode::ResumeCancel, true);
+}

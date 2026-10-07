@@ -24,7 +24,7 @@
  * - **A success flag.** The protocol has none: a result is a failure only when
  *   the tool framework annotated one, and "not executed" is a third state.
  */
-import type { ConfirmationPrompt, RequestRecord, WorkerEnvelope } from '../../../shared/protocol.ts';
+import type { ConfirmationPrompt, HistoryTurn, RequestRecord, WorkerEnvelope } from '../../../shared/protocol.ts';
 import { parseCompactResult, type CompactResult } from '../state/compact.ts';
 import type {
     EventItem,
@@ -93,6 +93,8 @@ export interface AssistantBlock {
     readonly clock: string;
     /** Keys of the calls this response proposed. */
     readonly callIds: readonly string[];
+    /** A display-only fallback; live tool cards stay in the execution round. */
+    readonly historyStep?: HistoryTurn['steps'][number];
 }
 
 /** Something the worker or the panel reported as a problem. */

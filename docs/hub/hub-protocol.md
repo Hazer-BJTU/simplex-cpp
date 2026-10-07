@@ -575,7 +575,12 @@ round. The paired host-generated `auto_compact` tool card reports progress and
 needs no confirmation. Existing cancellation remains available throughout.
 
 History turns marked `internal_input: "auto_compact_continue"` contain no user
-text, but keep assistant responses and worker/request/run source correlation.
-Panels hide the internal user bubble and match decimal-string `commit_sequence`
-response identities against replay rather than assigning these turns by position.
+text, but retain their input `source` and assistant responses. Each new history
+step has its own `execution: {worker_id, request_id, run_id}` identifying the run
+that committed it; later Continue requests and worker restarts do not rewrite the
+turn's original input source. Panels hide the internal user bubble and match
+execution plus decimal-string `commit_sequence` against replay. Missing responses
+are restored inside their execution round while retaining its live tool cards;
+responses with no matching execution remain standalone history. Event cursors
+apply only to the queried worker incarnation, not prior workers' sequence numbers.
 See [worker automatic compaction](../core/worker-protocol.md#automatic-context-compaction).

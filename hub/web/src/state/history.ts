@@ -5,6 +5,11 @@ function record(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function execution(value: unknown): boolean {
+    return record(value) && ['worker_id', 'request_id', 'run_id'].every((key) =>
+        typeof value[key] === 'string' && (value[key] as string).length > 0);
+}
+
 function index(value: unknown): value is number {
     return Number.isSafeInteger(value) && (value as number) >= 0;
 }
@@ -40,15 +45,14 @@ export function parseHistoryPage(value: unknown): HistoryPage | null {
         if (turn.internal_input !== undefined) {
             const source = turn.source;
             if (turn.internal_input !== 'auto_compact_continue' || turn.user.length !== 0
-                || !record(source)
-                || !['worker_id', 'request_id', 'run_id'].every((key) =>
-                    typeof source[key] === 'string' && (source[key] as string).length > 0)) return null;
+                || !execution(source)) return null;
         }
         let expectedStep = turnOffset === 0 ? value.step as number : 0;
         for (const step of turn.steps) {
             if (!record(step) || !index(step.index) || step.index !== expectedStep
                 || step.commit_sequence !== undefined && (typeof step.commit_sequence !== 'string'
                     || !/^[1-9][0-9]{0,19}$/.test(step.commit_sequence))
+                || step.execution !== undefined && !execution(step.execution)
                 || !parts(step.content) || !index(step.tool_calls)
                 || step.omitted_parts !== undefined && !index(step.omitted_parts)
                 || step.reasoning !== undefined && !part(step.reasoning)) return null;

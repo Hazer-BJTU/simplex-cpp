@@ -429,14 +429,23 @@ BOOST_AUTO_TEST_CASE(history_hides_only_host_owned_internal_input_and_keeps_resp
     model_io::AgentLoopStep step;
     step.model_response.type = model_io::MessageItemType::ModelResponse;
     step.model_response.content.push_back(display_text("visible answer"));
+    step.commit_sequence = 7;
+    step.extras = Json{{"simplex.execution", {{"worker_id", "restarted-worker"},
+        {"run_id", "continued-run"}, {"request_id", "continued-request"}}}};
     turn.agent_loop_step.push_back(step);
+    // A new execution may append to a turn created before cancellation/restart.
+    // Serialization must retain both identities without exposing the instruction.
     state.turns.push_back(turn);
+    state = Json(state).get<model_io::AgentInputState>();
     core::HistoryRequest request;
     request.request_id = "query";
     const auto page = core::history_page(state, request, 1);
     BOOST_TEST(page.dump().find("PRIVATE RESUME") == std::string::npos);
     BOOST_TEST(page["turns"][0]["user"].empty());
     BOOST_TEST(page["turns"][0]["source"]["run_id"] == "run");
+    BOOST_TEST(page["turns"][0]["steps"][0]["execution"]["run_id"] == "continued-run");
+    BOOST_TEST(page["turns"][0]["steps"][0]["execution"]["worker_id"] == "restarted-worker");
+    BOOST_TEST(page["turns"][0]["steps"][0]["commit_sequence"] == "7");
     BOOST_TEST(page["turns"][0]["steps"][0]["content"][0]["raw"] == "visible answer");
     state.turns[0].user_input.content[0].extras = state.turns[0].user_input.extras;
     state.turns[0].user_input.extras.reset();

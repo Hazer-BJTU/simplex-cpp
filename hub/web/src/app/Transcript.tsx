@@ -33,7 +33,7 @@ import type {
 } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { statsOf, type NoteItem, type OutboxItem, type TranscriptItem } from '../state/view.ts';
-import { uncoveredInternalHistory } from './history-rounds.ts';
+import { reconcileInternalHistory } from './history-rounds.ts';
 import { parseCompactResult } from '../state/compact.ts';
 import { useClient } from './ClientContext.tsx';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
@@ -359,6 +359,18 @@ function AssistantMessage({ block, calls, showDetails }: {
                 ? <Markdown>{block.text}</Markdown>
                 : <p className="text-sm italic text-ink-faint">(no text in this response)</p>}
 
+            {block.historyStep && block.historyStep.tool_calls > 0 && (
+                <p className="text-xs text-ink-muted">
+                    {block.historyStep.tool_calls} tool call{block.historyStep.tool_calls === 1 ? '' : 's'}
+                    {' '}in the restored response
+                </p>
+            )}
+            {(block.historyStep?.omitted_parts ?? 0) > 0 && (
+                <p className="text-xs text-ink-muted">
+                    {block.historyStep!.omitted_parts} response parts omitted
+                </p>
+            )}
+
             {proposed.length > 0 && (
                 <div className="space-y-1">
                     {proposed.map((call) => <ToolCard key={call.key} call={call} />)}
@@ -581,7 +593,7 @@ export function Transcript() {
     // detailed live rounds, including their tool cards, when both sources
     // describe the same committed input. The projection supplies the missing
     // user text for an admitted input replayed without its panel outbox.
-    const { olderHistory, historyForRun } = useMemo(() => {
+    const { olderHistory, historyForRun, restoredRuns } = useMemo(() => {
         const mapped = new Map<string, HistoryTurn>();
         const baseline = view?.historySequence;
         const worker = view?.historyWorker;
@@ -589,8 +601,20 @@ export function Transcript() {
         const compactSequence = compact && compact.worker_id === worker
             && typeof compact.sequence === 'number' && parseCompactResult(compact.data)
             ? compact.sequence : -1;
-        if (view?.historyLoading || baseline === null || baseline === undefined || !worker) {
-            return { olderHistory: history, historyForRun: mapped };
+        if (baseline === null || baseline === undefined || !worker) {
+            return { olderHistory: history, historyForRun: mapped, restoredRuns: runs };
+        }
+        const ordinary = history.filter((turn) => !turn.internal_input);
+        const internal = history.filter((turn) => turn.internal_input);
+        const restored = reconcileInternalHistory(internal, runs, baseline, worker);
+        if (view?.historyLoading) {
+            // Input positions need the complete history. Response identities can
+            // already be reconciled while pages arrive or a refresh is pending.
+            return {
+                olderHistory: [...ordinary, ...restored.history].sort((a, b) => a.index - b.index),
+                historyForRun: mapped,
+                restoredRuns: restored.rounds,
+            };
         }
         const detailed = runs.filter((round) => round.protocol.some((item) =>
                 item.envelope.event === 'input_committed'
@@ -598,20 +622,23 @@ export function Transcript() {
                 && typeof item.envelope.sequence === 'number'
                 && item.envelope.sequence > compactSequence
                 && item.envelope.sequence <= baseline));
-        const ordinary = history.filter((turn) => !turn.internal_input);
-        const internal = history.filter((turn) => turn.internal_input);
         const count = Math.min(detailed.length, ordinary.length);
         const older = ordinary.slice(0, ordinary.length - count);
-        older.push(...uncoveredInternalHistory(internal, runs, baseline));
+        older.push(...restored.history);
         older.sort((a, b) => a.index - b.index);
         if (count > 0) {
             detailed.slice(-count).forEach((round, index) => {
                 mapped.set(round.key, ordinary[ordinary.length - count + index]!);
             });
         }
-        return { olderHistory: older, historyForRun: mapped };
+        return { olderHistory: older, historyForRun: mapped, restoredRuns: restored.rounds };
     }, [history, runs, view?.historyLoading, view?.historySequence, view?.historyWorker,
         view?.latestEvents.compact_finished]);
+
+    const displayedRounds = useMemo(() => {
+        const restored = new Map(restoredRuns.map(round => [round.key, round]));
+        return rounds.map(round => restored.get(round.key) ?? round);
+    }, [rounds, restoredRuns]);
 
     // Which turns the reader has opened or closed by hand. Absent means the
     // default: the most recent few are open.
@@ -736,7 +763,7 @@ export function Transcript() {
                             ? 'Events appear here as the worker reports them. Send a message to start a run.'
                             : 'No worker is attached. Start one, then send a message.'}
                     />
-                ) : rounds.map((round) => (
+                ) : displayedRounds.map((round) => (
                     <section
                         key={round.key}
                         data-testid="round"

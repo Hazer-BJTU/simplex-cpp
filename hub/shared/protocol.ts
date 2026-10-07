@@ -130,15 +130,24 @@ export interface ContentPart {
     extras?: unknown;
 }
 
+/** Identity of the host execution that committed a response or created input. */
+export interface ExecutionIdentity {
+    worker_id: string;
+    request_id: string;
+    run_id: string;
+}
+
 /** Bounded display projection, never a restorable worker snapshot. */
 export interface HistoryTurn {
     internal_input?: 'auto_compact_continue';
-    source?: { worker_id: string; request_id: string; run_id: string };
+    source?: ExecutionIdentity;
     index: number;
     user: ContentPart[];
     steps: {
         index: number;
         commit_sequence?: string;
+        /** Per-response execution; independent of the turn's input source. */
+        execution?: ExecutionIdentity;
         content: ContentPart[];
         reasoning?: ContentPart;
         tool_calls: number;
