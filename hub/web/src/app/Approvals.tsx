@@ -59,6 +59,26 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
     const [open, setOpen] = useState(autoOpen);
     const [sentAt, setSentAt] = useState<number | null>(null);
     const [localError, setLocalError] = useState('');
+    const deadline = prompt.deadline_at ? Date.parse(prompt.deadline_at) : NaN;
+    const [expired, setExpired] = useState(Number.isFinite(deadline) && deadline <= Date.now());
+    // The Hub remains authoritative. Disable a locally expired prompt while
+    // awaiting its settlement event, without claiming that the tool stopped.
+    useEffect(() => {
+        if (!Number.isFinite(deadline)) {
+            setExpired(false);
+            return;
+        }
+        let timer: ReturnType<typeof setTimeout>;
+        function check(): void {
+            const remaining = deadline - Date.now();
+            setExpired(remaining <= 0);
+            if (remaining > 0) {
+                timer = setTimeout(check, Math.min(remaining, 2_147_483_647));
+            }
+        }
+        check();
+        return () => clearTimeout(timer);
+    }, [deadline]);
     const parent = usePanel(state => {
         const chain: string[] = [];
         const seen = new Set<string>([prompt.session_id]);
@@ -94,6 +114,7 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
     }, [notice, sentAt]);
 
     function decide(decision: 'approved' | 'denied') {
+        if (prompt.settled_at !== null || (Number.isFinite(deadline) && deadline <= Date.now())) return;
         setLocalError('');
         const sent = client.sendConfirmation(
             prompt.session_id, prompt.confirmation_id, decision, 'decided in the panel',
@@ -134,10 +155,10 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                 <Button size="sm" onClick={() => { onReview(); setOpen(true); }}>
                     Review
                 </Button>
-                <Button size="sm" variant="primary" onClick={() => decide('approved')}>
+                <Button size="sm" variant="primary" disabled={expired} onClick={() => decide('approved')}>
                     Approve
                 </Button>
-                <Button size="sm" variant="danger" onClick={() => decide('denied')}>
+                <Button size="sm" variant="danger" disabled={expired} onClick={() => decide('denied')}>
                     Deny
                 </Button>
             </div>
@@ -155,14 +176,14 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                 <DialogContent
                     focus="self"
                     title={`${prompt.call?.name ?? 'A tool call'} needs approval`}
-                    description={`session ${prompt.session_id} · run ${prompt.run_id}`}
+                    description={`session ${prompt.session_id}${parent ? ` · parent ${parent}` : ''} · run ${prompt.run_id}`}
                     footer={
                         <>
                             <DialogButton onClick={() => setOpen(false)}>Later</DialogButton>
-                            <DialogButton variant="danger" onClick={() => decide('denied')}>
+                            <DialogButton variant="danger" disabled={expired} onClick={() => decide('denied')}>
                                 Deny
                             </DialogButton>
-                            <DialogButton variant="primary" onClick={() => decide('approved')}>
+                            <DialogButton variant="primary" disabled={expired} onClick={() => decide('approved')}>
                                 Approve
                             </DialogButton>
                         </>
@@ -172,6 +193,9 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                         button: nothing is armed, so Enter cannot decide, and the
                         prompt is still announced because focus is inside the
                         labelled modal. */}
+                    {expired && <p role="status" className="mb-3 text-sm text-warn">
+                        Approval deadline passed. Waiting for the Hub to report the outcome.
+                    </p>}
                     <ApprovalBody
                         prompt={prompt}
                         summary={summary}

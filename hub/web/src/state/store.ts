@@ -189,8 +189,6 @@ export interface PanelState {
     failedInput: FailedInput | null;
     /** The last refusal the operator has not dismissed. */
     notice: Notice | null;
-    /** True when protocol events are rendered alongside the conversation. */
-    showDetails: boolean;
     /**
      * Per-session confirmation mode.
      *
@@ -301,18 +299,6 @@ export interface PanelActions {
     setNotice(tone: Notice['tone'], code: string, text: string): void;
     dismissNotice(): void;
 
-    /**
-     * Show the protocol events mixed in with the conversation.
-     *
-     * Off by default: `persisted`, `input_committed` and `run_started` are
-     * real, but they are the machinery rather than the conversation, and the
-     * old panel gave each one a card of the same weight as a model response.
-     * The switch is one flag on the store rather than one per round, because
-     * "show me what the protocol did" is a mood, not a property of a turn.
-     */
-    setShowDetails(show: boolean): void;
-    toggleDetails(): void;
-
     // ------------------------------------------------------------- session --
     /** The mode in effect for a session; `ask` when none was chosen. */
     confirmModeOf(sessionId: SessionId): ConfirmMode;
@@ -382,7 +368,6 @@ const INITIAL: PanelState = {
     selected: null,
     failedInput: null,
     notice: null,
-    showDetails: false,
     confirmMode: new Map(),
     inspectorOpen: false,
     inspectorTab: 'run',
@@ -1134,15 +1119,6 @@ export function createPanelStore() {
         dismissNotice() {
             if (get().notice === null) return;
             set({ notice: null });
-        },
-
-        setShowDetails(show) {
-            if (get().showDetails === show) return;
-            set({ showDetails: show });
-        },
-
-        toggleDetails() {
-            set({ showDetails: !get().showDetails });
         },
 
         confirmModeOf: (sessionId) => get().confirmMode.get(sessionId) ?? 'ask',

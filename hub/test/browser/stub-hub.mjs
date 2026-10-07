@@ -283,7 +283,7 @@ const server = createServer((req, res) => {
                         identity_state: 'live',
                         call: payload.call ?? { name: 'run_command', arguments: { command: 'ls' } },
                         received_at: new Date().toISOString(),
-                        deadline_at: null,
+                        deadline_at: payload.deadline_at ?? null,
                         settled_at: null,
                         decision: null,
                         reason: null,

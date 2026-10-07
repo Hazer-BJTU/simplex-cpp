@@ -8,18 +8,13 @@ import type { ConfigList } from './Configurations.tsx';
  * because the operator's first question — "which of these needs me?" — should
  * not require hovering over eight dots.
  *
- * The counts come from the session's own view. A session the panel has never
- * subscribed to has no view and so shows no counts, which is honest: the panel
- * does not know how many events it has not been told about.
- *
  * Below `md` this column becomes a drawer. It is one element with responsive
  * classes rather than two renderings of the list, because a second copy is a
  * second place for the rows to drift apart.
  */
 import { useEffect, useState, type FormEvent } from 'react';
 import type { SessionDescription } from '../../../shared/protocol.ts';
-import { usePanel, useView } from '../state/usePanel.ts';
-import { statsOf } from '../state/view.ts';
+import { usePanel } from '../state/usePanel.ts';
 import { Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Dialog, DialogContent, Tooltip } from '../ui/overlays.tsx';
@@ -33,7 +28,7 @@ function describeProcess(session: SessionDescription): { tone: string; label: st
         case 'running':
             return {
                 tone: 'text-ok',
-                label: process.pid ? `running · pid ${process.pid}` : 'running',
+                label: 'running',
             };
         case 'starting':
             return { tone: 'text-warn', label: 'starting' };
@@ -60,10 +55,6 @@ function SessionRow({ session, selected, onSelect }: {
     selected: boolean;
     onSelect: () => void;
 }) {
-    // The view's own identity changes exactly when its counters do, so this is
-    // both correct and cheap — where a `stats()` selector would be a new object
-    // on every store change and would re-render forever.
-    const stats = statsOf(useView(session.session_id));
     const process = describeProcess(session);
     // An open approval is the one thing that must not go unnoticed: it blocks a
     // tool call until it is answered or its deadline passes.
@@ -79,7 +70,7 @@ function SessionRow({ session, selected, onSelect }: {
                 data-session={session.session_id}
                 className={`w-full rounded-md px-2.5 py-2 text-left transition-colors
                     ${selected
-                        ? 'bg-accent text-accent-ink'
+                        ? 'bg-subtle text-ink ring-1 ring-inset ring-line-strong'
                         : 'hover:bg-subtle focus-visible:bg-subtle'}`}
             >
                 <span className="flex items-center gap-2">
@@ -100,22 +91,14 @@ function SessionRow({ session, selected, onSelect }: {
                     )}
                     <span className="flex-1" />
                     <span className={`shrink-0 text-xs
-                        ${selected ? 'text-accent-ink' : 'text-ink-faint'}`}>
+                        ${selected ? 'text-ink-muted' : 'text-ink-faint'}`}>
                         {session.connected ? 'worker attached' : 'worker away'}
                     </span>
                 </span>
                 <span className={`mt-0.5 block truncate text-xs
-                    ${selected ? 'text-accent-ink' : process.tone}`}>
+                    ${selected ? 'text-ink-muted' : process.tone}`}>
                     {process.label}{session.kind === 'headless' ? ` · subagent of ${session.subagent?.parent} · ${session.subagent?.lifecycle}` : ''}
                 </span>
-                {stats.items > 0 && (
-                    <span className={`mt-0.5 block text-xs
-                        ${selected ? 'text-accent-ink' : 'text-ink-faint'}`}>
-                        {stats.items} item{stats.items === 1 ? '' : 's'}
-                        {stats.gaps > 0 ? ` · ${stats.gaps} gap${stats.gaps === 1 ? '' : 's'}` : ''}
-                        {stats.unknownRequests > 0 ? ` · ${stats.unknownRequests} unknown` : ''}
-                    </span>
-                )}
             </button>
         </li>
     );

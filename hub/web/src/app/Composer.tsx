@@ -18,7 +18,7 @@
  * line. Command mode is explicit and keeps a separate query, so a command can
  * never be mistaken for a worker message or erase an unfinished draft.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ContentPart, PayloadOptions } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { Button } from '../ui/Button.tsx';
@@ -57,7 +57,8 @@ const MODES: Record<ConfirmMode, { detail: string }> = {
 };
 
 /** The primary action occupies the same slot in both composer modes. */
-const PRIMARY_ACTION_CLASS = 'h-9 w-[76px] justify-center leading-5';
+const PRIMARY_ACTION_CLASS = 'h-9 w-[112px] justify-center leading-5 max-sm:px-1! max-sm:text-xs!';
+const DEFAULT_INPUT_HEIGHT = 96;
 
 export function Composer() {
     const client = useClient();
@@ -92,33 +93,58 @@ export function Composer() {
     }, [entryMode, selected]);
     const box = useRef<HTMLTextAreaElement>(null);
 
+    // A mode change retains the measured height and each mode's selection.
+    // Editing grows the surface up to its scrolling limit. A new session or
+    // successful message submission resets the now-empty surface.
+    const inputHeight = useRef(DEFAULT_INPUT_HEIGHT);
+    const selection = useRef({ message: [0, 0], command: [0, 0] });
+    const resetGeometry = useCallback(() => {
+        inputHeight.current = DEFAULT_INPUT_HEIGHT;
+        selection.current = { message: [0, 0], command: [0, 0] };
+        if (box.current) {
+            box.current.style.height = `${DEFAULT_INPUT_HEIGHT}px`;
+            box.current.setSelectionRange(0, 0);
+        }
+    }, []);
+    useLayoutEffect(() => {
+        const input = box.current;
+        if (!input) return;
+        input.style.height = `${inputHeight.current}px`;
+        const [start, end] = selection.current[entryMode];
+        input.setSelectionRange(start ?? 0, end ?? 0);
+    }, [entryMode]);
+
     // Capture Alt+Enter before the textarea's Enter-to-send handler. Dialogs
     // own their own input and do not change the composer mode.
     useEffect(() => {
         function onKeyDown(event: KeyboardEvent): void {
-            if (event.defaultPrevented || event.repeat
+            if (event.isComposing || event.defaultPrevented || event.repeat
                 || !event.altKey || event.ctrlKey || event.metaKey
                 || event.shiftKey || event.key !== 'Enter') return;
             if (event.target instanceof Element
                 && event.target.closest('[role="dialog"]')) return;
             event.preventDefault();
             event.stopPropagation();
-            setEntryMode((current) => current === 'message' ? 'command' : 'message');
+            if (box.current) {
+                selection.current[entryMode] = [box.current.selectionStart, box.current.selectionEnd];
+            }
+            setEntryMode(entryMode === 'message' ? 'command' : 'message');
             box.current?.focus();
         }
         document.addEventListener('keydown', onKeyDown, true);
         return () => document.removeEventListener('keydown', onKeyDown, true);
-    }, []);
+    }, [entryMode]);
 
     // Switching sessions must not carry one session's draft, or its references,
     // into another.
-    useEffect(() => {
+    useLayoutEffect(() => {
         setDraft('');
         setCommandQuery('');
         setEntryMode('message');
         setReferences([]);
         setRefOpen(false);
-    }, [selected]);
+        resetGeometry();
+    }, [selected, resetGeometry]);
 
     // Restore each refused part in its original form. A reference must remain
     // an external_ref: turning its URL into message text silently changes the
@@ -221,12 +247,15 @@ export function Composer() {
         if (sent && operation === 'message') {
             setDraft('');
             setReferences([]);
+            // An empty, submitted draft gives its reading space back. Mode
+            // changes and ongoing execution updates retain the current size.
+            resetGeometry();
         }
     }
 
     return (
         <form
-            className="shrink-0 border-t border-line bg-surface px-3 py-2 sm:px-5"
+            className="composer-shell" data-testid="composer"
             onSubmit={(event) => {
                 event.preventDefault();
                 if (entryMode === 'command') {
@@ -237,10 +266,9 @@ export function Composer() {
                 }
             }}
         >
-            {tokenUsage && <TokenUsageIndicator usage={tokenUsage} />}
-            <div className="relative mx-auto max-w-4xl rounded-xl border border-line-strong
-                bg-surface shadow-sm focus-within:border-ink-muted">
-                <div className="flex items-center border-b border-line px-2 py-1.5">
+            <div className="h-5">{tokenUsage && <TokenUsageIndicator usage={tokenUsage} />}</div>
+            <div className="reading-width composer-surface" data-testid="composer-surface">
+                <div className="flex items-center px-2 pt-2 pb-1">
                     <span key={entryMode} data-testid="composer-mode"
                         className={`animate-enter w-28 shrink-0 whitespace-nowrap rounded px-1 py-1 text-center text-xs font-medium capitalize
                             ${entryMode === 'message' ? 'bg-info-soft text-info' : 'bg-warn-soft text-warn'}`}>
@@ -287,6 +315,11 @@ export function Composer() {
                         ? `composer-command-${commands[highlighted].id}`
                         : undefined}
                     onChange={(event) => {
+                        const input = event.currentTarget;
+                        input.style.height = 'auto';
+                        inputHeight.current = Math.max(entryMode === 'command' ? inputHeight.current : DEFAULT_INPUT_HEIGHT,
+                            Math.min(240, input.scrollHeight));
+                        input.style.height = `${inputHeight.current}px`;
                         if (entryMode === 'message') setDraft(event.target.value);
                         else { setCommandQuery(event.target.value); setActiveCommand(0); }
                     }}
@@ -325,14 +358,14 @@ export function Composer() {
                     placeholder={entryMode === 'command'
                         ? 'Type a command name…'
                         : connected ? 'Message the worker…' : 'No worker is attached to this session'}
-                    className="composer-input block h-24 w-full resize-none overflow-y-auto bg-transparent
+                    className="composer-input block h-24 min-h-24 max-h-60 w-full resize-none overflow-y-auto bg-transparent
                         px-3 pb-1 pt-2
                         text-sm leading-5 text-ink placeholder:text-ink-faint focus:outline-none"
                 />
 
                 {entryMode === 'command' && (
                     <div id="composer-command-list" role="listbox"
-                        className="absolute bottom-full left-0 z-20 mb-1 max-h-64 w-full
+                        className="absolute bottom-full left-0 z-20 mb-1 max-h-[min(16rem,35dvh)] w-full
                             overflow-y-auto rounded-lg border border-line-strong bg-raised
                             p-1 shadow-lg"
                         aria-label="matching commands">
@@ -367,7 +400,7 @@ export function Composer() {
                     </div>
                 )}
 
-                <div className="flex flex-wrap items-center gap-1 px-2 pb-2 sm:gap-2">
+                <div className="flex items-center gap-1 px-2 pb-2 sm:gap-2">
                     <Popover open={refOpen} onOpenChange={setRefOpen}>
                         <PopoverTrigger asChild>
                             <Button
@@ -379,7 +412,7 @@ export function Composer() {
                                 className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
                                 icon={<Glyph name="attach" />}
                             >
-                                <span>Attach</span>
+                                <span className="hidden min-[380px]:inline">Attach</span>
                             </Button>
                         </PopoverTrigger>
                         <PopoverContent align="start" width="w-80">
@@ -529,8 +562,8 @@ export function Composer() {
                                 disabled={!connected || cancelPending}
                                 aria-busy={cancelPending}
                                 onClick={() => client.sendSignal(sessionId, 'cancel')}
-                                title="ask the worker to cancel the active run"
-                                className="h-9 justify-center leading-5"
+                                title={cancelPending ? "Waiting for an interruptible boundary; tools may still finish." : "Ask the worker to cancel the active run"}
+                                className={PRIMARY_ACTION_CLASS}
                                 icon={<Glyph name={cancelPending ? 'spinner' : 'cancel'} />}
                             >
                                 <span>{cancelPending ? 'Cancelling…' : 'Cancel run'}</span>
@@ -553,22 +586,17 @@ export function Composer() {
                 </div>
             </div>
 
-            {cancelPending && (
-                <p role="status" className="mx-auto mt-2 max-w-4xl px-1 text-xs text-warn">
-                    Cancellation requested. Waiting for the worker to reach an interruptible boundary.
-                </p>
-            )}
-
-            <div className="mx-auto mt-1 flex max-w-4xl flex-wrap items-center gap-x-3 gap-y-1
-                px-1 text-xs text-ink-muted">
+            <div className="reading-width composer-footer mt-1 flex items-center gap-2
+                px-1 text-xs text-ink-muted" aria-live="polite">
+                {cancelPending && <span role="status" className="text-warn">
+                    Cancellation requested. Waiting for an interruptible boundary.
+                </span>}
                 {connectionState !== 'open' && (
                     <span className="text-warn">the panel is not connected</span>
                 )}
                 {!connected && <span>no worker attached</span>}
                 <span className="flex-1" />
-                <span className="hidden sm:inline">{runActive
-                    ? 'Cancel stops this run · draft stays here'
-                    : 'Enter to send'}</span>
+                <span className="hidden sm:inline">{cancelPending ? '' : runActive ? 'Draft kept for your next request' : 'Enter to send'}</span>
             </div>
         </form>
     );

@@ -116,10 +116,9 @@ export interface RunFailure {
 /**
  * The order things happened in, within one round.
  *
- * The round groups its contents by kind so the renderer can draw them well, and
- * that grouping is what a reader wants — except when technical details are on,
- * where the point is to see the protocol in the order it arrived. This is the
- * order, kept alongside the grouping rather than instead of it.
+ * Presentation groups messages and tools, while this sequence also retains
+ * boundaries used to position restored responses. Protocol entries are not
+ * rendered inline; they remain essential for replay and execution identity.
  */
 export type TimelineEntry =
     | { readonly kind: 'compact'; readonly key: string }
@@ -149,7 +148,7 @@ export interface Round {
     readonly problems: readonly Problem[];
     /** What happened, in order. */
     readonly timeline: readonly TimelineEntry[];
-    /** Bookkeeping events, shown only when technical details are on. */
+    /** Execution identities and boundaries retained for history reconciliation. */
     readonly protocol: readonly EventItem[];
     readonly notes: readonly NoteItem[];
     readonly requests: readonly RequestItem[];

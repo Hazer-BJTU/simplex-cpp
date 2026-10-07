@@ -416,8 +416,8 @@ a settled conversation. The panel displays the summary separately, refreshes
 worker history, and preserves any unsent draft. Send a new message after success;
 there is no turn to continue. Cancellation and failure preserve the old history.
 The command shows the worker's actual archive-retention policy when reported.
-When a run fails, its transcript shows a visible failure notice with technical
-details available on demand. A model-request failure suggests **Continue run**
+When a run fails, its transcript shows a visible failure notice with **Error details**
+available on demand. A model-request failure suggests **Continue run**
 only while it remains the latest run of the same connected worker and the
 worker reported that its settled state permits continuation. Older failures
 keep their historical outcome without a stale retry instruction;
@@ -668,8 +668,10 @@ A small usage line above the composer shows only the latest model response's
 prompt tokens, generated tokens, and cache-hit percentage (`cache_hit / prompt`,
 or zero for an empty prompt). Counts use decimal K/M/B units with one fractional
 digit. Responses without cost leave the previous usage visible; counts are not
-accumulated. Per-response and per-turn token details appear only with Technical
-details enabled.
+accumulated. Per-turn counters and raw protocol events are not part of the
+conversation. Open the independent **Inspector** for worker identity, process,
+connection and replay diagnostics; tool arguments/results and error causes
+remain available in their own disclosures.
 
 
 The confirmation trigger has a fixed width. Its label changes from Confirm to

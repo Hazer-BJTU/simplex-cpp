@@ -90,7 +90,7 @@ test('keeps executing A, queued B, and rejected C separate in live and replayed 
     const roundC = page.getByTestId('round').filter({ hasText: 'Input C' });
     await expect(roundA.getByTestId('assistant-message')).toContainText('Answer A');
     await expect(roundA.getByTestId('tool-card')).toHaveAttribute('data-status', 'ok');
-    await expect(roundA.getByTestId('round-summary')).toContainText('completed');
+    await expect(roundA.getByTestId('round-summary')).toContainText('Completed');
     await expect(roundB).toHaveAttribute('data-kind', 'prelude');
     await expect(roundB.getByTestId('assistant-message')).toHaveCount(0);
     await expect(roundB.getByTestId('tool-card')).toHaveCount(0);
@@ -141,7 +141,7 @@ test('shows a model failure beside its run with guarded retry guidance', async (
     await expect(notice).toContainText('Model request failed');
     await expect(notice).toContainText('Continue run');
     await expect(notice.locator('pre')).not.toBeVisible();
-    await notice.getByText('Technical details').click();
+    await notice.getByText('Error details').click();
     await expect(notice.locator('pre')).toContainText('HTTP 503 after retries');
 
     await emit(page, 'input_admitted', { operation: 'continue' },
@@ -664,8 +664,13 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
     for (const content of contents) {
         expect(content.iconY).toBe(contents[0]!.iconY);
         expect(content.iconHeight).toBe(contents[0]!.iconHeight);
-        expect(content.labelY).toBe(contents[0]!.labelY);
-        expect(content.labelHeight).toBe(contents[0]!.labelHeight);
+        // Attach becomes an accessible icon-only control on the narrowest
+        // screens; the remaining visible labels still share a baseline.
+        if (content.labelHeight > 0) {
+            const visible = contents.find((entry) => entry.labelHeight > 0)!;
+            expect(content.labelY).toBe(visible.labelY);
+            expect(content.labelHeight).toBe(visible.labelHeight);
+        }
     }
     const card = message.locator('xpath=..');
     const neutralFocus = await card.evaluate((node) => {
@@ -805,22 +810,19 @@ test('highlights a fenced code block and offers to copy it', async ({ page }) =>
     await expect(transcript.getByRole('button', { name: 'copy' })).toBeVisible();
 });
 
-test('hides protocol events until technical details are asked for', async ({ page }) => {
+test('keeps protocol events out of the conversation without losing tool details', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
     await playTurn(page, { text: 'hello' });
 
     await expect(page.getByTestId('assistant-message')).toContainText('hello');
     await expect(page.getByTestId('protocol-line')).toHaveCount(0);
-    await expect(page.getByTestId('round-summary')).toContainText('protocol event');
+    await expect(page.getByTestId('round-summary')).not.toContainText('protocol event');
 
-    await page.getByTestId('details-toggle').check();
 
-    await expect(page.getByTestId('protocol-line').first()).toBeVisible();
-    await expect(page.getByTestId('transcript')).toContainText('run_finished');
-    // The payload is one click further in, so the timeline stays a timeline.
-    await expect(page.getByTestId('protocol-line').first().locator('details'))
-        .not.toHaveAttribute('open', '');
+    await expect(page.getByTestId('details-toggle')).toHaveCount(0);
+    await page.getByTestId('tool-details').locator('summary').click();
+    await expect(page.getByTestId('tool-card')).toContainText('hello');
 });
 
 test('reveals a tool call and its streams on demand', async ({ page }) => {
@@ -842,7 +844,7 @@ test('reveals a tool call and its streams on demand', async ({ page }) => {
 
     const details = card.getByTestId('tool-details');
     await expect(details).not.toHaveAttribute('open', '');
-    await expect(card.locator('p[title="echo hello"]')).toBeVisible();
+    await expect(card.locator('[title="echo hello"]')).toBeVisible();
     await expect(card.getByText('stdout', { exact: true })).toBeHidden();
     await details.locator('summary').first().click();
 
@@ -959,7 +961,7 @@ test('a folded turn still shows what went wrong in it', async ({ page }) => {
     );
 });
 
-test('latest token usage stays by the composer while per-turn costs require details', async ({ page }) => {
+test('latest token usage stays by the composer without per-turn costs', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
     await emit(page, 'run_started', {});
@@ -973,9 +975,7 @@ test('latest token usage stays by the composer while per-turn costs require deta
     await expect(usage).not.toContainText('total');
     await expect(page.getByTestId('transcript')).not.toContainText('prompt 4895');
     await expect(page.getByTestId('round-summary')).not.toContainText('tokens');
-    await page.getByTestId('details-toggle').check();
-    await expect(page.getByTestId('assistant-message')).toContainText('prompt 4895');
-    await page.getByTestId('details-toggle').uncheck();
+    await expect(page.getByTestId('assistant-message')).not.toContainText('prompt 4895');
     await emit(page, 'model_response', modelResponse('No usage reported'));
     await expect(usage).toContainText('prompt 4.9K');
     await emit(page, 'model_response', modelResponse('Latest response', {

@@ -61,7 +61,7 @@ const STATUS: Record<CallStatus, { label: string; tone: string; icon: GlyphName 
         icon: 'approval',
     },
     running: { label: 'running', tone: 'bg-info-soft text-info ring-info-line', icon: 'spinner' },
-    ok: { label: 'ok', tone: 'bg-ok-soft text-ok ring-ok-line', icon: 'ok' },
+    ok: { label: 'ok', tone: 'text-ink-muted', icon: 'ok' },
     failed: { label: 'failed', tone: 'bg-danger-soft text-danger ring-danger-line', icon: 'error' },
     cancelled: { label: 'cancelled', tone: 'bg-subtle text-ink-muted ring-line', icon: 'cancel' },
     skipped: { label: 'not run', tone: 'bg-subtle text-ink-muted ring-line', icon: 'cancel' },
@@ -76,7 +76,7 @@ const STATUS: Record<CallStatus, { label: string; tone: string; icon: GlyphName 
 const BORDER: Record<CallStatus, string> = {
     pending: 'border-l-warn-line',
     running: 'border-l-info-line',
-    ok: 'border-l-ok-line',
+    ok: 'border-l-line',
     failed: 'border-l-danger-line',
     cancelled: 'border-l-line-strong',
     skipped: 'border-l-line-strong',
@@ -141,7 +141,7 @@ function Block({ block }: { block: OutputBlock }) {
 function Fields({ fields }: { fields: OutputDocument['fields'] }) {
     if (fields.length === 0) return null;
     return (
-        <dl className="flex flex-wrap gap-x-3 gap-y-0.5 px-2 py-1 text-xs">
+        <dl className="flex flex-wrap gap-x-3 gap-y-0.5 px-2 py-1 text-xs [overflow-wrap:anywhere]">
             {fields.map((field) => (
                 <div key={field.name} className="flex gap-1">
                     <dt className="text-ink-faint">{field.name}</dt>
@@ -238,42 +238,20 @@ export function ToolCard({ call }: { call: ToolCall }) {
             data-testid="tool-card"
             data-tool={call.name}
             data-status={call.status}
-            className={`rounded border border-l-2 border-line bg-surface p-2 ${BORDER[call.status]}`}
+            className={`min-w-0 rounded-lg border border-l-2 border-line bg-surface px-3 py-2 ${BORDER[call.status]}`}
         >
-            <header className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-sm font-medium text-ink">{call.name}</span>
-                <span
-                    data-testid="tool-status"
-                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs
-                        font-medium ring-1 ring-inset ${status.tone}`}
-                >
-                    <Glyph name={status.icon} size="sm" />
-                    {status.label}
-                </span>
-            </header>
-
-            {summary && (
-                <p className="mt-1 truncate font-mono text-xs text-ink-muted" title={summary}>
-                    {summary}
-                </p>
-            )}
-
-            {call.status === 'pending' && call.prompt && (
-                <p className="mt-1 rounded border border-warn-line bg-warn-soft px-2 py-1 text-xs text-warn">
-                    this call is waiting for an approval — answer it above.
-                </p>
-            )}
-
-            {call.status === 'failed' && call.result?.error && (
-                <p className="mt-1 break-words text-xs text-danger">
-                    {call.result.error.stage}
-                    {call.result.error.message ? ` — ${call.result.error.message}` : ''}
-                </p>
-            )}
-
-            <details data-testid="tool-details" className="mt-1 min-w-0 text-xs">
-                <summary className="w-fit cursor-pointer select-none text-ink-muted hover:text-ink">
-                    Call and result details
+            <details data-testid="tool-details" className="tool-disclosure min-w-0 text-xs">
+                <summary className="flex min-w-0 cursor-pointer select-none items-center gap-2 text-ink-muted hover:text-ink">
+                    <span data-testid="tool-status" title={status.label} className={status.tone}>
+                        <Glyph name={status.icon} size="sm" />
+                        <span className="sr-only">{status.label}</span>
+                    </span>
+                    <span className="max-w-[50%] truncate font-mono font-medium text-ink" title={call.name}>
+                        {call.name}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-mono" title={summary}>{summary}</span>
+                    <span className="tool-disclosure-arrow" aria-hidden="true">▸</span>
+                    <span className="sr-only">Call and result details</span>
                 </summary>
                 <div className="mt-2 min-w-0 space-y-2 border-t border-line pt-2">
                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-ink-faint">
@@ -308,6 +286,18 @@ export function ToolCard({ call }: { call: ToolCall }) {
                     )}
                 </div>
             </details>
+            {call.status !== 'ok' && call.status !== 'running' && (
+                <p className={`mt-1 text-xs ${call.status === 'failed' ? 'text-danger' : call.status === 'pending' ? 'text-warn' : 'text-ink-muted'}`}>
+                    {status.label}
+                    {call.status === 'pending' && ' — review the approval above'}
+                </p>
+            )}
+            {call.status === 'failed' && call.result?.error && (
+                <p className="mt-1 break-words text-xs text-danger">
+                    {call.result.error.stage}
+                    {call.result.error.message ? ` — ${call.result.error.message}` : ''}
+                </p>
+            )}
         </article>
     );
 }

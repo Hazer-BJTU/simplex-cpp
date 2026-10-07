@@ -1,23 +1,5 @@
-/**
- * @file the session header, in three layers.
- *
- * The old header was ten peer buttons of the same size and weight, ordered as
- * they happened to be written: three kinds of action — process lifecycle,
- * control signals, and destructive operations — with no grouping, and a single
- * `disabled = !session` flag on all of them. So Stop was clickable with no
- * process, Delete was clickable while one was running, and `Force kill` was red
- * while `Delete`, the one that actually removes data, was a ghost.
- *
- * The layers here are the design's:
- *
- *   primary    Start ⇄ Stop, one solid button, the state decides which;
- *   common     Status, Options, approvals — icon buttons with tooltips;
- *   overflow   Restart, Shutdown, Force kill, Delete — a menu, with the
- *              destructive entries in red and behind a dialog.
- *
- * Every control is enabled exactly when it can do something, and says why when
- * it cannot. That is the whole of the fix for "button availability divorced
- * from real state": a disabled control here has a reason attached to it.
+/** Session identity, worker lifecycle controls, and the independent Inspector.
+ * Request activity and cancellation belong to the conversation and composer.
  */
 import { useState } from 'react';
 import type { SessionDescription } from '../../../shared/protocol.ts';
@@ -50,7 +32,7 @@ function processState(session: SessionDescription): {
         case 'running':
             return {
                 running: true,
-                label: process.pid === null ? 'running' : `running · pid ${process.pid}`,
+                label: 'running',
                 tone: 'ok',
             };
         case 'starting':
@@ -156,7 +138,6 @@ export function SessionHeader() {
     // which the compiler cannot narrow through.
     const sessionId: string = selected;
     const state = processState(session);
-    const runActive = Boolean(view?.runActive);
     const processGroup = hub?.force_kill_process_group ?? false;
     const pendingApprovals = [...(view?.confirmations.values() ?? [])]
         .filter((prompt) => prompt.settled_at === null).length;
@@ -191,9 +172,11 @@ export function SessionHeader() {
                 <h2 data-testid="session-title" className="font-mono text-sm font-semibold text-ink">
                     {sessionId}
                 </h2>
-                <Badge tone={state.tone}>{state.label}</Badge>
+                {(!session.connected || (session.process && session.process.state !== 'running')) && (
+                    <Badge tone={state.tone}>{state.label}</Badge>
+                )}
+                {!session.connected && <span className="text-xs text-warn">Worker disconnected</span>}
                 {session.connected && <Badge tone="info">worker attached</Badge>}
-                {runActive && <Badge tone="info">run active</Badge>}
                 {pendingApprovals > 0 && (
                     <Badge tone="warn" title="tool calls waiting for a decision">
                         {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'}

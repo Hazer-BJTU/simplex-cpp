@@ -46,10 +46,10 @@ function SessionPanels({ markdown }: { markdown: string }) {
                     forceMount
                     aria-labelledby="plan-tab"
                     style={{ display: activePane === 'plan' ? 'block' : 'none' }}
-                    className="min-h-0 flex-1 overflow-auto break-words p-4 text-sm focus:outline-none"
+                    className="min-h-0 flex-1 overflow-auto break-words reading-scroll text-sm focus:outline-none"
                     data-testid="plan-content"
                 >
-                    <Markdown>{markdown}</Markdown>
+                    <div className="reading-width"><Markdown>{markdown}</Markdown></div>
                 </TabsPrimitive.Content>
             )}
         </Tabs>

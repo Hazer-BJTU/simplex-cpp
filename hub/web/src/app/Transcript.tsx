@@ -29,18 +29,17 @@ import type {
     ConfirmationPrompt,
     HistoryTurn,
     RequestRecord,
-    WorkerEnvelope,
 } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
-import { statsOf, type NoteItem, type OutboxItem, type TranscriptItem } from '../state/view.ts';
+import type { NoteItem, OutboxItem, TranscriptItem } from '../state/view.ts';
 import { reconcileInternalHistory } from './history-rounds.ts';
 import { parseCompactResult } from '../state/compact.ts';
-import { useClient } from './ClientContext.tsx';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
-import { Glyph } from '../ui/icons.tsx';
+import { Glyph, type GlyphName } from '../ui/icons.tsx';
+import { Tooltip } from '../ui/overlays.tsx';
 import { Markdown } from './Markdown.tsx';
 import { ToolCard } from './ToolCard.tsx';
-import { clockOf, contentText, formatDuration, prettyJson, str } from './content.ts';
+import { contentText, formatDuration } from './content.ts';
 import {
     buildRounds,
     type AssistantBlock,
@@ -58,6 +57,14 @@ const OPEN_ROUNDS = 3;
 
 /** Length at which an operator's own message is folded. */
 const LONG_MESSAGE_CHARS = 600;
+
+/** Budget boundaries and unknown future outcomes do not imply an error. */
+const RUN_OUTCOMES = new Map<string, { icon: GlyphName; label: string }>([
+    ['completed', { icon: 'ok', label: 'Completed' }],
+    ['cancelled', { icon: 'cancel', label: 'Cancelled' }],
+    ['exchange_limit', { icon: 'info', label: 'Exchange limit reached' }],
+    ['failed', { icon: 'error', label: 'Failed' }],
+]);
 
 const EMPTY_ITEMS: readonly TranscriptItem[] = [];
 const EMPTY_PROMPTS: ReadonlyMap<string, ConfirmationPrompt> = new Map();
@@ -94,54 +101,22 @@ function activityLabel(items: readonly TranscriptItem[]): string {
 /** A quiet, accessible activity cue at the end of the live conversation. */
 function RunActivity({ label }: { label: string }) {
     return (
-        <div
-            data-testid="run-activity"
-            role="status"
-            aria-live="polite"
-            className="animate-enter flex w-fit items-center gap-3 rounded-xl border border-line
-                bg-sunken px-3 py-2 text-sm text-ink-muted"
-        >
-            <span aria-hidden="true" className="flex items-center gap-1">
-                <span className="activity-dot" />
-                <span className="activity-dot" />
-                <span className="activity-dot" />
-            </span>
-            <span>
-                <span className="block">{label}</span>
-                {label === 'Waiting for model response' && (
-                    <span className="block text-xs text-ink-faint">Reply appears when complete</span>
-                )}
-            </span>
-        </div>
-    );
-}
-
-/**
- * One line of the quiet protocol timeline.
- *
- * Rendering this at all is the "technical details" switch. The raw payload is
- * one click further in, because a fold that is open by default is not a fold —
- * and the old panel had one hanging off nearly every card.
- */
-function ProtocolLine({ envelope }: { envelope: WorkerEnvelope }) {
-    const label = str(envelope.event) || '(unnamed event)';
-    const clock = clockOf(envelope);
-    return (
-        <div data-testid="protocol-line" className="text-xs text-ink-faint">
-            <div className="flex items-baseline gap-2">
-                <span className="h-px flex-1 bg-line" />
-                <span className="font-mono">{label}</span>
-                {clock && <span>{clock}</span>}
-                <span className="h-px flex-1 bg-line" />
+        <Tooltip label={label}>
+            <div
+                data-testid="run-activity"
+                role="status"
+                aria-live="polite"
+                className="flex w-fit items-center gap-3 py-3 text-sm text-ink-muted"
+                tabIndex={0}
+            >
+                <span aria-hidden="true" className="flex items-center gap-1">
+                    <span className="activity-dot" />
+                    <span className="activity-dot" />
+                    <span className="activity-dot" />
+                </span>
+                <span className="sr-only">{label}</span>
             </div>
-            <details className="mt-0.5 text-center">
-                <summary className="cursor-pointer select-none">payload</summary>
-                <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded
-                    bg-sunken p-2 text-left font-mono text-xs text-ink">
-                    {prettyJson(envelope.raw ?? envelope.data ?? {})}
-                </pre>
-            </details>
-        </div>
+        </Tooltip>
     );
 }
 
@@ -189,7 +164,7 @@ function RunFailureNotice({ failure, actionable, compacting }: {
         guidance = 'The worker kept the conversation state. Use Continue run in Command mode to try again.';
     } else if (failure.canContinue) {
         guidance = 'The worker reported that this run could be continued when it settled.';
-        if (!model) guidance += ' Inspect the technical details.';
+        if (!model) guidance += ' Inspect the error details.';
     }
     return (
         <div data-testid="run-failure" role="alert"
@@ -199,7 +174,7 @@ function RunFailureNotice({ failure, actionable, compacting }: {
             <p className="mt-1">{guidance}</p>
             {failure.error && (
                 <details className="mt-2">
-                    <summary className="cursor-pointer text-xs">Technical details</summary>
+                    <summary className="cursor-pointer text-xs">Error details</summary>
                     <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all
                         rounded border border-danger-line p-2 text-xs">{failure.error}</pre>
                 </details>
@@ -218,7 +193,7 @@ function UserMessage({ item }: { item: OutboxItem }) {
         <article
             data-testid="outbox-item"
             data-state={item.state}
-            className="ml-auto w-fit max-w-full sm:max-w-[80%] rounded-lg bg-accent px-3 py-2 text-accent-ink"
+            className="ml-auto w-fit max-w-full sm:max-w-[80%] rounded-lg bg-subtle px-4 py-3 text-ink"
         >
             <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">{shown}</p>
             {long && (
@@ -230,11 +205,12 @@ function UserMessage({ item }: { item: OutboxItem }) {
                     {open ? 'show less' : `show all ${text.length} characters`}
                 </button>
             )}
-            <p className="mt-1 text-xs text-ink-faint">
-                {item.state === 'admitted' ? 'admitted by the worker'
-                    : item.state === 'rejected' ? 'rejected by the worker — not executed'
-                    : 'sent, not yet admitted'}
-            </p>
+            {item.state !== 'admitted' && (
+                <p className="mt-1 text-xs text-ink-faint">
+                    {item.state === 'rejected' ? 'rejected by the worker — not executed'
+                        : 'sent, not yet admitted'}
+                </p>
+            )}
         </article>
     );
 }
@@ -258,7 +234,7 @@ function RestoredUserMessage({ turn }: { turn: HistoryTurn }) {
     const text = turn.user.map(contentText).filter(Boolean).join('\n\n');
     return (
         <article data-testid="restored-user-message" className="ml-auto w-fit max-w-full
-            rounded-lg bg-accent px-3 py-2 text-accent-ink">
+            rounded-lg bg-subtle px-4 py-3 text-ink">
             <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
                 {text || '(empty input)'}
             </p>
@@ -273,8 +249,7 @@ function HistoryRound({ turn, open, onToggle }: {
     const user = turn.user.map(contentText).filter(Boolean).join('\n\n');
     const calls = turn.steps.reduce((count, step) => count + step.tool_calls, 0);
     return (
-        <section data-testid="history-turn" className="min-w-0 space-y-3 rounded-lg border
-            border-line bg-raised px-3 py-3">
+        <section data-testid="history-turn" className="min-w-0 space-y-4 py-3">
             <button type="button" onClick={onToggle}
                 aria-expanded={open}
                 className="w-full min-w-0 break-words [overflow-wrap:anywhere] text-left
@@ -283,7 +258,7 @@ function HistoryRound({ turn, open, onToggle }: {
                 {user.length > 100 ? '…' : ''}
             </button>
             {open && <div className="min-w-0 space-y-3">
-                {!turn.internal_input && <div className="ml-auto w-fit max-w-full rounded-lg bg-accent px-3 py-2 text-accent-ink">
+                {!turn.internal_input && <div className="ml-auto w-fit max-w-full rounded-lg bg-subtle px-4 py-3 text-ink">
                     <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
                         {user || '(empty input)'}
                     </p>
@@ -326,9 +301,8 @@ function HistoryRound({ turn, open, onToggle }: {
     );
 }
 
-/** One model response: reasoning, markdown, the calls it proposed, and cost. */
-function AssistantMessage({ block, calls, showDetails }: {
-    showDetails: boolean;
+/** One model response: reasoning, Markdown, and its proposed calls. */
+function AssistantMessage({ block, calls }: {
     block: AssistantBlock;
     calls: ReadonlyMap<string, ToolCall>;
 }) {
@@ -337,11 +311,10 @@ function AssistantMessage({ block, calls, showDetails }: {
         .filter((call): call is ToolCall => call !== undefined);
 
     return (
-        <article data-testid="assistant-message" className="space-y-2">
+        <article data-testid="assistant-message" className="min-w-0 space-y-4">
             <p className="flex items-baseline gap-2 text-xs text-ink-faint">
                 <span className="font-medium text-ink-muted">assistant</span>
                 {block.clock && <span>{block.clock}</span>}
-                {showDetails && block.cost && <span>{block.cost}</span>}
             </p>
 
             {block.reasoning && (
@@ -381,27 +354,22 @@ function AssistantMessage({ block, calls, showDetails }: {
 }
 
 /** The one-line summary a folded turn shows. */
-function RoundSummary({ round, historicalInput, expanded, onToggle, showDetails }: {
-    showDetails: boolean;
+function RoundSummary({ round, historicalInput, expanded, onToggle }: {
     round: Round;
     historicalInput: HistoryTurn | null;
     expanded: boolean;
     onToggle: () => void;
 }) {
+    const outcome = RUN_OUTCOMES.get(round.status)
+        ?? { icon: 'info' as const, label: `Run status: ${round.status}` };
     const parts: string[] = [];
-    if (round.status) parts.push(round.status);
-    else if (round.open) parts.push('running');
     if (round.assistant.length > 0) {
         parts.push(`${round.assistant.length} repl${round.assistant.length === 1 ? 'y' : 'ies'}`);
     }
     if (round.calls.length > 0) {
         parts.push(`${round.calls.length} tool${round.calls.length === 1 ? '' : 's'}`);
     }
-    if (round.exchanges !== null) parts.push(`${round.exchanges} exchange(s)`);
     if (round.wallMs !== null) parts.push(formatDuration(round.wallMs));
-    if (showDetails && round.tokens !== null) parts.push(`${round.tokens} tokens`);
-    const hidden = round.protocol.length;
-    if (hidden > 0) parts.push(`${hidden} protocol event${hidden === 1 ? '' : 's'}`);
 
     const preview = round.compacting ? 'context compaction' : round.continued ? 'continued from worker state' : round.input
         ? round.input.parts.map((part: ContentPart) => part.raw).join(' ').slice(0, 80)
@@ -415,18 +383,20 @@ function RoundSummary({ round, historicalInput, expanded, onToggle, showDetails 
             data-testid="round-summary"
             aria-expanded={expanded}
             onClick={onToggle}
-            className={`flex w-full items-baseline gap-2 rounded border px-2 py-1 text-left
-                hover:bg-subtle ${round.failure
-                    ? 'border-danger-line bg-danger-soft'
-                    : 'border-line bg-sunken'}`}
+            className={`flex w-full min-w-0 items-center gap-2 rounded py-2 text-left
+                hover:bg-subtle ${round.failure ? 'text-danger' : 'text-ink-muted'}`}
         >
+            {round.status && <span data-testid="round-status" title={outcome.label}>
+                <Glyph name={outcome.icon} size="sm" />
+                <span className="sr-only">{outcome.label}</span>
+            </span>}
             <span className="text-xs text-ink-faint">{expanded ? '▾' : '▸'}</span>
             <span className="text-xs font-medium text-ink-muted">turn {round.index}</span>
             {preview && (
                 <span className="truncate text-xs text-ink-muted">“{preview}”</span>
             )}
             <span className="flex-1" />
-            <span className={`shrink-0 text-xs ${round.failure ? 'text-danger' : 'text-ink-faint'}`}>
+            <span className={`max-w-[45%] text-right text-xs ${round.failure ? 'text-danger' : 'text-ink-faint'}`}>
                 {parts.join(' · ')}
             </span>
         </button>
@@ -434,10 +404,9 @@ function RoundSummary({ round, historicalInput, expanded, onToggle, showDetails 
 }
 
 /** Everything in a round, in the order it happened. */
-function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
+function RoundBody({ round, historicalInput, actionableFailure }: {
     round: Round;
     historicalInput: HistoryTurn | null;
-    showDetails: boolean;
     actionableFailure: boolean;
 }) {
     const calls = useMemo(() => {
@@ -458,11 +427,6 @@ function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
         return index;
     }, [round.problems]);
 
-    const protocol = useMemo(() => {
-        const index = new Map<string, WorkerEnvelope>();
-        for (const item of round.protocol) index.set(item.id, item.envelope);
-        return index;
-    }, [round.protocol]);
 
     const notes = useMemo(() => {
         const index = new Map<string, NoteItem>();
@@ -471,7 +435,7 @@ function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
     }, [round.notes]);
 
     return (
-        <div className="space-y-2">
+        <div className="min-w-0 space-y-4">
             {round.compacting && !round.compactResult && !round.failure && (
                 <p className="text-sm text-ink-muted">
                     {round.status === 'cancelled'
@@ -518,7 +482,7 @@ function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
                 if (entry.kind === 'assistant') {
                     const block = assistant.get(entry.key);
                     return block
-                        ? <AssistantMessage key={entry.key} block={block} calls={calls} showDetails={showDetails} />
+                        ? <AssistantMessage key={entry.key} block={block} calls={calls} />
                         : null;
                 }
                 if (entry.kind === 'calls') {
@@ -535,11 +499,8 @@ function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
                     const note = notes.get(entry.key);
                     return note ? <NoteLine key={entry.key} item={note} /> : null;
                 }
-                const envelope = protocol.get(entry.key);
-                // Protocol events are the machinery; the switch is what decides
-                // whether they are part of the reading.
-                if (!envelope || !showDetails) return null;
-                return <ProtocolLine key={entry.key} envelope={envelope} />;
+                // Retain protocol entries in rounds for replay correlation, not presentation.
+                return null;
             })}
 
             {round.failure && (
@@ -551,7 +512,6 @@ function RoundBody({ round, historicalInput, showDetails, actionableFailure }: {
 }
 
 export function Transcript() {
-    const client = useClient();
     const selected = usePanel((state) => state.selected);
     const session = useSession(selected);
     const view = useView(selected);
@@ -560,7 +520,6 @@ export function Transcript() {
     const confirmations = view?.confirmations ?? EMPTY_PROMPTS;
     const requests = view?.requests ?? EMPTY_REQUESTS;
     const dropped = view?.droppedItems ?? 0;
-    const showDetails = usePanel((state) => state.showDetails);
 
     const rounds = useMemo(
         () => buildRounds(items, confirmations, requests),
@@ -671,6 +630,28 @@ export function Transcript() {
     const scroller = useRef<HTMLDivElement>(null);
     const [following, setFollowing] = useState(true);
 
+    // Classic desktop scrollbars consume width; overlay scrollbars do not.
+    // Match that gutter in the sibling composer without rerendering messages.
+    useLayoutEffect(() => {
+        const node = scroller.current;
+        const main = node?.closest('main');
+        if (!node || !main) return;
+        const update = () => {
+            // Plan keeps this pane mounted but hidden; retain its last gutter.
+            if (node.clientWidth === 0) return;
+            main.style.setProperty(
+                '--conversation-scrollbar', `${node.offsetWidth - node.clientWidth}px`,
+            );
+        };
+        update();
+        const observer = new ResizeObserver(update);
+        observer.observe(node);
+        return () => {
+            observer.disconnect();
+            main.style.removeProperty('--conversation-scrollbar');
+        };
+    }, [selected]);
+
     const measure = useCallback(() => {
         const node = scroller.current;
         if (!node) return;
@@ -699,11 +680,7 @@ export function Transcript() {
         const node = scroller.current;
         if (!node) return;
         node.scrollTop = node.scrollHeight;
-        // `showDetails` is in the list because the switch inserts and removes
-        // content above the fold: without it, turning technical details on
-        // while reading the end leaves the view adrift and offers a "jump to
-        // latest" button to a reader who never left.
-    }, [items, history, following, showDetails]);
+    }, [items, history, following]);
 
     const jumpToLatest = useCallback(() => {
         const node = scroller.current;
@@ -728,79 +705,79 @@ export function Transcript() {
             <div
                 ref={scroller}
                 data-testid="transcript"
-                className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3"
+                className="min-h-0 flex-1 overflow-y-auto reading-scroll"
             >
-                {dropped > 0 && (
-                    <p className="text-xs text-ink-faint">
-                        {dropped} earlier item{dropped === 1 ? '' : 's'} dropped to keep the
-                        transcript bounded
-                    </p>
-                )}
+                <div className="reading-width conversation-space" data-testid="reading-surface">
+                    {dropped > 0 && (
+                        <p className="text-xs text-ink-faint">
+                            {dropped} earlier item{dropped === 1 ? '' : 's'} dropped to keep the
+                            transcript bounded
+                        </p>
+                    )}
 
-                {view?.historyLoading && (
-                    <p className="text-xs text-ink-muted">loading conversation history…</p>
-                )}
-                {olderHistory.map((turn, index) => <HistoryRound key={turn.index} turn={turn}
-                    open={historyToggled.get(turn.index) ?? index >= olderHistory.length - OPEN_ROUNDS}
-                    onToggle={() => setHistoryToggled((current) => {
-                        const next = new Map(current);
-                        const currentOpen = current.get(turn.index)
-                            ?? index >= olderHistory.length - OPEN_ROUNDS;
-                        next.set(turn.index, !currentOpen);
-                        return next;
-                    })} />)}
+                    {view?.historyLoading && (
+                        <p className="text-xs text-ink-muted">loading conversation history…</p>
+                    )}
+                    {olderHistory.map((turn, index) => <HistoryRound key={turn.index} turn={turn}
+                        open={historyToggled.get(turn.index) ?? index >= olderHistory.length - OPEN_ROUNDS}
+                        onToggle={() => setHistoryToggled((current) => {
+                            const next = new Map(current);
+                            const currentOpen = current.get(turn.index)
+                                ?? index >= olderHistory.length - OPEN_ROUNDS;
+                            next.set(turn.index, !currentOpen);
+                            return next;
+                        })} />)}
 
-                {!view ? (
-                    /* No `subscribed` frame yet: the transcript is on its way,
-                       and saying "nothing yet" here would be a claim the panel
-                       cannot support. */
-                    <LoadingLines label="waiting for this session's transcript" lines={4} />
-                ) : rounds.length === 0 && olderHistory.length === 0 && !view.historyLoading ? (
-                    <EmptyState
-                        icon="empty-session"
-                        title="Nothing in this transcript yet"
-                        detail={session?.connected
-                            ? 'Events appear here as the worker reports them. Send a message to start a run.'
-                            : 'No worker is attached. Start one, then send a message.'}
-                    />
-                ) : displayedRounds.map((round) => (
-                    <section
-                        key={round.key}
-                        data-testid="round"
-                        data-kind={round.kind}
-                        className="animate-enter"
-                    >
-                        {round.kind === 'run' && (
-                            <RoundSummary
-                                round={round}
-                                historicalInput={historyForRun.get(round.key) ?? null}
-                                expanded={isOpen(round)}
-                                showDetails={showDetails}
-                                onToggle={() => toggle(round)}
-                            />
-                        )}
-                        {(round.kind === 'prelude' || isOpen(round)) && (
-                            <div className={round.kind === 'run' ? 'mt-2' : ''}>
-                                <RoundBody round={round}
+                    {!view ? (
+                        /* No `subscribed` frame yet: the transcript is on its way,
+                           and saying "nothing yet" here would be a claim the panel
+                           cannot support. */
+                        <LoadingLines label="waiting for this session's transcript" lines={4} />
+                    ) : rounds.length === 0 && olderHistory.length === 0 && !view.historyLoading ? (
+                        <EmptyState
+                            icon="empty-session"
+                            title="Nothing in this transcript yet"
+                            detail={session?.connected
+                                ? 'Events appear here as the worker reports them. Send a message to start a run.'
+                                : 'No worker is attached. Start one, then send a message.'}
+                        />
+                    ) : displayedRounds.map((round) => (
+                        <section
+                            key={round.key}
+                            data-testid="round"
+                            data-kind={round.kind}
+                            className="animate-enter"
+                        >
+                            {round.kind === 'run' && (
+                                <RoundSummary
+                                    round={round}
                                     historicalInput={historyForRun.get(round.key) ?? null}
-                                    showDetails={showDetails}
-                                    actionableFailure={round.key === actionableFailureKey} />
-                            </div>
-                        )}
-                        {round.kind === 'run' && !isOpen(round) && (
-                            <div className="mt-1 space-y-1">
-                                {round.notes.map((note) => <NoteLine key={note.id} item={note} />)}
-                                {round.problems.map((problem) => (
-                                    <ProblemLine key={problem.key} problem={problem} />
-                                ))}
-                            </div>
-                        )}
-                    </section>
-                ))}
+                                    expanded={isOpen(round)}
+                                    onToggle={() => toggle(round)}
+                                />
+                            )}
+                            {(round.kind === 'prelude' || isOpen(round)) && (
+                                <div className={round.kind === 'run' ? 'mt-2' : ''}>
+                                    <RoundBody round={round}
+                                        historicalInput={historyForRun.get(round.key) ?? null}
+                                        actionableFailure={round.key === actionableFailureKey} />
+                                </div>
+                            )}
+                            {round.kind === 'run' && !isOpen(round) && (
+                                <div className="mt-1 space-y-1">
+                                    {round.notes.map((note) => <NoteLine key={note.id} item={note} />)}
+                                    {round.problems.map((problem) => (
+                                        <ProblemLine key={problem.key} problem={problem} />
+                                    ))}
+                                </div>
+                            )}
+                        </section>
+                    ))}
 
-                {view?.runActive && session?.connected && (
-                    <RunActivity label={activityLabel(items)} />
-                )}
+                    {view?.runActive && session?.connected && (
+                        <RunActivity label={activityLabel(items)} />
+                    )}
+                </div>
             </div>
 
             {!following && (
@@ -818,33 +795,6 @@ export function Transcript() {
                 </button>
             )}
 
-            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 border-t
-                border-line px-4 py-1.5 text-xs text-ink-muted">
-                <TranscriptStats sessionId={selected} />
-            </div>
         </div>
-    );
-}
-
-/** Counters for the current transcript, including what had to be dropped. */
-function TranscriptStats({ sessionId }: { sessionId: string }) {
-    const view = useView(sessionId);
-    const stats = useMemo(() => statsOf(view), [view]);
-
-    return (
-        <span data-testid="transcript-stats" className="flex items-center gap-2">
-            <span>{stats.items} items</span>
-            <span>seq {stats.lastSeq}</span>
-            {stats.gaps > 0 && <span className="text-warn">{stats.gaps} gap(s)</span>}
-            {stats.duplicates > 0 && <span>{stats.duplicates} duplicate(s)</span>}
-            {stats.confirmations > 0 && (
-                <span className="text-warn">{stats.confirmations} approval(s)</span>
-            )}
-            {stats.unknownRequests > 0 && (
-                <span className="text-warn" title="sent, and never answered">
-                    {stats.unknownRequests} unanswered
-                </span>
-            )}
-        </span>
     );
 }

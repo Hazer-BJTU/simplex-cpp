@@ -55,7 +55,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 /** What the run is doing, from the worker's own status snapshot. */
 function RunPane({ sessionId }: { sessionId: string }) {
-    const status = usePanel((state) => state.statusData(sessionId)) as
+    const reported = usePanel((state) => state.statusData(sessionId)) as
         Record<string, unknown> | null;
     const identity = usePanel((state) => (
         state.sessions.get(sessionId)?.identity ?? null
@@ -63,50 +63,54 @@ function RunPane({ sessionId }: { sessionId: string }) {
     const loop = usePanel((state) => state.loop(sessionId));
     const model = usePanel((state) => state.model(sessionId));
     const view = useView(sessionId);
+    const hub = usePanel((state) => state.hub);
+    const epoch = usePanel((state) => state.epoch);
     const stats = useMemo(() => statsOf(view), [view]);
     const [showRaw, setShowRaw] = useState(false);
 
-    if (!status) {
-        return (
-            <EmptyState
-                icon="status"
-                title="No status snapshot yet"
-                detail="The worker sends one when it starts, and whenever Status is asked for."
-            />
-        );
-    }
+    const status = reported ?? {};
 
     const active = status.active === true;
     const pending = Array.isArray(loop?.pending_results) ? loop.pending_results.length : 0;
 
     return (
         <div className="p-2">
-            <Section title="run">
-                <Row label="active">{active ? 'yes' : 'no'}</Row>
-                <Row label="stopping">{status.stopping === true ? 'yes' : 'no'}</Row>
-                {loop && <Row label="loop status">{String(loop.status ?? '')}</Row>}
-                {loop && <Row label="phase">{String(loop.phase ?? '')}</Row>}
-                {loop && (
-                    <Row label="completed exchanges">{String(loop.completed_exchanges ?? '')}</Row>
-                )}
-                {pending > 0 && <Row label="pending results">{pending}</Row>}
-                {model && <Row label="model (session)">{model}</Row>}
-            </Section>
+            {!reported && <p className="px-2 py-3 text-xs text-ink-muted">No status snapshot yet. Use “Ask for a status snapshot” in the command palette to refresh it.</p>}
+            {reported && (
+                <>
+                    <Section title="run">
+                        <Row label="active">{active ? 'yes' : 'no'}</Row>
+                        <Row label="stopping">{status.stopping === true ? 'yes' : 'no'}</Row>
+                        {loop && <Row label="loop status">{String(loop.status ?? '')}</Row>}
+                        {loop && <Row label="phase">{String(loop.phase ?? '')}</Row>}
+                        {loop && (
+                            <Row label="completed exchanges">{String(loop.completed_exchanges ?? '')}</Row>
+                        )}
+                        {pending > 0 && <Row label="pending results">{pending}</Row>}
+                        {model && <Row label="model (session)">{model}</Row>}
+                    </Section>
 
-            <Section title="storage">
-                <Row label="storage failed">
-                    {status.storage_failed === true
-                        ? <span className="text-danger">yes — further saves are suppressed</span>
-                        : 'no'}
-                </Row>
-                <Row label="rejected payloads">{String(status.rejected_payloads ?? 0)}</Row>
-                {loop && loop.error !== '' && loop.error !== undefined && (
-                    <Row label="loop error">
-                        <span className="text-danger">{String(loop.error)}</span>
-                    </Row>
-                )}
-            </Section>
+                    <Section title="storage">
+                        <Row label="storage failed">
+                            {status.storage_failed === true
+                                ? <span className="text-danger">yes — further saves are suppressed</span>
+                                : 'no'}
+                        </Row>
+                        <Row label="rejected payloads">{String(status.rejected_payloads ?? 0)}</Row>
+                        {loop && loop.error !== '' && loop.error !== undefined && (
+                            <Row label="loop error">
+                                <span className="text-danger">{String(loop.error)}</span>
+                            </Row>
+                        )}
+                    </Section>
 
+                </>
+            )}
+            <Section title="Hub connection">
+                <Row label="Hub">{hub ? `${hub.name} ${hub.version}` : 'unknown'}</Row>
+                <Row label="panel protocol">{hub?.protocol.version ?? 'unknown'}</Row>
+                <Row label="transcript">{epoch ?? 'unknown'}</Row>
+            </Section>
             <Section title="worker identity">
                 <Row label="state">{identity?.state ?? 'unknown'}</Row>
                 <Row label="worker id">{identity?.worker_id ?? '(none seen)'}</Row>
@@ -124,6 +128,7 @@ function RunPane({ sessionId }: { sessionId: string }) {
 
             <button
                 type="button"
+                disabled={!reported}
                 className="text-xs text-ink-faint hover:text-ink"
                 onClick={() => setShowRaw((value) => !value)}
             >

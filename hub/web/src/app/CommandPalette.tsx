@@ -39,11 +39,9 @@ export function CommandPalette() {
     const views = usePanel((state) => state.views);
     const confirmMode = usePanel((state) => state.confirmMode);
     const selected = usePanel((state) => state.selected);
-    const showDetails = usePanel((state) => state.showDetails);
     const inspectorOpen = usePanel((state) => state.inspectorOpen);
     const setInspectorTab = usePanel((state) => state.setInspectorTab);
     const setInspectorOpen = usePanel((state) => state.setInspectorOpen);
-    const toggleDetails = usePanel((state) => state.toggleDetails);
     const pingMs = usePanel((state) => state.pingMs);
     const [query, setQuery] = useState('');
     const [active, setActive] = useState(0);
@@ -77,10 +75,9 @@ export function CommandPalette() {
         running: selected !== null && isRunning(sessions.get(selected)),
         runActive: selected !== null && Boolean(views.get(selected)?.runActive),
         inspectorOpen,
-        showDetails,
         confirmMode: selected !== null ? confirmMode.get(selected) ?? 'ask' : 'ask',
         pingMs,
-    }), [sessions, views, selected, inspectorOpen, showDetails, confirmMode, pingMs]);
+    }), [sessions, views, selected, inspectorOpen, confirmMode, pingMs]);
 
     const commands = useMemo(() => buildCommands(input), [input]);
 
@@ -102,9 +99,6 @@ export function CommandPalette() {
             case 'inspector':
                 if (action.tab) setInspectorTab(action.tab);
                 setInspectorOpen(action.open);
-                return;
-            case 'toggle-details':
-                toggleDetails();
                 return;
             case 'ping':
                 client.ping();
