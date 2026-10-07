@@ -21,13 +21,24 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
         let writing = false;
         let anchor: { element: Element; offset: number } | undefined;
 
+        function offset(element: Element): number {
+            const transform = getComputedStyle(element).transform;
+            const translation = transform === 'none' ? 0 : new DOMMatrixReadOnly(transform).m42;
+            // Entrance transforms do not change layout and must not be treated
+            // as history growth that needs compensating scroll writes.
+            return element.getBoundingClientRect().top - node!.getBoundingClientRect().top - translation;
+        }
         function capture() {
+            if (follows.current) {
+                anchor = undefined;
+                return;
+            }
             const top = node!.getBoundingClientRect().top;
             anchor = undefined;
             for (const element of content!.querySelectorAll('[data-testid="round"], [data-testid="history-turn"]')) {
                 const bounds = element.getBoundingClientRect();
                 if (bounds.bottom > top) {
-                    anchor = { element, offset: bounds.top - top };
+                    anchor = { element, offset: offset(element) };
                     break;
                 }
             }
@@ -39,8 +50,8 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             if (follows.current) {
                 node!.scrollTop = node!.scrollHeight - node!.clientHeight;
             } else if (anchor?.element.isConnected) {
-                const offset = anchor.element.getBoundingClientRect().top - node!.getBoundingClientRect().top;
-                node!.scrollTop += offset - anchor.offset;
+                const currentOffset = offset(anchor.element);
+                node!.scrollTop += currentOffset - anchor.offset;
             }
             capture();
             // Scroll delivery is asynchronous. Clear writer ownership in the

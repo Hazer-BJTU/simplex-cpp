@@ -34,7 +34,8 @@ export function usePanel<T>(selector: (state: PanelStore) => T): T {
  * still updates the store; showing the pane reads the current snapshot at once.
  * Shallow equality keeps unrelated fields from scheduling a visual render.
  */
-export function useVisiblePanel<T>(active: boolean, selector: (state: PanelStore) => T): T {
+export function useVisiblePanel<T>(active: boolean, selector: (state: PanelStore) => T,
+    scheduling?: { urgent(next: PanelStore, previous: PanelStore): boolean }): T {
     const previous = useRef<{ value: T } | undefined>(undefined);
     const snapshot = useMemo(() => () => {
         if (!active && previous.current) return previous.current.value;
@@ -42,8 +43,38 @@ export function useVisiblePanel<T>(active: boolean, selector: (state: PanelStore
         if (!previous.current || !shallow(previous.current.value, value)) previous.current = { value };
         return previous.current.value;
     }, [active, selector]);
-    const subscribe = useCallback((notify: () => void) => active
-        ? panelStore.subscribe(notify) : () => {}, [active]);
+    const subscribe = useCallback((notify: () => void) => {
+        if (!active) return () => {};
+        if (!scheduling) return panelStore.subscribe(notify);
+        let frame = 0;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        function cancel() {
+            cancelAnimationFrame(frame);
+            clearTimeout(timer);
+            frame = 0;
+            timer = undefined;
+        }
+        function flush() {
+            cancel();
+            notify();
+        }
+        const unsubscribe = panelStore.subscribe((next, previous) => {
+            if (scheduling.urgent(next, previous)) flush();
+            else if (timer === undefined) {
+                frame = requestAnimationFrame(flush);
+                // Background tabs may suspend animation frames. Ingestion is
+                // always immediate; a timer publishes the latest snapshot too.
+                // There is no buffered event queue to grow or reorder.
+                timer = setTimeout(flush, 8);
+            }
+        });
+        document.addEventListener('visibilitychange', flush);
+        return () => {
+            cancel();
+            unsubscribe();
+            document.removeEventListener('visibilitychange', flush);
+        };
+    }, [active, scheduling]);
     return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 

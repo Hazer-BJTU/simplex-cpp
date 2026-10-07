@@ -242,7 +242,8 @@ export const ToolCard = memo(function ToolCard({ call }: { call: ToolCall }) {
             className={`min-w-0 rounded-lg border border-l-2 border-line bg-surface px-3 py-2 ${BORDER[call.status]}`}
         >
             <details data-testid="tool-details" onToggle={event => setDetailsOpen(event.currentTarget.open)} className="tool-disclosure min-w-0 text-xs">
-                <summary className="flex min-w-0 cursor-pointer select-none items-center gap-2 text-ink-muted hover:text-ink">
+                <summary onClick={event => setDetailsOpen(!(event.currentTarget.parentElement as HTMLDetailsElement).open)}
+                    className="flex min-w-0 cursor-pointer select-none items-center gap-2 text-ink-muted hover:text-ink">
                     <span data-testid="tool-status" title={status.label} className={status.tone}>
                         <Glyph name={status.icon} size="sm" />
                         <span className="sr-only">{status.label}</span>

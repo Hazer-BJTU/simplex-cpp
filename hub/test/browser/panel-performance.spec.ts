@@ -1,4 +1,5 @@
 /** Repeated production-build measurements, deliberately not timing gates in CI. */
+import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { STUB, call, emit, modelResponse, toolResult } from './harness.ts';
 
@@ -26,6 +27,9 @@ test('large transcript, output burst, approvals and local pane switching', async
     await page.request.post(`${STUB}/__stub/plan`, { data: { plan: { markdown: '# Plan\n\n- [ ] Work', revision: 1, updated_at: null } } });
     await page.goto('/?session=demo&panel_profile=1');
     await expect(page.getByTestId('round').last()).toContainText('Response 319');
+    const profiler = await page.context().newCDPSession(page);
+    await profiler.send('Profiler.enable');
+    await profiler.send('Profiler.start');
     await page.evaluate(() => {
         const target = window as unknown as { __simplexPanelProfile: { reset(): void }; __benchmark: unknown };
         target.__simplexPanelProfile.reset();
@@ -59,6 +63,16 @@ test('large transcript, output burst, approvals and local pane switching', async
         await page.getByRole('tab', { name: 'Conversation', exact: true }).click();
         await emit(page, 'tool_calls', [call(`burst-${index}`, 'read_text', { path: '/tmp/test' })]);
     }
+    const burst = Array.from({ length: 80 }, (_, index) => ({
+        event: 'model_response', data: modelResponse(`Burst message ${index}`),
+        extra: { request_id: 'stress', run_id: 'stress-run' },
+    }));
+    await page.request.post(`${STUB}/__stub/emit-batch`, { data: { events: [
+        { event: 'input_admitted', data: { operation: 'message' }, extra: { request_id: 'stress', run_id: 'stress-run' } },
+        ...burst,
+    ] } });
+    await expect(page.getByTestId('transcript')).toContainText('Burst message 79');
+    await page.getByLabel('message', { exact: true }).fill('Typing remains local during output');
     await page.getByTestId('approval-banner').first().getByRole('button', { name: 'Approve', exact: true }).click();
     await page.waitForTimeout(2000);
     await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'perf-0' } });
@@ -73,9 +87,13 @@ test('large transcript, output burst, approvals and local pane switching', async
             domNodes: document.querySelectorAll('*').length,
             heap: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize };
     });
-    const output = { fixture: { turns: 320, events: 1920, codeLines: 120, approvals: 8 },
+    const { profile } = await profiler.send('Profiler.stop');
+    await writeFile(testInfo.outputPath('panel-cpu-profile.json'), JSON.stringify(profile));
+    await testInfo.attach('panel-cpu-profile.json', { body: JSON.stringify(profile), contentType: 'application/json' });
+    const output = { fixture: { turns: 320, events: 1920, codeLines: 120, approvals: 8, burst: 81 },
         localPaint, report, browser: page.context().browser()?.version(),
         build: 'Vite production', viewport: page.viewportSize(), cpuThrottling: 1 };
+    await writeFile(testInfo.outputPath('panel-performance.json'), JSON.stringify(output, null, 2));
     await testInfo.attach('panel-performance.json', { body: JSON.stringify(output, null, 2), contentType: 'application/json' });
     console.log(JSON.stringify(output));
 });

@@ -850,7 +850,13 @@ export function buildRounds(
         || draft.protocol.length > 0 || draft.problems.length > 0
         || draft.notes.length > 0 || draft.requests.length > 0
     ).map((draft) => ({
-        key: draft.key,
+        // Retention/replay can change array positions. Scope visible identity
+        // to the input/execution so trimming cannot remount surviving tools or
+        // transfer a disclosure's local state to an unrelated turn.
+        key: draft.localInput ? `input-${draft.localInput.id}`
+            : draft.kind === 'run' ? JSON.stringify(['run', draft.workerId, draft.runId,
+                draft.requestId, draft.admitted?.envelope.sequence ?? null])
+            : draft.notes[0]?.id ?? draft.problems[0]?.key ?? draft.protocol[0]?.id ?? draft.key,
         index: draft.index,
         kind: draft.kind,
         input: draft.input,

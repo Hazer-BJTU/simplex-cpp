@@ -107,7 +107,7 @@ const Approval = memo(function Approval({ prompt, autoOpen, onDefer, onReview }:
         const sent = client.sendConfirmation(
             prompt.session_id, prompt.confirmation_id, decision, 'decided in the panel',
         );
-        if (!sent) {
+        if (!sent && !client.confirmations.states.getState().has(key)) {
             // Nothing left the machine, so nothing is in flight and the button
             // stays usable. This is the case the old panel turned into a
             // permanently disabled dialog.
@@ -221,7 +221,8 @@ const ApprovalBody = memo(function ApprovalBody({ prompt, summary, error }: {
             </pre>
 
             <details onToggle={event => setArgumentsOpen(event.currentTarget.open)} className="text-xs text-ink-muted">
-                <summary className="cursor-pointer select-none">arguments as the worker sent them</summary>
+                <summary onClick={event => setArgumentsOpen(!(event.currentTarget.parentElement as HTMLDetailsElement).open)}
+                    className="cursor-pointer select-none">arguments as the worker sent them</summary>
                 <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded
                     bg-sunken px-2 py-1 font-mono text-ink">
                     {argumentsOpen ? JSON.stringify(prompt.call?.arguments ?? {}, null, 2) : null}

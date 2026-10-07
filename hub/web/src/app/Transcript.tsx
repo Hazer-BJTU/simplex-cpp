@@ -32,7 +32,7 @@ import type {
     RequestRecord,
 } from '../../../shared/protocol.ts';
 import { profile, profileCount } from '../lib/profile.ts';
-import { useVisiblePanel } from '../state/usePanel.ts';
+import { useVisiblePanel, type PanelStore } from '../state/usePanel.ts';
 import type { NoteItem, OutboxItem, TranscriptItem } from '../state/view.ts';
 import { useTranscriptScroll } from './useTranscriptScroll.ts';
 import { createRoundProjection } from './roundProjection.ts';
@@ -244,14 +244,14 @@ function RestoredUserMessage({ turn }: { turn: HistoryTurn }) {
 }
 
 /** Compact history projection; tool arguments and results never enter it. */
-function HistoryRound({ turn, open, onToggle }: {
-    turn: HistoryTurn; open: boolean; onToggle: () => void;
+const HistoryRound = memo(function HistoryRound({ turn, open, onToggle }: {
+    turn: HistoryTurn; open: boolean; onToggle: (index: number, expanded: boolean) => void;
 }) {
     const user = turn.user.map(contentText).filter(Boolean).join('\n\n');
     const calls = turn.steps.reduce((count, step) => count + step.tool_calls, 0);
     return (
         <section data-testid="history-turn" className="min-w-0 space-y-4 py-3">
-            <button type="button" onClick={onToggle}
+            <button type="button" onClick={() => onToggle(turn.index, open)}
                 aria-expanded={open}
                 className="w-full min-w-0 break-words [overflow-wrap:anywhere] text-left
                     text-xs text-ink-muted hover:text-ink">
@@ -300,7 +300,7 @@ function HistoryRound({ turn, open, onToggle }: {
             </div>}
         </section>
     );
-}
+});
 
 /** One model response: reasoning, Markdown, and its proposed calls. */
 function AssistantMessage({ block, calls }: {
@@ -513,6 +513,26 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
     );
 });
 
+/** Control and lifecycle updates bypass coalesced output publication. */
+const TRANSCRIPT_SCHEDULING = {
+    urgent(next: PanelStore, previous: PanelStore): boolean {
+        const id = next.selected;
+        if (id !== previous.selected || next.connection !== previous.connection) return true;
+        if (!id) return false;
+        const session = next.sessions.get(id);
+        const before = previous.sessions.get(id);
+        if (session?.connected !== before?.connected
+            || session?.identity.worker_id !== before?.identity.worker_id) return true;
+        const view = next.views.get(id);
+        const old = previous.views.get(id);
+        if (view?.runActive !== old?.runActive || view?.confirmations !== old?.confirmations) return true;
+        const last = view?.items.at(-1);
+        if (last === old?.items.at(-1)) return false;
+        return last?.kind !== 'event' || ['input_admitted', 'run_started', 'run_finished',
+            'error', 'input_rejected', 'compact_finished'].includes(last.envelope.event);
+    },
+};
+
 export const Transcript = memo(function Transcript({ active = true }: { active?: boolean }) {
     const snapshot = useVisiblePanel(active, useCallback(state => {
         const selected = state.selected;
@@ -527,7 +547,7 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
             historySequence: view?.historySequence, historyWorker: view?.historyWorker,
             compact: view?.latestEvents.compact_finished,
         };
-    }, []));
+    }, []), TRANSCRIPT_SCHEDULING);
     const { selected, connected, workerId, identityState } = snapshot;
     const view = useMemo(() => snapshot.exists ? {
         ...snapshot, latestEvents: { compact_finished: snapshot.compact },
@@ -639,13 +659,12 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
         if (chosen !== undefined) return chosen;
         return openByDefault.get(round.key) ?? true;
     };
-    const toggle = (round: Round): void => {
-        setToggled((current) => {
-            const next = new Map(current);
-            next.set(round.key, !isOpen(round));
-            return next;
-        });
-    };
+    const toggle = useCallback((key: string, expanded: boolean) => {
+        setToggled(current => new Map(current).set(key, !(current.get(key) ?? expanded)));
+    }, []);
+    const toggleHistory = useCallback((index: number, expanded: boolean) => {
+        setHistoryToggled(current => new Map(current).set(index, !(current.get(index) ?? expanded)));
+    }, []);
 
     const scroller = useRef<HTMLDivElement>(null);
     const { following, jumpToLatest } = useTranscriptScroll(scroller, active);
@@ -704,13 +723,7 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
                     )}
                     {olderHistory.map((turn, index) => <HistoryRound key={turn.index} turn={turn}
                         open={historyToggled.get(turn.index) ?? index >= olderHistory.length - OPEN_ROUNDS}
-                        onToggle={() => setHistoryToggled((current) => {
-                            const next = new Map(current);
-                            const currentOpen = current.get(turn.index)
-                                ?? index >= olderHistory.length - OPEN_ROUNDS;
-                            next.set(turn.index, !currentOpen);
-                            return next;
-                        })} />)}
+                        onToggle={toggleHistory} />)}
 
                     {!view ? (
                         /* No `subscribed` frame yet: the transcript is on its way,
@@ -725,37 +738,11 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
                                 ? 'Events appear here as the worker reports them. Send a message to start a run.'
                                 : 'No worker is attached. Start one, then send a message.'}
                         />
-                    ) : displayedRounds.map((round) => (
-                        <section
-                            key={round.key}
-                            data-testid="round"
-                            data-kind={round.kind}
-                            className="animate-enter"
-                        >
-                            {round.kind === 'run' && (
-                                <RoundSummary
-                                    round={round}
-                                    historicalInput={historyForRun.get(round.key) ?? null}
-                                    expanded={isOpen(round)}
-                                    onToggle={() => toggle(round)}
-                                />
-                            )}
-                            {(round.kind === 'prelude' || isOpen(round)) && (
-                                <div className={round.kind === 'run' ? 'mt-2' : ''}>
-                                    <RoundBody round={round}
-                                        historicalInput={historyForRun.get(round.key) ?? null}
-                                        actionableFailure={round.key === actionableFailureKey} />
-                                </div>
-                            )}
-                            {round.kind === 'run' && !isOpen(round) && (
-                                <div className="mt-1 space-y-1">
-                                    {round.notes.map((note) => <NoteLine key={note.id} item={note} />)}
-                                    {round.problems.map((problem) => (
-                                        <ProblemLine key={problem.key} problem={problem} />
-                                    ))}
-                                </div>
-                            )}
-                        </section>
+                    ) : displayedRounds.map(round => (
+                        <TranscriptRound key={round.key} round={round}
+                            historicalInput={historyForRun.get(round.key) ?? null}
+                            expanded={isOpen(round)} onToggle={toggle}
+                            actionableFailure={round.key === actionableFailureKey} />
                     ))}
 
                     {view?.runActive && session?.connected && (
@@ -780,5 +767,48 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
             )}
 
         </div>
+    );
+});
+
+/** Stable round identity keeps unchanged summaries and disclosure trees asleep. */
+const TranscriptRound = memo(function TranscriptRound({ round, historicalInput, expanded,
+    actionableFailure, onToggle }: {
+    round: Round;
+    historicalInput: HistoryTurn | null;
+    expanded: boolean;
+    actionableFailure: boolean;
+    onToggle: (key: string, expanded: boolean) => void;
+}) {
+    profileCount('roundView');
+    return (
+        <section
+            data-testid="round"
+            data-kind={round.kind}
+            className="animate-enter"
+        >
+            {round.kind === 'run' && (
+                <RoundSummary
+                    round={round}
+                    historicalInput={historicalInput}
+                    expanded={expanded}
+                    onToggle={() => onToggle(round.key, expanded)}
+                />
+            )}
+            {(round.kind === 'prelude' || expanded) && (
+                <div className={round.kind === 'run' ? 'mt-2' : ''}>
+                    <RoundBody round={round}
+                        historicalInput={historicalInput}
+                        actionableFailure={actionableFailure} />
+                </div>
+            )}
+            {round.kind === 'run' && !expanded && (
+                <div className="mt-1 space-y-1">
+                    {round.notes.map((note) => <NoteLine key={note.id} item={note} />)}
+                    {round.problems.map((problem) => (
+                        <ProblemLine key={problem.key} problem={problem} />
+                    ))}
+                </div>
+            )}
+        </section>
     );
 });
