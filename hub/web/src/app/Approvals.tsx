@@ -136,31 +136,38 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
             <div
                 data-testid="approval-banner"
                 data-confirmation={prompt.confirmation_id}
-                className="flex flex-wrap items-center gap-2 rounded border border-warn-line
-                    bg-warn-soft px-2 py-1 text-xs text-warn"
+                className="approval-row"
             >
-                <Glyph name="approval" />
-                <span className="font-semibold">approval required</span>
-                <span className="font-mono">{prompt.session_id}{parent ? ` · parent ${parent}` : ''}</span>
-                <span className="font-mono font-medium">{prompt.call?.name ?? '(unnamed)'}</span>
-                <span className="max-w-96 truncate font-mono text-xs text-warn">
-                    {summary}
-                </span>
-                {!prompt.verified && (
-                    <Badge tone="bad" title={`worker identity is ${prompt.identity_state}`}>
-                        unverified worker
-                    </Badge>
-                )}
-                <span className="flex-1" />
-                <Button size="sm" onClick={() => { onReview(); setOpen(true); }}>
-                    Review
-                </Button>
-                <Button size="sm" variant="primary" disabled={expired} onClick={() => decide('approved')}>
-                    Approve
-                </Button>
-                <Button size="sm" variant="danger" disabled={expired} onClick={() => decide('denied')}>
-                    Deny
-                </Button>
+                <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                        <span className="inline-flex items-center gap-1 font-medium text-warn">
+                            <Glyph name="approval" />Approval required
+                        </span>
+                        <span className="break-all font-mono text-ink-muted">
+                            {prompt.session_id}{parent ? ` · parent ${parent}` : ''}
+                        </span>
+                        {!prompt.verified && (
+                            <Badge tone="bad" title={`worker identity is ${prompt.identity_state}`}>
+                                unverified worker
+                            </Badge>
+                        )}
+                    </div>
+                    <p className="truncate text-xs text-ink-muted">
+                        <span className="font-mono font-medium text-ink">{prompt.call?.name ?? '(unnamed)'}</span>
+                        {' · '}<span className="font-mono">{summary}</span>
+                    </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                    <Button size="sm" variant="ghost" onClick={() => { onReview(); setOpen(true); }}>
+                        Review
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={expired} onClick={() => decide('approved')}>
+                        Approve
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={expired} onClick={() => decide('denied')}>
+                        Deny
+                    </Button>
+                </div>
             </div>
 
             <Dialog
@@ -293,8 +300,7 @@ export function Approvals() {
         <section
             aria-label="pending approvals"
             data-testid="approvals"
-            className="animate-enter space-y-1 border-b border-warn-line bg-warn-soft/60 px-3
-                py-2 sm:px-4"
+            className="approval-list animate-enter"
         >
             {/* One line for the count rather than a live region around the whole
                 section: the prompt bodies change as decisions are sent, and a
@@ -303,35 +309,37 @@ export function Approvals() {
             <p role="status" aria-atomic="true" className="sr-only">
                 {prompts.length} approval{prompts.length === 1 ? '' : 's'} waiting for a decision
             </p>
-            {prompts.map((prompt) => (
-                <Approval
-                    key={prompt.confirmation_id}
-                    prompt={prompt}
-                    autoOpen={prompt.confirmation_id === firstUnanswered?.confirmation_id}
-                    onDefer={() => setDeferred((current) => (
-                        new Set([...current, prompt.confirmation_id])
-                    ))}
-                    onReview={() => setDeferred((current) => {
-                        if (!current.has(prompt.confirmation_id)) return current;
-                        const next = new Set(current);
-                        next.delete(prompt.confirmation_id);
-                        return next;
-                    })}
-                />
-            ))}
-            {deferred.size > 0 && (
-                <p className="text-xs text-warn">
-                    {deferred.size} prompt(s) deferred. They stay here until answered or until the
-                    worker's own deadline passes.
-                </p>
-            )}
-            <button
-                type="button"
-                className="text-xs text-warn underline-offset-2 hover:underline"
-                onClick={() => setDeferred(new Set(prompts.map((p) => p.confirmation_id)))}
-            >
-                defer all
-            </button>
+            <div className="reading-width">
+                {prompts.map((prompt) => (
+                    <Approval
+                        key={prompt.confirmation_id}
+                        prompt={prompt}
+                        autoOpen={prompt.confirmation_id === firstUnanswered?.confirmation_id}
+                        onDefer={() => setDeferred((current) => (
+                            new Set([...current, prompt.confirmation_id])
+                        ))}
+                        onReview={() => setDeferred((current) => {
+                            if (!current.has(prompt.confirmation_id)) return current;
+                            const next = new Set(current);
+                            next.delete(prompt.confirmation_id);
+                            return next;
+                        })}
+                    />
+                ))}
+                {deferred.size > 0 && (
+                    <p className="text-xs text-warn">
+                        {deferred.size} prompt(s) deferred. They stay here until answered or until the
+                        worker's own deadline passes.
+                    </p>
+                )}
+                <button
+                    type="button"
+                    className="text-xs text-warn underline-offset-2 hover:underline"
+                    onClick={() => setDeferred(new Set(prompts.map((p) => p.confirmation_id)))}
+                >
+                    defer all
+                </button>
+            </div>
         </section>
     );
 }
