@@ -19,7 +19,7 @@
  * - **Details are deliberate.** A short call summary is always visible; the
  *   complete arguments, output, and timing appear only when opened.
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Glyph, type GlyphName } from '../ui/icons.tsx';
 import { MarkdownBlock } from './Markdown.tsx';
 import { formatDuration, prettyJson } from './content.ts';
@@ -226,7 +226,8 @@ function Result({ call }: { call: ToolCall }) {
 }
 
 /** One proposed call, its status, and what came back. */
-export function ToolCard({ call }: { call: ToolCall }) {
+export const ToolCard = memo(function ToolCard({ call }: { call: ToolCall }) {
+    const [detailsOpen, setDetailsOpen] = useState(false);
     const [showArgs, setShowArgs] = useState(false);
     const split = splitCommand(call.args);
     const status = STATUS[call.status];
@@ -240,7 +241,7 @@ export function ToolCard({ call }: { call: ToolCall }) {
             data-status={call.status}
             className={`min-w-0 rounded-lg border border-l-2 border-line bg-surface px-3 py-2 ${BORDER[call.status]}`}
         >
-            <details data-testid="tool-details" className="tool-disclosure min-w-0 text-xs">
+            <details data-testid="tool-details" onToggle={event => setDetailsOpen(event.currentTarget.open)} className="tool-disclosure min-w-0 text-xs">
                 <summary className="flex min-w-0 cursor-pointer select-none items-center gap-2 text-ink-muted hover:text-ink">
                     <span data-testid="tool-status" title={status.label} className={status.tone}>
                         <Glyph name={status.icon} size="sm" />
@@ -253,7 +254,7 @@ export function ToolCard({ call }: { call: ToolCall }) {
                     <span className="tool-disclosure-arrow" aria-hidden="true">▸</span>
                     <span className="sr-only">Call and result details</span>
                 </summary>
-                <div className="mt-2 min-w-0 space-y-2 border-t border-line pt-2">
+                {detailsOpen && <div className="mt-2 min-w-0 space-y-2 border-t border-line pt-2">
                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-ink-faint">
                         {call.security && <span>security: {call.security}</span>}
                         {call.scheduling && <span>scheduling: {call.scheduling}</span>}
@@ -284,7 +285,7 @@ export function ToolCard({ call }: { call: ToolCall }) {
                             {prettyJson(call.args ?? {})}
                         </pre>
                     )}
-                </div>
+                </div>}
             </details>
             {call.status !== 'ok' && call.status !== 'running' && (
                 <p className={`mt-1 text-xs ${call.status === 'failed' ? 'text-danger' : call.status === 'pending' ? 'text-warn' : 'text-ink-muted'}`}>
@@ -300,7 +301,7 @@ export function ToolCard({ call }: { call: ToolCall }) {
             )}
         </article>
     );
-}
+});
 
 /** The arguments left over once a command has been taken out. */
 function CallArguments({ value }: { value: unknown }) {

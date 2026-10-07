@@ -288,6 +288,34 @@ function promptFor(prompts: Prompts, view: CallView): ConfirmationPrompt | null 
     return prompts.byName.get(view.name) ?? null;
 }
 
+/**
+ * Per-projection parsing caches. Weak keys follow immutable event lifetimes:
+ * trimming/replacing a transcript never retains its arguments or output here.
+ * The uncached fold remains the correctness reference.
+ */
+export class RoundDerivations {
+    private readonly results = new WeakMap<WorkerEnvelope, ResultView[]>();
+    private readonly outputs = new WeakMap<ResultView, ToolOutput>();
+
+    resultsOf(envelope: WorkerEnvelope): ResultView[] {
+        let result = this.results.get(envelope);
+        if (!result) {
+            result = resultsOf(envelope);
+            this.results.set(envelope, result);
+        }
+        return result;
+    }
+
+    outputOf(result: ResultView): ToolOutput {
+        let output = this.outputs.get(result);
+        if (!output) {
+            output = parseToolOutput(result.text);
+            this.outputs.set(result, output);
+        }
+        return output;
+    }
+}
+
 /** Read the calls a model response proposed. */
 function invokesOf(envelope: WorkerEnvelope): CallView[] {
     const message = obj(envelope.data) ?? {};
@@ -353,8 +381,9 @@ function settle(
     call: ToolCall,
     result: ResultView,
     envelope: WorkerEnvelope,
+    derivations?: RoundDerivations,
 ): ToolCall {
-    const output = parseToolOutput(result.text);
+    const output = derivations?.outputOf(result) ?? parseToolOutput(result.text);
     const proposedAt = draft.proposedAt.get(call.key);
     return {
         ...call,
@@ -561,6 +590,7 @@ export function buildRounds(
     items: readonly TranscriptItem[],
     confirmations: ReadonlyMap<string, ConfirmationPrompt>,
     requests: ReadonlyMap<string, RequestRecord> = new Map(),
+    derivations?: RoundDerivations,
 ): Round[] {
     // Older workers left admission data empty. Their request records can help
     // while retained, but newer replayable admission events take precedence.
@@ -740,12 +770,12 @@ export function buildRounds(
         if (name === 'tool_results') {
             const run = groups.execution(envelope);
             track(run, envelope);
-            for (const result of resultsOf(envelope)) {
+            for (const result of derivations?.resultsOf(envelope) ?? resultsOf(envelope)) {
                 const call = matchCall(run, result);
                 if (!call) {
                     // A result whose proposal is not in this transcript: a
                     // replay can begin mid-turn. Shown rather than dropped.
-                    const output = parseToolOutput(result.text);
+                    const output = derivations?.outputOf(result) ?? parseToolOutput(result.text);
                     const key = `orphan-${item.id}-${run.calls.length}`;
                     run.timeline.push({ kind: 'calls', key });
                     run.calls.push({
@@ -767,7 +797,7 @@ export function buildRounds(
                     continue;
                 }
                 const at = run.calls.indexOf(call);
-                run.calls[at] = settle(run, call, result, envelope);
+                run.calls[at] = settle(run, call, result, envelope, derivations);
                 run.settled.add(call.key);
             }
             continue;

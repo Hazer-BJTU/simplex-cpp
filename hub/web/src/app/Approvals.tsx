@@ -28,7 +28,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ConfirmationPrompt } from '../../../shared/protocol.ts';
 import { profileCount } from '../lib/profile.ts';
-import { usePanel } from '../state/usePanel.ts';
+import { usePanel, useVisiblePanel } from '../state/usePanel.ts';
 import { Badge, Button } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Dialog, DialogButton, DialogContent } from '../ui/overlays.tsx';
@@ -266,18 +266,13 @@ function ApprovalBody({ prompt, summary, waiting, error }: {
 
 export function Approvals() {
     profileCount('approvals');
-    // Prompts live in each session's view, so this collects across all of them.
-    // `views` is replaced only when one of them actually changed, which is what
-    // makes the memo effective and the selector safe: returning a fresh array
-    // from a selector would re-render forever.
-    const views = usePanel((state) => state.views);
-    const prompts = useMemo(() => {
+    // Only prompt identities trigger this subscription, not logs or messages.
+    const prompts = useVisiblePanel(true, state => {
         const open: ConfirmationPrompt[] = [];
-        for (const view of views.values()) open.push(...view.confirmations.values());
-        return open
-            .filter((prompt) => prompt.settled_at === null)
+        for (const view of state.views.values()) open.push(...view.confirmations.values());
+        return open.filter(prompt => prompt.settled_at === null)
             .sort((a, b) => a.received_at.localeCompare(b.received_at));
-    }, [views]);
+    });
 
     // Which prompts the operator has deferred. Deferring is remembered against
     // the prompt, so it does not come back on the next render (D17) — but the

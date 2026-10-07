@@ -17,6 +17,7 @@
  * which the previous stage established and this one keeps.
  */
 import {
+    memo,
     useCallback,
     useEffect,
     useLayoutEffect,
@@ -31,8 +32,10 @@ import type {
     RequestRecord,
 } from '../../../shared/protocol.ts';
 import { profile, profileCount } from '../lib/profile.ts';
-import { usePanel, useSession, useView } from '../state/usePanel.ts';
+import { useVisiblePanel } from '../state/usePanel.ts';
 import type { NoteItem, OutboxItem, TranscriptItem } from '../state/view.ts';
+import { useTranscriptScroll } from './useTranscriptScroll.ts';
+import { createRoundProjection } from './roundProjection.ts';
 import { reconcileInternalHistory } from './history-rounds.ts';
 import { parseCompactResult } from '../state/compact.ts';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
@@ -42,16 +45,12 @@ import { Markdown } from './Markdown.tsx';
 import { ToolCard } from './ToolCard.tsx';
 import { contentText, formatDuration } from './content.ts';
 import {
-    buildRounds,
     type AssistantBlock,
     type Problem,
     type Round,
     type RunFailure,
     type ToolCall,
 } from './rounds.ts';
-
-/** How close to the bottom still counts as "following the end". */
-const STICK_THRESHOLD_PX = 48;
 
 /** How many of the most recent turns stay open. */
 const OPEN_ROUNDS = 3;
@@ -67,6 +66,7 @@ const RUN_OUTCOMES = new Map<string, { icon: GlyphName; label: string }>([
     ['failed', { icon: 'error', label: 'Failed' }],
 ]);
 
+const EMPTY_HISTORY: readonly HistoryTurn[] = [];
 const EMPTY_ITEMS: readonly TranscriptItem[] = [];
 const EMPTY_PROMPTS: ReadonlyMap<string, ConfirmationPrompt> = new Map();
 const EMPTY_REQUESTS: ReadonlyMap<string, RequestRecord> = new Map();
@@ -405,7 +405,7 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
 }
 
 /** Everything in a round, in the order it happened. */
-function RoundBody({ round, historicalInput, actionableFailure }: {
+const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFailure }: {
     round: Round;
     historicalInput: HistoryTurn | null;
     actionableFailure: boolean;
@@ -511,21 +511,39 @@ function RoundBody({ round, historicalInput, actionableFailure }: {
             )}
         </div>
     );
-}
+});
 
-export function Transcript() {
-    const selected = usePanel((state) => state.selected);
-    const session = useSession(selected);
-    const view = useView(selected);
+export const Transcript = memo(function Transcript({ active = true }: { active?: boolean }) {
+    const snapshot = useVisiblePanel(active, useCallback(state => {
+        const selected = state.selected;
+        const session = selected ? state.sessions.get(selected) : undefined;
+        const view = selected ? state.views.get(selected) : undefined;
+        return {
+            selected, connected: session?.connected, workerId: session?.identity.worker_id,
+            identityState: session?.identity.state, exists: !!view,
+            items: view?.items, history: view?.history, confirmations: view?.confirmations,
+            requests: view?.requests, droppedItems: view?.droppedItems,
+            runActive: view?.runActive, historyLoading: view?.historyLoading,
+            historySequence: view?.historySequence, historyWorker: view?.historyWorker,
+            compact: view?.latestEvents.compact_finished,
+        };
+    }, []));
+    const { selected, connected, workerId, identityState } = snapshot;
+    const view = useMemo(() => snapshot.exists ? {
+        ...snapshot, latestEvents: { compact_finished: snapshot.compact },
+    } : undefined, [snapshot]);
+    const session = useMemo(() => connected === undefined ? null : {
+        connected, identity: { worker_id: workerId, state: identityState },
+    }, [connected, workerId, identityState]);
     const items = view?.items ?? EMPTY_ITEMS;
-    const history = view?.history ?? [];
+    const history = view?.history ?? EMPTY_HISTORY;
     const confirmations = view?.confirmations ?? EMPTY_PROMPTS;
     const requests = view?.requests ?? EMPTY_REQUESTS;
     const dropped = view?.droppedItems ?? 0;
-
+    const project = useMemo(() => createRoundProjection(), [selected]);
     const rounds = useMemo(
-        () => profile('rounds', () => buildRounds(items, confirmations, requests)),
-        [items, confirmations, requests],
+        () => profile('rounds', () => project(items, confirmations, requests)),
+        [project, items, confirmations, requests],
     );
     // buildRounds orders executions by worker admission, even when a pending
     // local outbox was created before another panel's earlier input arrived.
@@ -630,7 +648,7 @@ export function Transcript() {
     };
 
     const scroller = useRef<HTMLDivElement>(null);
-    const [following, setFollowing] = useState(true);
+    const { following, jumpToLatest } = useTranscriptScroll(scroller, active);
 
     // Classic desktop scrollbars consume width; overlay scrollbars do not.
     // Match that gutter in the sibling composer without rerendering messages.
@@ -654,43 +672,6 @@ export function Transcript() {
         };
     }, [selected]);
 
-    const measure = useCallback(() => {
-        const node = scroller.current;
-        if (!node) return;
-        const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-        setFollowing(distance <= STICK_THRESHOLD_PX);
-    }, []);
-
-    // Only a scroll the reader caused turns following off: appending content
-    // does not fire a scroll event, which is what makes this the right signal.
-    useEffect(() => {
-        const node = scroller.current;
-        if (!node) return;
-        node.addEventListener('scroll', measure, { passive: true });
-        return () => node.removeEventListener('scroll', measure);
-    }, [measure, selected]);
-
-    useLayoutEffect(() => {
-        const node = scroller.current;
-        if (!node) return;
-        node.scrollTop = node.scrollHeight;
-        setFollowing(true);
-    }, [selected]);
-
-    useLayoutEffect(() => {
-        if (!following) return;
-        const node = scroller.current;
-        if (!node) return;
-        node.scrollTop = node.scrollHeight;
-    }, [items, history, following]);
-
-    const jumpToLatest = useCallback(() => {
-        const node = scroller.current;
-        if (!node) return;
-        node.scrollTop = node.scrollHeight;
-        setFollowing(true);
-    }, []);
-
     if (!selected) {
         return (
             <EmptyState
@@ -707,6 +688,7 @@ export function Transcript() {
             <div
                 ref={scroller}
                 data-testid="transcript"
+                style={{ overflowAnchor: 'none' }}
                 className="min-h-0 flex-1 overflow-y-auto reading-scroll"
             >
                 <div className="reading-width conversation-space" data-testid="reading-surface">
@@ -799,4 +781,4 @@ export function Transcript() {
 
         </div>
     );
-}
+});

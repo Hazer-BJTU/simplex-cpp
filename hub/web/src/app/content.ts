@@ -73,13 +73,18 @@ export function partsText(parts: unknown): string {
     return parts.map(contentText).filter(Boolean).join('\n\n');
 }
 
+// Formatting options and browser locale stay fixed for this panel lifetime.
+// Constructing an Intl formatter for every retained event dominates grouping
+// on large transcripts; reuse the formatter, never cache timestamp strings.
+const clockFormatter = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
+
 /** A short clock time for an envelope, or `''`. */
 export function clockOf(envelope: WorkerEnvelope): string {
     const stamp = str(envelope.received_at);
     if (!stamp) return '';
     const date = new Date(stamp);
     if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    return clockFormatter.format(date);
 }
 
 /** Milliseconds since an ISO timestamp, or null when it cannot be read. */

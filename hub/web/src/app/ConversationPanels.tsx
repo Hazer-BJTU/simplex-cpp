@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import * as TabsPrimitive from '@radix-ui/react-tabs';
 import { usePanel } from '../state/usePanel.ts';
 import { Tabs, TabsList, TabsTrigger } from '../ui/overlays.tsx';
@@ -38,7 +38,7 @@ function SessionPanels({ markdown }: { markdown: string }) {
                 style={{ display: activePane === 'conversation' ? 'flex' : 'none' }}
                 className="min-h-0 flex-1 flex-col focus:outline-none"
             >
-                <Transcript />
+                <Transcript active={activePane === 'conversation'} />
             </div>
             {hasPlan && (
                 <TabsPrimitive.Content
@@ -49,9 +49,14 @@ function SessionPanels({ markdown }: { markdown: string }) {
                     className="min-h-0 flex-1 overflow-auto break-words reading-scroll text-sm focus:outline-none"
                     data-testid="plan-content"
                 >
-                    <div className="reading-width"><Markdown>{markdown}</Markdown></div>
+                    <PlanContent active={activePane === 'plan'} markdown={markdown} />
                 </TabsPrimitive.Content>
             )}
         </Tabs>
     );
 }
+
+/** Preserve rendered plan/disclosure state while hidden; refresh on return. */
+const PlanContent = memo(function PlanContent({ markdown }: { markdown: string; active: boolean }) {
+    return <div className="reading-width"><Markdown>{markdown}</Markdown></div>;
+}, (previous, next) => !next.active || previous.markdown === next.markdown);
