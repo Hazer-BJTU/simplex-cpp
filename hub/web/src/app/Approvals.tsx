@@ -27,6 +27,7 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ConfirmationPrompt } from '../../../shared/protocol.ts';
+import { profileCount } from '../lib/profile.ts';
 import { usePanel } from '../state/usePanel.ts';
 import { Badge, Button } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
@@ -264,6 +265,7 @@ function ApprovalBody({ prompt, summary, waiting, error }: {
 }
 
 export function Approvals() {
+    profileCount('approvals');
     // Prompts live in each session's view, so this collects across all of them.
     // `views` is replaced only when one of them actually changed, which is what
     // makes the memo effective and the selector safe: returning a fresh array

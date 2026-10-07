@@ -255,6 +255,16 @@ const server = createServer((req, res) => {
                     json(res, 200, { ok: true });
                     return;
                 }
+                case '/__stub/emit-batch': {
+                    for (const item of payload.events ?? []) {
+                        const envelope = append(payload.session ?? 'demo', item.event,
+                            item.data ?? {}, item.extra ?? {});
+                        if (!payload.seedOnly) broadcast({ type: 'event',
+                            session: envelope.session_id, hub_seq: envelope.hub_sequence, envelope });
+                    }
+                    json(res, 200, { count: payload.events?.length ?? 0 });
+                    return;
+                }
                 case '/__stub/emit': {
                     const envelope = append(
                         payload.session ?? 'demo', payload.event ?? 'model_response',

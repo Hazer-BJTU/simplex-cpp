@@ -30,6 +30,7 @@ import type {
     HistoryTurn,
     RequestRecord,
 } from '../../../shared/protocol.ts';
+import { profile, profileCount } from '../lib/profile.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import type { NoteItem, OutboxItem, TranscriptItem } from '../state/view.ts';
 import { reconcileInternalHistory } from './history-rounds.ts';
@@ -409,6 +410,7 @@ function RoundBody({ round, historicalInput, actionableFailure }: {
     historicalInput: HistoryTurn | null;
     actionableFailure: boolean;
 }) {
+    profileCount('roundBody');
     const calls = useMemo(() => {
         const index = new Map<string, ToolCall>();
         for (const call of round.calls) index.set(call.key, call);
@@ -522,7 +524,7 @@ export function Transcript() {
     const dropped = view?.droppedItems ?? 0;
 
     const rounds = useMemo(
-        () => buildRounds(items, confirmations, requests),
+        () => profile('rounds', () => buildRounds(items, confirmations, requests)),
         [items, confirmations, requests],
     );
     // buildRounds orders executions by worker admission, even when a pending
