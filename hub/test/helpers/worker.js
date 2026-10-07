@@ -169,13 +169,15 @@ export function workerEvent({
 
 /** Wait for a condition to become true, polling the microtask queue. */
 export async function until(predicate, { timeout = 2000, label = 'condition' } = {}) {
-    const deadline = Date.now() + timeout;
+    // Match timer elapsed time: host wall-clock adjustments must not expire a
+    // polling deadline before the operation's own timeout has had time to fire.
+    const deadline = performance.now() + timeout;
     for (;;) {
         // `await` handles both a synchronous predicate and an asynchronous one,
         // which the child-process end-to-end tests need.
         const value = await predicate();
         if (value) return value;
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+        if (performance.now() > deadline) throw new Error(`timed out waiting for ${label}`);
         await new Promise((resolve) => setTimeout(resolve, 5));
     }
 }
