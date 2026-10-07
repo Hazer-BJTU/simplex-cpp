@@ -440,7 +440,7 @@ clients need not understand paging unless they opt into it.
 | `welcome` | `hub`, `sessions` | sent once per connection |
 | `sessions` | `sessions` | full list, on request |
 | `session` | `session` | one session changed |
-| `session_removed` | `session` | deleted |
+| `session_removed` | `session` | removed from the panel session list |
 | `subscribed` | `session`, `transcript`, `logs`, `latest`, `transcript_epoch`, `plan`, optional `replay_more`, `replay_reset`, `request_id` | subscription replay page or completed legacy subscription |
 | `created` | `session` | session created by this client |
 | `event` | `session`, `hub_seq`, `envelope` | one worker event, verbatim |
@@ -488,6 +488,13 @@ authority that was not already there.
 
 Session list updates (`session`, `session_removed`) go to every connected
 client.
+
+A headless subagent is removed from the panel list once shutdown and persistence
+cleanup succeed. `GET /api/sessions`, `sessions` and `welcome` omit these stopped
+children. The Hub still retains their terminal status temporarily for the
+parent's `subagent/receive` requests; `session_removed` does not imply that this
+internal cache has expired. Stopping and cleanup-pending children remain listed,
+as do ordinary sessions whose workers have exited.
 
 ### Replay cursors and the transcript epoch
 

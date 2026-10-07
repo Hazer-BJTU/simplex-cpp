@@ -4,6 +4,10 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, rmSync
 import { join } from 'node:path';
 import { afterEach, it } from 'node:test';
 import { parse, stringify } from 'yaml';
+import { WebSocket } from 'ws';
+import { createPanelClient } from '../web/src/lib/client.ts';
+import { memoryStorage } from '../web/src/lib/token.ts';
+import { createPanelStore } from '../web/src/state/store.ts';
 import { startTestHub } from './helpers/hub.js';
 import { connectWorker, until, upgradeStatus } from './helpers/worker.js';
 import { sessionDir } from '../src/launch/config-render.ts';
@@ -150,6 +154,90 @@ it('does not clean up on worker disconnect and refreshes primary dialogue after 
     assert.equal(record.conversation.value.incomplete, false);
 });
 
+it('hides stopped children from live panels, refreshed lists and reconnects while retaining parent outcomes', async (t) => {
+    const ctx = await setup();
+    const child = await fork(ctx);
+    const store = createPanelStore();
+    const sockets = [];
+    const messages = [];
+    let peer;
+    class PanelWebSocket extends WebSocket {
+        constructor(url) {
+            super(url);
+            sockets.push(this);
+            this.on('message', data => messages.push(JSON.parse(data.toString('utf8'))));
+        }
+    }
+    const client = createPanelClient({
+        store,
+        location: new URL(`${ctx.base}/?session=${child.id}`),
+        storage: memoryStorage(),
+        fetchImpl: (url, options) => {
+            const { pathname, search } = new URL(url);
+            return fetch(`${ctx.base}${pathname}${search}`, options);
+        },
+        WebSocketImpl: PanelWebSocket,
+    });
+    t.after(async () => {
+        client.stop();
+        for (const socket of sockets) socket.terminate();
+        peer?.ws.terminate();
+        await ctx.hub.stop();
+        hubs.splice(hubs.indexOf(ctx.hub), 1);
+        rmSync(ctx.config.dataDir, { recursive: true, force: true });
+    });
+    await client.start();
+    await until(() => store.getState().session(child.id) !== null);
+    assert.equal(store.getState().selected, child.id);
+
+    assert.equal((await send(ctx, child)).status, 'succeeded');
+    await until(() => {
+        const conversation = ctx.hub.subagents.children.get(child.id).conversation?.value;
+        return !child.activeRunId && !conversation?.stale && conversation?.turns[0]?.steps.length === 1;
+    });
+    assert.ok(store.getState().session(child.id));
+
+    assert.equal((await ctx.hub.supervisor.stop(child)).ok, true);
+    await until(() => store.getState().session(child.id) === null);
+    assert.equal(store.getState().selected, null);
+    assert.ok(messages.some(message => message.type === 'session_removed' && message.session === child.id));
+    assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+    assert.equal(ctx.hub.registry.get(child.id), child);
+
+    const cached = await rpc(ctx, 'subagent/receive', { subagent_id: child.id });
+    assert.equal(cached.status, 'succeeded');
+    assert.equal(cached.result.lifecycle, 'stopped');
+    assert.equal(cached.result.conversation, null);
+    assert.equal(cached.result.requests[0].state, 'finished');
+    const children = await rpc(ctx, 'subagent/receive');
+    assert.ok(children.result.subagents.some(value => value.subagent_id === child.id));
+
+    // Late lifecycle notifications must not reinsert a retained terminal record.
+    ctx.hub.panel.hooks.onProcessChange(child, child.process);
+    client.refreshSessions();
+    await until(() => messages.some(message => message.type === 'sessions'));
+    assert.equal(store.getState().session(child.id), null);
+    assert.equal(messages.some(message => message.type === 'session'
+        && message.session.session_id === child.id
+        && message.session.subagent.lifecycle === 'stopped'), false);
+    const list = (await (await fetch(`${ctx.base}/api/sessions`)).json()).sessions;
+    assert.equal(list.some(session => session.session_id === child.id), false);
+    assert.ok(list.some(session => session.session_id === ctx.parent.id));
+
+    peer = await connectWorker(`${ctx.wsBase}/panel/ws`);
+    const welcome = await peer.waitFor(message => message.type === 'welcome');
+    assert.equal(welcome.sessions.some(session => session.session_id === child.id), false);
+    assert.ok(welcome.sessions.some(session => session.session_id === ctx.parent.id));
+    peer.send({ v: 1, type: 'list_sessions' });
+    const refreshed = await peer.waitFor(message => message.type === 'sessions');
+    assert.equal(refreshed.sessions.some(session => session.session_id === child.id), false);
+
+    // Ordinary exited sessions retain their existing visibility policy.
+    assert.equal((await ctx.hub.supervisor.stop(ctx.parent)).ok, true);
+    const afterParentStop = (await (await fetch(`${ctx.base}/api/sessions`)).json()).sessions;
+    assert.ok(afterParentStop.some(session => session.session_id === ctx.parent.id));
+});
+
 for (const failure of ['send', 'timeout']) {
     it(`reports ${failure} conversation storage failure without disabling unrelated sessions`, async () => {
         const ctx = await setup();
@@ -203,6 +291,8 @@ it('stops descendants on a parent process crash and reports terminal state witho
     ctx.parent.connection.sendSignal({ type: 'signal', data: { operation: 'test_crash' } });
     await until(() => child.subagent.lifecycle === 'stopped');
     assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+    const list = (await (await fetch(`${ctx.base}/api/sessions`)).json()).sessions;
+    assert.equal(list.some(session => session.session_id === child.id), false);
 });
 it('blocks panel conversation/control/configuration APIs while retaining operator policy', async () => {
     const ctx = await setup();
@@ -463,9 +553,13 @@ it('returns cleanup-pending for an unjoined output fence and deletes only after 
     assert.equal(result.ok, false);
     assert.equal(child.subagent.lifecycle, 'cleanup-pending');
     assert.equal(existsSync(sessionDir(ctx.config, child.id)), true);
+    const pending = (await (await fetch(`${ctx.base}/api/sessions`)).json()).sessions;
+    assert.ok(pending.some(session => session.session_id === child.id));
     release();
     assert.equal((await ctx.hub.supervisor.stop(child)).ok, true);
     assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+    const cleaned = (await (await fetch(`${ctx.base}/api/sessions`)).json()).sessions;
+    assert.equal(cleaned.some(session => session.session_id === child.id), false);
 });
 
 it('cleans safe unspawned orphan/cycle reservations independently of directory order', async () => {
