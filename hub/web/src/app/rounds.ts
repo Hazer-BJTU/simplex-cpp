@@ -133,6 +133,8 @@ export type TimelineEntry =
 /** One turn: an input, everything it caused, and how it settled. */
 export interface Round {
     readonly key: string;
+    /** Retained item identities for DOM continuity, never execution correlation. */
+    readonly sourceKeys: readonly string[];
     /** 0 for the loose items before the first run, then 1, 2, 3 … in run order. */
     readonly index: number;
     readonly kind: 'prelude' | 'run';
@@ -181,6 +183,7 @@ interface Prompts {
 /** A mutable draft, so the fold can be written in reading order. */
 interface Draft {
     key: string;
+    sourceKeys: string[];
     index: number;
     kind: 'prelude' | 'run';
     /** Wire identities are scoped to a worker; pending inputs have no run ID. */
@@ -218,6 +221,7 @@ interface Draft {
 function newDraft(key: string, index: number, kind: 'prelude' | 'run'): Draft {
     return {
         key,
+        sourceKeys: [],
         index,
         kind,
         requestId: '',
@@ -288,6 +292,34 @@ function promptFor(prompts: Prompts, view: CallView): ConfirmationPrompt | null 
     return prompts.byName.get(view.name) ?? null;
 }
 
+/**
+ * Per-projection parsing caches. Weak keys follow immutable event lifetimes:
+ * trimming/replacing a transcript never retains its arguments or output here.
+ * The uncached fold remains the correctness reference.
+ */
+export class RoundDerivations {
+    private readonly results = new WeakMap<WorkerEnvelope, ResultView[]>();
+    private readonly outputs = new WeakMap<ResultView, ToolOutput>();
+
+    resultsOf(envelope: WorkerEnvelope): ResultView[] {
+        let result = this.results.get(envelope);
+        if (!result) {
+            result = resultsOf(envelope);
+            this.results.set(envelope, result);
+        }
+        return result;
+    }
+
+    outputOf(result: ResultView): ToolOutput {
+        let output = this.outputs.get(result);
+        if (!output) {
+            output = parseToolOutput(result.text);
+            this.outputs.set(result, output);
+        }
+        return output;
+    }
+}
+
 /** Read the calls a model response proposed. */
 function invokesOf(envelope: WorkerEnvelope): CallView[] {
     const message = obj(envelope.data) ?? {};
@@ -353,8 +385,9 @@ function settle(
     call: ToolCall,
     result: ResultView,
     envelope: WorkerEnvelope,
+    derivations?: RoundDerivations,
 ): ToolCall {
-    const output = parseToolOutput(result.text);
+    const output = derivations?.outputOf(result) ?? parseToolOutput(result.text);
     const proposedAt = draft.proposedAt.get(call.key);
     return {
         ...call,
@@ -385,8 +418,19 @@ function matchCall(draft: Draft, result: ResultView): ToolCall | null {
     ) ?? null;
 }
 
-/** Note the envelope's time span, so a round can report its wall clock. */
-function track(draft: Draft, envelope: WorkerEnvelope): void {
+/** Stable retained identity, scoped independently of reused execution IDs. */
+function sourceKey(item: TranscriptItem): string {
+    if (item.kind !== 'event') return JSON.stringify([item.kind, item.id]);
+    const sequence = item.envelope.sequence;
+    return JSON.stringify(['event', item.epoch, str(item.envelope.session_id),
+        str(item.envelope.worker_id),
+        typeof sequence === 'number' && Number.isSafeInteger(sequence) ? sequence : item.id]);
+}
+
+/** Track retained evidence and the envelope's time span. */
+function track(draft: Draft, item: EventItem): void {
+    draft.sourceKeys.push(sourceKey(item));
+    const envelope = item.envelope;
     if (!draft.clock) draft.clock = clockOf(envelope);
     const at = stampOf(envelope);
     if (at === null) return;
@@ -556,11 +600,26 @@ class RoundGrouping {
     }
 }
 
+/** Retention must not transfer a disclosure or spinner to another execution. */
+function presentationKey(draft: Draft): string {
+    if (draft.localInput) return `input-${draft.localInput.id}`;
+    if (draft.kind === 'run') {
+        // Admission distinguishes reused execution IDs. Older uncorrelated
+        // output needs its first retained event instead of one shared null key.
+        const admission = draft.admitted?.envelope.sequence;
+        const boundary = typeof admission === 'number' && Number.isSafeInteger(admission)
+            ? admission : !draft.runId && !draft.requestId ? draft.sourceKeys[0] ?? draft.key : null;
+        return JSON.stringify(['run', draft.workerId, draft.runId, draft.requestId, boundary]);
+    }
+    return draft.notes[0]?.id ?? draft.problems[0]?.key ?? draft.protocol[0]?.id ?? draft.key;
+}
+
 /** Build transcript rounds, returning executed runs in admission order. */
 export function buildRounds(
     items: readonly TranscriptItem[],
     confirmations: ReadonlyMap<string, ConfirmationPrompt>,
     requests: ReadonlyMap<string, RequestRecord> = new Map(),
+    derivations?: RoundDerivations,
 ): Round[] {
     // Older workers left admission data empty. Their request records can help
     // while retained, but newer replayable admission events take precedence.
@@ -595,6 +654,7 @@ export function buildRounds(
     for (const item of items) {
         if (item.kind === 'outbox') {
             const pending = groups.input(item);
+            pending.sourceKeys.push(sourceKey(item));
             if (item.operation === 'continue') pending.continued = true;
             else if (item.operation === 'compact') pending.compacting = true;
             else pending.input = item;
@@ -603,6 +663,7 @@ export function buildRounds(
 
         if (item.kind === 'note') {
             const draft = groups.bookkeeping();
+            draft.sourceKeys.push(sourceKey(item));
             draft.notes.push(item);
             draft.timeline.push({ kind: 'note', key: item.id });
             continue;
@@ -610,6 +671,7 @@ export function buildRounds(
 
         if (item.kind === 'request') {
             const pending = groups.pending(item.request.request_id);
+            pending.sourceKeys.push(sourceKey(item));
             pending.requests.push(item);
             if (item.request.operation === 'continue') pending.continued = true;
             if (item.request.operation === 'compact') pending.compacting = true;
@@ -631,7 +693,7 @@ export function buildRounds(
                 run.admitted = item;
             }
             run.open = true;
-            track(run, envelope);
+            track(run, item);
             run.protocol.push(item);
             run.timeline.push({ kind: 'protocol', key: item.id });
             continue;
@@ -644,12 +706,12 @@ export function buildRounds(
                 if (result.origin === 'automatic') {
                     // The paired host tool card owns progress; this event only
                     // invalidates history and must not turn the run into compact.
-                    track(run, envelope);
+                    track(run, item);
                     continue;
                 }
                 run.compacting = true;
                 run.compactResult = result;
-                track(run, envelope);
+                track(run, item);
                 run.timeline.push({ kind: 'compact', key: item.id });
                 continue;
             }
@@ -660,7 +722,7 @@ export function buildRounds(
             // run in hand rather than opening another.
             const run = groups.execution(envelope);
             run.open = true;
-            track(run, envelope);
+            track(run, item);
             run.protocol.push(item);
             run.timeline.push({ kind: 'protocol', key: item.id });
             continue;
@@ -681,7 +743,7 @@ export function buildRounds(
                 };
             }
             run.exchanges = typeof summary.exchanges === 'number' ? summary.exchanges : null;
-            track(run, envelope);
+            track(run, item);
             run.protocol.push(item);
             run.timeline.push({ kind: 'protocol', key: item.id });
             run.open = false;
@@ -698,7 +760,7 @@ export function buildRounds(
         if (PROTOCOL_EVENTS.has(name)) {
             const draft = name === 'input_committed'
                 ? groups.execution(envelope) : groups.bookkeeping(envelope);
-            track(draft, envelope);
+            track(draft, item);
             draft.protocol.push(item);
             draft.timeline.push({ kind: 'protocol', key: item.id });
             continue;
@@ -706,7 +768,7 @@ export function buildRounds(
 
         if (name === 'model_response') {
             const run = groups.execution(envelope);
-            track(run, envelope);
+            track(run, item);
             const message = obj(envelope.data) ?? {};
             const cost = costLine(message.cost);
             const callIds = addCalls(run, prompts, invokesOf(envelope), envelope);
@@ -727,7 +789,7 @@ export function buildRounds(
 
         if (name === 'tool_calls') {
             const run = groups.execution(envelope);
-            track(run, envelope);
+            track(run, item);
             const claimed = new Set(run.assistant.flatMap((block) => [...block.callIds]));
             for (const key of addCalls(run, prompts, batchOf(envelope), envelope)) {
                 // A card the model response already claims is drawn with it, in
@@ -739,13 +801,13 @@ export function buildRounds(
 
         if (name === 'tool_results') {
             const run = groups.execution(envelope);
-            track(run, envelope);
-            for (const result of resultsOf(envelope)) {
+            track(run, item);
+            for (const result of derivations?.resultsOf(envelope) ?? resultsOf(envelope)) {
                 const call = matchCall(run, result);
                 if (!call) {
                     // A result whose proposal is not in this transcript: a
                     // replay can begin mid-turn. Shown rather than dropped.
-                    const output = parseToolOutput(result.text);
+                    const output = derivations?.outputOf(result) ?? parseToolOutput(result.text);
                     const key = `orphan-${item.id}-${run.calls.length}`;
                     run.timeline.push({ kind: 'calls', key });
                     run.calls.push({
@@ -767,7 +829,7 @@ export function buildRounds(
                     continue;
                 }
                 const at = run.calls.indexOf(call);
-                run.calls[at] = settle(run, call, result, envelope);
+                run.calls[at] = settle(run, call, result, envelope, derivations);
                 run.settled.add(call.key);
             }
             continue;
@@ -787,7 +849,7 @@ export function buildRounds(
                 run.status = 'rejected';
                 run.open = false;
             }
-            track(run, envelope);
+            track(run, item);
             const data = obj(envelope.data) ?? {};
             run.problems.push({
                 key: item.id,
@@ -804,7 +866,7 @@ export function buildRounds(
         // An event name this build has never heard of: core is allowed to add
         // them, and a panel that dropped one would lose part of the turn.
         const run = groups.execution(envelope);
-        track(run, envelope);
+        track(run, item);
         run.problems.push({
             key: item.id,
             label: name || '(unnamed event)',
@@ -820,7 +882,8 @@ export function buildRounds(
         || draft.protocol.length > 0 || draft.problems.length > 0
         || draft.notes.length > 0 || draft.requests.length > 0
     ).map((draft) => ({
-        key: draft.key,
+        key: presentationKey(draft),
+        sourceKeys: draft.sourceKeys,
         index: draft.index,
         kind: draft.kind,
         input: draft.input,

@@ -521,6 +521,8 @@ export type PanelMessage =
         type: 'confirmation';
         session: SessionId;
         confirmation_id: string;
+        /** Optional correlation for one submission attempt, not tool permission. */
+        request_id?: string;
         decision: 'approved' | 'denied';
         reason?: string;
     }
@@ -543,7 +545,7 @@ export interface AcceptedMessage {
     type: 'accepted';
     action: string;
     session: SessionId;
-    /** Present for `input`. */
+    /** Present for input/history and correlated confirmation submissions. */
     request_id?: string;
     /** Present for `signal`. */
     operation?: string;

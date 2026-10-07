@@ -1,0 +1,52 @@
+name: Panel performance report
+
+# Explicit reporting only: environment-sensitive timings are not PR/merge gates.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        fixture:
+          - { name: short, turns: 8, history: 0, width: 1280 }
+          - { name: retained-tail, turns: 320, history: 0, width: 1280 }
+          - { name: restored-history, turns: 8, history: 200, width: 1280 }
+          - { name: narrow, turns: 320, history: 0, width: 360 }
+    env:
+      NO_PROXY: 127.0.0.1,localhost
+      PANEL_BENCHMARK: '1'
+      PANEL_FIXTURE_TURNS: ${{ matrix.fixture.turns }}
+      PANEL_HISTORY_TURNS: ${{ matrix.fixture.history }}
+      PANEL_VIEWPORT_WIDTH: ${{ matrix.fixture.width }}
+    defaults:
+      run:
+        working-directory: hub
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies and browser
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npx playwright install --with-deps chromium
+      - name: Record three production-build samples
+        run: npx playwright test panel-performance.spec.ts --repeat-each=3 --output=performance-results
+      - name: Retain metrics, CPU profiles, traces and recordings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-performance-${{ matrix.fixture.name }}
+          path: |
+            hub/performance-results/
+            hub/web/dist/
+          retention-days: 14

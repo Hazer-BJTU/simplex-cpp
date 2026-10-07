@@ -31,6 +31,7 @@ let epoch = 'stub-epoch-1';
  */
 let settings = { force_kill_process_group: false };
 let historyResponseIndex = 0;
+const streams = new Set();
 
 /** One session description, as `describe()` builds it on the real hub. */
 function makeSession(id, createdAt = '2026-01-01T00:00:00.000Z') {
@@ -200,6 +201,8 @@ const server = createServer((req, res) => {
             }
             switch (url.pathname) {
                 case '/__stub/reset': {
+                    for (const timer of streams) clearInterval(timer);
+                    streams.clear();
                     sequence = 0;
                     workerSequence = 0;
                     transcripts.clear();
@@ -255,6 +258,35 @@ const server = createServer((req, res) => {
                     json(res, 200, { ok: true });
                     return;
                 }
+                case '/__stub/stream': {
+                    let index = 0;
+                    const events = payload.events ?? [];
+                    const timer = setInterval(() => {
+                        const item = events[index++];
+                        if (!item) {
+                            clearInterval(timer);
+                            streams.delete(timer);
+                            return;
+                        }
+                        const envelope = append(payload.session ?? 'demo', item.event,
+                            item.data ?? {}, item.extra ?? {});
+                        broadcast({ type: 'event', session: envelope.session_id,
+                            hub_seq: envelope.hub_sequence, envelope });
+                    }, Math.max(1, payload.interval ?? 8));
+                    streams.add(timer);
+                    json(res, 200, { count: events.length });
+                    return;
+                }
+                case '/__stub/emit-batch': {
+                    for (const item of payload.events ?? []) {
+                        const envelope = append(payload.session ?? 'demo', item.event,
+                            item.data ?? {}, item.extra ?? {});
+                        if (!payload.seedOnly) broadcast({ type: 'event',
+                            session: envelope.session_id, hub_seq: envelope.hub_sequence, envelope });
+                    }
+                    json(res, 200, { count: payload.events?.length ?? 0 });
+                    return;
+                }
                 case '/__stub/emit': {
                     const envelope = append(
                         payload.session ?? 'demo', payload.event ?? 'model_response',
@@ -304,7 +336,7 @@ const server = createServer((req, res) => {
                 }
                 case '/__stub/settle': {
                     for (const session of sessions) {
-                        session.confirmations = session.confirmations.filter(
+                        if (session.session_id === (payload.session ?? 'demo')) session.confirmations = session.confirmations.filter(
                             (prompt) => prompt.confirmation_id !== payload.confirmation_id,
                         );
                     }
@@ -352,6 +384,11 @@ const server = createServer((req, res) => {
                     settings = { ...settings, ...payload };
                     if (Object.hasOwn(payload, 'historyResponses')) historyResponseIndex = 0;
                     json(res, 200, settings);
+                    return;
+                }
+                case '/__stub/message': {
+                    broadcast(payload);
+                    json(res, 200, { ok: true });
                     return;
                 }
                 case '/__stub/received': {

@@ -458,7 +458,16 @@ function seedConfirmations(
     if (confirmations.size === view.confirmations.size) {
         let same = true;
         for (const [id, prompt] of confirmations) {
-            if (view.confirmations.get(id)?.settled_at !== prompt.settled_at) {
+            const previous = view.confirmations.get(id);
+            // A reused ID is a new permission request. Preserve references
+            // only for the same creation/worker and unchanged lifecycle flags;
+            // call arguments are immutable within that prompt's lifetime.
+            if (!previous || previous.worker_id !== prompt.worker_id
+                || previous.run_id !== prompt.run_id || previous.received_at !== prompt.received_at
+                || previous.settled_at !== prompt.settled_at || previous.state !== prompt.state
+                || previous.verified !== prompt.verified || previous.identity_state !== prompt.identity_state
+                || previous.deadline_at !== prompt.deadline_at || previous.decision !== prompt.decision
+                || previous.reason !== prompt.reason) {
                 same = false;
                 break;
             }

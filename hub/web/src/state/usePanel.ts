@@ -9,6 +9,8 @@
  * subscription behaviour.
  */
 import { useStore } from 'zustand';
+import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
+import { shallow } from 'zustand/vanilla/shallow';
 import type { SessionDescription, SessionId } from '../../../shared/protocol.ts';
 import { panelStore, type PanelStore } from './store.ts';
 import type { ViewState } from './view.ts';
@@ -25,6 +27,55 @@ import type { ViewState } from './view.ts';
  */
 export function usePanel<T>(selector: (state: PanelStore) => T): T {
     return useStore(panelStore, selector);
+}
+
+/**
+ * Suspend visual subscriptions while a preserved pane is hidden. Ingestion
+ * still updates the store; showing the pane reads the current snapshot at once.
+ * Shallow equality keeps unrelated fields from scheduling a visual render.
+ */
+export function useVisiblePanel<T>(active: boolean, selector: (state: PanelStore) => T,
+    scheduling?: { urgent(next: PanelStore, previous: PanelStore): boolean }): T {
+    const previous = useRef<{ value: T } | undefined>(undefined);
+    const snapshot = useMemo(() => () => {
+        if (!active && previous.current) return previous.current.value;
+        const value = selector(panelStore.getState());
+        if (!previous.current || !shallow(previous.current.value, value)) previous.current = { value };
+        return previous.current.value;
+    }, [active, selector]);
+    const subscribe = useCallback((notify: () => void) => {
+        if (!active) return () => {};
+        if (!scheduling) return panelStore.subscribe(notify);
+        let frame = 0;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        function cancel() {
+            cancelAnimationFrame(frame);
+            clearTimeout(timer);
+            frame = 0;
+            timer = undefined;
+        }
+        function flush() {
+            cancel();
+            notify();
+        }
+        const unsubscribe = panelStore.subscribe((next, previous) => {
+            if (scheduling.urgent(next, previous)) flush();
+            else if (timer === undefined) {
+                frame = requestAnimationFrame(flush);
+                // Background tabs may suspend animation frames. Ingestion is
+                // always immediate; a timer publishes the latest snapshot too.
+                // There is no buffered event queue to grow or reorder.
+                timer = setTimeout(flush, 8);
+            }
+        });
+        document.addEventListener('visibilitychange', flush);
+        return () => {
+            cancel();
+            unsubscribe();
+            document.removeEventListener('visibilitychange', flush);
+        };
+    }, [active, scheduling]);
+    return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
 /** One session's view, or undefined. Stable identity, safe as a selector. */

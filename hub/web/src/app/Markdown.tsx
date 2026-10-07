@@ -18,6 +18,7 @@
  *   elements rather than an HTML string.
  */
 import {
+    memo,
     Children,
     isValidElement,
     useRef,
@@ -28,6 +29,7 @@ import {
 import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { profileCount } from '../lib/profile.ts';
 import { Glyph } from '../ui/icons.tsx';
 import { fenceFor } from './content.ts';
 
@@ -162,7 +164,8 @@ const COMPONENTS: Components = { pre: CodeBlock, a: Link };
  * to the bundle. That is a deliberate trade for a tool that runs on loopback:
  * the panel is not downloaded over a network anyone is paying for.
  */
-export function Markdown({ children }: { children: string }) {
+export const Markdown = memo(function Markdown({ children }: { children: string }) {
+    profileCount('markdown');
     return (
         <div className="md">
             <ReactMarkdown
@@ -174,7 +177,7 @@ export function Markdown({ children }: { children: string }) {
             </ReactMarkdown>
         </div>
     );
-}
+});
 
 /**
  * Render a short string through the same pipeline, for a fenced block.

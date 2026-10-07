@@ -17,6 +17,7 @@
  * which the previous stage established and this one keeps.
  */
 import {
+    memo,
     useCallback,
     useEffect,
     useLayoutEffect,
@@ -30,8 +31,11 @@ import type {
     HistoryTurn,
     RequestRecord,
 } from '../../../shared/protocol.ts';
-import { usePanel, useSession, useView } from '../state/usePanel.ts';
+import { profile, profileCount } from '../lib/profile.ts';
+import { useVisiblePanel, type PanelStore } from '../state/usePanel.ts';
 import type { NoteItem, OutboxItem, TranscriptItem } from '../state/view.ts';
+import { useTranscriptScroll } from './useTranscriptScroll.ts';
+import { createRoundProjection } from './roundProjection.ts';
 import { reconcileInternalHistory } from './history-rounds.ts';
 import { parseCompactResult } from '../state/compact.ts';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
@@ -41,16 +45,12 @@ import { Markdown } from './Markdown.tsx';
 import { ToolCard } from './ToolCard.tsx';
 import { contentText, formatDuration } from './content.ts';
 import {
-    buildRounds,
     type AssistantBlock,
     type Problem,
     type Round,
     type RunFailure,
     type ToolCall,
 } from './rounds.ts';
-
-/** How close to the bottom still counts as "following the end". */
-const STICK_THRESHOLD_PX = 48;
 
 /** How many of the most recent turns stay open. */
 const OPEN_ROUNDS = 3;
@@ -66,6 +66,7 @@ const RUN_OUTCOMES = new Map<string, { icon: GlyphName; label: string }>([
     ['failed', { icon: 'error', label: 'Failed' }],
 ]);
 
+const EMPTY_HISTORY: readonly HistoryTurn[] = [];
 const EMPTY_ITEMS: readonly TranscriptItem[] = [];
 const EMPTY_PROMPTS: ReadonlyMap<string, ConfirmationPrompt> = new Map();
 const EMPTY_REQUESTS: ReadonlyMap<string, RequestRecord> = new Map();
@@ -243,14 +244,14 @@ function RestoredUserMessage({ turn }: { turn: HistoryTurn }) {
 }
 
 /** Compact history projection; tool arguments and results never enter it. */
-function HistoryRound({ turn, open, onToggle }: {
-    turn: HistoryTurn; open: boolean; onToggle: () => void;
+const HistoryRound = memo(function HistoryRound({ turn, open, onToggle }: {
+    turn: HistoryTurn; open: boolean; onToggle: (index: number, expanded: boolean) => void;
 }) {
     const user = turn.user.map(contentText).filter(Boolean).join('\n\n');
     const calls = turn.steps.reduce((count, step) => count + step.tool_calls, 0);
     return (
         <section data-testid="history-turn" className="min-w-0 space-y-4 py-3">
-            <button type="button" onClick={onToggle}
+            <button type="button" onClick={() => onToggle(turn.index, open)}
                 aria-expanded={open}
                 className="w-full min-w-0 break-words [overflow-wrap:anywhere] text-left
                     text-xs text-ink-muted hover:text-ink">
@@ -299,7 +300,7 @@ function HistoryRound({ turn, open, onToggle }: {
             </div>}
         </section>
     );
-}
+});
 
 /** One model response: reasoning, Markdown, and its proposed calls. */
 function AssistantMessage({ block, calls }: {
@@ -404,11 +405,12 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
 }
 
 /** Everything in a round, in the order it happened. */
-function RoundBody({ round, historicalInput, actionableFailure }: {
+const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFailure }: {
     round: Round;
     historicalInput: HistoryTurn | null;
     actionableFailure: boolean;
 }) {
+    profileCount('roundBody');
     const calls = useMemo(() => {
         const index = new Map<string, ToolCall>();
         for (const call of round.calls) index.set(call.key, call);
@@ -509,21 +511,59 @@ function RoundBody({ round, historicalInput, actionableFailure }: {
             )}
         </div>
     );
-}
+});
 
-export function Transcript() {
-    const selected = usePanel((state) => state.selected);
-    const session = useSession(selected);
-    const view = useView(selected);
+/** Control and lifecycle updates bypass coalesced output publication. */
+const TRANSCRIPT_SCHEDULING = {
+    urgent(next: PanelStore, previous: PanelStore): boolean {
+        const id = next.selected;
+        if (id !== previous.selected || next.connection !== previous.connection) return true;
+        if (!id) return false;
+        const session = next.sessions.get(id);
+        const before = previous.sessions.get(id);
+        if (session?.connected !== before?.connected
+            || session?.identity.worker_id !== before?.identity.worker_id) return true;
+        const view = next.views.get(id);
+        const old = previous.views.get(id);
+        if (view?.runActive !== old?.runActive || view?.confirmations !== old?.confirmations) return true;
+        const last = view?.items.at(-1);
+        if (last === old?.items.at(-1)) return false;
+        return last?.kind !== 'event' || ['input_admitted', 'run_started', 'run_finished',
+            'error', 'input_rejected', 'compact_finished'].includes(last.envelope.event);
+    },
+};
+
+export const Transcript = memo(function Transcript({ active = true }: { active?: boolean }) {
+    const snapshot = useVisiblePanel(active, useCallback(state => {
+        const selected = state.selected;
+        const session = selected ? state.sessions.get(selected) : undefined;
+        const view = selected ? state.views.get(selected) : undefined;
+        return {
+            selected, connected: session?.connected, workerId: session?.identity.worker_id,
+            identityState: session?.identity.state, exists: !!view,
+            items: view?.items, history: view?.history, confirmations: view?.confirmations,
+            requests: view?.requests, droppedItems: view?.droppedItems,
+            runActive: view?.runActive, historyLoading: view?.historyLoading,
+            historySequence: view?.historySequence, historyWorker: view?.historyWorker,
+            compact: view?.latestEvents.compact_finished,
+        };
+    }, []), TRANSCRIPT_SCHEDULING);
+    const { selected, connected, workerId, identityState } = snapshot;
+    const view = useMemo(() => snapshot.exists ? {
+        ...snapshot, latestEvents: { compact_finished: snapshot.compact },
+    } : undefined, [snapshot]);
+    const session = useMemo(() => connected === undefined ? null : {
+        connected, identity: { worker_id: workerId, state: identityState },
+    }, [connected, workerId, identityState]);
     const items = view?.items ?? EMPTY_ITEMS;
-    const history = view?.history ?? [];
+    const history = view?.history ?? EMPTY_HISTORY;
     const confirmations = view?.confirmations ?? EMPTY_PROMPTS;
     const requests = view?.requests ?? EMPTY_REQUESTS;
     const dropped = view?.droppedItems ?? 0;
-
+    const project = useMemo(() => createRoundProjection(), [selected]);
     const rounds = useMemo(
-        () => buildRounds(items, confirmations, requests),
-        [items, confirmations, requests],
+        () => profile('rounds', () => project(items, confirmations, requests)),
+        [project, items, confirmations, requests],
     );
     // buildRounds orders executions by worker admission, even when a pending
     // local outbox was created before another panel's earlier input arrived.
@@ -606,6 +646,26 @@ export function Transcript() {
     const [historyToggled, setHistoryToggled] = useState<ReadonlyMap<number, boolean>>(new Map());
     useEffect(() => setHistoryToggled(new Map()), [selected]);
 
+    // Disclosure state follows retained content, not every key ever seen in
+    // this session. Keep the active pane's memory bounded after tail trimming.
+    useEffect(() => {
+        setToggled(current => {
+            if (!current.size) return current;
+            const live = new Set(rounds.map(round => round.key));
+            const kept = new Map([...current].filter(([key]) => live.has(key)));
+            return kept.size === current.size ? current : kept;
+        });
+    }, [rounds]);
+    useEffect(() => {
+        if (view?.historyLoading) return;
+        setHistoryToggled(current => {
+            if (!current.size) return current;
+            const live = new Set(history.map(turn => turn.index));
+            const kept = new Map([...current].filter(([index]) => live.has(index)));
+            return kept.size === current.size ? current : kept;
+        });
+    }, [history, view?.historyLoading]);
+
     const openByDefault = useMemo(() => {
         const open = new Map<string, boolean>();
         runs.forEach((round, position) => {
@@ -619,16 +679,15 @@ export function Transcript() {
         if (chosen !== undefined) return chosen;
         return openByDefault.get(round.key) ?? true;
     };
-    const toggle = (round: Round): void => {
-        setToggled((current) => {
-            const next = new Map(current);
-            next.set(round.key, !isOpen(round));
-            return next;
-        });
-    };
+    const toggle = useCallback((key: string, expanded: boolean) => {
+        setToggled(current => new Map(current).set(key, !(current.get(key) ?? expanded)));
+    }, []);
+    const toggleHistory = useCallback((index: number, expanded: boolean) => {
+        setHistoryToggled(current => new Map(current).set(index, !(current.get(index) ?? expanded)));
+    }, []);
 
     const scroller = useRef<HTMLDivElement>(null);
-    const [following, setFollowing] = useState(true);
+    const { following, jumpToLatest } = useTranscriptScroll(scroller, active);
 
     // Classic desktop scrollbars consume width; overlay scrollbars do not.
     // Match that gutter in the sibling composer without rerendering messages.
@@ -652,43 +711,6 @@ export function Transcript() {
         };
     }, [selected]);
 
-    const measure = useCallback(() => {
-        const node = scroller.current;
-        if (!node) return;
-        const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-        setFollowing(distance <= STICK_THRESHOLD_PX);
-    }, []);
-
-    // Only a scroll the reader caused turns following off: appending content
-    // does not fire a scroll event, which is what makes this the right signal.
-    useEffect(() => {
-        const node = scroller.current;
-        if (!node) return;
-        node.addEventListener('scroll', measure, { passive: true });
-        return () => node.removeEventListener('scroll', measure);
-    }, [measure, selected]);
-
-    useLayoutEffect(() => {
-        const node = scroller.current;
-        if (!node) return;
-        node.scrollTop = node.scrollHeight;
-        setFollowing(true);
-    }, [selected]);
-
-    useLayoutEffect(() => {
-        if (!following) return;
-        const node = scroller.current;
-        if (!node) return;
-        node.scrollTop = node.scrollHeight;
-    }, [items, history, following]);
-
-    const jumpToLatest = useCallback(() => {
-        const node = scroller.current;
-        if (!node) return;
-        node.scrollTop = node.scrollHeight;
-        setFollowing(true);
-    }, []);
-
     if (!selected) {
         return (
             <EmptyState
@@ -705,6 +727,7 @@ export function Transcript() {
             <div
                 ref={scroller}
                 data-testid="transcript"
+                style={{ overflowAnchor: 'none' }}
                 className="min-h-0 flex-1 overflow-y-auto reading-scroll"
             >
                 <div className="reading-width conversation-space" data-testid="reading-surface">
@@ -720,13 +743,7 @@ export function Transcript() {
                     )}
                     {olderHistory.map((turn, index) => <HistoryRound key={turn.index} turn={turn}
                         open={historyToggled.get(turn.index) ?? index >= olderHistory.length - OPEN_ROUNDS}
-                        onToggle={() => setHistoryToggled((current) => {
-                            const next = new Map(current);
-                            const currentOpen = current.get(turn.index)
-                                ?? index >= olderHistory.length - OPEN_ROUNDS;
-                            next.set(turn.index, !currentOpen);
-                            return next;
-                        })} />)}
+                        onToggle={toggleHistory} />)}
 
                     {!view ? (
                         /* No `subscribed` frame yet: the transcript is on its way,
@@ -741,37 +758,11 @@ export function Transcript() {
                                 ? 'Events appear here as the worker reports them. Send a message to start a run.'
                                 : 'No worker is attached. Start one, then send a message.'}
                         />
-                    ) : displayedRounds.map((round) => (
-                        <section
-                            key={round.key}
-                            data-testid="round"
-                            data-kind={round.kind}
-                            className="animate-enter"
-                        >
-                            {round.kind === 'run' && (
-                                <RoundSummary
-                                    round={round}
-                                    historicalInput={historyForRun.get(round.key) ?? null}
-                                    expanded={isOpen(round)}
-                                    onToggle={() => toggle(round)}
-                                />
-                            )}
-                            {(round.kind === 'prelude' || isOpen(round)) && (
-                                <div className={round.kind === 'run' ? 'mt-2' : ''}>
-                                    <RoundBody round={round}
-                                        historicalInput={historyForRun.get(round.key) ?? null}
-                                        actionableFailure={round.key === actionableFailureKey} />
-                                </div>
-                            )}
-                            {round.kind === 'run' && !isOpen(round) && (
-                                <div className="mt-1 space-y-1">
-                                    {round.notes.map((note) => <NoteLine key={note.id} item={note} />)}
-                                    {round.problems.map((problem) => (
-                                        <ProblemLine key={problem.key} problem={problem} />
-                                    ))}
-                                </div>
-                            )}
-                        </section>
+                    ) : displayedRounds.map(round => (
+                        <TranscriptRound key={round.key} round={round}
+                            historicalInput={historyForRun.get(round.key) ?? null}
+                            expanded={isOpen(round)} onToggle={toggle}
+                            actionableFailure={round.key === actionableFailureKey} />
                     ))}
 
                     {view?.runActive && session?.connected && (
@@ -797,4 +788,47 @@ export function Transcript() {
 
         </div>
     );
-}
+});
+
+/** Stable round identity keeps unchanged summaries and disclosure trees asleep. */
+const TranscriptRound = memo(function TranscriptRound({ round, historicalInput, expanded,
+    actionableFailure, onToggle }: {
+    round: Round;
+    historicalInput: HistoryTurn | null;
+    expanded: boolean;
+    actionableFailure: boolean;
+    onToggle: (key: string, expanded: boolean) => void;
+}) {
+    profileCount('roundView');
+    return (
+        <section
+            data-testid="round"
+            data-kind={round.kind}
+            className="animate-enter"
+        >
+            {round.kind === 'run' && (
+                <RoundSummary
+                    round={round}
+                    historicalInput={historicalInput}
+                    expanded={expanded}
+                    onToggle={() => onToggle(round.key, expanded)}
+                />
+            )}
+            {(round.kind === 'prelude' || expanded) && (
+                <div className={round.kind === 'run' ? 'mt-2' : ''}>
+                    <RoundBody round={round}
+                        historicalInput={historicalInput}
+                        actionableFailure={actionableFailure} />
+                </div>
+            )}
+            {round.kind === 'run' && !expanded && (
+                <div className="mt-1 space-y-1">
+                    {round.notes.map((note) => <NoteLine key={note.id} item={note} />)}
+                    {round.problems.map((problem) => (
+                        <ProblemLine key={problem.key} problem={problem} />
+                    ))}
+                </div>
+            )}
+        </section>
+    );
+});
