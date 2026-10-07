@@ -273,9 +273,23 @@ export function createPanelApi({
         for (const client of clients) send(client, message);
     }
 
-    /** Broadcast the current description of one session. */
+    /** Terminal child outcomes belong to parent RPCs, not the panel session list. */
+    function isListed(session: Session): boolean {
+        return session.kind !== 'headless' || session.subagent?.lifecycle !== 'stopped';
+    }
+
+    /** Apply the same visibility policy to REST, list replies and reconnects. */
+    function listedSessions() {
+        return registry.list().filter(isListed).map(session => session.describe());
+    }
+
+    /** Remove successfully cleaned children immediately, including on late notifications. */
     function broadcastSession(session: Session): void {
-        broadcast({ type: 'session', session: session.describe() });
+        if (isListed(session)) {
+            broadcast({ type: 'session', session: session.describe() });
+        } else {
+            broadcast({ type: 'session_removed', session: session.id });
+        }
     }
 
     /**
@@ -648,7 +662,7 @@ export function createPanelApi({
         },
         'GET /api/sessions': ({ res }) => {
             sendJson(res, 200, {
-                sessions: registry.list().map((session) => session.describe()),
+                sessions: listedSessions(),
             });
         },
 
@@ -832,7 +846,7 @@ export function createPanelApi({
                 send(client, { type: 'pong', at: new Date().toISOString() });
                 return;
             case 'list_sessions':
-                send(client, { type: 'sessions', sessions: registry.list().map((s) => s.describe()) });
+                send(client, { type: 'sessions', sessions: listedSessions() });
                 return;
             case 'subscribe': {
                 if (message.paged === true) {
@@ -1086,7 +1100,7 @@ export function createPanelApi({
         send(client, {
             type: 'welcome',
             hub: meta(),
-            sessions: registry.list().map((session) => session.describe()),
+            sessions: listedSessions(),
             subscriptions: [],
         });
     }

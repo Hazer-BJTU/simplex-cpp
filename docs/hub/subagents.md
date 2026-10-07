@@ -86,6 +86,13 @@ one opens a status/security view. There is no composer, transcript, configuratio
 replacement, manual restart or direct message/continue/compact/stop control.
 The same restrictions apply to REST and panel WebSocket callers.
 
+After confirmed shutdown and successful persistence cleanup, a headless entry
+disappears from the panel session list immediately, including after a refresh or
+reconnect. Entries still stopping or requiring cleanup remain visible. Ordinary
+sessions remain listed after their workers exit. The parent can still query a
+stopped child's cached terminal status through `subagent_receive` until its
+retention period expires; panel removal does not discard that cache.
+
 ![Headless status and safety policy view](./assets/headless-subagent.png)
 
 Health is an observation, not a watchdog for model progress. A live identified
