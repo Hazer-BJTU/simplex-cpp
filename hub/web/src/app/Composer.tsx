@@ -57,7 +57,7 @@ const MODES: Record<ConfirmMode, { detail: string }> = {
 };
 
 /** The primary action occupies the same slot in both composer modes. */
-const PRIMARY_ACTION_CLASS = 'h-9 w-[112px] justify-center leading-5 max-sm:px-1! max-sm:text-xs!';
+const PRIMARY_ACTION_CLASS = 'h-9 w-32 shrink-0 justify-center whitespace-nowrap leading-5 max-sm:w-28 max-sm:px-1! max-sm:text-xs!';
 const DEFAULT_INPUT_HEIGHT = 96;
 
 export function Composer() {
