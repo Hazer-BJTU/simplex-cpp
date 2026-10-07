@@ -1,6 +1,6 @@
 /** Comparable review artifacts plus interaction checks for the reading surface. */
 import { expect, test } from '@playwright/test';
-import { STUB, call, emit, modelResponse, open, toolResult } from './harness.ts';
+import { STUB, call, emit, modelResponse, open, setSessions, toolResult } from './harness.ts';
 
 test.use({ video: 'on' });
 
@@ -214,4 +214,62 @@ test('classic scrollbar space does not offset the shared reading edges', async (
         const composer = (await page.getByTestId('composer-surface').boundingBox())!;
         return Math.abs(reading.x - composer.x) + Math.abs(reading.width - composer.width);
     }).toBeLessThan(1);
+});
+
+for (const [status, label, icon] of [
+    ['completed', 'Completed', 'circle-check'],
+    ['cancelled', 'Cancelled', 'circle-x'],
+    ['exchange_limit', 'Exchange limit reached', 'info'],
+    ['failed', 'Failed', 'circle-alert'],
+    ['constructor', 'Run status: constructor', 'info'],
+]) {
+    test(`run outcome ${status} has its own accessible, truthful presentation`, async ({ page }) => {
+        await open(page, '?session=demo');
+        await emit(page, 'run_started', {});
+        await emit(page, 'run_finished', { status });
+        const outcome = page.getByTestId('round-status');
+        await expect(outcome).toHaveAttribute('title', label!);
+        await expect(outcome).toContainText(label!);
+        await expect(outcome.locator('svg')).toHaveClass(new RegExp(`lucide-${icon}`));
+    });
+}
+
+test('switching sessions resets empty geometry and both mode selections', async ({ page }) => {
+    await open(page);
+    await setSessions(page, ['first', 'second']);
+    await page.reload();
+    await page.getByTestId('session-row').filter({ hasText: 'first' }).click();
+    const message = page.getByLabel('message', { exact: true });
+    await message.fill('A long draft.\n'.repeat(40));
+    await expect(message).toHaveCSS('height', '240px');
+    await message.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(8, 16));
+    await message.press('Alt+Enter');
+    const command = page.getByLabel('command input');
+    await command.fill('refresh');
+    await command.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(2, 5));
+    await page.getByTestId('session-row').filter({ hasText: 'second' }).click();
+    await expect(message).toHaveValue('');
+    await expect(message).toHaveCSS('height', '96px');
+    expect(await message.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])).toEqual([0, 0]);
+    await message.press('Alt+Enter');
+    await expect(command).toHaveValue('');
+    await expect(command).toHaveCSS('height', '96px');
+    expect(await command.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])).toEqual([0, 0]);
+});
+
+test('successful message submission recovers reading space and rejection restores the full draft', async ({ page }) => {
+    await open(page, '?session=demo');
+    const message = page.getByLabel('message', { exact: true });
+    const draft = 'A long message.\n'.repeat(40);
+    await message.fill(draft);
+    await expect(message).toHaveCSS('height', '240px');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(message).toHaveValue('');
+    await expect(message).toHaveCSS('height', '96px');
+    await emit(page, 'run_finished', { status: 'completed' });
+    await page.request.post(`${STUB}/__stub/settings`, { data: { refuseInput: true } });
+    await message.fill(draft);
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(message).toHaveValue(draft);
+    await expect(message).toBeFocused();
 });

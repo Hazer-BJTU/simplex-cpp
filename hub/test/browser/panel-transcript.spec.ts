@@ -90,7 +90,7 @@ test('keeps executing A, queued B, and rejected C separate in live and replayed 
     const roundC = page.getByTestId('round').filter({ hasText: 'Input C' });
     await expect(roundA.getByTestId('assistant-message')).toContainText('Answer A');
     await expect(roundA.getByTestId('tool-card')).toHaveAttribute('data-status', 'ok');
-    await expect(roundA.getByTestId('round-summary')).toContainText('completed');
+    await expect(roundA.getByTestId('round-summary')).toContainText('Completed');
     await expect(roundB).toHaveAttribute('data-kind', 'prelude');
     await expect(roundB.getByTestId('assistant-message')).toHaveCount(0);
     await expect(roundB.getByTestId('tool-card')).toHaveCount(0);

@@ -35,7 +35,7 @@ import type { NoteItem, OutboxItem, TranscriptItem } from '../state/view.ts';
 import { reconcileInternalHistory } from './history-rounds.ts';
 import { parseCompactResult } from '../state/compact.ts';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
-import { Glyph } from '../ui/icons.tsx';
+import { Glyph, type GlyphName } from '../ui/icons.tsx';
 import { Tooltip } from '../ui/overlays.tsx';
 import { Markdown } from './Markdown.tsx';
 import { ToolCard } from './ToolCard.tsx';
@@ -57,6 +57,14 @@ const OPEN_ROUNDS = 3;
 
 /** Length at which an operator's own message is folded. */
 const LONG_MESSAGE_CHARS = 600;
+
+/** Budget boundaries and unknown future outcomes do not imply an error. */
+const RUN_OUTCOMES = new Map<string, { icon: GlyphName; label: string }>([
+    ['completed', { icon: 'ok', label: 'Completed' }],
+    ['cancelled', { icon: 'cancel', label: 'Cancelled' }],
+    ['exchange_limit', { icon: 'info', label: 'Exchange limit reached' }],
+    ['failed', { icon: 'error', label: 'Failed' }],
+]);
 
 const EMPTY_ITEMS: readonly TranscriptItem[] = [];
 const EMPTY_PROMPTS: ReadonlyMap<string, ConfirmationPrompt> = new Map();
@@ -352,6 +360,8 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
     expanded: boolean;
     onToggle: () => void;
 }) {
+    const outcome = RUN_OUTCOMES.get(round.status)
+        ?? { icon: 'info' as const, label: `Run status: ${round.status}` };
     const parts: string[] = [];
     if (round.assistant.length > 0) {
         parts.push(`${round.assistant.length} repl${round.assistant.length === 1 ? 'y' : 'ies'}`);
@@ -376,10 +386,9 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
             className={`flex w-full min-w-0 items-center gap-2 rounded py-2 text-left
                 hover:bg-subtle ${round.failure ? 'text-danger' : 'text-ink-muted'}`}
         >
-            {round.status && <span title={round.status}>
-                <Glyph name={round.status === 'completed' ? 'ok'
-                    : round.status === 'cancelled' ? 'cancel' : 'error'} size="sm" />
-                <span className="sr-only">{round.status}</span>
+            {round.status && <span data-testid="round-status" title={outcome.label}>
+                <Glyph name={outcome.icon} size="sm" />
+                <span className="sr-only">{outcome.label}</span>
             </span>}
             <span className="text-xs text-ink-faint">{expanded ? '▾' : '▸'}</span>
             <span className="text-xs font-medium text-ink-muted">turn {round.index}</span>

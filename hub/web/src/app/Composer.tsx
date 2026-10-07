@@ -18,7 +18,7 @@
  * line. Command mode is explicit and keeps a separate query, so a command can
  * never be mistaken for a worker message or erase an unfinished draft.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ContentPart, PayloadOptions } from '../../../shared/protocol.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { Button } from '../ui/Button.tsx';
@@ -58,6 +58,7 @@ const MODES: Record<ConfirmMode, { detail: string }> = {
 
 /** The primary action occupies the same slot in both composer modes. */
 const PRIMARY_ACTION_CLASS = 'h-9 w-[112px] justify-center leading-5 max-sm:px-1! max-sm:text-xs!';
+const DEFAULT_INPUT_HEIGHT = 96;
 
 export function Composer() {
     const client = useClient();
@@ -93,9 +94,18 @@ export function Composer() {
     const box = useRef<HTMLTextAreaElement>(null);
 
     // A mode change retains the measured height and each mode's selection.
-    // Only editing resizes the surface, up to the internal scrolling limit.
-    const inputHeight = useRef(96);
+    // Editing grows the surface up to its scrolling limit. A new session or
+    // successful message submission resets the now-empty surface.
+    const inputHeight = useRef(DEFAULT_INPUT_HEIGHT);
     const selection = useRef({ message: [0, 0], command: [0, 0] });
+    const resetGeometry = useCallback(() => {
+        inputHeight.current = DEFAULT_INPUT_HEIGHT;
+        selection.current = { message: [0, 0], command: [0, 0] };
+        if (box.current) {
+            box.current.style.height = `${DEFAULT_INPUT_HEIGHT}px`;
+            box.current.setSelectionRange(0, 0);
+        }
+    }, []);
     useLayoutEffect(() => {
         const input = box.current;
         if (!input) return;
@@ -127,13 +137,14 @@ export function Composer() {
 
     // Switching sessions must not carry one session's draft, or its references,
     // into another.
-    useEffect(() => {
+    useLayoutEffect(() => {
         setDraft('');
         setCommandQuery('');
         setEntryMode('message');
         setReferences([]);
         setRefOpen(false);
-    }, [selected]);
+        resetGeometry();
+    }, [selected, resetGeometry]);
 
     // Restore each refused part in its original form. A reference must remain
     // an external_ref: turning its URL into message text silently changes the
@@ -236,6 +247,9 @@ export function Composer() {
         if (sent && operation === 'message') {
             setDraft('');
             setReferences([]);
+            // An empty, submitted draft gives its reading space back. Mode
+            // changes and ongoing execution updates retain the current size.
+            resetGeometry();
         }
     }
 
@@ -303,7 +317,7 @@ export function Composer() {
                     onChange={(event) => {
                         const input = event.currentTarget;
                         input.style.height = 'auto';
-                        inputHeight.current = Math.max(entryMode === 'command' ? inputHeight.current : 96,
+                        inputHeight.current = Math.max(entryMode === 'command' ? inputHeight.current : DEFAULT_INPUT_HEIGHT,
                             Math.min(240, input.scrollHeight));
                         input.style.height = `${inputHeight.current}px`;
                         if (entryMode === 'message') setDraft(event.target.value);
