@@ -132,7 +132,7 @@ are a repeatable paint approximation, not a browser INP score.
 ### Reference comparison
 
 On 2026-10-07, three samples of the same fixture were compared at baseline
-`abc05ee` and optimized revision `a48ee5e`. The baseline differs only in the copied
+`abc05ee` and optimized revision `8abd9f0`. The baseline differs only in the copied
 benchmark/stub harness needed to run the identical newer workload. Environment:
 Linux x86_64, Intel Core Ultra 9 275HX, Node 24.15.0, Chromium 153.0.8010.12,
 1280 × 720, no CPU throttling. Each sample starts with 320 turns / 1,920 events,
@@ -142,21 +142,24 @@ Initial page hydration is outside the measured interval.
 
 | Measure (range across three samples) | Baseline | Optimized |
 | --- | ---: | ---: |
-| Total round-projection CPU time | 7,425.6–7,970.6 ms | 453.1–533.5 ms |
+| Total round-projection CPU time | 7,425.6–7,970.6 ms | 540.6–613.7 ms |
 | Markdown renders | 20,729–20,784 | 200 |
-| Long tasks ≥50 ms | 198–215 | 0–1 |
-| p95 animation-frame interval | 183.3–199.9 ms | 49.9–50.0 ms |
-| p95 local pane handler-to-paint | 31.1–32.7 ms | 26.3–31.2 ms |
-| p95 input handler-to-paint | 29.5–36.8 ms | 28.7–34.2 ms |
+| Long tasks ≥50 ms | 198–215 | 0–9 |
+| p95 animation-frame interval | 183.3–199.9 ms | 50.0–50.1 ms |
+| p95 local pane handler-to-paint | 31.1–32.7 ms | 24.3–28.2 ms |
+| p95 input handler-to-paint | 29.5–36.8 ms | 30.9–40.3 ms |
 | End-of-sample DOM nodes | 5,817 | 5,770 |
-| End-of-sample JS heap (decimal MB) | 64.0–76.6 | 37.3–53.5 |
+| End-of-sample JS heap (decimal MB) | 64.0–76.6 | 31.2–56.8 |
 
 The 200 optimized Markdown renders correspond to the 200 new response documents;
 unchanged history is not reparsed. Local timing already met the reference target
 before this change; the substantial improvement is reduced repeated work and
 fewer long stalls. CPU profiling adds overhead, frame gaps include test-driving
 work, and a heap snapshot cannot prove the absence of leaks. These numbers do
-not guarantee latency on every device. Compare distributions and stack evidence,
+not guarantee latency on every device. The updated samples contain 0, 9 and 0
+long tasks; the nine tasks are 50–62 ms. That sample's CPU profile also records
+substantial Playwright-injected DOM traversal (`visitNode`/`visitChild`), so these
+counts cannot be interpreted as application-only stalls. Compare distributions and stack evidence,
 not one best run; retain recordings to assess continuity separately.
 
 ### Acceptance checklist
