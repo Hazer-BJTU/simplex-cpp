@@ -342,11 +342,24 @@ the worker's persisted state remains the source of truth.
 | `input` | `session`, `operation?`: `message` \| `continue` \| `compact`, optional `content`, `request_id`, `options` | Omitted `operation` means `message`. `message` requires content; `continue` and `compact` omit it. Validates, sends a payload, answers with `accepted` and `request_id` |
 | `history` | `session`, optional `request_id`, `start`, `step`, `limit` | if the current worker advertises `session-history`, sends a read-only payload; otherwise returns `input_not_sent`. The response arrives as a transient `history` worker event |
 | `signal` | `session`, `operation`: `status`\|`options`\|`cancel`\|`shutdown`, optional `run_id` | answers with `accepted` or `signal_not_sent` |
-| `confirmation` | `session`, `confirmation_id`, `decision`, optional `reason` | answers with `accepted` or `confirmation_rejected` |
+| `confirmation` | `session`, `confirmation_id`, `decision`, optional `reason`, `request_id` | answers with `accepted` or `confirmation_rejected` |
 | `logs` | `session`, optional `limit` | answers with up to 2000 captured worker lines |
 | `status_snapshot` | `session`, optional `since` | answers with a fresh `snapshot` |
 | `ping` | — | answers with `pong` |
 | `subagent_policy` | `session`, `policy`: `ask`\|`deny`\|`approve` | updates only new headless confirmation requests; existing prompts remain actionable |
+
+Approval submissions may include a unique `request_id` for each attempt. The Hub
+echoes it in `accepted`; a rejection echoes the original `request`, including
+this ID. A transport acknowledgement is separate from the authoritative
+`confirmation` settlement. The panel locks only the submitted prompt, keeps
+its geometry unchanged, and never automatically resends a security decision.
+After eight seconds without settlement, it queries `GET /api/sessions/:id`.
+A still-open prompt permits an explicit retry; absence only means the prompt
+is no longer open, not that a tool succeeded. If this check fails, Review
+retries the check before enabling a decision. Panel or worker disconnects
+invalidate the attempt's connection assumptions; reconnect checks the outcome
+before retry. Prompt creation and worker identity fence late responses.
+
 
 `input` accepts the same content parts as the worker protocol (`type` of
 `text`, `binary`, or `external_ref`, a required `modality` of `text`, `image`,

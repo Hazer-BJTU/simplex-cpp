@@ -73,6 +73,7 @@ export interface RestClient {
     request<T>(method: string, path: string, options?: {
         body?: unknown;
         query?: Query;
+        signal?: AbortSignal;
     }): Promise<T>;
     meta(): Promise<HubMetadata>;
     sessions(): Promise<SessionListResponse>;
@@ -123,7 +124,7 @@ export function createRest(options: RestOptions = {}): RestClient {
     async function request<T>(
         method: string,
         path: string,
-        call: { body?: unknown; query?: Query } = {},
+        call: { body?: unknown; query?: Query; signal?: AbortSignal } = {},
     ): Promise<T> {
         if (typeof doFetch !== 'function') {
             throw new ApiError('fetch is not available in this environment', { code: 'no_fetch' });
@@ -139,6 +140,7 @@ export function createRest(options: RestOptions = {}): RestClient {
         const presented = token();
         if (presented) headers.Authorization = `Bearer ${presented}`;
         const init: RequestInit = { method, headers };
+        if (call.signal) init.signal = call.signal;
         if (call.body !== undefined) {
             headers['Content-Type'] = 'application/json';
             init.body = JSON.stringify(call.body);

@@ -18,9 +18,12 @@ import type {
     PayloadOptions,
     SessionId,
     SessionSpec,
+    SessionResponse,
 } from '../../../shared/protocol.ts';
 import type { PanelStoreApi } from '../state/store.ts';
 import { panelStore } from '../state/store.ts';
+import { profile } from './profile.ts';
+import { createConfirmationDecisions, type ConfirmationDecisions } from './confirmationDecisions.ts';
 import { ApiError, createRest, type RestClient, type WorkerAction } from './rest.ts';
 import { createPanelSocket, type PanelSocket } from './socket.ts';
 import { createTokenStore, type HistoryLike, type KeyValueStorage, type LocationLike, type TokenStore } from './token.ts';
@@ -42,6 +45,7 @@ export interface PanelClientOptions {
 
 /** The panel's connection to one hub. */
 export interface PanelClient {
+    readonly confirmations: ConfirmationDecisions;
     readonly tokens: TokenStore;
     readonly rest: RestClient;
     readonly store: PanelStoreApi;
@@ -183,6 +187,17 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             else handleMessage(event.message);
         },
         ...(options.WebSocketImpl ? { WebSocketImpl: options.WebSocketImpl } : {}),
+    });
+
+    const confirmations = createConfirmationDecisions({
+        panel: store,
+        send: (prompt, decision, reason, requestId) => socket.send({
+            type: 'confirmation', session: prompt.session_id,
+            confirmation_id: prompt.confirmation_id, request_id: requestId, decision,
+            ...(reason ? { reason } : {}),
+        }),
+        snapshot: async (id, signal) => (await rest.request<SessionResponse>('GET',
+            `/api/sessions/${encodeURIComponent(id)}`, { signal })).session,
     });
 
     /**
@@ -357,7 +372,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 // History pages are transient control replies and have no
                 // retained hub sequence of their own.
                 if (message.envelope.event !== 'history') {
-                    store.getState().applyEvent(message);
+                    profile('eventFold', () => store.getState().applyEvent(message));
                 } else {
                     store.getState().noteTransientWorkerEvent(message.session, message.envelope);
                 }
@@ -477,6 +492,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 store.getState().applyAccepted(message);
                 return;
             case 'error':
+                confirmations.rejected(message);
                 store.getState().applyError(message);
                 const refusedSignal = message.request as {
                     type?: unknown; operation?: unknown; session?: unknown;
@@ -525,6 +541,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
     }
 
     return {
+        confirmations,
         tokens,
         rest,
         store,
@@ -551,6 +568,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         },
 
         stop() {
+            confirmations.stop();
             socket.close();
         },
 
@@ -664,13 +682,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         },
 
         sendConfirmation(sessionId, confirmationId, decision, reason) {
-            return socket.send({
-                type: 'confirmation',
-                session: sessionId,
-                confirmation_id: confirmationId,
-                decision,
-                ...(reason ? { reason } : {}),
-            });
+            return confirmations.submit(sessionId, confirmationId, decision, reason);
         },
 
         refreshLogs(sessionId, limit) {

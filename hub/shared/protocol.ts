@@ -521,6 +521,8 @@ export type PanelMessage =
         type: 'confirmation';
         session: SessionId;
         confirmation_id: string;
+        /** Optional correlation for one submission attempt, not tool permission. */
+        request_id?: string;
         decision: 'approved' | 'denied';
         reason?: string;
     }

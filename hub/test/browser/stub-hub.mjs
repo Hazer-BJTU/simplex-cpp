@@ -314,7 +314,7 @@ const server = createServer((req, res) => {
                 }
                 case '/__stub/settle': {
                     for (const session of sessions) {
-                        session.confirmations = session.confirmations.filter(
+                        if (session.session_id === (payload.session ?? 'demo')) session.confirmations = session.confirmations.filter(
                             (prompt) => prompt.confirmation_id !== payload.confirmation_id,
                         );
                     }
@@ -362,6 +362,11 @@ const server = createServer((req, res) => {
                     settings = { ...settings, ...payload };
                     if (Object.hasOwn(payload, 'historyResponses')) historyResponseIndex = 0;
                     json(res, 200, settings);
+                    return;
+                }
+                case '/__stub/message': {
+                    broadcast(payload);
+                    json(res, 200, { ok: true });
                     return;
                 }
                 case '/__stub/received': {

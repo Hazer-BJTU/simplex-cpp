@@ -18,14 +18,13 @@
  * - **A dismissed prompt put itself back** (D17). The old panel re-opened every
  *   hidden prompt on each re-render. Here "Later" records the decision to defer,
  *   and the prompt waits in the banner — visible, answerable, and not in the way.
- * - **A failed decision disabled the buttons forever** (D18). The old panel set
- *   `disabled = true` on click and only raised a toast on failure. Here a
- *   decision button is never disabled: the component only exists while the hub
- *   still lists the prompt as open, so the only thing a click can do is send the
- *   decision again, and a refusal leaves a usable button rather than a stuck
- *   dialog. The "waiting" line is information, not a lock.
+ * - **Pending is recoverable.** One transport-owned attempt locks only its
+ *   prompt. Missing replies are reconciled against the Hub before retry;
+ *   closing the dialog preserves that state. Only the Hub settles permission.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useStore } from 'zustand';
+import { confirmationKey } from '../lib/confirmationDecisions.ts';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ConfirmationPrompt } from '../../../shared/protocol.ts';
 import { profileCount } from '../lib/profile.ts';
 import { usePanel, useVisiblePanel } from '../state/usePanel.ts';
@@ -48,17 +47,20 @@ function describeCall(prompt: ConfirmationPrompt): string {
 }
 
 /** One prompt, answered. */
-function Approval({ prompt, autoOpen, onDefer, onReview }: {
+const Approval = memo(function Approval({ prompt, autoOpen, onDefer, onReview }: {
     prompt: ConfirmationPrompt;
     autoOpen: boolean;
     /** The operator closed the dialog without deciding. */
-    onDefer: () => void;
+    onDefer: (key: string) => void;
     /** The operator asked for a deferred prompt back. */
-    onReview: () => void;
+    onReview: (key: string) => void;
 }) {
     const client = useClient();
     const [open, setOpen] = useState(autoOpen);
-    const [sentAt, setSentAt] = useState<number | null>(null);
+    const key = confirmationKey(prompt);
+    const submission = useStore(client.confirmations.states, state => state.get(key));
+    const waiting = submission?.phase === 'pending' || submission?.phase === 'checking';
+    const blocked = waiting || (submission?.phase === 'failed' && !submission.retryable);
     const [localError, setLocalError] = useState('');
     const deadline = prompt.deadline_at ? Date.parse(prompt.deadline_at) : NaN;
     const [expired, setExpired] = useState(Number.isFinite(deadline) && deadline <= Date.now());
@@ -91,7 +93,6 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
         }
         return chain.join(' ← ');
     });
-    const notice = usePanel((state) => state.notice);
 
     // Opening the first unanswered prompt is what makes an approval from
     // another session impossible to miss. It is not a re-open: `autoOpen` comes
@@ -100,22 +101,8 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
         if (autoOpen) setOpen(true);
     }, [autoOpen]);
 
-    const waiting = sentAt !== null;
-
-    // A refusal from the hub clears the waiting state, so the hint stops
-    // claiming a decision is in flight when it never left. Without this the
-    // line would be a lie the operator cannot correct — which is the same
-    // failure D18 was, in a quieter form.
-    useEffect(() => {
-        if (sentAt === null) return;
-        if (!notice) return;
-        if (notice.code !== 'unknown_confirmation' && notice.code !== 'confirmation_rejected') return;
-        setSentAt(null);
-        setLocalError(notice.text);
-    }, [notice, sentAt]);
-
     function decide(decision: 'approved' | 'denied') {
-        if (prompt.settled_at !== null || (Number.isFinite(deadline) && deadline <= Date.now())) return;
+        if (blocked || prompt.settled_at !== null || (Number.isFinite(deadline) && deadline <= Date.now())) return;
         setLocalError('');
         const sent = client.sendConfirmation(
             prompt.session_id, prompt.confirmation_id, decision, 'decided in the panel',
@@ -127,13 +114,17 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
             setLocalError('the panel is not connected, so nothing was sent');
             return;
         }
-        setSentAt(Date.now());
     }
 
-    const summary = describeCall(prompt);
+    const summary = useMemo(() => describeCall(prompt), [prompt]);
 
     return (
         <>
+            <span role="status" aria-live="polite" className="sr-only">
+                {waiting ? submission?.phase === 'checking'
+                    ? 'Checking the decision outcome with the Hub.'
+                    : 'Decision sent; waiting for the Hub to confirm.' : ''}
+            </span>
             <div
                 data-testid="approval-banner"
                 data-confirmation={prompt.confirmation_id}
@@ -159,14 +150,14 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                     </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => { onReview(); setOpen(true); }}>
+                    <Button size="sm" variant="ghost" onClick={() => { onReview(key); client.confirmations.review(prompt); setOpen(true); }}>
                         Review
                     </Button>
-                    <Button size="sm" variant="primary" disabled={expired} onClick={() => decide('approved')}>
-                        Approve
+                    <Button size="sm" variant="primary" aria-label="Approve" disabled={expired || blocked} onClick={() => decide('approved')}>
+                        <DecisionLabel waiting={waiting && submission?.decision === 'approved'}>Approve</DecisionLabel>
                     </Button>
-                    <Button size="sm" variant="danger" disabled={expired} onClick={() => decide('denied')}>
-                        Deny
+                    <Button size="sm" variant="danger" aria-label="Deny" disabled={expired || blocked} onClick={() => decide('denied')}>
+                        <DecisionLabel waiting={waiting && submission?.decision === 'denied'}>Deny</DecisionLabel>
                     </Button>
                 </div>
             </div>
@@ -178,7 +169,7 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                     // Closing without deciding is a deferral, and it is
                     // remembered: a dialog that re-opens itself on the next
                     // render is the old panel's defect D17.
-                    if (!next) onDefer();
+                    if (!next) onDefer(key);
                 }}
             >
                 <DialogContent
@@ -187,12 +178,12 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                     description={`session ${prompt.session_id}${parent ? ` · parent ${parent}` : ''} · run ${prompt.run_id}`}
                     footer={
                         <>
-                            <DialogButton onClick={() => setOpen(false)}>Later</DialogButton>
-                            <DialogButton variant="danger" disabled={expired} onClick={() => decide('denied')}>
-                                Deny
+                            <DialogButton onClick={() => { onDefer(key); setOpen(false); }}>Later</DialogButton>
+                            <DialogButton variant="danger" aria-label="Deny" disabled={expired || blocked} onClick={() => decide('denied')}>
+                                <DecisionLabel waiting={waiting && submission?.decision === 'denied'}>Deny</DecisionLabel>
                             </DialogButton>
-                            <DialogButton variant="primary" disabled={expired} onClick={() => decide('approved')}>
-                                Approve
+                            <DialogButton variant="primary" aria-label="Approve" disabled={expired || blocked} onClick={() => decide('approved')}>
+                                <DecisionLabel waiting={waiting && submission?.decision === 'approved'}>Approve</DecisionLabel>
                             </DialogButton>
                         </>
                     }
@@ -207,22 +198,21 @@ function Approval({ prompt, autoOpen, onDefer, onReview }: {
                     <ApprovalBody
                         prompt={prompt}
                         summary={summary}
-                        waiting={waiting}
-                        error={localError}
+                        error={localError || submission?.error || ''}
                     />
                 </DialogContent>
             </Dialog>
         </>
     );
-}
+});
 
 /** The dialog's contents: what is being asked, and by whom. */
-function ApprovalBody({ prompt, summary, waiting, error }: {
+const ApprovalBody = memo(function ApprovalBody({ prompt, summary, error }: {
     prompt: ConfirmationPrompt;
     summary: string;
-    waiting: boolean;
     error: string;
 }) {
+    const [argumentsOpen, setArgumentsOpen] = useState(false);
     return (
         <div className="space-y-2">
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-sunken
@@ -230,11 +220,11 @@ function ApprovalBody({ prompt, summary, waiting, error }: {
                 {summary}
             </pre>
 
-            <details className="text-xs text-ink-muted">
+            <details onToggle={event => setArgumentsOpen(event.currentTarget.open)} className="text-xs text-ink-muted">
                 <summary className="cursor-pointer select-none">arguments as the worker sent them</summary>
                 <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded
                     bg-sunken px-2 py-1 font-mono text-ink">
-                    {JSON.stringify(prompt.call?.arguments ?? {}, null, 2)}
+                    {argumentsOpen ? JSON.stringify(prompt.call?.arguments ?? {}, null, 2) : null}
                 </pre>
             </details>
 
@@ -253,15 +243,19 @@ function ApprovalBody({ prompt, summary, waiting, error }: {
                 </dd>
             </dl>
 
-            {waiting && (
-                <p className="text-xs text-warn">
-                    sent — waiting for the hub to confirm the decision. This is information, not
-                    a lock: the buttons stay available, so a refusal can simply be retried.
-                </p>
-            )}
             {error && <p className="text-xs text-danger">{error}</p>}
         </div>
     );
+});
+
+/** Feedback replaces the existing label within exactly the same geometry. */
+function DecisionLabel({ waiting, children }: { waiting: boolean; children: string }) {
+    return <span className="relative inline-flex justify-center">
+        <span className={waiting ? 'invisible' : ''}>{children}</span>
+        {waiting && <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center">
+            <Glyph name="spinner" size="sm" />
+        </span>}
+    </span>;
 }
 
 export function Approvals() {
@@ -279,18 +273,25 @@ export function Approvals() {
     // banner keeps it one click away, because a deferred prompt that vanished
     // would be the same silent failure A1 was about.
     const [deferred, setDeferred] = useState<ReadonlySet<string>>(new Set());
-    const firstUnanswered = prompts.find((prompt) => !deferred.has(prompt.confirmation_id));
+    const firstUnanswered = prompts.find((prompt) => !deferred.has(confirmationKey(prompt)));
 
     useEffect(() => {
         // A prompt that has been answered leaves the set behind; without this
         // the set would grow for the life of the page.
         setDeferred((current) => {
-            const live = new Set(prompts.map((prompt) => prompt.confirmation_id));
+            const live = new Set(prompts.map(confirmationKey));
             const next = new Set([...current].filter((id) => live.has(id)));
             return next.size === current.size ? current : next;
         });
     }, [prompts]);
 
+    const defer = useCallback((key: string) => setDeferred(current => new Set([...current, key])), []);
+    const review = useCallback((key: string) => setDeferred(current => {
+        if (!current.has(key)) return current;
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+    }), []);
     const list = useRef<HTMLElement>(null);
     const hasPrompts = prompts.length > 0;
     useLayoutEffect(() => {
@@ -326,18 +327,11 @@ export function Approvals() {
             <div className="reading-width">
                 {prompts.map((prompt) => (
                     <Approval
-                        key={prompt.confirmation_id}
+                        key={confirmationKey(prompt)}
                         prompt={prompt}
-                        autoOpen={prompt.confirmation_id === firstUnanswered?.confirmation_id}
-                        onDefer={() => setDeferred((current) => (
-                            new Set([...current, prompt.confirmation_id])
-                        ))}
-                        onReview={() => setDeferred((current) => {
-                            if (!current.has(prompt.confirmation_id)) return current;
-                            const next = new Set(current);
-                            next.delete(prompt.confirmation_id);
-                            return next;
-                        })}
+                        autoOpen={prompt === firstUnanswered}
+                        onDefer={defer}
+                        onReview={review}
                     />
                 ))}
                 {deferred.size > 0 && (
@@ -349,7 +343,7 @@ export function Approvals() {
                 <button
                     type="button"
                     className="text-xs text-warn underline-offset-2 hover:underline"
-                    onClick={() => setDeferred(new Set(prompts.map((p) => p.confirmation_id)))}
+                    onClick={() => setDeferred(new Set(prompts.map(confirmationKey)))}
                 >
                     defer all
                 </button>

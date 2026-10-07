@@ -1028,11 +1028,13 @@ export function createPanelApi({
                         action: 'confirmation',
                         session: target.id,
                         confirmation_id: message.confirmation_id,
+                        ...(typeof message.request_id === 'string' ? { request_id: message.request_id } : {}),
                     });
                 } else {
                     send(client, {
                         type: 'error',
                         error: 'confirmation_rejected',
+                        request: message,
                         message: result.error ?? '',
                         action: 'confirmation',
                         session: target.id,

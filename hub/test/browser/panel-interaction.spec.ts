@@ -164,7 +164,7 @@ test('a deferred approval does not put itself back, and is still answerable (D17
     await expect(page.getByRole('dialog')).toBeVisible();
 });
 
-test('a decision the hub never answers leaves a usable button (D18)', async ({ page }) => {
+test('a lost decision is reconciled before retry access is restored (D18)', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
     await page.request.post(`${STUB}/__stub/confirm`, {
@@ -175,10 +175,12 @@ test('a decision the hub never answers leaves a usable button (D18)', async ({ p
     await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: 'Approve' }).click();
 
-    // The stub records the decision and never answers it, which is what a lost
-    // or refused decision looks like from here. The button must still work —
-    // the old panel disabled it on the first click and left the dialog stuck.
-    await expect(dialog.getByRole('button', { name: 'Approve' })).toBeEnabled();
+    // Suppress duplicate/opposite decisions while in flight. After a bounded
+    // timeout, check the Hub's open prompts before restoring explicit retry.
+    await expect(dialog.getByRole('button', { name: 'Approve' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Deny' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Approve' })).toBeEnabled({ timeout: 12_000 });
+    await expect(dialog).toContainText('still lists this prompt as open');
     await dialog.getByRole('button', { name: 'Approve' }).click();
 
     const decisions = await page.request.get(`${STUB}/__stub/decisions`);
