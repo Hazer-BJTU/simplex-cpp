@@ -649,6 +649,11 @@ identity, status, `loop_skipped` and framework error fields do not share a trave
 budget with arbitrary argument/output trees. Proposals, approvals and returned
 results therefore remain correlated when a body is only a preview. Up to 64 batch
 entries are shown; any omitted suffix is counted explicitly.
+Normalization preserves and accumulates existing `display_omitted` batch-marker
+counts instead of counting a marker as one tool. The panel excludes these markers
+from proposals/results and renders notices; the paired model proposal and
+`tool_calls` event share one call-omission notice. Result omissions are independent
+and never imply an anonymous successful execution.
 
 Display truncation never alters executable payloads, tool arguments, approval
 identities or decisions. Oversized indivisible execution/control messages are

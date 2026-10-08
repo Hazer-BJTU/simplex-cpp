@@ -175,3 +175,31 @@ test('whole-body normalization omission still exposes its source or honest unava
     await emit(page, 'model_response', { display_omitted: true });
     await expect(page.getByTestId('assistant-message').last()).toContainText('complete text is unavailable from this worker');
 });
+
+test('100-entry worker batches show only real tools and accurate omission notices after replay', async ({ page }) => {
+    await open(page, '?session=demo');
+    const calls = Array.from({ length: 100 }, (_, index) => ({ id: `batch-call-${index}`, name: `batch_tool_${index}`,
+        arguments: {}, type: 'read_only', security: 'trusted' }));
+    const marker = { display_omitted: true, omitted_items: 36 };
+    const workerCalls = [...calls.slice(0, 64), marker];
+    const workerResults = [...calls.slice(0, 64).map(query => ({ query,
+        output: { type: 'text', modality: 'text', raw: `output ${query.id}` } })), marker];
+    await emit(page, 'run_started', {});
+    await emit(page, 'model_response', normalizeDisplay('model_response', modelResponse('Proposing the batch.', { invokes: workerCalls })));
+    await emit(page, 'tool_calls', normalizeDisplay('tool_calls', workerCalls));
+    await expect(page.getByTestId('tool-card')).toHaveCount(64);
+    await expect(page.getByTestId('tool-omission')).toHaveCount(1);
+    await expect(page.getByTestId('tool-omission')).toHaveText('36 tool call previews omitted from this display.');
+    await emit(page, 'tool_results', normalizeDisplay('tool_results', workerResults));
+    await emit(page, 'run_finished', { status: 'completed' });
+    for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(page.getByTestId('tool-card')).toHaveCount(64);
+        await expect(page.locator('[data-testid="tool-card"][data-status="ok"]')).toHaveCount(64);
+        await expect(page.getByTestId('tool-omission')).toHaveText([
+            '36 tool call previews omitted from this display.',
+            '36 tool result previews omitted from this display.',
+        ]);
+        await expect(page.getByTestId('transcript')).not.toContainText('(unnamed');
+        if (attempt === 0) await page.reload();
+    }
+});

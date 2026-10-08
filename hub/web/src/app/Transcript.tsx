@@ -505,6 +505,12 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
                         ? <div key={entry.key} className="space-y-1"><ToolCard call={call} /></div>
                         : null;
                 }
+                if (entry.kind === 'tool_omission') {
+                    const category = entry.category === 'calls' ? 'call' : 'result';
+                    return <p key={entry.key} data-testid="tool-omission" className="text-xs text-ink-muted">
+                        {entry.count} tool {category} preview{entry.count === 1 ? '' : 's'} omitted from this display.
+                    </p>;
+                }
                 if (entry.kind === 'problem') {
                     const problem = problems.get(entry.key);
                     return problem ? <ProblemLine key={entry.key} problem={problem} /> : null;

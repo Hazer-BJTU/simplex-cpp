@@ -1,4 +1,5 @@
 import { answerSource } from '../../shared/answers.ts';
+import { toolOmissionCount } from '../../shared/tool-batches.ts';
 /** Display copies only: executable inputs and approval authority never use this module. */
 const MAX_ENCODED_DATA = 768 * 1024;
 const ANSWER_BYTES = 512 * 1024;
@@ -116,10 +117,18 @@ function toolContent(value: unknown, textBudget: number): unknown {
 /** Batch limits count represented calls; no early entry consumes a later entry's budget. */
 function toolBatch(value: unknown, results: boolean): unknown {
     if (!Array.isArray(value)) return boundedDiagnostic(value, 1024);
-    const count = Math.min(value.length, 64);
+    const entries: unknown[] = [];
+    let omitted = 0;
+    for (const item of value) {
+        const previous = toolOmissionCount(item);
+        if (previous > 0) omitted = Math.min(Number.MAX_SAFE_INTEGER, omitted + previous);
+        else if (entries.length < 64) entries.push(item);
+        else omitted = Math.min(Number.MAX_SAFE_INTEGER, omitted + 1);
+    }
+    const count = entries.length;
     const argumentBudget = Math.min(8192, Math.floor(64 * 1024 / Math.max(count, 1)));
     const outputBudget = Math.min(8192, Math.floor(128 * 1024 / Math.max(count, 1)));
-    const projected = value.slice(0, count).map(item => {
+    const projected = entries.map(item => {
         if (!results) return toolCall(item, argumentBudget);
         const source = object(item) ?? {};
         const result: Record<string, unknown> = {};
@@ -146,7 +155,7 @@ function toolBatch(value: unknown, results: boolean): unknown {
         }
         return result;
     });
-    if (count < value.length) projected.push({ display_omitted: true, omitted_items: value.length - count });
+    if (omitted > 0) projected.push({ display_omitted: true, omitted_items: omitted });
     return projected;
 }
 

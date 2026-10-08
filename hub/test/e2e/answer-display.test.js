@@ -8,6 +8,7 @@ import { e2eSkip, startE2eHub } from '../helpers/e2e.js';
 import { connectWorker, until } from '../helpers/worker.js';
 import { sessionDir } from '../../src/launch/config-render.ts';
 import { answerPage } from '../../shared/answers.ts';
+import { buildRounds } from '../../web/src/app/rounds.ts';
 
 it('preserves large accepted SSE content and reconstructs the same answer after reconnect/history',
     { skip: e2eSkip, timeout: 60000 }, async () => {
@@ -87,6 +88,70 @@ it('preserves large accepted SSE content and reconstructs the same answer after 
                 assert.equal(previous.content, answer);
                 if (previous.reasoning_content !== undefined) assert.equal(previous.reasoning_content, reasoning);
             } finally { replay.ws.terminate(); }
+        } finally {
+            panel.ws.terminate();
+            await ctx.hub.stop();
+            rmSync(ctx.config.dataDir, { recursive: true, force: true });
+        }
+});
+
+it('projects 100 real worker calls through Hub normalization into 64 panel cards and exact notices',
+    { skip: e2eSkip, timeout: 60000 }, async () => {
+        const ctx = await startE2eHub();
+        let requests = 0;
+        ctx.hub.mock.handle = async (req, res) => {
+            for await (const chunk of req) { /* Drain the provider request. */ }
+            const first = requests++ === 0;
+            const delta = first ? { role: 'assistant', tool_calls: Array.from({ length: 100 }, (_, index) => ({
+                index, id: `batch-call-${index}`, type: 'function',
+                // Unknown tools fail before invocation: this regression has no tool side effects.
+                function: { name: `missing_tool_${index}`, arguments: '{}' },
+            })) } : { role: 'assistant', content: 'The batch has settled.' };
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(`data: ${JSON.stringify({ id: 'batch-100', choices: [{ index: 0, delta,
+                finish_reason: first ? 'tool_calls' : 'stop' }],
+                usage: { prompt_tokens: 100, completion_tokens: 100, total_tokens: 200 } })}\n\ndata: [DONE]\n\n`);
+        };
+        const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
+        const api = async (path, body) => {
+            const response = await fetch(`${ctx.base}${path}`, { method: 'POST',
+                headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            const value = await response.json();
+            assert.ok(response.ok, JSON.stringify(value));
+            return value;
+        };
+        try {
+            await api('/api/sessions', { session: 'batch-output', spec: { provider: 'mock', model: 'mock-text' } });
+            const started = await api('/api/sessions/batch-output/start', {});
+            assert.equal(started.ok, true, started.error);
+            const session = ctx.hub.registry.get('batch-output');
+            await until(() => session.connected, { timeout: 20000 });
+            panel.send({ v: 1, type: 'subscribe', session: session.id });
+            await panel.waitFor(message => message.type === 'subscribed');
+            panel.send({ v: 1, type: 'input', session: session.id, request_id: 'batch-task',
+                content: [{ type: 'text', modality: 'text', raw: 'Exercise the synthetic tool batch.' }] });
+            await panel.waitFor(message => message.type === 'event' && message.envelope.event === 'run_finished'
+                && message.envelope.request_id === 'batch-task', { timeout: 20000 });
+            const events = panel.messages.filter(message => message.type === 'event'
+                && message.envelope.request_id === 'batch-task').map(message => message.envelope);
+            for (const data of [events.find(event => event.event === 'model_response').data.invokes,
+                events.find(event => event.event === 'tool_calls').data,
+                events.find(event => event.event === 'tool_results').data]) {
+                assert.equal(data.length, 65);
+                assert.deepEqual(data.at(-1), { display_omitted: true, omitted_items: 36 });
+            }
+            const snapshot = JSON.parse(readFileSync(join(sessionDir(ctx.config, session.id), 'state/state.json'), 'utf8'));
+            assert.equal(snapshot.turns[0].agent_loop_step[0].model_response.invokes.length, 100);
+            assert.equal(snapshot.turns[0].agent_loop_step[0].invoke_returns.length, 100);
+            const items = events.map((envelope, index) => ({ kind: 'event', id: `batch-${index}`, epoch: 'test', envelope }));
+            const round = buildRounds(items, new Map(), new Map()).find(value => value.calls.length);
+            assert.equal(round.calls.length, 64);
+            assert.ok(round.calls.every(call => call.id.startsWith('batch-call-')
+                && call.name.startsWith('missing_tool_') && call.result.id === call.id && call.status === 'failed'));
+            assert.deepEqual(round.timeline.filter(entry => entry.kind === 'tool_omission')
+                .map(({ category, count }) => ({ category, count })), [
+                { category: 'calls', count: 36 }, { category: 'results', count: 36 },
+            ]);
         } finally {
             panel.ws.terminate();
             await ctx.hub.stop();

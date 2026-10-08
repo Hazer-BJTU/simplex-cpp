@@ -7,6 +7,8 @@ import { RingBuffer } from '../src/util/ring.ts';
 import { setupPanelHub } from './helpers/panel.js';
 import { workerEvent, until } from './helpers/worker.js';
 import { buildRounds } from '../web/src/app/rounds.ts';
+import { createRoundProjection } from '../web/src/app/roundProjection.ts';
+import { omittedToolItems, toolOmissionCount } from '../shared/tool-batches.ts';
 
 function structuredArguments() {
     return { nodes: Array.from({ length: 64 }, (_, index) => ({ first: index, second: index })) };
@@ -75,7 +77,7 @@ it('preserves tool identity, independent batch entries and protected result anno
 });
 
 it('bounds each tool body while retaining later batch identities and explicit omission counts', () => {
-    const calls = Array.from({ length: 65 }, (_, index) => ({
+    const calls = Array.from({ length: 100 }, (_, index) => ({
         id: `call-${index}`, name: 'tool', type: 'serial_write', security: 'require_confirm',
         arguments: { raw: '\u0001'.repeat(65536) },
     }));
@@ -85,12 +87,90 @@ it('bounds each tool body while retaining later batch identities and explicit om
     const returned = normalizeDisplay('tool_results', results);
     assert.equal(proposed[63].id, 'call-63');
     assert.equal(returned[63].query.id, 'call-63');
-    assert.equal(proposed.at(-1).omitted_items, 1);
-    assert.equal(returned.at(-1).omitted_items, 1);
+    assert.equal(proposed.at(-1).omitted_items, 36);
+    assert.equal(returned.at(-1).omitted_items, 36);
     assert.ok(Buffer.byteLength(JSON.stringify(proposed)) < 128 * 1024);
     assert.ok(Buffer.byteLength(JSON.stringify(returned)) < 512 * 1024);
     assert.equal(returned[0].output.truncated, true);
     assert.equal(returned[0].extras.error.display_truncated, true);
+});
+
+it('preserves worker-projected 100-entry omissions through normalization and panel replay parsing', () => {
+    const calls = Array.from({ length: 100 }, (_, index) => ({
+        id: `batch-call-${index}`, name: `batch_tool_${index}`, arguments: {},
+        type: 'serial_write', security: 'require_confirm',
+    }));
+    const results = calls.map(query => ({ type: 'invoke_return', role: 'tool',
+        content: [{ type: 'text', modality: 'text', raw: `output ${query.id}` }],
+        invoke_return: { query, output: { type: 'text', modality: 'text', raw: `output ${query.id}` } },
+    }));
+    // Exact array shape emitted by display_calls()/display_results(); native
+    // tests and the real-worker E2E verify that producer separately.
+    const marker = { display_omitted: true, omitted_items: 36 };
+    const workerCalls = [...calls.slice(0, 64), marker];
+    const workerResults = [...results.slice(0, 64), marker];
+    const original = structuredClone({ workerCalls, workerResults });
+    const projectedCalls = normalizeDisplay('tool_calls', workerCalls);
+    const projectedResults = normalizeDisplay('tool_results', workerResults);
+    const model = normalizeDisplay('model_response', { content: [], invokes: workerCalls });
+    assert.equal(projectedCalls.length, 65);
+    assert.equal(projectedResults.length, 65);
+    assert.deepEqual(projectedCalls.at(-1), marker);
+    assert.deepEqual(projectedResults.at(-1), marker);
+    assert.deepEqual(model.invokes.at(-1), marker);
+    for (const [name, value] of [['tool_calls', projectedCalls], ['tool_results', projectedResults]]) {
+        assert.deepEqual(normalizeDisplay(name, value), value); // Already projected batches stay stable.
+    }
+    assert.deepEqual({ workerCalls, workerResults }, original);
+
+    let sequence = 0;
+    function item(event, data) {
+        return { kind: 'event', id: `batch-event-${++sequence}`, epoch: 'epoch', envelope: {
+            ...workerEvent({ event, data, sequence }), hub_sequence: sequence,
+        } };
+    }
+    const items = [item('run_started', {}), item('model_response', model),
+        item('tool_calls', projectedCalls), item('tool_results', projectedResults),
+        item('run_finished', { status: 'completed' })];
+    const project = createRoundProjection();
+    for (const parser of [buildRounds, project]) {
+        for (const transcript of [items, structuredClone(items)]) {
+            const round = parser(transcript, new Map(), new Map()).find(value => value.calls.length);
+            assert.equal(round.calls.length, 64);
+            assert.deepEqual(round.calls.map(call => call.id), calls.slice(0, 64).map(call => call.id));
+            assert.ok(round.calls.every(call => call.status === 'ok' && call.result.id === call.id));
+            assert.deepEqual(round.timeline.filter(entry => entry.kind === 'tool_omission')
+                .map(({ category, count }) => ({ category, count })), [
+                { category: 'calls', count: 36 }, { category: 'results', count: 36 },
+            ]);
+        }
+    }
+    // Results/proposals without a committed response also show notices, not cards.
+    const standalone = buildRounds(items.filter(value => value.envelope.event !== 'model_response'), new Map(), new Map())
+        .find(value => value.calls.length);
+    assert.equal(standalone.calls.length, 64);
+    assert.equal(standalone.timeline.filter(entry => entry.kind === 'tool_omission').length, 2);
+});
+
+it('accumulates existing omissions separately from newly dropped entries and bounds counts', () => {
+    const calls = Array.from({ length: 70 }, (_, index) => ({ id: `call-${index}`, name: 'tool', arguments: {} }));
+    const markers = [{ display_omitted: true, omitted_items: 36 }, { display_omitted: true, omitted_items: 10 }];
+    for (const event of ['tool_calls', 'tool_results']) {
+        const entries = event === 'tool_calls' ? calls : calls.map(query => ({ query, output: { type: 'text', raw: 'ok' } }));
+        const mixed = [markers[0], ...entries, markers[1]];
+        const result = normalizeDisplay(event, mixed);
+        assert.equal(result.length, 65);
+        assert.equal(result.at(-1).omitted_items, 52); // 36 + 10 already omitted, plus six new entries.
+        assert.equal(omittedToolItems(result), 52);
+        assert.deepEqual(normalizeDisplay(event, result), result);
+    }
+    assert.equal(toolOmissionCount({ display_omitted: true, omitted_items: 36, id: 'real-call', name: 'tool' }), 0);
+    assert.equal(toolOmissionCount({ display_omitted: true }), 1);
+    const saturated = normalizeDisplay('tool_calls', [
+        { display_omitted: true, omitted_items: Number.MAX_SAFE_INTEGER },
+        { display_omitted: true, omitted_items: 1 },
+    ]);
+    assert.equal(saturated[0].omitted_items, Number.MAX_SAFE_INTEGER);
 });
 
 it('clips reasoning/extras first without mutating a Unicode multipart answer', () => {

@@ -130,8 +130,8 @@ BOOST_AUTO_TEST_CASE(tool_display_preserves_batch_identity_and_outcomes_outside_
 }
 
 BOOST_AUTO_TEST_CASE(tool_display_batches_bound_escaped_bodies_and_mark_omitted_entries) {
-    std::vector<model_io::InvokeQuery> calls(65);
-    std::vector<model_io::MessageItem> messages(65);
+    std::vector<model_io::InvokeQuery> calls(100);
+    std::vector<model_io::MessageItem> messages(100);
     for (std::size_t index = 0; index < calls.size(); ++index) {
         calls[index].id = "call-" + std::to_string(index);
         calls[index].name = "tool";
@@ -148,8 +148,8 @@ BOOST_AUTO_TEST_CASE(tool_display_batches_bound_escaped_bodies_and_mark_omitted_
     const auto returned = core::display_results(messages);
     BOOST_TEST(proposed.at(63).at("id") == "call-63");
     BOOST_TEST(returned.at(63).at("invoke_return").at("query").at("id") == "call-63");
-    BOOST_TEST(proposed.back().at("omitted_items") == 1);
-    BOOST_TEST(returned.back().at("omitted_items") == 1);
+    BOOST_TEST(proposed.back().at("omitted_items") == 36);
+    BOOST_TEST(returned.back().at("omitted_items") == 36);
     BOOST_TEST(proposed.dump().size() < 128 * 1024u);
     BOOST_TEST(returned.dump().size() < 512 * 1024u);
     BOOST_TEST(returned.at(0).at("invoke_return").at("output").at("truncated") == true);

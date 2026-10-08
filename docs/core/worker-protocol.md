@@ -558,6 +558,10 @@ budgets for each entry. Result status, `loop_skipped`, and framework error stage
 message are projected separately from other extras; long error messages remain
 explicit previews. An early complex call cannot consume later calls' identity
 budget. Batches show at most 64 entries and count an omitted suffix explicitly.
+The suffix is an array marker, `{"display_omitted":true,"omitted_items":N}`,
+not a tool call or result. Consumers preserve that count when reprojecting a
+batch, add any newly omitted entries, and display an omission notice rather
+than assigning the marker execution identity or a success/failure status.
 Live responses have a 512 KiB aggregate encoded answer allowance, separate from
 history's 96 KiB allowance; reasoning receives at most 4 KiB. Larger answers use
 read-only pages rather than a universal complete-answer limit. The application

@@ -25,6 +25,7 @@
  *   the tool framework annotated one, and "not executed" is a third state.
  */
 import type { ConfirmationPrompt, HistoryTurn, RequestRecord, WorkerEnvelope } from '../../../shared/protocol.ts';
+import { omittedToolItems, toolOmissionCount } from '../../../shared/tool-batches.ts';
 import { parseCompactResult, type CompactResult } from '../state/compact.ts';
 import type {
     EventItem,
@@ -127,6 +128,8 @@ export type TimelineEntry =
     | { readonly kind: 'problem'; readonly key: string }
     /** A batch of calls no model response claimed. */
     | { readonly kind: 'calls'; readonly key: string }
+    /** Display omissions describe hidden entries, never an execution outcome. */
+    | { readonly kind: 'tool_omission'; readonly key: string; readonly count: number; readonly category: 'calls' | 'results' }
     /** A note the panel itself added. */
     | { readonly kind: 'note'; readonly key: string };
 
@@ -323,17 +326,20 @@ export class RoundDerivations {
 /** Read the calls a model response proposed. */
 function invokesOf(envelope: WorkerEnvelope): CallView[] {
     const message = obj(envelope.data) ?? {};
-    return Array.isArray(message.invokes) ? message.invokes.map(callView) : [];
+    return Array.isArray(message.invokes)
+        ? message.invokes.filter(item => toolOmissionCount(item) === 0).map(callView) : [];
 }
 
 /** Read a `tool_calls` batch. */
 function batchOf(envelope: WorkerEnvelope): CallView[] {
-    return Array.isArray(envelope.data) ? envelope.data.map(callView) : [];
+    return Array.isArray(envelope.data)
+        ? envelope.data.filter(item => toolOmissionCount(item) === 0).map(callView) : [];
 }
 
 /** Read a `tool_results` batch, in the shape core actually sends. */
 function resultsOf(envelope: WorkerEnvelope): ResultView[] {
-    return Array.isArray(envelope.data) ? envelope.data.map(resultView) : [];
+    return Array.isArray(envelope.data)
+        ? envelope.data.filter(item => toolOmissionCount(item) === 0).map(resultView) : [];
 }
 
 /**
@@ -784,6 +790,10 @@ export function buildRounds(
             });
             if (cost.total !== null) run.tokens = (run.tokens ?? 0) + cost.total;
             run.timeline.push({ kind: 'assistant', key: item.id });
+            const omitted = omittedToolItems(message.invokes);
+            if (omitted > 0) {
+                run.timeline.push({ kind: 'tool_omission', key: `${item.id}-omitted-calls`, count: omitted, category: 'calls' });
+            }
             continue;
         }
 
@@ -791,10 +801,21 @@ export function buildRounds(
             const run = groups.execution(envelope);
             track(run, item);
             const claimed = new Set(run.assistant.flatMap((block) => [...block.callIds]));
-            for (const key of addCalls(run, prompts, batchOf(envelope), envelope)) {
+            const keys = addCalls(run, prompts, batchOf(envelope), envelope);
+            for (const key of keys) {
                 // A card the model response already claims is drawn with it, in
                 // the response's place rather than the batch's.
                 if (!claimed.has(key)) run.timeline.push({ kind: 'calls', key });
+            }
+            const omitted = omittedToolItems(envelope.data);
+            const model = run.assistant.at(-1);
+            // The committed response and following batch describe the same
+            // proposals. Do not double-count their identical display omission.
+            const paired = model !== undefined && keys.length === model.callIds.length
+                && keys.every(key => model.callIds.includes(key))
+                && omittedToolItems(obj(model.envelope.data)?.invokes) === omitted;
+            if (omitted > 0 && !paired) {
+                run.timeline.push({ kind: 'tool_omission', key: `${item.id}-omitted-calls`, count: omitted, category: 'calls' });
             }
             continue;
         }
@@ -831,6 +852,10 @@ export function buildRounds(
                 const at = run.calls.indexOf(call);
                 run.calls[at] = settle(run, call, result, envelope, derivations);
                 run.settled.add(call.key);
+            }
+            const omitted = omittedToolItems(envelope.data);
+            if (omitted > 0) {
+                run.timeline.push({ kind: 'tool_omission', key: `${item.id}-omitted-results`, count: omitted, category: 'results' });
             }
             continue;
         }
