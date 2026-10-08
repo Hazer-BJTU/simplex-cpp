@@ -312,6 +312,13 @@ function AssistantMessage({ block, calls }: {
     const proposed = block.callIds
         .map((key) => calls.get(key))
         .filter((call): call is ToolCall => call !== undefined);
+    const display = block.envelope.data as {
+        answer_source?: unknown;
+        content?: ContentPart[];
+        omitted_parts?: number;
+        display_omitted?: boolean;
+    } | null;
+    const omitted = display?.display_omitted === true;
 
     return (
         <article data-testid="assistant-message" className="min-w-0 space-y-4">
@@ -328,13 +335,15 @@ function AssistantMessage({ block, calls }: {
 
             {block.text
                 ? <Markdown>{block.text}</Markdown>
-                : <p className="text-sm italic text-ink-faint">(no text in this response)</p>}
+                : <p className="text-sm italic text-ink-faint">
+                    {omitted ? 'Response display omitted to fit the display budget.' : '(no text in this response)'}
+                </p>}
 
             <AnswerAccess source={block.historyStep?.answer_source
-                ?? (block.envelope.data as { answer_source?: unknown })?.answer_source}
-                shortened={Boolean(block.historyStep?.content.some(part => part.truncated === true))
-                    || Boolean((block.envelope.data as { content?: ContentPart[] })?.content?.some(part => part.truncated === true))
-                    || (block.historyStep?.omitted_parts ?? Number((block.envelope.data as { omitted_parts?: number })?.omitted_parts ?? 0)) > 0} />
+                ?? display?.answer_source}
+                shortened={omitted || Boolean(block.historyStep?.content.some(part => part.truncated === true))
+                    || Boolean(display?.content?.some(part => part.truncated === true))
+                    || (block.historyStep?.omitted_parts ?? Number(display?.omitted_parts ?? 0)) > 0} />
 
             {block.historyStep && block.historyStep.tool_calls > 0 && (
                 <p className="text-xs text-ink-muted">

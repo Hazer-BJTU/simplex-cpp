@@ -88,6 +88,15 @@ inline constexpr std::size_t display_event_max_bytes = 1024 * 1024;
  * aggregate budget than reasoning; omitted native extras are not forwarded.
  */
 nlohmann::json display_value(const nlohmann::json& value);
+/**
+ * Tool display batches keep correlation/classification outside diagnostic
+ * traversal. Each represented entry has independent argument, output and
+ * annotation budgets, so an early complex call cannot hide a later call.
+ * Batches expose at most 64 entries and explicitly count an omitted suffix.
+ * These copies are never used for dispatch or confirmation authorization.
+ */
+nlohmann::json display_calls(const std::vector<model_io::InvokeQuery>& calls);
+nlohmann::json display_results(const std::vector<model_io::MessageItem>& results);
 /** Bounded, answer-first JSON; live and history use separate encoded budgets. */
 nlohmann::json response_preview(const model_io::MessageItem& response,
     std::size_t step, std::size_t answer_budget);

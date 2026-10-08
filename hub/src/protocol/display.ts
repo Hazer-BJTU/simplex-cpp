@@ -37,6 +37,119 @@ export function diagnosticPreview(value: unknown, depth = 0, budget = { nodes: 1
     return result;
 }
 
+/** Every body gets a fresh traversal budget, independent of identity and its siblings. */
+function boundedDiagnostic(value: unknown, maximum: number): unknown {
+    const result = diagnosticPreview(value);
+    return Buffer.byteLength(JSON.stringify(result)) <= maximum ? result : { display_omitted: true };
+}
+
+/** Encoded string allowance includes quotes and JSON escapes. */
+function encodedPrefix(text: string, maximum: number): string {
+    let low = 0;
+    let high = Math.min(Buffer.byteLength(text), maximum - 2);
+    const candidate = utf8Prefix(text, high);
+    if (Buffer.byteLength(JSON.stringify(candidate)) <= maximum) return candidate;
+    while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (Buffer.byteLength(JSON.stringify(utf8Prefix(text, middle))) <= maximum) low = middle;
+        else high = middle - 1;
+    }
+    return utf8Prefix(text, low);
+}
+
+/** Status and framework error fields survive unrelated metadata's traversal/byte limits. */
+function annotations(value: unknown): unknown {
+    const source = object(value);
+    const result = boundedDiagnostic(value, 512);
+    if (!source) return result;
+    const projected = result as Record<string, unknown>;
+    for (const key of ['status', 'loop_skipped']) {
+        if (typeof source[key] === 'string' || typeof source[key] === 'boolean') {
+            projected[key] = boundedDiagnostic(source[key], 256);
+        }
+    }
+    const error = object(source.error);
+    if (error) {
+        const detail: Record<string, unknown> = {};
+        for (const key of ['stage', 'message']) {
+            const text = error[key];
+            if (typeof text !== 'string') continue;
+            detail[key] = encodedPrefix(text, key === 'stage' ? 128 : 1024);
+            if (detail[key] !== text) detail.display_truncated = true;
+        }
+        projected.error = detail;
+    }
+    return projected;
+}
+
+/** Copy scalar correlation/classification directly, never by traversing argument trees. */
+function toolCall(value: unknown, argumentBudget: number): Record<string, unknown> {
+    const source = object(value) ?? {};
+    const result: Record<string, unknown> = {};
+    for (const key of ['id', 'name', 'type', 'security']) {
+        if (typeof source[key] === 'string') result[key] = source[key];
+    }
+    if (source.arguments !== undefined) result.arguments = boundedDiagnostic(source.arguments, argumentBudget);
+    if (source.extras !== undefined) result.extras = annotations(source.extras);
+    return result;
+}
+
+/** Preserve output labels/text independently of native metadata. */
+function toolContent(value: unknown, textBudget: number): unknown {
+    const source = object(value);
+    if (!source) return boundedDiagnostic(value, textBudget);
+    const result: Record<string, unknown> = {};
+    for (const key of ['type', 'modality']) {
+        if (typeof source[key] === 'string') result[key] = source[key];
+    }
+    if (typeof source.raw === 'string') {
+        result.raw = encodedPrefix(source.raw, textBudget);
+        if (result.raw !== source.raw || source.truncated === true) {
+            result.truncated = true;
+            result.bytes = typeof source.bytes === 'number' ? source.bytes : Buffer.byteLength(source.raw);
+        }
+    }
+    if (source.extras !== undefined) result.extras = boundedDiagnostic(source.extras, 512);
+    return result;
+}
+
+/** Batch limits count represented calls; no early entry consumes a later entry's budget. */
+function toolBatch(value: unknown, results: boolean): unknown {
+    if (!Array.isArray(value)) return boundedDiagnostic(value, 1024);
+    const count = Math.min(value.length, 64);
+    const argumentBudget = Math.min(8192, Math.floor(64 * 1024 / Math.max(count, 1)));
+    const outputBudget = Math.min(8192, Math.floor(128 * 1024 / Math.max(count, 1)));
+    const projected = value.slice(0, count).map(item => {
+        if (!results) return toolCall(item, argumentBudget);
+        const source = object(item) ?? {};
+        const result: Record<string, unknown> = {};
+        for (const key of ['type', 'role']) {
+            if (typeof source[key] === 'string') result[key] = source[key];
+        }
+        const record = object(source.invoke_return);
+        function projectRecord(original: Record<string, unknown>, destination: Record<string, unknown>): void {
+            if (original.query !== undefined) destination.query = toolCall(original.query, argumentBudget);
+            if (original.output !== undefined) destination.output = toolContent(original.output, outputBudget);
+            if (original.extras !== undefined) destination.extras = annotations(original.extras);
+        }
+        projectRecord(source, result);
+        if (record) {
+            const provenance: Record<string, unknown> = {};
+            projectRecord(record, provenance);
+            result.invoke_return = provenance;
+        }
+        if (Array.isArray(source.content)) {
+            const parts = Math.min(source.content.length, 4);
+            result.content = source.content.slice(0, parts).map(part => toolContent(part, Math.floor(outputBudget / parts)));
+            const omitted = typeof source.omitted_parts === 'number' ? source.omitted_parts : 0;
+            if (omitted || parts < source.content.length) result.omitted_parts = omitted + source.content.length - parts;
+        }
+        return result;
+    });
+    if (count < value.length) projected.push({ display_omitted: true, omitted_items: value.length - count });
+    return projected;
+}
+
 /** Preserve useful answers before allocating reasoning/metadata display space. */
 function response(value: unknown, answerBudget: number): Record<string, unknown> {
     const source = object(value) ?? {};
@@ -73,6 +186,7 @@ function response(value: unknown, answerBudget: number): Record<string, unknown>
     // Native provider extras often duplicate the complete response; never send them.
     delete result.extras;
     delete result.reasoning;
+    if (source.invokes !== undefined) result.invokes = toolBatch(source.invokes, false);
     if (answerSource(source.answer_source)) result.answer_source = source.answer_source;
     else delete result.answer_source;
     const omitted = Number.isSafeInteger(source.omitted_parts) && Number(source.omitted_parts) > 0
@@ -104,6 +218,8 @@ export function normalizeDisplay(event: string, value: unknown): unknown {
             return { ...turn, user: response({ content: turn.user }, 24 * 1024).content, steps: Array.isArray(turn.steps)
                 ? turn.steps.map(step => response(step, 96 * 1024)) : [] };
         }) : [] };
+    } else if (event === 'tool_calls' || event === 'tool_results') {
+        result = toolBatch(value, event === 'tool_results');
     } else result = diagnosticPreview(value);
     if (Buffer.byteLength(JSON.stringify(result)) <= MAX_ENCODED_DATA) return result;
     return { display_omitted: true, reason: 'display message exceeds encoded budget',

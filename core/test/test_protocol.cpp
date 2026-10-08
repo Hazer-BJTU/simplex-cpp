@@ -57,7 +57,104 @@ model_io::Content display_text(std::string raw) {
     return {model_io::ContentType::Text, std::move(raw), {}, model_io::Modality::Text};
 }
 
+/** Small on the wire but deliberately larger than one diagnostic traversal. */
+Json structured_arguments() {
+    auto nodes = Json::array();
+    for (std::size_t index = 0; index < 64; ++index) {
+        nodes.push_back(Json{{"first", index}, {"second", index}});
+    }
+    return Json{{"nodes", std::move(nodes)}};
+}
+
 } // namespace
+
+BOOST_AUTO_TEST_CASE(tool_display_preserves_batch_identity_and_outcomes_outside_body_budgets) {
+    std::vector<model_io::InvokeQuery> calls;
+    for (std::size_t index = 0; index < 3; ++index) {
+        model_io::InvokeQuery call;
+        call.id = "call-" + std::to_string(index);
+        call.name = "structured_tool_" + std::to_string(index);
+        call.type = model_io::InvokeType::SerialWrite;
+        call.security = model_io::InvokeSecurity::RequireConfirm;
+        call.arguments = structured_arguments();
+        call.extras = Json{{"metadata", structured_arguments()}};
+        calls.push_back(std::move(call));
+    }
+    const Json original_calls = calls;
+    BOOST_TEST(original_calls.front().dump().size() < 4096u);
+    const auto projected = core::display_calls(calls);
+    BOOST_REQUIRE_EQUAL(projected.size(), calls.size());
+
+    model_io::AgentInputState state;
+    state.turns.resize(1);
+    state.turns.front().agent_loop_step.resize(1);
+    state.turns.front().agent_loop_step.front().model_response.invokes = calls;
+    const auto response = core::project_response(state, 0, 0, "worker");
+    BOOST_TEST(response.at("invokes") == projected);
+
+    std::vector<model_io::MessageItem> messages;
+    for (const auto& call : calls) {
+        model_io::InvokeReturn record;
+        record.query = call;
+        record.output = display_text("Tool output 中文🌍");
+        record.output.extras = Json{{"metadata", structured_arguments()}};
+        record.extras = Json{{"aaa_metadata", structured_arguments()},
+            {"status", "failed"}, {"loop_skipped", true},
+            {"error", {{"stage", "invoke"}, {"message", "distinct failure reason"}}}};
+        model_io::MessageItem message;
+        message.role = "tool";
+        message.type = model_io::MessageItemType::InvokeReturn;
+        message.content = {record.output};
+        message.invoke_return = std::move(record);
+        messages.push_back(std::move(message));
+    }
+    const Json original_messages = messages;
+    const auto results = core::display_results(messages);
+    BOOST_REQUIRE_EQUAL(results.size(), calls.size());
+    for (std::size_t index = 0; index < calls.size(); ++index) {
+        const auto& call = projected.at(index);
+        const auto& returned = results.at(index).at("invoke_return");
+        for (const auto* key : {"id", "name", "security", "type"}) {
+            BOOST_TEST(call.at(key) == original_calls.at(index).at(key));
+            BOOST_TEST(returned.at("query").at(key) == call.at(key));
+        }
+        BOOST_TEST(returned.at("output").at("raw") == "Tool output 中文🌍");
+        BOOST_TEST(returned.at("output").at("type") == "text");
+        BOOST_TEST(returned.at("extras").at("status") == "failed");
+        BOOST_TEST(returned.at("extras").at("loop_skipped") == true);
+        BOOST_TEST(returned.at("extras").at("error").at("stage") == "invoke");
+        BOOST_TEST(returned.at("extras").at("error").at("message") == "distinct failure reason");
+    }
+    BOOST_TEST(Json(calls) == original_calls);
+    BOOST_TEST(Json(messages) == original_messages);
+}
+
+BOOST_AUTO_TEST_CASE(tool_display_batches_bound_escaped_bodies_and_mark_omitted_entries) {
+    std::vector<model_io::InvokeQuery> calls(65);
+    std::vector<model_io::MessageItem> messages(65);
+    for (std::size_t index = 0; index < calls.size(); ++index) {
+        calls[index].id = "call-" + std::to_string(index);
+        calls[index].name = "tool";
+        calls[index].arguments = Json{{"long", std::string(65536, '\x01')}};
+        model_io::InvokeReturn record;
+        record.query = calls[index];
+        record.output = display_text(std::string(65536, '\x01'));
+        record.extras = Json{{"error", {{"stage", "invoke"},
+            {"message", std::string(65536, '\x01')}}}};
+        messages[index].content = {record.output};
+        messages[index].invoke_return = std::move(record);
+    }
+    const auto proposed = core::display_calls(calls);
+    const auto returned = core::display_results(messages);
+    BOOST_TEST(proposed.at(63).at("id") == "call-63");
+    BOOST_TEST(returned.at(63).at("invoke_return").at("query").at("id") == "call-63");
+    BOOST_TEST(proposed.back().at("omitted_items") == 1);
+    BOOST_TEST(returned.back().at("omitted_items") == 1);
+    BOOST_TEST(proposed.dump().size() < 128 * 1024u);
+    BOOST_TEST(returned.dump().size() < 512 * 1024u);
+    BOOST_TEST(returned.at(0).at("invoke_return").at("output").at("truncated") == true);
+    BOOST_TEST(returned.at(0).at("invoke_return").at("extras").at("error").at("display_truncated") == true);
+}
 
 BOOST_AUTO_TEST_CASE(ordered_content_and_metadata_survive_message_serialization) {
     const auto request = payload(Json::array({

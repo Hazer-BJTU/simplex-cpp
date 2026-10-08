@@ -551,6 +551,13 @@ All built-in worker events fit a 1 MiB encoded JSON ceiling before admission to
 the application queue. Native extras are omitted from model projections, and
 related tool/diagnostic display trees are bounded with explicit shortening flags.
 These are display copies, never substituted execution arguments or persistence.
+Tool calls and results use dedicated projections: each represented call retains
+its exact ID, name, scheduling/security classification and result provenance.
+Arguments, output and unrelated extras have independent traversal/encoded-byte
+budgets for each entry. Result status, `loop_skipped`, and framework error stage/
+message are projected separately from other extras; long error messages remain
+explicit previews. An early complex call cannot consume later calls' identity
+budget. Batches show at most 64 entries and count an omitted suffix explicitly.
 Live responses have a 512 KiB aggregate encoded answer allowance, separate from
 history's 96 KiB allowance; reasoning receives at most 4 KiB. Larger answers use
 read-only pages rather than a universal complete-answer limit. The application

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <openssl/evp.h>
 
 namespace core {
@@ -60,6 +61,94 @@ Json preview(const Json& value, std::size_t depth, std::size_t& remaining) {
     }
     return value;
 }
+
+/** Independent bounded diagnostics; oversized trees become explicit omissions. */
+Json bounded_preview(const Json& value, std::size_t maximum) {
+    std::size_t remaining = 128;
+    auto result = preview(value, 0, remaining);
+    if (result.dump().size() > maximum) {
+        return Json{{"display_omitted", true}};
+    }
+    return result;
+}
+
+/** Account for JSON escaping while preserving a valid UTF-8 string prefix. */
+std::string encoded_prefix(const std::string& text, std::size_t maximum) {
+    std::size_t low = 0;
+    std::size_t high = std::min(text.size(), maximum - 2);
+    const auto candidate = prefix(text, high);
+    if (Json(candidate).dump().size() <= maximum) {
+        return candidate;
+    }
+    while (low < high) {
+        const auto middle = low + (high - low + 1) / 2;
+        if (Json(prefix(text, middle)).dump().size() <= maximum) {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    return prefix(text, low);
+}
+
+/** Keep outcome/error annotations even when unrelated metadata exhausts its budget. */
+Json annotations(const Json& value) {
+    auto result = bounded_preview(value, 512);
+    if (!value.is_object()) {
+        return result;
+    }
+    for (const auto* key : {"status", "loop_skipped"}) {
+        const auto item = value.find(key);
+        if (item != value.end() && item->is_primitive()) {
+            result[key] = bounded_preview(*item, 256);
+        }
+    }
+    const auto error = value.find("error");
+    if (error != value.end() && error->is_object()) {
+        auto projected = Json::object();
+        for (const auto* key : {"stage", "message"}) {
+            const auto item = error->find(key);
+            if (item == error->end() || !item->is_string()) {
+                continue;
+            }
+            const auto& original = item->get_ref<const std::string&>();
+            const auto maximum = std::string_view(key) == "stage" ? 128 : 1024;
+            const auto text = encoded_prefix(original, maximum);
+            projected[key] = text;
+            if (text != original) {
+                projected["display_truncated"] = true;
+            }
+        }
+        result["error"] = std::move(projected);
+    }
+    return result;
+}
+
+/** Identity/classification are copied before independent arguments and extras. */
+Json call_preview(const model_io::InvokeQuery& call, std::size_t argument_budget) {
+    Json result = {{"id", call.id}, {"name", call.name},
+        {"type", call.type}, {"security", call.security},
+        {"arguments", bounded_preview(call.arguments, argument_budget)}};
+    if (call.extras) {
+        result["extras"] = annotations(*call.extras);
+    }
+    return result;
+}
+
+/** Output text and its labels cannot be displaced by nested output metadata. */
+Json tool_content(const model_io::Content& content, std::size_t text_budget) {
+    const auto raw = encoded_prefix(content.raw, text_budget);
+    Json result = {{"type", content.type}, {"modality", content.modality}, {"raw", raw}};
+    if (raw != content.raw) {
+        result["truncated"] = true;
+        result["bytes"] = content.raw.size();
+    }
+    if (content.extras) {
+        result["extras"] = bounded_preview(*content.extras, 512);
+    }
+    return result;
+}
+
 /** Hash original answer bytes without copying them. Metadata/reasoning are not answer content. */
 std::string fingerprint(const model_io::MessageItem& response) {
     const auto release = [](EVP_MD_CTX* context) { EVP_MD_CTX_free(context); };
@@ -96,6 +185,54 @@ Json display_value(const Json& value) {
     return preview(value, 0, remaining);
 }
 
+Json display_calls(const std::vector<model_io::InvokeQuery>& calls) {
+    auto result = Json::array();
+    const auto count = std::min<std::size_t>(calls.size(), 64);
+    const auto argument_budget = std::min<std::size_t>(8192, 64 * 1024 / std::max<std::size_t>(count, 1));
+    for (std::size_t index = 0; index < count; ++index) {
+        result.push_back(call_preview(calls[index], argument_budget));
+    }
+    if (count < calls.size()) {
+        result.push_back(Json{{"display_omitted", true}, {"omitted_items", calls.size() - count}});
+    }
+    return result;
+}
+
+Json display_results(const std::vector<model_io::MessageItem>& messages) {
+    auto result = Json::array();
+    const auto count = std::min<std::size_t>(messages.size(), 64);
+    const auto argument_budget = std::min<std::size_t>(8192, 64 * 1024 / std::max<std::size_t>(count, 1));
+    const auto output_budget = std::min<std::size_t>(8192, 128 * 1024 / std::max<std::size_t>(count, 1));
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto& message = messages[index];
+        Json entry = {{"type", message.type}, {"role", message.role}, {"content", Json::array()}};
+        const auto parts = std::min<std::size_t>(message.content.size(), 4);
+        for (std::size_t part = 0; part < parts; ++part) {
+            entry["content"].push_back(tool_content(message.content[part], output_budget / parts));
+        }
+        if (parts < message.content.size()) {
+            entry["omitted_parts"] = message.content.size() - parts;
+        }
+        if (message.invoke_return) {
+            const auto& record = *message.invoke_return;
+            Json provenance = {{"query", call_preview(record.query, argument_budget)},
+                {"output", tool_content(record.output, output_budget)}};
+            if (record.extras) {
+                provenance["extras"] = annotations(*record.extras);
+            }
+            entry["invoke_return"] = std::move(provenance);
+        }
+        if (message.extras) {
+            entry["extras"] = annotations(*message.extras);
+        }
+        result.push_back(std::move(entry));
+    }
+    if (count < messages.size()) {
+        result.push_back(Json{{"display_omitted", true}, {"omitted_items", messages.size() - count}});
+    }
+    return result;
+}
+
 Json answer_source(const model_io::AgentLoopStep& response,
     std::size_t turn, std::size_t step, const std::string& worker_id) {
     return {{"worker_id", worker_id}, {"turn", turn}, {"step", step},
@@ -115,7 +252,7 @@ Json project_response(const model_io::AgentInputState& state,
     result["role"] = response.role;
     result["type"] = response.type;
     if (response.cost) result["cost"] = *response.cost;
-    if (response.invokes) result["invokes"] = display_value(Json(*response.invokes));
+    if (response.invokes) result["invokes"] = display_calls(*response.invokes);
     return result;
 }
 

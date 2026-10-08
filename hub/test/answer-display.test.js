@@ -6,6 +6,92 @@ import { answerPage } from '../shared/answers.ts';
 import { RingBuffer } from '../src/util/ring.ts';
 import { setupPanelHub } from './helpers/panel.js';
 import { workerEvent, until } from './helpers/worker.js';
+import { buildRounds } from '../web/src/app/rounds.ts';
+
+function structuredArguments() {
+    return { nodes: Array.from({ length: 64 }, (_, index) => ({ first: index, second: index })) };
+}
+
+it('preserves tool identity, independent batch entries and protected result annotations', () => {
+    const calls = Array.from({ length: 3 }, (_, index) => ({
+        arguments: structuredArguments(), extras: { metadata: structuredArguments() },
+        id: `call-${index}`, name: `structured_tool_${index}`, security: 'require_confirm', type: 'serial_write',
+    }));
+    assert.ok(Buffer.byteLength(JSON.stringify(calls[0])) < 4096);
+    const originalCalls = structuredClone(calls);
+    const proposals = normalizeDisplay('tool_calls', calls);
+    const model = normalizeDisplay('model_response', { content: [], invokes: calls });
+    assert.deepEqual(model.invokes, proposals);
+    const results = calls.map(query => ({
+        // Metadata appears first in the old generic traversal; neither it nor
+        // the output body may erase the subsequent query and outcome fields.
+        extras: { aaa_metadata: structuredArguments(), error: { stage: 'invoke', message: 'distinct error' },
+            status: 'failed', loop_skipped: true },
+        output: { extras: { metadata: structuredArguments() }, raw: 'output 中文🌍', type: 'text', modality: 'text' },
+        query,
+    }));
+    const messages = results.map(record => ({ content: [record.output], invoke_return: record, role: 'tool', type: 'invoke_return' }));
+    const originals = structuredClone({ results, messages });
+    for (const input of [results, messages]) {
+        const projected = normalizeDisplay('tool_results', input);
+        assert.equal(projected.length, calls.length);
+        for (let index = 0; index < calls.length; index++) {
+            const returned = projected[index].invoke_return ?? projected[index];
+            for (const key of ['id', 'name', 'security', 'type']) {
+                assert.equal(proposals[index][key], calls[index][key]);
+                assert.equal(returned.query[key], calls[index][key]);
+            }
+            assert.equal(returned.output.raw, 'output 中文🌍');
+            assert.equal(returned.extras.status, 'failed');
+            assert.equal(returned.extras.loop_skipped, true);
+            assert.deepEqual(returned.extras.error, { stage: 'invoke', message: 'distinct error' });
+        }
+    }
+    assert.deepEqual(calls, originalCalls);
+    assert.deepEqual({ results, messages }, originals);
+
+    let sequence = 0;
+    function item(event, data) {
+        sequence++;
+        return { kind: 'event', id: `event-${sequence}`, epoch: 'epoch', envelope: {
+            ...workerEvent({ event, data, sequence }), hub_sequence: sequence,
+        } };
+    }
+    const items = [item('run_started', {}), item('model_response', model), item('tool_calls', proposals)];
+    const prompts = new Map([['approval', { confirmation_id: 'approval', settled_at: null, call: calls[0] }]]);
+    const pending = buildRounds(items, prompts, new Map()).find(round => round.calls.length);
+    assert.equal(pending.calls.length, 3); // No duplicate card for the model proposal and batch.
+    assert.equal(pending.calls[0].status, 'pending');
+    assert.equal(pending.calls[0].prompt.confirmation_id, 'approval');
+    items.push(item('tool_results', normalizeDisplay('tool_results', messages)));
+    const settled = buildRounds(items, new Map(), new Map()).find(round => round.calls.length);
+    assert.deepEqual(settled.calls.map(call => call.id), calls.map(call => call.id));
+    for (const call of settled.calls) {
+        assert.equal(call.result.id, call.id);
+        assert.equal(call.result.text, 'output 中文🌍');
+        assert.equal(call.status, 'skipped');
+        assert.equal(call.result.error.message, 'distinct error');
+    }
+});
+
+it('bounds each tool body while retaining later batch identities and explicit omission counts', () => {
+    const calls = Array.from({ length: 65 }, (_, index) => ({
+        id: `call-${index}`, name: 'tool', type: 'serial_write', security: 'require_confirm',
+        arguments: { raw: '\u0001'.repeat(65536) },
+    }));
+    const results = calls.map(query => ({ query, output: { type: 'text', modality: 'text', raw: '\u0001'.repeat(65536) },
+        extras: { error: { stage: 'invoke', message: '\u0001'.repeat(65536) } } }));
+    const proposed = normalizeDisplay('tool_calls', calls);
+    const returned = normalizeDisplay('tool_results', results);
+    assert.equal(proposed[63].id, 'call-63');
+    assert.equal(returned[63].query.id, 'call-63');
+    assert.equal(proposed.at(-1).omitted_items, 1);
+    assert.equal(returned.at(-1).omitted_items, 1);
+    assert.ok(Buffer.byteLength(JSON.stringify(proposed)) < 128 * 1024);
+    assert.ok(Buffer.byteLength(JSON.stringify(returned)) < 512 * 1024);
+    assert.equal(returned[0].output.truncated, true);
+    assert.equal(returned[0].extras.error.display_truncated, true);
+});
 
 it('clips reasoning/extras first without mutating a Unicode multipart answer', () => {
     const source = { content: Array.from({ length: 8 }, (_, index) => ({
@@ -116,4 +202,53 @@ it('delivers a complete 300 KiB final answer before spending bytes on reasoning'
     assert.equal(value.reasoning.raw.length, 4096);
     assert.equal(value.reasoning.truncated, true);
     assert.equal(value.extras, undefined);
+});
+
+it('keeps whole-body omission sources live and replayable under a smaller transcript budget', async t => {
+    const ctx = await setupPanelHub(t);
+    ctx.config.limits.transcriptBytes = 64 * 1024;
+    const session = ctx.hub.registry.create('omitted-answer');
+    const worker = await ctx.connect(`/agent/${session.id}/events?token=${session.token}`);
+    let sequence = 0;
+    function send(event, data) {
+        worker.send(workerEvent({ session: session.id, worker: 'w', sequence: ++sequence, event, data }));
+    }
+    send('status', { active: false, capabilities: ['answer-pages'] });
+    await until(() => session.workerCapabilities?.names.includes('answer-pages'));
+    const source = { worker_id: 'w', turn: 0, step: 0, commit_sequence: '1', fingerprint: 'a'.repeat(64) };
+    const text = 'x'.repeat(70000);
+    worker.ws.on('message', data => {
+        const message = JSON.parse(data.toString());
+        if (message.type !== 'payload' || message.data.operation !== 'answer') return;
+        const { part, offset, request_id } = message.data;
+        const raw = text.slice(offset, offset + 32768);
+        const end = offset + raw.length;
+        send('answer', { source, part, offset, request_id, raw, type: 'text', modality: 'text',
+            next_offset: end, bytes: text.length, total_parts: 1, next_part: end === text.length ? 1 : 0,
+            done: end === text.length });
+    });
+    const first = await ctx.panel();
+    await ctx.subscribe(first.peer, session.id);
+    send('model_response', { content: [{ type: 'text', modality: 'text', raw: text }], answer_source: source });
+    const live = await first.peer.waitFor(message => message.type === 'event' && message.envelope.event === 'model_response');
+    const replay = await ctx.panel();
+    const subscribed = await ctx.subscribe(replay.peer, session.id);
+    for (const envelope of [live.envelope, subscribed.transcript.find(event => event.event === 'model_response')]) {
+        assert.equal(envelope.data.display_omitted, true);
+        assert.equal(envelope.data.content, undefined);
+        assert.deepEqual(envelope.data.answer_source, source);
+        assert.ok(envelope.bytes < ctx.config.limits.transcriptBytes);
+        let recovered = '';
+        for (let offset = 0; offset < text.length;) {
+            const query = { source: envelope.data.answer_source, part: 0, offset };
+            const response = await fetch(`${ctx.base}/api/sessions/${session.id}/answer`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(query) });
+            assert.equal(response.status, 200);
+            const page = await response.json();
+            assert.ok(answerPage(page, query));
+            recovered += page.raw;
+            offset = page.next_offset;
+        }
+        assert.equal(recovered, text);
+    }
 });

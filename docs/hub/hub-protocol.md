@@ -638,6 +638,17 @@ an omission record retaining correlation and any answer source; if even that rec
 cannot fit, eviction reports a retention gap instead of repeatedly disconnecting. Ingress still
 has its configured hard parser limit: oversized older-worker frames cannot be
 recovered by normalization. Optional event JSONL files remain best effort.
+Whole-response omission is displayed explicitly, rather than as an empty model
+answer. When the omission record carries a valid `answer_source`, the panel keeps
+the exact-answer pagination control available in both live display and replay.
+Without a usable source it reports that full text is unavailable.
+
+Tool calls/results use dedicated projections with independent per-entry argument,
+output and metadata budgets. Call ID, name and classifications, result query
+identity, status, `loop_skipped` and framework error fields do not share a traversal
+budget with arbitrary argument/output trees. Proposals, approvals and returned
+results therefore remain correlated when a body is only a preview. Up to 64 batch
+entries are shown; any omitted suffix is counted explicitly.
 
 Display truncation never alters executable payloads, tool arguments, approval
 identities or decisions. Oversized indivisible execution/control messages are

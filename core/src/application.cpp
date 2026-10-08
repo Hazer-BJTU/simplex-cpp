@@ -630,7 +630,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             emit("model_response", std::move(projected));
         }));
         subscriptions.emplace_back(events.subscribe<loop::BeforeToolBatch>([this](const auto& event) {
-            emit("tool_calls", display_value(Json(event.calls)));
+            emit("tool_calls", display_calls(event.calls));
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolDispatchCheckpoint>([this](const auto&) {
             save(SaveBoundary::BeforeTools);
@@ -639,7 +639,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             save(SaveBoundary::ResultsReady);
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolResultsCommitted>([this](const auto& event) {
-            emit("tool_results", display_value(Json(*event.state.turns.back().agent_loop_step.back().invoke_returns)));
+            emit("tool_results", display_results(*event.state.turns.back().agent_loop_step.back().invoke_returns));
         }));
         // Metadata edits belong to writable transactions, never to the
         // read-only checkpoint observers. Recovery snapshots retain the last
@@ -1058,7 +1058,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             query.security = model_io::InvokeSecurity::Trusted;
             query.arguments = std::move(trigger);
             query.extras = Json{{"origin", "worker"}, {"operation", "auto_compact"}};
-            emit("tool_calls", Json::array({query}));
+            emit("tool_calls", display_calls({query}));
             try {
                 result = co_await compact(CompactMode::Automatic, query.id);
             } catch (const std::exception& error) {
@@ -1081,7 +1081,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             returned.role = "tool";
             returned.content.push_back(record.output);
             returned.invoke_return = std::move(record);
-            emit("tool_results", Json::array({returned}));
+            emit("tool_results", display_results({returned}));
             if (result.status != loop::RunStatus::Completed) {
                 finish_controller(result);
                 co_return result;
