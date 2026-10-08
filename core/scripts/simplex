@@ -10,6 +10,7 @@ Commands:
   run       Start a worker session
 
 Use "simplex run --help" for worker options.
+Use "simplex --version" to show the compiled worker version.
 HELP
 }
 
@@ -20,6 +21,9 @@ case "${1:-}" in
         ;;
     run)
         shift
+        ;;
+    --version)
+        # Keep the flag for the worker, which owns the compiled version.
         ;;
     *)
         printf 'simplex: unknown command: %s\n\n' "$1" >&2

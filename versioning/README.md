@@ -4,7 +4,8 @@ The repository root `VERSION` is the single value to edit for a project
 release. It contains exactly `MAJOR.MINOR.PATCH`. CMake
 reads it for the C++ project version and generates the header-only
 `versioning/version.hpp` from `version.hpp.in`. The worker uses that version
-in its prompt signature.
+in its prompt signature and exposes it through `simplex --version`,
+`simplex run --version`, and `simplex_worker --version`.
 
 Hub reads its npm package version for `simplex-hub --version` and panel
 metadata. npm requires the version to be present in both `hub/package.json`

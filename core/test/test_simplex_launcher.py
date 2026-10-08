@@ -31,10 +31,11 @@ with tempfile.TemporaryDirectory(prefix="simplex launcher ") as temporary:
                                 text=True, timeout=5)
         assert result.returncode == 2, result
         assert "unknown command" in result.stderr
-    missing = subprocess.run([str(launcher), "run"], capture_output=True,
-                             text=True, timeout=5)
-    assert missing.returncode == 127, missing
-    assert "worker executable" in missing.stderr
+    for arguments in (["run"], ["--version"]):
+        missing = subprocess.run([str(launcher), *arguments], capture_output=True,
+                                 text=True, timeout=5)
+        assert missing.returncode == 127, missing
+        assert "worker executable" in missing.stderr
 
     worker = binary_dir / "simplex_worker"
     worker.write_text('''#!/usr/bin/env python3
@@ -69,5 +70,15 @@ sys.exit(int(os.environ["SIMPLEX_LAUNCH_EXIT"]))
         assert observed["pid"] == process.pid, "router must exec, not leave a parent shell"
         assert observed["cwd"] == str(caller), observed
         assert observed["environment"] == "preserved value", observed
+
+        # Top-level version queries use the same relocatable exec path, and
+        # preserve the worker's output, exit code and remaining arguments.
+        result = subprocess.run([entry, "--version", "--config", "a config.yaml"],
+                                cwd=caller, env=environment, capture_output=True,
+                                text=True, timeout=5)
+        assert result.returncode == 37, result.stderr
+        assert json.loads(result.stdout)["arguments"] == [
+            "--version", "--config", "a config.yaml"
+        ], result.stdout
 
 print("simplex launcher: routing, relocation, symlinks and exec forwarding passed")
