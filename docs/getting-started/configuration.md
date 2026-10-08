@@ -91,8 +91,8 @@ worker's installation inside that container. Omit `system_prompt_file` to use
 
 | File | Purpose and behavior |
 | --- | --- |
-| `prompts/coding_agent.yaml` | Default, concise software-focused role: inspect code and project guidance, make focused changes, verify results, and report evidence. Ask when missing information affects correctness or authorization. |
-| `prompts/general_agent.yaml` | General-purpose role for tasks beyond coding. Covers communication, task analysis, environment checks, comparing approaches, acceptance criteria, verification, and resource cleanup. Explicitly asks for detailed clarification when requirements are unclear or multiple viable approaches exist. Allows a relaxed, lively, humorous tone and feminine expression while requiring clear language, privacy, and confirmation before destructive actions. |
+| `prompts/coding_agent.yaml` | Default software-focused role with the same communication, clarification, and safety principles as the general agent. Adds repository inspection, focused code changes, compatibility and resource-lifetime considerations, relevant tests and builds, evidence-based reporting, and recovery from interruptions. |
+| `prompts/general_agent.yaml` | General-purpose role for tasks beyond coding. Covers task analysis, environment checks, comparing approaches, acceptance criteria, verification, and resource cleanup. Both roles allow a relaxed, graceful, formal tone and feminine expression, require clear language and detailed clarification for unclear requirements or multiple viable approaches, and protect privacy while requiring confirmation before destructive actions. |
 | `prompts/operations/compact.yaml` | An operation prompt, not a role. Loaded through `worker.compact_prompt_file` and sent as an internal user message for `compact`. Requests a structured handoff summary without tool calls, retaining useful prior memory and the user's explicit habits, preferences, and rules, including later corrections. |
 
 Both roles help the user complete tasks and follow the user's language; their
