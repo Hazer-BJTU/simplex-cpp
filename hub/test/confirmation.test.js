@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { PROMPT_STATE, awaitWorkerIdentity } from '../src/worker/confirmation.ts';
+import { PROMPT_STATE, awaitWorkerIdentity, PendingConfirmation } from '../src/worker/confirmation.ts';
 import { IDENTITY } from '../src/state/registry.ts';
 import { connectWorker, upgradeStatus, until, workerEvent } from './helpers/worker.js';
 import { startTestHub } from './helpers/hub.js';
@@ -346,4 +346,26 @@ describe('awaitWorkerIdentity', () => {
         assert.equal(verdict.ok, false);
         assert.match(verdict.reason, /not verified/);
     });
+});
+
+it('bounds displayed approval arguments and extras without changing the pending authority', async () => {
+    const ctx = await startTestHub();
+    try {
+        const session = ctx.hub.registry.create('approval-preview');
+        const call = { id: 'original-call', name: 'run_command', type: 'serial_write',
+            security: 'require_confirm', arguments: { command: 'x'.repeat(300000) },
+            extras: { provider: 'e'.repeat(100000) }, unknown: 'z'.repeat(100000) };
+        const input = request({ session: session.id, call }).data;
+        const prompt = new PendingConfirmation({ request: input, session,
+            receivedAt: 'now', deadlineAt: 'later', log: ctx.hub.log });
+        const preview = prompt.describe();
+        assert.ok(Buffer.byteLength(JSON.stringify(preview)) < 16384);
+        assert.equal(preview.arguments_truncated, true);
+        assert.equal(preview.call.unknown, undefined);
+        assert.equal(preview.call.type, 'serial_write');
+        assert.equal(preview.call.security, 'require_confirm');
+        assert.equal(preview.call.arguments.command.length, 1024);
+        assert.equal(prompt.call, call);
+        assert.equal(prompt.call.arguments.command.length, 300000);
+    } finally { await ctx.hub.stop(); }
 });

@@ -1,3 +1,4 @@
+import { receiveAnswer } from './answers.ts';
 /**
  * @file the worker-facing event connection.
  *
@@ -26,7 +27,7 @@ import type { Duplex } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { presentedToken, safeEqual } from '../http/auth.ts';
 import { buildSignal } from '../protocol/messages.ts';
-import { parseEventEnvelope } from '../protocol/events.ts';
+import { parseEventEnvelope, measureEnvelope } from '../protocol/events.ts';
 import type { ParsedEnvelope, UnsignedInteger } from '../protocol/events.ts';
 import { isValidSessionId } from '../state/session-id.ts';
 import type { Session, SessionRegistry } from '../state/registry.ts';
@@ -210,6 +211,10 @@ export class WorkerConnection {
             const message_ = cause instanceof Error ? cause.message : String(cause);
             return { ok: false, error: `message is not serializable: ${message_}` };
         }
+        const bytes = Buffer.byteLength(text);
+        if (bytes > this.config.limits.maxMessageBytes || this.ws.bufferedAmount + bytes + 14 > MAX_BUFFERED_BYTES) {
+            return { ok: false, error: 'execution/control request exceeds the transport budget; not sent' };
+        }
         this.sent += 1;
         this.ws.send(text, (error?: Error) => {
             if (error) {
@@ -326,6 +331,8 @@ export class WorkerConnection {
         if (!forwarded.known) {
             this.log.debug(`session ${this.session.id}: unknown event "${forwarded.event}"`);
         }
+        measureEnvelope(forwarded);
+        receiveAnswer(forwarded, this);
         this.emit(forwarded);
     }
 

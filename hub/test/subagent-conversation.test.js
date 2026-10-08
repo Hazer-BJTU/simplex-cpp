@@ -287,3 +287,23 @@ it('rejects changed internal source correlation between history fragments', asyn
     assert.equal(view.value.turns.length, 0);
     assert.equal(view.value.incomplete, true);
 });
+
+it('preserves a large answer source through projection storage and restore rather than a four-part clip', async t => {
+    const ctx = await projection(t, 1024 * 1024);
+    const source = { worker_id: 'worker', turn: 0, step: 0, commit_sequence: '1' };
+    const parts = Array.from({ length: 8 }, (_, index) => part(`answer ${index}: ` + '中文🌍'.repeat(1000)));
+    await until(() => ctx.sent.length > 0);
+    const request = ctx.sent.at(-1);
+    ctx.view.event({ event: 'history', worker_id: 'worker', sequence: 1, data: {
+        request_id: request.request_id, revision: 1, start: 0, step: 0, next: 1, next_step: 0, total: 1,
+        turns: [{ index: 0, user: [part('task')], steps: [{ index: 0, content: parts,
+            answer_source: source, tool_calls: 0 }], omitted_steps: 0 }],
+    } }, ctx.connection);
+    assert.equal(ctx.view.value.turns[0].steps[0].content.length, 8);
+    assert.deepEqual(ctx.view.value.turns[0].steps[0].content, parts);
+    assert.deepEqual(ctx.view.value.turns[0].steps[0].answer_source, source);
+    const restored = new ConversationProjection(ctx.session, ctx.path, 1024 * 1024);
+    t.after(() => restored.stop());
+    assert.deepEqual(restored.value.turns[0].steps[0].answer_source, source);
+    assert.deepEqual(restored.value.turns[0].steps[0].content, parts);
+});

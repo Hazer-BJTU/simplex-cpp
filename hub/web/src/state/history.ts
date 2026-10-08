@@ -20,7 +20,7 @@ function part(value: unknown): value is ContentPart {
 }
 
 function parts(value: unknown): value is ContentPart[] {
-    return Array.isArray(value) && value.length <= 4 && value.every(part);
+    return Array.isArray(value) && value.length <= 128 && value.every(part);
 }
 
 /** Return null for malformed structure or a cursor inconsistent with its page. */

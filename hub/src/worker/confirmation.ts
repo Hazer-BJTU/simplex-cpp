@@ -1,3 +1,4 @@
+import { diagnosticPreview } from '../protocol/display.ts';
 /**
  * @file one-shot tool-confirmation exchanges.
  *
@@ -287,7 +288,13 @@ export class PendingConfirmation {
 
     /** Serializable description for the panel. */
     describe(): ConfirmationPrompt {
+        const args = this.call.arguments;
+        let preview = diagnosticPreview(args, 0, { nodes: 16 });
+        const originalBytes = Buffer.byteLength(JSON.stringify(args));
+        if (Buffer.byteLength(JSON.stringify(preview)) > 8192) preview = { display_omitted: true };
+        const shortened = JSON.stringify(preview) !== JSON.stringify(args);
         return {
+            ...(shortened ? { arguments_truncated: true, arguments_bytes: originalBytes } : {}),
             confirmation_id: this.id,
             session_id: this.session.id,
             worker_id: this.request.worker_id,
@@ -295,12 +302,20 @@ export class PendingConfirmation {
             state: this.state,
             verified: this.verified,
             identity_state: this.session.identity.state,
-            call: this.call,
+            call: {
+                id: typeof this.call.id === 'string' ? this.call.id : '',
+                name: typeof this.call.name === 'string' ? this.call.name : '',
+                ...(typeof this.call.type === 'string' ? { type: this.call.type.slice(0, 64) } : {}),
+                ...(typeof this.call.security === 'string' ? { security: this.call.security.slice(0, 64) } : {}),
+                arguments: preview,
+                ...(this.call.extras !== undefined
+                    ? { extras: diagnosticPreview(this.call.extras, 0, { nodes: 8 }) } : {}),
+            },
             received_at: this.receivedAt,
             deadline_at: this.deadlineAt,
             settled_at: this.settledAt,
             decision: this.decision,
-            reason: this.reason,
+            reason: this.reason === null ? null : truncateReason(this.reason),
         };
     }
 }
@@ -338,7 +353,7 @@ export function createWorkerConfirmationRoute({
 }: ConfirmationRouteOptions): ConfirmationRoute {
     const wss = new WebSocketServer({
         noServer: true,
-        maxPayload: config.limits.maxMessageBytes,
+        maxPayload: Math.min(config.limits.maxMessageBytes, 1024 * 1024),
         perMessageDeflate: false,
     });
     const open = new Set<WebSocket>();
@@ -437,7 +452,7 @@ export function createWorkerConfirmationRoute({
         }
         const fields = data as Record<string, unknown>;
         for (const field of ['worker_id', 'session_id', 'run_id', 'confirmation_id'] as const) {
-            if (typeof fields[field] !== 'string' || (fields[field] as string).length === 0) {
+            if (typeof fields[field] !== 'string' || ((fields[field] as string).length === 0 || Buffer.byteLength(fields[field] as string) > 128)) {
                 return { ok: false, error: `confirmation ${field} must be a nonempty string` };
             }
         }
@@ -449,6 +464,13 @@ export function createWorkerConfirmationRoute({
         }
         if (typeof fields.call !== 'object' || fields.call === null || Array.isArray(fields.call)) {
             return { ok: false, error: 'confirmation call must be an object' };
+        }
+        const call = fields.call as Record<string, unknown>;
+        for (const key of ['id', 'name']) {
+            if (call[key] !== undefined && (typeof call[key] !== 'string'
+                || Buffer.byteLength(call[key] as string) > 256)) {
+                return { ok: false, error: `confirmation call ${key} exceeds the identity budget` };
+            }
         }
         if (session.prompts.has(fields.confirmation_id as string)) {
             return { ok: false, error: `duplicate confirmation_id ${String(fields.confirmation_id)}` };
@@ -491,6 +513,11 @@ export function createWorkerConfirmationRoute({
                 return;
             }
             const request = parsed.request;
+            if (session.prompts.size >= 64) {
+                sendDecision(ws, request, 'denied', 'confirmation capacity exhausted', slog);
+                await completeClose(ws);
+                return;
+            }
             if (session.kind === 'headless' && session.closing) {
                 sendDecision(ws, request, 'denied', 'subagent lifecycle is stopping', slog);
                 await completeClose(ws);

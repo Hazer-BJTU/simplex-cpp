@@ -137,11 +137,16 @@ boost::asio::awaitable<Json> HubRemoteCallToolBase::request(
             {"arguments", query.arguments}
         }}
     };
+    const auto encoded_request = envelope.dump();
+    if (encoded_request.size() > 1024 * 1024) {
+        throw InvokeException(InvokeException::Stage::Invoke,
+            "remote request exceeds the 1 MiB transport budget", query);
+    }
     std::string wire;
     try {
         wire = co_await intercom::cancellable_exchange(
             co_await boost::asio::this_coro::executor,
-            std::move(target), envelope.dump(), timeout_, {},
+            std::move(target), encoded_request, timeout_, {},
             endpoint::get_global_ssl_context(), 256 * 1024);
     } catch (const boost::system::system_error& error) {
         throw InvokeException(InvokeException::Stage::Invoke,

@@ -32,6 +32,25 @@ import { parseCompactResult } from './compact.ts';
 
 /** Envelopes retained per session on the client. */
 export const TRANSCRIPT_CAP = 2000;
+export const TRANSCRIPT_BYTE_CAP = 8 * 1024 * 1024;
+const itemSizes = new WeakMap<object, number>();
+const arraySizes = new WeakMap<object, number>();
+/** Encoded display size, cached by immutable item/array identity. */
+export function displayBytes(items: readonly object[]): number {
+    const previous = arraySizes.get(items);
+    if (previous !== undefined) return previous;
+    let bytes = 0;
+    for (const item of items) {
+        let size = itemSizes.get(item);
+        if (size === undefined) {
+            size = new TextEncoder().encode(JSON.stringify(item)).length;
+            itemSizes.set(item, size);
+        }
+        bytes += size;
+    }
+    arraySizes.set(items, bytes);
+    return bytes;
+}
 
 /** Worker log lines retained for the log pane. */
 export const LOG_CAP = 500;
@@ -122,6 +141,8 @@ export interface ViewState {
     /** Display-only history received from the worker, in turn order. */
     readonly history: readonly HistoryTurn[];
     readonly historyLoading: boolean;
+    /** Older display history was evicted; canonical worker state is unchanged. */
+    readonly historyTruncated: boolean;
     readonly historySequence: number | null;
     readonly historyWorker: string | null;
     /** Highest `hub_sequence` seen *in `epoch`*; also the replay cursor. */
@@ -162,6 +183,7 @@ export function emptyView(id: SessionId): ViewState {
         items: [],
         history: [],
         historyLoading: false,
+        historyTruncated: false,
         historySequence: null,
         historyWorker: null,
         lastSeq: 0,
@@ -212,12 +234,22 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
         && typeof envelope.sequence === 'number'
         && view.historyWorker === envelope.worker_id
         && (view.historySequence === null || view.historySequence <= envelope.sequence)) {
-        view = { ...view, history: [], historyLoading: false,
+        view = { ...view, history: [], historyLoading: false, historyTruncated: false,
             historySequence: envelope.sequence };
     }
-    const latestEvents = name
+    // Keep only a bounded derived cache. Unknown event names remain in the
+    // transcript, but cannot grow a second unlimited per-name cache.
+    const latestEvents: Record<string, WorkerEnvelope> = name
         ? { ...view.latestEvents, [name]: envelope }
-        : view.latestEvents;
+        : { ...view.latestEvents };
+    if (name) {
+        const names = Object.keys(latestEvents);
+        while (names.length > 32 || displayBytes(Object.values(latestEvents)) > 4 * 1024 * 1024) {
+            const oldest = names.shift();
+            if (!oldest) break;
+            delete latestEvents[oldest];
+        }
+    }
 
     let lastRunId = view.lastRunId;
     if (typeof envelope.run_id === 'string' && envelope.run_id.length > 0) {
@@ -273,8 +305,14 @@ export function noteWorkerSequence(view: ViewState, envelope: WorkerEnvelope): V
 
 /** Trim a view's transcript, keeping the request index consistent. */
 export function trim(view: ViewState): ViewState {
-    if (view.items.length <= TRANSCRIPT_CAP) return view;
-    const overflow = view.items.length - TRANSCRIPT_CAP;
+    let bytes = displayBytes(view.items);
+    let overflow = Math.max(0, view.items.length - TRANSCRIPT_CAP);
+    for (let index = 0; index < overflow; ++index) bytes -= displayBytes([view.items[index]!]);
+    while (bytes > TRANSCRIPT_BYTE_CAP && overflow < view.items.length) {
+        bytes -= displayBytes([view.items[overflow]!]);
+        overflow += 1;
+    }
+    if (overflow === 0) return view;
     const removed = view.items.slice(0, overflow);
     const items = view.items.slice(overflow);
     // Copied only if something removed actually had an index entry, which is
@@ -303,7 +341,7 @@ export function append(view: ViewState, ...added: readonly TranscriptItem[]): Vi
 
 /** Prepend items to a view (used by the replay-gap note, which belongs first). */
 export function prepend(view: ViewState, item: TranscriptItem): ViewState {
-    return { ...view, items: [item, ...view.items] };
+    return trim({ ...view, items: [item, ...view.items] });
 }
 
 /** A note about the transcript itself, not about the conversation. */

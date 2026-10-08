@@ -1,17 +1,18 @@
+import { answerSource, type AnswerSource } from '../../shared/answers.ts';
 /** Bounded primary dialogue only. Raw events, reasoning, tools and extras never persist. */
 import { newRequestId, buildPayload } from '../protocol/messages.ts';
 import type { Session } from '../state/registry.ts';
 import type { ForwardedEnvelope, WorkerConnection } from '../worker/connection.ts';
 import { readPrivate, writePrivate } from './storage.ts';
 
-export interface DialoguePart { type: string; modality: string; raw: string }
+export interface DialoguePart { type: string; modality: string; raw: string; truncated?: boolean; bytes?: number }
 export interface DialogueTurn {
     index: number;
     request_id?: string;
     internal_input?: 'auto_compact_continue';
     source?: { worker_id: string; request_id: string; run_id: string };
     user: DialoguePart[];
-    steps: { index: number; content: DialoguePart[] }[];
+    steps: { index: number; content: DialoguePart[]; answer_source?: AnswerSource }[];
 }
 export interface Conversation {
     revision: number | null;
@@ -56,17 +57,19 @@ function prefix(raw: string, maxBytes: number): string {
 /** Keep visible content, with explicit truncation. Do not pass through extras. */
 export function dialogueParts(value: unknown, mark: () => void): DialoguePart[] {
     if (!Array.isArray(value)) return [];
-    if (value.length > 4) mark();
+    if (value.length > 128) mark();
     const parts: DialoguePart[] = [];
-    for (const raw of value.slice(0, 4)) {
+    for (const raw of value.slice(0, 128)) {
         const part = object(raw);
         if (!part || !['text', 'external_ref'].includes(String(part.type))
             || typeof part.modality !== 'string' || typeof part.raw !== 'string') { mark(); continue; }
         if (part.truncated === true || part.omitted === true) mark();
         const bytes = Buffer.from(part.raw);
-        if (bytes.length > 4096) mark();
-        const text = prefix(part.raw, 4096);
-        parts.push({ type: part.type as string, modality: part.modality.slice(0, 32), raw: text });
+        if (bytes.length > 256 * 1024) mark();
+        const text = prefix(part.raw, 256 * 1024);
+        parts.push({ type: part.type as string, modality: part.modality.slice(0, 32), raw: text,
+            ...(text !== part.raw || part.truncated === true ? { truncated: true,
+                bytes: typeof part.bytes === 'number' ? part.bytes : bytes.length } : {}) });
     }
     return parts;
 }
@@ -164,7 +167,9 @@ export class ConversationProjection {
         } else if (envelope.event === 'model_response' && request?.operation !== 'compact') {
             const turn = this.value.turns.at(-1);
             const content = dialogueParts(object(envelope.data)?.content, () => { this.value.truncated = true; });
-            if (turn) turn.steps.push({ index: (turn.steps.at(-1)?.index ?? -1) + 1, content });
+            if (turn) turn.steps.push({ index: (turn.steps.at(-1)?.index ?? -1) + 1, content,
+                ...(answerSource(object(envelope.data)?.answer_source)
+                    ? { answer_source: object(envelope.data)!.answer_source as AnswerSource } : {}) });
             else this.value.incomplete = true;
         }
         if (['input_committed', 'model_response', 'run_finished', 'compact_finished'].includes(envelope.event)) {
@@ -193,7 +198,8 @@ export class ConversationProjection {
                 const step = object(rawStep);
                 if (!step || !integer(step.index) || !Array.isArray(step.content)) return [];
                 if (step.omitted_parts) mark();
-                return [{ index: step.index, content: dialogueParts(step.content, mark) }];
+                return [{ index: step.index, content: dialogueParts(step.content, mark),
+                    ...(answerSource(step.answer_source) ? { answer_source: step.answer_source } : {}) }];
             }) };
     }
 
@@ -386,6 +392,8 @@ export class ConversationProjection {
             if (content && content.length > 1) { content.pop(); continue; }
             const part = content?.[0];
             if (part?.raw.length) {
+                part.bytes ??= Buffer.byteLength(part.raw);
+                part.truncated = true;
                 part.raw = prefix(part.raw, Math.floor(Buffer.byteLength(part.raw) / 2));
             } else { turns.shift(); }
         }

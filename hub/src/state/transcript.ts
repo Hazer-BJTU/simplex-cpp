@@ -16,6 +16,8 @@ import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isSubagentId } from './session-id.ts';
 import { sessionDir } from '../launch/config-render.ts';
+import { answerSource } from '../../shared/answers.ts';
+import { measureEnvelope } from '../protocol/events.ts';
 import { RingBuffer } from '../util/ring.ts';
 import { BoundedWriter } from '../util/bounded-writer.ts';
 import type { Logger } from '../log.ts';
@@ -91,6 +93,17 @@ export class SessionTranscript {
     append<T extends TranscriptEnvelope>(envelope: T): T {
         this.sequence += 1;
         envelope.hub_sequence = this.sequence;
+        // Include forwarding fields and the assigned cursor, not the original ingress text.
+        measureEnvelope(envelope);
+        if (this.buffer.byteLimit > 0 && (envelope.bytes ?? 0) > this.buffer.byteLimit) {
+            // Retain an honest omission with the same correlation/cursor. Never
+            // let a single display item poison replay under a smaller operator budget.
+            const original = envelope.data as Record<string, unknown> | null;
+            (envelope as TranscriptEnvelope).data = { display_omitted: true, original_bytes: envelope.bytes,
+                ...(answerSource(original?.answer_source) ? { answer_source: original!.answer_source } : {}) };
+            delete envelope.raw;
+            measureEnvelope(envelope);
+        }
         this.buffer.push(envelope);
         this.write(envelope);
         return envelope;

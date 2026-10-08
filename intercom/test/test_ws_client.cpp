@@ -506,3 +506,23 @@ BOOST_AUTO_TEST_CASE(stop_from_another_thread_joins_active_session) {
     BOOST_REQUIRE(finished == std::future_status::ready);
     BOOST_CHECK(!result.get());
 }
+
+BOOST_AUTO_TEST_CASE(outbound_byte_admission_is_bounded_and_released_on_shutdown)
+{
+    asio::io_context io;
+    auto options = fast_options();
+    options.write_byte_capacity = 8;
+    Client client(io.get_executor(), where(12345), options);
+    bool rejected = false;
+    asio::co_spawn(io, [&]() -> asio::awaitable<void> {
+        co_await client.send("12345678");
+        BOOST_TEST(client.queued_write_bytes() == 8u);
+        try { co_await client.send("x"); }
+        catch (const std::length_error&) { rejected = true; }
+        BOOST_TEST(client.queued_write_bytes() == 8u);
+        client.stop();
+    }, asio::detached);
+    io.run();
+    BOOST_TEST(rejected);
+    BOOST_TEST(client.queued_write_bytes() == 0u);
+}

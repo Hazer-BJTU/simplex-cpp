@@ -222,10 +222,16 @@ sections:
     server.get();
     if (mode == Mode::ProtocolFailure) {
         BOOST_CHECK_THROW(worker.get(), intercom::WsProtocolException);
-    } else if (mode == Mode::Overflow || mode == Mode::StorageFailure) {
+    } else if (mode == Mode::StorageFailure) {
         BOOST_CHECK_THROW(worker.get(), std::exception);
     } else {
         worker.get();
+        if (mode == Mode::Overflow) {
+            BOOST_TEST(completed == 1);
+            const auto state = load::load_state(config.state_directory / "state.json");
+            BOOST_TEST(state.turns.size() == 1u);
+            BOOST_TEST(state.turns[0].agent_loop_step.size() == 1u);
+        }
         if (mode == Mode::Normal) {
             BOOST_TEST(completed == 2);
             BOOST_TEST(rejected == 1);
@@ -297,7 +303,7 @@ sections:
             if (mode == Mode::Cancel) BOOST_TEST(cancelled);
             const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_CHECK(state.loop->status == model_io::LoopStatus::Cancelled);
-        } else {
+        } else if (mode != Mode::Overflow) {
             BOOST_TEST(rejected == 1);
             BOOST_TEST(model->calls.load() == 0);
         }
@@ -378,7 +384,7 @@ BOOST_AUTO_TEST_CASE(model_failure_reports_recoverable_stage_and_continues) {
     scenario(Mode::ModelFailure);
 }
 BOOST_AUTO_TEST_CASE(cross_thread_stop_drains_active_model) { scenario(Mode::Stop); }
-BOOST_AUTO_TEST_CASE(event_overflow_stops_worker) { scenario(Mode::Overflow); }
+BOOST_AUTO_TEST_CASE(small_event_queue_reserves_run_settlement) { scenario(Mode::Overflow); }
 BOOST_AUTO_TEST_CASE(required_snapshot_failure_stops_admission) { scenario(Mode::StorageFailure); }
 BOOST_AUTO_TEST_CASE(blocked_restore_never_executes_model) { scenario(Mode::Blocked); }
 BOOST_AUTO_TEST_CASE(history_query_is_answered_while_model_is_pending) { scenario(Mode::History); }

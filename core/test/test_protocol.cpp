@@ -4,6 +4,8 @@
 #include "core/protocol.hpp"
 #include "llm/compat/chat_completions/interpreter.hpp"
 #include <limits>
+#include <filesystem>
+#include "load/persistence.hpp"
 #include <set>
 
 using Json = nlohmann::json;
@@ -364,16 +366,13 @@ BOOST_AUTO_TEST_CASE(history_query_preserves_every_step_across_mixed_page_bounda
             for (const auto& step : steps) {
                 BOOST_TEST(step.at("index") == expected_step);
                 BOOST_TEST(seen.emplace(index, expected_step++).second);
-                BOOST_TEST(step.at("omitted_parts") == 1);
+                BOOST_TEST(step.at("content").size() + step.at("omitted_parts").get<std::size_t>() == 5u);
                 BOOST_TEST(step.at("reasoning").at("truncated") == true);
                 for (const auto& part : step.at("content")) {
-                    if (index == 2) {
-                        BOOST_TEST(part.at("raw") == multibyte.substr(0, 4095));
-                        BOOST_TEST(part.at("truncated") == true);
-                    } else {
-                        BOOST_TEST(part.at("raw") == std::string(4096, '\x02'));
-                        BOOST_TEST(!part.contains("truncated"));
-                    }
+                    const auto raw = part.at("raw").get<std::string>();
+                    const auto& original = source.agent_loop_step.at(expected_step - 1).model_response.content.front().raw;
+                    BOOST_TEST(raw == original.substr(0, raw.size()));
+                    BOOST_TEST(part.value("truncated", false) == (raw.size() < original.size()));
                 }
             }
             BOOST_TEST(turn.at("omitted_steps") == source.agent_loop_step.size() - expected_step);
@@ -450,4 +449,77 @@ BOOST_AUTO_TEST_CASE(history_hides_only_host_owned_internal_input_and_keeps_resp
     state.turns[0].user_input.content[0].extras = state.turns[0].user_input.extras;
     state.turns[0].user_input.extras.reset();
     BOOST_TEST(core::history_page(state, request, 1)["turns"][0]["user"][0]["raw"] == "PRIVATE RESUME");
+}
+
+BOOST_AUTO_TEST_CASE(answer_pages_preserve_large_multipart_state_and_disk_snapshot) {
+    model_io::AgentInputState state;
+    state.turns.resize(1);
+    auto& steps = state.turns.front().agent_loop_step;
+    steps.resize(1);
+    auto& step = steps.front();
+    step.commit_sequence = 7;
+    for (int index = 0; index < 8; ++index) {
+        std::string text = std::to_string(index) + ":";
+        for (int count = 0; count < 40000; ++count) text += "中文🌍\\\"\n";
+        step.model_response.content.push_back(display_text(text));
+    }
+    step.model_response.reasoning = display_text(std::string(3 * 1024 * 1024, 'r'));
+    step.model_response.extras = {{"native", std::string(1024 * 1024, 'n')}};
+    const Json original = state;
+    const auto live = core::project_response(state, 0, 0, "worker-one");
+    BOOST_TEST(live.dump().size() < core::display_event_max_bytes);
+    BOOST_TEST(!live.contains("extras"));
+    BOOST_TEST(live.at("reasoning").at("truncated") == true);
+    const auto source = live.at("answer_source");
+    Json query = {{"operation", "answer"}, {"request_id", "read"},
+        {"source", source}, {"part", 0}, {"offset", 0}};
+    std::vector<std::string> assembled(8);
+    for (std::size_t pages = 0;; ++pages) {
+        BOOST_REQUIRE(pages < 1000u);
+        const auto page = core::answer_page(state, query, "worker-one");
+        BOOST_TEST(page.dump().size() < core::history_page_max_bytes);
+        BOOST_TEST(page.at("offset") == query.at("offset"));
+        const auto part = query.at("part").get<std::size_t>();
+        assembled.at(part) += page.at("raw").get<std::string>();
+        if (page.at("done") == true) break;
+        query["offset"] = page.at("next_part") == query.at("part") ? page.at("next_offset") : Json(0);
+        query["part"] = page.at("next_part");
+    }
+    for (std::size_t index = 0; index < assembled.size(); ++index) {
+        BOOST_TEST(assembled[index] == step.model_response.content[index].raw);
+    }
+    BOOST_TEST(Json(state) == original);
+    const auto file = std::filesystem::temp_directory_path() / ("simplex-answer-" + core::new_identity() + ".json");
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code error; std::filesystem::remove(path, error); } } cleanup{file};
+    load::save_state(file, state);
+    const auto restored = load::load_state(file);
+    BOOST_TEST(Json(restored) == original);
+    BOOST_CHECK_THROW(core::answer_page(restored, query, "different-worker"), std::invalid_argument);
+    query["source"]["commit_sequence"] = "8";
+    BOOST_CHECK_THROW(core::answer_page(state, query, "worker-one"), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(answer_queries_reject_invalid_offsets_and_expired_commits) {
+    model_io::AgentInputState state;
+    state.turns.resize(1);
+    state.turns[0].agent_loop_step.resize(1);
+    auto& step = state.turns[0].agent_loop_step[0];
+    step.commit_sequence = 1;
+    step.model_response.content = {display_text("🌍hello")};
+    Json query = {{"operation", "answer"}, {"request_id", "read"},
+        {"source", core::answer_source(step, 0, 0, "worker")},
+        {"part", 0}, {"offset", 1}};
+    BOOST_CHECK_THROW(core::answer_page(state, query, "worker"), std::invalid_argument);
+    query["offset"] = 0;
+    query["options"] = Json::object();
+    BOOST_CHECK_THROW(core::answer_page(state, query, "worker"), std::invalid_argument);
+    query.erase("options");
+    const auto initial = core::answer_page(state, query, "worker");
+    BOOST_TEST(initial.at("raw") == "🌍hello");
+    step.model_response.content[0].raw = "🌍other"; // Equal byte length; offsets alone cannot detect this edit.
+    BOOST_CHECK_THROW(core::answer_page(state, query, "worker"), std::invalid_argument);
+    query["source"] = core::answer_source(step, 0, 0, "worker");
+    BOOST_TEST(core::answer_page(state, query, "worker").at("raw") == "🌍other");
+    state.turns.clear();
+    BOOST_CHECK_THROW(core::answer_page(state, query, "worker"), std::invalid_argument);
 }

@@ -304,7 +304,7 @@ void request_outcomes(Presentation& result, const Json& requests)
 
 void content(Presentation& result, const Json& parts, const std::string& owner)
 {
-    require(parts.is_array() && parts.size() <= 4, "invalid visible content");
+    require(parts.is_array() && parts.size() <= 128, "invalid visible content");
     for (const auto& part : parts) {
         require(part.is_object()
                 && one_of(part.at("type"), {"text", "external_ref"})
@@ -373,6 +373,7 @@ void conversation(Presentation& result, const Json& page, const Json& arguments)
             const auto step_index = step.at("index").get<std::uint64_t>();
             require(!previous_step || step_index > *previous_step, "unordered conversation steps");
             previous_step = step_index;
+            if (step.contains("answer_source")) result.field("answer_source", step.at("answer_source"));
             content(result, step.at("content"), "assistant step " + std::to_string(step_index));
         }
     }
@@ -381,6 +382,34 @@ void conversation(Presentation& result, const Json& page, const Json& arguments)
 model_io::Content format_result(const std::string& route, const Json& value, const Json& arguments)
 {
     Presentation result;
+    if (arguments.contains("answer")) {
+        require(route == "subagent/receive" && value.at("subagent_id") == arguments.at("subagent_id"), "mismatched answer target");
+        const auto& page = value.at("answer");
+        const auto& cursor = arguments.at("answer");
+        require(page.at("source") == cursor.at("source") && page.at("part") == cursor.at("part")
+            && page.at("offset") == cursor.at("offset") && page.at("raw").is_string()
+            && page.at("raw").get_ref<const std::string&>().size() <= 32768
+            && index(page.at("next_offset")) && index(page.at("next_part"))
+            && index(page.at("bytes")) && index(page.at("total_parts")) && page.at("done").is_boolean(),
+            "invalid answer page");
+        status(result, value);
+        const auto& text = page.at("raw").get_ref<const std::string&>();
+        const auto offset = page.at("offset").get<std::uint64_t>();
+        const auto next = page.at("next_offset").get<std::uint64_t>();
+        require(next == offset + text.size() && next <= page.at("bytes").get<std::uint64_t>(), "invalid answer byte cursor");
+        const auto part = page.at("part").get<std::uint64_t>();
+        const auto total = page.at("total_parts").get<std::uint64_t>();
+        const bool finished = next == page.at("bytes").get<std::uint64_t>();
+        require(part < total && page.at("next_part") == part + (finished ? 1 : 0)
+            && page.at("done") == (finished && part + 1 == total)
+            && (finished || !text.empty()), "invalid answer completion cursor");
+        for (const char* key : {"source", "part", "offset", "next_offset", "next_part", "bytes", "total_parts", "done"}) {
+            result.field(key, page.at(key));
+        }
+        result.field("subagent_id", value.at("subagent_id"));
+        result.output.block("answer page", text);
+        return result.render();
+    }
     if (route == "subagent/receive" && arguments.contains("subagent_id")) {
         plan_bodies(result, value.at("conversation"), value.at("requests"));
     }
@@ -440,7 +469,7 @@ std::string rejection_hint(const Json& error)
     const bool known = one_of(code, {"unauthorized", "invalid_arguments", "policy_forbidden",
         "unsupported_launch", "unsupported_operation", "lifecycle_closed", "disconnected",
         "limit_exceeded", "request_conflict", "recovery_required", "delivery_unknown",
-        "storage_error", "result_too_large", "not_implemented", "invalid_parent"});
+        "storage_error", "answer_unavailable", "result_too_large", "not_implemented", "invalid_parent"});
     const auto name = known ? code.get<std::string>() : std::string("remote_rejection");
     std::string hint = "inspect subagent_receive before repeating a mutation";
     if (name == "not_implemented") {
@@ -563,12 +592,12 @@ SubagentReceiveTool::SubagentReceiveTool(endpoint::ResolvedEndpoint endpoint,
 void SubagentReceiveTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     try {
-        exact(query.arguments, {"subagent_id", "cursor", "limit"});
+        exact(query.arguments, {"subagent_id", "cursor", "limit", "answer"});
         const auto& arguments = query.arguments;
         if (arguments.contains("subagent_id")) {
             require(identifier(arguments.at("subagent_id")), "subagent_id must be a valid session ID");
         } else {
-            require(!arguments.contains("cursor") && !arguments.contains("limit"),
+            require(!arguments.contains("cursor") && !arguments.contains("limit") && !arguments.contains("answer"),
                 "pagination requires subagent_id");
         }
         require(!arguments.contains("cursor") || index(arguments.at("cursor")),
@@ -577,6 +606,29 @@ void SubagentReceiveTool::ensure_arguments(model_io::InvokeQuery& query) const
                 && arguments.at("limit").get<std::uint64_t>() >= 1
                 && arguments.at("limit").get<std::uint64_t>() <= 10),
             "limit must be an integer in 1..10");
+        if (arguments.contains("answer")) {
+            require(!arguments.contains("cursor") && !arguments.contains("limit"), "answer cannot carry turn pagination");
+            const auto& answer = arguments.at("answer");
+            exact(answer, {"source", "part", "offset"});
+            require(index(answer.at("part")) && index(answer.at("offset")), "invalid answer cursor");
+            const auto& source = answer.at("source");
+            exact(source, {"worker_id", "turn", "step", "commit_sequence", "fingerprint"});
+            require(identifier(source.at("worker_id")) && index(source.at("turn")) && index(source.at("step"))
+                && source.at("commit_sequence").is_string()
+                && !source.at("commit_sequence").get_ref<const std::string&>().empty()
+                && source.at("commit_sequence").get_ref<const std::string&>().size() <= 20,
+                "invalid answer source");
+            if (source.contains("fingerprint")) {
+                require(source.at("fingerprint").is_string(), "invalid answer fingerprint");
+                const auto& digest = source.at("fingerprint").get_ref<const std::string&>();
+                require(digest.size() == 64 && std::all_of(digest.begin(), digest.end(), [](char character) {
+                    return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
+                }), "invalid answer fingerprint");
+            }
+            const auto& sequence = source.at("commit_sequence").get_ref<const std::string&>();
+            require(sequence.front() != '0' && std::all_of(sequence.begin(), sequence.end(),
+                [](unsigned char digit) { return digit >= '0' && digit <= '9'; }), "invalid answer commit sequence");
+        }
         argument_budget(arguments);
     } catch (const std::exception& error) {
         bad_argument(error.what());

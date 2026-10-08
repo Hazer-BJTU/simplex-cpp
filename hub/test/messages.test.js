@@ -235,3 +235,15 @@ it('builds compact without content and preserves run options', () => {
     assert.throws(() => buildPayload({ operation: 'compact', requestId: 'compact-1',
         content: [{ type: 'text', raw: 'not a message' }] }), /must not carry content/);
 });
+
+it('builds a read-only answer query and rejects executable fields or invalid cursors', () => {
+    const source = { worker_id: 'worker', turn: 2, step: 1, commit_sequence: '123' };
+    const input = { operation: 'answer', requestId: 'read', source, part: 0, offset: 32768 };
+    assert.deepEqual(buildPayload(input).data, {
+        operation: 'answer', request_id: 'read', source, part: 0, offset: 32768,
+    });
+    for (const extra of [{ content: [] }, { options: {} }, { start: 0 }, { offset: -1 },
+        { source: { ...source, commit_sequence: '0' } }]) {
+        assert.throws(() => buildPayload({ ...input, ...extra }), ProtocolError);
+    }
+});

@@ -85,9 +85,14 @@ boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
         {"worker_id", worker_id}, {"session_id", session_id},
         {"run_id", run_id}, {"confirmation_id", id},
         {"call", event.query}}}};
+    const auto encoded_request = request.dump();
+    if (encoded_request.size() > 1024 * 1024) {
+        event.reason = "confirmation request exceeds the 1 MiB transport budget; invocation denied";
+        co_return event;
+    }
     try {
         const auto wire = co_await intercom::cancellable_exchange(
-            executor, *endpoint, request.dump(), timeout, scope->token());
+            executor, *endpoint, encoded_request, timeout, scope->token());
         const auto reply = nlohmann::json::parse(wire);
         const auto& data = reply.at("data");
         if (reply.at("type") != "confirmation_response"

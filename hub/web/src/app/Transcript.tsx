@@ -41,6 +41,8 @@ import { parseCompactResult } from '../state/compact.ts';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
 import { Glyph, type GlyphName } from '../ui/icons.tsx';
 import { Tooltip } from '../ui/overlays.tsx';
+import { Reasoning } from './Reasoning.tsx';
+import { AnswerAccess } from './AnswerPages.tsx';
 import { Markdown } from './Markdown.tsx';
 import { ToolCard } from './ToolCard.tsx';
 import { contentText, formatDuration } from './content.ts';
@@ -269,16 +271,14 @@ const HistoryRound = memo(function HistoryRound({ turn, open, onToggle }: {
                     return (
                         <div key={step.index} className="min-w-0 space-y-1">
                             {step.reasoning?.raw && (
-                                <details className="min-w-0 rounded border border-line bg-sunken px-2 py-1">
-                                    <summary className="cursor-pointer text-xs text-ink-muted">reasoning</summary>
-                                    <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-xs">
-                                        {step.reasoning.raw}
-                                    </p>
-                                </details>
+                                <Reasoning text={step.reasoning.raw} truncated={step.reasoning.truncated === true}
+                                    {...(step.reasoning.bytes === undefined ? {} : { bytes: step.reasoning.bytes })} />
                             )}
                             {answer && <div className="min-w-0 break-words [overflow-wrap:anywhere] text-sm">
                                 <Markdown>{answer}</Markdown>
                             </div>}
+                            <AnswerAccess source={step.answer_source} shortened={(step.omitted_parts ?? 0) > 0
+                                || step.content.some(part => part.truncated === true)} />
                             {(step.omitted_parts ?? 0) > 0 && <p className="text-xs text-ink-muted">
                                 {step.omitted_parts} response parts omitted
                             </p>}
@@ -307,6 +307,8 @@ function AssistantMessage({ block, calls }: {
     block: AssistantBlock;
     calls: ReadonlyMap<string, ToolCall>;
 }) {
+    const reasoning = block.historyStep?.reasoning
+        ?? (block.envelope.data as { reasoning?: ContentPart })?.reasoning;
     const proposed = block.callIds
         .map((key) => calls.get(key))
         .filter((call): call is ToolCall => call !== undefined);
@@ -319,19 +321,20 @@ function AssistantMessage({ block, calls }: {
             </p>
 
             {block.reasoning && (
-                <details className="rounded border border-line bg-sunken px-2 py-1">
-                    <summary className="cursor-pointer select-none text-xs text-ink-muted">
-                        reasoning
-                    </summary>
-                    <div className="mt-1 text-sm text-ink-muted">
-                        <Markdown>{block.reasoning}</Markdown>
-                    </div>
-                </details>
+                <Reasoning text={reasoning?.raw ?? block.reasoning}
+                    truncated={reasoning?.truncated === true}
+                    {...(reasoning?.bytes === undefined ? {} : { bytes: reasoning.bytes })} />
             )}
 
             {block.text
                 ? <Markdown>{block.text}</Markdown>
                 : <p className="text-sm italic text-ink-faint">(no text in this response)</p>}
+
+            <AnswerAccess source={block.historyStep?.answer_source
+                ?? (block.envelope.data as { answer_source?: unknown })?.answer_source}
+                shortened={Boolean(block.historyStep?.content.some(part => part.truncated === true))
+                    || Boolean((block.envelope.data as { content?: ContentPart[] })?.content?.some(part => part.truncated === true))
+                    || (block.historyStep?.omitted_parts ?? Number((block.envelope.data as { omitted_parts?: number })?.omitted_parts ?? 0)) > 0} />
 
             {block.historyStep && block.historyStep.tool_calls > 0 && (
                 <p className="text-xs text-ink-muted">
@@ -543,7 +546,7 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
             identityState: session?.identity.state, exists: !!view,
             items: view?.items, history: view?.history, confirmations: view?.confirmations,
             requests: view?.requests, droppedItems: view?.droppedItems,
-            runActive: view?.runActive, historyLoading: view?.historyLoading,
+            runActive: view?.runActive, historyLoading: view?.historyLoading, historyTruncated: view?.historyTruncated,
             historySequence: view?.historySequence, historyWorker: view?.historyWorker,
             compact: view?.latestEvents.compact_finished,
         };
@@ -738,6 +741,11 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
                         </p>
                     )}
 
+                    {view?.historyTruncated && (
+                        <p className="text-xs text-ink-faint">
+                            Older history was evicted from this panel to keep it responsive. Worker state is unchanged.
+                        </p>
+                    )}
                     {view?.historyLoading && (
                         <p className="text-xs text-ink-muted">loading conversation history…</p>
                     )}

@@ -1,3 +1,4 @@
+import { displayBytes } from './view.ts';
 import type { SessionPlan } from '../../../shared/protocol.ts';
 /**
  * @file the panel's store.
@@ -393,6 +394,20 @@ function withView(
     if (next === current && state.views.has(sessionId)) return {};
     const views = new Map(state.views);
     views.set(sessionId, next);
+    // A tab may visit many sessions. Evict display copies from inactive views
+    // before their aggregate budget grows indefinitely; approvals and status
+    // remain available, and selecting the session reloads history/replay.
+    let bytes = [...views.values()].reduce((sum, view) => sum
+        + displayBytes(view.items) + displayBytes(view.history) + displayBytes(Object.values(view.latestEvents)), 0);
+    for (const [id, view] of views) {
+        if (bytes <= 40 * 1024 * 1024) break;
+        if (id === state.selected || id === sessionId) continue;
+        const size = displayBytes(view.items) + displayBytes(view.history) + displayBytes(Object.values(view.latestEvents));
+        if (size === 0) continue;
+        bytes -= size;
+        views.set(id, { ...view, items: [], history: [], historyTruncated: view.history.length > 0 || view.historyTruncated, latestEvents: {},
+            droppedItems: view.droppedItems + view.items.length });
+    }
     return { views };
 }
 
@@ -484,7 +499,7 @@ function eventItem(view: ViewState, envelope: WorkerEnvelope): TranscriptItem {
 
 /** Bookkeeping shared by the replay and live paths. */
 function foldEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
-    if (envelope.event === 'history') {
+    if (['history', 'answer', 'answer_error'].includes(envelope.event)) {
         // History is a transient query reply, never an event card or a cached
         // latest event containing megabytes of display data.
         const worker = envelope.worker_id;
@@ -920,7 +935,7 @@ export function createPanelStore() {
 
         invalidateHistory(sessionId) {
             set(withView(get(), sessionId, (view) => ({ ...view,
-                history: [], historyLoading: false, historySequence: null, historyWorker: null,
+                history: [], historyTruncated: false, historyLoading: false, historySequence: null, historyWorker: null,
             })));
         },
 
@@ -935,13 +950,14 @@ export function createPanelStore() {
                 const fresh = page.start === 0 && page.step === 0;
                 if (!fresh && view.historyWorker !== envelope.worker_id) return view;
                 let history;
+                let historyTruncated = fresh ? false : view.historyTruncated;
                 if (fresh) {
                     history = page.turns;
-                } else if (page.start === view.history.length && page.step === 0) {
+                } else if (page.start === (view.history.at(-1)?.index ?? -1) + 1 && page.step === 0) {
                     history = [...view.history, ...page.turns];
-                } else if (page.start === view.history.length - 1
-                    && page.step === view.history[page.start]?.steps.length) {
-                    const previous = view.history[page.start];
+                } else if (page.start === view.history.at(-1)?.index
+                    && page.step === (view.history.at(-1)?.steps.at(-1)?.index ?? -1) + 1) {
+                    const previous = view.history.at(-1);
                     if (!previous || page.turns.length === 0) return view;
                     const incoming = page.turns[0]!;
                     if (previous.internal_input !== incoming.internal_input
@@ -956,9 +972,25 @@ export function createPanelStore() {
                 } else {
                     return view;
                 }
+                while (displayBytes(history) > 8 * 1024 * 1024 && history.length > 1) {
+                    history = history.slice(1);
+                    historyTruncated = true;
+                }
+                if (displayBytes(history) > 8 * 1024 * 1024 && history.length === 1) {
+                    // A single turn can contain many exchanges. Keep its newest
+                    // answer sources and absolute step indices; further pages
+                    // validate against these indices rather than array length.
+                    const turn = history[0]!;
+                    let steps = turn.steps;
+                    while (displayBytes(steps) > 7 * 1024 * 1024 && steps.length > 1) {
+                        steps = steps.slice(1);
+                        historyTruncated = true;
+                    }
+                    history = [{ ...turn, steps }];
+                }
                 accepted = true;
                 const done = page.next === page.total && page.next_step === 0;
-                return { ...view, history, historyLoading: !done,
+                return { ...view, history, historyTruncated, historyLoading: !done,
                     historyWorker: envelope.worker_id,
                     historySequence: typeof envelope.sequence === 'number'
                         ? envelope.sequence : view.historySequence };

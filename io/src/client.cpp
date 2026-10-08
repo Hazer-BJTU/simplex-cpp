@@ -141,7 +141,8 @@ void Client::on_text(std::string message) {
     const std::string type = envelope.at("type").get<std::string>();
     nlohmann::json data = std::move(envelope["data"]);
     if (type == "payload" && data.is_object()
-        && data.value("operation", nlohmann::json()) == "history") {
+        && (data.value("operation", nlohmann::json()) == "history"
+            || data.value("operation", nlohmann::json()) == "answer")) {
         // Queries must remain responsive while the single payload consumer is
         // suspended in a model call. Retain their envelope kind so the signal
         // worker can publish a distinct event without invoking signal handlers.

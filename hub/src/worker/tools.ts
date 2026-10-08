@@ -36,7 +36,7 @@ export function createWorkerToolRoute({ registry, config, log, plans, onPlanChan
 } {
     const wss = new WebSocketServer({
         noServer: true,
-        maxPayload: config.limits.maxMessageBytes,
+        maxPayload: Math.min(config.limits.maxMessageBytes, 1024 * 1024),
         perMessageDeflate: false,
     });
     const open = new Set<WebSocket>();

@@ -71,20 +71,40 @@ inline constexpr std::size_t history_page_max_bytes =
  * reasoning, JSON escaping, separators and all page metadata, including revision.
  * The remaining envelope allowance keeps worker history events within
  * history_event_max_bytes without changing the start/step cursor contract.
- * The Hub also preserves a raw copy of the worker event; its forwarded panel
- * frame has a separate 512 KiB bound for this built-in projection.
- *
- * Admit complete turns or steps only. A page with remaining history always
- * advances its cursor; user content is repeated when a turn spans pages. The
- * existing four-part and per-part byte limits ensure a turn plus its first
- * remaining step fits an empty page, even with maximal JSON escaping. If future
- * projection changes invalidate that guarantee, throw length_error rather than
- * emit an oversized page, silently discard content or return a stalled cursor.
+ * Answer previews have a separate encoded aggregate budget and expose a
+ * committed source for exact answer_page() reads. Reasoning stays a short
+ * explicit preview. Whole turns/steps preserve the existing history cursor.
  * It does not copy the entire AgentInputState or mutate the source state.
  */
 nlohmann::json history_page(const model_io::AgentInputState& state,
                             const HistoryRequest& request,
-                            std::uint64_t revision = 0);
+                            std::uint64_t revision = 0,
+                            const std::string& worker_id = "");
+/** Maximum encoded event size before the transport queue, including its envelope. */
+inline constexpr std::size_t display_event_max_bytes = 1024 * 1024;
+/**
+ * Bounded display copies only. These functions never alter model state, tool
+ * execution arguments or provider replay metadata. Answers receive a larger
+ * aggregate budget than reasoning; omitted native extras are not forwarded.
+ */
+nlohmann::json display_value(const nlohmann::json& value);
+/** Bounded, answer-first JSON; live and history use separate encoded budgets. */
+nlohmann::json response_preview(const model_io::MessageItem& response,
+    std::size_t step, std::size_t answer_budget);
+/** Canonical content fingerprint also invalidates sources after writable-hook edits. */
+nlohmann::json answer_source(const model_io::AgentLoopStep& response,
+    std::size_t turn, std::size_t step, const std::string& worker_id);
+nlohmann::json project_response(const model_io::AgentInputState& state,
+    std::size_t turn, std::size_t step, const std::string& worker_id);
+/**
+ * Read one UTF-8 answer segment from a committed response. The caller supplies
+ * worker_id, turn, step, commit_sequence, fingerprint, part and byte offset. A worker change,
+ * compaction or invalid cursor fails explicitly. There is no canonical answer
+ * size limit; each reply contains at most 32 KiB of original bytes. No reasoning,
+ * extras, filesystem path or executable operation is exposed by this query.
+ */
+nlohmann::json answer_page(const model_io::AgentInputState& state,
+    const nlohmann::json& request, const std::string& worker_id);
 /** Generate a process-independent correlation identity; never reuse tool IDs. */
 std::string new_identity();
 } // namespace core

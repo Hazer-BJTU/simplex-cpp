@@ -17,7 +17,7 @@ describe('event vocabulary', () => {
     it('covers every event core documents', () => {
         // Mirrors the "Worker events" table in docs/core/worker-protocol.md.
         const documented = [
-            'ready', 'status', 'options', 'history', 'history_error',
+            'ready', 'status', 'options', 'history', 'history_error', 'answer', 'answer_error',
             'input_admitted', 'input_rejected',
             'run_started', 'input_committed', 'model_response', 'tool_calls',
             'tool_results', 'persisted', 'compact_finished', 'export_error', 'error', 'run_finished',
@@ -37,7 +37,7 @@ describe('event vocabulary', () => {
 });
 
 describe('parseEventEnvelope', () => {
-    it('accepts a complete envelope and preserves the raw document', () => {
+    it('accepts an envelope and preserves bounded raw metadata without duplicating data', () => {
         const raw = workerEvent({
             event: 'model_response',
             requestId: 'req-1',
@@ -54,7 +54,10 @@ describe('parseEventEnvelope', () => {
         assert.equal(parsed.envelope.run_id, 'run-1');
         assert.equal(parsed.envelope.sequence, 1);
         assert.equal(parsed.envelope.known, true);
-        assert.deepEqual(parsed.envelope.raw, raw);
+        const { data, ...metadata } = raw;
+        assert.deepEqual(parsed.envelope.raw, metadata);
+        assert.ok(!Object.hasOwn(parsed.envelope.raw, 'data'));
+        assert.equal(parsed.envelope.bytes, Buffer.byteLength(JSON.stringify(parsed.envelope)));
         assert.deepEqual(parsed.envelope.data.content, [{ type: 'text', raw: 'hi' }]);
     });
 
@@ -166,4 +169,14 @@ describe('readUnsignedInteger', () => {
         assert.equal(readUnsignedInteger('abc', '{}', 'sequence').value, null);
         assert.equal(readUnsignedInteger(undefined, '{"sequence":"x"}', 'sequence').value, null);
     });
+});
+
+it('bounds protocol identities and rejects out-of-range sequence strings without retaining their bytes', () => {
+    assert.equal(readUnsignedInteger('9'.repeat(100000), '{}', 'sequence').value, null);
+    assert.equal(readUnsignedInteger('18446744073709551616', '{}', 'sequence').value, null);
+    for (const key of ['event', 'worker_id', 'request_id', 'run_id']) {
+        const message = workerEvent({ session: 'demo' });
+        message[key] = '中文'.repeat(64);
+        assert.equal(parseEventEnvelope(JSON.stringify(message)).ok, false);
+    }
 });

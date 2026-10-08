@@ -166,7 +166,8 @@ std::string clipped(const std::string& raw, std::size_t maximum) {
     return raw.substr(0, end);
 }
 
-nlohmann::json display_content(const model_io::Content& part) {
+nlohmann::json display_content(const model_io::Content& part,
+    std::size_t maximum = 4096) {
     // The part's encoding and its media category are both projected: the panel
     // reads `type` for how `raw` is encoded and `modality` for what it is.
     nlohmann::json value = {{"type", part.type}, {"modality", part.modality}};
@@ -177,10 +178,12 @@ nlohmann::json display_content(const model_io::Content& part) {
     } else {
         // The display budget follows the category: a text part may use twice
         // the room of an attachment reference.
-        const auto maximum =
-            part.modality == model_io::Modality::Text ? 4096u : 2048u;
+        if (part.modality != model_io::Modality::Text) maximum = std::min<std::size_t>(maximum, 2048);
         value["raw"] = clipped(part.raw, maximum);
-        if (part.raw.size() > maximum) value["truncated"] = true;
+        if (part.raw.size() > maximum) {
+            value["truncated"] = true;
+            value["bytes"] = part.raw.size();
+        }
     }
     return value;
 }
@@ -192,22 +195,49 @@ nlohmann::json display_parts(const std::vector<model_io::Content>& parts) {
     return result;
 }
 
-/** Project one indivisible display step; tool payloads never enter the page. */
+/** Answer preview budget counts escaped JSON across all parts, not each field. */
 nlohmann::json display_step(const model_io::MessageItem& response,
-                            std::size_t index) {
-    nlohmann::json step = {{"index", index},
-        {"content", display_parts(response.content)},
-        {"tool_calls", response.invokes ? response.invokes->size() : 0},
-        {"omitted_parts", response.content.size()
-            - std::min<std::size_t>(response.content.size(), 4)}};
-    if (response.reasoning) step["reasoning"] = display_content(*response.reasoning);
+                            std::size_t index, std::size_t answer_budget = 96 * 1024) {
+    auto parts = nlohmann::json::array();
+    std::size_t remaining = answer_budget;
+    for (const auto& part : response.content) {
+        if (parts.size() >= 128 || remaining < 1024) break;
+        // Probe only a bounded prefix. Measure actual JSON escaping rather
+        // than charging every character the worst-case six bytes.
+        auto maximum = std::min<std::size_t>(part.raw.size(), remaining - 256);
+        auto projected = display_content(part, maximum);
+        if (projected.dump().size() > remaining) {
+            std::size_t low = 0;
+            std::size_t high = maximum;
+            while (low < high) {
+                const auto middle = low + (high - low + 1) / 2;
+                if (display_content(part, middle).dump().size() <= remaining) low = middle;
+                else high = middle - 1;
+            }
+            projected = display_content(part, low);
+        }
+        const auto bytes = projected.dump().size();
+        if (bytes > remaining) break;
+        remaining -= bytes;
+        parts.push_back(std::move(projected));
+    }
+    nlohmann::json step = {{"index", index}, {"content", std::move(parts)},
+        {"tool_calls", response.invokes ? response.invokes->size() : 0}};
+    step["omitted_parts"] = response.content.size() - step["content"].size();
+    if (response.reasoning) step["reasoning"] = display_content(*response.reasoning, 4096);
     return step;
 }
 } // namespace
 
+nlohmann::json response_preview(const model_io::MessageItem& response,
+    std::size_t step, std::size_t answer_budget) {
+    return display_step(response, step, answer_budget);
+}
+
 nlohmann::json history_page(const model_io::AgentInputState& state,
                             const HistoryRequest& request,
-                            std::uint64_t revision) {
+                            std::uint64_t revision,
+                            const std::string& worker_id) {
     if (request.start >= state.turns.size() && request.step != 0)
         throw std::invalid_argument("history step is outside the available turns");
     const auto start = std::min(request.start, state.turns.size());
@@ -262,7 +292,11 @@ nlohmann::json history_page(const model_io::AgentInputState& state,
             auto step = display_step(
                 turn.agent_loop_step[step_index].model_response, step_index);
             const auto commit = turn.agent_loop_step[step_index].commit_sequence;
-            if (commit != 0) step["commit_sequence"] = std::to_string(commit);
+            if (commit != 0) {
+                step["commit_sequence"] = std::to_string(commit);
+                if (!worker_id.empty()) step["answer_source"] = answer_source(
+                    turn.agent_loop_step[step_index], index, step_index, worker_id);
+            }
             const auto& metadata = turn.agent_loop_step[step_index].extras;
             if (metadata && metadata->is_object()
                 && metadata->contains("simplex.execution")) {

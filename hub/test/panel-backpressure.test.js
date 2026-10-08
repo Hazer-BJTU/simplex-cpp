@@ -132,7 +132,7 @@ it('accounts for versioned UTF-8 JSON and all three frame-header sizes before se
     }
 });
 
-it('rejects an oversized escaped JSON frame even with no queued output', async (t) => {
+it('reports an oversized indivisible display without disconnecting or poisoning replay', async (t) => {
     const ctx = await setup(t);
     const panel = await ctx.panel();
     assert.equal(panel.server.bufferedAmount, 0);
@@ -140,11 +140,11 @@ it('rejects an oversized escaped JSON frame even with no queued output', async (
     // Each input byte becomes six JSON bytes; raw string length is not a wire budget.
     const line = '\u0001'.repeat(Math.ceil(PANEL_MAX_BUFFERED_BYTES / 6));
     ctx.hub.panel.broadcast({ type: 'logs', session: 'oversized', lines: [line] });
-    assert.equal(sends.mock.callCount(), 0);
-    assert.equal(ctx.hub.panel.clientCount(), 0);
-    assert.equal((await panel.peer.waitForClose()).code, 1006);
-
-    const next = await ctx.panel();
-    next.peer.send({ v: PANEL_VERSION, type: 'ping' });
-    await next.peer.waitFor((message) => message.type === 'pong');
+    assert.equal(sends.mock.callCount(), 1);
+    assert.equal(ctx.hub.panel.clientCount(), 1);
+    const notice = await panel.peer.waitFor(message => message.type === 'error');
+    assert.equal(notice.error, 'display_snapshot_too_large');
+    assert.ok(Buffer.byteLength(JSON.stringify(notice)) < 1024);
+    panel.peer.send({ v: PANEL_VERSION, type: 'ping' });
+    await panel.peer.waitFor((message) => message.type === 'pong');
 });

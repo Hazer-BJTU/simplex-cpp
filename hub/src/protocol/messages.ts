@@ -6,6 +6,7 @@
  * round trip. The worker remains authoritative — an `input_rejected` event is
  * still surfaced as-is, and this module never rewrites a settled request.
  */
+import { answerQuery, type AnswerSource } from '../../shared/answers.ts';
 import { randomUUID } from 'node:crypto';
 
 /** Input content encodings accepted by the worker. */
@@ -28,7 +29,7 @@ export const CONFIRMATION_MODES = ['ask', 'approve', 'deny'] as const;
 export const SIGNAL_OPERATIONS = ['status', 'options', 'cancel', 'shutdown'] as const;
 
 /** Input operations accepted by the worker. */
-export const INPUT_OPERATIONS = ['message', 'continue', 'compact', 'history'] as const;
+export const INPUT_OPERATIONS = ['message', 'continue', 'compact', 'history', 'answer'] as const;
 
 /** One accepted content encoding. */
 export type ContentType = (typeof CONTENT_TYPES)[number];
@@ -62,6 +63,9 @@ export interface NormalizedOptions {
 
 /** The `data` of a payload envelope. */
 export interface PayloadData {
+    source?: AnswerSource;
+    part?: number;
+    offset?: number;
     operation: InputOperation;
     request_id: string;
     content?: NormalizedContentPart[];
@@ -195,6 +199,9 @@ export function normalizeOptions(options: unknown): NormalizedOptions | undefine
 
 /** What `buildPayload` accepts. */
 export interface PayloadInput {
+    source?: AnswerSource;
+    part?: number;
+    offset?: number;
     operation?: InputOperation;
     requestId: string;
     /** Required for `message`, refused for `continue` and `compact`. */
@@ -207,7 +214,7 @@ export interface PayloadInput {
 
 /** Build a payload for a message, continuation, context compaction, or history query. */
 export function buildPayload({
-    operation = 'message', requestId, content, options, start, step, limit,
+    operation = 'message', requestId, content, options, start, step, limit, source, part, offset,
 }: PayloadInput): PayloadEnvelope {
     if (!(INPUT_OPERATIONS as readonly unknown[]).includes(operation)) {
         throw new ProtocolError(`operation must be one of ${INPUT_OPERATIONS.join(', ')}`);
@@ -218,9 +225,22 @@ export function buildPayload({
     if (utf8Length(requestId) > 128) {
         throw new ProtocolError('request_id must be at most 128 UTF-8 bytes');
     }
+    if (operation !== 'answer' && (source !== undefined || part !== undefined || offset !== undefined)) {
+        throw new ProtocolError('answer cursors are only accepted for answer queries');
+    }
     const data: PayloadData = { operation, request_id: requestId };
 
-    if (operation === 'history') {
+    if (operation === 'answer') {
+        if (content !== undefined || options !== undefined || start !== undefined
+            || step !== undefined || limit !== undefined || !answerQuery({ source, part, offset })) {
+            throw new ProtocolError('answer requires only a valid source, part and offset');
+        }
+        const query = { source, part, offset };
+        if (!answerQuery(query)) throw new ProtocolError('invalid answer cursor');
+        data.source = query.source;
+        data.part = query.part;
+        data.offset = query.offset;
+    } else if (operation === 'history') {
         if (content !== undefined || options !== undefined) {
             throw new ProtocolError('history must not carry content or options');
         }
@@ -253,7 +273,7 @@ export function buildPayload({
         data.content = content.map((part, index) => normalizeContentPart(part, index));
     }
 
-    if (operation !== 'history') {
+    if (operation !== 'history' && operation !== 'answer') {
         const normalized = normalizeOptions(options);
         if (normalized !== undefined) data.options = normalized;
     }

@@ -1,3 +1,4 @@
+import type { AnswerSource } from './answers.ts';
 /**
  * @file hub panel protocol: the vocabulary both ends share.
  *
@@ -78,6 +79,7 @@ export const CAPABILITIES = [
     'global-confirmations',
     /** Worker-backed, display-only conversation history queries. */
     'session-history',
+    'answer-pages',
     /** Worker context compaction through an input operation. */
     'context-compact',
     /** Headless delegation routes and operator-owned safety policy. */
@@ -124,6 +126,8 @@ export type SessionId = string;
 export interface ContentPart {
     type: 'text' | 'binary' | 'external_ref' | string;
     raw: string;
+    truncated?: boolean;
+    bytes?: number;
     /** Media category, independent of `type`: the worker requires it and never
      * infers one from the encoding. */
     modality: 'text' | 'image' | 'audio' | 'video' | 'document' | string;
@@ -145,6 +149,7 @@ export interface HistoryTurn {
     user: ContentPart[];
     steps: {
         index: number;
+        answer_source?: AnswerSource;
         commit_sequence?: string;
         /** Per-response execution; independent of the turn's input source. */
         execution?: ExecutionIdentity;
@@ -159,8 +164,8 @@ export interface HistoryTurn {
 
 /**
  * Built-in worker data is at most 252 KiB of compact UTF-8 JSON, including
- * escaping and metadata. Worker events fit 256 KiB; the Hub's parsed/raw copies
- * and panel wrapper fit 512 KiB. Whole turns/steps preserve the existing cursor;
+ * escaping and metadata. Worker events fit 256 KiB; raw excludes the data body.
+ * Answer sources support independent exact-content pagination. Whole turns/steps preserve the existing cursor;
  * continued turns repeat user parts and append steps without new user entries.
  */
 export interface HistoryPage {
@@ -236,6 +241,8 @@ export interface PendingCall {
 
 /** One tool confirmation prompt. */
 export interface ConfirmationPrompt {
+    arguments_truncated?: boolean;
+    arguments_bytes?: number;
     confirmation_id: string;
     session_id: SessionId;
     worker_id: string;
@@ -355,7 +362,7 @@ export interface WorkerEnvelope {
     known?: boolean;
     issues?: string[];
     connection?: { opened_at: string; protocol_errors: number };
-    /** The document as received, before normalisation. */
+    /** Bounded original envelope metadata; never a duplicate data body. */
     raw?: unknown;
     [field: string]: unknown;
 }

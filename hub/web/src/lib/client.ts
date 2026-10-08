@@ -371,7 +371,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                     || message.envelope.hub_sequence > store.getState().lastSeq(message.session);
                 // History pages are transient control replies and have no
                 // retained hub sequence of their own.
-                if (message.envelope.event !== 'history') {
+                if (!['history', 'answer', 'answer_error'].includes(message.envelope.event)) {
                     profile('eventFold', () => store.getState().applyEvent(message));
                 } else {
                     store.getState().noteTransientWorkerEvent(message.session, message.envelope);
@@ -386,6 +386,11 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                     && (message.envelope.data as { code?: unknown } | null)?.code === 'invalid_options'
                     && message.envelope.worker_id === store.getState().sessions.get(message.session)?.identity.worker_id) {
                     requestModelOptions(message.session, true);
+                }
+                if (freshEvent && message.envelope.event === 'run_finished'
+                    && Number((message.envelope.data as { omitted_display_events?: number })?.omitted_display_events) > 0) {
+                    store.getState().note(message.session, 'Display events were omitted during transport congestion; refreshing worker history.', 'warn');
+                    requestHistory(message.session);
                 }
                 if (message.envelope.event === 'compact_finished') {
                     const result = parseCompactResult(message.envelope.data);

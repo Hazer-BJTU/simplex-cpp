@@ -580,3 +580,40 @@ it('cleans safe unspawned orphan/cycle reservations independently of directory o
     await ctx.hub.subagents.restore();
     for (const id of ids) assert.equal(existsSync(sessionDir(ctx.config, id)), false);
 });
+
+it('retrieves every large child answer part through authorized parent pages and expires compacted sources', async () => {
+    const ctx = await setup();
+    const child = await fork(ctx);
+    const sent = await send(ctx, child, 'message', {
+        content: [{ type: 'text', modality: 'text', raw: 'large-answer-fixture' }],
+    });
+    assert.equal(sent.status, 'succeeded');
+    const record = ctx.hub.subagents.children.get(child.id);
+    await until(() => !record.conversation.value.stale && record.conversation.value.turns[0]?.steps.length === 1);
+    const received = await rpc(ctx, 'subagent/receive', { subagent_id: child.id });
+    const source = received.result.conversation.turns[0].steps[0].answer_source;
+    assert.equal(source.worker_id, child.identity.workerId);
+    let query = { source, part: 0, offset: 0 };
+    const parts = ['', '', ''];
+    for (let pageCount = 0;; ++pageCount) {
+        assert.ok(pageCount < 100);
+        const result = await rpc(ctx, 'subagent/receive', { subagent_id: child.id, answer: query });
+        assert.equal(result.status, 'succeeded', JSON.stringify(result.error));
+        const page = result.result.answer;
+        assert.deepEqual(page.source, source);
+        assert.equal(page.offset, query.offset);
+        assert.equal(page.part, query.part);
+        assert.equal(page.next_offset, query.offset + Buffer.byteLength(page.raw));
+        parts[page.part] += page.raw;
+        if (page.done) break;
+        query = { source, part: page.next_part, offset: page.next_part === page.part ? page.next_offset : 0 };
+    }
+    assert.deepEqual(parts, [0, 1, 2].map(i => `part-${i} 中文🌍\n`.repeat(8000)));
+    assert.ok(Buffer.byteLength(parts.join('')) > 256 * 1024);
+    await send(ctx, child, 'compact');
+    await until(() => !record.conversation.value.stale && record.conversation.value.turns.length === 0);
+    const expired = await rpc(ctx, 'subagent/receive', { subagent_id: child.id, answer: { source, part: 0, offset: 0 } });
+    assert.equal(expired.error.code, 'answer_unavailable');
+    assert.equal((await rpc(ctx, 'subagent/receive', { subagent_id: ctx.parent.id,
+        answer: { source, part: 0, offset: 0 } })).error.code, 'unauthorized');
+});

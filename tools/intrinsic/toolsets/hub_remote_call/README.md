@@ -78,6 +78,13 @@ declarations report partial availability without disabling unrelated tools.
 - `subagent_receive({})` lists direct children. With `subagent_id`, optional
   cursor (default 0) and limit (default 5, 1–10), it returns a snapshot of status,
   latest request outcomes and one primary-conversation page. It does not wait.
+  A displayed assistant step's `answer_source` is a read-only source. Pass
+  `answer: {source, part: 0, offset: 0}` with `subagent_id` (no cursor/limit) to
+  retrieve exact text in 32 KiB UTF-8 segments. Follow `next_part`/`next_offset`,
+  resetting offset to zero on a new part, until `done`. These pages bypass the
+  96 KiB presentation clip. Source identity and offsets are checked; disconnect,
+  restart, compaction or stop can make a source unavailable. Read answers before
+  stopping the child; no generic URL/filesystem download is used.
 
 Fork/send are SerialWrite and receive is ReadOnly. All are Trusted; child tool
 approvals keep the independent user-owned policy. Ownership is enforced by the

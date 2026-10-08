@@ -290,3 +290,22 @@ BOOST_AUTO_TEST_CASE(local_confirmation_modes_respect_scope_and_cancellation) {
     io.run();
     BOOST_CHECK(absent.get().decision == tools::ConfirmDecision::Denied);
 }
+
+BOOST_AUTO_TEST_CASE(oversized_confirmation_is_denied_without_rewriting_authority_or_connecting) {
+    asio::io_context io;
+    auto scope = std::make_shared<core::ConfirmationScope>();
+    tools::InvokeConfirmEvent event;
+    event.query.id = "large-call";
+    event.query.name = "run_command";
+    event.query.arguments = {{"command", std::string(2 * 1024 * 1024, 'x')}};
+    const auto original = Json(event.query);
+    auto result = asio::co_spawn(io, core::confirm(event, scope, io.get_executor(),
+        load::websocket_endpoint("ws://127.0.0.1:1/no-server"), std::chrono::seconds(1),
+        "w", "s", "r"), asio::use_future);
+    io.run();
+    const auto answer = result.get();
+    BOOST_CHECK(answer.decision == tools::ConfirmDecision::Denied);
+    BOOST_TEST(answer.reason.find("transport budget") != std::string::npos);
+    BOOST_CHECK(Json(answer.query) == original);
+    BOOST_CHECK(Json(event.query) == original);
+}
