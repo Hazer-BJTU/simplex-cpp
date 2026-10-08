@@ -1,5 +1,6 @@
 #include "core/application.hpp"
 #include "core/protocol.hpp"
+#include "versioning/version.hpp"
 
 #include <boost/program_options.hpp>
 #include <csignal>
@@ -20,6 +21,7 @@ int main(int argc, char** argv) {
         options::options_description description("Worker options");
         description.add_options()
             ("help,h", "Show this help message")
+            ("version", "Show the compiled worker version and exit")
             ("config,c", options::value<std::string>(&file)->default_value("config.yaml"),
                 "Startup YAML configuration file")
             ("session,s", options::value<std::string>(&session)->required(),
@@ -31,6 +33,12 @@ int main(int argc, char** argv) {
         options::store(options::parse_command_line(argc, argv, description), arguments);
         if (arguments.count("help")) {
             std::cout << "Usage: simplex run [options]\n\n" << description << '\n';
+            return 0;
+        }
+        // Version queries must not require a session, load configuration, or
+        // initialize the runtime. Report the version embedded in this binary.
+        if (arguments.count("version")) {
+            std::cout << simplex::VERSION_STRING << '\n';
             return 0;
         }
         options::notify(arguments);

@@ -39,6 +39,9 @@ simplex-hub install-worker --help
 
 The chosen directory contains `bin/`, `lib/`, and the other release resources
 directly, without a version-named wrapper directory. Keep this structure intact.
+Check the installed binary's version with `simplex --version`, or with
+`<installation>/bin/simplex --version` before adding it to PATH. This prints
+the worker's compiled version without requiring configuration or a session.
 The host must provide `libssl.so.3` and `libcrypto.so.3`; Node's bundled OpenSSL
 does not satisfy that requirement. Startup validation clears development
 `LD_LIBRARY_PATH`, `LD_PRELOAD`, and `LD_AUDIT` variables.
