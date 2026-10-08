@@ -13,7 +13,7 @@ export interface RingBufferOptions<T> {
     /** Maximum total size retained; zero disables the byte budget. */
     byteLimit?: number;
     /**
-     * Size of one entry. Defaults to string length, which is what a log ring
+     * Size of one entry. Defaults to UTF-8 byte length, which is what a log ring
      * needs; a ring of envelopes passes its own measure.
      */
     sizeOf?: (item: T) => number;
@@ -35,7 +35,7 @@ export class RingBuffer<T = string> {
         this.limit = limit;
         this.byteLimit = byteLimit;
         this.sizeOf = sizeOf
-            ?? ((item) => (typeof item === 'string' ? item.length : 0) as number);
+            ?? ((item) => (typeof item === 'string' ? Buffer.byteLength(item, 'utf8') : 0) as number);
         this.items = [];
         this.bytes = 0;
         this.dropped = 0;
@@ -46,7 +46,7 @@ export class RingBuffer<T = string> {
         this.items.push(item);
         this.bytes += this.sizeOf(item);
         while (this.items.length > this.limit
-            || (this.byteLimit > 0 && this.bytes > this.byteLimit && this.items.length > 1)) {
+            || (this.byteLimit > 0 && this.bytes > this.byteLimit)) {
             // The loop conditions both imply a nonempty ring, which is what makes
             // this shift defined.
             const removed = this.items.shift() as T;

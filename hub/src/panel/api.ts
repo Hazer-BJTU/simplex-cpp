@@ -1,3 +1,5 @@
+import { diagnosticPreview, utf8Prefix } from '../protocol/display.ts';
+import { readAnswer } from '../worker/answers.ts';
 import { ConfigurationStore } from '../configurations/store.ts';
 import { configurationRoutes } from '../configurations/routes.ts';
 import { selection, snapshotConfigs } from '../configurations/session.ts';
@@ -13,8 +15,8 @@ import { selection, snapshotConfigs } from '../configurations/session.ts';
  *
  * Every message carries `v: 1`. Unknown message types are ignored and unknown
  * fields are preserved, so a newer panel can talk to an older hub and vice
- * versa. Worker events are forwarded verbatim inside `envelope` — the panel is
- * the only place that renders them.
+ * versa. Worker display events are normalized before retention/forwarding; the panel
+ * renders bounded projections rather than canonical worker records.
  *
  * The message shapes are not declared here: they come from
  * `shared/protocol.ts`, the same module the panel imports, so what this file
@@ -164,7 +166,21 @@ export function createPanelApi({
         onSent?: (error?: Error) => void,
     ): boolean {
         if (client.ws.readyState !== client.ws.OPEN) return false;
-        const text = JSON.stringify({ v: PANEL_VERSION, ...message });
+        // Invalid input errors must not echo a complete executable payload as
+        // diagnostics and create another oversized outbound frame.
+        if (message.type === 'error' && message.request !== undefined) {
+            message = { ...message, request: diagnosticPreview(message.request) };
+        }
+        let text = JSON.stringify({ v: PANEL_VERSION, ...message });
+        if (Buffer.byteLength(text) > 2 * 1024 * 1024) {
+            // An indivisible legacy bulk snapshot is not slow-reader backlog.
+            // Keep the connection usable and report the omitted display; modern
+            // transcript clients use paged subscriptions, full session/log data
+            // remains available through authenticated REST.
+            text = JSON.stringify({ v: PANEL_VERSION, type: 'error', error: 'display_snapshot_too_large',
+                message: 'Display snapshot exceeds 2 MiB; use paged replay or the REST session/log endpoints.',
+                request: { type: message.type } });
+        }
         const payloadBytes = Buffer.byteLength(text, 'utf8');
         const headerBytes = payloadBytes <= 125 ? 2 : payloadBytes <= 65535 ? 4 : 10;
         const bufferedBytes = client.ws.bufferedAmount;
@@ -186,6 +202,24 @@ export function createPanelApi({
             const admitted = send(client, message, (error) => resolve(!error));
             if (!admitted) resolve(false);
         });
+    }
+
+    /** Bounded diagnostic log tail for snapshots; the captured log is unchanged. */
+    function displayLogs(session: Session, limit: number): string[] {
+        const original = supervisor.logs(session, { limit });
+        const result: string[] = [];
+        let bytes = 0;
+        let omitted = false;
+        for (const line of [...original].reverse()) {
+            const prefix = utf8Prefix(line, 8192);
+            const preview = prefix === line ? line : `${prefix} [log preview shortened]`;
+            const size = Buffer.byteLength(JSON.stringify(preview)) + 1;
+            if (bytes + size > 256 * 1024 - 128) { omitted = true; break; }
+            result.unshift(preview);
+            bytes += size;
+        }
+        if (omitted) result.unshift('[older log lines omitted from this display tail]');
+        return result;
     }
 
     /**
@@ -216,7 +250,7 @@ export function createPanelApi({
             type: 'subscribed', session: session.describe(),
             plan: plans.read(session.id),
             transcript: events,
-            logs: supervisor.logs(session, { limit: LOG_TAIL_DEFAULT }),
+            logs: displayLogs(session, LOG_TAIL_DEFAULT),
             latest, replay_more: more,
             ...(replace && first ? { replay_reset: true } : {}),
             transcript_epoch: meta().transcript_epoch,
@@ -328,7 +362,7 @@ export function createPanelApi({
         onEvent: (envelope, connection) => {
             const session = connection.session;
             if (session.kind === 'headless') return;
-            if (envelope.event === 'history') {
+            if (['history', 'answer', 'answer_error'].includes(envelope.event)) {
                 // A history reply is control traffic. Forward it live, but do
                 // not spend retained transcript slots or JSONL space on it.
                 envelope.hub_sequence = transcripts.get(session.id).sequence;
@@ -790,6 +824,21 @@ export function createPanelApi({
             });
         },
 
+        'POST /api/sessions/:id/answer': async ({ req, res, params }) => {
+            const session = requireSession(res, params.id as string);
+            if (!session) return;
+            const abort = new AbortController();
+            const close = (): void => { if (!res.writableEnded) abort.abort(); };
+            res.once('close', close);
+            try {
+                const query = await readJsonBody(req, 4096);
+                const page = await readAnswer(session, query, abort.signal);
+                sendJson(res, 200, page);
+            } catch (error) {
+                if (!abort.signal.aborted) sendError(res, 409, 'answer_unavailable',
+                    error instanceof Error ? error.message : 'answer unavailable');
+            } finally { res.off('close', close); }
+        },
         'GET /api/sessions/:id/snapshot': ({ res, params }) => {
             const session = requireSession(res, params.id as string);
             if (!session) return;
@@ -864,7 +913,7 @@ export function createPanelApi({
                     // The transcript measures envelopes rather than describing
                     // them, so its element type is the narrower one.
                     transcript: asEnvelopes(transcripts.get(target.id).since(Number(message.since) || 0)),
-                    logs: supervisor.logs(target, { limit: LOG_TAIL_DEFAULT }),
+                    logs: displayLogs(target, LOG_TAIL_DEFAULT),
                     latest: transcripts.get(target.id).sequence,
                     // Echoed so a client can tell "nothing new" apart from "your
                     // cursor predates a restart, and this hub's sequence started
@@ -1048,7 +1097,7 @@ export function createPanelApi({
                 send(client, {
                     type: 'logs',
                     session: target.id,
-                    lines: supervisor.logs(target, { limit }),
+                    lines: displayLogs(target, limit),
                     dropped: target.process?.logs?.dropped ?? 0,
                 });
                 return;

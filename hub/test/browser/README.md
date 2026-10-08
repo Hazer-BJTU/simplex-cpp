@@ -191,3 +191,55 @@ This checks an actual ask → tool execution → final response → page reload 
 live model credentials. Stop the scratch Hub before running E2E: both may use
 the default remote-tool endpoint. It does not validate external provider latency
 or replace a manual real-model session.
+
+## Large completed-output measurements
+
+The optional `panel-large-output.spec.ts` measures a completed response with a
+small exact final answer and 128 KiB, 1 MiB, 3 MiB or 8 MiB of reasoning. It
+reports render time, composer input, expansion, observed long tasks, DOM nodes,
+coarse browser heap estimates and profiling counters. Timings are observations,
+not CI gates. Normal CI runs the literal-reasoning/page correctness tests.
+
+Generate offline cases, then run the production panel:
+
+```bash
+node test/browser/large-output-cases.mjs /tmp/simplex-output-cases
+SIMPLEX_LARGE_OUTPUT_BENCHMARK=1 \
+SIMPLEX_OUTPUT_CASES=/tmp/simplex-output-cases/after.json \
+SIMPLEX_OUTPUT_REPORT=/tmp/simplex-output-cases/report.json \
+npx playwright test panel-large-output.spec.ts
+```
+
+For a baseline checkout, copy the benchmark spec into its browser test directory
+and pass `before.json`. Use that checkout's production build and stop any preview
+server from the other checkout before switching. `envelopeBytes` deliberately
+measures the content-bearing wrapper (`data` and the old duplicate `raw.data`),
+not a complete authenticated WebSocket frame. The real-Hub integration test
+measures complete messages and verifies repeated replay remains connected.
+
+Reference run on 2026-10-08: baseline `dd37792` (v0.4.1), WSL2 Linux 6.18.33.2,
+Intel Core Ultra 9 275HX / 12 exposed CPUs, Node 24.15.0, Playwright Chromium
+153.0.8010.12, 1280×720 viewport, no CPU throttling. Native test compilation was
+running independently during the reference sample; do not interpret small timing
+differences as portable performance guarantees.
+
+| Reasoning | Before render | After render | Before longest task | After longest task | Before / after content wrapper |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 128 KiB | 83 ms | 26 ms | 60 ms | none observed | 262,521 / 4,313 bytes |
+| 1 MiB | 351 ms | 34 ms | 249 ms | none observed | 2,097,529 / 4,314 bytes |
+| 3 MiB | 994 ms | 10 ms | 605 ms | none observed | 6,291,833 / 4,314 bytes |
+| 8 MiB | 2,521 ms | 15 ms | 1,415 ms | none observed | 16,777,593 / 4,314 bytes |
+
+Composer fill/verification remained 8–17 ms in this fixture. Expansion includes
+Playwright actionability and the explicit 50 ms observation window: before
+279–1,493 ms, after 304–310 ms. The unchanged final answer accounted for one
+Markdown render; baseline reasoning added another, while the new reasoning
+component added **zero**, expanded or collapsed. Browser-reported heap estimates
+were coarse (19.3 MB before / 10 MB after), not a worker-RSS or canonical-state
+measurement. State-copy/persistence benchmarking remains separate (#65).
+
+The tests also cover literal Markdown/HTML-like reasoning, multipart Unicode
+answer pages, live/replay/history identity, original snapshot values, subsequent
+provider replay, authorized parent retrieval and source expiration. Large answers
+use a 512 KiB encoded preview or explicit pages; this report's tiny-answer fixture
+does not claim that every large answer can render in one frame.

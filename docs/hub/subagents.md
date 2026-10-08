@@ -350,3 +350,21 @@ conversationBytes must be at least 4096. Supported maxima are 128 live workers,
 32 direct children, depth 16 and 1000 receipts. Keep deployment limits conservative:
 recursive delegation starts real processes/containers and shares configured
 credentials and external resources.
+
+### Complete child answers
+
+Primary dialogue remains a bounded projection, but each supported committed
+response carries an `answer_source` referencing the child's canonical state.
+`subagent_receive` can supply `answer: {source, part, offset}` instead of a
+conversation cursor/limit to read exact 32 KiB UTF-8 pages. Start at part 0,
+offset 0; advance to `next_part`/`next_offset`, resetting offset when the part
+changes, and stop only on `done`. Copy all source fields, including a fingerprint when present. This works for text spread across multiple
+parts and avoids the normal tool-output presentation budget. Query authority is
+still limited to the caller's direct child and rechecked after the awaited page.
+The Hub does not cache an answer-sized assembly or expose filesystem paths.
+
+Projection restoration retains sources for a still-live worker. A new worker
+incarnation requires fresh history sources; compaction and headless cleanup can
+expire them. Read a result before stopping its child. Older workers without
+`answer-pages`, missing sources and expired pages return explicit unavailability;
+a displayed prefix must not be treated as a complete task result.

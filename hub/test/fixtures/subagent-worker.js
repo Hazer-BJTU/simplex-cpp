@@ -24,19 +24,19 @@ const event = (name, data = {}, request = currentRequest) => socket.send(JSON.st
 function connect() {
     socket = new WebSocket(config.client.endpoint);
     socket.on('open', () => {
-        event('ready', { active, capabilities: ['session-history', 'context-compact'] });
+        event('ready', { active, capabilities: ['session-history', 'context-compact', 'answer-pages'] });
         if (active) event('run_started');
     });
     socket.on('message', raw => {
         const message = JSON.parse(raw.toString());
         const data = message.data;
         if (message.type === 'signal') {
-            if (data.operation === 'status') event('status', { active, capabilities: ['session-history', 'context-compact'] });
+            if (data.operation === 'status') event('status', { active, capabilities: ['session-history', 'context-compact', 'answer-pages'] });
             if (data.operation === 'shutdown') { stopping = true; socket.close(); setTimeout(() => process.exit(0), 10); }
             if (data.operation === 'test_disconnect') { socket.close(); }
             if (data.operation === 'test_crash') process.exit(7);
             if (data.operation === 'test_active') { active = true; run = 'parent-run'; event('run_started'); }
-            if (data.operation === 'test_gap') { sequence += 4; event('status', { active, capabilities: ['session-history', 'context-compact'] }); }
+            if (data.operation === 'test_gap') { sequence += 4; event('status', { active, capabilities: ['session-history', 'context-compact', 'answer-pages'] }); }
             return;
         }
         if (message.type !== 'payload') return;
@@ -47,7 +47,26 @@ function connect() {
                 turns: turns.slice(start, start + (data.limit ?? 10)) });
             return;
         }
-        if (active) { event('input_rejected', { request_id: data.request_id, message: 'fixture is busy' }, ''); return; }
+        if (data.operation === 'answer') {
+            const source = data.source;
+            const step = turns[source?.turn]?.steps[source?.step];
+            if (!step || JSON.stringify(step.answer_source) !== JSON.stringify(source)) {
+                event('answer_error', { request_id: data.request_id });
+                return;
+            }
+            const part = step.content[data.part];
+            const bytes = Buffer.from(part.raw);
+            let end = Math.min(bytes.length, data.offset + 32768);
+            while (end < bytes.length && end > data.offset && (bytes[end] & 0xc0) === 0x80) end--;
+            const nextPart = end === bytes.length ? data.part + 1 : data.part;
+            event('answer', { request_id: data.request_id, source, part: data.part,
+                offset: data.offset, next_offset: end, bytes: bytes.length,
+                total_parts: step.content.length, next_part: nextPart,
+                done: nextPart === step.content.length, type: part.type, modality: part.modality,
+                raw: bytes.subarray(data.offset, end).toString('utf8') });
+            return;
+        }
+        if (active) { event('input_rejected' , { request_id: data.request_id, message: 'fixture is busy' }, ''); return; }
         active = true;
         run = `run-${data.request_id}`;
         currentRequest = data.request_id;
@@ -59,7 +78,10 @@ function connect() {
             event('input_committed');
         }
         setTimeout(() => {
-            const content = [{ type: 'text', modality: 'text', raw: 'fixture answer' }];
+            const large = data.content?.[0]?.raw === 'large-answer-fixture';
+            const content = large
+                ? [0, 1, 2].map(i => ({ type: 'text', modality: 'text', raw: `part-${i} 中文🌍\n`.repeat(8000) }))
+                : [{ type: 'text', modality: 'text', raw: 'fixture answer' }];
             if (data.operation === 'compact') {
                 turns.length = 0;
                 revision += 1;
@@ -67,11 +89,12 @@ function connect() {
                 event('compact_finished', { summary: 'fixture summary', durable: true, revision, removed_turns: 1 });
             } else {
                 const turn = turns.at(-1);
-                if (turn) turn.steps.push({ index: turn.steps.length, content, reasoning: { raw: 'SECRET_REASONING' }, tool_calls: 1 });
+                const source = turn ? { worker_id: worker, turn: turn.index, step: turn.steps.length, commit_sequence: String(sequence + 1) } : undefined;
+                if (turn) turn.steps.push({ index: turn.steps.length, content, answer_source: source, reasoning: { raw: 'SECRET_REASONING' }, tool_calls: 1 });
                 revision += 1;
                 event('tool_calls', [{ name: 'SECRET_TOOL', arguments: { secret: 'SECRET_ARG' } }]);
                 event('tool_results', [{ content: 'SECRET_RESULT' }]);
-                event('model_response', { content, reasoning: { raw: 'SECRET_REASONING' }, invokes: [{ name: 'SECRET_TOOL' }] });
+                event('model_response', { content, answer_source: source, reasoning: { raw: 'SECRET_REASONING' }, invokes: [{ name: 'SECRET_TOOL' }] });
             }
             active = false;
             revision += 1;

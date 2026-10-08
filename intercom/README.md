@@ -47,7 +47,12 @@ an active `run()`. Call either shutdown method, then await `run()` before
 destroying the client or its TLS context.
 
 The default queue capacity and retry delays are configured through
-`StableWebSocketOptions`. The inactivity timeout defaults to zero, leaving a
+`StableWebSocketOptions`. `write_byte_capacity` defaults to 16 MiB and accounts
+for pending sends, admitted messages and the active write. A send that cannot
+reserve its encoded bytes fails with `std::length_error`; it is never shortened
+or silently queued elsewhere. Reservations are released on failure, actual write
+completion and shutdown discard; `queued_write_bytes()` reports current ownership,
+not bytes acknowledged by a peer. The inactivity timeout defaults to zero, leaving a
 healthy but silent session open indefinitely. Setting a positive timeout
 enables Beast's automatic idle ping; the session is closed and reconnected if
 the peer does not answer. TCP connect, TLS handshake and WebSocket upgrade

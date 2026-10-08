@@ -81,6 +81,7 @@ do not advertise the capability; those builds do not provide paged recovery.
 | `snapshot-view` | the worker's persisted snapshot can be read, never written |
 | `transcript-epoch` | `transcript_epoch` is reported, so a stale cursor is detectable |
 | `global-confirmations` | confirmations reach every client, not only subscribers |
+| `answer-pages` | read exact worker answer content through authenticated bounded pages |
 | `session-history` | panel can query a worker's simplified conversation history |
 | `context-compact` | panel can request worker context compaction and display the result |
 | `headless-subagents` | authenticated parent delegation and headless operator safety controls |
@@ -349,7 +350,7 @@ the worker's persisted state remains the source of truth.
 | `subagent_policy` | `session`, `policy`: `ask`\|`deny`\|`approve` | updates only new headless confirmation requests; existing prompts remain actionable |
 
 Approval submissions may include a unique `request_id` for each attempt. The Hub
-echoes it in `accepted`; a rejection echoes the original `request`, including
+echoes it in `accepted`; a rejection includes a bounded diagnostic `request`, including
 this ID. A transport acknowledgement is separate from the authoritative
 `confirmation` settlement. The panel locks only the submitted prompt, keeps
 its geometry unchanged, and never automatically resends a security decision.
@@ -391,10 +392,9 @@ rather than dangerous.
 `history` pages are a bounded display projection of the worker's in-memory
 `UserLoopStep` turns. The built-in worker limits the complete compact JSON page
 data to 252 KiB and the complete worker event to 256 KiB, accounting for escaped
-user text, response content, reasoning and metadata. The Hub retains the original
-worker event under `raw` alongside the parsed fields; a full panel `event` frame
-for this projection fits within 512 KiB, including this duplicate and forwarding
-metadata. These byte limits exclude WebSocket frame headers and pretty printing.
+user text, response content, reasoning and metadata. The Hub omits `raw.data`; `raw` contains bounded envelope diagnostics only.
+A full panel event stays below the 4 MiB frame/backlog ceiling. Native extras and
+reasoning use bounded display previews before retention and replay. These byte limits exclude WebSocket frame headers and pretty printing.
 They do not replace the general 4 MiB outbound budget for other events or impose
 the new worker bound on older/custom workers.
 
@@ -461,7 +461,7 @@ clients need not understand paging unless they opt into it.
 | `session_removed` | `session` | removed from the panel session list |
 | `subscribed` | `session`, `transcript`, `logs`, `latest`, `transcript_epoch`, `plan`, optional `replay_more`, `replay_reset`, `request_id` | subscription replay page or completed legacy subscription |
 | `created` | `session` | session created by this client |
-| `event` | `session`, `hub_seq`, `envelope` | one worker event, verbatim |
+| `event` | `session`, `hub_seq`, `envelope` | one bounded worker display event |
 | `confirmation` | `session`, `open`, `confirmation`, and `outcome` when closing | prompt opened or retired/answered; sent to **every** connected panel, not only subscribers of that session |
 | `process` | `session`, `process` | worker process state changed |
 | `connection` | `session`, `connected`, `identity` | event connection opened or closed |
@@ -474,7 +474,7 @@ clients need not understand paging unless they opt into it.
 | `pong` | `at` | heartbeat reply |
 
 `envelope` is the worker's envelope with hub-added fields:
-`hub_sequence`, `received_at`, `known`, `issues`, `raw` (the untouched document
+`hub_sequence`, `received_at`, `known`, `issues`, `raw` (bounded envelope metadata without the data body
 as received). Unknown event names are forwarded exactly like known ones; the
 panel decides how to render them.
 `history` responses are transient control replies. Live subscribers receive
@@ -602,3 +602,88 @@ are restored inside their execution round while retaining its live tool cards;
 responses with no matching execution remain standalone history. Event cursors
 apply only to the queried worker incarnation, not prior workers' sequence numbers.
 See [worker automatic compaction](../core/worker-protocol.md#automatic-context-compaction).
+
+## Complete answer access and large output
+
+`POST /api/sessions/:id/answer` accepts `{source, part, offset}`. It is authenticated
+with the normal panel token, verifies the selected live session/worker capability,
+and proxies one read-only worker query. Responses are correlated to that exact
+connection and commit; disconnect, source expiration or invalid cursor returns
+HTTP 409 `answer_unavailable`. Client disconnect cancels the query. At most 64
+queries globally and two per worker are pending, with a ten-second deadline;
+no complete-answer cache or unbounded pending queue is introduced.
+
+The response is the worker `answer` data object documented in the
+[Simplex Loop Worker Protocol](../core/worker-protocol.md#complete-answer-pages).
+The panel offers explicit next-page navigation and copies only the displayed
+page. Pages preserve every answer byte/part without mounting an entire large
+Markdown document. Large inline answers use plain-text section navigation without discarding
+the retained text; reasoning always uses lazy literal text, never Markdown/highlighting.
+
+Headless conversation projections preserve `answer_source` in storage. A parent
+may call `subagent_receive` with `subagent_id` and `answer: {source, part, offset}`
+to read the exact child answer in 32 KiB pages. Turn pagination (`cursor`, `limit`)
+and answer pagination are mutually exclusive. Direct-parent authorization is
+rechecked after the awaited query; child stop/deletion and worker restart retain
+the existing lifecycle semantics. Unknown/older workers offer explicit previews
+without a working full-content promise. Resource eviction can shorten projections
+but never silently rewrites the canonical worker answer.
+
+Accepted worker display data is normalized before caching: answers receive an
+aggregate 512 KiB encoded budget, reasoning a 4 KiB UTF-8 prefix; extras/unknown
+metadata are bounded first. A normalized data envelope fits 768 KiB. Many fields,
+JSON escapes and Unicode count toward the full frame. Transcript rings count
+actual UTF-8 encoded bytes. A display entry above a configured ring budget becomes
+an omission record retaining correlation and any answer source; if even that record
+cannot fit, eviction reports a retention gap instead of repeatedly disconnecting. Ingress still
+has its configured hard parser limit: oversized older-worker frames cannot be
+recovered by normalization. Optional event JSONL files remain best effort.
+Whole-response omission is displayed explicitly, rather than as an empty model
+answer. When the omission record carries a valid `answer_source`, the panel keeps
+the exact-answer pagination control available in both live display and replay.
+Without a usable source it reports that full text is unavailable.
+
+Tool calls/results use dedicated projections with independent per-entry argument,
+output and metadata budgets. Call ID, name and classifications, result query
+identity, status, `loop_skipped` and framework error fields do not share a traversal
+budget with arbitrary argument/output trees. Proposals, approvals and returned
+results therefore remain correlated when a body is only a preview. Up to 64 batch
+entries are shown; any omitted suffix is counted explicitly.
+Normalization preserves and accumulates existing `display_omitted` batch-marker
+counts instead of counting a marker as one tool. The panel excludes these markers
+from proposals/results and renders notices; the paired model proposal and
+`tool_calls` event share one call-omission notice. Result omissions are independent
+and never imply an anonymous successful execution.
+
+Display truncation never alters executable payloads, tool arguments, approval
+identities or decisions. Oversized indivisible execution/control messages are
+rejected explicitly. An approval preview identifies omitted content; the original
+pending operation remains authority. Browser transcript copies are byte bounded
+per view and across inactive sessions; history/replay can restore evicted data.
+
+### Display resource accounting
+
+The panel retains up to 8 MiB of transcript JSON and 8 MiB of history JSON per
+session, plus a 4 MiB/32-name derived event cache. Inactive views are evicted when
+these display copies exceed 40 MiB across sessions; history eviction is indicated
+and does not change worker persistence. Source-aware answer navigation keeps one
+32 KiB page in the DOM instead of assembling an unbounded document. Large normal
+answers use a plain-text rendering window of 32,768 UTF-16 code units with
+surrogate-safe boundaries and explicit section navigation; reasoning always uses literal text.
+
+Confirmation and remote-tool ingress each cap one executable frame at the lesser
+of the configured ingress ceiling and 1 MiB. Oversized operations are rejected,
+never rewritten into a clipped operation. Confirmation displays preview arguments
+and extras, retain the original pending request as approval authority, and show
+an explicit warning when the full review is unavailable. At most 64 approvals per
+session are pending; further requests are denied as capacity exhausted. Remote
+results retain their 256 KiB frame ceiling; answer pagination fits this ceiling.
+
+Panel frames have a 2 MiB indivisible display ceiling beneath the 4 MiB socket
+backlog limit. Modern replay is paged; an oversized legacy bulk/session snapshot
+returns `display_snapshot_too_large` on the live connection instead of poisoning
+reconnect. Authenticated REST session/log endpoints remain available. WebSocket
+log snapshots use a 256 KiB newest tail, with 8 KiB line previews and explicit
+omission notices. Their captured logs and execution inputs are not rewritten.
+Worker correlation/event-name fields above 128 UTF-8 bytes are rejected rather
+than cropped into another identity.

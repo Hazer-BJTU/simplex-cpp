@@ -264,7 +264,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
           session_id(std::move(session)), driver_model(std::move(injected)),
           hooks(events), store(std::make_shared<tools::intrinsic::ProcessSessionStore>(strand)),
           client(strand, config.client, events, config.queues, config.transport),
-          outgoing(strand, config.event_capacity),
+          outgoing(strand, config.event_capacity + 8),
           rejected_inputs(strand, config.queues.signal_capacity),
           rejection_done(strand, 1), sender_done(strand, 1), client_done(strand, 1) {
         validate_session_id(session_id);
@@ -291,6 +291,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     std::shared_ptr<tools::intrinsic::ProcessSessionStore> store;
     io::Client client;
     Queue outgoing;
+    /** Encoded application queue bytes, including the message awaiting IO admission. */
+    std::size_t outgoing_bytes = 0;
+    std::size_t outgoing_count = 0;
+    std::size_t omitted_display_events = 0;
     /** Bounded metadata bridge from the IO control thread to the state owner. */
     RejectionQueue rejected_inputs;
     Done rejection_done;
@@ -359,19 +363,45 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         rejected_inputs.close();
     }
 
-    /** Copy only event data. Full queue is fatal, never an invisible drop. */
+    /** Admit a bounded display copy. Omitted previews are counted at settlement;
+     * mandatory lifecycle/control overflow remains fatal and observable. */
     void emit(std::string name, Json data,
               const std::string& event_request, const std::string& event_run) {
+        const bool display = name == "model_response" || name == "tool_calls" || name == "tool_results";
+        if (display && (outgoing_count >= config.event_capacity
+            || outgoing_bytes + client.queued_write_bytes() > 14 * 1024 * 1024)) {
+            // Keep reserved settlement capacity; source state remains available
+            // through history/answer queries after the congestion is cleared.
+            ++omitted_display_events;
+            return;
+        }
+        if (name == "run_finished" && omitted_display_events != 0) {
+            data["omitted_display_events"] = omitted_display_events;
+            omitted_display_events = 0;
+        }
         Json message = {{"type", "event"}, {"event", std::move(name)},
             {"session_id", session_id}, {"worker_id", worker_id},
             {"request_id", event_request}, {"run_id", event_run},
             {"sequence", sequence + 1}, {"data", std::move(data)}};
+        const auto encoded_bytes = message.dump().size();
+        if (encoded_bytes > display_event_max_bytes) {
+            throw std::length_error("display event exceeds the transport budget");
+        }
         if (message.at("event") == "history"
-            && message.dump().size() > history_event_max_bytes) {
+            && encoded_bytes > history_event_max_bytes) {
             throw std::length_error("history event exceeds the display budget");
         }
         // A rejected history projection must not leave a gap before history_error.
+        if (outgoing_bytes + client.queued_write_bytes() + encoded_bytes > 16 * 1024 * 1024) {
+            // Synchronous observers cannot wait for a congested transport.
+            // Fail visibly rather than grow an unbounded display queue.
+            auto error = std::make_exception_ptr(std::runtime_error("application event byte queue exhausted"));
+            fail(error);
+            std::rethrow_exception(error);
+        }
         ++sequence;
+        outgoing_bytes += encoded_bytes;
+        ++outgoing_count;
         if (!outgoing.try_send(boost::system::error_code{}, std::move(message))) {
             auto error = std::make_exception_ptr(std::runtime_error("application event queue exhausted"));
             fail(error);
@@ -381,6 +411,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
 
     /** Ordinary events belong to the current run; rejected inputs never do. */
     void emit(std::string name, Json data = Json::object()) {
+        if (name != "model_response" && name != "tool_calls" && name != "tool_results"
+            && name != "history" && name != "answer") data = display_value(data);
         emit(std::move(name), std::move(data), request_id, run_id);
     }
 
@@ -394,7 +426,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     Json status() const {
         Json value = {{"active", active}, {"stopping", stopping},
             {"storage_failed", storage_failed}, {"rejected_payloads", client.rejected_payloads()},
-            {"capabilities", Json::array({"session-history", "context-compact", "auto-compact"})}};
+            {"capabilities", Json::array({"session-history", "context-compact", "auto-compact", "answer-pages"})}};
         value["memory_retention"] = {{"max_archives", config.memory_retention.max_archives}};
         value["auto_compact"] = compact_counters();
         if (state.loop) value["loop"] = *state.loop;
@@ -593,13 +625,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }));
         subscriptions.emplace_back(events.subscribe<loop::ModelCommitted>([this](const auto& event) {
             ++history_revision;
-            const auto& step = event.state.turns.back().agent_loop_step.back();
-            Json projected = step.model_response;
-            projected["commit_sequence"] = std::to_string(step.commit_sequence);
+            Json projected = project_response(event.state, event.state.turns.size() - 1,
+                event.state.turns.back().agent_loop_step.size() - 1, worker_id);
             emit("model_response", std::move(projected));
         }));
         subscriptions.emplace_back(events.subscribe<loop::BeforeToolBatch>([this](const auto& event) {
-            emit("tool_calls", event.calls);
+            emit("tool_calls", display_calls(event.calls));
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolDispatchCheckpoint>([this](const auto&) {
             save(SaveBoundary::BeforeTools);
@@ -608,7 +639,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             save(SaveBoundary::ResultsReady);
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolResultsCommitted>([this](const auto& event) {
-            emit("tool_results", *event.state.turns.back().agent_loop_step.back().invoke_returns);
+            emit("tool_results", display_results(*event.state.turns.back().agent_loop_step.back().invoke_returns));
         }));
         // Metadata edits belong to writable transactions, never to the
         // read-only checkpoint observers. Recovery snapshots retain the last
@@ -664,15 +695,21 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 if (auto self = weak.lock()) {
                     asio::post(self->strand, [self, payload = event.payload] {
                         try {
+                            if (payload.value("operation", Json()) == "answer") {
+                                self->emit("answer", answer_page(self->state, payload, self->worker_id));
+                                return;
+                            }
                             const auto request = parse_history_request(payload);
                             auto page = history_page(
-                                self->state, request, self->history_revision);
+                                self->state, request, self->history_revision, self->worker_id);
                             self->emit("history", std::move(page));
                         } catch (const std::exception& error) {
-                            self->emit("history_error", {
-                                {"request_id", payload.is_object()
-                                    ? payload.value("request_id", Json()) : Json()},
-                                {"message", error.what()}});
+                            try {
+                                self->emit(payload.value("operation", Json()) == "answer" ? "answer_error" : "history_error", {
+                                    {"request_id", payload.is_object()
+                                        ? payload.value("request_id", Json()) : Json()},
+                                    {"message", error.what()}});
+                            } catch (...) { self->fail(std::current_exception()); }
                         }
                     });
                 }
@@ -723,7 +760,16 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 if (error.code() == asio::experimental::channel_errc::channel_closed) co_return;
                 throw;
             }
-            co_await client.send(std::move(message));
+            const auto bytes = message.dump().size();
+            try {
+                co_await client.send(std::move(message));
+            } catch (...) {
+                outgoing_bytes -= bytes;
+                --outgoing_count;
+                throw;
+            }
+            outgoing_bytes -= bytes;
+            --outgoing_count;
         }
     }
 
@@ -1012,7 +1058,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             query.security = model_io::InvokeSecurity::Trusted;
             query.arguments = std::move(trigger);
             query.extras = Json{{"origin", "worker"}, {"operation", "auto_compact"}};
-            emit("tool_calls", Json::array({query}));
+            emit("tool_calls", display_calls({query}));
             try {
                 result = co_await compact(CompactMode::Automatic, query.id);
             } catch (const std::exception& error) {
@@ -1035,7 +1081,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             returned.role = "tool";
             returned.content.push_back(record.output);
             returned.invoke_return = std::move(record);
-            emit("tool_results", Json::array({returned}));
+            emit("tool_results", display_results({returned}));
             if (result.status != loop::RunStatus::Completed) {
                 finish_controller(result);
                 co_return result;

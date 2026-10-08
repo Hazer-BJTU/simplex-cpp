@@ -137,7 +137,7 @@ describe('panel API', () => {
                 && message.envelope.data.request_id === data.request_id);
             assert.ok(Buffer.byteLength(JSON.stringify(reply), 'utf8') <= HISTORY_PANEL_MAX_BYTES);
             assert.deepEqual(reply.envelope.data, data);
-            assert.deepEqual(reply.envelope.raw.data, data, 'the raw diagnostic copy changed');
+            assert.equal(reply.envelope.raw.data, undefined, 'data must not be duplicated in raw');
             assert.equal(socket.closed, null);
         }
         assert.equal(ctx.hub.transcripts.get(session.id).toArray()

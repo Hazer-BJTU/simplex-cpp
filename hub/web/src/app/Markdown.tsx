@@ -22,6 +22,7 @@ import {
     Children,
     isValidElement,
     useRef,
+    useEffect,
     useState,
     type ComponentPropsWithoutRef,
     type ReactNode,
@@ -164,8 +165,41 @@ const COMPONENTS: Components = { pre: CodeBlock, a: Link };
  * to the bundle. That is a deliberate trade for a tool that runs on loopback:
  * the panel is not downloaded over a network anyone is paying for.
  */
+/** Keep large plain-text answers in the display cache, mounting one section at a time. */
+const LargeAnswer = memo(function LargeAnswer({ text }: { text: string }) {
+    const size = 32768;
+    const [section, setSection] = useState(0);
+    useEffect(() => setSection(0), [text]);
+    const total = Math.ceil(text.length / size);
+    const current = Math.min(section, total - 1);
+    const boundary = (position: number): number => {
+        const end = Math.min(position, text.length);
+        // JavaScript counts UTF-16 code units. Never split a surrogate pair;
+        // both neighboring sections use this same boundary.
+        return end > 0 && end < text.length && text.charCodeAt(end) >= 0xdc00
+            && text.charCodeAt(end) <= 0xdfff ? end - 1 : end;
+    };
+    const visible = text.slice(boundary(current * size), boundary((current + 1) * size));
+    return <div className="min-w-0 space-y-2" data-testid="large-answer">
+        <p className="text-xs text-ink-muted">Large answer shown as plain text · section {current + 1}/{total}.</p>
+        <pre className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{visible}</pre>
+        <div className="flex items-center gap-3 text-xs text-ink-muted">
+            <button className="underline disabled:opacity-50" disabled={current === 0}
+                onClick={() => setSection(current - 1)}>Previous section</button>
+            <button className="underline disabled:opacity-50" disabled={current + 1 === total}
+                onClick={() => setSection(current + 1)}>Next section</button>
+            <CopyButton text={() => visible} label="copy this section" />
+        </div>
+    </div>;
+});
+
 export const Markdown = memo(function Markdown({ children }: { children: string }) {
     profileCount('markdown');
+    // Complex/large answers remain complete, but bypass eager AST/highlighting.
+    // This is a rendering policy only: transport/state content is untouched.
+    if (children.length > 32768 || (children.match(/\n/g)?.length ?? 0) > 1000) {
+        return <LargeAnswer text={children} />;
+    }
     return (
         <div className="md">
             <ReactMarkdown

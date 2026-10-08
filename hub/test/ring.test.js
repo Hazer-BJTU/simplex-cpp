@@ -23,12 +23,14 @@ describe('RingBuffer', () => {
         assert.equal(ring.bytes, 3);
     });
 
-    it('always keeps at least one entry, however large', () => {
+    it('enforces the byte ceiling even for the final oversized entry', () => {
         const ring = new RingBuffer({ limit: 10, byteLimit: 2 });
         ring.push('oversized');
-        assert.deepEqual(ring.toArray(), ['oversized']);
+        assert.deepEqual(ring.toArray(), []);
+        assert.equal(ring.bytes, 0);
         ring.push('another');
-        assert.deepEqual(ring.toArray(), ['another']);
+        assert.deepEqual(ring.toArray(), []);
+        assert.equal(ring.dropped, 2);
     });
 
     it('uses a custom size function for structured entries', () => {

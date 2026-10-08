@@ -11,6 +11,7 @@
  * emits an unfamiliar event (docs/core/worker-protocol.md, "Encoding and
  * message envelopes").
  */
+import { normalizeDisplay, diagnosticPreview } from './display.ts';
 import { validateSessionId } from '../state/session-id.ts';
 
 /** Rendering hints for one event name. */
@@ -35,14 +36,16 @@ export const EVENT_TABLE = {
     status: { tone: 'info', note: 'state snapshot', snapshot: true },
     options: { tone: 'info', note: 'available choices and selections', snapshot: true },
     history: { tone: 'info', note: 'simplified conversation history page' },
+    answer: { tone: 'info', note: 'read-only answer segment' },
+    answer_error: { tone: 'warn', note: 'answer source unavailable' },
     history_error: { tone: 'warn', note: 'history query failed' },
     input_admitted: { tone: 'info', note: 'host admitted an input', run: true },
     input_rejected: { tone: 'warn', note: 'input failed validation or queue admission' },
     run_started: { tone: 'info', note: 'loop admitted the invocation', run: true },
     input_committed: { tone: 'info', note: 'user input integrated in memory' },
-    model_response: { tone: 'assistant', note: 'complete model response' },
+    model_response: { tone: 'assistant', note: 'committed model response display' },
     tool_calls: { tone: 'tool', note: 'calls proposed for a batch', array: true },
-    tool_results: { tone: 'tool', note: 'complete returned batch', array: true },
+    tool_results: { tone: 'tool', note: 'returned batch display', array: true },
     persisted: { tone: 'muted', note: 'JSON snapshot written' },
     compact_finished: { tone: 'summary', note: 'context summary durably published' },
     export_error: { tone: 'warn', note: 'Markdown export failed' },
@@ -88,8 +91,9 @@ export function readUnsignedInteger(
         if (Number.isSafeInteger(parsed)) {
             return { value: BigInt(parsed), safe: true, display: parsed };
         }
-    } else if (typeof parsed === 'string' && /^\d+$/.test(parsed)) {
+    } else if (typeof parsed === 'string' && /^\d{1,20}$/.test(parsed)) {
         const value = BigInt(parsed);
+        if (value > 18446744073709551615n) return { value: null, safe: false, display: null };
         const safe = value <= BigInt(Number.MAX_SAFE_INTEGER);
         return { value, safe, display: safe ? Number(value) : parsed };
     } else if (parsed !== undefined && parsed !== null) {
@@ -98,7 +102,9 @@ export function readUnsignedInteger(
     if (typeof parsed !== 'number') return { value: null, safe: false, display: null };
     const match = new RegExp(`"${field}"\\s*:\\s*(\\d+)`).exec(rawText ?? '');
     if (!match) return { value: null, safe: false, display: null };
+    if ((match[1] as string).length > 20) return { value: null, safe: false, display: null };
     const value = BigInt(match[1] as string);
+    if (value > 18446744073709551615n) return { value: null, safe: false, display: null };
     const safe = value <= BigInt(Number.MAX_SAFE_INTEGER);
     return { value, safe, display: safe ? Number(value) : (match[1] as string) };
 }
@@ -126,7 +132,7 @@ export interface ParsedEnvelope {
     known: boolean;
     /** Wire size, measured once: a bounded transcript needs a cheap size. */
     bytes: number;
-    /** The document as received, so unknown fields survive untouched. */
+    /** Bounded envelope metadata, without a second copy of data. */
     raw: unknown;
 }
 
@@ -162,6 +168,11 @@ export function parseEventEnvelope(text: string): EnvelopeParseResult {
     if (typeof document.event !== 'string' || document.event.length === 0) {
         return { ok: false, error: 'event name must be a nonempty string' };
     }
+    for (const field of ['event', 'worker_id', 'request_id', 'run_id']) {
+        if (typeof document[field] === 'string' && Buffer.byteLength(document[field] as string) > 128) {
+            return { ok: false, error: `${field} exceeds the 128-byte identity budget` };
+        }
+    }
     if (typeof document.worker_id !== 'string' || document.worker_id.length === 0) {
         return { ok: false, error: 'worker_id must be a nonempty string' };
     }
@@ -185,14 +196,25 @@ export function parseEventEnvelope(text: string): EnvelopeParseResult {
         request_id: typeof document.request_id === 'string' ? document.request_id : '',
         run_id: typeof document.run_id === 'string' ? document.run_id : '',
         sequence: sequence.display,
-        data: document.data ?? {},
+        data: normalizeDisplay(document.event, document.data ?? {}),
         known: isKnownEvent(document.event),
         // Wire size, measured once: a bounded transcript needs a cheap size and
         // re-serializing a large payload on every append is not cheap.
-        bytes: text.length,
-        // Everything the worker sent, so the panel's raw view and any future
-        // extension field survive untouched.
-        raw: parsed,
+        bytes: 0,
+        // Keep bounded diagnostic metadata without duplicating the event body.
+        raw: diagnosticPreview(Object.fromEntries(Object.entries(document)
+            .filter(([key]) => key !== 'data'))),
     };
+    measureEnvelope(envelope);
     return { ok: true, envelope, issues, sequence };
+}
+
+/** Include the self-describing size field in the exact encoded byte count. */
+export function measureEnvelope(envelope: { bytes?: number }): number {
+    let size = Buffer.byteLength(JSON.stringify(envelope));
+    while (envelope.bytes !== size) {
+        envelope.bytes = size;
+        size = Buffer.byteLength(JSON.stringify(envelope));
+    }
+    return size;
 }

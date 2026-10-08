@@ -625,3 +625,36 @@ describe('panel store: capabilities are read, not assumed', () => {
         assert.equal(store.getState().hasCapability('supervisor'), false);
     });
 });
+
+it('bounds byte retention across sessions and signals evicted history while absolute cursors keep advancing', () => {
+    const store = createPanelStore();
+    store.getState().setSelected('demo');
+    const make = (turn, done = false) => ({ ...envelope(turn + 1, 'history'), data: {
+        request_id: `page-${turn}`, revision: 1, start: turn, step: 0,
+        next: turn + 1, next_step: 0, total: done ? turn + 1 : 101,
+        turns: [{ index: turn, user: [], steps: [{ index: 0, tool_calls: 0,
+            content: [{ type: 'text', modality: 'text', raw: '中文🌍'.repeat(17000) }] }], omitted_steps: 0 }],
+    } });
+    for (let i = 0; i < 55; i++) {
+        const event = make(i, i === 54);
+        assert.equal(store.getState().applyHistoryPage('demo', event, parseHistoryPage(event.data)), true);
+    }
+    const view = store.getState().view('demo');
+    assert.equal(view.history.at(-1).index, 54);
+    assert.ok(view.history[0].index > 0);
+    assert.equal(view.historyTruncated, true);
+    assert.equal(view.historyLoading, false);
+    assert.ok(Buffer.byteLength(JSON.stringify(view.history)) <= 8 * 1024 * 1024);
+    let derived = emptyView('names');
+    for (let i = 0; i < 100; ++i) derived = indexEnvelope(derived, envelope(i + 1, `unknown-${i}`));
+    assert.ok(Object.keys(derived.latestEvents).length <= 32);
+    for (let s = 0; s < 8; ++s) {
+        for (let i = 0; i < 16; ++i) store.getState().applyEvent({ session: `session-${s}`, envelope: envelope(i + 1, 'model_response', { session_id: `session-${s}`, data: {
+                content: [{ type: 'text', modality: 'text', raw: 'x'.repeat(400000) }],
+            } }) });
+    }
+    const bytes = [...store.getState().views.values()].reduce((sum, v) => sum
+        + Buffer.byteLength(JSON.stringify(v.items)) + Buffer.byteLength(JSON.stringify(v.history))
+        + Buffer.byteLength(JSON.stringify(Object.values(v.latestEvents))), 0);
+    assert.ok(bytes < 40 * 1024 * 1024);
+});

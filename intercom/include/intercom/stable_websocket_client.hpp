@@ -25,6 +25,9 @@ namespace intercom {
 struct StableWebSocketOptions {
     /// Maximum number of messages accepted while the writer is busy or offline.
     std::size_t write_capacity = 256;
+    /// Encoded bytes owned by admitted/pending messages, including the active write.
+    /// Admission exceeding this budget fails explicitly; text is never shortened.
+    std::size_t write_byte_capacity = 16 * 1024 * 1024;
     /// Delay before the first reconnect attempt after a failed session.
     std::chrono::milliseconds initial_backoff{250};
     /// Upper bound for exponential reconnect delays.
@@ -66,10 +69,10 @@ public:
           _endpoint(std::move(endpoint)),
           _options(options),
           _tls_context(tls_context),
-          _control(std::make_shared<Control>(_strand, options.write_capacity))
+          _control(std::make_shared<Control>(_strand, options.write_capacity, options.write_byte_capacity))
     {
         if (_endpoint.host.empty() || _endpoint.port.empty() ||
-            _options.write_capacity == 0 ||
+            _options.write_capacity == 0 || _options.write_byte_capacity == 0 ||
             _options.initial_backoff.count() <= 0 ||
             _options.max_backoff < _options.initial_backoff ||
             _options.idle_timeout.count() < 0) {
@@ -101,6 +104,11 @@ public:
             _strand, run_on_strand(stop), boost::asio::use_awaitable);
     }
 
+    /** Encoded bytes owned by pending/admitted/in-flight sends, not a delivery acknowledgment. */
+    std::size_t queued_write_bytes() const noexcept {
+        return _control->used_bytes->load(std::memory_order_acquire);
+    }
+
     /** Request a prompt stop from any thread; run() is the completion fence. */
     void stop() {
         auto control = _control;
@@ -120,8 +128,18 @@ protected:
     virtual void on_text(std::string message) = 0;
 
 private:
+    /** Reservation follows the message until the actual write finishes or is discarded. */
+    struct ByteReservation {
+        std::shared_ptr<std::atomic<std::size_t>> used;
+        std::size_t bytes;
+        ~ByteReservation() { used->fetch_sub(bytes, std::memory_order_acq_rel); }
+    };
+    struct Outbound {
+        std::string text;
+        std::shared_ptr<ByteReservation> reservation;
+    };
     using WriteChannel = boost::asio::experimental::concurrent_channel<
-        void(boost::system::error_code, std::string)>;
+        void(boost::system::error_code, Outbound)>;
 
     struct Session {
         explicit Session(websocket_stream connection)
@@ -133,8 +151,12 @@ private:
     };
 
     struct Control {
-        Control(boost::asio::any_io_executor executor, std::size_t capacity)
-            : outgoing(std::move(executor), capacity) {}
+        Control(boost::asio::any_io_executor executor, std::size_t capacity, std::size_t byte_capacity)
+            : byte_capacity(byte_capacity), outgoing(std::move(executor), capacity) {}
+
+        const std::size_t byte_capacity;
+        std::shared_ptr<std::atomic<std::size_t>> used_bytes =
+            std::make_shared<std::atomic<std::size_t>>(0);
 
         WriteChannel outgoing;
         boost::asio::cancellation_signal connect_cancel;
@@ -162,8 +184,20 @@ private:
         if (control->admission_closed.load(std::memory_order_acquire)) {
             throw std::logic_error("stable WebSocket client has stopped");
         }
+        auto reservation = std::make_shared<ByteReservation>();
+        reservation->used = control->used_bytes;
+        reservation->bytes = 0;
+        const auto bytes = message.size();
+        auto used = control->used_bytes->load(std::memory_order_acquire);
+        do {
+            if (bytes > control->byte_capacity || used > control->byte_capacity - bytes) {
+                throw std::length_error("stable WebSocket outbound byte capacity exhausted");
+            }
+        } while (!control->used_bytes->compare_exchange_weak(
+            used, used + bytes, std::memory_order_acq_rel));
+        reservation->bytes = bytes;
         co_await control->outgoing.async_send(
-            boost::system::error_code{}, std::move(message),
+            boost::system::error_code{}, Outbound{std::move(message), std::move(reservation)},
             boost::asio::use_awaitable);
     }
 
@@ -179,6 +213,14 @@ private:
         if (control.stopping) return;
         control.stopping = true;
         close_admission(control);
+        // Drain queued owners on the strand. Reservation destructors release
+        // byte accounting; the active writer retains its own owner until joined.
+        for (;;) {
+            boost::system::error_code error;
+            const auto received = control.outgoing.try_receive(
+                [&](boost::system::error_code result, Outbound) { error = result; });
+            if (!received || error) break;
+        }
         control.connect_cancel.emit(boost::asio::cancellation_type::terminal);
         if (control.backoff_timer) control.backoff_timer->cancel();
         if (control.session) {
@@ -227,10 +269,10 @@ private:
     {
         try {
             for (;;) {
-                std::string message = co_await _control->outgoing.async_receive(
+                Outbound message = co_await _control->outgoing.async_receive(
                     boost::asio::use_awaitable);
                 try {
-                    co_await session->stream.write(std::move(message));
+                    co_await session->stream.write(std::move(message.text));
                 } catch (const std::exception& error) {
                     logging::Logger::warning(
                         "intercom client: in-flight message has uncertain "

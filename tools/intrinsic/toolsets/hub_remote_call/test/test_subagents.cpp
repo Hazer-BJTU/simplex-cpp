@@ -507,3 +507,41 @@ BOOST_AUTO_TEST_CASE(subagent_declaration_failure_preserves_plan_and_reports_par
     BOOST_TEST(set.capability_groups().at(1).registered.at(0) == "subagent_receive");
     BOOST_REQUIRE(set.skill());
 }
+
+BOOST_AUTO_TEST_CASE(subagent_answer_pages_return_exact_text_and_actionable_cursor)
+{
+    const Json source = {{"worker_id", "child-worker"}, {"turn", 7}, {"step", 3}, {"commit_sequence", "42"}};
+    const Json cursor = {{"source", source}, {"part", 0}, {"offset", 0}};
+    Json result = child_status();
+    const std::string text = "# exact page\n中文🌍\n" + std::string(12000, 'x');
+    result["answer"] = {{"source", source}, {"part", 0}, {"offset", 0},
+        {"raw", text}, {"bytes", text.size() + 10}, {"next_offset", text.size()},
+        {"next_part", 0}, {"total_parts", 1}, {"done", false}};
+    const auto answer = call("subagent_receive", {{"subagent_id", "subagent-child"}, {"answer", cursor}}, result);
+    BOOST_TEST(answer.raw.find(text) != std::string::npos);
+    BOOST_TEST(answer.raw.find("[[next_offset]]") != std::string::npos);
+    BOOST_TEST(answer.raw.find("\"commit_sequence\":\"42\"") != std::string::npos);
+    result["answer"]["next_offset"] = 1;
+    BOOST_CHECK_THROW(call("subagent_receive", {{"subagent_id", "subagent-child"}, {"answer", cursor}}, result), tools::InvokeException);
+}
+
+BOOST_AUTO_TEST_CASE(subagent_answer_query_rejects_ambiguous_or_malformed_cursors)
+{
+    SubagentReceiveTool tool(endpoint_for(), std::chrono::milliseconds(100), identity);
+    model_io::InvokeQuery query;
+    query.name = "subagent_receive";
+    const Json source = {{"worker_id", "child-worker"}, {"turn", 0}, {"step", 0}, {"commit_sequence", "1"}};
+    const Json valid = {{"subagent_id", "subagent-child"}, {"answer", {
+        {"source", source}, {"part", 0}, {"offset", 0}}}};
+    query.arguments = valid;
+    BOOST_CHECK_NO_THROW(tool.ensure_arguments(query));
+    for (int test = 0; test < 5; ++test) {
+        query.arguments = valid;
+        if (test == 0) query.arguments["cursor"] = 0;
+        if (test == 1) query.arguments.erase("subagent_id");
+        if (test == 2) query.arguments["answer"]["offset"] = -1;
+        if (test == 3) query.arguments["answer"]["source"]["commit_sequence"] = "garbage";
+        if (test == 4) query.arguments["answer"]["source"]["path"] = "/private";
+        BOOST_CHECK_THROW(tool.ensure_arguments(query), tools::InvokeException);
+    }
+}

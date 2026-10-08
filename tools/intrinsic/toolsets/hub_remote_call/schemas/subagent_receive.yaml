@@ -4,7 +4,9 @@ description: >-
   subagent_id, read status, recent request outcomes and a primary-conversation
   page. This does not wait for completion. Check request IDs/run status and
   stale/incomplete/truncated flags. Cursors address a bounded current projection;
-  restart at cursor 0 when revision or worker changes. Trusted, read_only.
+  restart at cursor 0 when revision or worker changes. For a complete answer,
+  use answer.source from answer_source with part=0, offset=0. Continue using
+  next_part and next_offset, resetting offset to 0 when next_part advances. Trusted, read_only.
 type: read_only
 security: trusted
 argument_schema:
@@ -29,6 +31,25 @@ argument_schema:
       maximum: 10
       default: 5
       description: Maximum turns to return; requires subagent_id.
+    answer:
+      type: object
+      additionalProperties: false
+      required: [source, part, offset]
+      description: Read an exact answer segment; requires subagent_id and excludes cursor/limit.
+      properties:
+        source:
+          type: object
+          description: Exact committed response source returned by this child.
+          additionalProperties: false
+          required: [worker_id, turn, step, commit_sequence]
+          properties:
+            worker_id: {type: string, minLength: 1, maxLength: 128, description: Current child worker incarnation.}
+            turn: {type: integer, minimum: 0, maximum: 9007199254740991, description: Original zero-based turn index.}
+            step: {type: integer, minimum: 0, maximum: 9007199254740991, description: Original zero-based response index within the turn.}
+            commit_sequence: {type: string, pattern: '^[1-9][0-9]{0,19}$', description: Decimal committed response identity returned by receive.}
+            fingerprint: {type: string, pattern: '^[a-f0-9]{64}$', description: Copy the answer fingerprint unchanged when supplied by the worker.}
+        part: {type: integer, minimum: 0, maximum: 9007199254740991, description: Zero-based content part; start at 0.}
+        offset: {type: integer, minimum: 0, maximum: 9007199254740991, description: UTF-8 byte offset; use 0 for a new part or the prior next_offset.}
   anyOf:
     - required: [subagent_id]
     - required: []
@@ -36,3 +57,4 @@ argument_schema:
         anyOf:
           - required: [cursor]
           - required: [limit]
+          - required: [answer]

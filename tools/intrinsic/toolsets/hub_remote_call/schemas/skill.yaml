@@ -21,6 +21,11 @@ text: |
   without a target to discover direct children, or with subagent_id/cursor/limit
   for status, recent outcomes and visible conversation. Match request IDs and
   inspect run status, pending approvals and stale/incomplete/truncated flags.
+  If answer_source is present, read exact answer pages with subagent_receive:
+  answer: {source: answer_source, part: 0, offset: 0}. Continue with next_part and
+  next_offset; reset offset to 0 when the part advances. Stop on done. Match source
+  identity and byte offsets; refresh receive after a restart or expired source.
+  Turn cursors cannot retrieve a clipped answer suffix. Collect pages before stop.
   sent means queued, not completed; unknown means uncertain delivery. No RPC is
   retried automatically, and a repeated tool call has a fresh RPC ID. After a
   timeout/lost reply, receive before another mutation; recovery may be inconclusive.

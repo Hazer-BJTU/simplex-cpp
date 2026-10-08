@@ -481,45 +481,100 @@ another user entry. A turn with no model steps still consumes the byte budget
 and advances `next`. Requesting `step` equal to the turn's step count returns
 that turn's user projection and advances to the next turn.
 
-The current four-part and per-part limits ensure that one user projection plus
-its first remaining model step fits an empty page, even when every raw byte
-requires a six-byte JSON escape. Pagination adds no further text truncation.
-If a future projection cannot fit such an indivisible entry, the query emits
-`history_error` rather than exceeding the limit, silently omitting content, or
-returning a cursor that cannot advance. Invalid UTF-8 or other projection errors
-also remain query failures; they do not start an agent run.
+User input keeps its existing four-part display projection. Answers receive a
+separate 96 KiB aggregate **encoded** preview allowance per response (up to 128
+parts), while reasoning receives a 4 KiB UTF-8 prefix. The aggregate allowance
+includes escaping and guarantees that a user projection and the next response
+fit an empty page. Full answer pagination below is independent of this preview.
+Invalid UTF-8 or projection errors remain query failures and never start a run.
 Each step contains its index, ordered response content, optional reasoning,
 and a tool-call count. Newly committed task steps also include `commit_sequence`
 (a decimal string) and `execution: {worker_id, request_id, run_id}`. These identify
 the response independently of the turn's input provenance; legacy steps may omit
 them. See [automatic context compaction](#automatic-context-compaction) for replay
 reconciliation across Continue requests and worker restarts. `omitted_steps` counts model steps still to be fetched;
-`omitted_user_parts` counts input parts beyond the display limit. Each content
-list includes at most four parts;
+`omitted_user_parts` counts input parts beyond the display limit. Each user content list includes at most four parts; response previews include up to 128 parts;
 `omitted_parts` on a model step counts its remaining parts.
 Tool arguments, results, system prompt, and the rest of `AgentInputState` are
-never returned. Text parts are limited to 4096 UTF-8 bytes and parts of any other
-modality to 2048 bytes; `truncated: true` marks clipped values. Binary
-contents carry an empty `raw`, `omitted: true`, and their encoded byte length.
-Each projected part carries `type` and `modality`.
-This is display data, not a restorable snapshot.
+never returned. User text parts retain their 4096-byte preview, other references
+2048 bytes; binary values are omitted. Answer and reasoning previews use the
+separate allowances above. Every shortened part has `truncated: true` and its
+original UTF-8 `bytes`; `omitted_parts` reports parts outside the preview.
+Worker state, provider replay metadata and JSON snapshots keep complete originals.
 
-The built-in Hub preserves both the parsed event and its original `raw` document.
-Its complete panel `event` message therefore fits within **512 KiB (524288
-bytes)** for these worker history pages, including the duplicated data,
-bounded built-in identifiers, Hub metadata and panel wrapper. This is a derived
-upper bound, not a separate Hub admission setting. Arbitrary older/custom worker events remain
-subject to the Hub's general transport and output limits; this worker projection
-does not impose a new limit on their protocol. Existing `session-history`
-capability and cursor fields are unchanged, so compatible clients need no new
-capability negotiation.
+### Complete answer pages
 
-Pages reflect state at the time each query runs. Hooks may prune or edit turns
-between pages. If two pages have different `revision` values, discard the
-partial result and restart from `start: 0`. Refresh after a run settles.
-The response event's `sequence` is the display baseline for subsequent live
-events from the same worker. A query can run during an active invocation, but
-it observes only records already committed to in-memory state.
+Workers advertise `answer-pages` in ready/status. A committed response in live
+`model_response` and history contains `answer_source`:
+
+```json
+{"worker_id":"worker-incarnation", "turn":0, "step":1, "commit_sequence":"2","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+```
+
+Read the original answer without starting a run or modifying options:
+
+```json
+{"type":"payload","data":{"operation":"answer","request_id":"answer-1","source":{"worker_id":"worker-incarnation","turn":0,"step":1,"commit_sequence":"2","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"part":0,"offset":0}}
+```
+
+The `answer` event data echoes request/source/part/offset and returns `raw`,
+`type`, `modality`, `bytes`, `next_offset`, `next_part`, `total_parts`, `done`.
+Binary answer parts are explicitly unavailable in this text-only path; neither
+filesystem files nor external URLs are fetched. Text and external-reference
+strings are returned verbatim. Each page contains at most 32 KiB of original UTF-8 bytes (at most 192 KiB after
+JSON escaping). Concatenate bytes within a part, preserving part boundaries.
+When `next_part` advances, reset offset to zero; otherwise use `next_offset`.
+`done` identifies the last part. Reject mismatched identities, gaps or duplicate
+ranges when assembling an answer. No complete-answer size cap is applied.
+Binary content is explicitly unavailable through this text-only operation.
+
+The worker validates its process identity and committed response before reading;
+invalid offsets, compaction/state replacement and process restart produce
+`answer_error`, never a replacement answer. Refresh history to obtain new sources
+after restart. A snapshot restore preserves the answer but not the old worker
+identity. Source availability follows existing persistence/compaction/headless
+cleanup lifetimes; readable archives are not a lossless retrieval source.
+
+Source fingerprints are SHA-256 over the ordered canonical answer parts, their
+encoding/modality and byte lengths. Copy the returned fingerprint unchanged;
+the illustrative hexadecimal value above is not a usable source. Writable-hook
+edits, even of equal-length text, invalidate an older fingerprint. A fresh history
+query supplies current sources; changes to reasoning/diagnostic metadata alone
+do not invalidate answer text. Hashing reads original bytes without a response-
+sized copy; each read verifies the source and does not keep a separate answer cache.
+Older compatible workers may omit fingerprints; the Hub accepts those sources,
+but this worker requires the fingerprint it returned.
+
+### Display transport limits
+
+All built-in worker events fit a 1 MiB encoded JSON ceiling before admission to
+the application queue. Native extras are omitted from model projections, and
+related tool/diagnostic display trees are bounded with explicit shortening flags.
+These are display copies, never substituted execution arguments or persistence.
+Tool calls and results use dedicated projections: each represented call retains
+its exact ID, name, scheduling/security classification and result provenance.
+Arguments, output and unrelated extras have independent traversal/encoded-byte
+budgets for each entry. Result status, `loop_skipped`, and framework error stage/
+message are projected separately from other extras; long error messages remain
+explicit previews. An early complex call cannot consume later calls' identity
+budget. Batches show at most 64 entries and count an omitted suffix explicitly.
+The suffix is an array marker, `{"display_omitted":true,"omitted_items":N}`,
+not a tool call or result. Consumers preserve that count when reprojecting a
+batch, add any newly omitted entries, and display an omission notice rather
+than assigning the marker execution identity or a success/failure status.
+Live responses have a 512 KiB aggregate encoded answer allowance, separate from
+history's 96 KiB allowance; reasoning receives at most 4 KiB. Larger answers use
+read-only pages rather than a universal complete-answer limit. The application
+bridge and IO write queue share a conservative 16 MiB admission check, including
+in-flight values. Two MiB and eight queue slots are reserved for control and
+settlement. Under pressure, model/tool previews can be omitted; `run_finished`
+reports `omitted_display_events`, prompting history refresh. Canonical state and
+answer sources are unaffected. Admission is not delivery acknowledgement.
+Congestion/transport failures remain explicit, and optional JSONL logs remain
+best effort. The Hub normalizes accepted older-worker display events and removes
+`raw.data` duplication. It cannot recover a frame rejected at ingress or an old
+worker's clipped suffix; those limitations must be displayed honestly.
+Reasoning is always literal plain text, including expanded/restored views.
 
 ### Compact conversation context
 
@@ -722,12 +777,14 @@ may occur in nested dataclass records.
 | `options` | Options object | Available choices and current selections returned in response to the `options` signal. |
 | `history` | Display history page | Read-only response to a `history` payload; not a run event. |
 | `compact_finished` | `{ "summary": string, "memory_file": string, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
+| `answer` | Correlated answer page | Exact read-only content segment; no run admission. |
+| `answer_error` | `{ "request_id": any JSON value or null, "message": string }` | Answer source or cursor is unavailable. |
 | `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
 | `input_admitted` | `{ "operation": string }` | Host admitted `message`, `continue`, or `compact` and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
 | `input_rejected` | `{ "request_id": any JSON value or null, "message": string, "operation"?: "message" \| "continue" \| "compact", "code"?: "invalid_options" \| "payload_queue_full" }` | Input failed host validation or payload queue admission; no run was started for that input. A recognized operation is retained for transcript replay even after request bookkeeping expires. |
 | `run_started` | `{}` | Loop admitted the invocation. |
 | `input_committed` | `{}` | New user input was integrated in memory. |
-| `model_response` | Message object | One complete model response was committed in memory. It can contain tool calls and need not be the final answer. |
+| `model_response` | Answer-first Message projection | A complete response was committed in memory; displayed content may be a marked preview with an `answer_source`. It can contain tool calls and need not be the final answer. |
 | `tool_calls` | Array of call objects | Calls proposed for a batch, before dispatch and security evaluation. Not proof of execution or final authorization attributes. |
 | `tool_results` | Array of result objects | Complete returned batch was projected into conversation state. Results remain in call order, not completion order. |
 | `persisted` | `{ "boundary": string, "format": "json" }` | A required JSON snapshot write completed successfully at the named boundary. |
@@ -842,7 +899,7 @@ the next payload as described under
 | `storage_failed` | Boolean | A required JSON persistence operation failed; further saves are suppressed. |
 | `rejected_payloads` | Nonnegative integer | Cumulative inbound payload-queue overflow count in this IO client lifetime; not semantic input rejections. |
 | `memory_retention` | Object | Effective `max_archives` (default 5); zero disables cleanup. Older workers omit this field. |
-| `capabilities` | Array of strings | Features supported by this worker process. `session-history` means it accepts read-only `history` payloads; `context-compact` means it implements the `compact` lifecycle (subject to persistence and state prerequisites). A hub should check this before querying a worker that may be older than the hub. |
+| `capabilities` | Array of strings | Features supported by this worker process. `answer-pages` means it accepts read-only `answer` payloads; `session-history` means it accepts read-only `history` payloads; `context-compact` means it implements the `compact` lifecycle (subject to persistence and state prerequisites). A hub should check this before querying a worker that may be older than the hub. |
 | `loop` | Optional loop-progress object | Present only when conversation state contains loop progress, including restored progress. |
 
 Loop progress always contains the following fields when present:
@@ -913,8 +970,9 @@ and pending event queues are not part of the persisted conversation.
 These shapes are embedded directly in event `data`, confirmation `data.call`,
 and loop progress. Optional fields are omitted when absent. `extras` is optional
 opaque JSON, not necessarily an object except for the recognized result markers
-below. Hubs should retain unknown provider/plugin fields without interpreting
-them as commands.
+below. The canonical worker record retains all metadata, but display projections
+can omit native extras or preview diagnostics. Unknown metadata is never a command;
+Hub display retention is bounded rather than a copy of canonical state.
 
 ### Content
 
@@ -955,6 +1013,11 @@ computing total tokens. Usage is provider-reported and may be partial.
   "cost": {"prompt":120,"generated":4,"cache_hit":80}
 }
 ```
+
+Display content may additionally contain `truncated`, original UTF-8 `bytes`,
+and `omitted`; response projections contain `omitted_parts`. These flags describe
+display shortening, not a partial/failed model generation. Native extras and
+unbounded action-status/diagnostic fields are not copied into normal response events.
 
 ### Call object
 

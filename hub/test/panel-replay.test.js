@@ -40,7 +40,7 @@ for (const reconnect of [false, true]) {
         emit(1, 'status', { active: false, capabilities: ['session-history'] });
         for (let sequence = 2; sequence <= 1001; sequence += 1) {
             emit(sequence, 'model_response', { content: [
-                { type: 'text', raw: 'x'.repeat(2048), modality: 'text' },
+                { type: 'text', raw: 'x'.repeat(4096), modality: 'text' },
             ] });
         }
         await until(() => session.stats.events === 1001, { timeout: 5000 });

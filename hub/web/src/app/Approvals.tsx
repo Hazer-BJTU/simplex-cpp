@@ -233,9 +233,13 @@ const ApprovalBody = memo(function ApprovalBody({ prompt, summary, status, error
                 {summary}
             </pre>
 
+            {prompt.arguments_truncated && <p className="text-xs text-ink-muted" role="status">
+                Argument preview only ({prompt.arguments_bytes} UTF-8 bytes originally).
+                Complete details are unavailable in this panel; the decision applies to the original operation.
+            </p>}
             <details onToggle={event => setArgumentsOpen(event.currentTarget.open)} className="text-xs text-ink-muted">
                 <summary onClick={event => setArgumentsOpen(!(event.currentTarget.parentElement as HTMLDetailsElement).open)}
-                    className="cursor-pointer select-none">arguments as the worker sent them</summary>
+                    className="cursor-pointer select-none">{prompt.arguments_truncated ? 'argument preview' : 'arguments as the worker sent them'}</summary>
                 <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded
                     bg-sunken px-2 py-1 font-mono text-ink">
                     {argumentsText}

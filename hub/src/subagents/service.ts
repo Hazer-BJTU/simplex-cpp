@@ -1,3 +1,4 @@
+import { readAnswer } from '../worker/answers.ts';
 /** Session-level family supervisor and the fixed subagent remote operations. */
 import { createHash, randomUUID } from 'node:crypto';
 import type { HubConfig } from '../config.ts';
@@ -185,7 +186,7 @@ export class SubagentService {
     }
 
     /** Routes are fixed in the dispatcher, and arguments never select executable code. */
-    dispatch(context: ToolContext): Record<string, unknown> {
+    dispatch(context: ToolContext): Record<string, unknown> | Promise<Record<string, unknown>> {
         context.validate();
         if (Buffer.byteLength(canonical(context.request.arguments)) > 64 * 1024) {
             throw new ToolFailure('invalid_arguments', 'subagent arguments exceed 64 KiB');
@@ -298,16 +299,26 @@ export class SubagentService {
             error: record.error || null };
     }
 
-    private receive(context: ToolContext): Record<string, unknown> {
+    private receive(context: ToolContext): Record<string, unknown> | Promise<Record<string, unknown>> {
         const args = context.request.arguments;
-        exact(args, ['subagent_id', 'cursor', 'limit']);
+        exact(args, ['subagent_id', 'cursor', 'limit', 'answer']);
         if (args.subagent_id === undefined) {
-            if (args.cursor !== undefined || args.limit !== undefined) throw new ToolFailure('invalid_arguments', 'pagination requires a target');
+            if (args.cursor !== undefined || args.limit !== undefined || args.answer !== undefined) throw new ToolFailure('invalid_arguments', 'pagination requires a target');
             return { subagents: [...this.children.values()].filter(record =>
                 record.parent.session_id === context.caller.id && record.parent.lifecycle_id === context.caller.lifecycleId
                 && record.parent.worker_id === context.request.worker_id).map(record => this.status(record)) };
         }
         const record = this.child(context, args.subagent_id);
+        if (args.answer !== undefined) {
+            if (args.cursor !== undefined || args.limit !== undefined) throw new ToolFailure('invalid_arguments', 'answer cannot carry turn pagination');
+            return readAnswer(record.session, args.answer, context.signal).then(answer => {
+                context.validate();
+                this.child(context, args.subagent_id);
+                return { ...this.status(record), requests: [], requests_truncated: false,
+                    conversation: null, answer };
+            }).catch(error => { throw error instanceof ToolFailure ? error
+                : new ToolFailure('answer_unavailable', 'answer source expired, disconnected or cursor invalid'); });
+        }
         const cursor = args.cursor ?? 0;
         const limit = args.limit ?? 5;
         if (!Number.isSafeInteger(cursor) || (cursor as number) < 0 || !Number.isSafeInteger(limit)
@@ -321,7 +332,16 @@ export class SubagentService {
                 next: (cursor as number) + page.length, total: turns.length } : null };
         if (Buffer.byteLength(JSON.stringify(result)) > MAX_RPC_BYTES) {
             // Keep whole turns; a single oversized turn may be represented as omitted.
-            while (page.length && Buffer.byteLength(JSON.stringify(result)) > MAX_RPC_BYTES) page.pop();
+            while (page.length > 1 && Buffer.byteLength(JSON.stringify(result)) > MAX_RPC_BYTES - 4096) page.pop();
+            if (page.length && Buffer.byteLength(JSON.stringify(result)) > MAX_RPC_BYTES - 4096) {
+                // Keep the source of a large answer actionable instead of skipping its turn.
+                const turn = structuredClone(page[0]!);
+                turn.user = [];
+                turn.steps = turn.steps.slice(-1).map(step => ({ ...step,
+                    content: step.content.map(part => ({ ...part, raw: '', truncated: true,
+                        bytes: part.bytes ?? Buffer.byteLength(part.raw) })) }));
+                page[0] = turn;
+            }
             if (result.conversation) {
                 result.conversation.next = (cursor as number) + page.length;
                 result.conversation.truncated = true;
