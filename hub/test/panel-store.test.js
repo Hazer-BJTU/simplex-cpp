@@ -587,6 +587,62 @@ describe('panel store: an open prompt comes from the session description', () =>
         assert.equal(store.getState().openConfirmations('demo').length, 1);
     });
 
+    for (const update of ['subscribed', 'welcome']) {
+        const replace = (store, next) => {
+            const description = session('demo', { confirmations: [next] });
+            if (update === 'welcome') store.getState().applyWelcome(welcome('epoch-1', [description]));
+            else store.getState().applySubscribed(subscribed('demo', [], { session: description }));
+        };
+
+        it(`replaces a shorter argument preview with a longer one on ${update}`, () => {
+            const store = createPanelStore();
+            const preview = text => ({ ...prompt, arguments_truncated: true, arguments_bytes: 200,
+                call: { ...prompt.call, arguments: { command: {
+                    display_truncated: true, bytes: 180, preview: text,
+                } } } });
+            const shorter = preview('echo');
+            store.getState().applyWelcome(welcome('epoch-1', [session('demo', { confirmations: [shorter] })]));
+            const longer = preview('echo detailed command arguments');
+            replace(store, longer);
+            const displayed = store.getState().confirmation('demo', prompt.confirmation_id);
+            assert.deepEqual(displayed.call.arguments, longer.call.arguments);
+            assert.notEqual(displayed, shorter);
+        });
+
+        it(`replaces omitted arguments with complete values on ${update}`, () => {
+            const store = createPanelStore();
+            const omitted = { ...prompt, arguments_truncated: true, arguments_bytes: 16,
+                call: { ...prompt.call, arguments: { display_omitted: true } } };
+            store.getState().applyWelcome(welcome('epoch-1', [session('demo', { confirmations: [omitted] })]));
+            replace(store, prompt);
+            const displayed = store.getState().confirmation('demo', prompt.confirmation_id);
+            assert.deepEqual(displayed.call.arguments, prompt.call.arguments);
+            assert.equal(displayed.arguments_truncated, undefined);
+            assert.equal(displayed.arguments_bytes, undefined);
+        });
+
+        for (const [field, value] of [['arguments_truncated', false], ['arguments_bytes', 201]]) {
+            it(`updates ${field} even when preview content is unchanged on ${update}`, () => {
+                const store = createPanelStore();
+                const initial = { ...prompt, arguments_truncated: true, arguments_bytes: 200 };
+                store.getState().applyWelcome(welcome('epoch-1', [session('demo', { confirmations: [initial] })]));
+                replace(store, { ...initial, [field]: value });
+                assert.equal(store.getState().confirmation('demo', prompt.confirmation_id)[field], value);
+            });
+        }
+    }
+
+    it('reuses unchanged approval references after decoding an identical snapshot', () => {
+        const store = createPanelStore();
+        store.getState().applyWelcome(welcome('epoch-1', [session('demo', { confirmations: [prompt] })]));
+        const previous = store.getState().views.get('demo').confirmations;
+        store.getState().applySubscribed(subscribed('demo', [], {
+            session: session('demo', { confirmations: [JSON.parse(JSON.stringify(prompt))] }),
+        }));
+        assert.equal(store.getState().views.get('demo').confirmations, previous);
+        assert.equal(store.getState().confirmation('demo', prompt.confirmation_id), prompt);
+    });
+
     it('drops a prompt the newest description no longer lists', () => {
         const store = createPanelStore();
         store.getState().applyWelcome(welcome('epoch-1', [session('demo', { confirmations: [prompt] })]));

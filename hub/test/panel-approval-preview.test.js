@@ -121,6 +121,16 @@ for (const counts of [[32], [64], [32, 32]]) {
                     assert.ok(command.startsWith(prompt.call.arguments.command.preview));
                 }
             }
+            // A subscription has more room per prompt than a multi-session
+            // welcome. The store must expose its newly received preview rather
+            // than reuse the older, smaller object on matching lifecycle fields.
+            const subscribed = finalPages().at(-1).session.confirmations;
+            const displayed = store.getState().views.get(selected.id).confirmations;
+            for (const prompt of subscribed) {
+                assert.deepEqual(displayed.get(prompt.confirmation_id).call.arguments, prompt.call.arguments);
+                assert.equal(displayed.get(prompt.confirmation_id).arguments_truncated, prompt.arguments_truncated);
+                assert.equal(displayed.get(prompt.confirmation_id).arguments_bytes, prompt.arguments_bytes);
+            }
         };
         await client.start();
         await until(() => finalPages().length === 1 && store.getState().lastSeq(selected.id) === 6,
