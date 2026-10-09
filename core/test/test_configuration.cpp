@@ -260,3 +260,18 @@ BOOST_AUTO_TEST_CASE(auto_compact_configuration_is_opt_in_and_requires_durabilit
         BOOST_CHECK_THROW(load::parse_configuration(invalid, "/tmp"), std::invalid_argument);
     }
 }
+
+BOOST_AUTO_TEST_CASE(transport_capacity_covers_application_budget_and_query_quota_is_independent) {
+    auto value = configuration();
+    value["client"]["query_capacity"] = 3;
+    value["client"]["transport"]["write_byte_capacity"] = 32 * 1024 * 1024;
+    auto parsed = load::parse_configuration(value, "/tmp/config");
+    BOOST_TEST(parsed.queues.query_capacity == 3u);
+    BOOST_TEST(parsed.queues.signal_capacity == 256u);
+    BOOST_TEST(parsed.transport.write_byte_capacity == 32 * 1024 * 1024u);
+    value["client"]["transport"]["write_byte_capacity"] = 16 * 1024 * 1024 - 1;
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp/config"), std::invalid_argument);
+    value["client"]["transport"]["write_byte_capacity"] = 16 * 1024 * 1024;
+    value["client"]["query_capacity"] = 0;
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp/config"), std::invalid_argument);
+}

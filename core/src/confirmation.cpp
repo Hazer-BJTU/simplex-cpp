@@ -1,6 +1,7 @@
 #include "core/confirmation.hpp"
 #include "core/protocol.hpp"
 #include "intercom/cancellable_exchange.hpp"
+#include "intercom/message_limits.hpp"
 
 namespace core {
 nlohmann::json ConfirmationOptions::get_options() const {
@@ -92,7 +93,9 @@ boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     }
     try {
         const auto wire = co_await intercom::cancellable_exchange(
-            executor, *endpoint, encoded_request, timeout, scope->token());
+            executor, *endpoint, encoded_request, timeout,
+            scope->token(), endpoint::get_global_ssl_context(),
+            intercom::confirmation_reply_max_bytes);
         const auto reply = nlohmann::json::parse(wire);
         const auto& data = reply.at("data");
         if (reply.at("type") != "confirmation_response"

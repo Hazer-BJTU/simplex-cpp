@@ -261,8 +261,14 @@ Configuration parse_configuration(
     result.client = websocket_endpoint(text(client, "endpoint"));
     result.queues.payload_capacity = number(client, "payload_capacity", 256);
     result.queues.signal_capacity = number(client, "signal_capacity", 256);
+    result.queues.query_capacity = number(client, "query_capacity", 64);
     const auto& transport = object(client, "transport");
     result.transport.write_capacity = number(transport, "write_capacity", 256);
+    result.transport.write_byte_capacity = number(transport, "write_byte_capacity",
+        intercom::default_write_byte_capacity);
+    if (result.transport.write_byte_capacity < intercom::default_write_byte_capacity) {
+        throw std::invalid_argument("client.transport.write_byte_capacity must cover the 16 MiB application budget");
+    }
     result.transport.initial_backoff = std::chrono::milliseconds(number(transport, "initial_backoff_ms", 250));
     result.transport.max_backoff = std::chrono::milliseconds(number(transport, "max_backoff_ms", 10000));
     result.transport.idle_timeout = std::chrono::seconds(number(transport, "idle_timeout_seconds", 0, true));

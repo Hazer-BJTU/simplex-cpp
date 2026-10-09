@@ -3,6 +3,7 @@
 #include "fileio/session_lock.hpp"
 #include "core/confirmation.hpp"
 #include "core/protocol.hpp"
+#include "core/event_outbox.hpp"
 #include "load/plugins.hpp"
 #include "load/persistence.hpp"
 #include "loop/loop.hpp"
@@ -251,10 +252,9 @@ const char* failure_stage(loop::RunFailureStage stage) {
 }
 
 
-/** Strand-owned runtime, with thread-safe run control and a rejection mailbox. */
+/** Strand-owned runtime, with thread-safe run control and bounded event admission. */
 struct Application::Impl : std::enable_shared_from_this<Impl> {
-    using Queue = asio::experimental::channel<void(boost::system::error_code, Json)>;
-    using RejectionQueue = asio::experimental::concurrent_channel<
+    using ControlQueue = asio::experimental::concurrent_channel<
         void(boost::system::error_code, Json)>;
     using Done = asio::experimental::channel<void(boost::system::error_code, bool)>;
 
@@ -264,9 +264,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
           session_id(std::move(session)), driver_model(std::move(injected)),
           hooks(events), store(std::make_shared<tools::intrinsic::ProcessSessionStore>(strand)),
           client(strand, config.client, events, config.queues, config.transport),
-          outgoing(strand, config.event_capacity + 8),
-          rejected_inputs(strand, config.queues.signal_capacity),
-          rejection_done(strand, 1), sender_done(strand, 1), client_done(strand, 1) {
+          outgoing(config.event_capacity), outgoing_ready(strand, 1),
+          control_messages(strand, config.queues.signal_capacity),
+          control_done(strand, 1), sender_done(strand, 1), client_done(strand, 1) {
         validate_session_id(session_id);
         if (config.max_auto_compactions == 0 || config.max_exchanges == 0) {
             throw std::invalid_argument("worker execution budgets must be positive");
@@ -275,7 +275,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             || config.auto_compact_prompt.empty() || config.auto_compact_continue_prompt.empty())) {
             throw std::invalid_argument("automatic compaction requires persistence, memory and operation prompts");
         }
-        if (config.event_capacity == 0) throw std::invalid_argument("event_capacity must be positive");
+        if (config.transport.write_byte_capacity < intercom::default_write_byte_capacity) {
+            throw std::invalid_argument("transport byte capacity must cover the application budget");
+        }
     }
 
     asio::strand<asio::any_io_executor> strand;
@@ -290,14 +292,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     loop::LoopHookRegistry hooks;
     std::shared_ptr<tools::intrinsic::ProcessSessionStore> store;
     io::Client client;
-    Queue outgoing;
-    /** Encoded application queue bytes, including the message awaiting IO admission. */
-    std::size_t outgoing_bytes = 0;
-    std::size_t outgoing_count = 0;
-    std::size_t omitted_display_events = 0;
-    /** Bounded metadata bridge from the IO control thread to the state owner. */
-    RejectionQueue rejected_inputs;
-    Done rejection_done;
+    EventOutbox outgoing;
+    Done outgoing_ready;
+    /** Bounded bridge for status/options signals; cancellation acts before it. */
+    ControlQueue control_messages;
+    Done control_done;
     Done sender_done;
     Done client_done;
     model_io::AgentInputState state;
@@ -325,7 +324,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     std::string failure_operation = "task";
     enum class CompactMode { Manual, Automatic };
     std::exception_ptr failure;
-    std::uint64_t sequence = 0;
     std::uint64_t history_revision = 0;
 
     /** Close security admission before requesting loop cancellation. */
@@ -343,7 +341,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     }
 
     void shutdown() {
-        shutdown_requested.store(true);
+        if (shutdown_requested.exchange(true)) return;
         cancel();
         asio::post(strand, [self = shared_from_this()] {
             self->stopping = true;
@@ -360,52 +358,40 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         cancel();
         client.stop();
         outgoing.close();
-        rejected_inputs.close();
+        outgoing_ready.try_send(boost::system::error_code{}, true);
+        control_messages.close();
     }
 
-    /** Admit a bounded display copy. Omitted previews are counted at settlement;
-     * mandatory lifecycle/control overflow remains fatal and observable. */
+    /** Noncritical congestion is bounded and observable, never a run failure. */
     void emit(std::string name, Json data,
               const std::string& event_request, const std::string& event_run) {
-        const bool display = name == "model_response" || name == "tool_calls" || name == "tool_results";
-        if (display && (outgoing_count >= config.event_capacity
-            || outgoing_bytes + client.queued_write_bytes() > 14 * 1024 * 1024)) {
-            // Keep reserved settlement capacity; source state remains available
-            // through history/answer queries after the congestion is cleared.
-            ++omitted_display_events;
-            return;
+        if (name == "run_finished" || (name == "error" && storage_failed)) {
+            data["rejected_queries"] = client.rejected_queries();
+            data["unreported_rejections"] = client.unreported_rejections();
         }
-        if (name == "run_finished" && omitted_display_events != 0) {
-            data["omitted_display_events"] = omitted_display_events;
-            omitted_display_events = 0;
+        auto kind = EventOutbox::Kind::Feedback;
+        if (name == "model_response" || name == "tool_calls" || name == "tool_results") {
+            kind = EventOutbox::Kind::Preview;
+        } else if (name == "history" || name == "answer" || name == "history_error" || name == "answer_error") {
+            kind = EventOutbox::Kind::Query;
+        } else if (name == "persisted" || name == "status" || name == "options" || name == "export_error"
+                   || (name == "error" && !storage_failed)
+                   || (name == "compact_finished" && data.value("origin", std::string()) == "automatic")) {
+            kind = EventOutbox::Kind::Metadata;
+        } else if (name == "ready" || name == "input_admitted" || name == "run_started"
+                   || name == "input_committed" || name == "run_finished" || name == "compact_finished"
+                   || (name == "error" && storage_failed)) {
+            kind = EventOutbox::Kind::Lifecycle;
         }
         Json message = {{"type", "event"}, {"event", std::move(name)},
             {"session_id", session_id}, {"worker_id", worker_id},
-            {"request_id", event_request}, {"run_id", event_run},
-            {"sequence", sequence + 1}, {"data", std::move(data)}};
-        const auto encoded_bytes = message.dump().size();
-        if (encoded_bytes > display_event_max_bytes) {
-            throw std::length_error("display event exceeds the transport budget");
+            {"request_id", event_request}, {"run_id", event_run}, {"data", std::move(data)}};
+        const auto admission = outgoing.admit(std::move(message), kind, client.queued_write_bytes());
+        if (admission == EventOutbox::Admission::Omitted && kind == EventOutbox::Kind::Lifecycle) {
+            throw std::runtime_error("application lifecycle event admission failed");
         }
-        if (message.at("event") == "history"
-            && encoded_bytes > history_event_max_bytes) {
-            throw std::length_error("history event exceeds the display budget");
-        }
-        // A rejected history projection must not leave a gap before history_error.
-        if (outgoing_bytes + client.queued_write_bytes() + encoded_bytes > 16 * 1024 * 1024) {
-            // Synchronous observers cannot wait for a congested transport.
-            // Fail visibly rather than grow an unbounded display queue.
-            auto error = std::make_exception_ptr(std::runtime_error("application event byte queue exhausted"));
-            fail(error);
-            std::rethrow_exception(error);
-        }
-        ++sequence;
-        outgoing_bytes += encoded_bytes;
-        ++outgoing_count;
-        if (!outgoing.try_send(boost::system::error_code{}, std::move(message))) {
-            auto error = std::make_exception_ptr(std::runtime_error("application event queue exhausted"));
-            fail(error);
-            std::rethrow_exception(error);
+        if (admission != EventOutbox::Admission::Omitted) {
+            outgoing_ready.try_send(boost::system::error_code{}, true);
         }
     }
 
@@ -430,6 +416,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     Json status() const {
         Json value = {{"active", active}, {"stopping", stopping},
             {"storage_failed", storage_failed}, {"rejected_payloads", client.rejected_payloads()},
+            {"rejected_queries", client.rejected_queries()},
+            {"unreported_rejections", client.unreported_rejections()},
+            {"event_queue", {{"count", outgoing.size()}, {"bytes", outgoing.bytes()},
+                             {"transport_bytes", client.queued_write_bytes()}}},
             {"capabilities", Json::array({"session-history", "context-compact", "auto-compact", "answer-pages"})}};
         value["memory_retention"] = {{"max_archives", config.memory_retention.max_archives}};
         value["auto_compact"] = compact_counters();
@@ -668,112 +658,98 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }));
         subscriptions.emplace_back(events.subscribe<io::SignalEvent>(
             [weak = weak_from_this()](const io::SignalEvent& event) {
-            const auto& signal = event.signal;
-            if (auto self = weak.lock()) {
-                asio::post(self->strand, [self, signal] {
-                    try {
-                        const auto operation = signal.at("operation").template get<std::string>();
-                        if (operation == "cancel") {
-                            const auto run = signal.at("run_id").template get<std::string>();
-                            if (run.empty()) throw std::invalid_argument("cancel requires run_id");
-                            self->cancel(run);
-                            self->emit("status", self->status());
-                        } else if (operation == "shutdown") {
-                            self->shutdown();
-                        } else if (operation == "status") {
-                            self->emit("status", self->status());
-                        } else if (operation == "options") {
-                            self->emit("options", self->options());
-                        } else {
-                            throw std::invalid_argument("unknown signal operation");
-                        }
-                    } catch (const std::exception& error) {
-                        try { self->emit("error", {{"message", error.what()}}); }
-                        catch (...) { self->fail(std::current_exception()); }
+                if (auto self = weak.lock()) {
+                    const auto& signal = event.signal;
+                    // This callback runs on the separate control thread. Only
+                    // thread-safe run control acts here; all state reads remain
+                    // in the bounded strand mailbox below.
+                    if (signal.is_object() && signal.value("operation", Json()) == "shutdown") {
+                        self->shutdown();
+                        return;
                     }
-                });
+                    if (signal.is_object() && signal.value("operation", Json()) == "cancel"
+                        && signal.contains("run_id") && signal.at("run_id").is_string()
+                        && !signal.at("run_id").get_ref<const std::string&>().empty()) {
+                        self->cancel(signal.at("run_id").get<std::string>());
+                    }
+                    self->control_messages.try_send(boost::system::error_code{}, signal);
+                }
+            }));
+        subscriptions.emplace_back(events.subscribe<io::PayloadQueryEvent>([this](const auto& event) {
+            // IO publishes queries on the executor supplied to Client: our strand.
+            const auto& payload = event.payload;
+            const bool answer = payload.value("operation", Json()) == "answer";
+            try {
+                if (answer) {
+                    emit("answer", answer_page(state, payload, worker_id));
+                } else {
+                    auto request = parse_history_request(payload);
+                    emit("history", history_page(state, request, history_revision, worker_id));
+                }
+            } catch (const std::exception& error) {
+                emit(answer ? "answer_error" : "history_error", {
+                    {"request_id", payload.value("request_id", Json())}, {"message", error.what()}});
             }
         }));
-        subscriptions.emplace_back(events.subscribe<io::PayloadQueryEvent>(
-            [weak = weak_from_this()](const io::PayloadQueryEvent& event) {
-                if (auto self = weak.lock()) {
-                    asio::post(self->strand, [self, payload = event.payload] {
-                        try {
-                            if (payload.value("operation", Json()) == "answer") {
-                                self->emit("answer", answer_page(self->state, payload, self->worker_id));
-                                return;
-                            }
-                            const auto request = parse_history_request(payload);
-                            auto page = history_page(
-                                self->state, request, self->history_revision, self->worker_id);
-                            self->emit("history", std::move(page));
-                        } catch (const std::exception& error) {
-                            try {
-                                self->emit(payload.value("operation", Json()) == "answer" ? "answer_error" : "history_error", {
-                                    {"request_id", payload.is_object()
-                                        ? payload.value("request_id", Json()) : Json()},
-                                    {"message", error.what()}});
-                            } catch (...) { self->fail(std::current_exception()); }
-                        }
-                    });
-                }
-            }));
-        subscriptions.emplace_back(events.subscribe<io::PayloadRejectedEvent>(
-            [weak = weak_from_this()](const io::PayloadRejectedEvent& event) {
-                if (auto self = weak.lock()) {
-                    if (self->shutdown_requested.load()) return;
-                    // concurrent_channel is the only host state touched here.
-                    // Do not post one unbounded strand task per discarded input.
-                    if (!self->rejected_inputs.try_send(boost::system::error_code{},
-                            Json{{"request_id", event.request_id},
-                                 {"operation", event.operation}})) {
-                        if (self->shutdown_requested.load()) return;
-                        throw std::runtime_error("application payload rejection queue exhausted");
-                    }
-                }
-            }));
-    }
-
-    /** Emit overflow feedback on the strand even while consume() awaits a model. */
-    asio::awaitable<void> report_rejected_inputs() {
-        for (;;) {
-            boost::system::error_code error;
-            auto metadata = co_await rejected_inputs.async_receive(
-                asio::redirect_error(asio::use_awaitable, error));
-            if (error || stopping || shutdown_requested.load()) co_return;
-            Json rejection = {
-                {"request_id", std::move(metadata["request_id"])},
-                {"code", "payload_queue_full"},
-                {"message", "Worker input queue is full. Wait for current work to finish, then retry."}
-            };
-            const auto& operation = metadata.at("operation");
-            if (operation == "message" || operation == "continue" || operation == "compact") {
-                rejection["operation"] = operation;
+        subscriptions.emplace_back(events.subscribe<io::PayloadQueryRejectedEvent>([this](const auto& event) {
+            emit(event.operation == "answer" ? "answer_error" : "history_error", {
+                {"request_id", event.request_id}, {"code", event.code},
+                {"message", "Worker query quota exceeded; retry after the connection drains."}});
+        }));
+        subscriptions.emplace_back(events.subscribe<io::PayloadRejectedEvent>([this](const auto& event) {
+            if (stopping || shutdown_requested.load()) return;
+            Json rejection = {{"request_id", event.request_id}, {"code", "payload_queue_full"},
+                {"message", "Worker input queue is full. Wait for current work to finish, then retry."}};
+            if (event.operation == "message" || event.operation == "continue" || event.operation == "compact") {
+                rejection["operation"] = event.operation;
             }
             reject_input(std::move(rejection));
+        }));
+    }
+
+    /** Drain only metadata/control requests; cancellation never waits for this task. */
+    asio::awaitable<void> process_control() {
+        for (;;) {
+            boost::system::error_code error;
+            auto signal = co_await control_messages.async_receive(
+                asio::redirect_error(asio::use_awaitable, error));
+            if (error || stopping) co_return;
+            try {
+                const auto operation = signal.at("operation").get<std::string>();
+                if (operation == "cancel") {
+                    if (signal.at("run_id").get<std::string>().empty()) {
+                        throw std::invalid_argument("cancel requires run_id");
+                    }
+                    emit("status", status());
+                } else if (operation == "status") {
+                    emit("status", status());
+                } else if (operation == "options") {
+                    emit("options", options());
+                } else {
+                    throw std::invalid_argument("unknown signal operation");
+                }
+            } catch (const std::exception& error) {
+                emit("error", {{"message", error.what()}});
+            }
         }
     }
 
-    /** One writer drains owned event values without borrowing live state. */
+    /** Retain the front reservation until IO admission settles, even while suspended. */
     asio::awaitable<void> send_events() {
-        while (outgoing.is_open() || outgoing.ready()) {
-            Json message;
-            try {
-                message = co_await outgoing.async_receive(asio::use_awaitable);
-            } catch (const boost::system::system_error& error) {
-                if (error.code() == asio::experimental::channel_errc::channel_closed) co_return;
-                throw;
+        for (;;) {
+            if (outgoing.empty()) {
+                if (outgoing.closed()) co_return;
+                co_await outgoing_ready.async_receive(asio::use_awaitable);
+                continue;
             }
-            const auto bytes = message.dump().size();
+            auto message = outgoing.begin_send();
             try {
                 co_await client.send(std::move(message));
             } catch (...) {
-                outgoing_bytes -= bytes;
-                --outgoing_count;
+                outgoing.complete_send();
                 throw;
             }
-            outgoing_bytes -= bytes;
-            --outgoing_count;
+            outgoing.complete_send();
         }
     }
 
@@ -1105,6 +1081,14 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         emit("ready", status());
         while (!stopping) {
             auto payload = co_await payloads.next();
+            // A bounded payload can wait here; no new run can accumulate more
+            // lifecycle records behind a previous undrained run. Only one timer
+            // exists, and shutdown/cancellation control remains independent.
+            while (!stopping && !shutdown_requested.load()
+                   && (!outgoing.empty() || client.queued_write_bytes() != 0)) {
+                asio::steady_timer wait(strand, std::chrono::milliseconds(10));
+                co_await wait.async_wait(asio::use_awaitable);
+            }
             if (stopping || shutdown_requested.load()) break;
             std::optional<Input> input;
             bool applying_options = false;
@@ -1256,10 +1240,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             ownership = std::make_unique<fileio::SessionLock>(directory / "session.lock");
         }
         initialize();
-        asio::co_spawn(strand, report_rejected_inputs(),
+        asio::co_spawn(strand, process_control(),
             [self = shared_from_this()](std::exception_ptr error) {
                 if (error && !self->stopping) self->fail(error);
-                self->rejection_done.try_send(boost::system::error_code{}, true);
+                self->control_done.try_send(boost::system::error_code{}, true);
             });
         asio::co_spawn(strand, client.run(), [self = shared_from_this()](std::exception_ptr error) {
             if (error) {
@@ -1293,8 +1277,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         stopping = true;
         shutdown_requested.store(true);
         cancel();
-        rejected_inputs.close();
-        co_await rejection_done.async_receive(asio::use_awaitable);
+        control_messages.close();
+        co_await control_done.async_receive(asio::use_awaitable);
         try {
             if (config.save_shutdown && !storage_failed) {
                 state.meta.updated_at = timestamp();
@@ -1309,6 +1293,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             if (!failure) failure = std::current_exception();
         }
         outgoing.close();
+        outgoing_ready.try_send(boost::system::error_code{}, true);
         // Final queue admission is bounded; admission is never a delivery receipt.
         auto deadline = std::make_shared<asio::steady_timer>(strand, std::chrono::milliseconds(500));
         deadline->async_wait([self = shared_from_this(), deadline](boost::system::error_code error) {

@@ -909,6 +909,9 @@ the next payload as described under
 | `stopping` | Boolean | Worker shutdown is in progress as observed at this snapshot. |
 | `storage_failed` | Boolean | A required JSON persistence operation failed; further saves are suppressed. |
 | `rejected_payloads` | Nonnegative integer | Cumulative inbound payload-queue overflow count in this IO client lifetime; not semantic input rejections. |
+| `rejected_queries` | Nonnegative integer | Cumulative history/answer quota or 16 KiB envelope rejections in this IO client lifetime. |
+| `unreported_rejections` | Nonnegative integer | Cumulative rejection notices omitted because the independent feedback mailbox was full. |
+| `event_queue` | Object | Application `count` and encoded `bytes`, including its active admission, plus separate transport `transport_bytes`; a snapshot, not a delivery receipt. |
 | `memory_retention` | Object | Effective `max_archives` (default 5); zero disables cleanup. Older workers omit this field. |
 | `capabilities` | Array of strings | Features supported by this worker process. `answer-pages` means it accepts read-only `answer` payloads; `session-history` means it accepts read-only `history` payloads; `context-compact` means it implements the `compact` lifecycle (subject to persistence and state prerequisites). A hub should check this before querying a worker that may be older than the hub. |
 | `loop` | Optional loop-progress object | Present only when conversation state contains loop progress, including restored progress. |
@@ -970,6 +973,11 @@ error. Earlier step checkpoints can exist even when this field is false.
 | `compact` | Mandatory successful compact replacement, before the success event. |
 | `cancelled` | Settled cancellation state when final saving is disabled; still saved if persistence is enabled. |
 | `shutdown` | State during controlled shutdown, if `on_shutdown` is enabled. |
+
+Checkpoint writes remain mandatory where specified, even when their `persisted`
+notifications are coalesced or omitted under congestion. A received notification
+describes a completed write; the notification stream is not a journal of every
+checkpoint. Use `status` or history/answer queries to recover the latest view.
 
 No `persisted` event is emitted when persistence is disabled. There is no
 Markdown-success event. A successful JSON write can be followed by
@@ -1252,29 +1260,61 @@ admission, durable outbox, replay request, or exactly-once execution mechanism.
 
 | Queue / failure | Current behavior |
 | --- | --- |
-| Payload queue full | Incoming payload is discarded and `rejected_payloads` increases. Metadata-only overflow feedback emits a request-correlated `input_rejected` with code `payload_queue_full`, when the control and event paths remain usable. |
-| Signal queue full | Fatal IO error; worker shutdown is initiated. |
-| Overflow notification path full | Fatal IO/worker error and cleanup; the aggregate rejection count remains incremented. No unbounded notification backlog or automatic replay is created. |
-| Worker event queue full | Fatal worker error, cancellation and cleanup; results are not silently discarded as if delivery succeeded. |
-| Transport write queue full | Sender waits; pressure can eventually fill the worker event queue. |
+| Payload queue full | Discard incoming payload; increment `rejected_payloads`. Offer `input_rejected` / `payload_queue_full` through bounded best-effort feedback. |
+| Query queue full or query envelope above 16 KiB | Increment `rejected_queries`. Offer correlated `history_error` or `answer_error`, with `query_queue_full` or `query_too_large`, when feedback/output capacity permits. |
+| Signal queue full | Fatal IO error; queries and feedback do not consume these slots. |
+| Feedback mailbox full | Increment `unreported_rejections`; do not recursively enqueue rejection or fail the active run. |
+| Ordinary event quota or byte headroom exhausted | Omit preview/query/feedback events and count them; canonical state remains intact. |
+| Repeated replayable metadata | Replace a queued latest value with the same event/request/run identity, retaining its sequence; the in-flight message is never replaced. |
+| Transport write queue full | Sender waits; new run admission waits for the preceding event/transport backlog to drain. |
 | Invalid JSON, malformed envelope, unknown envelope `type`, or binary input | Fatal event-client error; no automatic reconnect for that application/protocol failure. |
-| Valid envelope with invalid payload | `input_rejected`, when dequeued and the event path is usable. |
-| Valid envelope with invalid signal | `error`, when processed and the event path is usable. |
+| Valid envelope with invalid payload | Offer `input_rejected`, when dequeued and the event path is usable. |
+| Valid envelope with invalid signal | Offer `error`, when processed and the event path is usable. |
 
-Queue capacities count messages, not bytes. There is no public configurable
-application-message byte limit; transport library limits and available memory
-still constrain messages. Hubs should avoid sending a burst without observing
-admission and should keep reading events while waiting for user decisions.
+Payload and signal quotas default to 256 messages. Queries and their independent
+feedback mailbox each use `client.query_capacity` (default 64). Query cursors
+are limited to 16 KiB encoded envelopes; this does not limit conversation input,
+provider output or persistent state. Feedback retains bounded correlation
+metadata, not discarded input bodies. Hosts should keep reading events while
+waiting for user decisions and use finite query timeouts with deliberate retries.
+Missing feedback never implies successful execution or approval.
 
-Overflow feedback shares the bounded IO control queue (`client.signal_capacity`)
-with signals and history queries. A second metadata-only application queue, also
-bounded by `client.signal_capacity`, hands notifications to the application strand.
-The notification handler never accesses conversation state from the IO worker
-thread or posts one task per rejection. A strand-owned coroutine emits ordinary
-sequenced events through `worker.event_capacity`; exhausting that event queue
-retains the existing fatal policy. Shutdown or an unusable response connection
-may prevent feedback delivery. These notifications add no ACK, durable outbox,
-delivery guarantee, or exactly-once promise.
+`worker.event_capacity` bounds ordinary previews/query replies/feedback. Six
+latest-value metadata slots cover `persisted`, `status`, `options`, `export_error`,
+nonterminal `error`, and automatic `compact_finished`. Eight separate lifecycle
+slots preserve `ready`, admission/start/input commit, manual compact results and
+terminal run/storage-failure outcomes. Noncritical data shares 7 MiB byte
+headroom; the combined application/transport reservation limit is 16 MiB,
+including the active send. `client.transport.write_byte_capacity` defaults to
+16777216 and must be at least that application budget. Each encoded event still
+has its existing maximum (1 MiB, or 256 KiB for history).
+
+Metadata coalescing does not skip disk commits. It reports the latest pending
+notification rather than every intermediate checkpoint/cycle, and may omit a
+notification when byte headroom is unavailable. `status` and history/answer
+queries recover current state after congestion; automatic compact notifications
+that are retained still contain the complete accepted summary. This channel is
+not an exact checkpoint log. A new run cannot produce another set of lifecycle
+records until the preceding backlog drains. Cancellation closes confirmation
+admission and requests loop stop directly from the control thread, before any
+best-effort status notification enters the strand mailbox.
+
+Sequence numbers and byte/count reservations advance only after successful
+outbox admission. Replacements retain the existing sequence, and omitted events
+create no artificial sequence gap. `run_finished`, or the terminal `error` with
+`durable: false` after required-storage failure, settles `omitted_display_events`,
+`omitted_query_events`, `omitted_feedback_events`, and
+`coalesced_metadata_events` only after admission succeeds. These optional counts
+cover events since the previous settlement; they are not canonical message
+loss. `status` and terminal outcomes also expose cumulative `rejected_queries`
+and `unreported_rejections`, including feedback that could not be reported.
+`status.event_queue` reports application count/bytes and transport reservations.
+
+All queues remain bounded. A failed lifecycle admission or an event above its
+hard encoded limit remains an explicit error rather than silently losing a
+terminal outcome. Shutdown or a permanently unusable connection may still
+prevent delivery. These notifications add no ACK, durable outbox, or
+exactly-once promise.
 
 Connection establishment failures retry indefinitely, including permanent DNS,
 certificate validation, and HTTP upgrade rejections such as 401/403. Established
@@ -1289,7 +1329,8 @@ removed a message, it is never automatically replayed: a failed write has an
 unknown delivery outcome. The hub may therefore observe sequence gaps.
 Stopping discards undelivered messages. Inbound payloads already queued and
 in-progress loop work are not cancelled merely because the event socket drops.
-Prolonged disconnection can eventually cause fatal event-queue pressure.
+Prolonged disconnection sheds optional events, coalesces metadata and delays
+new run admission; it does not itself abandon the current loop or its durable state.
 
 `ready` is generated once at startup, possibly before the first successful
 connection, and is not regenerated on reconnect. The hub should send `status`
