@@ -237,6 +237,20 @@ A confirmation prompt object:
 `deadline_at` is advisory: the worker's own deadline started before the
 confirmation connection existed.
 
+Argument display copies preserve up to 64 KiB of encoded JSON per individual
+confirmation event or REST description. Aggregate WebSocket descriptions
+(`welcome`, `sessions`, `session`, `created`, `subscribed`, `snapshot`) share
+512 KiB across all included approvals and sessions, with a smaller allowance
+when other contents approach the 2 MiB frame ceiling. Allocation preserves small
+previews and reduces larger ones first. Prompt identities and lifecycle fields
+are retained; previews are regenerated from the original pending calls.
+Shortened prompts set `arguments_truncated: true` and `arguments_bytes` to the
+original argument JSON size. Strings use
+`{"display_truncated":true,"bytes":N,"preview":"..."}` and omitted values use
+`{"display_omitted":true}` (array tails can also carry `omitted_items`).
+Snapshot previews can therefore be shorter than the same prompt's individual
+event or REST description. A decision always applies to the original operation.
+
 ## JSON API
 
 | Method and path | Body | Response |
@@ -680,9 +694,11 @@ session are pending; further requests are denied as capacity exhausted. Remote
 results retain their 256 KiB frame ceiling; answer pagination fits this ceiling.
 
 Panel frames have a 2 MiB indivisible display ceiling beneath the 4 MiB socket
-backlog limit. Modern replay is paged; an oversized legacy bulk/session snapshot
-returns `display_snapshot_too_large` on the live connection instead of poisoning
-reconnect. Authenticated REST session/log endpoints remain available. WebSocket
+backlog limit. Approval previews share the aggregate allowance described above,
+including on initialization, paged replay and reconnect. Modern replay is paged;
+an oversized legacy bulk/session snapshot whose other contents cannot fit
+returns `display_snapshot_too_large` on the live connection. Authenticated REST
+session/log endpoints remain available for explicit retrieval. WebSocket
 log snapshots use a 256 KiB newest tail, with 8 KiB line previews and explicit
 omission notices. Their captured logs and execution inputs are not rewritten.
 Worker correlation/event-name fields above 128 UTF-8 bytes are rejected rather

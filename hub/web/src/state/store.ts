@@ -475,14 +475,18 @@ function seedConfirmations(
         for (const [id, prompt] of confirmations) {
             const previous = view.confirmations.get(id);
             // A reused ID is a new permission request. Preserve references
-            // only for the same creation/worker and unchanged lifecycle flags;
-            // call arguments are immutable within that prompt's lifetime.
+            // only for the same creation/worker, lifecycle and display copy.
+            // The original arguments are immutable, but their preview can vary
+            // with the aggregate budget of welcome/subscription snapshots.
             if (!previous || previous.worker_id !== prompt.worker_id
                 || previous.run_id !== prompt.run_id || previous.received_at !== prompt.received_at
                 || previous.settled_at !== prompt.settled_at || previous.state !== prompt.state
                 || previous.verified !== prompt.verified || previous.identity_state !== prompt.identity_state
                 || previous.deadline_at !== prompt.deadline_at || previous.decision !== prompt.decision
-                || previous.reason !== prompt.reason) {
+                || previous.reason !== prompt.reason
+                || previous.arguments_truncated !== prompt.arguments_truncated
+                || previous.arguments_bytes !== prompt.arguments_bytes
+                || (previous.call !== prompt.call && JSON.stringify(previous.call) !== JSON.stringify(prompt.call))) {
                 same = false;
                 break;
             }
@@ -801,11 +805,14 @@ export function createPanelStore() {
             const epoch = reconcileEpoch(state, message.hub?.transcript_epoch);
             set({ ...patch, ...epoch.patch });
 
-            // Re-seed every surviving view so request chips and open prompts
-            // survive a reconnect. Prompts matter most here: they are the one
-            // message whose loss makes a tool call fail, which is why the hub
-            // now broadcasts them to every client and not only subscribers.
-            for (const id of get().views.keys()) {
+            // Re-seed surviving views and create approval views for sessions
+            // not visited yet. A fresh panel must surface every pending prompt
+            // in the welcome snapshot, just like a global live confirmation.
+            const approvalViews = new Set(get().views.keys());
+            for (const [id, listed] of sessions) {
+                if (listed.confirmations?.length) approvalViews.add(id);
+            }
+            for (const id of approvalViews) {
                 const listed = sessions.get(id);
                 if (!listed) continue;
                 set(withView(get(), id, (view) => {

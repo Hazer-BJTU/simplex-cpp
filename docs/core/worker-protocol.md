@@ -1628,6 +1628,32 @@ Other confirmation rules:
   the connection existed. The prompt is retired on deadline, on disconnect, and
   on hub shutdown; a retired prompt cannot be answered later.
 
+The Hub's panel/API approval description carries a separate argument preview,
+limited to **64 KiB of encoded JSON** (including keys and escape sequences).
+Arguments that fit remain complete. Larger arguments retain small fields and
+reduce the largest values first. Shortened strings appear as
+`{"display_truncated":true,"bytes":123456,"preview":"retained prefix"}`;
+`bytes` is the original string's UTF-8 size. Arrays can end with
+`{"display_omitted":true,"omitted_items":N}`. Containers whose keys and markers
+cannot fit, or whose oversized traversal reaches the depth/node safety guard,
+use `{"display_omitted":true}`. These markers are display values, not executable
+tool arguments. The enclosing prompt sets `arguments_truncated: true` and
+`arguments_bytes` to the original argument JSON's encoded size when shortened.
+Call extras retain their smaller diagnostic preview. Aggregate WebSocket
+snapshots share a **512 KiB encoded argument allowance across all approvals in
+all included sessions**, reduced further when the remaining frame contents need
+space under the 2 MiB panel ceiling. Larger previews are rebuilt from the
+original pending calls with smaller allowances; every approval's identity and
+state remain present. Thus a snapshot may show a shorter preview than an
+individual confirmation event or the REST session description. The original
+`arguments_bytes` and truncation markers remain explicit. Pagination budgets
+include these aggregate previews rather than the unbounded session description.
+
+The Hub retains the original pending call, and every decision applies to that
+original operation. Previewing never changes execution or approval authority.
+The panel labels shortened values and keeps the argument disclosure scrollable;
+it does not offer a separate full-arguments download endpoint.
+
 ### Remote tools
 
 The remote-tool listener authenticates the session token before accepting an

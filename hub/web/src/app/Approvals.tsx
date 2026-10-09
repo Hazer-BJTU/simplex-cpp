@@ -41,6 +41,13 @@ function describeCall(prompt: ConfirmationPrompt): string {
         const record = args as Record<string, unknown>;
         for (const key of ['command', 'path', 'url', 'query']) {
             if (typeof record[key] === 'string') return String(record[key]);
+            const value = record[key];
+            if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+                const preview = value as Record<string, unknown>;
+                if (preview.display_truncated === true && typeof preview.preview === 'string') {
+                    return `${preview.preview}\n[argument preview]`;
+                }
+            }
         }
     }
     return compactJson(args ?? {});
@@ -234,8 +241,9 @@ const ApprovalBody = memo(function ApprovalBody({ prompt, summary, status, error
             </pre>
 
             {prompt.arguments_truncated && <p className="text-xs text-ink-muted" role="status">
-                Argument preview only ({prompt.arguments_bytes} UTF-8 bytes originally).
-                Complete details are unavailable in this panel; the decision applies to the original operation.
+                Argument preview only ({prompt.arguments_bytes} encoded JSON bytes originally).
+                Shortened values are marked with display_truncated or display_omitted.
+                The decision applies to the original operation; omitted details are unavailable in this panel.
             </p>}
             <details onToggle={event => setArgumentsOpen(event.currentTarget.open)} className="text-xs text-ink-muted">
                 <summary onClick={event => setArgumentsOpen(!(event.currentTarget.parentElement as HTMLDetailsElement).open)}

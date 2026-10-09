@@ -241,7 +241,9 @@ export interface PendingCall {
 
 /** One tool confirmation prompt. */
 export interface ConfirmationPrompt {
+    /** Display copy contains labelled truncation/omission values; execution uses the original call. */
     arguments_truncated?: boolean;
+    /** Original argument JSON size, including encoding/escaping, before the 64 KiB display budget. */
     arguments_bytes?: number;
     confirmation_id: string;
     session_id: SessionId;
