@@ -273,13 +273,23 @@ for admission rules, failure behavior, and event fields. The hub exposes it as
 **Compact context** in Command mode, gated on the current worker's capabilities.
 
 Archives accumulate under `<persistence.directory>/<persistence.memory>`
-(default subdirectory `memory`), without another session-ID component. Every attempt reserves a new numbered directory, so
+(default subdirectory `memory`), without another session-ID component. Every exported attempt reserves a new numbered directory, so
 restarts and clock changes preserve ordering without replacing earlier files.
-After a successful compact, `persistence.memory_retention` applies a
-`max_archives` count limit (5 by default; zero disables cleanup). The current archive is
-always retained. Failed attempts and unfamiliar files may remain; these are
-cleanup targets rather than a disk quota. Cleanup failure is reported alongside
-the saved summary without undoing it.
+Each archived attempt, including failure and cancellation, applies
+`persistence.memory_retention.max_archives` (5 by default; zero disables cleanup).
+Current evidence and archives explicitly referenced by the retained state are
+protected, even above the target; other recognized archives are kept newest first.
+If a required replacement write fails, protect both old and replacement references:
+rename may already have made the new snapshot visible before directory sync fails.
+Unfamiliar files are untouched. Cleanup errors preserve the original outcome:
+reported beside a saved summary on success, or logged/emitted as optional
+`export_error` with operation `archive_cleanup` on failure/cancellation.
+
+Compaction preflights its 64 KiB replacement-context byte budget before disk
+writes or model execution. Retained prompts, tools and exact memory wrapper/path
+bytes determine the summary allowance, capped at 32 KiB. The instruction states
+that allowance; generated output must still pass size and 10% reduction checks.
+This byte policy is independent of the provider's token-window setting.
 Injected memory identifies the absolute archive directory for later tool-based
 lookup. The compact instruction is loaded from
 [prompts/operations/compact.yaml](prompts/operations/compact.yaml) at startup.

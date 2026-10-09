@@ -10,7 +10,8 @@ namespace load {
 ArchiveCleanup prune_memory_archives(
     const std::filesystem::path& directory,
     const std::filesystem::path& current_archive,
-    const MemoryRetention& policy
+    const MemoryRetention& policy,
+    std::span<const std::filesystem::path> referenced_archives
 ) {
     namespace fs = std::filesystem;
     ArchiveCleanup result;
@@ -49,12 +50,24 @@ ArchiveCleanup prune_memory_archives(
     if (protected_entry == archives.end()) {
         throw std::runtime_error("current memory archive is missing or has unexpected contents");
     }
-    std::size_t retained = 1;
+    std::vector<fs::path> protected_paths{current};
+    for (const auto& path : referenced_archives) {
+        const auto normalized = fs::absolute(path).lexically_normal();
+        if (normalized.parent_path() != root) {
+            throw std::invalid_argument("protected memory archive must be a direct child of the archive root");
+        }
+        protected_paths.push_back(normalized);
+    }
+    const auto protected_archive = [&](const auto& archive) {
+        return std::find(protected_paths.begin(), protected_paths.end(), archive.directory)
+            != protected_paths.end();
+    };
+    std::size_t retained = std::count_if(archives.begin(), archives.end(), protected_archive);
     std::sort(archives.begin(), archives.end(), [](const auto& left, const auto& right) {
         return left.directory.filename() > right.directory.filename();
     });
     for (const auto& archive : archives) {
-        if (archive.directory == current) continue;
+        if (protected_archive(archive)) continue;
         if (retained >= policy.max_archives) {
             if (fs::remove(archive.directory / "state.md")) {
                 result.removed_bytes += archive.bytes;

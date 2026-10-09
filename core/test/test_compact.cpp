@@ -9,16 +9,63 @@
 #include <atomic>
 #include <iterator>
 #include <thread>
+#if defined(__linux__)
+#include <cerrno>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 using Json = nlohmann::json;
 using State = model_io::AgentInputState;
 
+#if defined(__linux__)
+namespace {
+/** One-shot fault targets only the snapshot parent; file/archive fsyncs stay real.
+ * The acquire/release flag publishes immutable device/inode identity to both IO
+ * threads. Reset when the fixture settles so unrelated tests cannot inherit it.
+ */
+struct SnapshotSyncFailure {
+    dev_t device{};
+    ino_t inode{};
+    std::atomic<bool> armed{false};
+    std::atomic<unsigned int> failures{0};
+
+    void arm(const std::filesystem::path& directory) {
+        struct stat status{};
+        if (::stat(directory.c_str(), &status) != 0) {
+            throw std::runtime_error("cannot inspect snapshot directory for fault injection");
+        }
+        device = status.st_dev;
+        inode = status.st_ino;
+        armed.store(true, std::memory_order_release);
+    }
+} snapshot_sync_failure;
+}
+
+/** Exported only by this Linux test executable; shared utility calls reach here. */
+extern "C" int fsync(int descriptor) {
+    auto& fault = snapshot_sync_failure;
+    if (fault.armed.load(std::memory_order_acquire)) {
+        struct stat status{};
+        if (::fstat(descriptor, &status) == 0 && S_ISDIR(status.st_mode)
+            && status.st_dev == fault.device && status.st_ino == fault.inode
+            && fault.armed.exchange(false, std::memory_order_acq_rel)) {
+            ++fault.failures;
+            errno = EIO;
+            return -1;
+        }
+    }
+    return static_cast<int>(::syscall(SYS_fsync, descriptor));
+}
+#endif
+
 namespace {
 enum class Scenario { Success, Cancel, ModelFailure, Empty, Tools, ArchiveFailure,
-                      SaveFailure, Disabled, Blocked, Projection, NoTurns,
-                      Oversized, Ineffective, BudgetExceeded };
+                      SaveFailure, PublishedSaveFailure, Disabled, Blocked, Projection, NoTurns,
+                      Oversized, Ineffective, BudgetExceeded, AllowanceExceeded, RepeatFailure, RepeatCancel, CleanupFailure };
 
 std::string read_file(const std::filesystem::path& path) {
     std::ifstream stream(path);
@@ -46,14 +93,19 @@ struct Model : llm::LLMModel {
     Scenario scenario;
     std::filesystem::path snapshot;
     std::filesystem::path archive_root;
+    std::filesystem::path summary_reference;
     std::vector<State> contexts;
     int summaries = 0;
+    std::filesystem::path current_archive;
     std::size_t summary_bytes = 0;
     std::atomic<bool> entered{false};
 
     /** A complete summary, optionally extended with UTF-8 and escaped text. */
     std::string summary(int number) const {
         auto result = "Summary " + std::to_string(number);
+        if (!summary_reference.empty()) {
+            result += "\nRetrieve evidence from: " + summary_reference.string();
+        }
         const std::string fragment = "\n目标🌍\"\\";
         while (result.size() + fragment.size() <= summary_bytes) {
             result += fragment;
@@ -65,7 +117,7 @@ struct Model : llm::LLMModel {
     }
 
     asio::awaitable<model_io::MessageItem> converse(State context) override {
-        const bool compact = context.turns.back().user_input.content.front().raw == "COMPACT INSTRUCTION";
+        const bool compact = context.turns.back().user_input.content.front().raw.starts_with("COMPACT INSTRUCTION");
         contexts.push_back(std::move(context));
         if (!compact) co_return text_message("ordinary answer", false);
         ++summaries;
@@ -73,17 +125,34 @@ struct Model : llm::LLMModel {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(archive_root)) {
             if (entry.path().filename() == "state.md") {
                 ++archived;
+                if (entry.path().parent_path().filename() > current_archive.parent_path().filename()) {
+                    current_archive = entry.path();
+                }
                 BOOST_TEST(read_file(entry.path()).find("COMPACT INSTRUCTION") == std::string::npos);
             }
         }
-        BOOST_TEST(archived == static_cast<std::size_t>(summaries));
+        if (scenario == Scenario::RepeatFailure || scenario == Scenario::RepeatCancel) {
+            BOOST_CHECK(archived <= 3u); // Committed reference, previous attempt, new attempt.
+        } else if (scenario == Scenario::PublishedSaveFailure) {
+            BOOST_TEST(archived == 4u);
+        } else {
+            BOOST_TEST(archived == static_cast<std::size_t>(summaries));
+        }
+        BOOST_TEST(contexts.back().turns.back().user_input.content.front().raw.find(
+            "UTF-8 bytes (not tokens or JSON-escaped bytes)") != std::string::npos);
         entered.store(true);
         BOOST_CHECK(contexts.back().tools.empty());
-        if (scenario == Scenario::Cancel) {
+        if (scenario == Scenario::Cancel || scenario == Scenario::RepeatCancel) {
             asio::steady_timer timer(co_await asio::this_coro::executor, std::chrono::seconds(20));
             co_await timer.async_wait(asio::use_awaitable);
         }
-        if (scenario == Scenario::ModelFailure) throw std::runtime_error("summary request failed");
+        if (scenario == Scenario::ModelFailure || scenario == Scenario::RepeatFailure
+            || scenario == Scenario::CleanupFailure) {
+            throw std::runtime_error("summary request failed");
+        }
+        if (scenario == Scenario::AllowanceExceeded) {
+            co_return text_message(std::string(32 * 1024, 'S'), false);
+        }
         if (scenario == Scenario::Empty) co_return text_message(" \n\t", false);
         if (scenario == Scenario::Oversized) {
             co_return text_message(std::string(40 * 1024, 'S'), false);
@@ -105,6 +174,11 @@ struct Model : llm::LLMModel {
             std::filesystem::rename(snapshot, snapshot.string() + ".before");
             std::filesystem::create_directory(snapshot);
         }
+#if defined(__linux__)
+        if (scenario == Scenario::PublishedSaveFailure) {
+            snapshot_sync_failure.arm(snapshot.parent_path());
+        }
+#endif
         co_return response;
     }
 };
@@ -116,6 +190,15 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
         std::filesystem::path path;
         ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
     } cleanup{root};
+#if defined(__linux__)
+    struct ResetFault {
+        ResetFault() {
+            snapshot_sync_failure.armed.store(false);
+            snapshot_sync_failure.failures.store(0);
+        }
+        ~ResetFault() { snapshot_sync_failure.armed.store(false); }
+    } reset_fault;
+#endif
     std::filesystem::create_directories(root);
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
@@ -138,18 +221,43 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
     model->summary_bytes = summary_bytes;
     model->snapshot = snapshot;
     model->archive_root = config.memory;
+    const bool repeated = mode == Scenario::RepeatFailure || mode == Scenario::RepeatCancel;
+    const bool cancelled = mode == Scenario::Cancel || mode == Scenario::RepeatCancel;
+    std::filesystem::path referenced;
+    if (repeated || mode == Scenario::PublishedSaveFailure) {
+        config.memory_retention.max_archives = 1;
+        referenced = config.memory / "00000000000000000001-2026-09-27T000000Z-11111111-1111-4111-8111-111111111111";
+        std::filesystem::create_directories(referenced);
+        std::ofstream(referenced / "state.md") << "committed recovery evidence";
+    }
+    std::filesystem::path obsolete;
+    if (mode == Scenario::PublishedSaveFailure) {
+        const auto summary_archive = config.memory / "00000000000000000002-2026-09-27T000000Z-22222222-2222-4222-8222-222222222222";
+        std::filesystem::create_directory(summary_archive);
+        model->summary_reference = summary_archive / "state.md";
+        std::ofstream(model->summary_reference) << "evidence referenced only by replacement";
+        obsolete = config.memory / "00000000000000000003-2026-09-27T000000Z-33333333-3333-4333-8333-333333333333";
+        std::filesystem::create_directory(obsolete);
+        std::ofstream(obsolete / "state.md") << "unreferenced obsolete attempt";
+    }
+    if (mode == Scenario::CleanupFailure) {
+        std::filesystem::create_directories(config.storage / "real-memory");
+        std::filesystem::create_directory_symlink(config.storage / "real-memory", config.memory);
+    }
     State initial;
     initial.meta.session_id = "test";
     initial.system_prompt.add_section("base", "",
         mode == Scenario::BudgetExceeded
             ? "Original instructions " + std::string(70 * 1024, 'P')
-            : "Original instructions");
-    initial.system_prompt.add_section("memory.runtime", "Memory", "Old summary",
+            : mode == Scenario::AllowanceExceeded
+                ? "Original instructions " + std::string(40 * 1024, 'P')
+                : "Original instructions");
+    initial.system_prompt.add_section("memory.runtime", "Memory", !referenced.empty() ? "Old summary; archive: " + (referenced / "state.md").string() : "Old summary",
         model_io::SectionStability::Volatile);
     std::size_t history_bytes = 0;
-    if (mode == Scenario::Success || mode == Scenario::SaveFailure) {
+    if (mode == Scenario::Success || mode == Scenario::SaveFailure || mode == Scenario::PublishedSaveFailure) {
         history_bytes = summary_bytes ? 80 * 1024 : 6 * 1024;
-    } else if (mode == Scenario::Oversized || mode == Scenario::BudgetExceeded) {
+    } else if (mode == Scenario::Oversized || mode == Scenario::BudgetExceeded || mode == Scenario::AllowanceExceeded) {
         history_bytes = 80 * 1024;
     }
     model->integrate(initial, text_message("Original user request" +
@@ -171,6 +279,8 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
     int successful = 0;
     int finished = 0;
     int rejected = 0;
+    int cleanup_errors = 0;
+    int storage_errors = 0;
     bool history_checked = false;
     std::vector<std::filesystem::path> archives;
     const bool admission_failure = mode == Scenario::Disabled || mode == Scenario::Blocked
@@ -198,7 +308,7 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
                 co_await send("payload", {{"operation", "compact"}, {"request_id", "compact-1"}});
             } else if (name == "input_admitted" && request.starts_with("compact")) {
                 BOOST_TEST(event["data"]["operation"] == "compact");
-            } else if (name == "run_started" && mode == Scenario::Cancel && request == "compact-1") {
+            } else if (name == "run_started" && cancelled && request.starts_with("compact-")) {
                 while (!model->entered.load()) {
                     asio::steady_timer wait(co_await asio::this_coro::executor,
                         std::chrono::milliseconds(1));
@@ -208,6 +318,11 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
                 // is pending, then cancel through the independent signal queue.
                 co_await send("payload", {{"operation", "history"}, {"request_id", "during"}});
                 co_await send("signal", {{"operation", "cancel"}, {"run_id", event["run_id"]}});
+            } else if (name == "export_error" && event["data"].value("operation", "") == "archive_cleanup") {
+                ++cleanup_errors;
+            } else if (name == "error" && (mode == Scenario::SaveFailure || mode == Scenario::PublishedSaveFailure)) {
+                ++storage_errors;
+                BOOST_TEST(event["data"]["durable"] == false);
             } else if (name == "history") {
                 BOOST_TEST(event["data"]["total"] == 1);
                 BOOST_TEST(event["data"]["turns"][0]["user"][0]["raw"] == "Original user request");
@@ -285,13 +400,13 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
                 }
             } else if (name == "run_finished") {
                 ++finished;
-                if (request == "compact-1") {
+                if (request == "compact-1" || (repeated && request.starts_with("compact-"))) {
                     if (mode == Scenario::Success) {
                         BOOST_TEST(event["data"]["status"] == "completed");
                         BOOST_TEST(event["data"]["durable"] == true);
                         co_await send("payload", {{"operation", "continue"}, {"request_id", "empty"}});
                     } else {
-                        BOOST_TEST(event["data"]["status"] == (mode == Scenario::Cancel ? "cancelled" : "failed"));
+                        BOOST_TEST(event["data"]["status"] == (cancelled ? "cancelled" : "failed"));
                         BOOST_TEST(event["data"]["durable"] == false);
                         BOOST_TEST(read_file(snapshot) == original_file);
                         if (mode == Scenario::Oversized) {
@@ -302,11 +417,38 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
                                 "did not reduce context") != std::string::npos);
                         } else if (mode == Scenario::BudgetExceeded) {
                             BOOST_TEST(event["data"]["error"].get<std::string>().find(
-                                "context exceeds byte budget") != std::string::npos);
+                                "fixed overhead exhausts byte budget") != std::string::npos);
                         }
-                        co_await send("payload", {{"operation", "message"}, {"request_id", "next"},
-                            {"content", Json::array({{{"type", "text"}, {"raw", "Next task"},
-                                {"modality", "text"}}})}});
+                        if (mode == Scenario::BudgetExceeded) {
+                            BOOST_TEST(model->summaries == 0);
+                            BOOST_CHECK(!std::filesystem::exists(config.memory));
+                        }
+                        if (mode == Scenario::AllowanceExceeded) {
+                            BOOST_TEST(model->summaries == 1);
+                            BOOST_TEST(event["data"]["error"].get<std::string>().find(
+                                "exceeds derived byte allowance") != std::string::npos);
+                        }
+                        if (mode == Scenario::CleanupFailure) {
+                            BOOST_TEST(cleanup_errors == 1);
+                            BOOST_TEST(event["data"]["error"] == "summary request failed");
+                        }
+                        if (repeated) {
+                            BOOST_CHECK(std::filesystem::exists(referenced / "state.md"));
+                            BOOST_CHECK(std::filesystem::exists(model->current_archive));
+                            if (!archives.empty()) BOOST_CHECK(!std::filesystem::exists(archives.back()));
+                            archives.push_back(model->current_archive);
+                            BOOST_TEST(std::distance(std::filesystem::directory_iterator(config.memory),
+                                std::filesystem::directory_iterator()) == 2);
+                        }
+                        if (repeated && finished < 4) {
+                            model->entered.store(false);
+                            co_await send("payload", {{"operation", "compact"},
+                                {"request_id", "compact-" + std::to_string(finished + 1)}});
+                        } else {
+                            co_await send("payload", {{"operation", "message"}, {"request_id", "next"},
+                                {"content", Json::array({{{"type", "text"}, {"raw", "Next task"},
+                                    {"modality", "text"}}})}});
+                        }
                     }
                 } else if (request == "next" && mode == Scenario::Success) {
                     co_await send("payload", {{"operation", "compact"}, {"request_id", "compact-2"}});
@@ -322,10 +464,37 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
     io.run();
     second.join();
     server.get();
+    if (mode == Scenario::PublishedSaveFailure) {
+        BOOST_CHECK_EXCEPTION(worker.get(), load::PersistenceError,
+            [](const auto& error) { return error.published(); });
+        BOOST_TEST(successful == 0);
+        BOOST_TEST(finished == 0);
+        BOOST_TEST(storage_errors == 1);
+        BOOST_TEST(cleanup_errors == 0);
+#if defined(__linux__)
+        BOOST_TEST(snapshot_sync_failure.failures.load() == 1u);
+#endif
+        // Rename really happened: restart sees the new memory-only snapshot.
+        const auto restored = load::load_state(snapshot);
+        BOOST_CHECK(restored.turns.empty());
+        const auto& memory = restored.system_prompt.find("memory.runtime")->text;
+        BOOST_CHECK(memory.find(model->summary_reference.string()) != std::string::npos);
+        BOOST_CHECK(original_file.find(model->summary_reference.string()) == std::string::npos);
+        BOOST_CHECK(read_file(snapshot) != original_file);
+        BOOST_CHECK(std::filesystem::exists(model->summary_reference));
+        BOOST_TEST(read_file(model->summary_reference) == "evidence referenced only by replacement");
+        BOOST_CHECK(std::filesystem::exists(referenced / "state.md"));
+        BOOST_CHECK(std::filesystem::exists(model->current_archive));
+        BOOST_CHECK(!std::filesystem::exists(obsolete));
+        BOOST_TEST(std::distance(std::filesystem::directory_iterator(config.memory),
+            std::filesystem::directory_iterator()) == 3);
+        return;
+    }
     if (mode == Scenario::SaveFailure) {
         BOOST_CHECK_THROW(worker.get(), std::exception);
         BOOST_TEST(successful == 0);
         BOOST_TEST(finished == 0);
+        BOOST_TEST(storage_errors == 1);
         BOOST_TEST(read_file(snapshot.string() + ".before") == original_file);
         return;
     }
@@ -336,9 +505,9 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
         return;
     }
     BOOST_TEST(successful == (mode == Scenario::Success ? 2 : 0));
-    BOOST_TEST(finished == (mode == Scenario::Success ? 3 : 2));
-    if (mode == Scenario::Cancel) BOOST_CHECK(history_checked);
-    const auto& ordinary = model->contexts[mode == Scenario::ArchiveFailure ? 0 : 1];
+    BOOST_TEST(finished == (mode == Scenario::Success ? 3 : repeated ? 5 : 2));
+    if (cancelled) BOOST_CHECK(history_checked);
+    const auto& ordinary = model->contexts[(mode == Scenario::ArchiveFailure || mode == Scenario::BudgetExceeded) ? 0 : repeated ? 4 : 1];
     BOOST_TEST(ordinary.turns.back().user_input.content.front().raw.starts_with("Next task"));
     BOOST_TEST(ordinary.turns.size() == (mode == Scenario::Success ? 1u : 2u));
     if (mode == Scenario::Success) {
@@ -396,7 +565,7 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
         BOOST_TEST(std::prev(restored_context.system_prompt.end())->name == "memory.runtime");
         BOOST_TEST(restored_context.system_prompt.find("memory.runtime")->text.find(model->summary(2)) != std::string::npos);
     } else {
-        BOOST_TEST(ordinary.system_prompt.find("memory.runtime")->text == "Old summary");
+        BOOST_TEST(ordinary.system_prompt.find("memory.runtime")->text == initial.system_prompt.find("memory.runtime")->text);
     }
 }
 } // namespace
@@ -423,3 +592,14 @@ BOOST_AUTO_TEST_CASE(unsafe_or_disabled_admission_is_rejected) {
         scenario(mode);
     }
 }
+
+BOOST_AUTO_TEST_CASE(derived_allowance_rejects_generated_summary) { scenario(Scenario::AllowanceExceeded); }
+BOOST_AUTO_TEST_CASE(failed_attempts_prune_and_protect_committed_archive) { scenario(Scenario::RepeatFailure); }
+BOOST_AUTO_TEST_CASE(cancelled_attempts_prune_and_protect_committed_archive) { scenario(Scenario::RepeatCancel); }
+BOOST_AUTO_TEST_CASE(cleanup_failure_does_not_replace_provider_failure) { scenario(Scenario::CleanupFailure); }
+
+#if defined(__linux__)
+BOOST_AUTO_TEST_CASE(published_snapshot_failure_protects_both_recovery_candidates) {
+    scenario(Scenario::PublishedSaveFailure);
+}
+#endif

@@ -231,7 +231,7 @@ describe('end to end with the real worker', { skip }, () => {
         }
     });
 
-    it('compacts through the hub and prunes archives only after publishing the replacement', { timeout: 180000 }, async () => {
+    it('compacts through the hub and preserves committed success on optional cleanup failure', { timeout: 180000 }, async () => {
         const ctx = await startE2eHub();
         ctx.config.worker.memoryRetention = { maxArchives: 1 };
         const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);

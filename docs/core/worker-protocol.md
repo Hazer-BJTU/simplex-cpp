@@ -591,11 +591,11 @@ at least one conversation turn, and a settled `ready` phase (or no loop progress
 Invalid requests receive `input_rejected`. A request accepted into the payload
 queue waits for earlier runs to settle, just like `message` and `continue`.
 
-Before model execution, the worker exports the original AgentInputState to a new
+After budget preflight and before model execution, the worker exports the original AgentInputState to a new
 readable Markdown archive under `<persistence.directory>/<persistence.memory>`
 (default memory subdirectory `memory`). Each exclusively created archive directory
 is `<20-digit ordinal>-<UTC timestamp>-<run_id>/`, containing `state.md`. Ordinals are derived from existing archives and increase across worker restarts
-and clock changes. Old directories and files are never reused. Failed or cancelled attempts retain their archives;
+and clock changes. Old directories and files are never reused. The current attempt retains its archive;
 export failure can leave an empty directory. Readable exports include all history,
 with the existing JSON-preview clipping and binary omission policy. They are not
 lossless restorable snapshots. Export failure prevents the model request.
@@ -610,16 +610,28 @@ injected into memory. While summarization is pending, history queries continue
 to return the original conversation, and the live state remains unchanged. The
 private run uses the built-in context statistic hook to account for its response before pruning; successful publication
 retains that accounting and refreshes the estimate for the new system prompt.
-`run_started` follows the successful archive write.
+`run_started` marks host admission, before budget preflight and archive export; it is
+not proof that an archive was written or a model request began.
 
-The worker rejects an empty summary, one above 32 KiB, or a replacement that
-does not reduce the measured context by at least 10%. The replacement must also
-fit a byte budget: the lesser of 64 KiB and 75% of the configured context window
-token count. This deterministic measure adds the rendered system prompt and
-JSON-encoded tools and turns, in UTF-8 bytes. It is a conservative size proxy;
-provider-specific tokenization and message wrappers can differ. These checks
-run before the mandatory JSON save. A rejected result leaves the original state
-authoritative and emits no `compact_finished`.
+Compaction uses an explicit **64 KiB replacement-context byte budget**, independent
+of the provider's configured token window. Before creating an archive or calling
+the model, the worker measures the retained rendered prompt, JSON-encoded tool
+declarations, and the exact new memory wrapper, including directory/file paths
+and boundary markers. If this fixed overhead exhausts the budget, it fails with
+measured `fixed_bytes`, `budget_bytes`, and guidance to shorten prompts, tool
+schemas or archive paths. This preflight creates no archive and makes no model
+request.
+
+Otherwise the instruction states a raw UTF-8 summary allowance of
+`min(32 KiB, 64 KiB - fixed_bytes)`. A generated summary can still violate it;
+empty text and over-allowance text are rejected without truncation. After
+construction, the actual replacement must fit 64 KiB and reduce measured context
+by at least 10%. The size measure adds rendered prompt and JSON-encoded tools and
+turns; summary allowance counts original text bytes, not JSON escaping or tokens.
+Multibyte text and archive-path overhead count. This is a deterministic compact
+policy, not a tokenizer or exact model capacity check; token-window settings do
+not scale it. All validation precedes the mandatory JSON save. Rejection leaves
+the original state authoritative and emits no `compact_finished`.
 
 Only a successful, non-cancelled summary replaces the live state. All user turns
 are removed; other state fields are retained, apart from the updated timestamp,
@@ -637,7 +649,9 @@ It is atomically saved before the in-memory replacement and success notification
 Cancellation before that commit preserves the original state. Cancellation during
 the synchronous commit does not undo it. Required JSON save failure stops further
 admission; a failure after file publication has uncertain durability and is never
-reported as success. Optional `readable.md` export failure emits `export_error`
+reported as success or user cancellation. The worker emits one terminal `error`
+with `durable: false` and stops, rather than a duplicate `run_finished`.
+Optional `readable.md` export failure emits `export_error`
 without undoing successful JSON publication.
 
 On success the worker emits `persisted` with boundary `compact`, then
@@ -665,9 +679,8 @@ A failure or cancellation emits `run_finished` without `compact_finished` and
 without changing the authoritative conversation or loop progress; its status
 object can therefore still describe the preceding ordinary run. `durable: false`
 for this attempt does not invalidate the original snapshot. Retrying compact uses
-a fresh request ID. There is no automatic retry, and a failed or cancelled
-attempt does not trigger archive cleanup; a later successful compact may remove
-its archive under the retention policy below.
+a fresh request ID. There is no automatic retry. Failed and cancelled attempts
+also apply archive retention against the unchanged authoritative state.
 
 After success, history contains zero turns. An explicit `continue` can resume from
 settled memory using the private continuation prompt. A new message uses the new
@@ -677,14 +690,28 @@ mode. Both hub and current worker advertise `context-compact`. The panel retires
 outstanding history queries, refreshes the new revision, and renders the summary
 as a compact result. Retained hub events remain available as an execution record.
 
-After each successful state replacement the worker applies
+After every settled attempt that created an archive, the worker applies
 `persistence.memory_retention.max_archives` (default 5). Zero disables cleanup.
-It always keeps the current archive, which counts toward the limit, then
-retains other recognized archives newest first until the count limit is reached.
-Cleanup is synchronous under
-session ownership, after the durable commit, with no archive writer or tool
-running. Failed or cancelled attempts remain until a later successful compact;
-these limits are therefore cleanup targets, not a hard disk quota.
+The current attempt and archives explicitly referenced by absolute paths in the
+authoritative state's prompt, tools, extras or turns are always protected.
+References resolve to direct children of the configured archive root; relative
+paths and arbitrary prose are not resolved. Protected archives count toward the
+target and take precedence even if their count exceeds it. Other recognized
+archives are retained newest first up to that target.
+
+Successful attempts use the committed replacement's references; failures and
+cancellations before a snapshot write use the unchanged state's references.
+Once a required replacement write is attempted, a failure conservatively protects
+the union of old and replacement references, even if publication was not confirmed.
+A parent-directory sync can fail after rename: the new snapshot is then visible,
+but crash recovery may still need either candidate. Retention cannot delete
+archives referenced only by that replacement summary. Thus a limit of one can retain
+two archives after failure: the current attempt and an older committed memory
+archive. Repeated attempts under healthy storage replace older unreferenced
+attempt evidence instead of growing without bound. Cleanup is synchronous under
+session ownership after the private run settles, with no archive writer or tool
+running. Protected references, unexpected contents and filesystem failures mean
+this remains a cleanup target, not a hard disk quota.
 
 Only ordinary directories matching the worker archive name and containing
 exactly one regular `state.md` are eligible. Symlinks, extra files and empty or
@@ -693,6 +720,10 @@ assumes cooperating filesystem users, not hostile concurrent path replacement.
 The status object reports the active policy. `compact_finished` additionally
 reports `archive_cleanup: {removed_archives, removed_bytes}` or
 `archive_cleanup_error: string`; a cleanup failure does not undo a saved summary.
+On a failed/cancelled attempt, cleanup failure is logged and emits optional
+`export_error` with `operation: "archive_cleanup"`, preserving the original run
+error or cancellation. Incomplete/empty archive directories are not deleted;
+export failures may also produce a cleanup diagnostic.
 The panel displays cleanup failures. The worker owns cleanup even when its files
 are remote to the hub; the hub never deletes a path received in an event.
 

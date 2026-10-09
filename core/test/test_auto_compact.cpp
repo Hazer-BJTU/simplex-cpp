@@ -13,7 +13,7 @@ using Json = nlohmann::json;
 using State = model_io::AgentInputState;
 
 namespace {
-enum class Mode { Success, Frequent, Budget, LastBudgetSuccess, SummaryFailure, SummaryEmpty, SummaryTools, Cancel, CancelResume, MemoryContinue, ResumeFailure, ResumeCancel };
+enum class Mode { Success, Frequent, Budget, LastBudgetSuccess, SummaryFailure, SummaryEmpty, SummaryTools, SummarySaveFailure, Cancel, CancelResume, MemoryContinue, ResumeFailure, ResumeCancel };
 
 /** No credentials or shell effects: unknown fixture calls settle through the registry. */
 struct Model : llm::LLMModel {
@@ -24,10 +24,11 @@ struct Model : llm::LLMModel {
     int summaries = 0;
     bool waiting = false;
     std::vector<State> contexts;
+    std::filesystem::path snapshot;
     asio::awaitable<model_io::MessageItem> converse(State state) override {
         contexts.push_back(state);
         const auto prompt = state.turns.back().user_input.content.front().raw;
-        const bool summary = prompt == "HANDOFF";
+        const bool summary = prompt.starts_with("HANDOFF");
         model_io::MessageItem result;
         result.type = model_io::MessageItemType::ModelResponse;
         result.role = "assistant";
@@ -50,6 +51,10 @@ struct Model : llm::LLMModel {
                 result.invokes = std::vector<model_io::InvokeQuery>{forbidden};
             }
             result.cost = model_io::TokenCost{500, 10, 100};
+            if (mode == Mode::SummarySaveFailure) {
+                std::filesystem::rename(snapshot, snapshot.string() + ".before");
+                std::filesystem::create_directory(snapshot);
+            }
         } else {
             ++ordinary;
             if (mode == Mode::ResumeFailure && ordinary == 4) {
@@ -111,6 +116,7 @@ void exercise(Mode mode, bool save_run) {
     config.save_run = save_run;
     config.save_step = config.save_shutdown = false;
     auto model = std::make_shared<Model>(io.get_executor(), mode);
+    model->snapshot = config.state_directory / "state.json";
     if (mode == Mode::MemoryContinue) {
         State state;
         state.meta.session_id = "test";
@@ -171,6 +177,8 @@ void exercise(Mode mode, bool save_run) {
                 } else {
                     co_await send("signal", {{"operation", "shutdown"}});
                 }
+            } else if (name == "error" && mode == Mode::SummarySaveFailure) {
+                BOOST_TEST(event.at("data").at("durable") == false);
             } else if (name == "input_rejected" || name == "error") {
                 BOOST_FAIL(event.dump());
             }
@@ -183,11 +191,36 @@ void exercise(Mode mode, bool save_run) {
     watchdog.async_wait([&](auto error) { if (!error) { timed_out = true; app.stop(); } });
     // Cancel the watchdog once the peer has drained; no timing sleeps in assertions.
     std::jthread runner([&] { io.run(); });
-    worker_done.get();
+    if (mode == Mode::SummarySaveFailure) {
+        BOOST_CHECK_THROW(worker_done.get(), std::exception);
+    } else {
+        worker_done.get();
+    }
     peer_done.get();
     asio::post(io, [&] { watchdog.cancel(); });
     runner.join();
     BOOST_TEST(!timed_out);
+    if (mode == Mode::SummarySaveFailure) {
+        int errors = 0, terminals = 0, compact_results = 0;
+        for (const auto& event : events) {
+            if (event.at("event") == "error") ++errors;
+            if (event.at("event") == "run_finished" || event.at("event") == "compact_finished") ++terminals;
+            if (event.at("event") == "tool_results"
+                && event.at("data").at(0).at("invoke_return").at("query").at("name") == "auto_compact") {
+                ++compact_results;
+                BOOST_TEST(event.at("data").at(0).at("invoke_return").at("extras").at("status") == "failed");
+            }
+        }
+        BOOST_TEST(errors == 1);
+        BOOST_TEST(terminals == 0);
+        BOOST_TEST(compact_results == 1);
+        BOOST_TEST(model->ordinary == 2);
+        BOOST_TEST(model->summaries == 1);
+        const auto retained = load::load_state(model->snapshot.string() + ".before");
+        BOOST_REQUIRE(!retained.turns.empty());
+        BOOST_CHECK(retained.system_prompt.find("memory.runtime") == retained.system_prompt.end());
+        return;
+    }
     if (resumed) {
         std::vector<Json> finishes, histories;
         for (const auto& event : events) {
@@ -288,4 +321,8 @@ BOOST_AUTO_TEST_CASE(failed_internal_turn_retains_each_execution_on_explicit_con
 }
 BOOST_AUTO_TEST_CASE(cancelled_internal_turn_retains_each_execution_on_explicit_continue) {
     exercise(Mode::ResumeCancel, true);
+}
+
+BOOST_AUTO_TEST_CASE(summary_storage_failure_stops_with_one_failure_terminal) {
+    exercise(Mode::SummarySaveFailure, true);
 }

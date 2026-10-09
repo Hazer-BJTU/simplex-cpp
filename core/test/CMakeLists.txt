@@ -1,4 +1,4 @@
-foreach(name configuration confirmation application protocol compact auto_compact event_outbox congestion)
+foreach(name configuration confirmation application protocol compact compact_budget auto_compact event_outbox congestion)
     add_executable(test_core_${name} test_${name}.cpp)
     target_link_libraries(test_core_${name} PRIVATE core_lib Boost::unit_test_framework)
     add_test(NAME test_core_${name} COMMAND test_core_${name})
@@ -10,6 +10,8 @@ target_link_libraries(test_core_application PRIVATE fileio_lib)
 add_dependencies(test_core_application llm_deepseek llm_qwen)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Inject a single snapshot-directory fsync failure after its successful rename.
+    target_link_options(test_core_compact PRIVATE "LINKER:--export-dynamic-symbol=fsync")
     # Export the test executable's resolver override for interposition in Asio.
     # Keeping the fixture in this executable avoids a test-only DT_NEEDED
     # dependency and removes any need for LD_PRELOAD in staged runtime tests.

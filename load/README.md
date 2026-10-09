@@ -398,7 +398,7 @@ before releasing its dependencies. See [IO](../io/README.md) and
 | `directory` | `./data/session` | Direct session root, relative to the configuration file; no session ID is appended. |
 | `state` | `state` | Snapshot subdirectory relative to `directory`. |
 | `memory` | `memory` | Compact archive subdirectory relative to `directory`. |
-| `memory_retention.max_archives` | `5` | Archive-count cleanup target after successful compact; zero disables. |
+| `memory_retention.max_archives` | `5` | Archive-count cleanup target after every archived compact attempt; protected references take precedence; zero disables. |
 | `format` | `json` | Existing `AgentInputState` dataclass serialization. |
 | `restore` | `if_present` | Restore an existing session; create fresh state only when absent. |
 | `save.on_step_finished` | `true` | Save after a completed step's state-edit hooks. |
@@ -588,14 +588,18 @@ not restorable JSON snapshots.
 Compact requires `persistence.enabled: true`. Its original-state Markdown export
 and successful final JSON save are mandatory regardless of `readable` and
 `save.on_run_finished`. An optional session `readable.md` is also refreshed when
-`readable: true`. After a successful compact commit, the worker applies
-`persistence.memory_retention` and always keeps the current archive.
-Other recognized archives are retained newest first up to `max_archives`
-(default 5), including the current archive. The count accepts integers from 0
-through 2147483647; zero disables cleanup. Failed/cancelled attempts and unexpected files may
-remain, so this is not a hard disk quota. Cleanup never follows child symlinks or
-recursively removes directories, and failures are reported without undoing the
-committed summary. The same worker policy applies to externally managed workers.
+`readable: true`. After each archived compact attempt, including failure and
+cancellation, the worker applies `persistence.memory_retention`. Current evidence
+and archives explicitly referenced by absolute paths in authoritative state are
+protected, even if they exceed `max_archives` (default 5). A required replacement
+write failure additionally protects the attempted replacement's references, since
+rename may have succeeded before directory synchronization failed. Other recognized
+archives are retained newest first up to that target. The count accepts integers
+from 0 through 2147483647; zero disables cleanup. Unfamiliar files are untouched,
+so this is not a disk quota. Cleanup never follows child symlinks or recursively
+removes directories. Cleanup failures are reported without undoing a committed
+summary or replacing the primary error/cancellation.
+The same worker policy applies to externally managed workers.
 The old session-ID-appending layout is not migrated or read automatically. See the
 [worker protocol](../docs/core/worker-protocol.md#compact-conversation-context).
 
