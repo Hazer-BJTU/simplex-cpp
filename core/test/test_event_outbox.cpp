@@ -97,3 +97,36 @@ BOOST_AUTO_TEST_CASE(lifecycle_slot_exhaustion_does_not_spend_sequence_or_omissi
     BOOST_CHECK(queue.admit(event("run_finished"), Kind::Lifecycle) == Admission::Added);
     BOOST_TEST(queue.omitted_display() == 0u);
 }
+
+BOOST_AUTO_TEST_CASE(pending_admission_pauses_new_polling_output_without_changing_existing_entries) {
+    Outbox queue(1);
+    queue.admit(event("history"), Kind::Query);
+    queue.admit(event("status", {{"active", false}}), Kind::Metadata);
+    const auto bytes = queue.bytes();
+    const auto sequence = queue.sequence();
+    queue.pause_noncritical(true);
+    for (int i = 0; i < 100; ++i) {
+        BOOST_CHECK(queue.admit(event("history"), Kind::Query) == Admission::Omitted);
+        BOOST_CHECK(queue.admit(event("status", {{"active", true}}), Kind::Metadata) == Admission::Omitted);
+    }
+    BOOST_CHECK(queue.admit(event("input_rejected"), Kind::Feedback) == Admission::Omitted);
+    BOOST_TEST(queue.size() == 2u);
+    BOOST_TEST(queue.bytes() == bytes);
+    BOOST_TEST(queue.sequence() == sequence);
+    queue.begin_send();
+    queue.complete_send();
+    auto status = queue.begin_send();
+    BOOST_TEST(status.at("data").at("active") == false);
+    queue.complete_send();
+    BOOST_CHECK(queue.empty());
+    // Lifecycle admission remains available throughout the pause.
+    BOOST_CHECK(queue.admit(event("run_finished"), Kind::Lifecycle) == Admission::Added);
+    auto terminal = queue.begin_send();
+    BOOST_TEST(terminal.at("data").at("omitted_query_events") == 100);
+    BOOST_TEST(terminal.at("data").at("coalesced_metadata_events") == 100);
+    BOOST_TEST(terminal.at("data").at("omitted_feedback_events") == 1);
+    queue.complete_send();
+    queue.pause_noncritical(false);
+    BOOST_CHECK(queue.admit(event("history"), Kind::Query) == Admission::Added);
+    BOOST_CHECK(queue.admit(event("status"), Kind::Metadata) == Admission::Added);
+}

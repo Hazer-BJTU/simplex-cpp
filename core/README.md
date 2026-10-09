@@ -148,6 +148,8 @@ The assembled confirmation reply is limited to 64 KiB before JSON parsing.
 Event admission uses a strand-owned ledger with separate lifecycle reserves and
 coalesced latest-value metadata. Congestion omits bounded previews/query feedback
 and delays admission of the next run, without consuming cancellation capacity.
+While a payload waits for admission, new noncritical output is temporarily
+omitted and counted so status/history polling cannot keep extending the backlog.
 Sequence and byte/count accounting commit only after successful admission;
 terminal events settle omission counters. The combined application/transport
 event budget is 16 MiB, and configuration rejects a smaller transport budget.

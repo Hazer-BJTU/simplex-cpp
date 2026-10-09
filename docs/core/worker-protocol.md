@@ -1266,7 +1266,7 @@ admission, durable outbox, replay request, or exactly-once execution mechanism.
 | Feedback mailbox full | Increment `unreported_rejections`; do not recursively enqueue rejection or fail the active run. |
 | Ordinary event quota or byte headroom exhausted | Omit preview/query/feedback events and count them; canonical state remains intact. |
 | Repeated replayable metadata | Replace a queued latest value with the same event/request/run identity, retaining its sequence; the in-flight message is never replaced. |
-| Transport write queue full | Sender waits; new run admission waits for the preceding event/transport backlog to drain. |
+| Transport write queue full | Sender waits; new run admission waits for the existing event/transport backlog to drain, temporarily omitting new noncritical output so polling cannot prolong that backlog. |
 | Invalid JSON, malformed envelope, unknown envelope `type`, or binary input | Fatal event-client error; no automatic reconnect for that application/protocol failure. |
 | Valid envelope with invalid payload | Offer `input_rejected`, when dequeued and the event path is usable. |
 | Valid envelope with invalid signal | Offer `error`, when processed and the event path is usable. |
@@ -1295,7 +1295,14 @@ notification when byte headroom is unavailable. `status` and history/answer
 queries recover current state after congestion; automatic compact notifications
 that are retained still contain the complete accepted summary. This channel is
 not an exact checkpoint log. A new run cannot produce another set of lifecycle
-records until the preceding backlog drains. Cancellation closes confirmation
+records until the preceding backlog drains. While a payload waits at this gate,
+new query replies, feedback and metadata notifications are omitted and counted;
+existing entries continue draining unchanged. This temporary pause ends when the
+gate exits, including shutdown or failure. Lifecycle admission
+retains its separate reserves. Continuous status/history polling cannot append
+new output to the waiting backlog and indefinitely starve the next request.
+The host should use finite query timeouts and deliberate retry after admission.
+Cancellation closes confirmation
 admission and requests loop stop directly from the control thread, before any
 best-effort status notification enters the strand mailbox.
 

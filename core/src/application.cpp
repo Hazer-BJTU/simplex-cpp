@@ -1075,20 +1075,31 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
     }
 
+    /** Drain a finite backlog before admitting more lifecycle production.
+     * Queries/status can still be processed, but their noncritical output is
+     * temporarily omitted. They cannot prolong this wait by adding new entries.
+     * Cancellation/shutdown remain independent, and every exit resumes admission.
+     */
+    asio::awaitable<void> wait_for_admission() {
+        outgoing.pause_noncritical(true);
+        struct ResumeOutput {
+            EventOutbox& outbox;
+            ~ResumeOutput() { outbox.pause_noncritical(false); }
+        } resume{outgoing};
+        while (!stopping && !shutdown_requested.load()
+               && (!outgoing.empty() || client.queued_write_bytes() != 0)) {
+            asio::steady_timer wait(strand, std::chrono::milliseconds(10));
+            co_await wait.async_wait(asio::use_awaitable);
+        }
+    }
+
     /** Serialized payload admission and loop execution; never overlaps runs. */
     asio::awaitable<void> consume() {
         auto payloads = client.subscribe_payload();
         emit("ready", status());
         while (!stopping) {
             auto payload = co_await payloads.next();
-            // A bounded payload can wait here; no new run can accumulate more
-            // lifecycle records behind a previous undrained run. Only one timer
-            // exists, and shutdown/cancellation control remains independent.
-            while (!stopping && !shutdown_requested.load()
-                   && (!outgoing.empty() || client.queued_write_bytes() != 0)) {
-                asio::steady_timer wait(strand, std::chrono::milliseconds(10));
-                co_await wait.async_wait(asio::use_awaitable);
-            }
+            co_await wait_for_admission();
             if (stopping || shutdown_requested.load()) break;
             std::optional<Input> input;
             bool applying_options = false;

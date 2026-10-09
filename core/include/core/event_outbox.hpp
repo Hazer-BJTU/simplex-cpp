@@ -16,7 +16,8 @@ namespace core {
  * metadata slots are separate from eight lifecycle slots. Metadata replacement
  * retains the admitted sequence and never replaces the in-flight front item.
  * New runs must wait for the previous backlog to drain, bounding lifecycle
- * production independently of the number of tool steps. Automatic compact
+ * production. While a request waits, new noncritical output must be paused so
+ * polling cannot indefinitely extend that finite backlog. Automatic compact
  * notifications are latest-value metadata; manual results remain lifecycle.
  */
 class EventOutbox {
@@ -70,6 +71,10 @@ public:
             throw std::length_error("history event exceeds the display budget");
         }
         if (closed_) {
+            return Admission::Omitted;
+        }
+        if (noncritical_paused_ && kind != Kind::Lifecycle) {
+            note_omission(kind);
             return Admission::Omitted;
         }
         if (kind == Kind::Metadata) {
@@ -133,6 +138,11 @@ public:
         in_flight_ = false;
     }
     void close() noexcept { closed_ = true; }
+    /** Strand-owned admission pause. Existing entries drain unchanged; new
+     * noncritical output is counted as omitted, preserving lifecycle reserves.
+     * The caller must resume admission when its waiting request proceeds or exits.
+     */
+    void pause_noncritical(bool paused) noexcept { noncritical_paused_ = paused; }
     bool closed() const noexcept { return closed_; }
     bool empty() const noexcept { return queue_.empty(); }
     std::size_t bytes() const noexcept { return bytes_; }
@@ -181,6 +191,7 @@ private:
     std::size_t omitted_feedback_ = 0;
     std::uint64_t sequence_ = 0;
     bool in_flight_ = false;
+    bool noncritical_paused_ = false;
     bool closed_ = false;
 };
 } // namespace core
