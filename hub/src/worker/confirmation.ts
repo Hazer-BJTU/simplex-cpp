@@ -1,4 +1,5 @@
 import { diagnosticPreview } from '../protocol/display.ts';
+import { approvalArgumentPreview } from '../protocol/approval-preview.ts';
 /**
  * @file one-shot tool-confirmation exchanges.
  *
@@ -87,7 +88,7 @@ export type DecideResult = { ok: true } | { ok: false; error: string };
  * A confirmation request's `data`, after validation.
  *
  * `call` is what the worker is asking to do; the operator decides on it, so it
- * has to survive to the panel unharmed.
+ * remains unchanged here. The panel receives a separately bounded preview.
  */
 export interface ConfirmationRequest {
     worker_id: string;
@@ -288,13 +289,9 @@ export class PendingConfirmation {
 
     /** Serializable description for the panel. */
     describe(): ConfirmationPrompt {
-        const args = this.call.arguments;
-        let preview = diagnosticPreview(args, 0, { nodes: 16 });
-        const originalBytes = Buffer.byteLength(JSON.stringify(args));
-        if (Buffer.byteLength(JSON.stringify(preview)) > 8192) preview = { display_omitted: true };
-        const shortened = JSON.stringify(preview) !== JSON.stringify(args);
+        const preview = approvalArgumentPreview(this.call.arguments);
         return {
-            ...(shortened ? { arguments_truncated: true, arguments_bytes: originalBytes } : {}),
+            ...(preview.truncated ? { arguments_truncated: true, arguments_bytes: preview.originalBytes } : {}),
             confirmation_id: this.id,
             session_id: this.session.id,
             worker_id: this.request.worker_id,
@@ -307,7 +304,7 @@ export class PendingConfirmation {
                 name: typeof this.call.name === 'string' ? this.call.name : '',
                 ...(typeof this.call.type === 'string' ? { type: this.call.type.slice(0, 64) } : {}),
                 ...(typeof this.call.security === 'string' ? { security: this.call.security.slice(0, 64) } : {}),
-                arguments: preview,
+                arguments: preview.value,
                 ...(this.call.extras !== undefined
                     ? { extras: diagnosticPreview(this.call.extras, 0, { nodes: 8 }) } : {}),
             },

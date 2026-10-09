@@ -359,12 +359,14 @@ it('bounds displayed approval arguments and extras without changing the pending 
         const prompt = new PendingConfirmation({ request: input, session,
             receivedAt: 'now', deadlineAt: 'later', log: ctx.hub.log });
         const preview = prompt.describe();
-        assert.ok(Buffer.byteLength(JSON.stringify(preview)) < 16384);
+        assert.ok(Buffer.byteLength(JSON.stringify(preview)) < 70 * 1024);
         assert.equal(preview.arguments_truncated, true);
         assert.equal(preview.call.unknown, undefined);
         assert.equal(preview.call.type, 'serial_write');
         assert.equal(preview.call.security, 'require_confirm');
-        assert.equal(preview.call.arguments.command.length, 1024);
+        assert.equal(preview.call.arguments.command.display_truncated, true);
+        assert.equal(preview.call.arguments.command.bytes, 300000);
+        assert.ok(preview.call.arguments.command.preview.length > 60 * 1024);
         assert.equal(prompt.call, call);
         assert.equal(prompt.call.arguments.command.length, 300000);
     } finally { await ctx.hub.stop(); }

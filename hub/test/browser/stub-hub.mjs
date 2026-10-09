@@ -17,6 +17,7 @@
  * here because those are exactly what the tests are about.
  */
 import { createServer } from 'node:http';
+import { approvalArgumentPreview } from '../../src/protocol/approval-preview.ts';
 import { WebSocketServer } from 'ws';
 import { PANEL_VERSION } from '../../shared/protocol.ts';
 
@@ -305,7 +306,9 @@ const server = createServer((req, res) => {
                     return;
                 }
                 case '/__stub/confirm': {
+                    const preview = approvalArgumentPreview(payload.call?.arguments ?? { command: 'ls' });
                     const prompt = {
+                        ...(preview.truncated ? { arguments_truncated: true, arguments_bytes: preview.originalBytes } : {}),
                         confirmation_id: payload.confirmation_id ?? 'c-1',
                         session_id: payload.session ?? 'demo',
                         worker_id: 'stub-worker',
@@ -313,7 +316,7 @@ const server = createServer((req, res) => {
                         state: 'awaiting-decision',
                         verified: payload.verified ?? true,
                         identity_state: 'live',
-                        call: payload.call ?? { name: 'run_command', arguments: { command: 'ls' } },
+                        call: { ...(payload.call ?? { name: 'run_command' }), arguments: preview.value },
                         received_at: new Date().toISOString(),
                         deadline_at: payload.deadline_at ?? null,
                         settled_at: null,
