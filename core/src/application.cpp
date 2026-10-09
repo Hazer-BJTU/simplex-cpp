@@ -411,8 +411,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
 
     /** Ordinary events belong to the current run; rejected inputs never do. */
     void emit(std::string name, Json data = Json::object()) {
-        if (name != "model_response" && name != "tool_calls" && name != "tool_results"
-            && name != "history" && name != "answer") data = display_value(data);
+        if (name == "compact_finished") {
+            data = display_compact(std::move(data));
+        } else if (name != "model_response" && name != "tool_calls" && name != "tool_results"
+                   && name != "history" && name != "answer") {
+            data = display_value(data);
+        }
         emit(std::move(name), std::move(data), request_id, run_id);
     }
 
@@ -855,8 +859,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
         // Keep the injected summary bounded even when a large original history
         // would make a huge replacement appear to be a reduction.
-        constexpr std::size_t max_summary_bytes = 32 * 1024;
-        if (summary.size() > max_summary_bytes) {
+        if (summary.size() > compact_summary_max_bytes) {
             throw std::runtime_error("compact summary exceeds 32768 byte limit");
         }
 

@@ -453,7 +453,9 @@ export class SubagentService {
             if (envelope.event === 'input_rejected' && ['intent', 'sent', 'unknown'].includes(entry.state)) { entry.state = 'rejected'; entry.detail = typeof data?.message === 'string' ? data.message.slice(0, 512) : 'worker rejected input'; session.noteRequestRejected(entry.request_id, entry.detail); }
             if (envelope.event === 'run_finished' && ['admitted', 'unknown'].includes(entry.state)
                 && (!entry.run_id || entry.run_id === envelope.run_id)) { entry.state = 'finished'; entry.status = typeof data?.status === 'string' ? data.status.slice(0, 32) : 'unknown'; }
-            if (entry.operation === 'compact' && envelope.event === 'compact_finished' && data?.durable === true && typeof data.summary === 'string') entry.summary = data.summary.slice(0, 32768);
+            // Worker ingestion has already validated the summary's UTF-8 byte
+            // budget. Keep the complete normalized text in the operation receipt.
+            if (entry.operation === 'compact' && envelope.event === 'compact_finished' && data?.durable === true && typeof data.summary === 'string') entry.summary = data.summary;
             this.saveOps(session, operations);
         }
         record.conversation?.event(envelope, connection);

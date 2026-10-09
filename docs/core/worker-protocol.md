@@ -648,6 +648,17 @@ On success the worker emits `persisted` with boundary `compact`, then
 {"summary":"Summary text", "memory_file":"/absolute/archive/state.md", "removed_turns":12, "revision":38, "durable":true}
 ```
 
+`summary` is the complete accepted text, limited to 32 KiB of original UTF-8
+bytes. Worker display projection and Hub normalization preserve it verbatim,
+including Unicode and characters escaped by JSON. Other metadata, such as
+`archive_cleanup_error`, still uses bounded diagnostic previews; its
+`display_truncated` flag does not indicate summary truncation. The complete
+encoded event, including JSON escaping and its envelope, remains subject to
+transport and replay budgets. A Hub receiving an oversized summary from another
+worker replaces that field with an explicit omission object; clients must not
+treat it as a successful summary string. This contract also applies to automatic
+compact results and the summary in a subagent compact operation receipt.
+
 The history revision advances once at replacement. Clients should invalidate old
 history pages and display the summary as a compact result, not a new user turn.
 A failure or cancellation emits `run_finished` without `compact_finished` and

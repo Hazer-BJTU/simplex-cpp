@@ -185,6 +185,27 @@ Json display_value(const Json& value) {
     return preview(value, 0, remaining);
 }
 
+Json display_compact(Json value) {
+    if (!value.is_object() || !value.contains("summary")) {
+        return display_value(value);
+    }
+    auto summary = std::move(value.at("summary"));
+    value.erase("summary");
+    auto result = display_value(value);
+    if (!summary.is_string()) {
+        result["summary"] = display_value(summary);
+    } else if (summary.get_ref<const std::string&>().size() > compact_summary_max_bytes) {
+        result["summary"] = Json{
+            {"display_omitted", true},
+            {"bytes", summary.get_ref<const std::string&>().size()},
+            {"reason", "compact summary exceeds 32768 byte limit"}
+        };
+    } else {
+        result["summary"] = std::move(summary);
+    }
+    return result;
+}
+
 Json display_calls(const std::vector<model_io::InvokeQuery>& calls) {
     auto result = Json::array();
     const auto count = std::min<std::size_t>(calls.size(), 64);

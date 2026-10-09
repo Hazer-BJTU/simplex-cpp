@@ -15,6 +15,7 @@ import { createHub } from '../src/hub.ts';
 import { hubRoot } from '../src/config.ts';
 import { createLogger } from '../src/log.ts';
 import { removeChildDirectory, readPrivate, writePrivate } from '../src/subagents/storage.ts';
+import { compactSummary } from './helpers/compact.js';
 const fixture = join(import.meta.dirname, 'fixtures', 'subagent-worker.js');
 const hubs = [];
 afterEach(async () => { for (const hub of hubs.splice(0)) await hub.stop(); });
@@ -119,6 +120,29 @@ it('supports send/continue/compact/receive while excluding tools, reasoning and 
     assert.equal(after.result.requests.at(-1).summary, 'fixture summary');
     assert.equal(ctx.hub.transcripts.transcripts.has(child.id), false);
 });
+for (const bytes of [8192, 32768]) {
+    it(`returns a complete ${bytes}-byte child compact summary in receive and its durable receipt`, async () => {
+        const ctx = await setup();
+        const child = await fork(ctx);
+        await send(ctx, child);
+        const record = ctx.hub.subagents.children.get(child.id);
+        await until(() => !child.activeRunId && !record.conversation.value.stale
+            && record.conversation.value.turns[0]?.steps.length === 1);
+        const summary = compactSummary(bytes);
+        child.connection.sendSignal({ type: 'signal', data: { operation: 'test_compact_summary', summary } });
+        const sent = await send(ctx, child, 'compact');
+        assert.equal(sent.result.state, 'sent');
+        await until(() => !child.activeRunId && !record.conversation.value.stale
+            && record.conversation.value.turns.length === 0);
+        const received = await rpc(ctx, 'subagent/receive', { subagent_id: child.id });
+        const operation = received.result.requests.find(entry => entry.request_id === sent.result.request_id);
+        assert.equal(operation.state, 'finished');
+        assert.equal(operation.summary, summary);
+        const persisted = JSON.parse(readFileSync(join(sessionDir(ctx.config, child.id), 'operations.json'), 'utf8'));
+        assert.equal(persisted.requests.find(entry => entry.request_id === sent.result.request_id).summary, summary);
+        assert.equal(ctx.hub.transcripts.transcripts.has(child.id), false);
+    });
+}
 it('enforces direct-parent scope, operator-only policy and limits before reservations', async () => {
     const ctx = await setup({ subagents: { maxChildren: 1, maxDepth: 2 } });
     const child = await fork(ctx);
