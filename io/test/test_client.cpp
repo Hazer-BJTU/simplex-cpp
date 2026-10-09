@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <thread>
 
 #include <boost/asio.hpp>
 #include <boost/beast/websocket.hpp>
@@ -32,21 +33,25 @@ void write_json(websocket::stream<tcp::socket>& ws, nlohmann::json value) {
 }
 
 std::exception_ptr drive(asio::io_context& context, io::Client& client,
-                         std::chrono::seconds limit = 3s) {
+                         std::chrono::seconds limit = 3s, bool parallel = false) {
     std::exception_ptr failure;
     bool expired = false;
-    asio::steady_timer watchdog(context, limit);
+    auto supervisor = asio::make_strand(context);
+    asio::steady_timer watchdog(supervisor, limit);
     watchdog.async_wait([&](boost::system::error_code ec) {
         if (!ec) {
             expired = true;
             client.stop();
         }
     });
-    asio::co_spawn(context, client.run(), [&](std::exception_ptr error) {
+    asio::co_spawn(supervisor, client.run(), [&](std::exception_ptr error) {
         failure = error;
         watchdog.cancel();
     });
+    std::jthread second;
+    if (parallel) second = std::jthread([&] { context.run(); });
     context.run();
+    if (second.joinable()) second.join();
     BOOST_REQUIRE_MESSAGE(!expired, "IO client did not finish before deadline");
     return failure;
 }
@@ -239,11 +244,13 @@ BOOST_AUTO_TEST_CASE(overflow_reports_metadata_and_preserves_payload_fifo) {
     eventbus::EventBus::ScopedSubscription rejection_subscription{
         bus.subscribe<io::PayloadRejectedEvent>([&](const auto& event) {
             rejected.push_back(event);
+            if (rejected.size() == 3) {
+                asio::co_spawn(context, take_two_and_stop(subscription, received, client), asio::detached);
+            }
         })};
     eventbus::EventBus::ScopedSubscription signal_subscription{
         bus.subscribe<io::SignalEvent>([&](const auto&) {
-            asio::co_spawn(context, take_two_and_stop(subscription, received, client),
-                           asio::detached);
+            // This signal does not acknowledge feedback delivery.
         })};
     const auto failure = drive(context, client);
     server.join();
@@ -261,45 +268,98 @@ BOOST_AUTO_TEST_CASE(overflow_reports_metadata_and_preserves_payload_fifo) {
     BOOST_TEST(received[1] == 2);
 }
 
-BOOST_AUTO_TEST_CASE(full_rejection_control_queue_is_fatal_and_counted) {
-    std::promise<void> handler_started;
-    auto started = handler_started.get_future();
-    std::promise<void> release_handler;
-    auto release = release_handler.get_future();
-    bool server_saw_handler = false;
+BOOST_AUTO_TEST_CASE(full_feedback_and_query_quotas_do_not_block_control_or_fail_run) {
+    std::promise<void> feedback_started;
+    auto started = feedback_started.get_future();
+    std::promise<void> release_feedback;
+    auto release = release_feedback.get_future();
+    bool server_saw_feedback = false;
     loopback_ws::OneShotServer server([&](tcp::socket& socket) {
         websocket::stream<tcp::socket> ws(std::move(socket));
         ws.accept();
-        write_json(ws, {{"type", "signal"}, {"data", "hold"}});
-        server_saw_handler = started.wait_for(2s) == std::future_status::ready;
-        for (int index = 0; index != 3; ++index) {
+        write_json(ws, {{"type", "payload"}, {"data", 0}});
+        write_json(ws, {{"type", "payload"}, {"data", 1}});
+        server_saw_feedback = started.wait_for(2s) == std::future_status::ready;
+        for (int index = 2; index < 20; ++index) {
             write_json(ws, {{"type", "payload"}, {"data", index}});
         }
-        // The third payload cannot queue its rejection. Transport shutdown
-        // wakes this read; only then release the deliberately occupied worker.
-        beast::flat_buffer buffer;
-        boost::system::error_code error;
-        ws.read(buffer, error);
-        release_handler.set_value();
+        for (int index = 0; index < 100; ++index) {
+            write_json(ws, {{"type", "payload"}, {"data", {
+                {"operation", "history"}, {"request_id", "query"}, {"padding", std::string(20000, 'Q')}}}});
+        }
+        write_json(ws, {{"type", "signal"}, {"data", "cancel"}});
     });
     asio::io_context context;
     eventbus::EventBus bus;
     io::Client client(context.get_executor(), where(server.wait_listening()),
-                      bus, {.payload_capacity = 1, .signal_capacity = 1});
+                      bus, {.payload_capacity = 1, .signal_capacity = 1, .query_capacity = 1});
+    std::atomic<int> feedback_count{0};
+    eventbus::EventBus::ScopedSubscription feedback_subscription{
+        bus.subscribe<io::PayloadRejectedEvent>([&](const auto&) {
+            if (feedback_count.fetch_add(1) == 0) {
+                feedback_started.set_value();
+                release.wait_for(2s);
+            }
+        })};
+    std::atomic<bool> control_seen{false};
     client.register_signal_handler([&](const auto&) {
-        handler_started.set_value();
-        release.wait_for(2s);
+        control_seen = true;
+        release_feedback.set_value();
+        client.stop();
     });
-    const auto failure = drive(context, client);
+    const auto failure = drive(context, client, 3s, true);
     server.join();
-    BOOST_CHECK(server_saw_handler);
-    BOOST_TEST(client.rejected_payloads() == 2u);
-    BOOST_REQUIRE(failure);
-    BOOST_CHECK_EXCEPTION(std::rethrow_exception(failure), std::runtime_error,
-        [](const auto& error) {
-            return std::string(error.what()).find("reporting payload rejection")
-                != std::string::npos;
-        });
+    BOOST_CHECK(server_saw_feedback);
+    BOOST_CHECK(control_seen);
+    BOOST_CHECK(!failure);
+    BOOST_TEST(client.rejected_payloads() > 1u);
+    BOOST_TEST(client.rejected_queries() == 100u);
+    BOOST_TEST(client.unreported_rejections() > 0u);
+}
+
+BOOST_AUTO_TEST_CASE(full_query_mailbox_rejects_queries_without_delaying_signals) {
+    std::promise<void> query_started;
+    auto started = query_started.get_future();
+    std::promise<void> release_query;
+    auto release = release_query.get_future();
+    bool server_saw_query = false;
+    loopback_ws::OneShotServer server([&](tcp::socket& socket) {
+        websocket::stream<tcp::socket> ws(std::move(socket));
+        ws.accept();
+        const auto query = nlohmann::json{{"type", "payload"}, {"data", {
+            {"operation", "history"}, {"request_id", "query"}}}};
+        write_json(ws, query);
+        server_saw_query = started.wait_for(2s) == std::future_status::ready;
+        for (int index = 0; index < 100; ++index) {
+            write_json(ws, query);
+        }
+        write_json(ws, {{"type", "signal"}, {"data", "cancel"}});
+    });
+    asio::io_context context;
+    eventbus::EventBus bus;
+    io::Client client(context.get_executor(), where(server.wait_listening()),
+        bus, {.payload_capacity = 1, .signal_capacity = 1, .query_capacity = 1});
+    std::atomic<int> queries{0};
+    eventbus::EventBus::ScopedSubscription subscription{
+        bus.subscribe<io::PayloadQueryEvent>([&](const auto&) {
+            if (queries.fetch_add(1) == 0) {
+                query_started.set_value();
+                release.wait_for(2s);
+            }
+        })};
+    std::atomic<bool> control_seen{false};
+    client.register_signal_handler([&](const auto&) {
+        control_seen = true;
+        release_query.set_value();
+        client.stop();
+    });
+    const auto failure = drive(context, client, 3s, true);
+    server.join();
+    BOOST_CHECK(server_saw_query);
+    BOOST_CHECK(control_seen);
+    BOOST_CHECK(!failure);
+    BOOST_TEST(client.rejected_queries() == 99u);
+    BOOST_TEST(client.rejected_payloads() == 0u);
 }
 
 BOOST_AUTO_TEST_CASE(throwing_rejection_listener_ends_run) {

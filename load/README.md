@@ -361,21 +361,27 @@ headers and TLS overrides are not exposed by this template.
 | --- | --- | --- |
 | `payload_capacity` | `256` | Positive integer; queued incoming payloads. |
 | `signal_capacity` | `256` | Positive integer; queued incoming signals. |
+| `query_capacity` | `64` | Positive integer; independent history/answer queue and separate rejection-feedback queue. |
 | `transport.write_capacity` | `256` | Positive integer; queued outgoing messages. |
+| `transport.write_byte_capacity` | `16777216` | Encoded outgoing bytes, including the active write; at least 16 MiB for the core application. |
 | `transport.initial_backoff_ms` | `250` | Positive integer milliseconds. |
 | `transport.max_backoff_ms` | `10000` | Integer milliseconds, at least the initial delay. |
 | `transport.idle_timeout_seconds` | `0` | Nonnegative integer seconds; zero disables idle timeout. |
 
 These options map to `io::ClientOptions` and
-`intercom::StableWebSocketOptions`. Capacities count messages, not bytes.
+`intercom::StableWebSocketOptions`. Except for `write_byte_capacity`, capacities
+count complete messages.
 Positive idle timeout enables the existing idle ping and peer-response deadline.
 All connection-establishment failures are retried indefinitely with capped
 backoff, including DNS, TLS verification, and upgrade rejection. Protocol errors
 and signal-handler failures are fatal. This policy is fixed, not a configurable
 retry classification in this template.
 
-The existing `type`/`data` envelope routes payloads and signals. Payload overflow
-rejects and counts a message; signal overflow ends the client. The default
+The existing `type`/`data` envelope routes payloads and signals. History/answer
+queries have their own quota and a 16 KiB encoded-envelope limit. Payload/query
+overflow rejects and counts a message; feedback is best effort in its own bounded
+mailbox. Query or feedback pressure cannot consume signal capacity. Actual
+signal overflow ends the client. The default
 signal handler publishes synchronously on the injected EventBus. There is one
 payload subscriber with one outstanding `next()` operation. Outgoing admission
 does not guarantee delivery, and a failed write is not automatically replayed.

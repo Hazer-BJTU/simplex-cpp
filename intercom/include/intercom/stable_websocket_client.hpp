@@ -17,6 +17,7 @@
 
 #include "endpoint/model_request.hpp"
 #include "intercom/websocket_stream.hpp"
+#include "intercom/message_limits.hpp"
 #include "logging/logger.hpp"
 
 namespace intercom {
@@ -27,7 +28,7 @@ struct StableWebSocketOptions {
     std::size_t write_capacity = 256;
     /// Encoded bytes owned by admitted/pending messages, including the active write.
     /// Admission exceeding this budget fails explicitly; text is never shortened.
-    std::size_t write_byte_capacity = 16 * 1024 * 1024;
+    std::size_t write_byte_capacity = default_write_byte_capacity;
     /// Delay before the first reconnect attempt after a failed session.
     std::chrono::milliseconds initial_backoff{250};
     /// Upper bound for exponential reconnect delays.

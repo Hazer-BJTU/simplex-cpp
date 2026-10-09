@@ -143,6 +143,19 @@ security, type and normalized arguments). The response has
 type=confirmation_response and echoes all four IDs with
 decision=approved|denied and optional reason.
 Malformed, mismatched, binary, disconnected or expired replies deny execution.
+The assembled confirmation reply is limited to 64 KiB before JSON parsing.
+
+Event admission uses a strand-owned ledger with separate lifecycle reserves and
+coalesced latest-value metadata. Congestion omits bounded previews/query feedback
+and delays admission of the next run, without consuming cancellation capacity.
+While a payload waits for admission, new noncritical output is temporarily
+omitted and counted so status/history polling cannot keep extending the backlog.
+Sequence and byte/count accounting commit only after successful admission;
+terminal events settle omission counters. The combined application/transport
+event budget is 16 MiB, and configuration rejects a smaller transport budget.
+History/answer queries and rejection feedback each have their own bounded mailbox;
+neither shares the signal quota. See the [protocol](../docs/core/worker-protocol.md)
+for omission counters, coalescing, retry and delivery semantics.
 
 The overall deadline spans DNS, TCP/TLS, upgrade, write, read and graceful
 close. Cancellation closes confirmation admission, aborts transport on its

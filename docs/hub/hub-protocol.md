@@ -690,12 +690,27 @@ and does not change worker persistence. Source-aware answer navigation keeps one
 answers use a plain-text rendering window of 32,768 UTF-16 code units with
 surrogate-safe boundaries and explicit section navigation; reasoning always uses literal text.
 
+Current workers isolate read-only query pressure from cancellation signals.
+History/answer query and rejection mailboxes are bounded; rejected queries may
+produce `history_error` / `answer_error` with `query_queue_full` or
+`query_too_large`. Rejection feedback can itself be omitted under congestion;
+finite query timeouts and explicit retry remain necessary. Worker status and
+terminal outcomes expose rejection/omission counts. Persistent state and exact
+answer sources remain authoritative when previews are omitted. Repeated worker
+checkpoint/status metadata may be coalesced; new run admission waits for the
+preceding output backlog to drain. During that admission wait, new noncritical
+output is temporarily omitted and counted so continuous polling cannot starve
+the pending request. Reads and cancellation/shutdown remain available; hosts
+should retry unanswered queries after admission. See the Worker protocol's queue contract for
+budgets and failure semantics.
+
 Confirmation and remote-tool ingress each cap one executable frame at the lesser
 of the configured ingress ceiling and 1 MiB. Oversized operations are rejected,
 never rewritten into a clipped operation. Confirmation displays preview arguments
 and extras, retain the original pending request as approval authority, and show
 an explicit warning when the full review is unavailable. At most 64 approvals per
-session are pending; further requests are denied as capacity exhausted. Remote
+session are pending; further requests are denied as capacity exhausted. Worker
+confirmation replies have a separate 64 KiB assembled receive ceiling. Remote
 results retain their 256 KiB frame ceiling; answer pagination fits this ceiling.
 
 Panel frames have a 2 MiB indivisible display ceiling beneath the 4 MiB socket

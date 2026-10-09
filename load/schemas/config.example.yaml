@@ -119,13 +119,18 @@ client:
   endpoint: "{{hub.events_endpoint}}"
   # Positive incoming queue capacities, measured in complete JSON messages.
   payload_capacity: 256
-  # Shared by signals, history queries, and payload-overflow feedback.
-  # Also bounds the worker's metadata-only rejection bridge; exhaustion is fatal.
+  # Reserved for signals; query/rejection pressure cannot consume these slots.
   signal_capacity: 256
+  # Independent history/answer query quota, and a separate feedback quota.
+  # Query envelopes above 16 KiB are rejected. Feedback is best effort when full.
+  query_capacity: 64
   transport:
     # Positive outgoing queue capacity, measured in complete messages.
     # Queue admission does not acknowledge delivery to the peer.
     write_capacity: 256
+    # Aggregate encoded bytes, including the active write. Must be >= 16 MiB
+    # to cover the application's event budget; larger values are allowed.
+    write_byte_capacity: 16777216
     initial_backoff_ms: 250
     max_backoff_ms: 10000
     # Zero disables idle timeout. Positive values enable idle ping/deadline.
@@ -158,7 +163,8 @@ worker:
   max_auto_compactions: 5
   # auto_compact_prompt_file: prompts/operations/auto_compact.yaml
   # auto_compact_continue_prompt_file: prompts/operations/auto_compact_continue.yaml
-  # Bounded host event queue. Overflow safely stops the worker.
+  # Ordinary preview/query-feedback slots; lifecycle and latest-value metadata
+  # have separate reserves. Congestion omits previews and delays new runs.
   event_capacity: 1024
   # Used only for a new session; restored prompts are retained.
   # Relative to the executable's directory, never to this file; a rooted path

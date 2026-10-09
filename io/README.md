@@ -2,7 +2,7 @@
 
 `io::Client` adds JSON routing to the reusable, text-only
 `intercom::StableWebSocketClient`. It owns one WebSocket connection at a time,
-one incoming payload queue, and one incoming signal queue. The queues live for
+with independent payload, signal, query and rejection-feedback queues. The queues live for
 the entire client run, including reconnections.
 
 An incoming WebSocket text message must be a JSON object with `type` and
@@ -27,36 +27,28 @@ distributes work to one consumer and does not broadcast copies. Only one
 call fails. This package
 does not invoke AgentLoop; the consumer decides when and how to do that.
 
-A payload whose `data.operation` is `history` is a read-only control query.
+A payload whose `data.operation` is `history` or `answer` is a read-only query.
 It bypasses the normal payload queue and is published as
-`io::PayloadQueryEvent` from the dedicated control worker. The application
-must validate it and post any state read to its state-owning executor. This
-keeps history queries responsive while the normal payload consumer waits for
-a model response; other payload operations retain FIFO admission.
+`io::PayloadQueryEvent` on the executor supplied to the client. Queries have
+an independent `query_capacity` quota (default 64). A query envelope above
+16 KiB is rejected; this applies to protocol cursors, not conversation content.
+The host should supply its state-owning strand and keep listeners short.
 
-Both incoming queues have configurable positive capacities. Routing uses a
-non-blocking channel send so a full payload queue never holds up the WebSocket
-reader or later signals. A rejected payload is logged and counted by
-`rejected_payloads()`. Its correlation metadata is queued on the control channel
-and published as `io::PayloadRejectedEvent` by the dedicated worker, independently
-of `PayloadSubscription::next()`. The event contains the original JSON
-`request_id` (or null) and a string `operation` (or null). It does not retain the
-discarded content or options, and does not validate host-specific operations.
-Even a scalar payload or invalid operation can overflow without preventing the
-next control signal from being routed.
+Payload overflow increments `rejected_payloads()`. Query overflow or excessive
+query size increments `rejected_queries()` and offers a metadata-only
+`PayloadQueryRejectedEvent` (`query_queue_full` or `query_too_large`). Payload
+rejection offers `PayloadRejectedEvent`. The independent feedback mailbox also
+has `query_capacity` slots, bounds malformed correlation metadata, and publishes
+on the supplied executor. If it is full, `unreported_rejections()` increases;
+there is no recursive rejection and no automatic resend. Listeners throwing
+still fail `run()` after its supervised workers have been joined.
 
-Subscribe to this event to provide host-level rejection feedback. Listeners
-must finish promptly and hand state access to the host's owning executor.
-Use a bounded bridge, not an unbounded sequence of posted tasks. A throwing
-listener fails the client through the same supervision path as a throwing
-signal handler. If the control queue cannot admit the notification, routing
-fails after incrementing `rejected_payloads()`; it does not silently lose the
-notification and continue. A full signal/control queue is fatal because
-silently dropping control work would be unsafe.
-
-Rejection feedback is not a successful-admission or delivery acknowledgment.
-It can be lost during shutdown or a connection failure. There is no implicit
-replay or automatic resend, and the retained payload queue remains FIFO.
+Signals retain a separate `signal_capacity` quota and their dedicated thread.
+A full actual signal queue remains fatal; queries and rejection feedback never
+consume its capacity. Queue admission and rejection feedback do not acknowledge
+execution or delivery. Feedback may be omitted under congestion or shutdown;
+hosts must expose counters and clients should time out read-only queries and
+retry, rather than assume an unanswered request succeeded.
 
 ## Signals
 
@@ -70,6 +62,6 @@ run serially and should finish. A throwing handler ends the client run after
 the transport and worker are joined.
 
 Call `stop()` or request the run's stop token, then await `run()` before
-destroying the client, its EventBus, or its executor. Stopping closes both
+destroying the client, its EventBus, or its executor. Stopping closes all
 incoming queues. A message already removed by a consumer is that consumer's
 responsibility; queued requests are not persisted by this package.

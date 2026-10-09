@@ -17,7 +17,7 @@ namespace {
 /** A local peer that can stop progressing at each established transport stage. */
 enum class Mode {
     LateApprove, Approve, Deny, Mismatch, WorkerMismatch, WorkerMissing,
-    Binary, Disconnect, ReadWait, CloseWait, UpgradeWait
+    OversizedReply, Binary, Disconnect, ReadWait, CloseWait, UpgradeWait
 };
 tools::InvokeConfirmEvent exercise(Mode mode, bool stop = false) {
     asio::io_context io;
@@ -52,7 +52,7 @@ tools::InvokeConfirmEvent exercise(Mode mode, bool stop = false) {
             scope->cancel();
         }
         data["decision"] = mode == Mode::Deny ? "denied" : "approved";
-        data["reason"] = "fixture";
+        data["reason"] = mode == Mode::OversizedReply ? std::string(64 * 1024, 'R') : "fixture";
         if (mode == Mode::Mismatch) data["confirmation_id"] = "wrong";
         if (mode == Mode::WorkerMismatch) data["worker_id"] = "other-worker";
         if (mode == Mode::WorkerMissing) data.erase("worker_id");
@@ -61,7 +61,7 @@ tools::InvokeConfirmEvent exercise(Mode mode, bool stop = false) {
         boost::system::error_code write_error;
         co_await socket.async_write(asio::buffer(wire),
             asio::redirect_error(asio::use_awaitable, write_error));
-        if (write_error && mode == Mode::LateApprove) co_return;
+        if (write_error && (mode == Mode::LateApprove || mode == Mode::OversizedReply)) co_return;
         if (write_error) throw boost::system::system_error(write_error);
         if (mode == Mode::CloseWait) {
             asio::steady_timer timer(io, std::chrono::milliseconds(100));
@@ -79,7 +79,7 @@ tools::InvokeConfirmEvent exercise(Mode mode, bool stop = false) {
         std::chrono::milliseconds(mode == Mode::Approve || mode == Mode::Deny
             || mode == Mode::Mismatch || mode == Mode::WorkerMismatch
             || mode == Mode::WorkerMissing || mode == Mode::Binary
-            || mode == Mode::Disconnect ? 1000 : 50),
+            || mode == Mode::Disconnect || mode == Mode::OversizedReply ? 1000 : 50),
         "worker", "session", "run"), asio::use_future);
     asio::steady_timer cancel(io, std::chrono::milliseconds(20));
     if (stop) cancel.async_wait([scope](auto) { scope->cancel(); });
@@ -308,4 +308,11 @@ BOOST_AUTO_TEST_CASE(oversized_confirmation_is_denied_without_rewriting_authorit
     BOOST_TEST(answer.reason.find("transport budget") != std::string::npos);
     BOOST_CHECK(Json(answer.query) == original);
     BOOST_CHECK(Json(event.query) == original);
+}
+
+BOOST_AUTO_TEST_CASE(oversized_confirmation_reply_is_denied_before_json_parse) {
+    const auto result = exercise(Mode::OversizedReply);
+    BOOST_CHECK(result.decision == tools::ConfirmDecision::Denied);
+    BOOST_TEST(result.reason.find("confirmation failed:") == 0u);
+    BOOST_TEST(result.reason.size() < 1024u);
 }

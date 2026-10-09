@@ -25,13 +25,20 @@ struct SignalEvent {
     nlohmann::json signal;
 };
 
-/** A read-only payload query routed through the control worker. */
+/** A read-only payload query published on the caller-supplied executor. */
 struct PayloadQueryEvent {
     nlohmann::json payload;
 };
 
+/** Bounded query rejection metadata; no original query body is retained. */
+struct PayloadQueryRejectedEvent {
+    nlohmann::json request_id;
+    std::string operation;
+    std::string code;
+};
+
 /**
- * Payload-queue overflow notification, published by the control worker.
+ * Payload-queue overflow notification, published on the caller-supplied executor.
  * Only correlation metadata is retained; the rejected content is discarded.
  * request_id is the supplied JSON value or null. operation is a supplied string
  * or null; the host decides which operation names its protocol recognizes.
@@ -43,10 +50,11 @@ struct PayloadRejectedEvent {
     nlohmann::json operation;
 };
 
-/** Payload and control queue capacities. Both must be positive. */
+/** Independent payload, control and query quotas. All must be positive. */
 struct ClientOptions {
     std::size_t payload_capacity = 256;
     std::size_t signal_capacity = 256;
+    std::size_t query_capacity = 64;
 };
 
 /**
@@ -60,13 +68,17 @@ struct ClientOptions {
  *
  * The intercom base remains a plain-text transport. This class alone parses
  * incoming JSON and serializes outgoing JSON. A malformed envelope ends
- * run() as a protocol error. Once run() returns, both incoming queues are
- * closed and the signal worker has been joined. Keep this object, its payload
+ * run() as a protocol error. Queries and rejection feedback each have a
+ * query_capacity mailbox and run on the caller-supplied executor. Query
+ * envelopes above 16 KiB are rejected before admission. Once run() returns,
+ * every incoming queue is closed and all routing workers have been joined. Keep this object, its payload
  * subscription, its EventBus and its executor alive until run() returns.
  * Payload overflow increments rejected_payloads() and queues a metadata-only
- * PayloadRejectedEvent on the bounded control queue. Control queue exhaustion
- * is fatal, including failure to admit rejection feedback; no unbounded work
- * is posted and no automatic replay is attempted.
+ * PayloadRejectedEvent on the bounded feedback queue. Query rejection emits
+ * PayloadQueryRejectedEvent when feedback capacity permits. Feedback overflow
+ * increments unreported_rejections(); it never recursively queues feedback.
+ * Actual signal-queue exhaustion remains fatal; query/rejection pressure cannot
+ * consume those slots. No automatic replay is attempted.
  */
 class Client final : public intercom::StableWebSocketClient {
 private:
@@ -79,15 +91,21 @@ private:
         State(boost::asio::any_io_executor payload_executor,
               boost::asio::any_io_executor signal_executor,
               ClientOptions options)
-            : payloads(std::move(payload_executor), options.payload_capacity),
+            : payloads(payload_executor, options.payload_capacity),
+              queries(payload_executor, options.query_capacity),
+              feedback(payload_executor, options.query_capacity),
               signals(std::move(signal_executor), options.signal_capacity) {}
 
         JsonChannel payloads;
+        JsonChannel queries;
+        JsonChannel feedback;
         JsonChannel signals;
         std::atomic<bool> subscribed{false};
         std::atomic<bool> receiving{false};
         std::atomic<bool> stopping{false};
         std::atomic<std::size_t> rejected_payloads{0};
+        std::atomic<std::size_t> rejected_queries{0};
+        std::atomic<std::size_t> unreported_rejections{0};
     };
 
 public:
@@ -132,7 +150,7 @@ public:
     /** Start the signal worker and the transport; one invocation per client. */
     boost::asio::awaitable<void> run(std::stop_token stop = {});
 
-    /** Stop transport and both incoming queues; run() is the completion fence. */
+    /** Stop transport and all incoming queues; run() is the completion fence. */
     void stop();
 
     /** Claim the payload queue's single consumer slot. May be called once. */
@@ -143,17 +161,24 @@ public:
 
     /** Count payloads explicitly rejected because their queue was full. */
     [[nodiscard]] std::size_t rejected_payloads() const noexcept;
+    [[nodiscard]] std::size_t rejected_queries() const noexcept;
+    [[nodiscard]] std::size_t unreported_rejections() const noexcept;
 
 protected:
     void on_text(std::string message) override;
 
 private:
     boost::asio::awaitable<void> process_signals();
+    boost::asio::awaitable<void> process_queries();
+    boost::asio::awaitable<void> process_feedback();
+    void queue_feedback(nlohmann::json metadata);
     void close_queues() noexcept;
 
     boost::asio::io_context _signal_io;
+    boost::asio::any_io_executor _executor;
     std::shared_ptr<State> _state;
     DoneChannel _signal_done;
+    DoneChannel _messages_done;
     std::jthread _signal_thread;
     std::mutex _handler_mutex;
     eventbus::EventBus& _events;
