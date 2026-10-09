@@ -1302,6 +1302,10 @@ gate exits, including shutdown or failure. Lifecycle admission
 retains its separate reserves. Continuous status/history polling cannot append
 new output to the waiting backlog and indefinitely starve the next request.
 The host should use finite query timeouts and deliberate retry after admission.
+Queries are also omitted before expensive history/answer projection when their
+ordinary quota is full or there is insufficient byte headroom for a maximum
+history frame. This avoids spending state-projection CPU on replies that would
+be discarded, leaving the executor available for cancellation and run progress.
 Cancellation closes confirmation
 admission and requests loop stop directly from the control thread, before any
 best-effort status notification enters the strand mailbox.

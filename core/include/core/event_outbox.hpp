@@ -41,6 +41,25 @@ public:
         }
     }
 
+    /** Omit a query before projecting state if output capacity is unavailable.
+     * Call on the owning strand before expensive history/answer construction.
+     * A skipped query is counted exactly once without allocating a reply or
+     * spending sequence/count/byte reservations. Byte preflight conservatively
+     * requires headroom for the maximum history frame. Passing it does
+     * not reserve capacity: admit() still checks the final encoded reply.
+     */
+    bool omit_query_when_congested(std::size_t transport_bytes = 0) {
+        if (closed_) {
+            return true;
+        }
+        if (noncritical_paused_ || ordinary_count_ >= capacity_
+            || !fits(bytes_, transport_bytes, history_event_max_bytes, soft_bytes)) {
+            note_omission(Kind::Query);
+            return true;
+        }
+        return false;
+    }
+
     /** Commit sequence, bytes and omission settlement only on successful admission.
      * Failed or closed admission leaves the ledger intact. The caller supplies
      * transport reservations, including its active write, for the shared bound.

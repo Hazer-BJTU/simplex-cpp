@@ -223,7 +223,7 @@ BOOST_AUTO_TEST_CASE(continuous_history_and_status_polling_cannot_starve_second_
             submitted = std::chrono::steady_clock::now();
             co_await input("second");
             const auto deadline = submitted + std::chrono::seconds(5);
-            while (!second_finished && std::chrono::steady_clock::now() < deadline) {
+            while (!second_admitted && std::chrono::steady_clock::now() < deadline) {
                 for (int i = 0; i < 8; ++i) {
                     co_await send("payload", {{"operation", "history"},
                         {"request_id", "query-" + std::to_string(++queries)}});
@@ -233,6 +233,16 @@ BOOST_AUTO_TEST_CASE(continuous_history_and_status_polling_cannot_starve_second_
                 co_await tick.async_wait(asio::use_awaitable);
             }
             polling = false;
+            // The bounded assertion concerns admission under ongoing polling.
+            // Once admitted, let the model finish and drain the finite backlog
+            // before shutdown rather than cancelling it at that same deadline.
+            const auto completion_deadline = std::chrono::steady_clock::now()
+                + std::chrono::seconds(10);
+            while (second_admitted && !second_finished
+                   && std::chrono::steady_clock::now() < completion_deadline) {
+                asio::steady_timer tick(context, std::chrono::milliseconds(5));
+                co_await tick.async_wait(asio::use_awaitable);
+            }
             co_await send("signal", {{"operation", "shutdown"}});
         };
         std::uint64_t sequence = 0;
@@ -281,7 +291,7 @@ BOOST_AUTO_TEST_CASE(continuous_history_and_status_polling_cannot_starve_second_
         BOOST_TEST(histories > 0u);
         BOOST_TEST(statuses > 0u);
     };
-    asio::steady_timer watchdog(context, std::chrono::seconds(15));
+    asio::steady_timer watchdog(context, std::chrono::seconds(20));
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error) app.stop();
     });

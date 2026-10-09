@@ -677,6 +677,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             }));
         subscriptions.emplace_back(events.subscribe<io::PayloadQueryEvent>([this](const auto& event) {
             // IO publishes queries on the executor supplied to Client: our strand.
+            // Do not repeatedly project/hash/encode state only to discard the
+            // reply. That work can delay model cancellation and run completion
+            // under a polling flood, even though queue storage stays bounded.
+            if (outgoing.omit_query_when_congested(client.queued_write_bytes())) {
+                return;
+            }
             const auto& payload = event.payload;
             const bool answer = payload.value("operation", Json()) == "answer";
             try {

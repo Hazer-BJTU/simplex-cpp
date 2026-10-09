@@ -130,3 +130,30 @@ BOOST_AUTO_TEST_CASE(pending_admission_pauses_new_polling_output_without_changin
     BOOST_CHECK(queue.admit(event("history"), Kind::Query) == Admission::Added);
     BOOST_CHECK(queue.admit(event("status"), Kind::Metadata) == Admission::Added);
 }
+
+BOOST_AUTO_TEST_CASE(query_preflight_counts_only_skipped_work_without_spending_reservations) {
+    Outbox queue(1);
+    BOOST_CHECK(!queue.omit_query_when_congested());
+    queue.admit(event("history"), Kind::Query);
+    const auto bytes = queue.bytes();
+    BOOST_CHECK(queue.omit_query_when_congested());
+    BOOST_TEST(queue.sequence() == 1u);
+    BOOST_TEST(queue.size() == 1u);
+    BOOST_TEST(queue.bytes() == bytes);
+    queue.begin_send();
+    queue.complete_send();
+    BOOST_CHECK(!queue.omit_query_when_congested());
+    queue.pause_noncritical(true);
+    BOOST_CHECK(queue.omit_query_when_congested());
+    queue.pause_noncritical(false);
+    BOOST_CHECK(queue.omit_query_when_congested(Outbox::soft_bytes));
+    BOOST_TEST(queue.sequence() == 1u);
+    BOOST_TEST(queue.bytes() == 0u);
+    queue.admit(event("run_finished"), Kind::Lifecycle);
+    auto terminal = queue.begin_send();
+    BOOST_TEST(terminal.at("data").at("omitted_query_events") == 3);
+    queue.complete_send();
+    queue.close();
+    BOOST_CHECK(queue.omit_query_when_congested());
+    BOOST_TEST(queue.sequence() == 2u);
+}
