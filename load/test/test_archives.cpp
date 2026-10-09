@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <unistd.h>
+#include <vector>
 
 namespace fs = std::filesystem;
 namespace {
@@ -85,4 +86,17 @@ BOOST_AUTO_TEST_CASE(disabled_cleanup_and_unrecognized_contents_are_preserved) {
     BOOST_CHECK_THROW(load::prune_memory_archives(test.root, test.root / "missing", {1}),
         std::runtime_error);
     BOOST_CHECK(fs::exists(current));
+}
+
+BOOST_AUTO_TEST_CASE(retained_state_references_take_precedence_over_count_limit) {
+    Scratch test;
+    const auto committed = test.archive(1);
+    const auto obsolete = test.archive(2);
+    const auto current = test.archive(3);
+    const std::vector<std::filesystem::path> references{committed, committed};
+    const auto result = load::prune_memory_archives(test.root, current, {1}, references);
+    BOOST_TEST(result.removed_archives == 1u);
+    BOOST_CHECK(fs::exists(committed / "state.md"));
+    BOOST_CHECK(fs::exists(current / "state.md"));
+    BOOST_CHECK(!fs::exists(obsolete));
 }

@@ -199,9 +199,9 @@ persistence:
   # Archive subdirectory, relative to directory; old archives are never replaced.
   # state and memory must be nonempty relative paths without parent traversal.
   memory: memory
-  # Applied after successful compact commits. The current archive is protected.
-  # Zero disables cleanup. Failed/cancelled attempts are retained until a later
-  # successful compact. Unknown files and symlinks are never cleaned.
+  # Applied after successful, failed and cancelled compact attempts.
+  # Current and state-referenced archives are protected, even above the target.
+  # Zero disables cleanup. Unknown files and symlinks are never cleaned.
   memory_retention:
     max_archives: 5
   # if_present: restore existing state, or start fresh when no file exists.

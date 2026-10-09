@@ -49,15 +49,20 @@ refreshed; stored conversation memory remains.
 Readable Markdown is write-only. Long JSON previews are clipped and binary
 payloads are omitted to keep exports navigable. Use JSON for restoration.
 
-Compaction first archives the old state, runs an isolated summarization exchange,
-validates the summary, then durably publishes the replacement before announcing
+Compaction first preflights fixed overhead against a 64 KiB replacement byte
+budget, then archives the old state and runs an isolated summarization exchange.
+It validates the summary, then durably publishes the replacement before announcing
 success. The summary replaces prior injected memory and removes user turns.
 The memory prompt points to archive paths, which are meaningful on the worker's
 filesystem. Failed or cancelled compaction preserves the original conversation.
 
-After successful compaction, `memory_retention.max_archives` retains five
-recognized archives by default. Zero disables cleanup. The current archive is
-protected; unknown files, symlinks, and incomplete directories are not removed.
+After each archived attempt, including failure/cancellation,
+`memory_retention.max_archives` targets five recognized archives by default.
+Zero disables cleanup. The current attempt and archives explicitly referenced
+by absolute paths in retained state are protected, even above the target.
+Other recognized archives are retained newest first; unknown files, symlinks,
+and incomplete directories are not removed. Cleanup errors preserve the primary
+outcome and are reported through optional diagnostics.
 This is a retention target, not a disk quota.
 
 ## Hub history is a projection
