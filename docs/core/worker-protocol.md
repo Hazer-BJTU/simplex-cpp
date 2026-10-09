@@ -699,8 +699,13 @@ paths and arbitrary prose are not resolved. Protected archives count toward the
 target and take precedence even if their count exceeds it. Other recognized
 archives are retained newest first up to that target.
 
-Successful attempts use the committed replacement's references; failed/cancelled
-attempts use the unchanged state's references. Thus a limit of one can retain
+Successful attempts use the committed replacement's references; failures and
+cancellations before a snapshot write use the unchanged state's references.
+Once a required replacement write is attempted, a failure conservatively protects
+the union of old and replacement references, even if publication was not confirmed.
+A parent-directory sync can fail after rename: the new snapshot is then visible,
+but crash recovery may still need either candidate. Retention cannot delete
+archives referenced only by that replacement summary. Thus a limit of one can retain
 two archives after failure: the current attempt and an older committed memory
 archive. Repeated attempts under healthy storage replace older unreferenced
 attempt evidence instead of growing without bound. Cleanup is synchronous under

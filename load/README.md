@@ -591,7 +591,9 @@ and successful final JSON save are mandatory regardless of `readable` and
 `readable: true`. After each archived compact attempt, including failure and
 cancellation, the worker applies `persistence.memory_retention`. Current evidence
 and archives explicitly referenced by absolute paths in authoritative state are
-protected, even if they exceed `max_archives` (default 5). Other recognized
+protected, even if they exceed `max_archives` (default 5). A required replacement
+write failure additionally protects the attempted replacement's references, since
+rename may have succeeded before directory synchronization failed. Other recognized
 archives are retained newest first up to that target. The count accepts integers
 from 0 through 2147483647; zero disables cleanup. Unfamiliar files are untouched,
 so this is not a disk quota. Cleanup never follows child symlinks or recursively

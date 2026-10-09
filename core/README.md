@@ -279,6 +279,8 @@ Each archived attempt, including failure and cancellation, applies
 `persistence.memory_retention.max_archives` (5 by default; zero disables cleanup).
 Current evidence and archives explicitly referenced by the retained state are
 protected, even above the target; other recognized archives are kept newest first.
+If a required replacement write fails, protect both old and replacement references:
+rename may already have made the new snapshot visible before directory sync fails.
 Unfamiliar files are untouched. Cleanup errors preserve the original outcome:
 reported beside a saved summary on success, or logged/emitted as optional
 `export_error` with operation `archive_cleanup` on failure/cancellation.

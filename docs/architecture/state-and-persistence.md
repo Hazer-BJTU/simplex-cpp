@@ -60,6 +60,8 @@ After each archived attempt, including failure/cancellation,
 `memory_retention.max_archives` targets five recognized archives by default.
 Zero disables cleanup. The current attempt and archives explicitly referenced
 by absolute paths in retained state are protected, even above the target.
+Required replacement write failures protect both old and replacement references:
+rename may succeed before a directory-sync error leaves crash durability uncertain.
 Other recognized archives are retained newest first; unknown files, symlinks,
 and incomplete directories are not removed. Cleanup errors preserve the primary
 outcome and are reported through optional diagnostics.

@@ -719,12 +719,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
     }
 
-    /** Retention never removes the current attempt or absolute archive
-     * references in the authoritative state, including legacy memory prompts.
+    /** Protect authoritative references and any replacement whose publication
+     * may have succeeded before a required snapshot write reported failure.
      */
-    load::ArchiveCleanup cleanup_archive(const std::filesystem::path& root,
-                                        const std::filesystem::path& current) {
-        const auto references = compact_archive_references(state, root);
+    load::ArchiveCleanup cleanup_archive(
+        const std::filesystem::path& root,
+        const std::filesystem::path& current,
+        std::span<const std::filesystem::path> replacement_references = {}
+    ) {
+        auto references = compact_archive_references(state, root);
+        references.insert(references.end(),
+            replacement_references.begin(), replacement_references.end());
         return load::prune_memory_archives(root, current, config.memory_retention, references);
     }
 
@@ -732,10 +737,13 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * Export errors remain optional: report through bounded events and logging,
      * even if the transport cannot admit the notification. No exception escapes.
      */
-    void cleanup_failed_compact(const std::filesystem::path& root,
-                               const std::filesystem::path& current) noexcept {
+    void cleanup_failed_compact(
+        const std::filesystem::path& root,
+        const std::filesystem::path& current,
+        std::span<const std::filesystem::path> replacement_references
+    ) noexcept {
         try {
-            const auto cleaned = cleanup_archive(root, current);
+            const auto cleaned = cleanup_archive(root, current, replacement_references);
             logging::Logger::info("compact archive cleanup: removed {} archives ({} bytes)",
                 cleaned.removed_archives, cleaned.removed_bytes);
         } catch (const std::exception& error) {
@@ -763,7 +771,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * evidence and references in retained state. Preflight creates no archive.
      * The JSON save is the commit boundary: before it succeeds, the live state
      * is untouched. A published-but-unsynced write stops the worker just like
-     * other required snapshot failures. Cancellation during the synchronous
+     * other required snapshot failures. Write failures retain archive references
+     * from both the old state and the attempted replacement because publication
+     * may already have occurred. Cancellation during the synchronous
      * commit does not roll back an already published snapshot.
      */
     asio::awaitable<loop::RunResult> compact(
@@ -784,6 +794,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             throw std::runtime_error("compact archive directory already exists");
         }
         bool cleanup_attempted = false;
+        // Lives longer than the exit guard; keep paths only, not another state
+        // copy. Filled before saving so even post-rename failures protect both
+        // recovery candidates, without relying on exception classification.
+        std::vector<std::filesystem::path> replacement_references;
         // Run after the private draft and hook subscriptions are destroyed.
         // Synchronous best-effort cleanup cannot alter the primary outcome.
         struct CleanupAttempt {
@@ -791,10 +805,14 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             const std::filesystem::path& root;
             const std::filesystem::path& current;
             bool& attempted;
+            const std::vector<std::filesystem::path>& replacement_references;
             ~CleanupAttempt() {
-                if (!attempted) self.cleanup_failed_compact(root, current);
+                if (!attempted) {
+                    self.cleanup_failed_compact(root, current, replacement_references);
+                }
             }
-        } cleanup{*this, memory_directory, archive_directory, cleanup_attempted};
+        } cleanup{*this, memory_directory, archive_directory,
+            cleanup_attempted, replacement_references};
         load::save_state(archive_file, state, load::StateFormat::Readable);
 
         auto draft = state;
@@ -898,6 +916,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             result.status = loop::RunStatus::Cancelled;
             co_return result;
         }
+        // A failed parent-directory sync leaves the replacement visible on
+        // disk while live state remains old. Protect the union on every failed
+        // write attempt, conservatively including failures before publication.
+        replacement_references = compact_archive_references(replacement, memory_directory);
         try {
             load::save_state(config.state_directory / "state.json", replacement);
         } catch (...) {
