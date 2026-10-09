@@ -4,6 +4,8 @@ import { toolOmissionCount } from '../../shared/tool-batches.ts';
 const MAX_ENCODED_DATA = 768 * 1024;
 const ANSWER_BYTES = 512 * 1024;
 const REASONING_BYTES = 4096;
+/** Successful compact summaries are complete UTF-8 text, up to the worker's limit. */
+const COMPACT_SUMMARY_BYTES = 32 * 1024;
 const object = (value: unknown): Record<string, unknown> | null =>
     value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown> : null;
@@ -35,6 +37,22 @@ export function diagnosticPreview(value: unknown, depth = 0, budget = { nodes: 1
         }
     }
     if (shortened) result.display_truncated = true;
+    return result;
+}
+
+/** Preserve the summary independently of diagnostic traversal and string limits. */
+function compactResult(value: unknown): unknown {
+    const source = object(value);
+    if (!source || !Object.hasOwn(source, 'summary')) return diagnosticPreview(value);
+    const { summary, ...metadata } = source;
+    const result = diagnosticPreview(metadata) as Record<string, unknown>;
+    if (typeof summary !== 'string') result.summary = diagnosticPreview(summary);
+    else {
+        const bytes = Buffer.byteLength(summary);
+        result.summary = bytes <= COMPACT_SUMMARY_BYTES ? summary : {
+            display_omitted: true, bytes, reason: 'compact summary exceeds 32768 byte limit',
+        };
+    }
     return result;
 }
 
@@ -218,7 +236,8 @@ export function normalizeDisplay(event: string, value: unknown): unknown {
     if (event === 'answer') return Buffer.byteLength(JSON.stringify(value)) <= 256 * 1024
         ? value : { request_id: object(value)?.request_id, display_omitted: true };
     let result: unknown;
-    if (event === 'model_response') result = response(value, ANSWER_BYTES);
+    if (event === 'compact_finished') result = compactResult(value);
+    else if (event === 'model_response') result = response(value, ANSWER_BYTES);
     else if (event === 'history') {
         const page = object(value) ?? {};
         // Built-in pages are already byte bounded; preserve answer sources/parts.

@@ -68,6 +68,37 @@ Json structured_arguments() {
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(compact_display_preserves_summary_and_bounds_diagnostics) {
+    for (const auto bytes : {8192u, 32768u}) {
+        // Include multibyte UTF-8 and JSON escapes. The limit measures original
+        // text, while the event budget also has to allow its encoded form.
+        const std::string fragment = "目标🌍\n\"\\\x01";
+        std::string summary;
+        while (summary.size() + fragment.size() <= bytes) {
+            summary += fragment;
+        }
+        summary.append(bytes - summary.size(), 'S');
+        const Json source = {{"summary", summary}, {"durable", true},
+            {"archive_cleanup_error", std::string(4096, 'E')}};
+        const auto projected = core::display_compact(source);
+        BOOST_TEST(projected.at("summary").get<std::string>() == summary);
+        BOOST_TEST(projected.at("archive_cleanup_error").get<std::string>().size() == 1024u);
+        BOOST_TEST(projected.at("display_truncated") == true);
+        BOOST_TEST(source.at("archive_cleanup_error").get<std::string>().size() == 4096u);
+        BOOST_TEST(projected.dump().size() < core::display_event_max_bytes);
+        BOOST_TEST(Json::parse(projected.dump()).at("summary").get<std::string>() == summary);
+        const auto clean = core::display_compact(Json{{"summary", summary}, {"durable", true}});
+        BOOST_CHECK(!clean.contains("display_truncated"));
+    }
+    const auto oversized = core::display_compact(Json{
+        {"summary", std::string(core::compact_summary_max_bytes + 1, 'S')}, {"durable", true}});
+    BOOST_TEST(oversized.at("summary").at("display_omitted") == true);
+    BOOST_TEST(oversized.at("summary").at("bytes") == core::compact_summary_max_bytes + 1);
+    BOOST_TEST(core::display_compact(Json{{"summary", Json::array()}, {"durable", false}})
+        .at("summary").is_array());
+    BOOST_TEST(core::display_compact(Json{{"durable", false}}).at("durable") == false);
+}
+
 BOOST_AUTO_TEST_CASE(tool_display_preserves_batch_identity_and_outcomes_outside_body_budgets) {
     std::vector<model_io::InvokeQuery> calls;
     for (std::size_t index = 0; index < 3; ++index) {

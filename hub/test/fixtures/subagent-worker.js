@@ -16,6 +16,7 @@ let active = process.env.SIMPLEX_FIXTURE_ACTIVE_SESSION === session;
 let currentRequest = '';
 let run = active ? 'parent-run' : '';
 let revision = 0;
+let compactSummary = 'fixture summary';
 const turns = [];
 const event = (name, data = {}, request = currentRequest) => socket.send(JSON.stringify({
     type: 'event', event: name, session_id: session, worker_id: worker,
@@ -31,6 +32,7 @@ function connect() {
         const message = JSON.parse(raw.toString());
         const data = message.data;
         if (message.type === 'signal') {
+            if (data.operation === 'test_compact_summary') compactSummary = data.summary;
             if (data.operation === 'status') event('status', { active, capabilities: ['session-history', 'context-compact', 'answer-pages'] });
             if (data.operation === 'shutdown') { stopping = true; socket.close(); setTimeout(() => process.exit(0), 10); }
             if (data.operation === 'test_disconnect') { socket.close(); }
@@ -86,7 +88,7 @@ function connect() {
                 turns.length = 0;
                 revision += 1;
                 event('model_response', { content });
-                event('compact_finished', { summary: 'fixture summary', durable: true, revision, removed_turns: 1 });
+                event('compact_finished', { summary: compactSummary, durable: true, revision, removed_turns: 1 });
             } else {
                 const turn = turns.at(-1);
                 const source = turn ? { worker_id: worker, turn: turn.index, step: turn.steps.length, commit_sequence: String(sequence + 1) } : undefined;

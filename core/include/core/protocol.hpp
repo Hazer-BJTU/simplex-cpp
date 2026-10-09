@@ -82,12 +82,22 @@ nlohmann::json history_page(const model_io::AgentInputState& state,
                             const std::string& worker_id = "");
 /** Maximum encoded event size before the transport queue, including its envelope. */
 inline constexpr std::size_t display_event_max_bytes = 1024 * 1024;
+/** UTF-8 byte limit shared by compact validation and summary delivery. */
+inline constexpr std::size_t compact_summary_max_bytes = 32 * 1024;
 /**
  * Bounded display copies only. These functions never alter model state, tool
  * execution arguments or provider replay metadata. Answers receive a larger
  * aggregate budget than reasoning; omitted native extras are not forwarded.
  */
 nlohmann::json display_value(const nlohmann::json& value);
+/**
+ * Preserve a compact summary within compact_summary_max_bytes verbatim while
+ * bounding its other metadata as diagnostics. An oversized summary becomes an
+ * explicit omission object, never an apparently complete string prefix.
+ * Taking ownership lets the emitter move the summary without copying it.
+ * The complete encoded event still passes through the transport byte budget.
+ */
+nlohmann::json display_compact(nlohmann::json value);
 /**
  * Tool display batches keep correlation/classification outside diagnostic
  * traversal. Each represented entry has independent argument, output and
