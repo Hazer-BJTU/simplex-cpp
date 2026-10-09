@@ -287,9 +287,9 @@ export class PendingConfirmation {
         this.deadlineTimer = null;
     }
 
-    /** Serializable description for the panel. */
-    describe(): ConfirmationPrompt {
-        const preview = approvalArgumentPreview(this.call.arguments);
+    /** Serializable display copy; aggregate snapshots can request a smaller argument budget. */
+    describe(argumentBytes?: number): ConfirmationPrompt {
+        const preview = approvalArgumentPreview(this.call.arguments, argumentBytes);
         return {
             ...(preview.truncated ? { arguments_truncated: true, arguments_bytes: preview.originalBytes } : {}),
             confirmation_id: this.id,

@@ -36,6 +36,18 @@ describe('approval argument display budget', () => {
         }
     });
 
+    it('supports smaller snapshot allowances and rejects budgets that cannot fit a marker', () => {
+        const source = { command: 'x'.repeat(100000), cwd: '/workspace' };
+        for (const maximum of [24, 128, 1024, 128 * 1024]) {
+            const result = approvalArgumentPreview(source, maximum);
+            assert.ok(bytes(result.value) <= Math.min(maximum, APPROVAL_ARGUMENT_BYTES));
+            assert.equal(result.originalBytes, bytes(source));
+        }
+        for (const maximum of [0, 23, -1, NaN, Infinity, 24.5]) {
+            assert.throws(() => approvalArgumentPreview(source, maximum), RangeError);
+        }
+    });
+
     it('shortens the largest fields first and marks every changed value without mutating input', () => {
         const source = Object.fromEntries(Array.from({ length: 10 }, (_, index) =>
             [`field_${index}`, 'x'.repeat(20000)]));

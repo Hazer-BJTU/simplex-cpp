@@ -1,4 +1,6 @@
 import { diagnosticPreview, utf8Prefix } from '../protocol/display.ts';
+import { approvalArgumentPreview } from '../protocol/approval-preview.ts';
+import { approvalSnapshot } from '../protocol/approval-snapshot.ts';
 import { readAnswer } from '../worker/answers.ts';
 import { ConfigurationStore } from '../configurations/store.ts';
 import { configurationRoutes } from '../configurations/routes.ts';
@@ -68,6 +70,8 @@ const SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024;
 
 /** Maximum pending outbound frame bytes for one panel connection. */
 export const PANEL_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+/** Hard encoded JSON ceiling; aggregate previews must fit beneath it. */
+export const PANEL_FRAME_BYTES = 2 * 1024 * 1024;
 
 /** Target serialized size of replay pages, leaving room for other panel traffic. */
 export const PANEL_REPLAY_PAGE_BYTES = 512 * 1024;
@@ -152,6 +156,24 @@ export function createPanelApi({
         perMessageDeflate: false,
     });
 
+    /** Rebuild aggregate previews from pending calls, without changing snapshot state. */
+    function displaySnapshot(message: HubMessage): HubMessage {
+        return approvalSnapshot(message, PANEL_FRAME_BYTES, (prompt, argumentBytes) => {
+            const pending = registry.get(prompt.session_id)?.prompts.get(prompt.confirmation_id);
+            if (pending) {
+                const preview = pending.describe(argumentBytes);
+                if (preview.worker_id === prompt.worker_id && preview.run_id === prompt.run_id
+                    && preview.received_at === prompt.received_at) return preview;
+            }
+            // A caller-supplied or stale description has no pending authority.
+            // Bound its display copy while preserving original size metadata.
+            const preview = approvalArgumentPreview(prompt.call.arguments, argumentBytes);
+            return { ...prompt, arguments_truncated: true,
+                arguments_bytes: prompt.arguments_bytes ?? preview.originalBytes,
+                call: { ...prompt.call, arguments: preview.value } };
+        });
+    }
+
     /**
      * Send one versioned message within this client's outbound byte budget.
      *
@@ -171,8 +193,9 @@ export function createPanelApi({
         if (message.type === 'error' && message.request !== undefined) {
             message = { ...message, request: diagnosticPreview(message.request) };
         }
+        message = displaySnapshot(message);
         let text = JSON.stringify({ v: PANEL_VERSION, ...message });
-        if (Buffer.byteLength(text) > 2 * 1024 * 1024) {
+        if (Buffer.byteLength(text) > PANEL_FRAME_BYTES) {
             // An indivisible legacy bulk snapshot is not slow-reader backlog.
             // Keep the connection usable and report the omitted display; modern
             // transcript clients use paged subscriptions, full session/log data
@@ -246,7 +269,7 @@ export function createPanelApi({
         const current = () => clients.has(client)
             && client.replays.get(session.id) === generation
             && registry.get(session.id) === session;
-        const reply = (events: WorkerEnvelope[], latest: number, more: boolean): HubMessage => ({
+        const reply = (events: WorkerEnvelope[], latest: number, more: boolean): HubMessage => displaySnapshot({
             type: 'subscribed', session: session.describe(),
             plan: plans.read(session.id),
             transcript: events,

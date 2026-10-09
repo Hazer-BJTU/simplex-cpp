@@ -1639,8 +1639,15 @@ cannot fit, or whose oversized traversal reaches the depth/node safety guard,
 use `{"display_omitted":true}`. These markers are display values, not executable
 tool arguments. The enclosing prompt sets `arguments_truncated: true` and
 `arguments_bytes` to the original argument JSON's encoded size when shortened.
-Call extras retain their smaller diagnostic preview. The total panel frame
-limit still applies to aggregate snapshots containing multiple approvals.
+Call extras retain their smaller diagnostic preview. Aggregate WebSocket
+snapshots share a **512 KiB encoded argument allowance across all approvals in
+all included sessions**, reduced further when the remaining frame contents need
+space under the 2 MiB panel ceiling. Larger previews are rebuilt from the
+original pending calls with smaller allowances; every approval's identity and
+state remain present. Thus a snapshot may show a shorter preview than an
+individual confirmation event or the REST session description. The original
+`arguments_bytes` and truncation markers remain explicit. Pagination budgets
+include these aggregate previews rather than the unbounded session description.
 
 The Hub retains the original pending call, and every decision applies to that
 original operation. Previewing never changes execution or approval authority.

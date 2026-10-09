@@ -801,11 +801,14 @@ export function createPanelStore() {
             const epoch = reconcileEpoch(state, message.hub?.transcript_epoch);
             set({ ...patch, ...epoch.patch });
 
-            // Re-seed every surviving view so request chips and open prompts
-            // survive a reconnect. Prompts matter most here: they are the one
-            // message whose loss makes a tool call fail, which is why the hub
-            // now broadcasts them to every client and not only subscribers.
-            for (const id of get().views.keys()) {
+            // Re-seed surviving views and create approval views for sessions
+            // not visited yet. A fresh panel must surface every pending prompt
+            // in the welcome snapshot, just like a global live confirmation.
+            const approvalViews = new Set(get().views.keys());
+            for (const [id, listed] of sessions) {
+                if (listed.confirmations?.length) approvalViews.add(id);
+            }
+            for (const id of approvalViews) {
                 const listed = sessions.get(id);
                 if (!listed) continue;
                 set(withView(get(), id, (view) => {

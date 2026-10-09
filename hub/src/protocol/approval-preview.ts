@@ -19,7 +19,7 @@ function encodedBytes(value: unknown): number {
  * Keep small values intact; lower the largest allowances first until they fit.
  * Each shortened value has enough space for an explicit omission marker.
  */
-function allowances(sizes: number[], maximum: number, minimumBytes = OMITTED_BYTES): number[] | null {
+export function approvalPreviewBudgets(sizes: number[], maximum: number, minimumBytes = OMITTED_BYTES): number[] | null {
     const minimum = sizes.map(size => Math.min(size, minimumBytes));
     if (minimum.reduce((sum, size) => sum + size, 0) > maximum) return null;
     if (sizes.reduce((sum, size) => sum + size, 0) <= maximum) return sizes;
@@ -63,7 +63,7 @@ function stringPreview(value: string, maximum: number): unknown {
 /**
  * Only oversized trees are traversed. Keep object keys and small sibling values;
  * a container that cannot fit its keys/markers becomes an explicit omission.
- * Arrays retain a prefix with an omitted-item count when even minimal entries
+ * Arrays retain a prefix with an omitted-item count when useful entry previews
  * cannot all fit. Depth/node guards bound traversal of hostile argument trees.
  */
 function project(value: unknown, maximum: number, depth: number, work: { nodes: number }): unknown {
@@ -84,7 +84,7 @@ function project(value: unknown, maximum: number, depth: number, work: { nodes: 
             omittedBytes = 1 + encodedBytes({ display_omitted: true, omitted_items: sizes.length - count });
         }
         if (count === 0) return { display_omitted: true };
-        const limits = allowances(sizes.slice(0, count), maximum - 2 - (count - 1) - omittedBytes, ARRAY_ITEM_BYTES)!;
+        const limits = approvalPreviewBudgets(sizes.slice(0, count), maximum - 2 - (count - 1) - omittedBytes, ARRAY_ITEM_BYTES)!;
         const result = value.slice(0, count).map((item, index) => project(item, limits[index]!, depth + 1, work));
         if (count < value.length) result.push({ display_omitted: true, omitted_items: value.length - count });
         return result;
@@ -94,7 +94,7 @@ function project(value: unknown, maximum: number, depth: number, work: { nodes: 
         const entries = Object.entries(value);
         const framing = 2 + Math.max(0, entries.length - 1)
             + entries.reduce((sum, [key]) => sum + encodedBytes(key) + 1, 0);
-        const limits = allowances(entries.map(([, item]) => encodedBytes(item)), maximum - framing);
+        const limits = approvalPreviewBudgets(entries.map(([, item]) => encodedBytes(item)), maximum - framing);
         if (!limits) return OMITTED;
         return Object.fromEntries(entries.map(([key, item], index) =>
             [key, project(item, limits[index]!, depth + 1, work)]));
@@ -107,18 +107,24 @@ function project(value: unknown, maximum: number, depth: number, work: { nodes: 
  * Produce at most 64 KiB of encoded argument JSON, preserving exact values when
  * they fit. Marker objects belong only to the display copy, never the tool call.
  * A missing optional arguments field is displayed as an empty object.
+ * `maximum` can lower the allowance for an aggregate panel snapshot. It must
+ * accommodate at least the 24-byte omission marker; larger budgets cap at 64 KiB.
  */
-export function approvalArgumentPreview(argumentsValue: unknown): {
+export function approvalArgumentPreview(argumentsValue: unknown, maximum = APPROVAL_ARGUMENT_BYTES): {
     value: unknown;
     truncated: boolean;
     originalBytes: number;
 } {
+    if (!Number.isSafeInteger(maximum) || maximum < OMITTED_BYTES) {
+        throw new RangeError(`approval argument budget must be an integer of at least ${OMITTED_BYTES} bytes`);
+    }
+    maximum = Math.min(maximum, APPROVAL_ARGUMENT_BYTES);
     const source = argumentsValue === undefined ? {} : argumentsValue;
     const encoded = JSON.stringify(source);
     const originalBytes = Buffer.byteLength(encoded);
-    const truncated = originalBytes > APPROVAL_ARGUMENT_BYTES;
+    const truncated = originalBytes > maximum;
     const preview = truncated
-        ? JSON.stringify(project(source, APPROVAL_ARGUMENT_BYTES, 0, { nodes: MAX_NODES })) : encoded;
+        ? JSON.stringify(project(source, maximum, 0, { nodes: MAX_NODES })) : encoded;
     // Even unchanged nested values must not alias the authoritative call.
     return { value: JSON.parse(preview), truncated, originalBytes };
 }

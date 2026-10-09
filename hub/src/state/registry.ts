@@ -122,7 +122,8 @@ export interface AttachedProcess {
 /** The slice of a confirmation prompt the registry holds. */
 export interface RegisteredPrompt {
     id: string;
-    describe(): ConfirmationPrompt;
+    /** A display copy; an optional smaller argument allowance is used by aggregate snapshots. */
+    describe(argumentBytes?: number): ConfirmationPrompt;
     decide(decision: string, reason?: string): { ok: boolean; error?: string | undefined };
     retire(phase: string, detail: string): boolean;
 }
