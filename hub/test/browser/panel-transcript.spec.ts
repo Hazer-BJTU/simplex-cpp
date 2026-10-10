@@ -292,23 +292,24 @@ test('a history refresh keeps detailed tool cards beside the final reply', async
     }).toBe(1);
     await expect(page.getByTestId('transcript'))
         .not.toContainText('loading conversation history');
-    await emit(page, 'input_admitted', {}, { request_id: 'req-tools' });
-    await emit(page, 'run_started', {});
-    await emit(page, 'input_committed', {});
-    await emit(page, 'model_response', modelResponse(''));
-    await emit(page, 'tool_calls', [call('tool-1', 'run_command', { command: 'echo hello' })]);
-    await emit(page, 'tool_results', [toolResult('tool-1', 'run_command', PROCESS_OUTPUT)]);
-    await emit(page, 'model_response', modelResponse('Final answer after the tool.'));
+    const source = { worker_id: 'stub-worker', request_id: 'req-tools', run_id: 'run-tools' };
+    await emit(page, 'input_admitted', { operation: 'message' }, source);
+    await emit(page, 'run_started', {}, source);
+    await emit(page, 'input_committed', {}, source);
+    await emit(page, 'model_response', modelResponse('', { commit_sequence: '1' }), source);
+    await emit(page, 'tool_calls', [call('tool-1', 'run_command', { command: 'echo hello' })], source);
+    await emit(page, 'tool_results', [toolResult('tool-1', 'run_command', PROCESS_OUTPUT)], source);
+    await emit(page, 'model_response', modelResponse('Final answer after the tool.', { commit_sequence: '2' }), source);
     await page.request.post(`${STUB}/__stub/settings`, { data: {
-        historyTurns: [{ index: 0,
+        historyTurns: [{ index: 0, source,
             user: [{ type: 'text', raw: 'Please run the tool.', modality: 'text' }],
             steps: [
-                { index: 0, content: [], tool_calls: 1 },
-                { index: 1, content: [{ type: 'text', raw: 'Final answer after the tool.', modality: 'text' }],
+                { index: 0, execution: source, commit_sequence: '1', content: [], tool_calls: 1 },
+                { index: 1, execution: source, commit_sequence: '2', content: [{ type: 'text', raw: 'Final answer after the tool.', modality: 'text' }],
                     tool_calls: 0 },
             ], omitted_steps: 0 }],
     } });
-    await emit(page, 'run_finished', { status: 'completed', exchanges: 2 });
+    await emit(page, 'run_finished', { status: 'completed', exchanges: 2 }, source);
     const historyQueries = async () => {
         const response = await page.request.get(`${STUB}/__stub/received`);
         return (await response.json()).received.filter(
@@ -362,14 +363,14 @@ test('orders another panel’s earlier run before a local outbox through history
     await emit(page, 'run_started', {}, a);
     await emit(page, 'input_committed', {}, a);
     await emit(page, 'model_response', modelResponse('Answer A', {
-        invokes: [call('call-A', 'run_command', { command: 'echo A' })],
+        commit_sequence: '1', invokes: [call('call-A', 'run_command', { command: 'echo A' })],
     }), a);
     await emit(page, 'tool_results', [toolResult('call-A', 'run_command', 'Output A')], a);
     await emit(page, 'run_finished', { status: 'completed', exchanges: 1 }, a);
     await emit(page, 'input_admitted', { operation: 'message' }, b);
     await emit(page, 'run_started', {}, b);
     await emit(page, 'input_committed', {}, b);
-    await emit(page, 'model_response', modelResponse('Answer B'), b);
+    await emit(page, 'model_response', modelResponse('Answer B', { commit_sequence: '2' }), b);
     await emit(page, 'run_finished', { status: 'failed', exchanges: 1,
         error: 'HTTP 503 after retries', failure: { stage: 'model_request', can_continue: true } }, b);
 
@@ -389,8 +390,9 @@ test('orders another panel’s earlier run before a local outbox through history
     await verifyRuns();
     await page.request.post(`${STUB}/__stub/settings`, { data: {
         historyTurns: ['Remote input A', 'Local input B'].map((raw, index) => ({
-            index, user: [{ type: 'text', modality: 'text', raw }],
-            steps: [{ index: 0, content: [{ type: 'text', modality: 'text',
+            index, source: { worker_id: 'stub-worker', ...(index === 0 ? a : b) }, user: [{ type: 'text', modality: 'text', raw }],
+            steps: [{ index: 0, execution: { worker_id: 'stub-worker', ...(index === 0 ? a : b) },
+                commit_sequence: String(index + 1), content: [{ type: 'text', modality: 'text',
                 raw: `Answer ${index === 0 ? 'A' : 'B'}` }], tool_calls: index === 0 ? 1 : 0 }],
             omitted_steps: 0,
         })),

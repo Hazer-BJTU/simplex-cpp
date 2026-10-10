@@ -1,4 +1,4 @@
-/** Reconcile private continuation responses without changing input provenance. */
+/** Join bounded history to replay by durable execution and response identities. */
 import type { ExecutionIdentity, HistoryTurn, WorkerEnvelope } from '../../../shared/protocol.ts';
 import { contentText } from './content.ts';
 import type { AssistantBlock, Round } from './rounds.ts';
@@ -47,11 +47,24 @@ export function uncoveredInternalHistory(
 }
 
 /** Find a replayed execution even when its model response has been evicted. */
-function roundIdentities(round: Round): string[] {
+function roundIdentities(round: Round, baseline: number, worker: string): string[] {
     const envelopes = [round.admitted?.envelope, ...round.assistant.map(block => block.envelope),
         ...round.protocol.map(item => item.envelope)];
     return envelopes.flatMap(envelope => envelope?.worker_id && envelope.request_id && envelope.run_id
+        && typeof envelope.sequence === 'number'
+        && (envelope.worker_id !== worker || envelope.sequence <= baseline)
         ? [identity(envelope as ExecutionIdentity)] : []);
+}
+
+/** Duplicate replay executions provide no unique owner; never let the last win. */
+function executionOwners(runs: readonly Round[], baseline: number, worker: string): Map<string, number | null> {
+    const owners = new Map<string, number | null>();
+    runs.forEach((round, index) => {
+        for (const execution of new Set(roundIdentities(round, baseline, worker))) {
+            owners.set(execution, owners.has(execution) ? null : index);
+        }
+    });
+    return owners;
 }
 
 /**
@@ -61,22 +74,26 @@ function roundIdentities(round: Round): string[] {
  * Unmatched executions remain standalone history rather than being guessed from
  * a turn index, input source, or sequence shared by another worker incarnation.
  */
-export function reconcileInternalHistory(
+function restoreResponses(
     history: readonly HistoryTurn[], runs: readonly Round[], baseline: number, worker: string,
+    ordinary = false,
 ): { history: HistoryTurn[]; rounds: Round[] } {
-    const owners = new Map<string, number>();
-    runs.forEach((round, index) => {
-        for (const execution of roundIdentities(round)) owners.set(execution, index);
-    });
+    const owners = executionOwners(runs, baseline, worker);
     const rounds = [...runs];
     const unmatched: HistoryTurn[] = [];
-    for (const turn of uncoveredInternalHistory(history, runs, baseline, worker)) {
+    const covered = coveredResponses(runs, baseline, worker);
+    const uncovered = ordinary ? history.map(turn => ({ ...turn, steps: turn.steps.filter(step =>
+        !step.execution || !commitIdentity(step.commit_sequence)
+        || !covered.has(responseIdentity(step.execution, step.commit_sequence))) }))
+        : uncoveredInternalHistory(history, runs, baseline, worker);
+    for (const turn of uncovered) {
         const steps: HistoryTurn['steps'] = [];
         for (const step of turn.steps) {
             // Only persisted per-response identity authorizes placement. Legacy
             // input provenance cannot safely assign a resumed execution.
-            const owner = step.execution ? owners.get(identity(step.execution)) : undefined;
-            if (owner === undefined) {
+            const owner = step.execution && commitIdentity(step.commit_sequence)
+                ? owners.get(identity(step.execution)) : undefined;
+            if (owner === undefined || owner === null) {
                 steps.push(step);
                 continue;
             }
@@ -103,7 +120,55 @@ export function reconcileInternalHistory(
             assistant.splice(next >= 0 ? next : assistant.length, 0, block);
             rounds[owner] = { ...round, assistant, timeline };
         }
-        if (steps.length || turn.omitted_steps) unmatched.push({ ...turn, steps });
+        if (ordinary || steps.length || turn.omitted_steps) unmatched.push({ ...turn, steps });
     }
     return { history: unmatched, rounds };
+}
+
+/** Compatibility helper for private continuation projections. */
+export function reconcileInternalHistory(
+    history: readonly HistoryTurn[], runs: readonly Round[], baseline: number, worker: string,
+): { history: HistoryTurn[]; rounds: Round[] } {
+    return restoreResponses(history, runs, baseline, worker);
+}
+
+/**
+ * Input identity and response identity are separate. A Continue execution can
+ * restore responses into its own round but cannot inherit the original user's
+ * bubble. Inputs lacking provenance remain standalone, even when their replies
+ * can be matched. Turn indices are display cursors, never correlation keys.
+ * Responses with no unique execution/commit match remain standalone too.
+ */
+export function reconcileHistory(
+    history: readonly HistoryTurn[], runs: readonly Round[], baseline: number, worker: string,
+): { olderHistory: HistoryTurn[]; historyForRun: Map<string, HistoryTurn>;
+    restoredRuns: Round[]; linkedInputs: Set<number> } {
+    const owners = executionOwners(runs, baseline, worker);
+    const sources = new Map<string, number>();
+    for (const turn of history) {
+        if (turn.source && !turn.internal_input) {
+            const key = identity(turn.source);
+            sources.set(key, (sources.get(key) ?? 0) + 1);
+        }
+    }
+    const mapped = new Map<string, HistoryTurn>();
+    const linkedInputs = new Set<number>();
+    for (const turn of history) {
+        if (!turn.source || turn.internal_input) continue;
+        const key = identity(turn.source);
+        const owner = sources.get(key) === 1 ? owners.get(key) : undefined;
+        if (owner === undefined || owner === null) continue;
+        const round = runs[owner]!;
+        if (round.continued || round.compacting) continue;
+        mapped.set(round.key, turn);
+        linkedInputs.add(turn.index);
+    }
+    const restored = restoreResponses(history, runs, baseline, worker, true);
+    return {
+        olderHistory: restored.history.filter(turn => turn.steps.length > 0 || turn.omitted_steps > 0
+            || !turn.internal_input && !linkedInputs.has(turn.index)),
+        historyForRun: mapped,
+        restoredRuns: restored.rounds,
+        linkedInputs,
+    };
 }

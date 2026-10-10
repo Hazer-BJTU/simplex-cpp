@@ -36,9 +36,10 @@ using Json = nlohmann::json;
 namespace {
 /**
  * Attach host execution identity inside the loop's integration transaction.
- * Input provenance stays untouched when Continue appends to an existing turn.
- * The provider still owns integration policy; only the newly appended step's
- * extras are annotated, before observers, recovery checkpoints or tools run.
+ * New inputs receive their creating execution; Continue keeps that provenance
+ * while annotating every new response with its own execution.
+ * The provider still owns integration policy; only newly integrated input/step
+ * metadata is annotated, before observers, recovery checkpoints or tools run.
  * This borrowed adapter lives until run() has joined its model coroutine.
  */
 class ExecutionModel final : public llm::LLMModel {
@@ -60,6 +61,15 @@ public:
     void integrate(model_io::AgentInputState& state,
                    const model_io::MessageItem& item) override {
         provider_.integrate(state, item);
+        if (item.type == model_io::MessageItemType::UserInput) {
+            if (state.turns.empty()) {
+                throw std::logic_error("model did not append an input turn");
+            }
+            auto& extras = state.turns.back().user_input.extras;
+            if (!extras || !extras->is_object()) extras = Json::object();
+            (*extras)["simplex.source"] = execution_;
+            return;
+        }
         if (item.type != model_io::MessageItemType::ModelResponse) return;
         if (state.turns.empty() || state.turns.back().agent_loop_step.empty()) {
             throw std::logic_error("model did not append a response step");

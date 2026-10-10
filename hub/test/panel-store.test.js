@@ -688,7 +688,7 @@ it('bounds byte retention across sessions and signals evicted history while abso
     store.getState().setSelected('demo');
     const make = (turn, done = false) => ({ ...envelope(turn + 1, 'history'), data: {
         request_id: `page-${turn}`, revision: 1, start: turn, step: 0,
-        next: turn + 1, next_step: 0, total: done ? turn + 1 : 101,
+        next: turn + 1, next_step: 0, total: 55,
         turns: [{ index: turn, user: [], steps: [{ index: 0, tool_calls: 0,
             content: [{ type: 'text', modality: 'text', raw: '中文🌍'.repeat(17000) }] }], omitted_steps: 0 }],
     } });

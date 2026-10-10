@@ -144,6 +144,7 @@ export interface ExecutionIdentity {
 /** Bounded display projection, never a restorable worker snapshot. */
 export interface HistoryTurn {
     internal_input?: 'auto_compact_continue';
+    /** Creating input execution, preserved when Continue appends responses. */
     source?: ExecutionIdentity;
     index: number;
     user: ContentPart[];

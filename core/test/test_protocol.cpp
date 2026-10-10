@@ -574,6 +574,12 @@ BOOST_AUTO_TEST_CASE(history_hides_only_host_owned_internal_input_and_keeps_resp
     BOOST_TEST(page["turns"][0]["steps"][0]["execution"]["worker_id"] == "restarted-worker");
     BOOST_TEST(page["turns"][0]["steps"][0]["commit_sequence"] == "7");
     BOOST_TEST(page["turns"][0]["steps"][0]["content"][0]["raw"] == "visible answer");
+    state.turns[0].user_input.extras->erase("simplex.internal_input");
+    const auto ordinary = core::history_page(state, request, 1);
+    BOOST_TEST(ordinary["turns"][0]["user"][0]["raw"] == "PRIVATE RESUME");
+    BOOST_TEST(ordinary["turns"][0]["source"]["request_id"] == "request");
+    BOOST_TEST(ordinary["turns"][0]["steps"][0]["execution"]["request_id"] == "continued-request");
+    BOOST_TEST(!ordinary["turns"][0].contains("internal_input"));
     state.turns[0].user_input.content[0].extras = state.turns[0].user_input.extras;
     state.turns[0].user_input.extras.reset();
     BOOST_TEST(core::history_page(state, request, 1)["turns"][0]["user"][0]["raw"] == "PRIVATE RESUME");

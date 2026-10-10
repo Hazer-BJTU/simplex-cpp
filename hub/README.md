@@ -493,6 +493,15 @@ by result order or attaches them to an ID-bearing call. Argument comparison is
 bounded; over-budget comparisons also remain unmatched. Headless approval
 counts include only unsettled prompts.
 
+History refreshes are assembled in a separate bounded candidate and published
+only after all pages agree on worker, revision, total and cursor progression.
+Failed refreshes preserve the last published projection. Input `source` and
+per-response `execution`/`commit_sequence` identities link history to replay;
+turn positions never select a run. Continue restores its own replies without
+repeating the original input. Older or unmatched history remains visible
+separately with an explanation. Candidate history has its own 8 MiB retention
+bound and counts toward the aggregate panel display budget.
+
 ## Tests
 
 ```sh

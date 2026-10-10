@@ -464,6 +464,12 @@ The `history` event contains `request_id`, `revision`, `start`, `step`, `next`,
 `next_step` cursor until `next == total` and `next_step == 0`.
 `revision` increases when the displayed state changes within one
 worker instance; it is not persisted and must be scoped by `worker_id`.
+All pages in a load must agree on worker identity, revision and total, and
+advance the requested cursor. If the revision changes, discard that candidate
+and restart from zero; never combine pages from different revisions. The Hub
+panel preserves its previously published history until a complete refresh has
+validated. Malformed/correlation-invalid pages discard the candidate and report
+an error; they do not publish a partial replacement.
 Each turn contains its index, up to four ordered user content parts, and the
 model steps on this page. The complete compact UTF-8 JSON data object, including
 user content, response content, reasoning, paging metadata, `revision`, separators
@@ -501,6 +507,34 @@ never returned. User text parts retain their 4096-byte preview, other references
 separate allowances above. Every shortened part has `truncated: true` and its
 original UTF-8 `bytes`; `omitted_parts` reports parts outside the preview.
 Worker state, provider replay metadata and JSON snapshots keep complete originals.
+
+#### Matching history to event replay
+
+Newly integrated ordinary inputs include
+`source: {worker_id, request_id, run_id}` on their history turn. This host-owned
+identity is recorded as `user_input.extras["simplex.source"]` inside the input
+integration transaction and retained by JSON snapshots, including when
+cancellation or failure occurs before the first response. `input_committed`
+still reports an in-memory commit, not disk durability. Continue preserves that
+input source and annotates each new
+response with its own `execution` identity. Internal automatic-continuation
+inputs keep their existing source and hidden-user semantics. Content extras
+submitted by a client cannot supply or override host provenance.
+
+Match a restored user input only to the replayed execution named by its source.
+Match/deduplicate a response using both its `execution` and `commit_sequence`;
+the latter is a decimal string, not a JavaScript numeric counter. A turn can
+contain responses from several Continue executions or worker incarnations.
+Neither its array position nor its display `index` identifies a run. A history
+query's event sequence bounds replay from that queried worker only, not events
+from previous worker incarnations. Compact replaces the canonical turns and
+invalidates old history loads; retained replay remains an execution record.
+
+Older persisted inputs/steps may lack these identities. Keep unmatched history
+separate with a visible explanation rather than assigning another run's user
+text or guessing a response association. The panel restores uniquely matched
+missing responses within their execution, retaining detailed replay tool cards;
+it does not repeat the original user bubble in a Continue round.
 
 ### Complete answer pages
 

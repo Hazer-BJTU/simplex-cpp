@@ -270,14 +270,14 @@ nlohmann::json history_page(const model_io::AgentInputState& state,
         // Only host-owned MessageItem metadata can hide an internal input.
         // Content extras supplied by a user never participate in this check.
         const auto& metadata = turn.user_input.extras;
+        if (metadata && metadata->is_object() && metadata->contains("simplex.source")) {
+            projected["source"] = metadata->at("simplex.source");
+        }
         if (metadata && metadata->is_object()
             && metadata->value("simplex.internal_input", "") == "auto_compact_continue") {
             projected["user"] = nlohmann::json::array();
             projected["omitted_user_parts"] = 0;
             projected["internal_input"] = "auto_compact_continue";
-            if (metadata->contains("simplex.source")) {
-                projected["source"] = metadata->at("simplex.source");
-            }
         }
         auto& steps = projected["steps"];
         auto turn_bytes = projected.dump().size();
