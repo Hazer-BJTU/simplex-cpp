@@ -24,7 +24,8 @@ text: |
   If answer_source is present, read exact answer pages with subagent_receive:
   answer: {source: answer_source, part: 0, offset: 0}. Continue with next_part and
   next_offset; reset offset to 0 when the part advances. Stop on done. Match source
-  identity and byte offsets; refresh receive after a restart or expired source.
+  identity, the required fingerprint and byte offsets; copy the complete source
+  unchanged and refresh receive after a restart or expired source.
   Turn cursors cannot retrieve a clipped answer suffix. Collect pages before stop.
   sent means queued, not completed; unknown means uncertain delivery. No RPC is
   retried automatically, and a repeated tool call has a fresh RPC ID. After a

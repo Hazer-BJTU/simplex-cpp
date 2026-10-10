@@ -290,7 +290,7 @@ it('rejects changed internal source correlation between history fragments', asyn
 
 it('preserves a large answer source through projection storage and restore rather than a four-part clip', async t => {
     const ctx = await projection(t, 1024 * 1024);
-    const source = { worker_id: 'worker', turn: 0, step: 0, commit_sequence: '1' };
+    const source = { worker_id: 'worker', turn: 0, step: 0, commit_sequence: '1', fingerprint: 'a'.repeat(64) };
     const parts = Array.from({ length: 8 }, (_, index) => part(`answer ${index}: ` + '中文🌍'.repeat(1000)));
     await until(() => ctx.sent.length > 0);
     const request = ctx.sent.at(-1);

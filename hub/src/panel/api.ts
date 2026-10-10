@@ -2,6 +2,7 @@ import { diagnosticPreview, utf8Prefix } from '../protocol/display.ts';
 import { approvalArgumentPreview } from '../protocol/approval-preview.ts';
 import { approvalSnapshot } from '../protocol/approval-snapshot.ts';
 import { readAnswer } from '../worker/answers.ts';
+import { answerQuery } from '../../shared/answers.ts';
 import { ConfigurationStore } from '../configurations/store.ts';
 import { configurationRoutes } from '../configurations/routes.ts';
 import { selection, snapshotConfigs } from '../configurations/session.ts';
@@ -884,6 +885,11 @@ export function createPanelApi({
             res.once('close', close);
             try {
                 const query = await readJsonBody(req, 4096);
+                if (!answerQuery(query)) {
+                    sendError(res, 400, 'invalid_arguments',
+                        'answer requires a complete source including fingerprint, part and offset');
+                    return;
+                }
                 const page = await readAnswer(session, query, abort.signal);
                 sendJson(res, 200, page);
             } catch (error) {

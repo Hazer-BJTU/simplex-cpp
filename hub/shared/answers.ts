@@ -4,8 +4,8 @@ export interface AnswerSource {
     turn: number;
     step: number;
     commit_sequence: string;
-    /** New workers require this; older compatible sources can omit it. */
-    fingerprint?: string;
+    /** Required committed-answer fingerprint; copy it unchanged from the worker. */
+    fingerprint: string;
 }
 export interface AnswerQuery { source: AnswerSource; part: number; offset: number }
 export interface AnswerPage extends AnswerQuery {
@@ -24,11 +24,11 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const index = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 export function answerSource(value: unknown): value is AnswerSource {
     return record(value) && Object.keys(value).every(key => ['worker_id', 'turn', 'step', 'commit_sequence', 'fingerprint'].includes(key))
-        && (Object.keys(value).length === 4 || Object.keys(value).length === 5)
+        && Object.keys(value).length === 5
         && typeof value.worker_id === 'string' && value.worker_id.length > 0 && value.worker_id.length <= 128
         && index(value.turn) && index(value.step) && typeof value.commit_sequence === 'string'
         && /^[1-9][0-9]{0,19}$/.test(value.commit_sequence)
-        && (value.fingerprint === undefined || typeof value.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(value.fingerprint));
+        && typeof value.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(value.fingerprint);
 }
 export function sameSource(a: AnswerSource, b: AnswerSource): boolean {
     return a.worker_id === b.worker_id && a.turn === b.turn && a.step === b.step && a.commit_sequence === b.commit_sequence && a.fingerprint === b.fingerprint;

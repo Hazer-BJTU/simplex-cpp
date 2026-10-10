@@ -757,6 +757,30 @@ it('cleans safe unspawned orphan/cycle reservations independently of directory o
     for (const id of ids) assert.equal(existsSync(sessionDir(ctx.config, id)), false);
 });
 
+it('rejects missing answer fingerprints before forwarding a direct-child read', async () => {
+    const ctx = await setup();
+    const child = await fork(ctx);
+    await send(ctx, child);
+    const record = ctx.hub.subagents.children.get(child.id);
+    await until(() => !record.conversation.value.stale && record.conversation.value.turns[0]?.steps.length === 1);
+    const source = record.conversation.value.turns[0].steps[0].answer_source;
+    let answerQueries = 0;
+    const connection = child.connection;
+    const original = connection.sendPayload.bind(connection);
+    connection.sendPayload = payload => {
+        if (payload.data.operation === 'answer') answerQueries++;
+        return original(payload);
+    };
+    const missing = { ...source };
+    delete missing.fingerprint;
+    const rejected = await rpc(ctx, 'subagent/receive', {
+        subagent_id: child.id, answer: { source: missing, part: 0, offset: 0 },
+    });
+    assert.equal(rejected.error.code, 'invalid_arguments');
+    assert.match(rejected.error.message, /fingerprint/);
+    assert.equal(answerQueries, 0);
+});
+
 it('retrieves every large child answer part through authorized parent pages and expires compacted sources', async () => {
     const ctx = await setup();
     const child = await fork(ctx);

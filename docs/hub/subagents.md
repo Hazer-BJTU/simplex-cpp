@@ -55,7 +55,10 @@ Receive preserves correlated request states/run status and conversation revision
 cursors and stale/incomplete/truncated flags. Visible user/assistant text excludes
 reasoning/tools/extras; local presentation clipping is marked `output_truncated`.
 Incoming RPC messages and rendered results are bounded to 256 KiB, with a shared
-96 KiB budget for displayed conversation/summary bodies. Before chronological
+budget of at most 96 KiB for displayed conversation/summary bodies. Actual labels
+and clipping annotations count toward the result limit. A fitting page keeps its
+ordinary body allocation; only an oversized presentation reduces that allowance
+in bounded local passes, without another RPC. Before chronological
 rendering, each turn's latest nonempty assistant step and compact summaries get
 space ahead of older assistant steps and user input. Original indices and omission
 markers remain visible; oversized answers/summaries may themselves be clipped.
@@ -421,7 +424,10 @@ response carries an `answer_source` referencing the child's canonical state.
 `subagent_receive` can supply `answer: {source, part, offset}` instead of a
 conversation cursor/limit to read exact 32 KiB UTF-8 pages. Start at part 0,
 offset 0; advance to `next_part`/`next_offset`, resetting offset when the part
-changes, and stop only on `done`. Copy all source fields, including a fingerprint when present. This works for text spread across multiple
+changes, and stop only on `done`. Copy all five source fields, including the required
+fingerprint. Incomplete sources are rejected before forwarding a Worker payload
+(`invalid_arguments`; the panel HTTP endpoint returns 400). Older sources without
+a fingerprint provide previews only. This works for text spread across multiple
 parts and avoids the normal tool-output presentation budget. Query authority is
 still limited to the caller's direct child and rechecked after the awaited page.
 The Hub does not cache an answer-sized assembly or expose filesystem paths.

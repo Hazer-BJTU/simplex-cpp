@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import { parseEventEnvelope } from '../src/protocol/events.ts';
 import { normalizeDisplay } from '../src/protocol/display.ts';
-import { answerPage } from '../shared/answers.ts';
+import { answerPage, answerQuery, answerSource } from '../shared/answers.ts';
 import { RingBuffer } from '../src/util/ring.ts';
 import { setupPanelHub } from './helpers/panel.js';
 import { workerEvent, until } from './helpers/worker.js';
@@ -201,7 +201,7 @@ it('counts escaped Unicode envelopes and strictly evicts an oversized entry', ()
 });
 
 it('rejects page gaps, stale mixtures, excessive chunks and false completion', () => {
-    const query = { source: { worker_id: 'w', turn: 0, step: 0, commit_sequence: '1' }, part: 0, offset: 0 };
+    const query = { source: { worker_id: 'w', turn: 0, step: 0, commit_sequence: '1', fingerprint: 'a'.repeat(64) }, part: 0, offset: 0 };
     const page = { ...query, request_id: 'r', raw: '中文🌍', type: 'text', modality: 'text',
         bytes: 10, next_offset: 10, next_part: 1, total_parts: 1, done: true };
     assert.ok(answerPage(page, query));
@@ -212,6 +212,32 @@ it('rejects page gaps, stale mixtures, excessive chunks and false completion', (
         { ...page, raw: 'x'.repeat(40000), next_offset: 40000, bytes: 40000 }]) {
         assert.equal(answerPage(value, query), false);
     }
+});
+
+it('requires the committed fingerprint at source, query and panel request boundaries', async t => {
+    const source = { worker_id: 'w', turn: 0, step: 0, commit_sequence: '1', fingerprint: 'a'.repeat(64) };
+    assert.equal(answerSource(source), true);
+    const ctx = await setupPanelHub(t);
+    const session = ctx.hub.registry.create('invalid-answer-source');
+    const worker = await ctx.connect(`/agent/${session.id}/events?token=${session.token}`);
+    worker.send(workerEvent({ session: session.id, worker: 'w', sequence: 1,
+        event: 'status', data: { active: false, capabilities: ['answer-pages'] } }));
+    await until(() => session.workerCapabilities?.names.includes('answer-pages'));
+    for (const fingerprint of [undefined, '', 'a'.repeat(63), 'g'.repeat(64), 1]) {
+        const invalid = { ...source, fingerprint };
+        if (fingerprint === undefined) delete invalid.fingerprint;
+        const query = { source: invalid, part: 0, offset: 0 };
+        assert.equal(answerSource(invalid), false);
+        assert.equal(answerQuery(query), false);
+        const response = await fetch(`${ctx.base}/api/sessions/${session.id}/answer`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(query),
+        });
+        assert.equal(response.status, 400);
+        const body = await response.json();
+        assert.equal(body.error, 'invalid_arguments');
+        assert.match(body.message, /fingerprint/);
+    }
+    assert.equal(worker.messages.some(message => message.data?.operation === 'answer'), false);
 });
 
 it('keeps panels connected and replay advances after an older worker sends 3 MiB reasoning', async t => {
@@ -252,7 +278,7 @@ it('proxies exact answer pages only to the identified live worker and expires re
     worker.send(workerEvent({ session: session.id, worker: 'w', sequence: 1,
         event: 'status', data: { active: false, capabilities: ['answer-pages'] } }));
     await until(() => session.workerCapabilities?.names.includes('answer-pages'));
-    const query = { source: { worker_id: 'w', turn: 0, step: 0, commit_sequence: '1' }, part: 0, offset: 0 };
+    const query = { source: { worker_id: 'w', turn: 0, step: 0, commit_sequence: '1', fingerprint: 'a'.repeat(64) }, part: 0, offset: 0 };
     const request = fetch(`${ctx.base}/api/sessions/${session.id}/answer`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(query) });
     const sent = await worker.waitFor(message => message.type === 'payload' && message.data.operation === 'answer');

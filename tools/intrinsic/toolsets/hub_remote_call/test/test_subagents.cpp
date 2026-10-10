@@ -5,6 +5,8 @@
 #include <boost/beast.hpp>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
+#include <regex>
 #include <set>
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
@@ -183,8 +185,8 @@ bool matches(const Json& schema, const Json& value)
             text.begin(), text.end(), [](unsigned char byte) { return (byte & 0xc0) != 0x80; }));
         if (length < schema.value("minLength", 0u)
             || length > schema.value("maxLength", length)) return false;
-        if (schema.contains("pattern") && text.find_first_not_of(
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos) return false;
+        if (schema.contains("pattern")
+            && !std::regex_search(text, std::regex(schema.at("pattern").get<std::string>()))) return false;
     }
     if (value.is_number()) {
         if (schema.contains("minimum") && value.get<double>() < schema.at("minimum").get<double>()) return false;
@@ -336,13 +338,123 @@ BOOST_AUTO_TEST_CASE(subagent_failure_diagnostics_are_safe_and_never_retry)
             }
             if (mode == "correlation") reply["data"]["worker_id"] = "distinctive-worker";
         };
-        BOOST_CHECK_EXCEPTION(call("subagent_receive", {{"subagent_id", "subagent-child"}},
-            result, modifier, false, mode == "binary", mode), tools::InvokeException, [&](const auto& error) {
+        std::string expected = "hub remote call transport failed";
+        if (mode == "rejected") expected = "not_implemented";
+        if (mode == "target" || mode == "missing" || mode == "cursor") expected = "invalid Hub subagent result";
+        if (mode == "correlation") expected = "invalid or mismatched hub remote call response";
+        BOOST_TEST_CONTEXT("failure mode: " << mode) {
+            BOOST_CHECK_EXCEPTION(call("subagent_receive", {{"subagent_id", "subagent-child"}},
+                result, modifier, false, mode == "binary", mode), tools::InvokeException, [&](const auto& error) {
+                    const std::string text = error.what();
+                    return text.find("distinctive-") == std::string::npos
+                        && text.find("mutation") == std::string::npos
+                        && text.find(expected) != std::string::npos;
+                });
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(subagent_fragmented_pages_use_actual_presentation_overhead)
+{
+    for (const int parts : {2480, 3000, 3900}) {
+        auto value = detail();
+        auto& turn = value["conversation"]["turns"][0];
+        turn["user"] = Json::array();
+        turn["steps"] = Json::array();
+        for (int offset = 0; offset < parts; offset += 128) {
+            Json content = Json::array();
+            for (int i = offset; i < std::min(parts, offset + 128); ++i) {
+                content.push_back({{"type", "text"}, {"modality", "text"}, {"raw", "x"}});
+            }
+            turn["steps"].push_back({{"index", 9007199254740900ULL + offset / 128}, {"content", content}});
+        }
+        turn["steps"].push_back({{"index", 9007199254740900ULL + (parts + 127) / 128},
+            {"content", Json::array({{{"type", "text"}, {"modality", "text"},
+                {"raw", "DISTINCTIVE_FINAL_BODY " + std::string(parts == 3900 ? 100 : 110000, 'a')}}})}});
+        // A valid assembled reply, within every declared turn/step/part limit.
+        BOOST_REQUIRE(turn["steps"].size() <= 32u);
+        BOOST_REQUIRE(value.dump().size() < 255u * 1024);
+        const auto received = call("subagent_receive", {{"subagent_id", "subagent-child"}, {"limit", 1}}, value);
+        BOOST_TEST(received.raw.size() <= 256u * 1024);
+        BOOST_TEST(received.raw.find("DISTINCTIVE_FINAL_BODY") != std::string::npos);
+        BOOST_CHECK_NO_THROW(Json(received.raw).dump());
+        if (parts == 3900) {
+            // The complete one-turn page fits. No body may be clipped merely
+            // because its empty-block header plus a worst-case reserve is large.
+            BOOST_TEST(received.raw.find("[[output_truncated]]: false") != std::string::npos);
+            BOOST_TEST(received.raw.find("truncated, first") == std::string::npos);
+            const std::regex short_body("\\(1 bytes\\):\\nx\\n");
+            const auto count = std::distance(std::sregex_iterator(received.raw.begin(), received.raw.end(), short_body),
+                std::sregex_iterator());
+            BOOST_TEST(count == parts);
+        } else {
+            BOOST_TEST(received.raw.find("[[output_truncated]]: true") != std::string::npos);
+            if (parts == 3000) {
+                // The usual 96 KiB body allocation overflows once real headers
+                // are included. A reduced allowance must retain the final prefix.
+                BOOST_TEST(received.raw.find(std::string(90000, 'a')) == std::string::npos);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(subagent_excessive_actual_structure_reports_a_read_budget_failure)
+{
+    auto value = detail();
+    auto& turn = value["conversation"]["turns"][0];
+    turn["user"] = Json::array();
+    turn["steps"] = Json::array();
+    for (int step = 0; step < 32; ++step) {
+        Json content = Json::array();
+        for (int part = 0; part < 128; ++part) {
+            content.push_back({{"type", "external_ref"}, {"modality", "document"}, {"raw", "x"}});
+        }
+        turn["steps"].push_back({{"index", 9007199254740900ULL + step}, {"content", content}});
+    }
+    // Both complete and omitted-body headers exceed 256 KiB, even though the
+    // actual reply remains below the assembled WebSocket transport limit.
+    BOOST_REQUIRE(value.dump().size() < 255u * 1024);
+    BOOST_CHECK_EXCEPTION(call("subagent_receive", {{"subagent_id", "subagent-child"}, {"limit", 1}}, value),
+        tools::InvokeException, [](const auto& error) {
+            const std::string text = error.what();
+            return text.find("256 KiB budget") != std::string::npos
+                && text.find("smaller limit") != std::string::npos
+                && text.find("invalid Hub") == std::string::npos
+                && text.find("mutation") == std::string::npos;
+        });
+}
+
+BOOST_AUTO_TEST_CASE(subagent_read_rejections_are_actionable_without_mutation_warnings)
+{
+    for (const std::string code : {"answer_unavailable", "result_too_large", "storage_error"}) {
+        const auto reject = [&](Json& reply) {
+            reply["data"].erase("result");
+            reply["data"]["status"] = "rejected";
+            reply["data"]["error"] = {{"code", code}, {"message", "distinctive-private-diagnostic"}};
+        };
+        BOOST_CHECK_EXCEPTION(call("subagent_receive", {{"subagent_id", "subagent-child"}}, detail(), reject),
+            tools::InvokeException, [&](const auto& error) {
                 const std::string text = error.what();
-                return text.find("distinctive-") == std::string::npos
-                    && (mode == "rejected" ? text.find("not_implemented") != std::string::npos
-                        : text.find("subagent_receive") != std::string::npos);
+                return text.find(code) != std::string::npos && text.find("mutation") == std::string::npos
+                    && text.find("distinctive-") == std::string::npos
+                    && (code != "answer_unavailable" || text.find("fingerprint") != std::string::npos)
+                    && (code != "result_too_large" || text.find("smaller limit") != std::string::npos);
             });
+    }
+}
+
+BOOST_AUTO_TEST_CASE(subagent_mutation_failures_preserve_uncertain_outcome_warnings)
+{
+    for (const std::string name : {"subagent_fork", "subagent_send"}) {
+        for (const std::string mode : {"disconnect", "invalid-result"}) {
+            BOOST_CHECK_EXCEPTION(call(name, name == "subagent_fork" ? Json::object() : message(),
+                {{"private", "distinctive-private-result"}}, {}, false, false, mode),
+                tools::InvokeException, [](const auto& error) {
+                    const std::string text = error.what();
+                    return text.find("mutation may have committed") != std::string::npos
+                        && text.find("distinctive-") == std::string::npos;
+                });
+        }
     }
 }
 
@@ -510,7 +622,7 @@ BOOST_AUTO_TEST_CASE(subagent_declaration_failure_preserves_plan_and_reports_par
 
 BOOST_AUTO_TEST_CASE(subagent_answer_pages_return_exact_text_and_actionable_cursor)
 {
-    const Json source = {{"worker_id", "child-worker"}, {"turn", 7}, {"step", 3}, {"commit_sequence", "42"}};
+    const Json source = {{"worker_id", "child-worker"}, {"turn", 7}, {"step", 3}, {"commit_sequence", "42"}, {"fingerprint", std::string(64, 'a')}};
     const Json cursor = {{"source", source}, {"part", 0}, {"offset", 0}};
     Json result = child_status();
     const std::string text = "# exact page\n中文🌍\n" + std::string(12000, 'x');
@@ -530,18 +642,31 @@ BOOST_AUTO_TEST_CASE(subagent_answer_query_rejects_ambiguous_or_malformed_cursor
     SubagentReceiveTool tool(endpoint_for(), std::chrono::milliseconds(100), identity);
     model_io::InvokeQuery query;
     query.name = "subagent_receive";
-    const Json source = {{"worker_id", "child-worker"}, {"turn", 0}, {"step", 0}, {"commit_sequence", "1"}};
+    const Json source = {{"worker_id", "child-worker"}, {"turn", 0}, {"step", 0}, {"commit_sequence", "1"}, {"fingerprint", std::string(64, 'a')}};
     const Json valid = {{"subagent_id", "subagent-child"}, {"answer", {
         {"source", source}, {"part", 0}, {"offset", 0}}}};
     query.arguments = valid;
     BOOST_CHECK_NO_THROW(tool.ensure_arguments(query));
-    for (int test = 0; test < 5; ++test) {
+    BOOST_TEST(matches(tool.get_details().argument_schema, valid));
+    for (int test = 0; test < 10; ++test) {
         query.arguments = valid;
         if (test == 0) query.arguments["cursor"] = 0;
         if (test == 1) query.arguments.erase("subagent_id");
         if (test == 2) query.arguments["answer"]["offset"] = -1;
         if (test == 3) query.arguments["answer"]["source"]["commit_sequence"] = "garbage";
         if (test == 4) query.arguments["answer"]["source"]["path"] = "/private";
+        if (test == 5) query.arguments["answer"]["source"].erase("fingerprint");
+        if (test == 6) query.arguments["answer"]["source"]["fingerprint"] = std::string(63, 'a');
+        if (test == 7) query.arguments["answer"]["source"]["fingerprint"] = std::string(64, 'g');
+        if (test == 8) query.arguments["answer"]["source"]["fingerprint"] = 1;
+        if (test == 9) query.arguments["limit"] = 5;
         BOOST_CHECK_THROW(tool.ensure_arguments(query), tools::InvokeException);
+        BOOST_TEST(!matches(tool.get_details().argument_schema, query.arguments));
     }
+    query.arguments = valid;
+    query.arguments["answer"]["source"].erase("fingerprint");
+    BOOST_CHECK_EXCEPTION(tool.ensure_arguments(query), tools::InvokeException, [](const auto& error) {
+        return error.stage() == tools::InvokeException::Stage::ArgumentParse
+            && error.message().find("fingerprint") != std::string::npos;
+    });
 }

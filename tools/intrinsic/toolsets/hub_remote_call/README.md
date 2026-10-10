@@ -95,12 +95,20 @@ Outputs use plain intrinsic metadata and readable content blocks. They retain
 request/operation IDs, truthful dispatch/run states, visible turn/step association,
 pagination and history completeness/freshness flags. Response diagnostics and
 conversation bodies are clipped on UTF-8 boundaries with `output_truncated`;
-bodies share a 96 KiB budget and the rendered document cannot exceed 256 KiB.
-The budget is allocated before rendering: each turn's latest nonempty assistant
+bodies share up to 96 KiB and the rendered document cannot exceed 256 KiB.
+The initial presentation counts actual labels, separators and clipping annotations,
+preserving short-part pages that fit. Only an oversized presentation reduces the
+body allowance in bounded local passes over the same reply; no RPC is repeated.
+Exact answer pages do not use this clipping fallback. Each turn's latest nonempty assistant
 step and compact summaries share space first, then older assistant steps and
 user input use the remainder. Display stays chronological, with original indices
 and explicit clipping markers even for bodies omitted entirely. If the prioritized
 result bodies together exceed the budget, they are also clipped.
+If structural overhead exhausts the presentation budget, receive reports a budget
+failure with a smaller-page/exact-answer hint. Invalid replies and read transport
+failures have separate diagnostics; only fork/send failures warn that a mutation
+may have committed. An expired answer source requires refreshing receive and
+copying the complete current source, including its mandatory fingerprint.
 Unknown future fields are ignored rather than blindly returned. Child text is
 untrusted data, not instructions for the parent.
 

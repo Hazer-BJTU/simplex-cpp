@@ -21,6 +21,11 @@ constexpr std::uint64_t max_safe_integer = 9007199254740991ULL;
 constexpr std::size_t argument_bytes = 64 * 1024;
 constexpr std::size_t result_bytes = 256 * 1024;
 
+/** An internal presentation limit, distinct from an invalid Hub reply. */
+struct RenderingBudgetExceeded : std::runtime_error {
+    RenderingBudgetExceeded() : std::runtime_error("rendered subagent result exceeds budget") {}
+};
+
 /** These failures describe constraints only; never attach received values. */
 void require(bool condition, const char* message)
 {
@@ -122,16 +127,18 @@ std::string prefix(const std::string& text, std::size_t bytes)
 
 /**
  * Metadata is whitelisted and small; user/assistant/summary bodies share a
- * preallocated 96 KiB budget. Latest assistant outputs and compact summaries
- * get space before older content, without changing chronological display order.
+ * preallocated budget of at most 96 KiB. Latest assistant outputs and compact
+ * summaries get space before older content, without changing display order.
  * The parsed reply owns the strings for the lifetime of this local presentation;
  * the pointer keys avoid copying large bodies just to plan their allocation.
- * The complete rendered document has a final 256 KiB check.
+ * The complete document includes actual labels and clipping annotations in its
+ * 256 KiB check. Body allowances shrink only after a presentation exceeds it.
  */
 struct Presentation {
     ToolResult output;
     std::unordered_map<const std::string*, std::size_t> body_limits;
     bool clipped = false;
+    std::size_t body_budget = 96 * 1024;
 
     /**
      * Share the budget among result bodies first. Allocate short results whole,
@@ -143,7 +150,7 @@ struct Presentation {
         std::vector<const std::string*> results,
         const std::vector<const std::string*>& context)
     {
-        std::size_t remaining = 96 * 1024;
+        std::size_t remaining = body_budget;
         std::stable_sort(results.begin(), results.end(), [](const auto* left, const auto* right) {
             return left->size() < right->size();
         });
@@ -188,7 +195,9 @@ struct Presentation {
     model_io::Content render()
     {
         output.field("output_truncated", clipped);
-        require(output.text().size() <= result_bytes, "rendered result exceeds budget");
+        if (output.text().size() > result_bytes) {
+            throw RenderingBudgetExceeded();
+        }
         return output.render();
     }
 };
@@ -379,9 +388,11 @@ void conversation(Presentation& result, const Json& page, const Json& arguments)
     }
 }
 
-model_io::Content format_result(const std::string& route, const Json& value, const Json& arguments)
+Presentation format_presentation(const std::string& route, const Json& value,
+    const Json& arguments, std::size_t body_budget)
 {
     Presentation result;
+    result.body_budget = body_budget;
     if (arguments.contains("answer")) {
         require(route == "subagent/receive" && value.at("subagent_id") == arguments.at("subagent_id"), "mismatched answer target");
         const auto& page = value.at("answer");
@@ -408,7 +419,7 @@ model_io::Content format_result(const std::string& route, const Json& value, con
         }
         result.field("subagent_id", value.at("subagent_id"));
         result.output.block("answer page", text);
-        return result.render();
+        return result;
     }
     if (route == "subagent/receive" && arguments.contains("subagent_id")) {
         plan_bodies(result, value.at("conversation"), value.at("requests"));
@@ -459,11 +470,35 @@ model_io::Content format_result(const std::string& route, const Json& value, con
         require(value.at("replayed").is_boolean(), "invalid receipt replay flag");
         result.field("replayed", value.at("replayed"));
     }
-    return result.render();
+    return result;
+}
+
+model_io::Content format_result(const std::string& route, const Json& value, const Json& arguments)
+{
+    std::size_t body_budget = 96 * 1024;
+    const bool can_clip_bodies = route == "subagent/receive"
+        && arguments.contains("subagent_id") && !arguments.contains("answer");
+    // Try the ordinary body allocation first: short complete blocks often have
+    // smaller headers than empty/truncated ones. Only an actual oversized
+    // presentation warrants clipping, never a worst-case header reservation.
+    // Halving the allowance bounds this to 18 local passes including zero.
+    // Every pass uses the same immutable reply; no RPC is repeated. Exact
+    // answer pages stay byte-identical and do not enter this clipping fallback.
+    for (;;) {
+        auto presentation = format_presentation(route, value, arguments, body_budget);
+        try {
+            return presentation.render();
+        } catch (const RenderingBudgetExceeded&) {
+            if (!can_clip_bodies || body_budget == 0) {
+                throw;
+            }
+        }
+        body_budget /= 2;
+    }
 }
 
 /** Only protocol codes, never arbitrary Hub message bodies, enter exceptions. */
-std::string rejection_hint(const Json& error)
+std::string rejection_hint(const Json& error, bool mutation)
 {
     const auto& code = error.at("code");
     const bool known = one_of(code, {"unauthorized", "invalid_arguments", "policy_forbidden",
@@ -471,7 +506,9 @@ std::string rejection_hint(const Json& error)
         "limit_exceeded", "request_conflict", "recovery_required", "delivery_unknown",
         "storage_error", "answer_unavailable", "result_too_large", "not_implemented", "invalid_parent"});
     const auto name = known ? code.get<std::string>() : std::string("remote_rejection");
-    std::string hint = "inspect subagent_receive before repeating a mutation";
+    std::string hint = mutation
+        ? "inspect subagent_receive before repeating a mutation"
+        : "check child status before retrying this read";
     if (name == "not_implemented") {
         hint = "this Hub does not support subagents; use a compatible Hub";
     } else if (name == "unsupported_launch") {
@@ -484,6 +521,10 @@ std::string rejection_hint(const Json& error)
         hint = "only live direct children of this worker lifecycle may be controlled";
     } else if (name == "invalid_arguments" || name == "policy_forbidden") {
         hint = "check operation arguments; child confirmation policy is operator-owned";
+    } else if (name == "answer_unavailable") {
+        hint = "refresh receive and copy a current answer_source, including its fingerprint";
+    } else if (name == "result_too_large" && !mutation) {
+        hint = "retry receive with a smaller limit or use exact answer pages";
     }
     return "hub rejected subagent request (" + name + "); " + hint;
 }
@@ -517,19 +558,35 @@ boost::asio::awaitable<model_io::Content> SubagentToolBase::invoke(
 {
     co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
     Json reply;
+    const bool mutation = route_ != "subagent/receive";
     try {
         const auto identity = identity_();
         reply = co_await request(query, route_, identity.worker_id, identity.session_id, identity.run_id);
-    } catch (const std::exception&) {
+    } catch (const tools::InvokeException& error) {
+        // request() exposes only sanitized transport/protocol diagnostics.
+        // Preserve those for reads; lost write replies still require inspection.
+        if (!mutation) {
+            invoke_failed(error.message());
+        }
         invoke_failed("subagent exchange failed; a mutation may have committed; inspect subagent_receive before repeating");
+    } catch (const std::exception&) {
+        invoke_failed(mutation
+            ? "subagent exchange failed; a mutation may have committed; inspect subagent_receive before repeating"
+            : "subagent read exchange failed; check the connection before retrying this read");
     }
     if (reply.at("status") == "rejected") {
-        invoke_failed(rejection_hint(reply.at("error")));
+        invoke_failed(rejection_hint(reply.at("error"), mutation));
     }
     try {
         co_return format_result(route_, reply.at("result"), query.arguments);
+    } catch (const RenderingBudgetExceeded&) {
+        invoke_failed(mutation
+            ? "rendered subagent result exceeds budget; a mutation may have committed; inspect subagent_receive before repeating"
+            : "rendered subagent result exceeds the 256 KiB budget; retry receive with a smaller limit or use exact answer pages");
     } catch (const std::exception&) {
-        invoke_failed("invalid subagent result; a mutation may have committed; inspect subagent_receive before repeating");
+        invoke_failed(mutation
+            ? "invalid subagent result; a mutation may have committed; inspect subagent_receive before repeating"
+            : "invalid Hub subagent result; check the receive protocol before retrying this read");
     }
 }
 
@@ -618,13 +675,12 @@ void SubagentReceiveTool::ensure_arguments(model_io::InvokeQuery& query) const
                 && !source.at("commit_sequence").get_ref<const std::string&>().empty()
                 && source.at("commit_sequence").get_ref<const std::string&>().size() <= 20,
                 "invalid answer source");
-            if (source.contains("fingerprint")) {
-                require(source.at("fingerprint").is_string(), "invalid answer fingerprint");
-                const auto& digest = source.at("fingerprint").get_ref<const std::string&>();
-                require(digest.size() == 64 && std::all_of(digest.begin(), digest.end(), [](char character) {
-                    return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
-                }), "invalid answer fingerprint");
-            }
+            require(source.contains("fingerprint") && source.at("fingerprint").is_string(),
+                "answer source requires a fingerprint");
+            const auto& digest = source.at("fingerprint").get_ref<const std::string&>();
+            require(digest.size() == 64 && std::all_of(digest.begin(), digest.end(), [](char character) {
+                return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
+            }), "invalid answer fingerprint");
             const auto& sequence = source.at("commit_sequence").get_ref<const std::string&>();
             require(sequence.front() != '0' && std::all_of(sequence.begin(), sequence.end(),
                 [](unsigned char digit) { return digit >= '0' && digit <= '9'; }), "invalid answer commit sequence");
