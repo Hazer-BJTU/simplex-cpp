@@ -5,13 +5,14 @@ import type { HubConfig } from '../config.ts';
 import type { Logger } from '../log.ts';
 import type { Session, SessionRegistry } from '../state/registry.ts';
 import { HubState } from '../state/persist.ts';
+import { processIdentity } from '../launch/supervisor.ts';
 import type { WorkerSupervisor, ProcessRecord, StopResult } from '../launch/supervisor.ts';
 import type { ForwardedEnvelope, WorkerConnection } from '../worker/connection.ts';
 import type { ToolContext } from '../worker/tool-context.ts';
 import { ToolFailure } from '../worker/tool-context.ts';
 import { newRequestId, buildPayload } from '../protocol/messages.ts';
 import { childDirectories, ownedPath, readPrivate, writePrivate, removeChildDirectory } from './storage.ts';
-import { dockerName } from './docker.ts';
+import { dockerName, dockerRunning } from './docker.ts';
 import { cleanFork } from './fork.ts';
 import { ConversationProjection } from './conversation.ts';
 import { isValidSessionId } from '../state/session-id.ts';
@@ -27,6 +28,10 @@ interface ChildRecord {
     terminalTimer: NodeJS.Timeout | null;
     error: string;
     uncertainStart: boolean;
+    /** Durable evidence or explicit operator attestation, never inferred from no record. */
+    terminationConfirmed: boolean;
+    cleanupAttempts: number;
+    retryAt: number;
 }
 interface Receipt {
     key: string;
@@ -48,6 +53,7 @@ interface Operation {
 interface Operations { receipts: Receipt[]; requests: Operation[] }
 const MAX_OPERATION_BYTES = 512 * 1024;
 const MAX_RPC_BYTES = 256 * 1024;
+const MAX_CLEANUP_ATTEMPTS = 3;
 const object = (value: unknown): Record<string, unknown> | null =>
     value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
@@ -91,6 +97,7 @@ export class SubagentService {
         this.options = options;
         options.supervisor.cascade = (session, stopSelf) => this.cascade(session, stopSelf);
         options.supervisor.beforeStart = session => {
+            if (this.recoveryBlocked) throw new Error('subagent ownership recovery is blocked; inspect managed storage before starting workers');
             const childrenRemain = session.closing && [...this.children.values()].some(record =>
                 !record.removed && record.parent.session_id === session.id);
             if (this.closing || this.stops.has(session.id) || childrenRemain) {
@@ -102,14 +109,14 @@ export class SubagentService {
     private publish(record: ChildRecord): void {
         const { session } = record;
         if (!record.removed) {
-            const stored = new HubState({ config: this.options.config, log: this.options.log }).document([{
-                id: session.id, token: session.token, spec: session.spec,
-                createdAt: session.createdAt, process: session.process,
-            }]).sessions[0]!;
+            const stored = new HubState({ config: this.options.config, log: this.options.log })
+                .sessionDocument(session);
             writePrivate(ownedPath(this.options.config.dataDir, session.id, 'metadata.json'), {
                 ...stored, kind: 'headless', cascading_parent: record.parent,
                 lifecycle_id: session.lifecycleId, subagent: session.subagent,
                 error: record.error, uncertain_start: record.uncertainStart,
+                termination_confirmed: record.terminationConfirmed === true,
+                cleanup_attempts: record.cleanupAttempts ?? 0, retry_at: record.retryAt ?? 0,
             }, MAX_OPERATION_BYTES);
         }
         this.options.changed(session);
@@ -232,6 +239,7 @@ export class SubagentService {
             session, parent: { session_id: parent.id, lifecycle_id: parent.lifecycleId,
                 worker_id: context.request.worker_id }, conversation: null,
             removed: false, startup: null, startupTimer: null, terminalTimer: null, error: '', uncertainStart: false,
+            terminationConfirmed: false, cleanupAttempts: 0, retryAt: 0,
         };
         this.children.set(id, record); // quota reservation precedes any asynchronous startup
         let committed = false;
@@ -499,12 +507,96 @@ export class SubagentService {
         void this.options.supervisor.stop(record.session).catch(() => {});
     }
 
+    /** Recovery diagnostics contain no launch arguments, tokens or private environment. */
+    recoveryStatus(): { blocked: boolean; reason: string | null } {
+        return { blocked: this.recoveryBlocked, reason: this.recoveryBlocked
+            ? 'unverified child ownership retained; inspect managed storage and restart the Hub' : null };
+    }
+
+    /** Inspect one restored child without exposing its private startup snapshot. */
+    recoveryState(session: Session): Record<string, unknown> {
+        const record = this.children.get(session.id);
+        if (!record) throw new Error('unknown headless lifecycle');
+        const automaticRetry = !record.removed && !record.uncertainStart
+            && session.subagent?.lifecycle === 'cleanup-pending'
+            && (record.cleanupAttempts ?? 0) < MAX_CLEANUP_ATTEMPTS;
+        return {
+            session_id: session.id,
+            lifecycle_id: session.lifecycleId,
+            lifecycle: session.subagent?.lifecycle,
+            uncertain_start: record.uncertainStart,
+            termination_confirmed: record.terminationConfirmed === true,
+            cleanup_attempts: record.cleanupAttempts ?? 0,
+            max_cleanup_attempts: MAX_CLEANUP_ATTEMPTS,
+            automatic_retry: automaticRetry,
+            retry_at: automaticRetry && record.retryAt ? new Date(record.retryAt).toISOString() : null,
+            reason: session.subagent?.reason,
+        };
+    }
+
+    /** Operator-only recovery. Worker remote routes cannot attest process termination. */
+    async recover(session: Session, action: unknown, lifecycleId: unknown): Promise<StopResult> {
+        const record = this.children.get(session.id);
+        if (!record) throw new Error('unknown headless lifecycle');
+        const valid = () => this.children.get(session.id) === record && !record.removed
+            && session.subagent?.lifecycle === 'cleanup-pending'
+            && lifecycleId === session.lifecycleId && !this.stops.has(session.id) && !this.closing;
+        if (!valid() || (action !== 'retry' && action !== 'confirm-terminated')) {
+            throw new Error('recovery requires a current cleanup-pending lifecycle and retry or confirm-terminated action');
+        }
+        if (action === 'confirm-terminated') {
+            const process = session.process as ProcessRecord | null;
+            const liveProcess = process && processIdentity(process.pid, process.pidStartTime) === 'same';
+            const liveContainer = process && dockerName(process)
+                && await dockerRunning(process.dockerManagement) === true;
+            if (!valid() || liveProcess || liveContainer || (session.connection as WorkerConnection | null)?.isOpen) {
+                throw new Error('a live worker or concurrent lifecycle prevents termination confirmation');
+            }
+        }
+        const previous = { uncertain: record.uncertainStart, confirmed: record.terminationConfirmed,
+            attempts: record.cleanupAttempts, retryAt: record.retryAt };
+        if (action === 'confirm-terminated') {
+            record.uncertainStart = false;
+            record.terminationConfirmed = true;
+        }
+        record.cleanupAttempts = 0;
+        record.retryAt = 0;
+        try { this.publish(record); }
+        catch (error) {
+            record.uncertainStart = previous.uncertain;
+            record.terminationConfirmed = previous.confirmed;
+            record.cleanupAttempts = previous.attempts;
+            record.retryAt = previous.retryAt;
+            throw error;
+        }
+        this.options.log.warn(`subagent ${session.id}: operator recovery ${action}`);
+        return this.options.supervisor.stop(session);
+    }
+
+    /** Retry only verifiable ownership, with a durable budget and exponential delay. */
+    retryCleanup(now = Date.now()): void {
+        if (this.closing || this.recovering) return;
+        for (const record of this.children.values()) {
+            if (!record.removed && !record.uncertainStart
+                && record.session.subagent?.lifecycle === 'cleanup-pending'
+                && (record.cleanupAttempts ?? 0) < MAX_CLEANUP_ATTEMPTS
+                && (record.retryAt ?? 0) <= now && !this.stops.has(record.session.id)) {
+                void this.cascade(record.session,
+                    () => this.options.supervisor.stopProcess(record.session), true).catch(() => {});
+            }
+        }
+    }
+
     /** Freeze the entire subtree synchronously, then attempt every cleanup. */
-    private cascade(session: Session, stopSelf: () => Promise<StopResult>): Promise<StopResult> {
+    private cascade(session: Session, stopSelf: () => Promise<StopResult>, automatic = false): Promise<StopResult> {
         const pending = this.stops.get(session.id);
         if (pending) return pending;
         if (this.children.get(session.id)?.removed) {
             return Promise.resolve({ ok: true, how: 'already-stopped', forced: false });
+        }
+        const child = this.children.get(session.id);
+        if (automatic && child && this.cleanupPaused(child)) {
+            return Promise.resolve({ ok: false, how: 'operator-recovery-required', forced: false });
         }
         let resolveStop!: (value: StopResult) => void;
         let rejectStop!: (error: unknown) => void;
@@ -522,24 +614,39 @@ export class SubagentService {
             // are being stopped, before the parent's shutdown signal is sent.
             this.options.supervisor.notify(session, process);
         }
-        for (const record of descendants) this.freeze(record);
-        const child = this.children.get(session.id);
-        if (child) this.freeze(child);
+        for (const record of descendants) this.freeze(record, new Set(), automatic);
+        if (child) {
+            child.cleanupAttempts = (child.cleanupAttempts ?? 0) + 1;
+            this.freezeSession(child);
+        }
         const task = Promise.resolve().then(async () => {
             let ok = true;
             // Resource bounds cap concurrency, and siblings never short-circuit.
             for (let index = 0; index < descendants.length; index += 4) {
                 const outcomes = await Promise.allSettled(descendants.slice(index, index + 4)
-                    .map(record => this.options.supervisor.stop(record.session)));
+                    .map(record => automatic
+                        ? this.cascade(record.session, () => this.options.supervisor.stopProcess(record.session), true)
+                        : this.options.supervisor.stop(record.session)));
                 if (outcomes.some(outcome => outcome.status === 'rejected' || !outcome.value.ok)) ok = false;
             }
             if (child?.startup) await child.startup.catch(() => {});
             let result: StopResult;
-            try { result = await stopSelf(); }
+            try {
+                if (child?.terminationConfirmed) {
+                    if (session.process) this.options.supervisor.finish(session.process as ProcessRecord, { exitCode: null });
+                    result = { ok: true, how: 'termination-confirmed', forced: false };
+                } else result = await stopSelf();
+            }
             catch { result = { ok: false, how: 'stop-failed', forced: false }; }
             ok = result.ok && ok;
             if (child) {
                 try {
+                    // A verified process/container stop resolves a stale uncertain
+                    // flag. A missing record's "not-started" result never does.
+                    if (result.ok && session.process && result.how !== 'not-started') {
+                        child.uncertainStart = false;
+                        child.terminationConfirmed = true;
+                    }
                     if (!result.ok || child.uncertainStart) throw new Error('worker termination is not confirmed');
                     const io = (session.process as ProcessRecord | null)?.ownedIo ?? Promise.resolve();
                     let timer: NodeJS.Timeout | undefined;
@@ -604,8 +711,13 @@ export class SubagentService {
                     ok = false;
                     session.subagent!.lifecycle = 'cleanup-pending';
                     session.subagent!.health = 'degraded';
-                    session.subagent!.reason = 'termination or cleanup could not be confirmed; retry scheduled';
+                    const retry = !child.uncertainStart && child.cleanupAttempts < MAX_CLEANUP_ATTEMPTS;
+                    child.retryAt = retry ? Date.now() + 5000 * 2 ** child.cleanupAttempts : 0;
+                    session.subagent!.reason = retry
+                        ? `cleanup incomplete; automatic retry ${child.cleanupAttempts}/${MAX_CLEANUP_ATTEMPTS} scheduled`
+                        : 'cleanup paused; inspect ownership, then use POST /api/sessions/:id/recover';
                     child.error ||= 'lifetime cleanup incomplete';
+                    if (!retry) this.options.log.warn(`subagent ${session.id}: ${session.subagent!.reason}`);
                 }
                 this.publish(child);
             }
@@ -616,9 +728,24 @@ export class SubagentService {
         return promise;
     }
 
-    private freeze(record: ChildRecord, seen = new Set<string>()): void {
+    /** Ancestor retries must not reset a paused descendant's budget or rewrite it. */
+    private cleanupPaused(record: ChildRecord): boolean {
+        return (record.cleanupAttempts ?? 0) >= MAX_CLEANUP_ATTEMPTS
+            || (record.uncertainStart && (record.cleanupAttempts ?? 0) > 0);
+    }
+
+    private freeze(record: ChildRecord, seen = new Set<string>(), automatic = false): void {
         if (seen.has(record.session.id)) return;
+        if (automatic && this.cleanupPaused(record)) return;
         seen.add(record.session.id);
+        this.freezeSession(record);
+        for (const child of this.children.values()) {
+            if (!child.removed && child.parent.session_id === record.session.id) this.freeze(child, seen, automatic);
+        }
+    }
+
+    /** Close one lifecycle before awaiting transport; recursion is owned by freeze. */
+    private freezeSession(record: ChildRecord): void {
         record.session.closing = true;
         record.session.subagent!.lifecycle = 'stopping';
         for (const prompt of [...record.session.prompts.values()]) prompt.retire('shutdown', 'subagent lifecycle is stopping');
@@ -627,17 +754,22 @@ export class SubagentService {
         record.startupTimer = null;
         try { this.publish(record); } // best effort: a disk error must not skip termination
         catch { this.options.log.warn(`subagent ${record.session.id}: could not persist stopping intent`); }
-        for (const child of this.children.values()) {
-            if (!child.removed && child.parent.session_id === record.session.id) this.freeze(child, seen);
-        }
     }
 
     /** Restore in two passes: registry/processes first, graph validation second. */
     async restore(): Promise<void> {
         if (this.retryTimer) clearInterval(this.retryTimer);
+        this.retryTimer = null;
         this.recovering = true;
         try {
-            for (const id of childDirectories(this.options.config.dataDir)) {
+            let directories: string[];
+            try { directories = childDirectories(this.options.config.dataDir); }
+            catch {
+                this.recoveryBlocked = true;
+                this.options.log.warn('subagent recovery blocked: cannot safely enumerate managed storage; ownership retained for operator inspection');
+                return;
+            }
+            for (const id of directories) {
                 try {
                     const raw = object(readPrivate(ownedPath(this.options.config.dataDir, id, 'metadata.json'), MAX_OPERATION_BYTES));
                     if (!raw) {
@@ -670,10 +802,26 @@ export class SubagentService {
                         ),
                         removed: false, startup: null, startupTimer: null, terminalTimer: null,
                         uncertainStart: raw.uncertain_start === true || (!raw.process && object(raw.subagent)?.lifecycle !== 'preparing'),
+                        terminationConfirmed: raw.termination_confirmed === true,
+                        cleanupAttempts: typeof raw.cleanup_attempts === 'number' && Number.isInteger(raw.cleanup_attempts)
+                            ? Math.min(MAX_CLEANUP_ATTEMPTS, Math.max(0, raw.cleanup_attempts)) : 0,
+                        retryAt: typeof raw.retry_at === 'number' && Number.isSafeInteger(raw.retry_at)
+                            && raw.retry_at >= 0 && raw.retry_at <= 8640000000000000 ? raw.retry_at : 0,
                         error: typeof raw.error === 'string' ? raw.error.slice(0, 512) : '' };
                     this.children.set(id, record);
                     this.ops(session);
-                    if (raw.process) this.options.supervisor.adopt(session, raw.process);
+                    if (record.terminationConfirmed) record.uncertainStart = false;
+                    else if (raw.process) {
+                        const stored = object(raw.process);
+                        const adopted = this.options.supervisor.adopt(session, raw.process);
+                        if (!adopted) {
+                            // A recorded Linux incarnation that disappeared/reused
+                            // is evidence; unreadable or malformed identity is not.
+                            record.terminationConfirmed = !!stored && stored.pid_file == null
+                                && processIdentity(stored.pid, stored.pid_start_time) === 'gone';
+                            record.uncertainStart = !record.terminationConfirmed;
+                        }
+                    }
                 } catch {
                     this.recoveryBlocked = true;
                     this.options.log.warn(`subagent ${id}: invalid recovery state retained for operator inspection`);
@@ -708,18 +856,17 @@ export class SubagentService {
                 }
             }
             for (const record of recovery) {
-                if (record.session.subagent?.lifecycle === 'cleanup-pending') {
-                    await this.options.supervisor.stop(record.session).catch(() => {});
+                if (record.session.subagent?.lifecycle === 'cleanup-pending'
+                    && (record.cleanupAttempts ?? 0) < MAX_CLEANUP_ATTEMPTS) {
+                    await this.cascade(record.session,
+                        () => this.options.supervisor.stopProcess(record.session), true).catch(() => {});
+                } else if (record.session.subagent?.lifecycle === 'cleanup-pending') {
+                    record.session.subagent.reason = 'cleanup paused; inspect ownership, then use POST /api/sessions/:id/recover';
+                    this.options.changed(record.session);
                 }
             }
         } finally { this.recovering = false; }
-        this.retryTimer = setInterval(() => {
-            for (const record of this.children.values()) {
-                if (record.session.subagent?.lifecycle === 'cleanup-pending' && !record.removed) {
-                    void this.options.supervisor.stop(record.session).catch(() => {});
-                }
-            }
-        }, 5000);
+        this.retryTimer = setInterval(() => this.retryCleanup(), 5000);
         this.retryTimer.unref();
     }
 

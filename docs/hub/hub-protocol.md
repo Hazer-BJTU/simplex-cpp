@@ -257,6 +257,9 @@ event or REST description. A decision always applies to the original operation.
 | --- | --- | --- |
 | `GET /api/meta` | — | hub metadata and capabilities |
 | `POST /api/sessions/:id/subagent-policy` | `policy` | authenticated operator changes headless ask/deny/approve policy |
+| `GET /api/subagents/recovery` | — | `{blocked, reason}`; unsafe/unreadable ownership storage blocks new launches/forks without deleting retained data |
+| `GET /api/sessions/:id/recovery` | — | headless recovery diagnostics and current lifecycle ID; no private launch data |
+| `POST /api/sessions/:id/recover` | `{action, lifecycle_id}` | operator-only `retry` or explicit `confirm-terminated`; `200 {ok, how, forced, session}` after cleanup, `409` on conflict/incomplete cleanup |
 | `GET /api/sessions` | — | `{sessions: [session...]}` |
 | `POST /api/sessions` | `{session, spec?}` | `201 {session}`; `400 invalid_session`; `409 session_exists` |
 | `GET /api/sessions/:id` | — | `{session}`; `404 unknown_session` |

@@ -309,8 +309,9 @@ with the process and restored after a Hub restart; public process descriptions
 omit it. Because the environment may contain credentials, headless metadata and
 ordinary `hub.json` are written with mode 0600. Missing/invalid recovered context
 never falls back to the current Hub environment: termination remains unconfirmed
-and storage stays cleanup-pending for operator intervention. Failure leaves cleanup-pending metadata and a
-periodic retry. Successful shutdown deletes **all** child persistence, including
+and storage stays cleanup-pending for operator intervention. Confirmed container
+exit puts even an already-exited/failed Docker CLI record into a terminal state;
+Hub shutdown checks those managed containers too. Successful shutdown deletes **all** child persistence, including
 conversation. Parents must receive desired output first. Only small terminal
 status/outcome records remain in memory for one receipt TTL, capped at 128.
 
@@ -320,11 +321,66 @@ awaiting reconnection; only unfinished startups receive a startup deadline.
 Stale parents, cycles and stopping intent trigger
 cleanup rather than resurrection. A crash between spawn and process publication
 can leave uncertain startup evidence: preserve it as cleanup-pending instead of
-deleting potentially live data. Invalid ownership metadata is quarantined for
+deleting potentially live data. Missing records, unreadable process identity and
+failed Docker inspections never prove termination. A stored Linux PID/start-time
+incarnation that is confirmed absent or replaced can converge automatically;
+observing the recorded process/container stop also resolves an uncertain flag.
+Invalid ownership metadata is quarantined for
 operator inspection and blocks additional forks. Never delete such directories
 until the process/container is independently confirmed stopped. Owned output
 tasks have a five-second join deadline per cleanup attempt; an incomplete fence
-retains the directory and is retried rather than blocking sibling cleanup forever.
+retains the directory rather than blocking sibling cleanup forever.
+
+### Bounded cleanup and operator recovery
+
+Recoverable cleanup failures receive at most three automatic attempts, including
+the initial attempt, with ten- and twenty-second delays before subsequent attempts
+(checked every five seconds). Attempt counts are stored with ownership metadata,
+so restarting the Hub does not reset an exhausted budget. Unknown startup ownership
+pauses immediately after the initial stop attempt; repeating `not-started` is not
+useful evidence. Paused children remain `cleanup-pending`, consume quota, and expose
+an operator-recovery reason in the list, receive results and Hub warnings.
+
+Use the authenticated operator JSON API to inspect a retained child:
+
+```sh
+curl -H "Authorization: Bearer $HUB_PANEL_TOKEN" \
+  "$HUB_URL/api/sessions/$CHILD_ID/recovery"
+```
+
+The response includes `lifecycle_id`, `uncertain_start`, `termination_confirmed`,
+`cleanup_attempts`, `max_cleanup_attempts`, `automatic_retry`, `retry_at` and `reason`.
+It omits private tokens, launch arguments and environment. After fixing a temporary
+storage/daemon problem, submit `retry` with the returned lifecycle ID:
+
+```sh
+curl -H "Authorization: Bearer $HUB_PANEL_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"action":"retry","lifecycle_id":"<current lifecycle_id>"}' \
+  "$HUB_URL/api/sessions/$CHILD_ID/recover"
+```
+
+`retry` grants a fresh bounded budget; it never declares an unknown process dead.
+For an unrecorded launch, independently locate and stop its worker/container first.
+Then use the same endpoint with `action: "confirm-terminated"`. **This action is an
+operator attestation that can delete the entire child directory**, not a liveness
+probe. It is rejected if a recorded worker/container is known alive, an event
+connection is open, cleanup is in flight, or the lifecycle ID is stale. Unknown
+liveness is allowed only with this explicit attestation. The attestation is saved
+before cleanup; owned output fences and descendant cleanup still must finish.
+Worker tokens and remote tools cannot call this operator API. A successful cleanup
+releases quota and hides the child; `409` retains its data and reports the conflict
+or remaining cleanup failure. Invalid/quarantined metadata that cannot be restored
+still requires manual inspection/repair rather than this per-child endpoint.
+`GET /api/subagents/recovery` reports global `{blocked, reason}` when ownership
+metadata cannot be safely restored or the managed root cannot be enumerated.
+The Hub keeps serving, but new worker launches are blocked and new forks are rejected with `recovery_required` until
+the operator repairs the retained storage and restarts it. It never follows a
+linked subagents root to discover, overwrite or remove external data.
+
+The operator-selected `dataDir` and any linked ancestors are canonicalized before
+managed paths are derived, including when the directory needs creation. Directory
+symlinks inside the managed sessions/subagents tree remain rejected for private
+state access and deletion; a failed safety check never removes its external target.
 
 ## Resource configuration
 

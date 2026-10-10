@@ -81,7 +81,10 @@ workers. Each child uses a flat `<dataDir>/subagents/<generated-id>/` root, an
 independent operator-controlled ask/deny/approve policy, and a bounded primary
 conversation projection. It retains no event transcript or reasoning/tool history.
 Parent process shutdown/crash cascades; socket disconnect alone preserves the
-family. Confirmed child shutdown deletes its persistence. Clean-fork shares any
-explicit external workspace and is not a sandbox. No C++ subagent tool ships yet.
+family. Confirmed child shutdown deletes its persistence. Unknown launch ownership
+retains data and quota; bounded retries and an authenticated, lifecycle-bound operator
+recovery API prevent indefinite retry churn without assuming missing records mean
+termination. Clean-fork shares any explicit external workspace and is not a sandbox.
+The optional C++ `hub_remote_call` toolset exposes fork/send/receive operations.
 See the [complete subagent contract](../hub/subagents.md) for configuration snapshots,
 launch support, request deduplication, recovery and cleanup limits.

@@ -432,6 +432,158 @@ it('retains an unverified spawn reservation instead of deleting potentially live
     assert.equal(ctx.hub.registry.require(id).subagent.lifecycle, 'cleanup-pending');
     assert.equal(existsSync(root), true);
 });
+it('pauses unknown ownership without repeated writes and requires lifecycle-bound operator recovery', async () => {
+    const ctx = await setup({ subagents: { maxChildren: 1 } });
+    const id = 'subagent-12345678-1234-4123-8123-123456789abe';
+    const root = sessionDir(ctx.config, id);
+    writePrivate(join(root, 'metadata.json'), { id, kind: 'headless', token: 'private-recovery-token',
+        cascading_parent: { session_id: ctx.parent.id, lifecycle_id: ctx.parent.lifecycleId, worker_id: ctx.parent.identity.workerId },
+        lifecycle_id: 'uncertain-lifecycle', process: null, subagent: { policy: 'ask', lifecycle: 'starting' } }, 512 * 1024);
+    await ctx.hub.subagents.restore();
+    const child = ctx.hub.registry.require(id);
+    const before = readFileSync(join(root, 'metadata.json'), 'utf8');
+    for (let tick = 0; tick < 10; ++tick) ctx.hub.subagents.retryCleanup(Date.now() + 3600000);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(readFileSync(join(root, 'metadata.json'), 'utf8'), before);
+    assert.equal((await rpc(ctx, 'subagent/clean-fork')).error.code, 'limit_exceeded');
+    ctx.config.panel.token = 'operator-key';
+    const endpoint = `${ctx.base}/api/sessions/${id}/recover`;
+    const body = { action: 'confirm-terminated', lifecycle_id: child.lifecycleId };
+    assert.equal((await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json',
+        Authorization: `Bearer ${child.token}` }, body: JSON.stringify(body) })).status, 401);
+    const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer operator-key' };
+    const diagnostics = await (await fetch(`${ctx.base}/api/sessions/${id}/recovery`, { headers })).json();
+    assert.equal(diagnostics.uncertain_start, true);
+    assert.equal(diagnostics.lifecycle_id, 'uncertain-lifecycle');
+    assert.match(diagnostics.reason, /cleanup paused/);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /private-recovery-token|DOCKER_/);
+    assert.equal((await fetch(endpoint, { method: 'POST', headers,
+        body: JSON.stringify({ ...body, lifecycle_id: 'stale-lifecycle' }) })).status, 409);
+    assert.equal((await fetch(endpoint, { method: 'POST', headers,
+        body: JSON.stringify({ ...body, action: 'retry' }) })).status, 409);
+    assert.equal(existsSync(root), true); // retry is not an attestation
+    const recovered = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+    assert.equal(recovered.status, 200, JSON.stringify(await recovered.json()));
+    assert.equal(child.subagent.lifecycle, 'stopped');
+    assert.equal(existsSync(root), false);
+    await fork(ctx); // confirmed cleanup releases the parent's quota
+});
+
+it('bounds automatic cleanup retries and resumes only after operator retry', async () => {
+    const ctx = await setup();
+    const child = await fork(ctx);
+    const original = ctx.hub.supervisor.stopProcess.bind(ctx.hub.supervisor);
+    let attempts = 0;
+    ctx.hub.supervisor.stopProcess = session => {
+        if (session === child) { attempts++; return Promise.resolve({ ok: false, how: 'injected-failure', forced: false }); }
+        return original(session);
+    };
+    assert.equal((await ctx.hub.supervisor.stop(child)).ok, false);
+    const endpoint = `${ctx.base}/api/sessions/${child.id}/recover`;
+    // Even an operator cannot attest a known-live worker as terminated.
+    assert.equal((await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'confirm-terminated', lifecycle_id: child.lifecycleId }) })).status, 409);
+    for (let retry = 0; retry < 2; retry++) {
+        ctx.hub.subagents.retryCleanup(Date.now() + 3600000);
+        await until(() => attempts === retry + 2 && !ctx.hub.subagents.stops.has(child.id));
+    }
+    const metadata = readFileSync(join(sessionDir(ctx.config, child.id), 'metadata.json'), 'utf8');
+    for (let tick = 0; tick < 10; ++tick) ctx.hub.subagents.retryCleanup(Date.now() + 3600000);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(attempts, 3);
+    assert.equal(readFileSync(join(sessionDir(ctx.config, child.id), 'metadata.json'), 'utf8'), metadata);
+    assert.equal(JSON.parse(metadata).cleanup_attempts, 3);
+    assert.match(child.subagent.reason, /cleanup paused/);
+    ctx.hub.supervisor.stopProcess = original;
+    const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'retry', lifecycle_id: child.lifecycleId }) });
+    assert.equal(response.status, 200, JSON.stringify(await response.json()));
+    assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+});
+
+it('converges a stored native incarnation only on verified absence, not malformed identity', { skip: process.platform !== 'linux' }, async () => {
+    const ctx = await setup();
+    const parent = { session_id: ctx.parent.id, lifecycle_id: ctx.parent.lifecycleId, worker_id: ctx.parent.identity.workerId };
+    for (const [suffix, startTime] of [['f', '123'], ['0', null]]) {
+        const id = `subagent-12345678-1234-4123-8123-123456789ab${suffix}`;
+        writePrivate(join(sessionDir(ctx.config, id), 'metadata.json'), {
+            id, kind: 'headless', token: 'recovery-token', cascading_parent: parent,
+            lifecycle_id: 'native-recovery', uncertain_start: true,
+            process: { pid: 2147483647, pid_start_time: startTime, command: '/bin/true', args: [], cwd: ctx.config.dataDir },
+            subagent: { policy: 'ask', lifecycle: 'cleanup-pending' },
+        }, 512 * 1024);
+    }
+    await ctx.hub.subagents.restore();
+    const verified = ctx.hub.registry.require('subagent-12345678-1234-4123-8123-123456789abf');
+    const unknown = ctx.hub.registry.require('subagent-12345678-1234-4123-8123-123456789ab0');
+    assert.equal(verified.subagent.lifecycle, 'stopped');
+    assert.equal(existsSync(sessionDir(ctx.config, verified.id)), false);
+    assert.equal(unknown.subagent.lifecycle, 'cleanup-pending');
+    assert.equal(existsSync(sessionDir(ctx.config, unknown.id)), true);
+});
+
+it('preserves an exhausted cleanup budget when restoring persisted ownership', async () => {
+    const ctx = await setup();
+    const id = 'subagent-12345678-1234-4123-8123-123456789ab1';
+    const root = sessionDir(ctx.config, id);
+    const metadata = {
+        id, kind: 'headless', token: 'recovery-token', lifecycle_id: 'budget-lifecycle',
+        cascading_parent: { session_id: ctx.parent.id, lifecycle_id: ctx.parent.lifecycleId, worker_id: ctx.parent.identity.workerId },
+        process: null, termination_confirmed: true, cleanup_attempts: 3,
+        subagent: { policy: 'ask', lifecycle: 'cleanup-pending' },
+    };
+    writePrivate(join(root, 'metadata.json'), metadata, 512 * 1024);
+    await ctx.hub.subagents.restore();
+    const child = ctx.hub.registry.require(id);
+    const before = readFileSync(join(root, 'metadata.json'), 'utf8');
+    ctx.hub.subagents.retryCleanup(Date.now() + 3600000);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(child.subagent.lifecycle, 'cleanup-pending');
+    assert.equal(readFileSync(join(root, 'metadata.json'), 'utf8'), before);
+    assert.equal(ctx.hub.subagents.recoveryState(child).cleanup_attempts, 3);
+    assert.equal((await ctx.hub.subagents.recover(child, 'retry', child.lifecycleId)).ok, true);
+    assert.equal(existsSync(root), false);
+});
+
+it('clears stale startup uncertainty after stopping the recorded process and releases quota', async () => {
+    const ctx = await setup({ subagents: { maxChildren: 1 } });
+    const child = await fork(ctx);
+    ctx.hub.subagents.children.get(child.id).uncertainStart = true;
+    assert.equal((await ctx.hub.supervisor.stop(child)).ok, true);
+    assert.equal(child.subagent.lifecycle, 'stopped');
+    assert.equal(ctx.hub.subagents.children.get(child.id).uncertainStart, false);
+    assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+    await fork(ctx);
+});
+
+it('does not rewrite paused descendants during automatic ancestor cleanup retries', async () => {
+    const ctx = await setup();
+    const child = await fork(ctx);
+    const id = 'subagent-12345678-1234-4123-8123-123456789ab2';
+    const descendant = ctx.hub.registry.create(id);
+    descendant.kind = 'headless';
+    descendant.subagent = { parent: child.id, policy: 'ask', lifecycle: 'starting',
+        health: 'unknown', reason: '', active: false, observed_at: null };
+    ctx.hub.subagents.children.set(id, { session: descendant,
+        parent: { session_id: child.id, lifecycle_id: child.lifecycleId, worker_id: child.identity.workerId },
+        conversation: null, removed: false, startup: null, startupTimer: null, terminalTimer: null,
+        error: '', uncertainStart: true, terminationConfirmed: false, cleanupAttempts: 0, retryAt: 0 });
+    assert.equal((await ctx.hub.supervisor.stop(child)).ok, false);
+    const path = join(sessionDir(ctx.config, id), 'metadata.json');
+    const before = readFileSync(path, 'utf8');
+    for (let attempt = 2; attempt <= 3; attempt++) {
+        ctx.hub.subagents.retryCleanup(Date.now() + 3600000);
+        await until(() => ctx.hub.subagents.children.get(child.id).cleanupAttempts === attempt
+            && !ctx.hub.subagents.stops.has(child.id));
+        assert.equal(readFileSync(path, 'utf8'), before);
+        assert.equal(descendant.subagent.lifecycle, 'cleanup-pending');
+    }
+    assert.equal(ctx.hub.subagents.children.get(id).cleanupAttempts, 1);
+    assert.equal(existsSync(sessionDir(ctx.config, child.id)), true);
+    assert.equal((await ctx.hub.subagents.recover(descendant, 'confirm-terminated', descendant.lifecycleId)).ok, true);
+    assert.equal((await ctx.hub.subagents.recover(child, 'retry', child.lifecycleId)).ok, true);
+    assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+});
 it('rejects unsupported daemonizing parents without leaking quota', async () => {
     const ctx = await setup();
     const launch = join(sessionDir(ctx.config, ctx.parent.id), 'config', 'startup-launch.jsonc');

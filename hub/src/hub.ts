@@ -7,6 +7,7 @@
  * place that knows the whole object graph.
  */
 import { SubagentService } from './subagents/service.ts';
+import { canonicalDataRoot } from './subagents/storage.ts';
 import { randomUUID } from 'node:crypto';
 import { authorizePanel } from './http/auth.ts';
 import { createHttpServer, sendError, sendJson } from './http/server.ts';
@@ -71,7 +72,7 @@ export interface HubHooks {
 
 /** Everything `createHub` needs. */
 export interface CreateHubOptions {
-    /** Validated hub configuration. */
+    /** Validated hub configuration. Assembly canonicalizes dataDir in place. */
     config: HubConfig;
     log: Logger;
     /** Runtime root containing schemas and built panel assets. */
@@ -102,6 +103,10 @@ export interface Hub {
 export function createHub({
     config, log, hubRoot, version = '0.0.0', hooks: extraHooks = {},
 }: CreateHubOptions): Hub {
+    // The operator may select a root through /home or another directory link.
+    // Resolve it before services derive paths; links inside managed storage are
+    // still rejected by privateDirectory before private state is read or removed.
+    config.dataDir = canonicalDataRoot(config.dataDir);
     const http = createHttpServer({ config, log, hubRoot });
     const toolHttp = createHttpServer({
         config, log, hubRoot, upgradeOnly: true,

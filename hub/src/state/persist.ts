@@ -150,27 +150,33 @@ export class HubState {
         return {
             version: STATE_VERSION,
             saved_at: new Date().toISOString(),
-            sessions: sessions.filter(session => session.kind !== 'headless').map((session) => ({
-                id: session.id,
-                token: session.token,
-                spec: session.spec ?? {},
-                created_at: session.createdAt,
-                lifecycle_id: session.lifecycleId ?? '',
-                process: session.process && session.process.pid
-                    ? {
-                        ...(session.process.dockerManagement ? { docker_management: session.process.dockerManagement } : {}),
-                        pid: session.process.pid,
-                        pid_start_time: session.process.pidStartTime,
-                        started_at: session.process.startedAt,
-                        command: session.process.command,
-                        args: session.process.args,
-                        cwd: session.process.cwd,
-                        pid_file: session.process.pidFile ?? null,
-                        log_path: session.process.logPath ?? null,
-                        state: session.process.state,
-                    }
-                    : null,
-            })),
+            sessions: sessions.filter(session => session.kind !== 'headless')
+                .map(session => this.sessionDocument(session)),
+        };
+    }
+
+    /** Serialize one owned session, including headless metadata stored separately. */
+    sessionDocument(session: PersistableSession): StoredSession {
+        return {
+            id: session.id,
+            token: session.token,
+            spec: session.spec ?? {},
+            created_at: session.createdAt,
+            lifecycle_id: session.lifecycleId ?? '',
+            process: session.process && session.process.pid
+                ? {
+                    ...(session.process.dockerManagement ? { docker_management: session.process.dockerManagement } : {}),
+                    pid: session.process.pid,
+                    pid_start_time: session.process.pidStartTime,
+                    started_at: session.process.startedAt,
+                    command: session.process.command,
+                    args: session.process.args,
+                    cwd: session.process.cwd,
+                    pid_file: session.process.pidFile ?? null,
+                    log_path: session.process.logPath ?? null,
+                    state: session.process.state,
+                }
+                : null,
         };
     }
 

@@ -1,12 +1,22 @@
 /** Private, bounded, atomic files for subagent ownership and operation receipts. */
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync,
-    openSync, readSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+    openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { sessionDir } from '../launch/config-render.ts';
 import { isSubagentId, validateSessionId } from '../state/session-id.ts';
 
-/** Refuse symlink directories before any write/deletion. DataDir is operator-owned. */
+/** Resolve operator-selected root/ancestor links once, before deriving managed paths. */
+export function canonicalDataRoot(directory: string): string {
+    // recursive mkdir supports a missing suffix below an existing linked ancestor.
+    // A dangling link or non-directory still fails, instead of becoming a new root.
+    mkdirSync(resolve(directory), { recursive: true, mode: 0o700 });
+    const root = realpathSync(directory);
+    if (!lstatSync(root).isDirectory()) throw new Error('data root is not a directory');
+    return root;
+}
+
+/** Refuse directory links in managed paths. DataDir was canonicalized at assembly. */
 export function privateDirectory(directory: string, create = false): void {
     const absolute = resolve(directory);
     const parent = dirname(absolute);
