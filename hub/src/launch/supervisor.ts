@@ -455,7 +455,7 @@ export class WorkerSupervisor {
         });
         const record = new ProcessRecord({ sessionId: session.id, invocation, logPath, logStream, logs });
         record.stopPolicy = { ...launchConfig.worker };
-        try { record.dockerManagement = captureDockerManagement(invocation); }
+        try { record.dockerManagement = captureDockerManagement(invocation, launchConfig.launcher.dockerManagementEnv); }
         catch { logStream.end(); return { ok: false, error: 'cannot capture Docker management context' }; }
         session.process = record;
 
@@ -463,7 +463,9 @@ export class WorkerSupervisor {
         try {
             child = spawn(record.dockerManagement?.executable ?? invocation.command, invocation.args, {
                 cwd: record.dockerManagement?.cwd ?? invocation.cwd,
-                env: record.dockerManagement?.env ?? { ...process.env, ...invocation.env },
+                // Startup still inherits all worker/container credentials. Only
+                // later inspect/kill calls use the minimized durable environment.
+                env: { ...process.env, ...invocation.env },
                 // A dedicated process group makes an explicit force-kill able
                 // to reach descendants; it is never used implicitly.
                 detached: true,

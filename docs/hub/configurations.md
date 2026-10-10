@@ -92,6 +92,7 @@ See [`schemas/local.jsonc`](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/
 | `launcher.args` | Additional arguments |
 | `launcher.cwd` | Command working directory; empty uses the session directory; relative paths resolve against the session's `config/` directory |
 | `launcher.pidFile` | Absolute PID-file path for a daemonizing launcher, if applicable |
+| `launcher.dockerManagementEnv` | Additional environment **names** required by Docker inspection/signaling; defaults to `[]`; their startup values are persisted privately |
 | `worker.bin` / `worker.args` | Direct worker executable and flags for `simplex-worker`; explicit relative binary paths resolve against the session's `config/` directory |
 | `worker.threads` | Execution thread count; positive integer |
 | `worker.connectHost` | Host reachable from the worker; empty derives from Hub listeners |
@@ -125,6 +126,50 @@ The in-tree `simplex-hub-test:latest` image uses the build-tree launcher
 `/src/build/bin/simplex`; when selecting that image, replace the separate
 `simplex` command argument with that path and keep `run` as the next argument.
 The template does not build an image or install a worker automatically.
+
+### Docker management environment
+
+Docker startup inherits the Hub environment plus launch `env` overrides, so
+`docker run -e MODEL_API_KEY ...` still forwards that credential. Later inspection
+and shutdown use the captured absolute Docker executable, working directory and a
+smaller environment. Only these built-in names and explicit pass-throughs are
+saved in `hub.json` and headless `metadata.json`:
+
+| Purpose | Preserved names |
+| --- | --- |
+| Docker daemon, context, configuration and TLS | `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS`, `DOCKER_TLS_VERIFY`, `DOCKER_API_VERSION`, `DOCKER_CUSTOM_HEADERS` |
+| Executable/home lookup and SSH agent | `PATH`, `HOME`, `USER`, `LOGNAME`, `SSH_AUTH_SOCK` |
+| Proxy and system trust roots | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `http_proxy`, `https_proxy`, `no_proxy`, `SSL_CERT_FILE`, `SSL_CERT_DIR` |
+| Windows host lookup | `SYSTEMROOT`, `SystemRoot`, `WINDIR`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PATHEXT` |
+
+The connection variables follow the [Docker CLI environment contract](https://docs.docker.com/reference/cli/docker/#environment-variables).
+No wildcard such as `DOCKER_*` is retained. A special CLI/helper deployment can
+declare extra names in its launch configuration:
+
+```json
+{
+  "launcher": {
+    "dockerManagementEnv": ["CUSTOM_MANAGER_TOKEN", "XDG_RUNTIME_DIR"]
+  }
+}
+```
+
+This fragment supplements the other launcher fields. Names must be unique and
+match `[A-Za-z_][A-Za-z0-9_]*`; values come from the effective startup environment,
+without interpolation. A listed name absent at startup stays absent after restart.
+Do not list model credentials forwarded only to the container. The declaration
+is retained in session/startup snapshots, including clean-forks, independently of
+later library or Hub defaults.
+
+Recovery filters legacy full-environment snapshots to the built-in names; new
+snapshots also retain their saved pass-through declarations. Recovery never fills
+missing values from the current Hub environment. Legacy deployments requiring
+extra helper variables should configure the list and relaunch to capture it.
+Missing or invalid context remains unverified; it does not authorize deletion.
+Necessary proxy/header credentials and explicitly selected secrets can still be
+stored in these mode-0600 files. Old disk copies are not securely erased; protect
+the data directory and backups. Explicit credentials already placed in launch
+`env` remain part of that operator-authored configuration.
 
 ## Worker templates and managed fields
 

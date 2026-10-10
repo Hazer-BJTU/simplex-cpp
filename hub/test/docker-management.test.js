@@ -1,6 +1,6 @@
 /** Docker inspection/signaling must not silently change daemon after recovery. */
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { it } from 'node:test';
@@ -8,6 +8,7 @@ import { captureDockerManagement, dockerRunning, signalContainer, restoreDockerM
 import { HubState } from '../src/state/persist.ts';
 import { startTestHub } from './helpers/hub.js';
 import { sessionDir } from '../src/launch/config-render.ts';
+import { until } from './helpers/worker.js';
 
 function dockerFixture(t) {
     const root = mkdtempSync(join(tmpdir(), 'simplex-docker-context-'));
@@ -24,7 +25,16 @@ try {
     const path = directory + '/state.json';
     const state = JSON.parse(readFileSync(path, 'utf8'));
     appendFileSync(directory + '/calls.jsonl', JSON.stringify({ args, executable: process.argv[1],
-        host: process.env.DOCKER_HOST, context: process.env.DOCKER_CONTEXT, cwd: process.cwd() }) + '\\n');
+        host: process.env.DOCKER_HOST, context: process.env.DOCKER_CONTEXT, cwd: process.cwd(),
+        env: Object.fromEntries(['HOME', 'PATH', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY',
+            'SSH_AUTH_SOCK', 'HTTPS_PROXY', 'CUSTOM_MANAGER_TOKEN', 'MODEL_API_KEY',
+            'DOCKER_UNRELATED_SECRET'].filter(key => process.env[key] !== undefined)
+            .map(key => [key, process.env[key]])) }) + '\\n');
+    if (args[0] === 'run') {
+        writeFileSync(directory + '/startup.json', JSON.stringify({
+            modelKey: process.env.MODEL_API_KEY, explicitKey: process.env.EXPLICIT_MODEL_KEY }));
+        state.running = false; writeFileSync(path, JSON.stringify(state));
+    }
     if (args[0] === 'inspect') {
         if (state.unknownInspections > 0) {
             state.unknownInspections--; writeFileSync(path, JSON.stringify(state));
@@ -80,6 +90,134 @@ it('captures the startup executable/environment and restores them without Hub de
         assert.equal(call.context, 'original-context');
     }
     assert.equal(await dockerRunning(restoreDockerManagement(null, 'test-child')), null);
+});
+
+it('resolves Docker from startup PATH and retains that absolute executable for management', async t => {
+    const fixture = dockerFixture(t);
+    const invocation = { ...fixture.invocation, command: 'docker',
+        env: { ...fixture.invocation.env, PATH: `${fixture.root}:${process.env.PATH}` } };
+    const context = captureDockerManagement(invocation);
+    assert.equal(context.executable, fixture.executable);
+    assert.equal(context.env.PATH, invocation.env.PATH);
+    const restored = restoreDockerManagement(JSON.parse(JSON.stringify(context)), 'test-child');
+    assert.equal(await dockerRunning(restored), true);
+    const calls = readFileSync(join(fixture.directory, 'calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(calls[0].executable, fixture.executable);
+});
+
+it('keeps connection, TLS, SSH and proxy requirements while excluding unrelated secrets', async t => {
+    const fixture = dockerFixture(t);
+    const env = { ...fixture.invocation.env, HOME: fixture.root, PATH: process.env.PATH,
+        DOCKER_CERT_PATH: './certs', DOCKER_TLS_VERIFY: '1', SSH_AUTH_SOCK: '/tmp/test-agent.sock',
+        HTTPS_PROXY: 'http://test-proxy.invalid:3128', MODEL_API_KEY: 'model-secret-not-for-docker',
+        DOCKER_UNRELATED_SECRET: 'not-a-management-variable', CUSTOM_MANAGER_TOKEN: 'explicit-manager-secret' };
+    const invocation = { ...fixture.invocation, env };
+    const context = captureDockerManagement(invocation, ['CUSTOM_MANAGER_TOKEN']);
+    for (const key of ['HOME', 'PATH', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY', 'SSH_AUTH_SOCK',
+        'HTTPS_PROXY', 'CUSTOM_MANAGER_TOKEN']) assert.equal(context.env[key], env[key]);
+    assert.equal(context.env.MODEL_API_KEY, undefined);
+    assert.equal(context.env.DOCKER_UNRELATED_SECRET, undefined);
+    assert.deepEqual(context.passThrough, ['CUSTOM_MANAGER_TOKEN']);
+    // Environment values are never expanded or looked up again after capture.
+    env.CUSTOM_MANAGER_TOKEN = 'changed-after-capture';
+    const restored = restoreDockerManagement(JSON.parse(JSON.stringify(context)), 'test-child');
+    assert.equal(await dockerRunning(restored), true);
+    await signalContainer(restored, 'TERM');
+    const calls = readFileSync(join(fixture.directory, 'calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    for (const call of calls) {
+        assert.equal(call.env.CUSTOM_MANAGER_TOKEN, 'explicit-manager-secret');
+        assert.equal(call.env.DOCKER_CERT_PATH, './certs');
+        assert.equal(call.env.SSH_AUTH_SOCK, '/tmp/test-agent.sock');
+        assert.equal(call.env.HTTPS_PROXY, 'http://test-proxy.invalid:3128');
+        assert.equal(call.env.MODEL_API_KEY, undefined);
+        assert.equal(call.env.DOCKER_UNRELATED_SECRET, undefined);
+    }
+});
+
+it('filters legacy full-environment snapshots without changing the saved daemon', async t => {
+    const fixture = dockerFixture(t);
+    const legacy = { executable: fixture.executable, cwd: fixture.root, name: 'test-child',
+        env: { ...process.env, ...fixture.invocation.env,
+            MODEL_API_KEY: 'legacy-secret', DOCKER_UNRELATED_SECRET: 'legacy-docker-secret' } };
+    const saved = JSON.stringify(legacy);
+    const restored = restoreDockerManagement(legacy, 'test-child');
+    assert.equal(JSON.stringify(legacy), saved, 'restoration must not mutate its input');
+    assert.equal(restored.env.MODEL_API_KEY, undefined);
+    assert.equal(restored.env.DOCKER_UNRELATED_SECRET, undefined);
+    assert.deepEqual(restored.passThrough, []);
+    assert.equal(restored.executable, fixture.executable);
+    assert.equal(restored.cwd, fixture.root);
+    assert.equal(await dockerRunning(restored), true);
+    const state = new HubState({ config: { dataDir: fixture.root }, log: { warn() {}, error() {} } });
+    state.save([{ id: 'legacy', token: 'token', createdAt: '', process: {
+        pid: 2147483647, pidStartTime: '123', startedAt: '', command: fixture.executable,
+        args: fixture.invocation.args, cwd: fixture.root, state: 'running', dockerManagement: restored,
+    } }]);
+    assert.doesNotMatch(readFileSync(state.path, 'utf8'), /legacy-secret|legacy-docker-secret|MODEL_API_KEY|DOCKER_UNRELATED_SECRET/);
+});
+
+it('does not inherit newly added management values when they were absent at startup', async t => {
+    const fixture = dockerFixture(t);
+    const previous = process.env.DOCKER_CONFIG;
+    process.env.DOCKER_CONFIG = fixture.directory;
+    t.after(() => {
+        if (previous === undefined) delete process.env.DOCKER_CONFIG;
+        else process.env.DOCKER_CONFIG = previous;
+    });
+    const restored = restoreDockerManagement({ executable: fixture.executable, cwd: fixture.root,
+        name: 'test-child', env: { PATH: process.env.PATH }, passThrough: ['CUSTOM_MANAGER_TOKEN'] }, 'test-child');
+    assert.deepEqual(restored.env, { PATH: process.env.PATH });
+    // Only retain PATH for the fixture interpreter. Inheriting this Hub's
+    // DOCKER_CONFIG would query the live fixture daemon instead of reporting absence.
+    assert.equal(await dockerRunning(restored), false);
+});
+
+it('rejects invalid persisted pass-through declarations instead of using Hub defaults', async t => {
+    const fixture = dockerFixture(t);
+    const context = captureDockerManagement(fixture.invocation);
+    for (const passThrough of [null, 'CUSTOM_MANAGER_TOKEN', ['*'], ['A=B'], ['bad\0key'], ['A', 'A'], [3]]) {
+        assert.equal(restoreDockerManagement({ ...context, passThrough }, 'test-child'), null);
+        assert.throws(() => captureDockerManagement(fixture.invocation, passThrough), /environment names/);
+    }
+    assert.equal(restoreDockerManagement({ ...context, name: 'wrong-child' }, 'test-child'), null);
+});
+
+it('preserves full launch inheritance but persists only the selected Docker management environment', async t => {
+    const fixture = dockerFixture(t);
+    const previous = process.env.MODEL_API_KEY;
+    process.env.MODEL_API_KEY = 'inherited-model-secret';
+    t.after(() => {
+        if (previous === undefined) delete process.env.MODEL_API_KEY;
+        else process.env.MODEL_API_KEY = previous;
+    });
+    const ctx = await startTestHub({ launcher: { kind: 'command',
+        command: [fixture.executable, 'run', '--name', 'test-child', '-e', 'MODEL_API_KEY'],
+        dockerManagementEnv: ['CUSTOM_MANAGER_TOKEN'] } });
+    try {
+        const session = ctx.hub.registry.create('docker-inheritance', { env: {
+            ...fixture.invocation.env, CUSTOM_MANAGER_TOKEN: 'configured-management-secret',
+            EXPLICIT_MODEL_KEY: 'configured-model-secret',
+        } });
+        assert.equal((await ctx.hub.supervisor.start(session)).ok, true);
+        await until(() => existsSync(join(fixture.directory, 'startup.json')));
+        assert.deepEqual(JSON.parse(readFileSync(join(fixture.directory, 'startup.json'), 'utf8')),
+            { modelKey: 'inherited-model-secret', explicitKey: 'configured-model-secret' });
+        const context = session.process.dockerManagement;
+        assert.equal(context.env.MODEL_API_KEY, undefined);
+        assert.equal(context.env.EXPLICIT_MODEL_KEY, undefined);
+        assert.equal(context.env.CUSTOM_MANAGER_TOKEN, 'configured-management-secret');
+        const startup = JSON.parse(readFileSync(join(sessionDir(ctx.config, session.id), 'config', 'startup-launch.jsonc'), 'utf8'));
+        assert.deepEqual(startup.launcher.dockerManagementEnv, ['CUSTOM_MANAGER_TOKEN']);
+        const state = new HubState({ config: ctx.config, log: ctx.hub.supervisor.log });
+        const ordinary = state.document([session]);
+        const headless = state.sessionDocument({ ...session, kind: 'headless' });
+        for (const snapshot of [ordinary, headless]) {
+            assert.doesNotMatch(JSON.stringify(snapshot), /inherited-model-secret/);
+            const stored = snapshot.sessions?.[0] ?? snapshot;
+            assert.deepEqual(stored.process.docker_management, context);
+        }
+        assert.equal((await ctx.hub.supervisor.stop(session)).ok, true);
+    } finally { await ctx.hub.stop(); }
 });
 
 it('retains adopted child storage until the original Docker daemon confirms termination', async t => {

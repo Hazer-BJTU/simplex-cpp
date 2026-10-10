@@ -303,8 +303,11 @@ does not stop children. A worker incarnation change invalidates its old family.
 Deletion waits for confirmed actual process/container termination and owned output
 pipes/log writer closure. A Docker CLI exit alone is insufficient; the Hub inspects
 and signals the named container using the resolved startup Docker executable,
-working directory, and effective environment, including `DOCKER_HOST`,
-`DOCKER_CONTEXT` and `DOCKER_CONFIG`. This private management snapshot is persisted
+working directory, and a minimized management environment, including `DOCKER_HOST`,
+`DOCKER_CONTEXT` and `DOCKER_CONFIG`. The [allow-list and explicit pass-throughs](./configurations.md#docker-management-environment)
+preserve connection, TLS, SSH and proxy requirements without capturing unrelated
+Hub/model secrets. The Docker launch still inherits the full startup environment.
+This private management snapshot is persisted
 with the process and restored after a Hub restart; public process descriptions
 omit it. Because the environment may contain credentials, headless metadata and
 ordinary `hub.json` are written with mode 0600. Missing/invalid recovered context
