@@ -18,6 +18,7 @@ async function projection(t, maxBytes = 4096, onStorageFailure = () => {}) {
     const path = join(directory, 'conversation.json');
     const view = new ConversationProjection(session, path, maxBytes, onStorageFailure);
     view.connectionChanged(connection);
+    assert.equal(view.flush(), true);
     t.after(() => { view.stop(); rmSync(directory, { recursive: true, force: true }); });
     await until(() => sent.length === 1);
     function page(fields = {}, envelope = {}) {
@@ -88,7 +89,8 @@ it('retains the newest answer when history exceeds the byte budget, including re
         assert.equal(view.value.turns.at(-1).steps.at(-1).content[0].raw, latest);
         assert.equal(view.value.truncated, true);
         assert.equal(view.value.incomplete, true);
-        assert.ok(statSync(path).size <= 4096);
+        assert.equal(view.flush(), true);
+    assert.ok(statSync(path).size <= 4096);
     }
     complete();
     assert.equal(sent[1].start, total - 1);
@@ -97,6 +99,7 @@ it('retains the newest answer when history exceeds the byte budget, including re
     view.connectionChanged(connection);
     await until(() => sent.length > before);
     complete();
+    assert.equal(view.flush(), true);
     const restored = new ConversationProjection(session, path, 4096);
     t.after(() => restored.stop());
     assert.equal(restored.value.turns.at(-1).steps.at(-1).content[0].raw, latest);
@@ -118,6 +121,7 @@ it('publishes a bounded newest tail rather than an old prefix at the 64-page lim
     assert.equal(view.value.turns.length, 63);
     assert.equal(view.value.incomplete, true);
     assert.equal(view.value.truncated, true);
+    assert.equal(view.flush(), true);
     assert.ok(statSync(path).size <= 128 * 1024);
 });
 
@@ -137,6 +141,7 @@ it('jumps to the final steps of a heavily fragmented turn instead of losing its 
     assert.equal(view.value.turns[0].steps.at(-1).content[0].raw, 'answer 99');
     assert.equal(view.value.truncated, true);
     assert.equal(view.value.incomplete, true);
+    assert.equal(view.flush(), true);
     assert.ok(statSync(path).size <= 128 * 1024);
 });
 
@@ -159,6 +164,7 @@ it('publishes the completed newest tail when page 64 interrupts a fragmented old
     assert.equal(view.value.turns.length, 32);
     assert.equal(view.value.turns[0].index, 2);
     assert.equal(view.value.turns.at(-1).steps[0].content[0].raw, 'answer 33 step 0');
+    assert.equal(view.flush(), true);
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).turns, view.value.turns);
     await new Promise(resolve => setTimeout(resolve, 80));
     assert.equal(sent.length, 64, 'a valid bounded tail must not schedule identical retries');
@@ -207,6 +213,7 @@ it('keeps readable UTF-8 text from an oversized final answer within the file bud
     assert.ok(answer.length > 0);
     assert.doesNotMatch(answer, /\uFFFD/);
     assert.equal(view.value.truncated, true);
+    assert.equal(view.flush(), true);
     assert.ok(statSync(path).size <= 4096);
 });
 
@@ -234,7 +241,8 @@ it('contains scheduled send/storage failures, keeps durable data and bounds retr
     await until(() => sent.length === 3);
     await new Promise(resolve => setTimeout(resolve, 80));
     assert.equal(sent.length, 3);
-    assert.ok(reports >= 3);
+    await until(() => reports > 0);
+    assert.equal(reports, 1, 'repeated failures in one window share a projection write');
     assert.equal(view.storageFailed, true);
     assert.equal(view.value.stale, true);
     assert.equal(view.value.incomplete, true);
@@ -302,6 +310,7 @@ it('preserves a large answer source through projection storage and restore rathe
     assert.equal(ctx.view.value.turns[0].steps[0].content.length, 8);
     assert.deepEqual(ctx.view.value.turns[0].steps[0].content, parts);
     assert.deepEqual(ctx.view.value.turns[0].steps[0].answer_source, source);
+    assert.equal(ctx.view.flush(), true);
     const restored = new ConversationProjection(ctx.session, ctx.path, 1024 * 1024);
     t.after(() => restored.stop());
     assert.deepEqual(restored.value.turns[0].steps[0].answer_source, source);

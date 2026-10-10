@@ -518,6 +518,21 @@ confirmation is pending, and a crashed hub whose
 worker is adopted by the next hub. Set `SIMPLEX_WORKER_BIN` to test a different
 build.
 
+To measure subagent persistence on a deterministic 201-event burst with real
+file publications and fsyncs, run from `hub/`:
+
+```sh
+node test/benchmarks/subagent-persistence.mjs
+# Use the same fixture against an older checkout with Hub dependencies installed:
+node test/benchmarks/subagent-persistence.mjs /path/to/older-checkout
+```
+
+The report includes metadata/conversation/operation writes, broadcasts, event
+handling duration, control-timer latency and maximum event-loop delay. Compare on
+the same machine and filesystem; timings are measurements, not CI thresholds.
+Correctness tests separately assert write counts, fixed flush deadlines, durable
+receipts/policy changes, and shutdown/failure cleanup.
+
 Overlays — menus, dialogs, popovers, tooltips, tabs — are Radix primitives, and
 the reason is specific rather than fashionable: the old panel hand-wrote a focus
 trap and a document-level key handler, and four of its interaction defects came

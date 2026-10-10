@@ -110,7 +110,10 @@ it('supports send/continue/compact/receive while excluding tools, reasoning and 
     assert.equal(received.result.conversation.turns[0].user[0].raw, 'child task');
     assert.equal(received.result.conversation.turns[0].steps[0].content[0].raw, 'fixture answer');
     assert.doesNotMatch(JSON.stringify(received), /SECRET_|reasoning|tool_calls|invokes|"raw":\{/);
-    assert.doesNotMatch(readFileSync(join(sessionDir(ctx.config, child.id), 'conversation.json'), 'utf8'), /SECRET_|reasoning|tool_calls/);
+    const conversationPath = join(sessionDir(ctx.config, child.id), 'conversation.json');
+    await until(() => existsSync(conversationPath)
+        && JSON.parse(readFileSync(conversationPath, 'utf8')).turns[0]?.steps.length === 1);
+    assert.doesNotMatch(readFileSync(conversationPath, 'utf8'), /SECRET_|reasoning|tool_calls/);
     await send(ctx, child, 'continue');
     await until(() => !record.conversation.value.stale && record.conversation.value.turns[0]?.steps.length === 2);
     assert.equal(record.conversation.value.turns.length, 1);
@@ -268,7 +271,8 @@ for (const failure of ['send', 'timeout']) {
         const child = await fork(ctx);
         await send(ctx, child);
         const projection = ctx.hub.subagents.children.get(child.id).conversation;
-        await until(() => !projection.value.stale && projection.value.turns.length === 1);
+        await until(() => !child.activeRunId && !projection.value.stale
+            && !projection.refresh && !projection.scheduled && projection.value.turns.length === 1);
         const root = sessionDir(ctx.config, child.id);
         const backup = `${root}-durable`;
         const path = join(root, 'conversation.json');
@@ -283,11 +287,14 @@ for (const failure of ['send', 'timeout']) {
         // Schedule successfully, then make all later private writes fail. The
         // linked directory keeps the last durable file readable, even under root.
         projection.connectionChanged(connection);
+        assert.equal(projection.flush(), true);
         const durable = readFileSync(path, 'utf8');
         renameSync(root, backup);
         symlinkSync(backup, root, 'dir');
         try {
-            await until(() => projection.storageFailed && queries === (failure === 'send' ? 3 : 1), { timeout: 4000 });
+            // With deferred persistence the timeout retry can start before the
+            // failed projection write is observed; the three-attempt cap remains.
+            await until(() => projection.storageFailed && queries === (failure === 'send' ? 3 : 2), { timeout: 4000 });
             assert.equal(child.subagent.health, 'degraded');
             assert.equal(child.subagent.reason, 'primary conversation storage is unavailable');
             assert.equal(projection.value.stale, true);
@@ -645,7 +652,8 @@ it('restores surviving families after an actual Hub process crash and then casca
     assert.equal((await task.waitFor(value => value.type === 'tool_response')).data.status, 'succeeded');
     await task.waitForClose();
     const conversationPath = join(sessionDir(config, childId), 'conversation.json');
-    await until(() => JSON.parse(readFileSync(conversationPath, 'utf8')).turns[0]?.steps.length);
+    await until(() => existsSync(conversationPath)
+        && JSON.parse(readFileSync(conversationPath, 'utf8')).turns[0]?.steps.length);
     process.kill('SIGKILL'); await new Promise(resolve => process.once('exit', resolve));
     // A previously ready child must not get a new startup deadline merely
     // because its event socket has not reconnected after the Hub restart.

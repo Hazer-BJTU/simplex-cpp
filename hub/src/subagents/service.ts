@@ -16,6 +16,7 @@ import { childDirectories, ownedPath, readPrivate, writePrivate, removeChildDire
 import { dockerName, dockerRunning } from './docker.ts';
 import { cleanFork } from './fork.ts';
 import { ConversationProjection } from './conversation.ts';
+import { ProjectionFlush } from './projection-flush.ts';
 import { isValidSessionId } from '../state/session-id.ts';
 
 interface ParentRef { session_id: string; lifecycle_id: string; worker_id: string }
@@ -98,6 +99,8 @@ export class SubagentService {
     private recovering = false;
     private recoveryBlocked = false;
     private retryTimer: NodeJS.Timeout | null = null;
+    private readonly metadataFlushes = new Map<string, ProjectionFlush>();
+    private readonly metadataStorageFailures = new Set<string>();
     readonly options: SubagentServiceOptions;
     constructor(options: SubagentServiceOptions) {
         this.options = options;
@@ -112,8 +115,10 @@ export class SubagentService {
         };
     }
 
+    /** Lifecycle/ownership/policy changes supersede any queued observation immediately. */
     private publish(record: ChildRecord): void {
         const { session } = record;
+        this.metadataFlushes.get(session.id)?.cancel();
         if (!record.removed) {
             const stored = new HubState({ config: this.options.config, log: this.options.log })
                 .sessionDocument(session);
@@ -124,8 +129,30 @@ export class SubagentService {
                 termination_confirmed: record.terminationConfirmed === true,
                 cleanup_attempts: record.cleanupAttempts ?? 0, retry_at: record.retryAt ?? 0,
             }, MAX_OPERATION_BYTES);
+            this.metadataStorageFailures.delete(session.id);
         }
         this.options.changed(session);
+    }
+
+    /** Event observations are reconstructible; batch their disk copy and list broadcast. */
+    private schedulePublication(record: ChildRecord): void {
+        if (this.closing || record.removed || record.session.closing) return;
+        const id = record.session.id;
+        let flush = this.metadataFlushes.get(id);
+        if (!flush) {
+            flush = new ProjectionFlush(() => {
+                if (!record.removed) this.publish(record);
+            }, () => {
+                this.metadataStorageFailures.add(id);
+                record.session.subagent!.health = 'degraded';
+                record.session.subagent!.reason = record.conversation?.storageFailed
+                    ? 'primary conversation storage is unavailable' : 'subagent metadata storage is unavailable';
+                this.options.log.warn(`subagent ${id}: metadata storage failed`);
+                this.options.changed(record.session);
+            });
+            this.metadataFlushes.set(id, flush);
+        }
+        flush.schedule();
     }
 
     /** Report degraded storage without depending on another successful disk write. */
@@ -447,12 +474,15 @@ export class SubagentService {
         if (!record || record.removed || connection.session.closing) return;
         const session = record.session;
         const state = session.subagent!;
+        const previousLifecycle = state.lifecycle;
         state.observed_at = envelope.received_at ?? null;
         state.active = !!session.activeRunId;
         const dataStatus = object(envelope.data);
-        state.health = record.conversation?.storageFailed || envelope.issues?.length || (envelope.event === 'status' && dataStatus?.storage_failed === true)
+        state.health = record.conversation?.storageFailed || this.metadataStorageFailures.has(session.id)
+            || envelope.issues?.length || (envelope.event === 'status' && dataStatus?.storage_failed === true)
             ? 'degraded' : 'healthy';
         state.reason = record.conversation?.storageFailed ? 'primary conversation storage is unavailable'
+            : this.metadataStorageFailures.has(session.id) ? 'subagent metadata storage is unavailable'
             : state.health === 'healthy' ? 'live identified worker event channel'
             : 'worker reported storage or protocol diagnostics';
         if (state.lifecycle === 'starting' && ['ready', 'status'].includes(envelope.event)) {
@@ -465,17 +495,39 @@ export class SubagentService {
         const id = envelope.event === 'input_rejected' ? data?.request_id : envelope.request_id;
         const entry = operations.requests.find(request => request.request_id === id);
         if (entry) {
-            if (envelope.event === 'input_admitted' && ['intent', 'sent', 'unknown'].includes(entry.state)) { entry.state = 'admitted'; entry.run_id = envelope.run_id; session.noteRequestAdmitted(entry.request_id); }
-            if (envelope.event === 'input_rejected' && ['intent', 'sent', 'unknown'].includes(entry.state)) { entry.state = 'rejected'; entry.detail = typeof data?.message === 'string' ? data.message.slice(0, 512) : 'worker rejected input'; session.noteRequestRejected(entry.request_id, entry.detail); }
+            let changed = false;
+            if (envelope.event === 'input_admitted' && ['intent', 'sent', 'unknown'].includes(entry.state)) {
+                entry.state = 'admitted';
+                entry.run_id = envelope.run_id;
+                session.noteRequestAdmitted(entry.request_id);
+                changed = true;
+            }
+            if (envelope.event === 'input_rejected' && ['intent', 'sent', 'unknown'].includes(entry.state)) {
+                entry.state = 'rejected';
+                entry.detail = typeof data?.message === 'string' ? data.message.slice(0, 512) : 'worker rejected input';
+                session.noteRequestRejected(entry.request_id, entry.detail);
+                changed = true;
+            }
             if (envelope.event === 'run_finished' && ['admitted', 'unknown'].includes(entry.state)
-                && (!entry.run_id || entry.run_id === envelope.run_id)) { entry.state = 'finished'; entry.status = typeof data?.status === 'string' ? data.status.slice(0, 32) : 'unknown'; }
+                && (!entry.run_id || entry.run_id === envelope.run_id)) {
+                entry.state = 'finished';
+                entry.status = typeof data?.status === 'string' ? data.status.slice(0, 32) : 'unknown';
+                changed = true;
+            }
             // Worker ingestion has already validated the summary's UTF-8 byte
             // budget. Keep the complete normalized text in the operation receipt.
-            if (entry.operation === 'compact' && envelope.event === 'compact_finished' && data?.durable === true && typeof data.summary === 'string') entry.summary = data.summary;
-            this.saveOps(session, operations);
+            if (entry.operation === 'compact' && envelope.event === 'compact_finished' && data?.durable === true
+                && typeof data.summary === 'string' && entry.summary !== data.summary) {
+                entry.summary = data.summary;
+                changed = true;
+            }
+            // Receipts/outcomes remain synchronous, but unrelated events must
+            // not fsync the unchanged operation ledger on every model step.
+            if (changed) this.saveOps(session, operations);
         }
         record.conversation?.event(envelope, connection);
-        this.publish(record);
+        if (state.lifecycle !== previousLifecycle) this.publish(record);
+        else this.schedulePublication(record);
     }
 
     onConnection(session: Session, connection: WorkerConnection | null): void {
@@ -682,6 +734,8 @@ export class SubagentService {
                     (session.connection as WorkerConnection | null)?.terminate('subagent stopped');
                     removeChildDirectory(this.options.config.dataDir, session.id);
                     child.removed = true;
+                    this.metadataFlushes.delete(session.id);
+                    this.metadataStorageFailures.delete(session.id);
                     session.subagent!.lifecycle = 'stopped';
                     session.subagent!.health = 'unknown';
                     session.subagent!.reason = 'worker terminated; persistence removed';
@@ -776,6 +830,12 @@ export class SubagentService {
         record.session.subagent!.lifecycle = 'stopping';
         for (const prompt of [...record.session.prompts.values()]) prompt.retire('shutdown', 'subagent lifecycle is stopping');
         record.conversation?.stop();
+        // A stopping-intent publication below supersedes the queued metadata.
+        // Cancel before closing the scheduler so it cannot recreate storage later.
+        const metadata = this.metadataFlushes.get(record.session.id);
+        metadata?.cancel();
+        metadata?.stop();
+        this.metadataFlushes.delete(record.session.id);
         if (record.startupTimer) clearTimeout(record.startupTimer);
         record.startupTimer = null;
         try { this.publish(record); } // best effort: a disk error must not skip termination
@@ -916,6 +976,8 @@ export class SubagentService {
             if (record.terminalTimer) clearTimeout(record.terminalTimer);
             if (record.startupTimer) clearTimeout(record.startupTimer);
         }
+        for (const flush of this.metadataFlushes.values()) flush.stop();
+        this.metadataFlushes.clear();
         if (results.some(result => result.status === 'rejected' || !result.value.ok)) {
             this.options.log.warn('some worker family shutdowns remain cleanup-pending');
         }
