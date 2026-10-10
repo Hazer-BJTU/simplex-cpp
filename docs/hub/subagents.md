@@ -293,10 +293,31 @@ preserves the previously published results. The projection follows
 **current** worker history after compact, not an archival pre-compact chat log.
 It reports `revision`, `worker_id`, `refreshed_at`, `stale`, `incomplete` and
 `truncated`; worker history itself clips content, so recovery is not lossless.
+Live dialogue and child status are updated in memory immediately. Reconstructible
+`conversation.json` and event-observation metadata/list broadcasts are coalesced
+over a fixed 200 ms window; new events do not postpone its deadline. A Hub crash
+can lose that last window of projection updates; worker history remains the source
+of truth for recovering dialogue. Launch/ownership changes, stopping and recovery
+intent, operator policy changes, and changed operation receipts/outcomes remain
+synchronous atomic publications. Unrelated events do not rewrite an unchanged
+operation ledger that was successfully persisted. A failed ledger publication
+keeps its in-memory outcome marked as unpersisted, reports degraded child health,
+and is retried synchronously on subsequent events, even without a matching request
+ID. Only a successful write clears that marker; restart still treats durable
+unfinished delivery as unknown. These boundaries are internal and do not change
+tool delivery or approval authority.
+
 Conversation-file publication failures preserve the previous durable file,
 mark the in-memory projection stale/incomplete, and report degraded child health
 without requiring another disk write. Timers and send failures cannot propagate
-storage errors out of the refresh worker; shutdown cancels pending retries.
+storage errors out of the refresh worker. Deferred metadata failures also report
+degraded child health without requiring another successful write. Shutdown closes
+projection scheduling, cancels refresh/retry timers, and attempts the last pending
+conversation write before lifetime cleanup. The synchronous stopping metadata
+supersedes any queued observation; no delayed callback may recreate a deleted
+child directory. A failed flush never skips process termination or descendant
+cleanup. Projection writes still use synchronous file I/O, but bursts share fewer
+writes rather than one fsync per event.
 
 Stopping/restarting/force-killing a parent, observing its process crash, or shutting
 down the Hub freezes all descendant admission synchronously and attempts every

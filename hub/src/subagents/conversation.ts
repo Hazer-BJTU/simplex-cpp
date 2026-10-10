@@ -4,6 +4,7 @@ import { newRequestId, buildPayload } from '../protocol/messages.ts';
 import type { Session } from '../state/registry.ts';
 import type { ForwardedEnvelope, WorkerConnection } from '../worker/connection.ts';
 import { readPrivate, writePrivate } from './storage.ts';
+import { ProjectionFlush } from './projection-flush.ts';
 
 export interface DialoguePart { type: string; modality: string; raw: string; truncated?: boolean; bytes?: number }
 export interface DialogueTurn {
@@ -95,6 +96,7 @@ export class ConversationProjection {
     private lastSequence: number | string | null = null;
     storageFailed = false;
     private readonly onStorageFailure: (error: unknown) => void;
+    private readonly storage: ProjectionFlush;
     readonly session: Session;
     readonly path: string;
     readonly maxBytes: number;
@@ -108,6 +110,15 @@ export class ConversationProjection {
         this.session = session;
         this.path = path;
         this.maxBytes = maxBytes;
+        this.storage = new ProjectionFlush(() => {
+            writePrivate(this.path, this.value, this.maxBytes);
+            this.storageFailed = false;
+        }, error => {
+            this.storageFailed = true;
+            this.value.stale = true;
+            this.value.incomplete = true;
+            this.onStorageFailure(error);
+        });
         const saved = readPrivate(path, maxBytes);
         const source = object(saved);
         if (source && Array.isArray(source.turns)) {
@@ -399,19 +410,16 @@ export class ConversationProjection {
         }
     }
 
-    /** Storage failure reporting never attempts to persist its own failure state. */
+    /** Bound live memory immediately; coalesce reconstructible disk copies of it. */
     private persist(): void {
         if (this.stopped || this.session.closing) return;
         this.fit(this.value.turns, () => { this.value.truncated = true; this.value.incomplete = true; });
-        try {
-            writePrivate(this.path, this.value, this.maxBytes);
-            this.storageFailed = false;
-        } catch (error) {
-            this.storageFailed = true;
-            this.value.stale = true;
-            this.value.incomplete = true;
-            try { this.onStorageFailure(error); } catch { /* observers cannot fail a timer */ }
-        }
+        this.storage.schedule();
+    }
+
+    /** Flush the current pending projection, including after admission is closed. */
+    flush(): boolean {
+        return this.storage.flush();
     }
 
     private cancelRefresh(): void {
@@ -425,5 +433,6 @@ export class ConversationProjection {
         this.scheduled = null;
         this.cancelRefresh();
         this.pendingUsers.clear();
+        this.storage.stop();
     }
 }
