@@ -29,7 +29,7 @@ export function HeadlessPanel({ session }: { session: SessionDescription }) {
                     <dt>Run</dt><dd>{detail?.active ? 'active' : 'idle'}</dd>
                     <dt>Health</dt><dd>{detail?.health} · {detail?.reason}</dd>
                     <dt>Last observed</dt><dd>{detail?.observed_at ?? 'no identified event yet'}</dd>
-                    <dt>Approvals</dt><dd>{session.confirmations.length} pending</dd>
+                    <dt>Approvals</dt><dd>{session.confirmations.filter(prompt => prompt.settled_at === null).length} pending</dd>
                 </dl>
                 <label className="mt-6 flex items-center gap-3 text-sm">
                     Safety policy
