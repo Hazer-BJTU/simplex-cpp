@@ -201,8 +201,11 @@ Most messages embed this object, produced by `Session.describe()`:
 ```
 
 The three additional log diagnostics are optional for compatibility with older
-hubs. `log_dropped` counts lines evicted from the in-memory ring;
-`log_truncated_bytes` counts decoded UTF-8 bytes removed from oversized lines;
+hubs. `log_dropped` counts complete records evicted from the in-memory ring;
+`log_truncated_bytes` counts decoded UTF-8 content bytes removed by the line
+splitter or by the narrower memory preview. It excludes annotations and CRLF
+terminators, counts each removed content byte only once, and includes omissions
+in pending partial lines;
 `file_log_dropped` counts records rejected by disk admission, independently of
 the memory ring. `file_log_failed` means disk logging has been disabled for this
 process. An admitted write is not proof of delivery or durability.
@@ -343,9 +346,20 @@ exit, the Hub allows up to one second for pipe EOF, then closes inherited pipes
 and flushes the retained fragments. Process state changes at exit independently
 of this best-effort output drain.
 
-The existing `limits.logLines` and `limits.logRingBytes` bound the captured tail;
-the byte measure uses UTF-8. As with other rings, a single entry may exceed a
-smaller ring budget. The per-line prefix cap still applies.
+`limits.logLines` and `limits.logRingBytes` strictly bound the captured memory
+tail. The byte measure includes each complete UTF-8 record and its annotation.
+Before ring admission, an oversized record keeps a code-point-safe prefix plus
+one `[hub: truncated N UTF-8 bytes]` annotation combining splitter and preview
+omissions. This preserves a useful newest record rather than letting it
+self-evict. Older records are still evicted normally; the generic ring's hard
+byte ceiling is unchanged. `limits.logRingBytes` must be a safe integer of at
+least **64 bytes**, leaving room for both content and a complete annotation.
+Smaller configurations are rejected explicitly. The default is 256 KiB.
+
+Memory preview clipping does not reduce the optional `logs/worker.log` copy:
+that copy retains the splitter's original prefix of up to 64 KiB and its own
+omission annotation. Thus a small memory ring can have shorter previews than
+the disk log. Both remain best-effort diagnostics, not canonical model history.
 
 `logs/worker.log` and `events.jsonl` are optional operator artifacts. Each file
 has at most 1 MiB of admitted UTF-8 data pending in its Writable, with no second

@@ -127,6 +127,48 @@ describe('worker supervisor', () => {
         assert.ok(session.process.describe().log_truncated_bytes >= 192 * 1024);
     });
 
+    for (const budget of [64, 64 * 1024]) {
+        it(`retains a useful real-child preview within a ${budget}-byte log ring`, async () => {
+            const { ctx, session } = await setup({ ...supervisorOverrides(), limits: { logRingBytes: budget } });
+            await ctx.hub.supervisor.start(session);
+            await until(() => session.latest.status !== null);
+            const logPath = join(sessionDir(ctx.config, session.id), 'logs', 'worker.log');
+            await until(() => {
+                const disk = readFileSync(logPath, 'utf8');
+                return disk.includes('fixture: stderr line') && disk.includes('fixture: connected');
+            });
+            const source = 'ring-prefix: ' + '中'.repeat(32768);
+            const probe = () => session.connection.send({ type: 'signal',
+                data: { operation: 'log_probe', stage: 'ring' } });
+            probe();
+            await until(() => ctx.hub.supervisor.logs(session).some(line => line.startsWith('ring-prefix: ')));
+            const preview = ctx.hub.supervisor.logs(session).findLast(line => line.startsWith('ring-prefix: '));
+            const match = preview.match(/^(.*) \[hub: truncated (\d+) UTF-8 bytes\]$/s);
+            assert.ok(match);
+            assert.ok(Buffer.byteLength(preview) <= budget);
+            assert.ok(session.process.logs.bytes <= budget);
+            assert.doesNotMatch(match[1], /\uFFFD/);
+            const omitted = Buffer.byteLength(source) - Buffer.byteLength(match[1]);
+            assert.equal(Number(match[2]), omitted);
+            const before = session.process.describe().log_truncated_bytes;
+            assert.ok(before >= omitted);
+            const dropped = session.process.logs.dropped;
+            probe();
+            await until(() => session.process.describe().log_truncated_bytes >= before + omitted);
+            assert.ok(session.process.logs.size > 0);
+            assert.ok(session.process.logs.bytes <= budget);
+            assert.ok(session.process.logs.dropped > dropped);
+            const previousStatus = session.latest.status;
+            session.connection.send({ type: 'signal', data: { operation: 'status' } });
+            await until(() => session.latest.status !== previousStatus);
+            await until(() => readFileSync(logPath, 'utf8').includes('ring-prefix: '));
+            const diskLine = readFileSync(logPath, 'utf8').split('\n').find(line => line.startsWith('ring-prefix: '));
+            assert.ok(Buffer.byteLength(diskLine) > Buffer.byteLength(preview), 'ring clipping does not shrink the disk copy');
+            const stopped = await ctx.hub.supervisor.stop(session);
+            assert.equal(stopped.ok, true);
+        });
+    }
+
     it('keeps worker control and live events usable after both optional log files fail', async () => {
         const { ctx, session } = await setup();
         const directory = sessionDir(ctx.config, session.id);

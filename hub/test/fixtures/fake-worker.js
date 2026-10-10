@@ -69,6 +69,8 @@ if (endpoint) {
             } else if (message.data.stage === 'long') {
                 process.stdout.write('a'.repeat(256 * 1024));
                 process.stderr.write('fixture: long output written\n');
+            } else if (message.data.stage === 'ring') {
+                process.stdout.write('ring-prefix: ' + '中'.repeat(32768) + '\r\n');
             } else if (message.data.stage === 'finish') {
                 process.stdout.write(Buffer.from([0xb8, 0xad, 0x0a]));
                 process.stdout.write(Buffer.concat([

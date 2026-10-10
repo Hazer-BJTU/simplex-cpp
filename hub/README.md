@@ -707,7 +707,7 @@ the runner's Ubuntu.
 | The worker starts and exits immediately | the provider profile is missing a credential (`DEEPSEEK_API_KEY`), or another worker already owns the session lock |
 | A confirmation is denied with "identity mismatch" | a worker the hub does not know opened a confirmation for that session; check the event connection log |
 | A confirmation is denied after ~15 s | the event connection never identified the worker; check that the event socket reconnected |
-| Log lines are missing in the panel | the in-memory ring is bounded; inspect the best-effort `sessions/<session>/logs/worker.log` and the process's `log_truncated_bytes`, `file_log_dropped`, and `file_log_failed` diagnostics |
+| Log lines are missing in the panel | older records are evicted; oversized newest records keep a UTF-8 prefix and truncation notice within `limits.logRingBytes` (minimum 64 bytes, default 256 KiB). The best-effort `sessions/<session>/logs/worker.log` can retain a longer prefix; inspect `log_truncated_bytes`, `file_log_dropped`, and `file_log_failed` |
 | The panel returns 401 | `panel.token` is set; supply it with `?token=...` in the URL once |
 
 

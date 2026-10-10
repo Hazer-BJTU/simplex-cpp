@@ -30,6 +30,8 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, sta
     from 'node:fs';
 import { join } from 'node:path';
 import { LineSplitter, RingBuffer } from '../util/ring.ts';
+import type { SplitLine } from '../util/ring.ts';
+import { logPreview } from '../util/log-preview.ts';
 import { BoundedWriter } from '../util/bounded-writer.ts';
 import { sessionDir, workerConfigPath } from './config-render.ts';
 import { prepareSessionConfig } from './config-file.ts';
@@ -238,6 +240,8 @@ export class ProcessRecord {
     readonly logs: RingBuffer<string>;
     /** Independent decoder and partial-line state for each child output pipe. */
     readonly outputSplitters: LineSplitter[] = [];
+    /** Content removed only from memory previews; never count annotations as content. */
+    private logPreviewTruncatedBytes = 0;
     child: ChildProcess | null;
     /** True when this record was reconstructed from a previous hub run. */
     adopted: boolean;
@@ -292,11 +296,19 @@ export class ProcessRecord {
             log_path: this.logPath,
             log_lines: this.logs.size,
             log_dropped: this.logs.dropped,
-            log_truncated_bytes: this.outputSplitters.reduce(
+            log_truncated_bytes: this.logPreviewTruncatedBytes + this.outputSplitters.reduce(
                 (total, splitter) => total + splitter.truncatedBytes, 0),
             file_log_dropped: this.logStream.droppedRecords ?? 0,
             file_log_failed: this.logStream.failed ?? false,
         };
+    }
+
+    /** Admit a useful bounded memory preview independently of the optional disk copy. */
+    captureLine(line: string, details: SplitLine): void {
+        const preview = logPreview(details.prefix, details.omittedBytes, this.logs.byteLimit);
+        this.logPreviewTruncatedBytes += preview.truncatedBytes;
+        this.logs.push(preview.text);
+        this.logStream.write(`${line}\n`);
     }
 }
 
@@ -493,13 +505,9 @@ export class WorkerSupervisor {
         record.pid = child.pid;
         record.pidStartTime = readProcessStartTime(child.pid);
 
-        const captureLine = (line: string) => {
-            logs.push(line);
-            logStream.write(`${line}\n`);
-        };
         for (const pipe of [child.stdout, child.stderr]) {
             if (!pipe) continue;
-            const splitter = new LineSplitter(captureLine);
+            const splitter = new LineSplitter((line, details) => record.captureLine(line, details));
             record.outputSplitters.push(splitter);
             pipe.on('data', (chunk: Buffer) => splitter.push(chunk));
             pipe.once('end', () => splitter.flush());

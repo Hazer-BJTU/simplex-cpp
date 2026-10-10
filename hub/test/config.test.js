@@ -85,6 +85,18 @@ describe('defaultConfig', () => {
 });
 
 describe('validateConfig', () => {
+    it('requires enough ring bytes for a useful log preview and its complete annotation', () => {
+        const config = defaultConfig();
+        for (const limit of [1, 4, 63, Number.MAX_SAFE_INTEGER + 1]) {
+            config.limits.logRingBytes = limit;
+            assert.throws(() => validateConfig(config), /limits\.logRingBytes.*safe integer >= 64/);
+        }
+        for (const limit of [64, 65, 1024, 64 * 1024]) {
+            config.limits.logRingBytes = limit;
+            assert.doesNotThrow(() => validateConfig(config));
+        }
+    });
+
     it('requires a panel token off loopback', () => {
         const config = defaultConfig();
         config.listen.host = '0.0.0.0';

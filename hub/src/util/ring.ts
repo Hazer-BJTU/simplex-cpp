@@ -5,6 +5,7 @@
  * another process, so the hub keeps a fixed-size tail of each in memory and
  * optionally writes a best-effort copy to disk.
  */
+import { formatLogLine } from './log-preview.ts';
 
 /** Options accepted by `RingBuffer`. */
 export interface RingBufferOptions<T> {
@@ -72,6 +73,12 @@ export class RingBuffer<T = string> {
     }
 }
 
+/** Retained content and its real omissions, without treating annotations as data. */
+export interface SplitLine {
+    prefix: string;
+    omittedBytes: number;
+}
+
 /**
  * Incremental UTF-8 line splitter.
  *
@@ -83,7 +90,7 @@ export class RingBuffer<T = string> {
  * does not consume the content budget, even across chunk boundaries.
  */
 export class LineSplitter {
-    readonly onLine: (line: string) => void;
+    readonly onLine: (line: string, details: SplitLine) => void;
     pending: string;
     decoder: TextDecoder;
     readonly maxLineBytes: number;
@@ -94,7 +101,7 @@ export class LineSplitter {
     /** Hold one trailing CR until it can be distinguished from a CRLF ending. */
     private pendingCarriageReturn = false;
 
-    constructor(onLine: (line: string) => void, maxLineBytes = 64 * 1024) {
+    constructor(onLine: (line: string, details: SplitLine) => void, maxLineBytes = 64 * 1024) {
         if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0) {
             throw new RangeError('maxLineBytes must be a positive safe integer');
         }
@@ -156,14 +163,13 @@ export class LineSplitter {
 
     /** Emit one line and reset its prefix and omission counters. */
     private emit(): void {
-        const line = this.omittedBytes > 0
-            ? `${this.pending} [hub: truncated ${this.omittedBytes} UTF-8 bytes]`
-            : this.pending;
+        const details = { prefix: this.pending, omittedBytes: this.omittedBytes };
+        const line = formatLogLine(details.prefix, details.omittedBytes);
         this.pending = '';
         this.pendingBytes = 0;
         this.omittedBytes = 0;
         this.pendingCarriageReturn = false;
-        this.onLine(line);
+        this.onLine(line, details);
     }
 
     /** Flush the decoder at EOF, including an incomplete final UTF-8 sequence. */
