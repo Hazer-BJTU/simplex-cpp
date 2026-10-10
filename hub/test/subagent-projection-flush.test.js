@@ -69,8 +69,8 @@ function fixture(t) {
         operation: 'message', state: 'sent', run_id: '', at: 'fixture' }] });
     const counts = writes(t);
     let sequence = 0;
-    const event = (name = 'tool_calls', data = {}) => service.onEvent({ event: name,
-        worker_id: 'worker', request_id: 'request', run_id: 'run',
+    const event = (name = 'tool_calls', data = {}, requestId = 'request') => service.onEvent({ event: name,
+        worker_id: 'worker', request_id: requestId, run_id: 'run',
         sequence: ++sequence, received_at: `observation-${sequence}`, data }, connection);
     t.after(async () => {
         await service.shutdown();
@@ -139,6 +139,78 @@ it('preserves synchronous operation outcomes, operator policy and ready transiti
         .requests[0].state, 'finished');
     assert.equal(ctx.counts.files.filter(name => name === 'operations.json').length, 2,
         'only changed outcomes rewrite the durable ledger');
+});
+
+for (const failures of [1, 2]) {
+    it(`retries an unpersisted finished outcome after ${failures} transient ledger write failures`, t => {
+        const ctx = fixture(t);
+        ctx.event('input_admitted');
+        const path = join(ctx.root, 'operations.json');
+        const admitted = fs.readFileSync(path, 'utf8');
+        ctx.reset();
+        const open = fs.openSync;
+        let attempts = 0;
+        t.mock.method(fs, 'openSync', (target, ...args) => {
+            if (String(target).startsWith(`${path}.`) && ++attempts <= failures) {
+                throw new Error('temporary ledger write failure');
+            }
+            return open(target, ...args);
+        });
+        syncBuiltinESMExports();
+
+        assert.throws(() => ctx.event('run_finished', { status: 'completed' }), /temporary ledger write failure/);
+        assert.equal(ctx.service.operations.get(ctx.session.id).requests[0].state, 'finished');
+        assert.equal(fs.readFileSync(path, 'utf8'), admitted);
+        assert.equal(ctx.session.subagent.health, 'degraded');
+        assert.match(ctx.session.subagent.reason, /operation ledger storage/);
+        for (let count = 1; count < failures; count += 1) {
+            assert.throws(() => ctx.event('status', {}, 'uncorrelated-status'), /temporary ledger write failure/);
+            assert.equal(fs.readFileSync(path, 'utf8'), admitted);
+            assert.equal(ctx.session.subagent.health, 'degraded', 'a failed retry cannot report healthy');
+        }
+
+        // A status without the completed request's ID must still retry dirty state.
+        ctx.event('status', {}, 'uncorrelated-status');
+        assert.equal(attempts, failures + 1);
+        const persisted = JSON.parse(fs.readFileSync(path, 'utf8')).requests[0];
+        assert.equal(persisted.state, 'finished');
+        assert.equal(persisted.status, 'completed');
+        assert.equal(ctx.session.subagent.health, 'healthy');
+
+        // Exercise the actual restart decoder: durable completion must not become unknown.
+        ctx.service.operations.delete(ctx.session.id);
+        assert.equal(ctx.service.ops(ctx.session).requests[0].state, 'finished');
+        for (let count = 0; count < 20; count += 1) ctx.event('status');
+        assert.equal(attempts, failures + 1, 'clean ledgers still skip writes on later unchanged events');
+        assert.equal(ctx.counts.files.filter(name => name === 'operations.json').length, 1);
+    });
+}
+
+it('retries an ordinary parent receipt publication without adding writes to its clean event path', t => {
+    const ctx = fixture(t);
+    const parent = ctx.service.options.registry.require('parent');
+    const operations = ctx.service.ops(parent);
+    operations.receipts.push({ key: 'receipt', digest: 'digest', route: 'subagent/clean-fork',
+        at: Date.now(), result: { subagent_id: ctx.session.id } });
+    const path = join(sessionDir(ctx.config, parent.id), 'operations.json');
+    const open = fs.openSync;
+    let attempts = 0;
+    t.mock.method(fs, 'openSync', (target, ...args) => {
+        if (String(target).startsWith(`${path}.`) && ++attempts === 1) {
+            throw new Error('temporary receipt storage failure');
+        }
+        return open(target, ...args);
+    });
+    syncBuiltinESMExports();
+    assert.throws(() => ctx.service.saveOps(parent), /temporary receipt storage failure/);
+    const connection = { session: parent };
+    const status = { event: 'status', worker_id: 'parent-worker', request_id: '', sequence: 1, data: {} };
+    ctx.service.onEvent(status, connection);
+    assert.equal(JSON.parse(fs.readFileSync(path, 'utf8')).receipts[0].key, 'receipt');
+    ctx.service.operations.delete(parent.id);
+    assert.equal(ctx.service.ops(parent).receipts[0].result.subagent_id, ctx.session.id);
+    ctx.service.onEvent({ ...status, sequence: 2 }, connection);
+    assert.equal(attempts, 2);
 });
 
 it('joins pending dialogue and cancels metadata observations before stop deletes storage', async t => {

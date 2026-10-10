@@ -300,8 +300,12 @@ can lose that last window of projection updates; worker history remains the sour
 of truth for recovering dialogue. Launch/ownership changes, stopping and recovery
 intent, operator policy changes, and changed operation receipts/outcomes remain
 synchronous atomic publications. Unrelated events do not rewrite an unchanged
-operation ledger. These boundaries are internal and do not change tool delivery
-or approval authority.
+operation ledger that was successfully persisted. A failed ledger publication
+keeps its in-memory outcome marked as unpersisted, reports degraded child health,
+and is retried synchronously on subsequent events, even without a matching request
+ID. Only a successful write clears that marker; restart still treats durable
+unfinished delivery as unknown. These boundaries are internal and do not change
+tool delivery or approval authority.
 
 Conversation-file publication failures preserve the previous durable file,
 mark the in-memory projection stale/incomplete, and report degraded child health

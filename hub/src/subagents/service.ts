@@ -94,6 +94,8 @@ export interface SubagentServiceOptions {
 export class SubagentService {
     readonly children = new Map<string, ChildRecord>();
     private operations = new Map<string, Operations>();
+    /** Failed synchronous publications stay dirty until a later successful write. */
+    private readonly dirtyOperations = new Set<string>();
     private stops = new Map<string, Promise<StopResult>>();
     private closing = false;
     private recovering = false;
@@ -146,7 +148,9 @@ export class SubagentService {
                 this.metadataStorageFailures.add(id);
                 record.session.subagent!.health = 'degraded';
                 record.session.subagent!.reason = record.conversation?.storageFailed
-                    ? 'primary conversation storage is unavailable' : 'subagent metadata storage is unavailable';
+                    ? 'primary conversation storage is unavailable'
+                    : this.dirtyOperations.has(id) ? 'operation ledger storage is unavailable'
+                    : 'subagent metadata storage is unavailable';
                 this.options.log.warn(`subagent ${id}: metadata storage failed`);
                 this.options.changed(record.session);
             });
@@ -195,11 +199,26 @@ export class SubagentService {
     private saveOps(session: Session, operations = this.ops(session)): void {
         const child = this.children.get(session.id);
         if (child?.removed) return;
-        // Whole older request outcomes expire before the file can grow unbounded.
-        while (Buffer.byteLength(JSON.stringify(operations)) >= MAX_OPERATION_BYTES && operations.requests.length > 1) {
-            operations.requests.shift();
+        this.dirtyOperations.add(session.id);
+        try {
+            // Whole older request outcomes expire before the file can grow unbounded.
+            while (Buffer.byteLength(JSON.stringify(operations)) >= MAX_OPERATION_BYTES && operations.requests.length > 1) {
+                operations.requests.shift();
+            }
+            writePrivate(ownedPath(this.options.config.dataDir, session.id, 'operations.json'), operations, MAX_OPERATION_BYTES);
+            this.dirtyOperations.delete(session.id);
+        } catch (error) {
+            // Do not let observer failures mask the storage error or lose its retry marker.
+            if (session.subagent) {
+                session.subagent.health = 'degraded';
+                session.subagent.reason = 'operation ledger storage is unavailable';
+            }
+            try {
+                this.options.log.warn(`subagent operations for ${session.id}: storage failed`);
+                this.options.changed(session);
+            } catch { /* the original publication failure remains authoritative */ }
+            throw error;
         }
-        writePrivate(ownedPath(this.options.config.dataDir, session.id, 'operations.json'), operations, MAX_OPERATION_BYTES);
     }
 
     private receipt(context: ToolContext): { operations: Operations; key: string; digest: string; reused?: Record<string, unknown> } {
@@ -471,20 +490,19 @@ export class SubagentService {
                 this.fail(descendant, 'parent worker incarnation changed');
             }
         }
-        if (!record || record.removed || connection.session.closing) return;
+        if (connection.session.closing || record?.removed) return;
+        if (!record) {
+            // Ordinary parents also own receipts; retry failed publications without
+            // introducing writes on their normal event path.
+            if (this.dirtyOperations.has(connection.session.id)) this.saveOps(connection.session);
+            return;
+        }
         const session = record.session;
         const state = session.subagent!;
         const previousLifecycle = state.lifecycle;
         state.observed_at = envelope.received_at ?? null;
         state.active = !!session.activeRunId;
         const dataStatus = object(envelope.data);
-        state.health = record.conversation?.storageFailed || this.metadataStorageFailures.has(session.id)
-            || envelope.issues?.length || (envelope.event === 'status' && dataStatus?.storage_failed === true)
-            ? 'degraded' : 'healthy';
-        state.reason = record.conversation?.storageFailed ? 'primary conversation storage is unavailable'
-            : this.metadataStorageFailures.has(session.id) ? 'subagent metadata storage is unavailable'
-            : state.health === 'healthy' ? 'live identified worker event channel'
-            : 'worker reported storage or protocol diagnostics';
         if (state.lifecycle === 'starting' && ['ready', 'status'].includes(envelope.event)) {
             state.lifecycle = 'ready';
             if (record.startupTimer) clearTimeout(record.startupTimer);
@@ -494,8 +512,8 @@ export class SubagentService {
         const data = object(envelope.data);
         const id = envelope.event === 'input_rejected' ? data?.request_id : envelope.request_id;
         const entry = operations.requests.find(request => request.request_id === id);
+        let changed = false;
         if (entry) {
-            let changed = false;
             if (envelope.event === 'input_admitted' && ['intent', 'sent', 'unknown'].includes(entry.state)) {
                 entry.state = 'admitted';
                 entry.run_id = envelope.run_id;
@@ -521,10 +539,17 @@ export class SubagentService {
                 entry.summary = data.summary;
                 changed = true;
             }
-            // Receipts/outcomes remain synchronous, but unrelated events must
-            // not fsync the unchanged operation ledger on every model step.
-            if (changed) this.saveOps(session, operations);
         }
+        // Retry failed publications even when this event has no matching request.
+        // Only unchanged, successfully persisted ledgers can skip synchronous I/O.
+        if (changed || this.dirtyOperations.has(session.id)) this.saveOps(session, operations);
+        state.health = record.conversation?.storageFailed || this.metadataStorageFailures.has(session.id)
+            || envelope.issues?.length || (envelope.event === 'status' && dataStatus?.storage_failed === true)
+            ? 'degraded' : 'healthy';
+        state.reason = record.conversation?.storageFailed ? 'primary conversation storage is unavailable'
+            : this.metadataStorageFailures.has(session.id) ? 'subagent metadata storage is unavailable'
+            : state.health === 'healthy' ? 'live identified worker event channel'
+            : 'worker reported storage or protocol diagnostics';
         record.conversation?.event(envelope, connection);
         if (state.lifecycle !== previousLifecycle) this.publish(record);
         else this.schedulePublication(record);
@@ -734,6 +759,7 @@ export class SubagentService {
                     (session.connection as WorkerConnection | null)?.terminate('subagent stopped');
                     removeChildDirectory(this.options.config.dataDir, session.id);
                     child.removed = true;
+                    this.dirtyOperations.delete(session.id);
                     this.metadataFlushes.delete(session.id);
                     this.metadataStorageFailures.delete(session.id);
                     session.subagent!.lifecycle = 'stopped';
