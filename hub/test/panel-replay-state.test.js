@@ -71,13 +71,13 @@ it('eviction resets replay/index state and reselect rebuilds request chips and t
     assert.equal(store.getState().lastSeq('demo'), 4);
     assert.equal(store.getState().view('demo').replayRequired, true);
     store.getState().setSelected('demo');
-    store.getState().applySubscribed({ type: 'subscribed', session: session([request('observed')]),
+    store.getState().applySubscribed({ type: 'subscribed', session: session([request('admitted')]),
         transcript: events, latest: 4, logs: [] });
     const recovered = store.getState().view('demo');
     assert.deepEqual(recovered.items.filter(item => item.kind === 'event')
         .map(item => item.envelope.hub_sequence), [1, 2, 3, 4]);
     assert.equal(recovered.items.filter(item => item.kind === 'request').length, 1);
-    assert.equal(recovered.requestIndex.get('query').request.state, 'observed');
+    assert.equal(recovered.requestIndex.get('query').request.state, 'admitted');
     assert.equal(recovered.lastSeq, 4);
     assert.equal(recovered.replayRequired, false);
     assert.equal(recovered.gaps, 0);
@@ -85,7 +85,7 @@ it('eviction resets replay/index state and reselect rebuilds request chips and t
 
 it('successive request updates keep the chip index pointing at the current item', () => {
     const store = createPanelStore();
-    for (const state of ['sent', 'unknown', 'observed']) {
+    for (const state of ['sent', 'unknown', 'admitted']) {
         store.getState().applyRequest({ type: 'request', session: 'demo', request: request(state) });
         const view = store.getState().view('demo');
         assert.equal(view.items.length, 1);
