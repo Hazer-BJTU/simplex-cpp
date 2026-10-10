@@ -13,8 +13,9 @@
  * reformatted beyond what this parser understands, it fails too — with a
  * message that says which of the two to fix.
  *
- * It reads the repository's core package. A standalone copy of `hub/` (without
- * `core/`) skips instead of failing.
+ * It reads the repository's documentation and, for Worker-owned fields, the
+ * C++ emission/serialization sites. A standalone copy of `hub/` without those
+ * files skips the corresponding checks instead of failing.
  */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
@@ -37,6 +38,11 @@ import {
 const DOC_PATH = join(hubRoot, '..', 'docs', 'core', 'worker-protocol.md');
 const available = existsSync(DOC_PATH);
 const skip = available ? false : `core documentation not present at ${DOC_PATH}`;
+const WORKER_PATH = join(hubRoot, '..', 'core', 'src', 'application.cpp');
+const MODEL_IO_PATH = join(hubRoot, '..', 'dataclass', 'include', 'dataclass', 'model_io.hpp');
+const OUTBOX_PATH = join(hubRoot, '..', 'core', 'include', 'core', 'event_outbox.hpp');
+const workerSkip = [WORKER_PATH, MODEL_IO_PATH, OUTBOX_PATH].every(existsSync)
+    ? false : 'Worker C++ sources are not present in this standalone Hub';
 
 /** Hint appended to every parse failure. */
 const PARSER_HINT = 'The document was reformatted or the vocabulary moved. Update this '
@@ -106,7 +112,66 @@ function identifier(cell) {
     return first?.replace(/:.*$/, '') ?? cell.replace(/`/g, '');
 }
 
+/** Extract a known source fragment, failing explicitly when its layout changes. */
+function sourceFragment(text, pattern, label) {
+    const match = pattern.exec(text);
+    assert.ok(match, `cannot locate ${label} in the C++ source. ${PARSER_HINT}`);
+    return match[1];
+}
+
 describe('worker protocol drift', { skip }, () => {
+    it('keeps status capability examples and glossary aligned with the Worker', { skip: workerSkip }, () => {
+        const worker = readFileSync(WORKER_PATH, 'utf8');
+        const capabilities = sourceFragment(worker,
+            /\{"capabilities", Json::array\(\{([^}]+)\}\)\}/, 'status capabilities');
+        const supported = [...capabilities.matchAll(/"([a-z-]+)"/g)].map(match => match[1]).sort();
+        assert.ok(supported.length > 0, PARSER_HINT);
+        const status = section(readDocument(), '### Status object');
+        const example = JSON.parse(sourceFragment(status, /```json\s*([\s\S]*?)```/, 'status JSON example'));
+        assert.deepEqual(example.capabilities.sort(), supported);
+        const rows = firstTable(status, 'status fields');
+        const row = rows.find(entry => identifier(entry[0]) === 'capabilities');
+        assert.ok(row, PARSER_HINT);
+        const described = backticks(row[2]).filter(value => supported.includes(value)).sort();
+        assert.deepEqual(described, supported);
+        assert.match(row[2], /not necessarily enabled/);
+        assert.match(row[2], /auto_compact\.threshold/);
+        assert.equal(example.auto_compact.threshold, 0);
+        assert.ok(rows.some(entry => identifier(entry[0]) === 'auto_compact'));
+    });
+
+    it('lists every persisted loop status serialized by model_io', { skip: workerSkip }, () => {
+        const modelIO = readFileSync(MODEL_IO_PATH, 'utf8');
+        const serialization = sourceFragment(modelIO,
+            /inline void to_json\(nlohmann::json& j, LoopStatus value\) \{([\s\S]*?)\n\}/, 'LoopStatus serialization');
+        const serialized = [...serialization.matchAll(/j = "([a-z_]+)";/g)].map(match => match[1]).sort();
+        assert.ok(serialized.length > 0, PARSER_HINT);
+        const rows = tables(section(readDocument(), '### Status object')).flat();
+        const row = rows.find(entry => identifier(entry[0]) === 'status');
+        assert.ok(row, PARSER_HINT);
+        assert.deepEqual(backticks(row[1]).sort(), serialized);
+        assert.match(row[2], /not a queued action/);
+    });
+
+    it('documents all run_finished emission fields and optional outbox counters', { skip: workerSkip }, () => {
+        const worker = readFileSync(WORKER_PATH, 'utf8');
+        const finished = sourceFragment(worker, /Json finished = \{([\s\S]*?)\};/, 'run_finished data');
+        const required = [...finished.matchAll(/\{"([a-z_]+)",/g)].map(match => match[1]);
+        assert.ok(required.length > 0, PARSER_HINT);
+        const conditional = [...worker.matchAll(/finished\["([a-z_]+)"\]/g)].map(match => match[1]);
+        const outbox = readFileSync(OUTBOX_PATH, 'utf8');
+        const counters = [...outbox.matchAll(/message\["data"\]\["([a-z_]+)"\]/g)].map(match => match[1]);
+        assert.ok(conditional.length > 0 && counters.length > 0, PARSER_HINT);
+        const optional = [...new Set([...conditional, ...counters])];
+        const rows = firstTable(section(readDocument(), '### Run outcome and persistence events'), 'run outcome fields');
+        const documented = rows.map(row => identifier(row[0]));
+        assert.deepEqual(documented.sort(), [...required, ...optional].sort());
+        for (const row of rows) {
+            assert.equal(row[1].startsWith('Optional'), optional.includes(identifier(row[0])),
+                `incorrect optionality for ${row[0]}`);
+        }
+    });
+
     it('documents hub events plus explicit worker-only additions', () => {
         const rows = firstTable(section(readDocument(), '## Worker events'), 'the worker events table');
         const documented = rows.map((row) => identifier(row[0])).sort();

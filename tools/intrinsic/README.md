@@ -94,8 +94,11 @@ a top-level `anyOf` for rules spanning properties. Object members and object-arr
 items are checked recursively, to at most 32 levels. Opaque provider/extras objects
 can omit properties; object defaults/enums are not supported. Alternatives add
 requirements or explicit absence predicates (`not` with one required property,
-or an `anyOf` of such predicates). Each is checked against its kind and against the
-others — an enum member below the declared minimum, a default outside its own
+or an `anyOf` of such predicates). Every alternative states a `required` list;
+`required: []` is valid when accompanied by a checked `not` absence predicate.
+Property narrowings may use `enum`, `minimum`, `maximum`, `minLength`, `maxLength`,
+`pattern`, and `minItems`, subject to the property's type. Each is checked against
+its kind and against the others — an enum member below the declared minimum, a default outside its own
 enum, an array without `items` are all refusals — and so is any keyword the
 loader does not know, by name. A declaration that would reach a model as a
 contract nothing here could check fails at load time instead.

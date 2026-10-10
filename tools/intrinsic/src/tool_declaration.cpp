@@ -554,8 +554,8 @@ void check_exclusion(const json& excluded, const json& properties,
 /// it may name properties the schema declares (it cannot introduce one), it
 /// must add a requirement or a checked absence predicate, and
 /// its property entries may only tighten a value (`enum`, `minimum`,
-/// `maximum`, `minLength`), because the type and the description come from the property
-/// itself.
+/// `maximum`, `minLength`, `maxLength`, `pattern`, `minItems`), because the type
+/// and the description come from the property itself.
 void check_branch(const json& branch, const json& properties,
                   const json& required, const std::filesystem::path& file,
                   std::size_t index)
@@ -578,9 +578,8 @@ void check_branch(const json& branch, const json& properties,
     const auto names = branch.find("required");
     if (names == branch.end()) {
         fail(file, path + "/required",
-             "an alternative must require at least one property: one that "
-             "requires nothing is satisfied by every call, so it adds nothing "
-             "to the schema");
+             "an alternative must state a required list; use required: [] "
+             "only with a checked not absence predicate");
     }
     check_required_list(*names, properties, file, path + "/required");
     if (const auto excluded = branch.find("not"); excluded != branch.end()) {
@@ -594,8 +593,7 @@ void check_branch(const json& branch, const json& properties,
     if (!adds_a_requirement && !branch.contains("not")) {
         fail(file, path + "/required",
              "an alternative must require a property the schema does not "
-             "already require, or it is satisfied by every call that satisfies "
-             "the schema");
+             "already require, or declare a checked not absence predicate");
     }
 
     if (const auto narrowed = branch.find("properties");
@@ -636,9 +634,9 @@ void check_branch(const json& branch, const json& properties,
                                                  + entry.key());
             if (check_clauses(entry.value(), kind, file, here).says_nothing()) {
                 fail(file, here,
-                     "a narrowing must state one of enum, minimum, maximum or "
-                     "minLength; leave the entry out to require the property "
-                     "as it stands");
+                     std::format("a narrowing must state one of {}; leave the "
+                                 "entry out to require the property as it stands",
+                                 kNarrowingVocabulary));
             }
         }
     }
