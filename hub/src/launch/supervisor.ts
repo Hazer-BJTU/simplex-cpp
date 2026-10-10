@@ -119,7 +119,12 @@ export function processIdentity(pid: unknown, startTime: unknown): 'same' | 'gon
         const current = processStartTime(pid);
         return current === null ? 'unknown' : current === startTime ? 'same' : 'gone';
     } catch (error) {
-        return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'gone' : 'unknown';
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return 'unknown';
+        // Missing /proc entries can mean an unavailable/hidden procfs, not a
+        // dead worker. Require kernel-confirmed absence before deleting data.
+        try { process.kill(pid, 0); }
+        catch (probe) { return (probe as NodeJS.ErrnoException).code === 'ESRCH' ? 'gone' : 'unknown'; }
+        return 'unknown';
     }
 }
 

@@ -8,6 +8,8 @@
  * leave.
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 import { join } from 'node:path';
@@ -273,6 +275,19 @@ describe('worker supervisor', () => {
 });
 
 describe('process identity helpers', () => {
+    it('does not mistake a hidden procfs entry for termination', () => {
+        const startTime = readProcessStartTime(process.pid);
+        const original = fs.readFileSync;
+        fs.readFileSync = (path, ...args) => {
+            if (path === `/proc/${process.pid}/stat`) {
+                throw Object.assign(new Error('hidden proc entry'), { code: 'ENOENT' });
+            }
+            return original(path, ...args);
+        };
+        syncBuiltinESMExports();
+        try { assert.equal(processIdentity(process.pid, startTime), 'unknown'); }
+        finally { fs.readFileSync = original; syncBuiltinESMExports(); }
+    });
     it('keeps missing or malformed identity unknown instead of claiming termination', () => {
         assert.equal(processIdentity(process.pid, null), 'unknown');
         assert.equal(processIdentity(process.pid, 'unavailable'), 'unknown');
