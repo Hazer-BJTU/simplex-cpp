@@ -276,16 +276,28 @@ operator diagnostics and can still contain sensitive output.
 
 `conversation.json` stores committed user content and visible assistant content
 with turn/step association. It excludes reasoning, tool calls/results and extras.
-Live commits update it; paginated worker history reconciles reconnects, restarts
-and event gaps. Refresh validates request/worker/connection identity, both cursors,
-revision, ordering and concurrent changes before replacing the projection.
+Live commits update it immediately; paginated worker history reconciles reconnects,
+restarts and event gaps when the worker is idle. Active runs do not start history
+queries on each model response. An in-flight refresh may finish validating its
+pages during a run, but a snapshot collected before a subsequent live commit or
+event gap cannot overwrite the live projection. The Hub retains the observed
+dialogue and catches up after `run_finished`, or after an idle status reveals a
+missed settlement. It does not merge pages from different revisions or guess
+canonical turn indices from an older snapshot. Refresh validates request/worker/
+connection identity, both cursors, revision and ordering before publication;
+compact and connection changes cancel obsolete pagination.
 Each refresh discovers the history revision/count, then reads **newest turns
 first**, retaining an ordered tail rather than an old prefix. It keeps at most
 32 final steps per turn, using the worker's omitted-step count to skip older
 fragments. Older turns and steps are evicted first when `conversationBytes` is
 reached; oversized visible text keeps a UTF-8-safe prefix. A refresh makes at
 most 64 page requests per attempt, with a three-second request deadline and at
-most three attempts per refresh trigger. Budget exhaustion marks the projection
+most three attempts per connection or run settlement. Model commits and repeated
+status polling cannot renew that retry budget. A queued refresh checks idleness
+again before sending; a failed refresh during a run waits for settlement rather
+than repeatedly restarting. After three unsuccessful attempts, the projection
+stays stale/incomplete until a new connection or settlement permits recovery.
+Page-budget exhaustion marks the projection
 incomplete/truncated. If the page limit interrupts an older turn, that unfinished
 turn is discarded and the fully validated newest tail is published. If the latest
 turn itself remains unfinished, or a revision/cursor validation fails, the refresh

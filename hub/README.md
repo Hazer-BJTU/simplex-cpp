@@ -533,6 +533,18 @@ the same machine and filesystem; timings are measurements, not CI thresholds.
 Correctness tests separately assert write counts, fixed flush deadlines, durable
 receipts/policy changes, and shutdown/failure cleanup.
 
+For delayed history replies during 500 model responses and 500 status polls:
+
+```sh
+node test/benchmarks/subagent-refresh.mjs
+node test/benchmarks/subagent-refresh.mjs /path/to/older-checkout
+```
+
+This fixture uses virtual deadlines and reports query counts before and after
+settlement, retained steps and whether canonical reconciliation completed.
+It measures scheduling rather than wall-clock performance; regression tests also
+cover stale snapshots, changing revisions, reconnects and exhausted retry budgets.
+
 Overlays — menus, dialogs, popovers, tooltips, tabs — are Radix primitives, and
 the reason is specific rather than fashionable: the old panel hand-wrote a focus
 trap and a document-level key handler, and four of its interaction defects came
