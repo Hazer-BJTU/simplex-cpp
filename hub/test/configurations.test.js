@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultConfig, parseConfigText } from '../src/config.ts';
-import { ConfigurationStore } from '../src/configurations/store.ts';
+import { ConfigurationStore, launchDocument } from '../src/configurations/store.ts';
 
 test('configuration library preserves text, guards revisions and survives restart', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
@@ -34,6 +34,28 @@ test('bundled worker template stays aligned with canonical load template', () =>
 import { snapshotConfigs, sessionLaunch, launchEndpoints } from '../src/configurations/session.ts';
 import { prepareSessionConfig } from '../src/launch/config-file.ts';
 import { parseDocument } from 'yaml';
+
+test('Docker management pass-through declarations are captured in independent launch snapshots', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
+    try {
+        const config = { ...defaultConfig(), dataDir };
+        const store = new ConfigurationStore(config);
+        const initial = store.read('launch', 'docker');
+        const document = parseConfigText(initial.text, 'docker.jsonc');
+        document.launcher.dockerManagementEnv = ['CUSTOM_MANAGER_TOKEN'];
+        const edited = store.save('launch', 'docker', JSON.stringify(document), initial.revision);
+        snapshotConfigs(store, 'docker-selected', { launchConfig: 'docker', workerConfig: 'default' });
+        document.launcher.dockerManagementEnv = [];
+        store.save('launch', 'docker', JSON.stringify(document), edited.revision);
+        assert.deepEqual(sessionLaunch(config, 'docker-selected').config.launcher.dockerManagementEnv,
+            ['CUSTOM_MANAGER_TOKEN']);
+        delete document.launcher.dockerManagementEnv;
+        config.launcher.dockerManagementEnv = ['CURRENT_HUB_VALUE'];
+        assert.deepEqual(launchDocument(JSON.stringify(document), config).launcher.dockerManagementEnv, []);
+        document.launcher.dockerManagementEnv = ['SECRET_*'];
+        assert.throws(() => launchDocument(JSON.stringify(document), config), /dockerManagementEnv/);
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
 
 test('session snapshots preserve selected files, optional omissions and live endpoints', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
@@ -215,7 +237,6 @@ test('selected launchers run independently and survive Hub restart without libra
 });
 
 import { loadConfig } from '../src/config.ts';
-import { launchDocument } from '../src/configurations/store.ts';
 
 test('startup discovers configuration inside the selected persistent root', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));

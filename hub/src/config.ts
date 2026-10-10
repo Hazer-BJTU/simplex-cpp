@@ -15,6 +15,7 @@ import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { SCENARIOS } from './mock/provider.ts';
 import type { Scenario } from './mock/provider.ts';
+import { validDockerManagementEnv } from './subagents/docker.ts';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -114,6 +115,8 @@ export interface HubConfig {
         args: string[];
         cwd: string;
         pidFile: string;
+        /** Extra environment names needed by Docker inspect/kill; values are persisted. */
+        dockerManagementEnv: string[];
     };
     mock: {
         enabled: boolean;
@@ -221,6 +224,7 @@ export function defaultConfig(): HubConfig {
             // Set when the launcher daemonizes: the supervisor then signals the
             // pid in this file instead of the process it spawned.
             pidFile: '',
+            dockerManagementEnv: [],
         },
         mock: {
             enabled: false,
@@ -554,6 +558,8 @@ export function validateConfig(config: HubConfig): HubConfig {
     check(typeof config.launcher.pidFile === 'string', 'launcher.pidFile must be a string');
     check(config.launcher.pidFile === '' || config.launcher.pidFile.startsWith('/'),
         'launcher.pidFile must be an absolute path');
+    check(validDockerManagementEnv(config.launcher.dockerManagementEnv),
+        'launcher.dockerManagementEnv must contain unique environment variable names, without wildcards');
 
     check(typeof config.mock?.enabled === 'boolean', 'mock.enabled must be a boolean');
     check((SCENARIOS as readonly string[]).includes(config.mock?.scenario),

@@ -32,7 +32,12 @@
         ],
         "args": [],
         "cwd": "",
-        "pidFile": ""
+        "pidFile": "",
+        // Extra environment NAMES needed by Docker inspect/kill after restart.
+        // Built-in connection/TLS/SSH/proxy variables are preserved automatically.
+        // Values of listed names are copied into private management snapshots.
+        // Worker model credentials forwarded with -e do not belong here.
+        "dockerManagementEnv": []
     },
     "worker": {
         "threads": 1,

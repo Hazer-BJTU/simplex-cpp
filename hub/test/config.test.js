@@ -107,6 +107,17 @@ describe('validateConfig', () => {
         assert.doesNotThrow(() => validateConfig(config));
     });
 
+    it('validates individual Docker management pass-through names without echoing values', () => {
+        const config = defaultConfig();
+        assert.deepEqual(config.launcher.dockerManagementEnv, []);
+        config.launcher.dockerManagementEnv = ['CUSTOM_MANAGER_TOKEN', 'XDG_RUNTIME_DIR'];
+        assert.doesNotThrow(() => validateConfig(config));
+        for (const invalid of [null, {}, 'CUSTOM_MANAGER_TOKEN', ['DOCKER_*'], [''], ['A=B'], ['A\0B'], ['A', 'A'], [1]]) {
+            config.launcher.dockerManagementEnv = invalid;
+            assert.throws(() => validateConfig(config), /launcher\.dockerManagementEnv/);
+        }
+    });
+
     it('keeps the identity hold shorter than the confirmation deadline', () => {
         const config = defaultConfig();
         config.limits.confirmIdentityHoldMs = config.worker.confirmationTimeoutMs;

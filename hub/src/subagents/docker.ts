@@ -1,4 +1,4 @@
-/** Foreground Docker lifetimes use the executable/environment that launched them. */
+/** Foreground Docker lifetimes retain only the environment needed for management. */
 import { execFile } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { basename, delimiter, isAbsolute, resolve } from 'node:path';
@@ -9,6 +9,33 @@ export interface DockerManagement {
     cwd: string;
     env: Record<string, string>;
     name: string;
+    /** Explicit additional names, retained so restart does not use current defaults. */
+    passThrough: string[];
+}
+
+/** Docker connection/configuration, TLS, SSH, proxy and host lookup requirements.
+ * Keep this list aligned with docs/hub/configurations.md. Never use DOCKER_* or
+ * another wildcard: unrelated variables may contain model/application secrets. */
+const MANAGEMENT_ENV = [
+    'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_CERT_PATH',
+    'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_API_VERSION', 'DOCKER_CUSTOM_HEADERS',
+    'PATH', 'HOME', 'USER', 'LOGNAME', 'SSH_AUTH_SOCK',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR',
+    'SYSTEMROOT', 'SystemRoot', 'WINDIR', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+    'APPDATA', 'LOCALAPPDATA', 'PATHEXT',
+] as const;
+
+/** Additional management variables require individual names, never patterns. */
+export function validDockerManagementEnv(value: unknown): value is string[] {
+    return Array.isArray(value)
+        && value.every(key => typeof key === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+        && new Set(value).size === value.length;
+}
+
+function managementEnvironment(env: Record<string, string>, passThrough: string[]): Record<string, string> {
+    return Object.fromEntries([...new Set<string>([...MANAGEMENT_ENV, ...passThrough])]
+        .filter(key => Object.hasOwn(env, key)).map(key => [key, env[key]!]));
 }
 
 export function dockerName(record: { command: string; args: unknown[] }): string | null {
@@ -24,9 +51,10 @@ export function captureDockerManagement(invocation: {
     args: string[];
     cwd: string;
     env: Record<string, string>;
-}): DockerManagement | null {
+}, passThrough: string[] = []): DockerManagement | null {
     const name = dockerName(invocation);
     if (!name) return null;
+    if (!validDockerManagementEnv(passThrough)) throw new Error('invalid Docker management environment names');
     const env = Object.fromEntries(Object.entries({ ...process.env, ...invocation.env })
         .filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
     const cwd = resolve(invocation.cwd || process.cwd());
@@ -37,7 +65,7 @@ export function captureDockerManagement(invocation: {
         try { accessSync(path, constants.X_OK); return true; } catch { return false; }
     });
     if (!executable) throw new Error('cannot resolve Docker startup executable');
-    return { executable, cwd, env, name };
+    return { executable, cwd, env: managementEnvironment(env, passThrough), name, passThrough: [...passThrough] };
 }
 
 /** Missing/invalid recovery context stays unknown; never fall back to another daemon. */
@@ -50,7 +78,12 @@ export function restoreDockerManagement(value: unknown, name: string): DockerMan
     const env = record.env as Record<string, unknown>;
     if (Object.entries(env).some(([key, value]) => !key || key.includes('=') || key.includes('\0')
         || typeof value !== 'string' || value.includes('\0'))) return null;
-    return { executable: record.executable, cwd: record.cwd, name, env: { ...env } as Record<string, string> };
+    // Legacy snapshots captured the whole environment. Filter those too, without
+    // filling absent values from this Hub's environment or changing the daemon.
+    const passThrough = record.passThrough === undefined ? [] : record.passThrough;
+    if (!validDockerManagementEnv(passThrough)) return null;
+    return { executable: record.executable, cwd: record.cwd, name,
+        env: managementEnvironment(env as Record<string, string>, passThrough), passThrough: [...passThrough] };
 }
 
 /** null means missing context/query failure: never delete data on that evidence. */

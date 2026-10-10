@@ -255,6 +255,10 @@ When it is missing, that is what you get, and it is worth recognising:
 Worker: required credential variable is unset or empty
 ```
 
+This startup inheritance is separate from the minimized environment persisted
+for later Docker inspection/shutdown. Special management helpers can use explicit
+`launcher.dockerManagementEnv` names; see the [management environment policy](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/configurations.md#docker-management-environment).
+
 To check the forwarding on its own, before blaming the API:
 
 ```sh

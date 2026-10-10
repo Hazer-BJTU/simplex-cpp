@@ -36,6 +36,13 @@ token. Use TLS termination and controlled network access for remote deployment.
 Worker routes use per-session bearer tokens, separate from the panel token.
 Tokens in URLs and configuration files must be protected from logs and sharing.
 
+Docker lifecycle snapshots retain only the documented management environment and
+explicit `launcher.dockerManagementEnv` pass-throughs. They do not duplicate the
+Hub's entire inherited environment, but necessary proxy/header credentials and
+operator-selected secrets can still be present in private mode-0600 storage.
+Explicit launch configuration secrets and older backups remain sensitive.
+See the [management environment policy](../hub/configurations.md#docker-management-environment).
+
 ## Data and model endpoints
 
 Conversation text and tool results can be sent to the configured provider.
