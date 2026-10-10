@@ -78,6 +78,10 @@ export function dialogueParts(value: unknown, mark: () => void): DialoguePart[] 
 /**
  * Worker-backed current history with a bounded newest tail. Refreshes validate
  * revision/cursors before publication; failed refreshes preserve known results.
+ * Live commits update memory without starting history queries. Reconciliation
+ * starts when idle, with three attempts per connection or run settlement.
+ * An already running refresh may finish during a run, but cannot publish over
+ * subsequently observed commits. It catches up at settlement instead.
  * Storage failure is observable in memory even when its diagnostic cannot be
  * persisted. The optional observer must not be required for safe shutdown.
  */
@@ -89,6 +93,7 @@ export class ConversationProjection {
     private refresh: Refresh | null = null;
     private generation = 0;
     private attempts = 0;
+    private active = false;
     private stopped = false;
     private scheduled: NodeJS.Timeout | null = null;
     private latestConnection: WorkerConnection | null = null;
@@ -139,30 +144,48 @@ export class ConversationProjection {
     }
 
     connectionChanged(connection: WorkerConnection | null): void {
+        this.cancelScheduled();
         this.cancelRefresh();
+        this.attempts = 0;
+        this.active = !!this.session.activeRunId;
         this.lastSequence = null;
         this.latestConnection = connection;
         this.value.stale = true;
         this.value.incomplete = true;
         if (!this.stopped) this.persist();
-        if (connection) this.schedule(connection, true);
+        if (connection) this.schedule(connection);
     }
 
     event(envelope: ForwardedEnvelope, connection: WorkerConnection): void {
         if (this.stopped || this.session.closing || this.session.connection !== connection) return;
-        if (envelope.event === 'history') { this.history(envelope, connection); return; }
-        if (envelope.event === 'history_error') {
-            if (object(envelope.data)?.request_id === this.refresh?.request) this.failed();
-            return;
-        }
+        // History replies occupy sequence numbers too. Ignoring them here would
+        // mistake every successful query for an event gap on the next status.
         const seq = envelope.sequence;
-        if (this.lastSequence !== null && seq !== null) {
+        if (this.lastSequence !== null && seq != null) {
             try {
                 if (BigInt(seq) <= BigInt(this.lastSequence)) return;
-                if (BigInt(seq) > BigInt(this.lastSequence) + 1n) this.schedule(connection, true);
+                if (BigInt(seq) > BigInt(this.lastSequence) + 1n) {
+                    this.value.stale = true;
+                    this.value.incomplete = true;
+                    this.generation += 1;
+                    this.schedule(connection);
+                }
             } catch { this.value.incomplete = true; }
         }
-        this.lastSequence = seq;
+        if (seq != null) this.lastSequence = seq;
+        if (envelope.event === 'history') { this.history(envelope, connection); return; }
+        if (envelope.event === 'history_error') {
+            if (envelope.worker_id === this.refresh?.worker
+                && object(envelope.data)?.request_id === this.refresh?.request) this.failed();
+            return;
+        }
+        // Session.noteEnvelope() has already updated activeRunId. An idle
+        // status also catches a settlement whose run_finished event was lost.
+        const settled = envelope.event === 'run_finished'
+            || (['ready', 'status'].includes(envelope.event)
+                && this.active && !this.session.activeRunId);
+        this.active = !!this.session.activeRunId;
+        if (settled) this.attempts = 0;
         const request = this.session.requests.get(envelope.request_id);
         if (envelope.event === 'input_committed' && request?.operation === 'message') {
             const content = this.pendingUsers.get(envelope.request_id);
@@ -186,10 +209,16 @@ export class ConversationProjection {
         if (['input_committed', 'model_response', 'run_finished', 'compact_finished'].includes(envelope.event)) {
             this.generation += 1;
             this.value.stale = true;
+            if (envelope.event === 'compact_finished') {
+                // Compact replaces history, so a pre-compact snapshot cannot
+                // continue collecting pages from the new history incarnation.
+                this.cancelScheduled();
+                this.cancelRefresh();
+            }
             this.persist();
-            this.schedule(connection, true);
+            if (settled || envelope.event === 'compact_finished') this.schedule(connection);
         } else if (envelope.event === 'ready' || envelope.event === 'status') {
-            if (this.value.stale) this.schedule(connection, true);
+            if (this.value.stale) this.schedule(connection);
         }
     }
 
@@ -221,17 +250,19 @@ export class ConversationProjection {
         catch { this.failed(); }
     }
 
-    private schedule(connection: WorkerConnection, reset = false): void {
+    /** One idle reconciliation budget; polling and model commits cannot renew it. */
+    private schedule(connection: WorkerConnection): void {
         this.latestConnection = connection;
-        if (reset) this.attempts = 0;
-        if (this.stopped || this.scheduled || this.refresh || this.session.closing) return;
+        if (this.stopped || this.scheduled || this.refresh || this.session.closing
+            || this.session.activeRunId || this.attempts >= 3) return;
         this.scheduled = setTimeout(() => this.callback(() => {
             this.scheduled = null;
             const current = this.latestConnection;
-            if (!current || this.session.connection !== current || !current.isOpen || this.session.closing) return;
+            if (!current || this.session.connection !== current || !current.isOpen
+                || this.session.closing || this.session.activeRunId) return;
             const capabilities = this.session.workerCapabilities;
             if (capabilities?.workerId !== this.session.identity.workerId || !capabilities?.names.includes('session-history')) return;
-            if (this.attempts++ >= 3) return;
+            this.attempts += 1;
             this.refresh = { connection: current, worker: this.session.identity.workerId!, request: '',
                 start: 0, step: 0, revision: null, total: null, pages: 0, generation: this.generation,
                 turns: [], pending: null, discovering: true, truncated: false, timer: null };
@@ -260,13 +291,14 @@ export class ConversationProjection {
         // payload request_id, which can differ while a model run is active.
         if (!refresh || refresh.connection !== connection || envelope.worker_id !== refresh.worker
             || page?.request_id !== refresh.request) return;
+        if (this.session.identity.workerId !== refresh.worker) { this.failed(); return; }
         if (refresh.timer) clearTimeout(refresh.timer);
         refresh.timer = null;
         if (!integer(page.revision) || !integer(page.total) || !integer(page.next) || !integer(page.next_step)
             || page.start !== refresh.start || page.step !== refresh.step || !Array.isArray(page.turns)
             || page.turns.length > 1 || (refresh.revision !== null && refresh.revision !== page.revision)
             || (refresh.total !== null && refresh.total !== page.total)
-            || page.next > page.total || refresh.generation !== this.generation) { this.failed(); return; }
+            || page.next > page.total) { this.failed(); return; }
         refresh.revision = page.revision;
         refresh.total = page.total;
         refresh.pages += 1;
@@ -362,6 +394,14 @@ export class ConversationProjection {
 
     /** Publish only a validated tail that includes the latest completed turn. */
     private finish(refresh: Refresh, incomplete: boolean): void {
+        if (refresh.generation !== this.generation) {
+            // Do not regress live content or guess how provisional turn indices
+            // map onto an older snapshot. Keep the live projection, then fetch
+            // canonical indices after settlement, within the existing budget.
+            this.cancelRefresh();
+            this.schedule(refresh.connection);
+            return;
+        }
         this.value = { revision: refresh.revision, worker_id: refresh.worker,
             turns: refresh.turns, truncated: refresh.truncated || incomplete,
             incomplete, stale: false, refreshed_at: new Date().toISOString() };
@@ -427,10 +467,14 @@ export class ConversationProjection {
         this.refresh = null;
     }
 
-    stop(): void {
-        this.stopped = true;
+    private cancelScheduled(): void {
         if (this.scheduled) clearTimeout(this.scheduled);
         this.scheduled = null;
+    }
+
+    stop(): void {
+        this.stopped = true;
+        this.cancelScheduled();
         this.cancelRefresh();
         this.pendingUsers.clear();
         this.storage.stop();

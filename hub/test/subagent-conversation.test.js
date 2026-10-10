@@ -52,7 +52,7 @@ it('ignores wrong correlation and preserves old state after revision/cursor viol
     page({ total: 3, next: 3, turns: [{ index: 0, user: [], steps: [] }] });
     assert.equal(view.value.turns.length, 0);
 });
-it('rejects live changes during refresh and cancels queries at the lifetime boundary', async t => {
+it('preserves live changes when an older refresh finishes and cancels queries at the lifetime boundary', async t => {
     const { view, sent, page, session, connection } = await projection(t);
     view.event({ event: 'input_committed', worker_id: 'worker', request_id: 'unknown', sequence: 1 }, connection);
     page({ turns: [{ index: 0, user: [], steps: [] }] });
@@ -90,7 +90,7 @@ it('retains the newest answer when history exceeds the byte budget, including re
         assert.equal(view.value.truncated, true);
         assert.equal(view.value.incomplete, true);
         assert.equal(view.flush(), true);
-    assert.ok(statSync(path).size <= 4096);
+        assert.ok(statSync(path).size <= 4096);
     }
     complete();
     assert.equal(sent[1].start, total - 1);
@@ -237,7 +237,8 @@ it('contains scheduled send/storage failures, keeps durable data and bounds retr
         if (sent.length % 2 === 0) throw new Error('send failed');
         return { ok: false };
     };
-    view.event({ event: 'history_error', data: { request_id: sent[0].request_id } }, connection);
+    view.event({ event: 'history_error', worker_id: 'worker',
+        data: { request_id: sent[0].request_id } }, connection);
     await until(() => sent.length === 3);
     await new Promise(resolve => setTimeout(resolve, 80));
     assert.equal(sent.length, 3);
