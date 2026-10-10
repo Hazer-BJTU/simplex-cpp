@@ -18,6 +18,7 @@ import type { Scenario } from './mock/provider.ts';
 import { validDockerManagementEnv } from './subagents/docker.ts';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MIN_LOG_RING_BYTES } from './util/log-preview.ts';
 
 /** Runtime asset root: `hub/` in source, `hub/dist/` in the installed package. */
 export const hubRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -131,6 +132,7 @@ export interface HubConfig {
         transcriptEvents: number;
         transcriptBytes: number;
         logLines: number;
+        /** UTF-8 bytes in complete retained log entries, including annotations; minimum 64. */
         logRingBytes: number;
         logBytes: number;
         logFiles: number;
@@ -582,6 +584,9 @@ export function validateConfig(config: HubConfig): HubConfig {
         check(Number.isInteger(value) && value > 0,
             `limits.${key} must be a positive integer`);
     }
+    check(Number.isSafeInteger(limits.logRingBytes) && limits.logRingBytes >= MIN_LOG_RING_BYTES,
+        `limits.logRingBytes must be a safe integer >= ${MIN_LOG_RING_BYTES}`
+        + ' to retain a log preview and its truncation annotation');
     check(Number.isInteger(limits.confirmIdentityHoldMs) && limits.confirmIdentityHoldMs >= 0,
         'limits.confirmIdentityHoldMs must be a nonnegative integer');
     check(Number.isInteger(limits.pingIntervalMs) && limits.pingIntervalMs >= 0,
