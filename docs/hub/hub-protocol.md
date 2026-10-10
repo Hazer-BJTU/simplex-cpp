@@ -524,6 +524,13 @@ panel decides how to render them.
 `history` responses are transient control replies. Live subscribers receive
 their full envelopes, but replay contains no history response. Clients issue a
 fresh `history` query to recover the display projection.
+The panel validates worker identity, revision, total and cursor progression
+across a load before publishing it. It retains the previous display on failed
+refreshes. Turn input `source` and per-response `execution`/`commit_sequence`
+link history to replay independently; array positions never establish ownership.
+Legacy or unmatched entries remain separate with a visible explanation. See
+[history/replay correlation](../core/worker-protocol.md#matching-history-to-event-replay)
+for the Worker contract, including Continue and compact boundaries.
 
 `subscribed.plan` and the `plan` message carry
 `{markdown: string, revision: number, updated_at: string | null}`. The initial

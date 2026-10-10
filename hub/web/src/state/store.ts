@@ -389,7 +389,7 @@ function viewOf(state: PanelState, sessionId: SessionId): ViewState {
 /** Discard display copies and invalidate every cursor/index that depended on them. */
 function evictDisplay(view: ViewState, keepControls: boolean): ViewState {
     const latestEvents = keepControls ? controlEvents(view) : {};
-    if (view.items.length === 0 && view.history.length === 0
+    if (view.items.length === 0 && view.history.length === 0 && !view.historyLoad
         && Object.keys(latestEvents).length === Object.keys(view.latestEvents).length) return view;
     return addTranscriptNotice({
         ...view,
@@ -399,6 +399,8 @@ function evictDisplay(view: ViewState, keepControls: boolean): ViewState {
         historyTruncated: view.history.length > 0 || view.historyTruncated,
         historySequence: null,
         historyWorker: null,
+        historyRevision: null,
+        historyLoad: null,
         latestEvents,
         lastSeq: 0,
         replayRequired: true,
@@ -979,17 +981,18 @@ export function createPanelStore() {
         },
 
         beginHistory(sessionId) {
-            set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: true })));
+            set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: true, historyLoad: null })));
         },
 
         invalidateHistory(sessionId) {
             set(withView(get(), sessionId, (view) => ({ ...view,
                 history: [], historyTruncated: false, historyLoading: false, historySequence: null, historyWorker: null,
+                historyRevision: null, historyLoad: null,
             })));
         },
 
         endHistory(sessionId) {
-            set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: false })));
+            set(withView(get(), sessionId, (view) => ({ ...view, historyLoading: false, historyLoad: null })));
         },
 
         applyHistoryPage(sessionId, envelope, page) {
@@ -997,23 +1000,34 @@ export function createPanelStore() {
             let accepted = false;
             set(withView(get(), sessionId, (view) => {
                 const fresh = page.start === 0 && page.step === 0;
-                if (!fresh && view.historyWorker !== envelope.worker_id) return view;
+                const load = view.historyLoad;
+                if (typeof envelope.worker_id !== 'string' || !envelope.worker_id
+                    || typeof envelope.sequence !== 'number'
+                    || !Number.isSafeInteger(envelope.sequence) || envelope.sequence <= 0) return view;
+                if (!fresh && (!load || load.worker !== envelope.worker_id
+                    || load.revision !== page.revision || load.total !== page.total
+                    || load.next !== page.start || load.nextStep !== page.step
+                    || envelope.sequence <= load.sequence)) return view;
+                const previousHistory = load?.history ?? [];
                 let history;
-                let historyTruncated = fresh ? false : view.historyTruncated;
+                let historyTruncated = fresh ? false : load!.truncated;
                 if (fresh) {
                     history = page.turns;
-                } else if (page.start === (view.history.at(-1)?.index ?? -1) + 1 && page.step === 0) {
-                    history = [...view.history, ...page.turns];
-                } else if (page.start === view.history.at(-1)?.index
-                    && page.step === (view.history.at(-1)?.steps.at(-1)?.index ?? -1) + 1) {
-                    const previous = view.history.at(-1);
+                } else if (page.start === (previousHistory.at(-1)?.index ?? -1) + 1 && page.step === 0) {
+                    history = [...previousHistory, ...page.turns];
+                } else if (page.start === previousHistory.at(-1)?.index
+                    && page.step === (previousHistory.at(-1)?.steps.at(-1)?.index ?? -1) + 1) {
+                    const previous = previousHistory.at(-1);
                     if (!previous || page.turns.length === 0) return view;
                     const incoming = page.turns[0]!;
                     if (previous.internal_input !== incoming.internal_input
                         || previous.source?.worker_id !== incoming.source?.worker_id
                         || previous.source?.request_id !== incoming.source?.request_id
                         || previous.source?.run_id !== incoming.source?.run_id) return view;
-                    history = [...view.history.slice(0, -1), {
+                    if (displayBytes(previous.user) !== displayBytes(incoming.user)
+                        || JSON.stringify(previous.user) !== JSON.stringify(incoming.user)
+                        || previous.omitted_user_parts !== incoming.omitted_user_parts) return view;
+                    history = [...previousHistory.slice(0, -1), {
                         ...previous,
                         steps: [...previous.steps, ...page.turns[0]!.steps],
                         omitted_steps: page.turns[0]!.omitted_steps,
@@ -1039,7 +1053,13 @@ export function createPanelStore() {
                 }
                 accepted = true;
                 const done = page.next === page.total && page.next_step === 0;
-                return { ...view, history, historyTruncated, historyLoading: !done,
+                if (!done) return { ...view, historyLoading: true, historyLoad: {
+                    history, truncated: historyTruncated, revision: page.revision,
+                    total: page.total, worker: envelope.worker_id, sequence: envelope.sequence,
+                    next: page.next, nextStep: page.next_step,
+                } };
+                return { ...view, history, historyTruncated, historyLoading: false, historyLoad: null,
+                    historyRevision: page.revision,
                     historyWorker: envelope.worker_id,
                     historySequence: typeof envelope.sequence === 'number'
                         ? envelope.sequence : view.historySequence };
@@ -1152,6 +1172,8 @@ export function createPanelStore() {
                     historyTruncated: view.historyTruncated,
                     historySequence: view.historySequence,
                     historyWorker: view.historyWorker,
+                    historyRevision: view.historyRevision,
+                    historyLoad: view.historyLoad,
                     modelSelection: view.modelSelection,
                     modelCatalog: view.modelCatalog,
                     tokenUsage: view.tokenUsage,

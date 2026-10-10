@@ -135,7 +135,19 @@ export interface LogState {
     readonly logPath: string | null;
 }
 
-/** Everything the panel knows about one session. */
+/** Bounded pages waiting for complete revision/cursor validation before publication. */
+export interface HistoryLoad {
+    readonly history: readonly HistoryTurn[];
+    readonly revision: number;
+    readonly worker: string;
+    readonly total: number;
+    readonly sequence: number;
+    readonly next: number;
+    readonly nextStep: number;
+    readonly truncated: boolean;
+}
+
+/** Published history and its bounded, unpublished refresh candidate. */
 export interface ViewState {
     readonly id: SessionId;
     /**
@@ -156,6 +168,8 @@ export interface ViewState {
     readonly historyTruncated: boolean;
     readonly historySequence: number | null;
     readonly historyWorker: string | null;
+    readonly historyRevision: number | null;
+    readonly historyLoad: HistoryLoad | null;
     /** Highest `hub_sequence` seen *in `epoch`*; also the replay cursor. */
     readonly lastSeq: number;
     /** Eviction requires a full replacement replay, even if a late live frame arrives. */
@@ -202,6 +216,8 @@ export function emptyView(id: SessionId): ViewState {
         historyTruncated: false,
         historySequence: null,
         historyWorker: null,
+        historyRevision: null,
+        historyLoad: null,
         lastSeq: 0,
         replayRequired: false,
         replayGeneration: 0,
@@ -250,10 +266,12 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
     // that predates this replacement, not pages fetched after it.
     if (name === 'compact_finished' && parseCompactResult(envelope.data)
         && typeof envelope.sequence === 'number'
-        && view.historyWorker === envelope.worker_id
-        && (view.historySequence === null || view.historySequence <= envelope.sequence)) {
+        && (view.historyWorker === envelope.worker_id
+            && (view.historySequence === null || view.historySequence <= envelope.sequence)
+            || view.historyLoad?.worker === envelope.worker_id
+                && view.historyLoad.sequence <= envelope.sequence)) {
         view = { ...view, history: [], historyLoading: false, historyTruncated: false,
-            historySequence: envelope.sequence };
+            historySequence: envelope.sequence, historyRevision: null, historyLoad: null };
     }
     // Keep only a bounded derived cache. Unknown event names remain in the
     // transcript, but cannot grow a second unlimited per-name cache.
@@ -383,6 +401,7 @@ export function controlEvents(view: ViewState): Readonly<Record<string, WorkerEn
 /** Display copies counted against the aggregate panel budget. */
 export function viewDisplayBytes(view: ViewState): number {
     return displayBytes(view.items) + displayBytes(view.history)
+        + displayBytes(view.historyLoad?.history ?? [])
         + displayBytes(view.transcriptNotices) + displayBytes(Object.values(view.latestEvents));
 }
 

@@ -42,6 +42,7 @@ export function parseHistoryPage(value: unknown): HistoryPage | null {
             || !parts(turn.user) || !Array.isArray(turn.steps)
             || !index(turn.omitted_steps)
             || turn.omitted_user_parts !== undefined && !index(turn.omitted_user_parts)) return null;
+        if (turn.source !== undefined && !execution(turn.source)) return null;
         if (turn.internal_input !== undefined) {
             const source = turn.source;
             if (turn.internal_input !== 'auto_compact_continue' || turn.user.length !== 0

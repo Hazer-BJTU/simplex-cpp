@@ -36,7 +36,7 @@ import { useVisiblePanel, type PanelStore } from '../state/usePanel.ts';
 import type { NoteItem, OutboxItem, TranscriptItem } from '../state/view.ts';
 import { useTranscriptScroll } from './useTranscriptScroll.ts';
 import { createRoundProjection } from './roundProjection.ts';
-import { reconcileInternalHistory } from './history-rounds.ts';
+import { reconcileHistory } from './history-rounds.ts';
 import { parseCompactResult } from '../state/compact.ts';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
 import { Glyph, type GlyphName } from '../ui/icons.tsx';
@@ -246,8 +246,9 @@ function RestoredUserMessage({ turn }: { turn: HistoryTurn }) {
 }
 
 /** Compact history projection; tool arguments and results never enter it. */
-const HistoryRound = memo(function HistoryRound({ turn, open, onToggle }: {
+const HistoryRound = memo(function HistoryRound({ turn, open, onToggle, inputLinked = false }: {
     turn: HistoryTurn; open: boolean; onToggle: (index: number, expanded: boolean) => void;
+    inputLinked?: boolean;
 }) {
     const user = turn.user.map(contentText).filter(Boolean).join('\n\n');
     const calls = turn.steps.reduce((count, step) => count + step.tool_calls, 0);
@@ -257,11 +258,12 @@ const HistoryRound = memo(function HistoryRound({ turn, open, onToggle }: {
                 aria-expanded={open}
                 className="w-full min-w-0 break-words [overflow-wrap:anywhere] text-left
                     text-xs text-ink-muted hover:text-ink">
-                turn {turn.index + 1} · {user.slice(0, 100) || (turn.internal_input ? 'continued from memory' : '(empty input)')}
+                turn {turn.index + 1} · {inputLinked ? 'additional restored responses'
+                    : user.slice(0, 100) || (turn.internal_input ? 'continued from memory' : '(empty input)')}
                 {user.length > 100 ? '…' : ''}
             </button>
             {open && <div className="min-w-0 space-y-3">
-                {!turn.internal_input && <div className="ml-auto w-fit max-w-full rounded-lg bg-subtle px-4 py-3 text-ink">
+                {!turn.internal_input && !inputLinked && <div className="ml-auto w-fit max-w-full rounded-lg bg-subtle px-4 py-3 text-ink">
                     <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
                         {user || '(empty input)'}
                     </p>
@@ -386,7 +388,7 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
 
     const preview = round.compacting ? 'context compaction' : round.continued ? 'continued from worker state' : round.input
         ? round.input.parts.map((part: ContentPart) => part.raw).join(' ').slice(0, 80)
-        : round.admitted && historicalInput
+        : historicalInput && !round.continued
             ? historicalInput.user.map(contentText).filter(Boolean).join(' ').slice(0, 80)
             : round.admitted ? '(input replayed without its text)' : '';
 
@@ -463,7 +465,7 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
             )}
             {round.input ? (
                 <UserMessage item={round.input} />
-            ) : round.admitted && historicalInput ? (
+            ) : historicalInput && !round.continued ? (
                 <RestoredUserMessage turn={historicalInput} />
             ) : round.admitted ? (
                 <AdmittedPlaceholder />
@@ -611,47 +613,17 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
     // detailed live rounds, including their tool cards, when both sources
     // describe the same committed input. The projection supplies the missing
     // user text for an admitted input replayed without its panel outbox.
-    const { olderHistory, historyForRun, restoredRuns } = useMemo(() => {
-        const mapped = new Map<string, HistoryTurn>();
+    const { olderHistory, historyForRun, restoredRuns, linkedInputs } = useMemo(() => {
         const baseline = view?.historySequence;
         const worker = view?.historyWorker;
-        const compact = view?.latestEvents.compact_finished;
-        const compactSequence = compact && compact.worker_id === worker
-            && typeof compact.sequence === 'number' && parseCompactResult(compact.data)
-            ? compact.sequence : -1;
         if (baseline === null || baseline === undefined || !worker) {
-            return { olderHistory: history, historyForRun: mapped, restoredRuns: runs };
+            return { olderHistory: history, historyForRun: new Map<string, HistoryTurn>(),
+                restoredRuns: runs, linkedInputs: new Set<number>() };
         }
-        const ordinary = history.filter((turn) => !turn.internal_input);
-        const internal = history.filter((turn) => turn.internal_input);
-        const restored = reconcileInternalHistory(internal, runs, baseline, worker);
-        if (view?.historyLoading) {
-            // Input positions need the complete history. Response identities can
-            // already be reconciled while pages arrive or a refresh is pending.
-            return {
-                olderHistory: [...ordinary, ...restored.history].sort((a, b) => a.index - b.index),
-                historyForRun: mapped,
-                restoredRuns: restored.rounds,
-            };
-        }
-        const detailed = runs.filter((round) => round.protocol.some((item) =>
-                item.envelope.event === 'input_committed'
-                && item.envelope.worker_id === worker
-                && typeof item.envelope.sequence === 'number'
-                && item.envelope.sequence > compactSequence
-                && item.envelope.sequence <= baseline));
-        const count = Math.min(detailed.length, ordinary.length);
-        const older = ordinary.slice(0, ordinary.length - count);
-        older.push(...restored.history);
-        older.sort((a, b) => a.index - b.index);
-        if (count > 0) {
-            detailed.slice(-count).forEach((round, index) => {
-                mapped.set(round.key, ordinary[ordinary.length - count + index]!);
-            });
-        }
-        return { olderHistory: older, historyForRun: mapped, restoredRuns: restored.rounds };
-    }, [history, runs, view?.historyLoading, view?.historySequence, view?.historyWorker,
-        view?.latestEvents.compact_finished]);
+        // The published snapshot stays intact until all refresh pages validate.
+        // New replay events can join it only through their own exact identities.
+        return reconcileHistory(history, runs, baseline, worker);
+    }, [history, runs, view?.historySequence, view?.historyWorker]);
 
     const displayedRounds = useMemo(() => {
         const restored = new Map(restoredRuns.map(round => [round.key, round]));
@@ -766,9 +738,14 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
                     {view?.historyLoading && (
                         <p className="text-xs text-ink-muted">loading conversation history…</p>
                     )}
+                    {olderHistory.length > 0 && runs.length > 0 && (
+                        <p data-testid="history-unmatched-notice" className="text-xs text-ink-muted">
+                            Some restored history is shown separately because no matching replay identity is available.
+                        </p>
+                    )}
                     {olderHistory.map((turn, index) => <HistoryRound key={turn.index} turn={turn}
                         open={historyToggled.get(turn.index) ?? index >= olderHistory.length - OPEN_ROUNDS}
-                        onToggle={toggleHistory} />)}
+                        inputLinked={linkedInputs.has(turn.index)} onToggle={toggleHistory} />)}
 
                     {!view ? (
                         /* No `subscribed` frame yet: the transcript is on its way,

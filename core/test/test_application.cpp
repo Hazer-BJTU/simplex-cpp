@@ -187,6 +187,8 @@ sections:
                     {"start", 0}, {"limit", 10}}}});
             } else if (name == "history" && mode == Mode::History) {
                 BOOST_TEST(event.at("data").at("turns")[0]["user"][0]["raw"] == "hello");
+                BOOST_TEST(event.at("data").at("turns")[0]["source"]["request_id"] == "one");
+                BOOST_TEST(event.at("data").at("turns")[0]["steps"].empty());
                 history_during_run = completed == 0 && model->active.load() == 1;
             } else if (name == "run_finished") {
                 ++completed;
@@ -239,6 +241,12 @@ sections:
             BOOST_TEST(model->calls.load() == 2);
             const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_TEST(state.turns.size() == 2u);
+            for (const auto& turn : state.turns) {
+                BOOST_REQUIRE(turn.user_input.extras);
+                BOOST_REQUIRE(turn.agent_loop_step.front().extras);
+                BOOST_TEST(turn.user_input.extras->at("simplex.source")
+                    == turn.agent_loop_step.front().extras->at("simplex.execution"));
+            }
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "plan"; }) == with_hub_remote_call);
             for (const std::string name : {"subagent_fork", "subagent_send", "subagent_receive"}) {
@@ -296,6 +304,13 @@ sections:
             const auto state = load::load_state(config.state_directory / "state.json");
             BOOST_REQUIRE_EQUAL(state.turns.size(), 1u);
             BOOST_REQUIRE_EQUAL(state.turns[0].agent_loop_step.size(), 1u);
+            BOOST_REQUIRE(state.turns[0].user_input.extras);
+            BOOST_REQUIRE(state.turns[0].agent_loop_step[0].extras);
+            const auto& source = state.turns[0].user_input.extras->at("simplex.source");
+            const auto& execution = state.turns[0].agent_loop_step[0].extras->at("simplex.execution");
+            BOOST_TEST(source.at("request_id") == "one");
+            BOOST_TEST(execution.at("request_id") == "retry");
+            BOOST_TEST(source.at("run_id") != execution.at("run_id"));
         } else if (mode == Mode::History) {
             BOOST_TEST(history_during_run);
             BOOST_TEST(completed == 1);
