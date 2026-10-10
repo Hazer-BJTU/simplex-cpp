@@ -44,6 +44,9 @@ const CONTROL_EVENTS: ReadonlySet<string> = new Set([
 ]);
 const itemSizes = new WeakMap<object, number>();
 const arraySizes = new WeakMap<object, number>();
+const recordSizes = new WeakMap<object, number>();
+const viewSizes = new WeakMap<ViewState, number>();
+const NO_HISTORY: readonly object[] = [];
 /** Encoded display size, cached by immutable item/array identity. */
 export function displayBytes(items: readonly object[]): number {
     const previous = arraySizes.get(items);
@@ -400,9 +403,18 @@ export function controlEvents(view: ViewState): Readonly<Record<string, WorkerEn
 
 /** Display copies counted against the aggregate panel budget. */
 export function viewDisplayBytes(view: ViewState): number {
-    return displayBytes(view.items) + displayBytes(view.history)
-        + displayBytes(view.historyLoad?.history ?? [])
-        + displayBytes(view.transcriptNotices) + displayBytes(Object.values(view.latestEvents));
+    const cached = viewSizes.get(view);
+    if (cached !== undefined) return cached;
+    let latestBytes = recordSizes.get(view.latestEvents);
+    if (latestBytes === undefined) {
+        latestBytes = displayBytes(Object.values(view.latestEvents));
+        recordSizes.set(view.latestEvents, latestBytes);
+    }
+    const bytes = displayBytes(view.items) + displayBytes(view.history)
+        + displayBytes(view.historyLoad?.history ?? NO_HISTORY)
+        + displayBytes(view.transcriptNotices) + latestBytes;
+    viewSizes.set(view, bytes);
+    return bytes;
 }
 
 /** A note about the transcript itself, not about the conversation. */

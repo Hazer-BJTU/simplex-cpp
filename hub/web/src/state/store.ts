@@ -1,4 +1,5 @@
 import { displayBytes } from './view.ts';
+import { indexViewChanges, viewProjection } from './viewProjection.ts';
 import type { SessionPlan } from '../../../shared/protocol.ts';
 /**
  * @file the panel's store.
@@ -424,11 +425,13 @@ function withView(
     if (next === current && state.views.has(sessionId)) return {};
     const views = new Map(state.views);
     views.set(sessionId, next);
+    const changed = new Set([sessionId]);
     // A tab may visit many sessions. Evict display copies from inactive views
     // before their aggregate budget grows indefinitely. Preserve control caches
     // first; under further pressure these inactive copies are replayable too.
     // Approval authority is independent of both passes.
-    let bytes = [...views.values()].reduce((sum, view) => sum + viewDisplayBytes(view), 0);
+    let bytes = viewProjection(state.views).bytes
+        + viewDisplayBytes(next) - (state.views.has(sessionId) ? viewDisplayBytes(current) : 0);
     for (const [id, view] of views) {
         if (bytes <= 40 * 1024 * 1024) break;
         if (id === state.selected || id === sessionId) continue;
@@ -436,6 +439,7 @@ function withView(
         if (evicted === view) continue;
         bytes -= viewDisplayBytes(view) - viewDisplayBytes(evicted);
         views.set(id, evicted);
+        changed.add(id);
     }
     // A keep-list must not let many large inactive control caches defeat the
     // existing aggregate target. The selected/current view remain exempt.
@@ -446,7 +450,9 @@ function withView(
         if (evicted === view) continue;
         bytes -= viewDisplayBytes(view) - viewDisplayBytes(evicted);
         views.set(id, evicted);
+        changed.add(id);
     }
+    indexViewChanges(state.views, views, changed);
     return { views };
 }
 
@@ -669,6 +675,7 @@ function reconcileEpoch(
                 + ' session was replayed from the start of the new hub process', 'warn'),
         ));
     }
+    indexViewChanges(state.views, views, state.views.keys());
     return { patch: { epoch: incoming, views }, restarted: true };
 }
 
@@ -870,6 +877,7 @@ export function createPanelStore() {
             sessions.delete(sessionId);
             const views = new Map(get().views);
             views.delete(sessionId);
+            indexViewChanges(get().views, views, [sessionId]);
             const plans = new Map(get().plans);
             plans.delete(sessionId);
             const patch: Partial<PanelState> = { sessions, views, plans };
