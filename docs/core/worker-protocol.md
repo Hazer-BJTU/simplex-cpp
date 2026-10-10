@@ -833,7 +833,7 @@ may occur in nested dataclass records.
 | `persisted` | `{ "boundary": string, "format": "json" }` | A required JSON snapshot write completed successfully at the named boundary. |
 | `export_error` | `{ "message": string }` | Optional Markdown export failed after successful JSON persistence. |
 | `error` | `{ "message": string }`, sometimes also `"durable": false` | Control-validation or worker/storage diagnostic. Not a universal fatal-error notification. |
-| `run_finished` | `{ "status": string, "error": string, "exchanges": unsigned integer, "durable": boolean, "failure"?: object }` | Invocation settled and its configured final persistence was handled. |
+| `run_finished` | [Run outcome object](#run-outcome-and-persistence-events), including exchange breakdown, automatic-compaction policy and optional omission counters | Invocation settled and its configured final persistence was handled. |
 
 All of these are wrapped in the common event envelope. `model_response`,
 `tool_calls`, and `tool_results` are separate events, not token or output chunks.
@@ -922,8 +922,9 @@ the next payload as described under
   "stopping": false,
   "storage_failed": false,
   "rejected_payloads": 0,
-  "capabilities": ["session-history", "context-compact"],
+  "capabilities": ["session-history", "context-compact", "auto-compact", "answer-pages"],
   "memory_retention": {"max_archives": 5},
+  "auto_compact": {"attempts": 0, "succeeded": 0, "limit": 5, "threshold": 0},
   "loop": {
     "status": "completed",
     "phase": "ready",
@@ -945,14 +946,15 @@ the next payload as described under
 | `unreported_rejections` | Nonnegative integer | Cumulative rejection notices omitted because the independent feedback mailbox was full. |
 | `event_queue` | Object | Application `count` and encoded `bytes`, including its active admission, plus separate transport `transport_bytes`; a snapshot, not a delivery receipt. |
 | `memory_retention` | Object | Effective `max_archives` (default 5); zero disables cleanup. Older workers omit this field. |
-| `capabilities` | Array of strings | Features supported by this worker process. `answer-pages` means it accepts read-only `answer` payloads; `session-history` means it accepts read-only `history` payloads; `context-compact` means it implements the `compact` lifecycle (subject to persistence and state prerequisites). A hub should check this before querying a worker that may be older than the hub. |
+| `auto_compact` | Object | Current or most recently admitted logical request's `attempts` and `succeeded` counts, with effective `limit` and token `threshold`. A zero threshold disables the startup policy. Older workers omit this field. |
+| `capabilities` | Array of strings | Features supported by this worker binary. `answer-pages` means it accepts read-only `answer` payloads; `session-history` means it accepts read-only `history` payloads; `context-compact` means it implements the `compact` lifecycle (subject to persistence and state prerequisites); `auto-compact` means automatic compaction is supported, not necessarily enabled. Inspect `auto_compact.threshold` for the effective policy. A hub should check capabilities before querying a worker that may be older than the hub. |
 | `loop` | Optional loop-progress object | Present only when conversation state contains loop progress, including restored progress. |
 
 Loop progress always contains the following fields when present:
 
 | Field | Type / values | Meaning |
 | --- | --- | --- |
-| `status` | `idle`, `running`, `completed`, `cancelled`, `exchange_limit`, `failed` | Current or most recent loop outcome; restored progress may describe a previous worker. |
+| `status` | `idle`, `running`, `completed`, `cancelled`, `exchange_limit`, `failed`, `auto_compact_required` | Current or most recent loop outcome; restored progress may describe a previous worker. `auto_compact_required` is a settled internal boundary, not a queued action or a terminal `run_finished` outcome. |
 | `phase` | `ready`, `model`, `tools`, `projection`, `blocked` | Recovery boundary; see recovery rules below. |
 | `completed_exchanges` | Nonnegative integer | Model responses committed during that invocation. |
 | `committed_response_sequence` | Unsigned 64-bit integer | Persisted count of model-response commits across invocations, even if hooks later prune history. Unrelated to event `sequence`; not a hub replay cursor. |
@@ -964,6 +966,26 @@ request-ID history, or the last final-save receipt. It cannot by itself resolve
 all delivery or durability ambiguity.
 
 ### Run outcome and persistence events
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `status` | String | Final logical-request outcome listed below. Intermediate automatic-compaction boundaries do not emit this event. |
+| `error` | String | Technical diagnostic, empty when none. |
+| `exchanges` | Unsigned integer | All committed task and compact model responses in this logical request, not HTTP attempts. |
+| `task_exchanges` | Unsigned integer | Committed responses from task runs, including automatic continuation. |
+| `compact_exchanges` | Unsigned integer | Committed manual or automatic summary responses. |
+| `auto_compact` | Object | `attempts`, `succeeded`, effective `limit` and token `threshold`, using the same fields as status. |
+| `durable` | Boolean | Whether a final/cancellation JSON snapshot was recorded, subject to the policy described below. |
+| `failure` | Optional object | Present for `failed`; contains `stage`, `operation` (`task`, `compact`, `auto_compact`) and `can_continue`. |
+| `omitted_display_events` | Optional unsigned integer | Model/tool display events omitted since the previous admitted settlement. Canonical answers are unchanged. |
+| `omitted_query_events` | Optional unsigned integer | Query responses omitted since the previous admitted settlement. |
+| `omitted_feedback_events` | Optional unsigned integer | Rejection feedback omitted since the previous admitted settlement. |
+| `coalesced_metadata_events` | Optional unsigned integer | Replayable metadata events replaced or omitted since the previous admitted settlement. |
+
+The four omission/coalescing counters are present only when nonzero and settle
+only after the event is admitted to the outbox. They are not lifetime totals or
+delivery acknowledgements. Older workers can omit the exchange breakdown and
+automatic-compaction fields; clients should tolerate their absence.
 
 `run_finished.data.status` is one of:
 

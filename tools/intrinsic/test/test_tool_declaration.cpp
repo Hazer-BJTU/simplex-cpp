@@ -329,6 +329,57 @@ argument_schema:
                == nlohmann::json::array({true}));
 }
 
+BOOST_AUTO_TEST_CASE(extended_branch_narrowings_arrive_verbatim)
+{
+    Scratch scratch;
+    using Json = nlohmann::json;
+    const std::vector<std::pair<Json, Json>> cases = {
+        {{{"type", "string"}, {"description", "Bounded text"}}, {{"maxLength", 10}}},
+        {{{"type", "string"}, {"description", "Identifier"}}, {{"pattern", "^[a-z]+$"}}},
+        {{{"type", "array"}, {"description", "Text list"}, {"items", {{"type", "string"}}}}, {{"minItems", 1}}}
+    };
+    for (const auto& [property, narrowing] : cases) {
+        const Json schema = {
+            {"type", "object"}, {"properties", {{"input", property}}},
+            {"anyOf", Json::array({{{"required", Json::array({"input"})}, {"properties", {{"input", narrowing}}}}})}
+        };
+        const auto file = scratch.write("narrowing.yaml",
+            Json{{"name", "probe"}, {"description", "A probe"}, {"argument_schema", schema}}.dump());
+        BOOST_TEST_CONTEXT(narrowing.dump()) {
+            BOOST_TEST(load_tool_declaration(file).argument_schema == schema);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(branch_diagnostics_explain_empty_required_lists_and_absence_predicates)
+{
+    Scratch scratch;
+    using Json = nlohmann::json;
+    Json document = {
+        {"name", "probe"}, {"description", "A probe"},
+        {"argument_schema", {
+            {"type", "object"}, {"properties", {{"input", {{"type", "string"}, {"description", "Text"}}}}},
+            {"anyOf", Json::array({{{"required", Json::array()}, {"not", {{"required", Json::array({"input"})}}}}})}
+        }}
+    };
+    const auto file = scratch.write("absence.yaml", document.dump());
+    BOOST_TEST(load_tool_declaration(file).argument_schema == document.at("argument_schema"));
+
+    auto missing_required = document;
+    missing_required["argument_schema"]["anyOf"][0].erase("required");
+    const auto missing_message = refusal_of(scratch, missing_required.dump());
+    BOOST_TEST(mentions(missing_message, "/argument_schema/anyOf/0/required"));
+    BOOST_TEST(mentions(missing_message, "must state a required list"));
+    BOOST_TEST(mentions(missing_message, "required: []"));
+    BOOST_TEST(mentions(missing_message, "checked not absence predicate"));
+    BOOST_TEST(!mentions(missing_message, "must require at least one property"));
+
+    document["argument_schema"]["anyOf"][0].erase("not");
+    const auto unbounded_message = refusal_of(scratch, document.dump());
+    BOOST_TEST(mentions(unbounded_message, "/argument_schema/anyOf/0/required"));
+    BOOST_TEST(mentions(unbounded_message, "checked not absence predicate"));
+}
+
 // ---- what a broken one gets --------------------------------------------------
 //
 // The vocabulary is closed on purpose (tool_declaration.hpp): `argument_schema`
@@ -937,7 +988,7 @@ argument_schema:
     - properties:
         session_id:
           minLength: 1
-)"), "must require at least one property"));
+)"), "must state a required list"));
 
     // What a branch states about a property is a NARROWING of the property the
     // schema declares: it cannot introduce one, it cannot restate the type or
@@ -980,7 +1031,7 @@ argument_schema:
         input:
           type: string
 )"), "is not something an alternative may narrow"));
-    BOOST_TEST(mentions(refusal_of(scratch, R"(
+    const std::string empty_narrowing = refusal_of(scratch, R"(
 name: probe
 description: a probe
 argument_schema:
@@ -997,7 +1048,10 @@ argument_schema:
     - required: [input]
       properties:
         input: {}
-)"), "a narrowing must state one of"));
+)");
+    BOOST_TEST(mentions(empty_narrowing, "/argument_schema/anyOf/0/properties/input"));
+    BOOST_TEST(mentions(empty_narrowing,
+        "a narrowing must state one of enum, minimum, maximum, minLength, maxLength, pattern, minItems"));
     BOOST_TEST(mentions(refusal_of(scratch, R"(
 name: probe
 description: a probe
@@ -1018,7 +1072,7 @@ argument_schema:
           minLength: 1
 )"), "minLength applies to a string property"));
 
-    // A branch is a mapping with two keys, and nothing else.
+    // A branch may state required, properties and checked not predicates only.
     BOOST_TEST(mentions(refusal_of(scratch, R"(
 name: probe
 description: a probe
