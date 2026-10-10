@@ -542,8 +542,9 @@ edits, even of equal-length text, invalidate an older fingerprint. A fresh histo
 query supplies current sources; changes to reasoning/diagnostic metadata alone
 do not invalidate answer text. Hashing reads original bytes without a response-
 sized copy; each read verifies the source and does not keep a separate answer cache.
-Older compatible workers may omit fingerprints; the Hub accepts those sources,
-but this worker requires the fingerprint it returned.
+The Worker, Hub and intrinsic receive tool require all five source fields,
+including the fingerprint. Sources without it cannot be queried; older history
+may still supply a preview, but does not provide exact-answer navigation.
 
 ### Display transport limits
 

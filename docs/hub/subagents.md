@@ -421,7 +421,10 @@ response carries an `answer_source` referencing the child's canonical state.
 `subagent_receive` can supply `answer: {source, part, offset}` instead of a
 conversation cursor/limit to read exact 32 KiB UTF-8 pages. Start at part 0,
 offset 0; advance to `next_part`/`next_offset`, resetting offset when the part
-changes, and stop only on `done`. Copy all source fields, including a fingerprint when present. This works for text spread across multiple
+changes, and stop only on `done`. Copy all five source fields, including the required
+fingerprint. Incomplete sources are rejected before forwarding a Worker payload
+(`invalid_arguments`; the panel HTTP endpoint returns 400). Older sources without
+a fingerprint provide previews only. This works for text spread across multiple
 parts and avoids the normal tool-output presentation budget. Query authority is
 still limited to the caller's direct child and rechecked after the awaited page.
 The Hub does not cache an answer-sized assembly or expose filesystem paths.

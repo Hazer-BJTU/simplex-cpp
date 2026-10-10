@@ -624,9 +624,11 @@ See [worker automatic compaction](../core/worker-protocol.md#automatic-context-c
 
 `POST /api/sessions/:id/answer` accepts `{source, part, offset}`. It is authenticated
 with the normal panel token, verifies the selected live session/worker capability,
-and proxies one read-only worker query. Responses are correlated to that exact
-connection and commit; disconnect, source expiration or invalid cursor returns
-HTTP 409 `answer_unavailable`. Client disconnect cancels the query. At most 64
+and proxies one read-only worker query. The source must contain all five Worker
+fields, including its fingerprint; malformed arguments return HTTP 400
+`invalid_arguments` before forwarding. Responses are correlated to that exact
+connection and commit; disconnect, source expiration or an unavailable byte cursor
+returns HTTP 409 `answer_unavailable`. Client disconnect cancels the query. At most 64
 queries globally and two per worker are pending, with a ten-second deadline;
 no complete-answer cache or unbounded pending queue is introduced.
 

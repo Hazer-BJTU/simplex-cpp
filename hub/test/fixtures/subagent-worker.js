@@ -91,7 +91,7 @@ function connect() {
                 event('compact_finished', { summary: compactSummary, durable: true, revision, removed_turns: 1 });
             } else {
                 const turn = turns.at(-1);
-                const source = turn ? { worker_id: worker, turn: turn.index, step: turn.steps.length, commit_sequence: String(sequence + 1) } : undefined;
+                const source = turn ? { worker_id: worker, turn: turn.index, step: turn.steps.length, commit_sequence: String(sequence + 1), fingerprint: 'a'.repeat(64) } : undefined;
                 if (turn) turn.steps.push({ index: turn.steps.length, content, answer_source: source, reasoning: { raw: 'SECRET_REASONING' }, tool_calls: 1 });
                 revision += 1;
                 event('tool_calls', [{ name: 'SECRET_TOOL', arguments: { secret: 'SECRET_ARG' } }]);

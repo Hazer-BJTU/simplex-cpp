@@ -10,7 +10,9 @@ namespace tools::intrinsic {
  * conversation or transport state. The Hub authorizes direct-child ownership.
  *
  * Invocations shield inherited cancellation and join transport cleanup. A lost
- * reply can follow a committed mutation: no retry or rollback is attempted.
+ * fork/send reply can follow a committed mutation: no retry or rollback is attempted.
+ * Read failures report transport, protocol or presentation-budget diagnostics
+ * without suggesting that receive performed a mutation.
  * Results retain dispatch/completion distinctions and bounded history metadata.
  * Child text is displayed as data; it never becomes parent instructions.
  */
@@ -73,6 +75,9 @@ public:
  * Targeted queries accept cursor (default 0) and limit (default 5, range 1..10).
  * Cursors address the Hub's current bounded projection; restart from zero when
  * its revision/worker changes. This is a snapshot with no polling or waiting.
+ * Exact answer queries require all source fields, including the fingerprint.
+ * Presentation reserves structural overhead before dividing the bounded body
+ * allowance; excessive structure is a read-only budget failure.
  */
 class SubagentReceiveTool final : public SubagentToolBase {
 public:

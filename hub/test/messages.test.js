@@ -237,7 +237,7 @@ it('builds compact without content and preserves run options', () => {
 });
 
 it('builds a read-only answer query and rejects executable fields or invalid cursors', () => {
-    const source = { worker_id: 'worker', turn: 2, step: 1, commit_sequence: '123' };
+    const source = { worker_id: 'worker', turn: 2, step: 1, commit_sequence: '123', fingerprint: 'a'.repeat(64) };
     const input = { operation: 'answer', requestId: 'read', source, part: 0, offset: 32768 };
     assert.deepEqual(buildPayload(input).data, {
         operation: 'answer', request_id: 'read', source, part: 0, offset: 32768,

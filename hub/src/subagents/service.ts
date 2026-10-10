@@ -1,4 +1,5 @@
 import { readAnswer } from '../worker/answers.ts';
+import { answerQuery } from '../../shared/answers.ts';
 /** Session-level family supervisor and the fixed subagent remote operations. */
 import { createHash, randomUUID } from 'node:crypto';
 import type { HubConfig } from '../config.ts';
@@ -324,6 +325,8 @@ export class SubagentService {
         const record = this.child(context, args.subagent_id);
         if (args.answer !== undefined) {
             if (args.cursor !== undefined || args.limit !== undefined) throw new ToolFailure('invalid_arguments', 'answer cannot carry turn pagination');
+            if (!answerQuery(args.answer)) throw new ToolFailure('invalid_arguments',
+                'answer requires a complete source including fingerprint, part and offset');
             return readAnswer(record.session, args.answer, context.signal).then(answer => {
                 context.validate();
                 this.child(context, args.subagent_id);

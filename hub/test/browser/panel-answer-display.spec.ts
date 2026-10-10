@@ -45,7 +45,7 @@ test('restored history uses the same literal renderer and explicit reasoning mar
 });
 
 test('answer navigation validates offsets and retains only one exact page', async ({ page }) => {
-    const source = { worker_id: 'stub-worker', turn: 0, step: 0, commit_sequence: '1' };
+    const source = { worker_id: 'stub-worker', turn: 0, step: 0, commit_sequence: '1', fingerprint: 'a'.repeat(64) };
     await open(page, '?session=demo');
     await page.route('**/api/sessions/demo/answer', async route => {
         const query = route.request().postDataJSON();
@@ -162,7 +162,7 @@ test('whole-answer omission keeps explicit display and exact page access live an
 
 test('whole-body normalization omission still exposes its source or honest unavailability', async ({ page }) => {
     await open(page, '?session=demo');
-    const source = { worker_id: 'stub-worker', turn: 0, step: 0, commit_sequence: '1' };
+    const source = { worker_id: 'stub-worker', turn: 0, step: 0, commit_sequence: '1', fingerprint: 'a'.repeat(64) };
     // Force the normalizer's aggregate fallback through an indivisible identity,
     // rather than the transcript's smaller retention budget.
     const value = normalizeDisplay('model_response', modelResponse('answer', {
@@ -174,6 +174,18 @@ test('whole-body normalization omission still exposes its source or honest unava
     await expect(page.getByRole('button', { name: 'Read complete answer in pages' })).toBeVisible();
     await emit(page, 'model_response', { display_omitted: true });
     await expect(page.getByTestId('assistant-message').last()).toContainText('complete text is unavailable from this worker');
+});
+
+test('a legacy answer source without fingerprint offers preview only', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'run_started', {});
+    await emit(page, 'model_response', modelResponse('Legacy answer preview', {
+        content: [{ type: 'text', modality: 'text', raw: 'Legacy answer preview', truncated: true, bytes: 9000 }],
+        answer_source: { worker_id: 'stub-worker', turn: 0, step: 0, commit_sequence: '1' },
+    }));
+    await expect(page.getByTestId('assistant-message').last()).toContainText('Legacy answer preview');
+    await expect(page.getByTestId('assistant-message').last()).toContainText('complete text is unavailable');
+    await expect(page.getByRole('button', { name: 'Read complete answer in pages' })).toHaveCount(0);
 });
 
 test('100-entry worker batches show only real tools and accurate omission notices after replay', async ({ page }) => {
