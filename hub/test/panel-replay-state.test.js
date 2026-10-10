@@ -70,9 +70,13 @@ it('eviction resets replay/index state and reselect rebuilds request chips and t
     store.getState().applyEvent({ session: 'demo', envelope: events.at(-1) });
     assert.equal(store.getState().lastSeq('demo'), 4);
     assert.equal(store.getState().view('demo').replayRequired, true);
+    const effects = store.getState().applySubscribed({ type: 'subscribed', session: session(),
+        transcript: [events.at(-1)], latest: 4, logs: [] });
+    assert.deepEqual(effects, { resubscribe: { session: 'demo', since: 0 } });
+    assert.equal(store.getState().view('demo').replayRequired, true);
     store.getState().setSelected('demo');
     store.getState().applySubscribed({ type: 'subscribed', session: session([request('admitted')]),
-        transcript: events, latest: 4, logs: [] });
+        transcript: events, latest: 4, logs: [] }, true);
     const recovered = store.getState().view('demo');
     assert.deepEqual(recovered.items.filter(item => item.kind === 'event')
         .map(item => item.envelope.hub_sequence), [1, 2, 3, 4]);

@@ -79,6 +79,12 @@ decisions.
 Inactive control caches may also be evicted if needed for the aggregate 40 MiB
 display target; they then require replacement replay. Selected and currently
 updated views remain exempt from aggregate eviction.
+For legacy Hubs without subscription request IDs, the bundled panel serializes
+subscriptions for each session, keeping at most one outstanding request and one
+superseding request. An unsubscribed or pre-eviction reply is consumed without
+changing recovery state. Only a reply to a current zero-cursor subscription can
+satisfy eviction recovery; a late delta or live event cannot clear that requirement.
+Disconnecting invalidates this connection-local bookkeeping.
 
 An individual envelope or subscription metadata object larger than the hard
 budget still cannot be sent. Neither can an oversized legacy `subscribed` or

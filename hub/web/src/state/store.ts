@@ -264,7 +264,8 @@ export interface PanelActions {
     applyWelcome(message: WelcomeMessage): void;
     removeSession(sessionId: SessionId): void;
 
-    applySubscribed(message: SubscribedMessage): ApplyEffects;
+    /** The client supplies confirmedReplacement only for a current zero-cursor legacy reply. */
+    applySubscribed(message: SubscribedMessage, confirmedReplacement?: boolean): ApplyEffects;
     applyEvent(message: EventMessage): void;
     setCancelPending(sessionId: SessionId, pending: boolean): void;
     setModelOption(sessionId: SessionId, name: string, value: unknown): void;
@@ -401,6 +402,7 @@ function evictDisplay(view: ViewState, keepControls: boolean): ViewState {
         latestEvents,
         lastSeq: 0,
         replayRequired: true,
+        replayGeneration: view.replayGeneration + 1,
         requestIndex: new Map(),
         seenRequests: new Set(),
         lastSequenceByWorker: {},
@@ -873,7 +875,7 @@ export function createPanelStore() {
             set(patch);
         },
 
-        applySubscribed(message) {
+        applySubscribed(message, confirmedReplacement = false) {
             const sessionId = message.session?.session_id;
             if (typeof sessionId !== 'string') return NO_EFFECTS;
 
@@ -892,6 +894,9 @@ export function createPanelStore() {
 
             const latest = typeof message.latest === 'number' ? message.latest : 0;
             const before = viewOf(get(), sessionId);
+            if (before.replayRequired && !confirmedReplacement && message.replay_reset !== true) {
+                return { resubscribe: { session: sessionId, since: 0 } };
+            }
             if (message.replay_reset !== true && !before.replayRequired && latest < before.lastSeq) {
                 // The hub's counter went backwards. Either it restarted without
                 // reporting an epoch, or the session was deleted and recreated:
@@ -906,7 +911,7 @@ export function createPanelStore() {
                 return { resubscribe: { session: sessionId, since: 0 } };
             }
 
-            if (message.replay_reset === true || before.replayRequired) {
+            if (message.replay_reset === true || confirmedReplacement && before.replayRequired) {
                 get().applySnapshot({ type: 'snapshot', session: message.session,
                     transcript: message.transcript });
             } else {
@@ -1151,6 +1156,7 @@ export function createPanelStore() {
                     modelCatalog: view.modelCatalog,
                     tokenUsage: view.tokenUsage,
                     transcriptNotices: view.transcriptNotices,
+                    replayGeneration: view.replayGeneration,
                 };
                 let maxSeq = 0;
                 let firstSeq: number | null = null;

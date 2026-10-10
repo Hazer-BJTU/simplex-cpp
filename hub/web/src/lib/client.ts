@@ -168,6 +168,12 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
     // durable worker capabilities. A lost socket invalidates both assumptions.
     const optionsRequested = new Map<SessionId, string>();
     const subscriptionRequests = new Map<SessionId, string>();
+    // Legacy replies have no request ID. Keep one outstanding request per
+    // session and one superseding request; never guess which overlapping reply
+    // belongs to a zero-cursor recovery. Cancelled requests stay until consumed.
+    type LegacySubscription = { cursor: number; generation: number; cancelled: boolean };
+    const legacySubscriptions = new Map<SessionId, LegacySubscription>();
+    const queuedLegacySubscriptions = new Map<SessionId, LegacySubscription>();
     const socket: PanelSocket = createPanelSocket({
         location: loc,
         token: () => tokens.get(),
@@ -175,6 +181,8 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             if (status.state !== 'open') {
                 optionsRequested.clear();
                 subscriptionRequests.clear();
+                legacySubscriptions.clear();
+                queuedLegacySubscriptions.clear();
                 for (const [sessionId, view] of store.getState().views) {
                     if (view.cancelPending) store.getState().setCancelPending(sessionId, false);
                 }
@@ -224,7 +232,40 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 paged: true, replace: replace || store.getState().views.get(sessionId)?.replayRequired === true,
                 request_id: requestId });
         }
-        return socket.send({ type: 'subscribe', session: sessionId, since: cursor });
+        const pending = legacySubscriptions.get(sessionId);
+        const request = { cursor,
+            generation: store.getState().views.get(sessionId)?.replayGeneration ?? 0,
+            cancelled: false };
+        subscribedSessions.delete(sessionId);
+        if (pending) {
+            pending.cancelled = true;
+            queuedLegacySubscriptions.set(sessionId, request);
+            return true;
+        }
+        return sendLegacySubscription(sessionId, request);
+    }
+
+    function sendLegacySubscription(sessionId: SessionId, request: LegacySubscription): boolean {
+        const generation = store.getState().views.get(sessionId)?.replayGeneration ?? 0;
+        if (request.generation !== generation) {
+            request = { cursor: cursorFor(sessionId), generation, cancelled: false };
+        }
+        legacySubscriptions.set(sessionId, request);
+        if (socket.send({ type: 'subscribe', session: sessionId, since: request.cursor })) return true;
+        legacySubscriptions.delete(sessionId);
+        return false;
+    }
+
+    function cancelLegacySubscription(sessionId: SessionId): void {
+        const pending = legacySubscriptions.get(sessionId);
+        if (pending) pending.cancelled = true;
+        queuedLegacySubscriptions.delete(sessionId);
+    }
+
+    function flushLegacySubscription(sessionId: SessionId): void {
+        const queued = queuedLegacySubscriptions.get(sessionId);
+        queuedLegacySubscriptions.delete(sessionId);
+        if (queued) sendLegacySubscription(sessionId, queued);
     }
 
     const historyRequests = new Map<SessionId, {
@@ -304,6 +345,8 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 optionsRequested.clear();
                 subscriptionRequests.clear();
                 subscribedSessions.clear();
+                legacySubscriptions.clear();
+                queuedLegacySubscriptions.clear();
                 if (store.getState().selected) {
                     historyNeedsRecovery.add(store.getState().selected!);
                 }
@@ -318,11 +361,32 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 if (subscribedSessions.has(message.session)) store.getState().setPlan(message.session, message.plan);
                 return;
             case 'subscribed': {
+                const sessionId = message.session.session_id;
                 if (message.request_id !== undefined
-                    && subscriptionRequests.get(message.session.session_id) !== message.request_id) return;
+                    && subscriptionRequests.get(sessionId) !== message.request_id) return;
+                let confirmedReplacement = false;
+                if (message.request_id === undefined) {
+                    const pending = legacySubscriptions.get(sessionId);
+                    if (pending) {
+                        legacySubscriptions.delete(sessionId);
+                        if (pending.cancelled || pending.generation !==
+                            (store.getState().views.get(sessionId)?.replayGeneration ?? 0)) {
+                            flushLegacySubscription(sessionId);
+                            // If still selected, start a fresh recovery when no
+                            // superseding request was queued during eviction.
+                            if (store.getState().selected === sessionId && !legacySubscriptions.has(sessionId)) {
+                                subscribe(sessionId);
+                            }
+                            return;
+                        }
+                        confirmedReplacement = pending.cursor === 0;
+                    } else if (store.getState().views.get(sessionId)?.replayRequired) {
+                        return;
+                    }
+                }
                 store.getState().setPlan(message.session.session_id,
                     message.plan ?? { markdown: '', revision: 0, updated_at: null }, true);
-                const effects = store.getState().applySubscribed(message);
+                const effects = store.getState().applySubscribed(message, confirmedReplacement);
                 if (effects.resubscribe) {
                     subscribe(effects.resubscribe.session, effects.resubscribe.since);
                 } else if (message.replay_more !== true) {
@@ -361,6 +425,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             case 'session_removed': {
                 subscribedSessions.delete(message.session);
                 subscriptionRequests.delete(message.session);
+                cancelLegacySubscription(message.session);
                 optionsRequested.delete(message.session);
                 historyNeedsRecovery.delete(message.session);
                 const wasSelected = store.getState().selected === message.session;
@@ -587,6 +652,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             if (previous) {
                 subscribedSessions.delete(previous);
                 subscriptionRequests.delete(previous);
+                cancelLegacySubscription(previous);
                 historyRequests.delete(previous);
                 store.getState().endHistory(previous);
                 socket.send({ type: 'unsubscribe', session: previous });

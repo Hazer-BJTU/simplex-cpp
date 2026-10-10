@@ -31,12 +31,17 @@ test('keeps a replay-gap notice visible when a full transcript is trimmed and re
     await page.request.post(`${STUB}/__stub/message`, { data: {
         type: 'subscribed', session: sessions.sessions[0], transcript: [last], latest: 2010, logs: [],
     } });
-    const note = page.getByTestId('transcript-note').filter({ hasText: 'transcript gap' });
+    const text = 'transcript gap: replay resumed at hub_sequence 2010'
+        + ' (last seen 2000); earlier envelopes are gone';
+    const note = page.getByTestId('transcript-note').filter({ hasText: text });
     await expect(note).toBeVisible();
     await page.request.post(`${STUB}/__stub/message`, { data: {
         type: 'snapshot', session: sessions.sessions[0], transcript: [last],
     } });
     await expect(note).toBeVisible();
+    await expect(page.getByTestId('transcript-note').filter({ hasText:
+        'transcript gap: replay resumed at hub_sequence 2010 (last seen 0); earlier envelopes are gone',
+    })).toBeVisible();
 });
 
 test('shows an honest activity cue through a live run', async ({ page }) => {

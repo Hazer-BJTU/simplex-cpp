@@ -160,6 +160,8 @@ export interface ViewState {
     readonly lastSeq: number;
     /** Eviction requires a full replacement replay, even if a late live frame arrives. */
     readonly replayRequired: boolean;
+    /** Changes on eviction so in-flight legacy replies cannot satisfy a later recovery. */
+    readonly replayGeneration: number;
     /** request_id -> the `request` item currently in `items`. */
     readonly requestIndex: ReadonlyMap<string, RequestItem>;
     /** request_id -> hub request entry. */
@@ -202,6 +204,7 @@ export function emptyView(id: SessionId): ViewState {
         historyWorker: null,
         lastSeq: 0,
         replayRequired: false,
+        replayGeneration: 0,
         requestIndex: new Map(),
         requests: new Map(),
         seenRequests: new Set(),
