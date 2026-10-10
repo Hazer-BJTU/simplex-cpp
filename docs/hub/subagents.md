@@ -55,7 +55,10 @@ Receive preserves correlated request states/run status and conversation revision
 cursors and stale/incomplete/truncated flags. Visible user/assistant text excludes
 reasoning/tools/extras; local presentation clipping is marked `output_truncated`.
 Incoming RPC messages and rendered results are bounded to 256 KiB, with a shared
-96 KiB budget for displayed conversation/summary bodies. Before chronological
+budget of at most 96 KiB for displayed conversation/summary bodies. Actual labels
+and clipping annotations count toward the result limit. A fitting page keeps its
+ordinary body allocation; only an oversized presentation reduces that allowance
+in bounded local passes, without another RPC. Before chronological
 rendering, each turn's latest nonempty assistant step and compact summaries get
 space ahead of older assistant steps and user input. Original indices and omission
 markers remain visible; oversized answers/summaries may themselves be clipped.

@@ -127,19 +127,18 @@ std::string prefix(const std::string& text, std::size_t bytes)
 
 /**
  * Metadata is whitelisted and small; user/assistant/summary bodies share a
- * preallocated budget of at most 96 KiB. Latest assistant outputs and compact summaries
- * get space before older content, without changing chronological display order.
+ * preallocated budget of at most 96 KiB. Latest assistant outputs and compact
+ * summaries get space before older content, without changing display order.
  * The parsed reply owns the strings for the lifetime of this local presentation;
  * the pointer keys avoid copying large bodies just to plan their allocation.
- * A metadata-only pass reserves labels, separators and clipping annotations
- * before body allocation. The complete document also has a final 256 KiB check.
+ * The complete document includes actual labels and clipping annotations in its
+ * 256 KiB check. Body allowances shrink only after a presentation exceeds it.
  */
 struct Presentation {
     ToolResult output;
     std::unordered_map<const std::string*, std::size_t> body_limits;
     bool clipped = false;
     std::size_t body_budget = 96 * 1024;
-    std::size_t block_count = 0;
 
     /**
      * Share the budget among result bodies first. Allocate short results whole,
@@ -187,7 +186,6 @@ struct Presentation {
 
     void block(std::string_view label, const std::string& text)
     {
-        ++block_count;
         auto body = text.substr(0, body_limits.at(&text));
         const bool truncated = body.size() != text.size();
         clipped |= truncated;
@@ -478,22 +476,25 @@ Presentation format_presentation(const std::string& route, const Json& value,
 model_io::Content format_result(const std::string& route, const Json& value, const Json& arguments)
 {
     std::size_t body_budget = 96 * 1024;
-    if (route == "subagent/receive" && arguments.contains("subagent_id")
-        && !arguments.contains("answer")) {
-        // Validate and render the exact metadata/record structure with empty
-        // bodies. A nonempty body can add at most 32 bytes over its empty-block
-        // annotation (byte-count digits, truncation wording and final newline).
-        // One further byte covers output_truncated changing from true to false.
-        // No exchange is repeated: both passes use the same immutable reply.
-        auto skeleton = format_presentation(route, value, arguments, 0);
-        const auto metadata_bytes = skeleton.render().raw.size();
-        const auto overhead = metadata_bytes + skeleton.block_count * 32 + 1;
-        if (overhead > result_bytes) {
-            throw RenderingBudgetExceeded();
+    const bool can_clip_bodies = route == "subagent/receive"
+        && arguments.contains("subagent_id") && !arguments.contains("answer");
+    // Try the ordinary body allocation first: short complete blocks often have
+    // smaller headers than empty/truncated ones. Only an actual oversized
+    // presentation warrants clipping, never a worst-case header reservation.
+    // Halving the allowance bounds this to 18 local passes including zero.
+    // Every pass uses the same immutable reply; no RPC is repeated. Exact
+    // answer pages stay byte-identical and do not enter this clipping fallback.
+    for (;;) {
+        auto presentation = format_presentation(route, value, arguments, body_budget);
+        try {
+            return presentation.render();
+        } catch (const RenderingBudgetExceeded&) {
+            if (!can_clip_bodies || body_budget == 0) {
+                throw;
+            }
         }
-        body_budget = std::min(body_budget, result_bytes - overhead);
+        body_budget /= 2;
     }
-    return format_presentation(route, value, arguments, body_budget).render();
 }
 
 /** Only protocol codes, never arbitrary Hub message bodies, enter exceptions. */

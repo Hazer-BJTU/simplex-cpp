@@ -5,6 +5,7 @@
 #include <boost/beast.hpp>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <regex>
 #include <set>
 #include <boost/uuid/random_generator.hpp>
@@ -353,9 +354,9 @@ BOOST_AUTO_TEST_CASE(subagent_failure_diagnostics_are_safe_and_never_retry)
     }
 }
 
-BOOST_AUTO_TEST_CASE(subagent_fragmented_pages_reserve_presentation_overhead)
+BOOST_AUTO_TEST_CASE(subagent_fragmented_pages_use_actual_presentation_overhead)
 {
-    for (const int parts : {2480, 3900}) {
+    for (const int parts : {2480, 3000, 3900}) {
         auto value = detail();
         auto& turn = value["conversation"]["turns"][0];
         turn["user"] = Json::array();
@@ -369,28 +370,58 @@ BOOST_AUTO_TEST_CASE(subagent_fragmented_pages_reserve_presentation_overhead)
         }
         turn["steps"].push_back({{"index", 9007199254740900ULL + (parts + 127) / 128},
             {"content", Json::array({{{"type", "text"}, {"modality", "text"},
-                {"raw", "DISTINCTIVE_FINAL_BODY " + std::string(parts == 2480 ? 110000 : 100, 'a')}}})}});
+                {"raw", "DISTINCTIVE_FINAL_BODY " + std::string(parts == 3900 ? 100 : 110000, 'a')}}})}});
         // A valid assembled reply, within every declared turn/step/part limit.
         BOOST_REQUIRE(turn["steps"].size() <= 32u);
         BOOST_REQUIRE(value.dump().size() < 255u * 1024);
-        if (parts == 2480) {
-            const auto received = call("subagent_receive", {{"subagent_id", "subagent-child"}}, value);
-            BOOST_TEST(received.raw.size() <= 256u * 1024);
-            BOOST_TEST(received.raw.find("DISTINCTIVE_FINAL_BODY") != std::string::npos);
-            BOOST_TEST(received.raw.find("[[output_truncated]]: true") != std::string::npos);
-            BOOST_CHECK_NO_THROW(Json(received.raw).dump());
+        const auto received = call("subagent_receive", {{"subagent_id", "subagent-child"}, {"limit", 1}}, value);
+        BOOST_TEST(received.raw.size() <= 256u * 1024);
+        BOOST_TEST(received.raw.find("DISTINCTIVE_FINAL_BODY") != std::string::npos);
+        BOOST_CHECK_NO_THROW(Json(received.raw).dump());
+        if (parts == 3900) {
+            // The complete one-turn page fits. No body may be clipped merely
+            // because its empty-block header plus a worst-case reserve is large.
+            BOOST_TEST(received.raw.find("[[output_truncated]]: false") != std::string::npos);
+            BOOST_TEST(received.raw.find("truncated, first") == std::string::npos);
+            const std::regex short_body("\\(1 bytes\\):\\nx\\n");
+            const auto count = std::distance(std::sregex_iterator(received.raw.begin(), received.raw.end(), short_body),
+                std::sregex_iterator());
+            BOOST_TEST(count == parts);
         } else {
-            BOOST_CHECK_EXCEPTION(call("subagent_receive", {{"subagent_id", "subagent-child"}}, value),
-                tools::InvokeException, [](const auto& error) {
-                    const std::string text = error.what();
-                    return text.find("256 KiB budget") != std::string::npos
-                        && text.find("smaller limit") != std::string::npos
-                        && text.find("invalid Hub") == std::string::npos
-                        && text.find("mutation") == std::string::npos
-                        && text.find("DISTINCTIVE_FINAL_BODY") == std::string::npos;
-                });
+            BOOST_TEST(received.raw.find("[[output_truncated]]: true") != std::string::npos);
+            if (parts == 3000) {
+                // The usual 96 KiB body allocation overflows once real headers
+                // are included. A reduced allowance must retain the final prefix.
+                BOOST_TEST(received.raw.find(std::string(90000, 'a')) == std::string::npos);
+            }
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(subagent_excessive_actual_structure_reports_a_read_budget_failure)
+{
+    auto value = detail();
+    auto& turn = value["conversation"]["turns"][0];
+    turn["user"] = Json::array();
+    turn["steps"] = Json::array();
+    for (int step = 0; step < 32; ++step) {
+        Json content = Json::array();
+        for (int part = 0; part < 128; ++part) {
+            content.push_back({{"type", "external_ref"}, {"modality", "document"}, {"raw", "x"}});
+        }
+        turn["steps"].push_back({{"index", 9007199254740900ULL + step}, {"content", content}});
+    }
+    // Both complete and omitted-body headers exceed 256 KiB, even though the
+    // actual reply remains below the assembled WebSocket transport limit.
+    BOOST_REQUIRE(value.dump().size() < 255u * 1024);
+    BOOST_CHECK_EXCEPTION(call("subagent_receive", {{"subagent_id", "subagent-child"}, {"limit", 1}}, value),
+        tools::InvokeException, [](const auto& error) {
+            const std::string text = error.what();
+            return text.find("256 KiB budget") != std::string::npos
+                && text.find("smaller limit") != std::string::npos
+                && text.find("invalid Hub") == std::string::npos
+                && text.find("mutation") == std::string::npos;
+        });
 }
 
 BOOST_AUTO_TEST_CASE(subagent_read_rejections_are_actionable_without_mutation_warnings)

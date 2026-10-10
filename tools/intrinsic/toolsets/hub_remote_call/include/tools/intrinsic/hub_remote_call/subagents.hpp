@@ -76,8 +76,8 @@ public:
  * Cursors address the Hub's current bounded projection; restart from zero when
  * its revision/worker changes. This is a snapshot with no polling or waiting.
  * Exact answer queries require all source fields, including the fingerprint.
- * Presentation reserves structural overhead before dividing the bounded body
- * allowance; excessive structure is a read-only budget failure.
+ * Presentation counts actual structural overhead and reduces body allowances
+ * only if needed; excessive structure is a read-only budget failure.
  */
 class SubagentReceiveTool final : public SubagentToolBase {
 public:

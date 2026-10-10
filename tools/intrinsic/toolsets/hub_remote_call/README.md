@@ -96,9 +96,10 @@ request/operation IDs, truthful dispatch/run states, visible turn/step associati
 pagination and history completeness/freshness flags. Response diagnostics and
 conversation bodies are clipped on UTF-8 boundaries with `output_truncated`;
 bodies share up to 96 KiB and the rendered document cannot exceed 256 KiB.
-A metadata-only pass validates the same reply and reserves labels, separators and
-clipping annotations before allocating bodies; it does not perform another RPC.
-Each turn's latest nonempty assistant
+The initial presentation counts actual labels, separators and clipping annotations,
+preserving short-part pages that fit. Only an oversized presentation reduces the
+body allowance in bounded local passes over the same reply; no RPC is repeated.
+Exact answer pages do not use this clipping fallback. Each turn's latest nonempty assistant
 step and compact summaries share space first, then older assistant steps and
 user input use the remainder. Display stays chronological, with original indices
 and explicit clipping markers even for bodies omitted entirely. If the prioritized
