@@ -135,6 +135,8 @@ export interface CallView {
 export interface ResultView {
     readonly id: string;
     readonly name: string;
+    /** Optional legacy correlation evidence; missing arguments stay undefined. */
+    readonly args: unknown;
     /** The result's readable text, exactly as the worker rendered it. */
     readonly text: string;
     readonly security: string;
@@ -180,6 +182,7 @@ export function resultView(value: unknown): ResultView {
     return {
         id: str(query.id),
         name: str(query.name) || str(entry.type) || '(unnamed result)',
+        args: query.arguments,
         text,
         security: str(query.security),
         error: error

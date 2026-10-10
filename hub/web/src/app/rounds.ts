@@ -74,6 +74,8 @@ export interface ToolCall {
     readonly scheduling: string;
     readonly status: CallStatus;
     readonly result: ResultView | null;
+    /** A retained result without an unambiguous proposal; never guessed by order. */
+    readonly unmatched?: boolean;
     /** The result text, read for structure. Null until a result arrives. */
     readonly output: ToolOutput | null;
     readonly prompt: ConfirmationPrompt | null;
@@ -219,6 +221,8 @@ interface Draft {
     proposedAt: Map<string, number | null>;
     /** Calls whose result has already been attached. */
     settled: Set<string>;
+    /** Only the next dispatch batch may echo the latest model's legacy calls. */
+    pendingCallBatch: string[] | null;
 }
 
 function newDraft(key: string, index: number, kind: 'prelude' | 'run'): Draft {
@@ -253,6 +257,7 @@ function newDraft(key: string, index: number, kind: 'prelude' | 'run'): Draft {
         clock: '',
         proposedAt: new Map(),
         settled: new Set(),
+        pendingCallBatch: null,
     };
 }
 
@@ -262,9 +267,31 @@ function stampOf(envelope: WorkerEnvelope): number | null {
     return Number.isNaN(at) ? null : at;
 }
 
-/** The stable identity of a call within one round. */
-function keyOf(call: CallView, ordinal: number): string {
-    return call.id || `${call.name}#${ordinal}`;
+/**
+ * Compare JSON arguments without depending on object key order or recursion.
+ * Legacy correlation is best effort: excessive depth/work refuses a match.
+ * ID-bearing calls never need this comparison.
+ */
+function sameArguments(left: unknown, right: unknown): boolean {
+    const pending: [unknown, unknown, number][] = [[left, right, 0]];
+    let budget = 4096;
+    while (pending.length > 0) {
+        if (--budget < 0) return false;
+        const [a, b, depth] = pending.pop()!;
+        if (Object.is(a, b)) continue;
+        if (depth >= 32 || a === null || b === null
+            || typeof a !== 'object' || typeof b !== 'object'
+            || Array.isArray(a) !== Array.isArray(b)) return false;
+        const before = a as Record<string, unknown>;
+        const after = b as Record<string, unknown>;
+        const keys = Object.keys(before);
+        if (keys.length !== Object.keys(after).length || keys.length > budget) return false;
+        for (const key of keys) {
+            if (!Object.hasOwn(after, key)) return false;
+            pending.push([before[key], after[key], depth + 1]);
+        }
+    }
+    return true;
 }
 
 /** Settle a call's status from everything known about it. */
@@ -348,21 +375,23 @@ function resultsOf(envelope: WorkerEnvelope): ResultView[] {
  * `tool_calls` and `model_response.invokes` describe the same batch: core emits
  * the response containing the calls and then a `tool_calls` event for it. The
  * old panel drew a card for each, so one `run_command` appeared twice. They are
- * merged by id here — but only by id, because the protocol allows them to
- * differ (the batch is pre-dispatch, the response is the message), so a call
- * that appears in only one of them stays a card of its own rather than being
- * dropped.
+ * merged by id. For older workers without ids, the next dispatch batch can
+ * reuse proposal keys only if the whole ordered batch matches names and
+ * arguments. Otherwise each legacy call gets an event/position key, independent
+ * of preceding calls and stable across re-folds. This never merges repeated
+ * identical calls from separate model exchanges.
  */
 function addCalls(
     draft: Draft,
     prompts: Prompts,
     views: readonly CallView[],
-    envelope: WorkerEnvelope,
+    item: EventItem,
+    pairedKeys?: readonly string[],
 ): string[] {
     const keys: string[] = [];
-    for (const view of views) {
-        const ordinal = draft.calls.filter((call) => call.name === view.name).length;
-        const key = keyOf(view, ordinal);
+    for (const [ordinal, view] of views.entries()) {
+        const key = view.id || pairedKeys?.[ordinal]
+            || JSON.stringify(['legacy-call', sourceKey(item), ordinal]);
         keys.push(key);
         if (draft.calls.some((call) => call.key === key)) continue;
         const prompt = promptFor(prompts, view);
@@ -380,9 +409,25 @@ function addCalls(
             reportedMs: null,
             elapsedMs: null,
         });
-        draft.proposedAt.set(key, stampOf(envelope));
+        draft.proposedAt.set(key, stampOf(item.envelope));
     }
     return keys;
+}
+
+/** Consume a single possible model/dispatch echo, never a previous exchange. */
+function pairedCallKeys(draft: Draft, views: readonly CallView[], omitted: number): readonly string[] | undefined {
+    const keys = draft.pendingCallBatch;
+    draft.pendingCallBatch = null;
+    const model = draft.assistant.at(-1);
+    if (!keys || !model || keys.length !== views.length
+        || omittedToolItems(obj(model.envelope.data)?.invokes) !== omitted) return undefined;
+    const matches = views.every((view, index) => {
+        const call = draft.calls.find(call => call.key === keys[index]);
+        if (!call || draft.settled.has(call.key)) return false;
+        if (view.id || call.id) return view.id === call.id;
+        return view.name === call.name && sameArguments(view.args, call.args);
+    });
+    return matches ? keys : undefined;
 }
 
 /** Attach a settled result to its call. */
@@ -414,14 +459,17 @@ function settle(
  * Match a result to the call it answers.
  *
  * Ids are the protocol's own correlation and are used whenever both sides have
- * one. A result that arrives without one is matched to the earliest call of the
- * same name that has not been settled, which is the best available reading.
+ * one. An id-less result needs exactly one unsettled id-less proposal with the
+ * same name and, when supplied, equal arguments. Missing/ambiguous evidence is
+ * displayed separately, never attached by arrival order or to an identified
+ * call. A complete id-less batch is still ambiguous if its calls are identical.
  */
 function matchCall(draft: Draft, result: ResultView): ToolCall | null {
     if (result.id) return draft.calls.find((call) => call.id === result.id) ?? null;
-    return draft.calls.find(
-        (call) => call.name === result.name && !draft.settled.has(call.key),
-    ) ?? null;
+    const candidates = draft.calls.filter(call => !call.id && !call.result
+        && call.name === result.name
+        && (result.args === undefined || sameArguments(call.args, result.args)));
+    return candidates.length === 1 ? candidates[0]! : null;
 }
 
 /** Stable retained identity, scoped independently of reused execution IDs. */
@@ -737,6 +785,7 @@ export function buildRounds(
         if (name === 'run_finished') {
             const summary = obj(envelope.data) ?? {};
             const run = groups.execution(envelope);
+            run.pendingCallBatch = null;
             run.status = str(summary.status) || 'finished';
             if (run.status === 'failed') {
                 const failure = obj(summary.failure) ?? {};
@@ -777,7 +826,8 @@ export function buildRounds(
             track(run, item);
             const message = obj(envelope.data) ?? {};
             const cost = costLine(message.cost);
-            const callIds = addCalls(run, prompts, invokesOf(envelope), envelope);
+            const callIds = addCalls(run, prompts, invokesOf(envelope), item);
+            run.pendingCallBatch = callIds;
             run.assistant.push({
                 key: item.id,
                 envelope,
@@ -801,7 +851,9 @@ export function buildRounds(
             const run = groups.execution(envelope);
             track(run, item);
             const claimed = new Set(run.assistant.flatMap((block) => [...block.callIds]));
-            const keys = addCalls(run, prompts, batchOf(envelope), envelope);
+            const views = batchOf(envelope);
+            const keys = addCalls(run, prompts, views, item,
+                pairedCallKeys(run, views, omittedToolItems(envelope.data)));
             for (const key of keys) {
                 // A card the model response already claims is drawn with it, in
                 // the response's place rather than the batch's.
@@ -822,6 +874,7 @@ export function buildRounds(
 
         if (name === 'tool_results') {
             const run = groups.execution(envelope);
+            run.pendingCallBatch = null;
             track(run, item);
             for (const result of derivations?.resultsOf(envelope) ?? resultsOf(envelope)) {
                 const call = matchCall(run, result);
@@ -840,6 +893,7 @@ export function buildRounds(
                         scheduling: '',
                         status: statusOf(result, null, true),
                         result,
+                        unmatched: true,
                         output,
                         prompt: null,
                         reportedMs: output.kind === 'document'

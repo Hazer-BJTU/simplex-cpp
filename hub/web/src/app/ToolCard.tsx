@@ -142,8 +142,8 @@ function Fields({ fields }: { fields: OutputDocument['fields'] }) {
     if (fields.length === 0) return null;
     return (
         <dl className="flex flex-wrap gap-x-3 gap-y-0.5 px-2 py-1 text-xs [overflow-wrap:anywhere]">
-            {fields.map((field) => (
-                <div key={field.name} className="flex gap-1">
+            {fields.map((field, index) => (
+                <div key={`${field.name}-${index}`} className="flex gap-1">
                     <dt className="text-ink-faint">{field.name}</dt>
                     <dd className="font-mono text-ink">{field.value}</dd>
                 </div>
@@ -173,8 +173,8 @@ function Result({ call }: { call: ToolCall }) {
             {call.output?.kind === 'document' && !raw && (
                 <div className="space-y-1">
                     <Fields fields={call.output.document.fields} />
-                    {call.output.document.blocks.map((block) => (
-                        <Block key={block.name} block={block} />
+                    {call.output.document.blocks.map((block, index) => (
+                        <Block key={`${block.name}-${index}`} block={block} />
                     ))}
                     {call.output.document.rest.length > 0 && (
                         <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded
@@ -273,6 +273,9 @@ export const ToolCard = memo(function ToolCard({ call }: { call: ToolCall }) {
                         </pre>
                     )}
                     <Result call={call} />
+                    {call.unmatched && <p className="text-ink-muted">
+                        No unambiguous call match was retained for this result.
+                    </p>}
                     <button
                         type="button"
                         className="text-ink-faint hover:text-ink"

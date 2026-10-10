@@ -7,6 +7,12 @@ test('headless entries expose status, policy and global approvals without conver
     await open(page);
     await withSession(page, {
         ...runningSession(id), kind: 'headless',
+        confirmations: ['decided', 'expired'].map((state, index) => ({
+            confirmation_id: `settled-${index}`, session_id: id, worker_id: 'stub-worker',
+            run_id: 'stub-run', state, verified: true, identity_state: 'live', call: {},
+            received_at: '2026-01-01T00:00:00.000Z', deadline_at: null,
+            settled_at: '2026-01-01T00:00:01.000Z', decision: null, reason: null,
+        })),
         subagent: { parent: 'parent-session', lifecycle: 'ready', policy: 'ask',
             health: 'healthy', reason: 'live identified worker event channel', active: false,
             observed_at: '2026-01-01T00:00:01.000Z' },
@@ -14,6 +20,7 @@ test('headless entries expose status, policy and global approvals without conver
     await page.reload();
     await page.getByTestId('session-row').click();
     await expect(page.getByTestId('headless-panel')).toBeVisible();
+    await expect(page.getByTestId('headless-panel').getByText('0 pending', { exact: true })).toBeVisible();
     await expect(page.getByText('Headless subagent · parent parent-session', { exact: true })).toBeVisible();
     await expect(page.getByLabel('message', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Send', exact: true })).toHaveCount(0);
@@ -30,7 +37,15 @@ test('headless entries expose status, policy and global approvals without conver
     await page.request.post(`${STUB}/__stub/confirm`, {
         data: { session: id, confirmation_id: 'child-approval', call: { name: 'run_command', arguments: { command: 'echo test' } } },
     });
+    // The real Hub publishes the session description after each prompt change.
+    const pending = await (await page.request.get(`${STUB}/api/sessions/${id}`)).json();
+    await page.request.post(`${STUB}/__stub/message`, { data: { type: 'session', session: pending.session } });
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
+    await expect(page.getByTestId('headless-panel').getByText('1 pending', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Deny', exact: true }).click();
     await expect.poll(async () => (await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions.length).toBe(1);
+    await page.request.post(`${STUB}/__stub/settle`, { data: { session: id, confirmation_id: 'child-approval' } });
+    const settled = await (await page.request.get(`${STUB}/api/sessions/${id}`)).json();
+    await page.request.post(`${STUB}/__stub/message`, { data: { type: 'session', session: settled.session } });
+    await expect(page.getByTestId('headless-panel').getByText('0 pending', { exact: true })).toBeVisible();
 });

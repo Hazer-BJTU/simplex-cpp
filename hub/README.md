@@ -483,6 +483,16 @@ state or approval authority.
 If inactive control caches themselves keep the aggregate display budget above
 40 MiB, they may also be evicted and recovered through replacement replay.
 
+Tool IDs are the normal correlation contract. For legacy events without IDs,
+the panel merges a model proposal with its next dispatch batch only when the
+entire ordered batch agrees on names and arguments. Repeated calls in later
+exchanges remain separate. An id-less result needs a unique unsettled id-less
+proposal with the same name and, when present, matching arguments. Ambiguous
+results remain separate and show a disclosure notice; the panel never guesses
+by result order or attaches them to an ID-bearing call. Argument comparison is
+bounded; over-budget comparisons also remain unmatched. Headless approval
+counts include only unsettled prompts.
+
 ## Tests
 
 ```sh
