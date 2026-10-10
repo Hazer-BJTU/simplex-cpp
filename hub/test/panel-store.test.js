@@ -110,7 +110,8 @@ function events(store, id = 'demo') {
 }
 
 function notes(store, id = 'demo') {
-    return store.getState().items(id).filter((item) => item.kind === 'note');
+    return [...store.getState().view(id).transcriptNotices,
+        ...store.getState().items(id).filter((item) => item.kind === 'note')];
 }
 
 describe('worker-backed display history', () => {

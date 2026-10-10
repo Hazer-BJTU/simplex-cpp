@@ -209,6 +209,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
      */
     function cursorFor(sessionId: SessionId): number {
         if (!store.getState().hasCapability('transcript-replay')) return 0;
+        if (store.getState().views.get(sessionId)?.replayRequired) return 0;
         return store.getState().lastSeq(sessionId);
     }
 
@@ -220,7 +221,8 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             subscriptionRequests.set(sessionId, requestId);
             subscribedSessions.delete(sessionId);
             return socket.send({ type: 'subscribe', session: sessionId, since: cursor,
-                paged: true, replace, request_id: requestId });
+                paged: true, replace: replace || store.getState().views.get(sessionId)?.replayRequired === true,
+                request_id: requestId });
         }
         return socket.send({ type: 'subscribe', session: sessionId, since: cursor });
     }

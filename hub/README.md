@@ -470,6 +470,18 @@ When a worker is connected, the panel also requests a bounded, display-only
 history projection of its turns. This restores the conversation after a panel
 reload or hub restart without copying the worker's full state into hub storage.
 Long turns are paged, and the hub logs only small cursor markers for the replies.
+The panel may evict inactive transcript/history copies to stay within its display
+budget. It resets their replay cursors and request indexes; reselecting a session
+recovers the events the Hub still retains. Events already evicted by the Hub
+cannot be recovered, and a visible notice reports that gap. Recovery notices
+survive transcript trimming and reload in a separate bounded cache (the latest
+8 notices, at most 16 KiB). Worker-history truncation remains visible after a
+transcript reload. Status, readiness, options and compact-result caches take
+priority over incidental output, while the per-view event cache still respects
+its 32-name / 4 MiB limits. These display limits do not change canonical Worker
+state or approval authority.
+If inactive control caches themselves keep the aggregate display budget above
+40 MiB, they may also be evicted and recovered through replacement replay.
 
 ## Tests
 

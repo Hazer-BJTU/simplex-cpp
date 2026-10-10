@@ -33,6 +33,15 @@ import { parseCompactResult } from './compact.ts';
 /** Envelopes retained per session on the client. */
 export const TRANSCRIPT_CAP = 2000;
 export const TRANSCRIPT_BYTE_CAP = 8 * 1024 * 1024;
+/** Recovery notices have their own small budget, independent of event trimming. */
+export const TRANSCRIPT_NOTICE_CAP = 8;
+export const TRANSCRIPT_NOTICE_BYTE_CAP = 16 * 1024;
+export const LATEST_EVENT_CAP = 32;
+export const LATEST_EVENT_BYTE_CAP = 4 * 1024 * 1024;
+/** These envelopes drive controls and compact/history reconciliation. */
+const CONTROL_EVENTS: ReadonlySet<string> = new Set([
+    'ready', 'status', 'options', 'compact_finished',
+]);
 const itemSizes = new WeakMap<object, number>();
 const arraySizes = new WeakMap<object, number>();
 /** Encoded display size, cached by immutable item/array identity. */
@@ -138,6 +147,8 @@ export interface ViewState {
      */
     readonly epoch: TranscriptEpoch | null;
     readonly items: readonly TranscriptItem[];
+    /** Bounded replay/eviction warnings that survive transcript trimming and reload. */
+    readonly transcriptNotices: readonly NoteItem[];
     /** Display-only history received from the worker, in turn order. */
     readonly history: readonly HistoryTurn[];
     readonly historyLoading: boolean;
@@ -147,6 +158,8 @@ export interface ViewState {
     readonly historyWorker: string | null;
     /** Highest `hub_sequence` seen *in `epoch`*; also the replay cursor. */
     readonly lastSeq: number;
+    /** Eviction requires a full replacement replay, even if a late live frame arrives. */
+    readonly replayRequired: boolean;
     /** request_id -> the `request` item currently in `items`. */
     readonly requestIndex: ReadonlyMap<string, RequestItem>;
     /** request_id -> hub request entry. */
@@ -181,12 +194,14 @@ export function emptyView(id: SessionId): ViewState {
         id,
         epoch: null,
         items: [],
+        transcriptNotices: [],
         history: [],
         historyLoading: false,
         historyTruncated: false,
         historySequence: null,
         historyWorker: null,
         lastSeq: 0,
+        replayRequired: false,
         requestIndex: new Map(),
         requests: new Map(),
         seenRequests: new Set(),
@@ -239,15 +254,20 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
     }
     // Keep only a bounded derived cache. Unknown event names remain in the
     // transcript, but cannot grow a second unlimited per-name cache.
-    const latestEvents: Record<string, WorkerEnvelope> = name
-        ? { ...view.latestEvents, [name]: envelope }
-        : { ...view.latestEvents };
+    const latestEvents: Record<string, WorkerEnvelope> = { ...view.latestEvents };
     if (name) {
+        // Refresh insertion order on updates; it now represents recency.
+        delete latestEvents[name];
+        latestEvents[name] = envelope;
         const names = Object.keys(latestEvents);
-        while (names.length > 32 || displayBytes(Object.values(latestEvents)) > 4 * 1024 * 1024) {
-            const oldest = names.shift();
-            if (!oldest) break;
-            delete latestEvents[oldest];
+        while (names.length > LATEST_EVENT_CAP
+            || displayBytes(Object.values(latestEvents)) > LATEST_EVENT_BYTE_CAP) {
+            // Incidental output must not evict controls. If control envelopes
+            // alone exceed the hard budget, drop their least recent entry too.
+            const index = names.findIndex(key => !CONTROL_EVENTS.has(key));
+            const [removed] = names.splice(index < 0 ? 0 : index, 1);
+            if (!removed) break;
+            delete latestEvents[removed];
         }
     }
 
@@ -339,9 +359,28 @@ export function append(view: ViewState, ...added: readonly TranscriptItem[]): Vi
     return trim({ ...view, items: [...view.items, ...added] });
 }
 
-/** Prepend items to a view (used by the replay-gap note, which belongs first). */
-export function prepend(view: ViewState, item: TranscriptItem): ViewState {
-    return trim({ ...view, items: [item, ...view.items] });
+/** Keep recovery warnings visible above the transcript, within a separate hard budget. */
+export function addTranscriptNotice(view: ViewState, item: NoteItem): ViewState {
+    if (view.transcriptNotices.some(previous => previous.text === item.text && previous.tone === item.tone)) {
+        return view;
+    }
+    let transcriptNotices = [...view.transcriptNotices, item].slice(-TRANSCRIPT_NOTICE_CAP);
+    while (displayBytes(transcriptNotices) > TRANSCRIPT_NOTICE_BYTE_CAP) {
+        transcriptNotices = transcriptNotices.slice(1);
+    }
+    return { ...view, transcriptNotices };
+}
+
+/** Control caches retained when inactive transcript/history copies are evicted. */
+export function controlEvents(view: ViewState): Readonly<Record<string, WorkerEnvelope>> {
+    return Object.fromEntries(Object.entries(view.latestEvents)
+        .filter(([name]) => CONTROL_EVENTS.has(name)));
+}
+
+/** Display copies counted against the aggregate panel budget. */
+export function viewDisplayBytes(view: ViewState): number {
+    return displayBytes(view.items) + displayBytes(view.history)
+        + displayBytes(view.transcriptNotices) + displayBytes(Object.values(view.latestEvents));
 }
 
 /** A note about the transcript itself, not about the conversation. */

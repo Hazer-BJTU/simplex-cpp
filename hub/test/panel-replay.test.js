@@ -10,6 +10,73 @@ import { createPanelStore } from '../web/src/state/store.ts';
 import { setupPanelHub } from './helpers/panel.js';
 import { until, workerEvent } from './helpers/worker.js';
 
+it('reselects an evicted view with a zero cursor and restores still-retained tool events', async (t) => {
+    const subscriptions = [];
+    const ctx = await setupPanelHub(t, server => {
+        server.on('message', text => {
+            const message = JSON.parse(text.toString());
+            if (message.type === 'subscribe') subscriptions.push(message);
+        });
+    });
+    const session = ctx.hub.registry.create('evicted-replay');
+    ctx.hub.registry.create('pressure');
+    const worker = await ctx.connect(`/agent/${session.id}/events?token=${session.token}`);
+    for (const [index, [event, data]] of [
+        ['status', { active: false, capabilities: [] }],
+        ['tool_calls', [{ id: 'call', name: 'run_command', arguments: { command: 'echo restored' } }]],
+        ['tool_results', [{ query: { id: 'call', name: 'run_command' }, output: { raw: 'restored' } }]],
+    ].entries()) {
+        worker.send(workerEvent({ session: session.id, worker: 'eviction-worker',
+            sequence: index + 1, event, data }));
+    }
+    await until(() => session.stats.events === 3);
+    const store = createPanelStore();
+    const sockets = [];
+    class PanelWebSocket extends WebSocket {
+        constructor(url) { super(url); sockets.push(this); }
+    }
+    const client = createPanelClient({ store, location: new URL(`${ctx.base}/?session=${session.id}`),
+        storage: memoryStorage(), WebSocketImpl: PanelWebSocket,
+        fetchImpl: (url, options) => {
+            const { pathname, search } = new URL(url);
+            return fetch(`${ctx.base}${pathname}${search}`, options);
+        } });
+    t.after(() => {
+        client.stop();
+        for (const socket of sockets) socket.terminate();
+    });
+    await client.start();
+    await until(() => store.getState().lastSeq(session.id) === 3);
+    client.select('pressure');
+    // Populate other inactive display copies through normal store operations.
+    for (let index = 0; index < 9; ++index) {
+        const id = `large-${index}`;
+        store.getState().applyEvent({ session: id, envelope: {
+            ...workerEvent({ session: id, worker: 'other', sequence: 1,
+                event: 'model_response', data: { raw: 'x'.repeat(5 * 1024 * 1024) } }),
+            hub_sequence: 1,
+        } });
+    }
+    assert.equal(store.getState().lastSeq(session.id), 0);
+    assert.deepEqual(store.getState().items(session.id), []);
+    // Simulate a live frame whose delivery was already in flight at eviction.
+    worker.send(workerEvent({ session: session.id, worker: 'eviction-worker', sequence: 4,
+        event: 'model_response', data: { content: [{ type: 'text', raw: 'late frame' }] } }));
+    await until(() => session.stats.events === 4);
+    store.getState().applyEvent({ session: session.id,
+        envelope: ctx.hub.transcripts.get(session.id).toArray().at(-1) });
+    assert.equal(store.getState().lastSeq(session.id), 4);
+    client.select(session.id);
+    await until(() => subscriptions.filter(message => message.session === session.id).length === 2
+        && store.getState().view(session.id).replayRequired === false);
+    assert.equal(subscriptions.filter(message => message.session === session.id).at(-1).since, 0);
+    assert.equal(subscriptions.filter(message => message.session === session.id).at(-1).replace, true);
+    assert.deepEqual(store.getState().items(session.id).filter(item => item.kind === 'event')
+        .map(item => item.envelope.event), ['status', 'tool_calls', 'tool_results', 'model_response']);
+    assert.equal(store.getState().view(session.id).gaps, 0);
+    assert.match(store.getState().view(session.id).transcriptNotices[0].text, /inactive transcript copies/);
+});
+
 for (const reconnect of [false, true]) {
     it(`recovers more than 4 MiB of replay in a ${reconnect ? 'reconnecting' : 'fresh'} panel`, async (t) => {
         let release;

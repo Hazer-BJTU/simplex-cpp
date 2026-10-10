@@ -57,16 +57,18 @@ import type { PanelSocketStatus } from '../lib/socket.ts';
 import {
     LOG_CAP,
     REQUEST_CAP,
+    addTranscriptNotice,
     append,
+    controlEvents,
     emptyView,
     hubSequenceOf,
     indexEnvelope,
     nextItemId,
     noteWorkerSequence,
     noteItem,
-    prepend,
     statsOf,
     trim,
+    viewDisplayBytes,
     type LogState,
     type NoteTone,
     type OutboxItem,
@@ -383,6 +385,30 @@ function viewOf(state: PanelState, sessionId: SessionId): ViewState {
     return state.views.get(sessionId) ?? emptyView(sessionId);
 }
 
+/** Discard display copies and invalidate every cursor/index that depended on them. */
+function evictDisplay(view: ViewState, keepControls: boolean): ViewState {
+    const latestEvents = keepControls ? controlEvents(view) : {};
+    if (view.items.length === 0 && view.history.length === 0
+        && Object.keys(latestEvents).length === Object.keys(view.latestEvents).length) return view;
+    return addTranscriptNotice({
+        ...view,
+        items: [],
+        history: [],
+        historyLoading: false,
+        historyTruncated: view.history.length > 0 || view.historyTruncated,
+        historySequence: null,
+        historyWorker: null,
+        latestEvents,
+        lastSeq: 0,
+        replayRequired: true,
+        requestIndex: new Map(),
+        seenRequests: new Set(),
+        lastSequenceByWorker: {},
+        droppedItems: view.droppedItems + view.items.length,
+    }, noteItem('This panel cleared inactive transcript copies to stay within its memory budget.'
+        + ' Reselecting the session replays what the Hub still retains; older events may be unavailable.', 'warn'));
+}
+
 /** Replace one session's view. Returns an empty patch when nothing changed. */
 function withView(
     state: PanelState,
@@ -395,18 +421,27 @@ function withView(
     const views = new Map(state.views);
     views.set(sessionId, next);
     // A tab may visit many sessions. Evict display copies from inactive views
-    // before their aggregate budget grows indefinitely; approvals and status
-    // remain available, and selecting the session reloads history/replay.
-    let bytes = [...views.values()].reduce((sum, view) => sum
-        + displayBytes(view.items) + displayBytes(view.history) + displayBytes(Object.values(view.latestEvents)), 0);
+    // before their aggregate budget grows indefinitely. Preserve control caches
+    // first; under further pressure these inactive copies are replayable too.
+    // Approval authority is independent of both passes.
+    let bytes = [...views.values()].reduce((sum, view) => sum + viewDisplayBytes(view), 0);
     for (const [id, view] of views) {
         if (bytes <= 40 * 1024 * 1024) break;
         if (id === state.selected || id === sessionId) continue;
-        const size = displayBytes(view.items) + displayBytes(view.history) + displayBytes(Object.values(view.latestEvents));
-        if (size === 0) continue;
-        bytes -= size;
-        views.set(id, { ...view, items: [], history: [], historyTruncated: view.history.length > 0 || view.historyTruncated, latestEvents: {},
-            droppedItems: view.droppedItems + view.items.length });
+        const evicted = evictDisplay(view, true);
+        if (evicted === view) continue;
+        bytes -= viewDisplayBytes(view) - viewDisplayBytes(evicted);
+        views.set(id, evicted);
+    }
+    // A keep-list must not let many large inactive control caches defeat the
+    // existing aggregate target. The selected/current view remain exempt.
+    for (const [id, view] of views) {
+        if (bytes <= 40 * 1024 * 1024) break;
+        if (id === state.selected || id === sessionId) continue;
+        const evicted = evictDisplay(view, false);
+        if (evicted === view) continue;
+        bytes -= viewDisplayBytes(view) - viewDisplayBytes(evicted);
+        views.set(id, evicted);
     }
     return { views };
 }
@@ -564,16 +599,18 @@ function mergeEnvelopes(view: ViewState, transcript: readonly WorkerEnvelope[]):
     }
 
     if (duplicates > 0) next = { ...next, duplicates: next.duplicates + duplicates };
-    if (previousLast > 0 && firstSeq !== null && firstSeq > previousLast + 1) {
-        // The hub's ring no longer holds everything the panel asked for.
-        next = prepend(next, noteItem(
-            `transcript gap: replay resumed at hub_sequence ${firstSeq}`
-            + ` (last seen ${previousLast}); earlier envelopes are gone`,
-            'warn',
-        ));
-        next = { ...next, gaps: next.gaps + 1 };
-    }
-    return next;
+    return noteReplayGap(next, firstSeq, previousLast);
+}
+
+/** Report missing replay prefixes, including a replacement starting after sequence 1. */
+function noteReplayGap(view: ViewState, firstSeq: number | null, previousLast = 0): ViewState {
+    if (firstSeq === null || firstSeq <= previousLast + 1) return view;
+    const next = addTranscriptNotice(view, noteItem(
+        `transcript gap: replay resumed at hub_sequence ${firstSeq}`
+        + ` (last seen ${previousLast}); earlier envelopes are gone`,
+        'warn',
+    ));
+    return { ...next, gaps: next.gaps + 1 };
 }
 
 /** Rebuild request chips from the session description after a replay. */
@@ -622,7 +659,7 @@ function reconcileEpoch(
     // return nothing at all — precisely the silence A2 was made of.
     const views = new Map<SessionId, ViewState>();
     for (const [id, view] of state.views) {
-        views.set(id, prepend(
+        views.set(id, addTranscriptNotice(
             { ...view, epoch: incoming, lastSeq: 0 },
             noteItem('the hub restarted: its transcript numbering began again, so this'
                 + ' session was replayed from the start of the new hub process', 'warn'),
@@ -855,12 +892,12 @@ export function createPanelStore() {
 
             const latest = typeof message.latest === 'number' ? message.latest : 0;
             const before = viewOf(get(), sessionId);
-            if (message.replay_reset !== true && latest < before.lastSeq) {
+            if (message.replay_reset !== true && !before.replayRequired && latest < before.lastSeq) {
                 // The hub's counter went backwards. Either it restarted without
                 // reporting an epoch, or the session was deleted and recreated:
                 // both mean the cursor is meaningless and the delta in hand
                 // belongs to a numbering the panel is not holding.
-                set(withView(get(), sessionId, (view) => prepend(
+                set(withView(get(), sessionId, (view) => addTranscriptNotice(
                     { ...view, lastSeq: 0 },
                     noteItem('the hub\'s transcript numbering went backwards, so it restarted'
                         + ' (or this session was recreated): the replay started over', 'warn'),
@@ -869,7 +906,7 @@ export function createPanelStore() {
                 return { resubscribe: { session: sessionId, since: 0 } };
             }
 
-            if (message.replay_reset === true) {
+            if (message.replay_reset === true || before.replayRequired) {
                 get().applySnapshot({ type: 'snapshot', session: message.session,
                     transcript: message.transcript });
             } else {
@@ -1025,10 +1062,15 @@ export function createPanelStore() {
                 }
                 const existing = next.requestIndex.get(entry.request_id);
                 if (existing) {
+                    const replacement = { ...existing, request: entry };
                     const items = next.items.map((item) => (
-                        item === existing ? { ...item, request: entry } : item
+                        item === existing ? replacement : item
                     ));
-                    return { ...next, items };
+                    const requestIndex = new Map(next.requestIndex);
+                    // The index must reference the replacement item, so later
+                    // request updates and trimming can find the same chip.
+                    requestIndex.set(entry.request_id, replacement);
+                    return { ...next, items, requestIndex };
                 }
                 const item = { kind: 'request', id: nextItemId('req'), request: entry } as const;
                 const requestIndex = new Map(next.requestIndex);
@@ -1102,20 +1144,24 @@ export function createPanelStore() {
                     logs: view.logs,
                     history: view.history,
                     historyLoading: view.historyLoading,
+                    historyTruncated: view.historyTruncated,
                     historySequence: view.historySequence,
                     historyWorker: view.historyWorker,
                     modelSelection: view.modelSelection,
                     modelCatalog: view.modelCatalog,
                     tokenUsage: view.tokenUsage,
+                    transcriptNotices: view.transcriptNotices,
                 };
                 let maxSeq = 0;
+                let firstSeq: number | null = null;
                 for (const envelope of message.transcript ?? []) {
                     if (!envelope || typeof envelope !== 'object') continue;
                     const seq = hubSequenceOf(envelope);
+                    if (firstSeq === null && seq !== null) firstSeq = seq;
                     if (seq !== null && seq > maxSeq) maxSeq = seq;
                     next = foldEnvelope(next, envelope);
                 }
-                return { ...next, lastSeq: maxSeq,
+                return { ...noteReplayGap(next, firstSeq), lastSeq: maxSeq,
                     modelSelection: next.modelCatalog === view.modelCatalog ? view.modelSelection : {},
                     cancelPending: view.cancelPending && next.runActive
                         && next.lastRunId === view.lastRunId,

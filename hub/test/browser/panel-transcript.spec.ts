@@ -20,6 +20,25 @@ import {
     toolResult,
 } from './harness.ts';
 
+test('keeps a replay-gap notice visible when a full transcript is trimmed and reloaded', async ({ page }) => {
+    await open(page);
+    await page.request.post(`${STUB}/__stub/emit-batch`, { data: { seedOnly: true,
+        events: Array.from({ length: 2000 }, () => ({ event: 'diagnostic', data: {} })) } });
+    await page.getByTestId('session-row').click();
+    const sessions = await (await page.request.get(`${STUB}/api/sessions`)).json();
+    const last = { type: 'event', event: 'diagnostic', session_id: 'demo', worker_id: 'stub-worker',
+        sequence: 2001, hub_sequence: 2010, data: {}, run_id: '', request_id: '' };
+    await page.request.post(`${STUB}/__stub/message`, { data: {
+        type: 'subscribed', session: sessions.sessions[0], transcript: [last], latest: 2010, logs: [],
+    } });
+    const note = page.getByTestId('transcript-note').filter({ hasText: 'transcript gap' });
+    await expect(note).toBeVisible();
+    await page.request.post(`${STUB}/__stub/message`, { data: {
+        type: 'snapshot', session: sessions.sessions[0], transcript: [last],
+    } });
+    await expect(note).toBeVisible();
+});
+
 test('shows an honest activity cue through a live run', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
