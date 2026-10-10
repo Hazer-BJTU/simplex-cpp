@@ -25,7 +25,12 @@ try {
     const state = JSON.parse(readFileSync(path, 'utf8'));
     appendFileSync(directory + '/calls.jsonl', JSON.stringify({ args, executable: process.argv[1],
         host: process.env.DOCKER_HOST, context: process.env.DOCKER_CONTEXT, cwd: process.cwd() }) + '\\n');
-    if (args[0] === 'inspect') console.log(state.running ? 'true' : 'false');
+    if (args[0] === 'inspect') {
+        if (state.unknownInspections > 0) {
+            state.unknownInspections--; writeFileSync(path, JSON.stringify(state));
+            console.error('daemon temporarily unavailable'); process.exitCode = 1;
+        } else console.log(state.running ? 'true' : 'false');
+    }
     if (args[0] === 'kill' && !state.ignore) { state.running = false; writeFileSync(path, JSON.stringify(state)); }
 } catch { console.error('No such object: default daemon'); process.exitCode = 1; }
 `, { mode: 0o755 });
@@ -33,6 +38,25 @@ try {
         env: { DOCKER_CONFIG: directory, DOCKER_HOST: 'tcp://original-daemon:2376', DOCKER_CONTEXT: 'original-context' } };
     return { root, executable, directory, state, invocation };
 }
+
+it('restores terminal state after a transient inspect failure without an adoption monitor', async t => {
+    const fixture = dockerFixture(t);
+    const ctx = await startTestHub({ worker: { stopTimeoutMs: 1, sigtermGraceMs: 1, sigkillGraceMs: 1 } });
+    t.after(() => ctx.hub.stop());
+    const session = ctx.hub.registry.create('docker-transient');
+    ctx.hub.supervisor.adopt(session, { pid: 2147483647, pid_start_time: '123', command: fixture.executable,
+        args: fixture.invocation.args, cwd: fixture.root, docker_management: captureDockerManagement(fixture.invocation) });
+    const record = session.process;
+    clearInterval(record.monitor);
+    record.monitor = null;
+    record.adopted = false;
+    record.state = 'exited';
+    writeFileSync(fixture.state, JSON.stringify({ running: false, ignore: true, unknownInspections: 1 }));
+    assert.equal((await ctx.hub.supervisor.stop(session)).ok, true);
+    assert.equal(record.state, 'exited');
+    assert.equal(ctx.hub.supervisor.isRunning(session), false);
+    assert.equal(record.monitor, null);
+});
 
 it('captures the startup executable/environment and restores them without Hub defaults', async t => {
     const fixture = dockerFixture(t);
@@ -95,3 +119,33 @@ it('retains adopted child storage until the original Docker daemon confirms term
     assert.equal((await ctx.hub.supervisor.stop(child)).ok, true);
     assert.equal(child.subagent.lifecycle, 'stopped');
 });
+
+for (const state of ['exited', 'failed']) {
+    it(`finishes ${state} CLI records after container termination and includes them in stopAll`, async t => {
+        const fixture = dockerFixture(t);
+        const ctx = await startTestHub({ worker: { stopTimeoutMs: 1, sigtermGraceMs: 1, sigkillGraceMs: 1 } });
+        t.after(() => ctx.hub.stop());
+        const session = ctx.hub.registry.create(`docker-${state}`);
+        assert.equal(ctx.hub.supervisor.adopt(session, {
+            pid: 2147483647, pid_start_time: '123', command: fixture.executable,
+            args: fixture.invocation.args, cwd: fixture.root,
+            docker_management: captureDockerManagement(fixture.invocation),
+        }), true);
+        const record = session.process;
+        ctx.hub.supervisor.finish(record, state === 'failed' ? { error: 'CLI failed' } : { exitCode: 0 });
+        // Exit notification begins family cleanup; it must first fail while the
+        // daemon says the container ignores signals, leaving a stopping record.
+        await ctx.hub.supervisor.stop(session);
+        assert.equal(record.state, 'stopping');
+        assert.equal(await dockerRunning(record.dockerManagement), true);
+        // A later CLI-terminal observation must not exclude a live container
+        // from Hub shutdown's final stopAll pass.
+        record.state = state;
+        writeFileSync(fixture.state, JSON.stringify({ running: true, ignore: false }));
+        const results = await ctx.hub.supervisor.stopAll();
+        assert.equal(results.find(result => result.session === session.id)?.ok, true);
+        assert.equal(await dockerRunning(record.dockerManagement), false);
+        assert.equal(record.state, 'exited');
+        assert.equal(record.monitor, null);
+    });
+}

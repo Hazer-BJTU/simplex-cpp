@@ -55,5 +55,8 @@ explicit external workspace and is not a sandbox. The optional C++ `hub_remote_c
 toolset exposes trusted fork/send/receive operations without extra parent approval.
 Child tool approvals remain governed by the independent operator-owned policy;
 parent calls cannot override it through payload options.
+Unknown process ownership never authorizes automatic deletion. The separate operator
+recovery API can retry cleanup or explicitly attest independently verified termination;
+the latter can delete child persistence and is unavailable to worker remote tools.
 See the [complete subagent contract](../hub/subagents.md) for configuration snapshots,
 launch support, request deduplication, recovery and cleanup limits.

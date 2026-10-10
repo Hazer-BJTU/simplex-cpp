@@ -717,6 +717,35 @@ export function createPanelApi({
             subagents.setPolicy(session, body.policy);
             sendJson(res, 200, { session: session.describe() });
         },
+        'GET /api/subagents/recovery': ({ res }) => {
+            sendJson(res, 200, subagents?.recoveryStatus() ?? { blocked: false, reason: null });
+        },
+        'GET /api/sessions/:id/recovery': ({ res, params }) => {
+            const session = requireSession(res, params.id as string, true);
+            if (!session) return;
+            if (session.kind !== 'headless' || !subagents) {
+                sendError(res, 400, 'invalid_recovery', 'recovery requires a headless session');
+                return;
+            }
+            try { sendJson(res, 200, subagents.recoveryState(session)); }
+            catch { sendError(res, 409, 'recovery_unavailable', 'ownership metadata requires manual inspection'); }
+        },
+        'POST /api/sessions/:id/recover': async ({ req, res, params }) => {
+            const session = requireSession(res, params.id as string, true);
+            if (!session) return;
+            const body = await readJsonBody(req, 4096) as { action?: unknown; lifecycle_id?: unknown };
+            if (!body || typeof body !== 'object' || Array.isArray(body)
+                || registry.get(session.id) !== session || session.kind !== 'headless' || !subagents) {
+                sendError(res, 400, 'invalid_recovery', 'recovery requires a headless session');
+                return;
+            }
+            try {
+                const result = await subagents.recover(session, body.action, body.lifecycle_id);
+                sendJson(res, result.ok ? 200 : 409, { ...result, session: session.describe() });
+            } catch (error) {
+                sendError(res, 409, 'recovery_conflict', error instanceof Error ? error.message : 'recovery failed');
+            }
+        },
         'GET /api/sessions': ({ res }) => {
             sendJson(res, 200, {
                 sessions: listedSessions(),

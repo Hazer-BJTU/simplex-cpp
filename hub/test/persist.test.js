@@ -31,6 +31,21 @@ function scratch() {
 }
 
 describe('HubState', () => {
+    it('serializes headless ownership explicitly without adding it to ordinary hub state', () => {
+        const { config } = scratch();
+        const state = new HubState({ config, log });
+        const session = { id: 'subagent-test', kind: 'headless', token: 'child-token',
+            createdAt: 'created', lifecycleId: 'owned-lifecycle', spec: { threads: 2 },
+            process: { pid: 4242, pidStartTime: '123', startedAt: 'started', command: '/bin/true',
+                args: [], cwd: '/tmp', state: 'running' } };
+        assert.deepEqual(state.document([session]).sessions, []);
+        const child = state.sessionDocument(session);
+        assert.equal(child.id, session.id);
+        assert.equal(child.token, session.token);
+        assert.equal(child.lifecycle_id, session.lifecycleId);
+        assert.equal(child.spec.threads, 2);
+        assert.equal(child.process.pid_start_time, '123');
+    });
     it('round-trips sessions, tokens, and process identity', () => {
         const { config, dataDir } = scratch();
         const state = new HubState({ config, log });

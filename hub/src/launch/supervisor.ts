@@ -98,12 +98,33 @@ export interface LogStream {
  */
 export function readProcessStartTime(pid: number): string | null {
     try {
-        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-        const after = stat.slice(stat.lastIndexOf(')') + 1).trim();
-        const fields = after.split(/\s+/);
-        return fields[19] ?? null;
+        return processStartTime(pid);
     } catch {
         return null;
+    }
+}
+
+function processStartTime(pid: number): string | null {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const after = stat.slice(stat.lastIndexOf(')') + 1).trim();
+    return after.split(/\s+/)[19] ?? null;
+}
+
+/** Unavailable identity is not evidence of death; absence/reuse on Linux is. */
+export function processIdentity(pid: unknown, startTime: unknown): 'same' | 'gone' | 'unknown' {
+    if (process.platform !== 'linux' || typeof pid !== 'number'
+        || !Number.isInteger(pid) || pid <= 0 || typeof startTime !== 'string'
+        || !/^\d+$/.test(startTime)) return 'unknown';
+    try {
+        const current = processStartTime(pid);
+        return current === null ? 'unknown' : current === startTime ? 'same' : 'gone';
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return 'unknown';
+        // Missing /proc entries can mean an unavailable/hidden procfs, not a
+        // dead worker. Require kernel-confirmed absence before deleting data.
+        try { process.kill(pid, 0); }
+        catch (probe) { return (probe as NodeJS.ErrnoException).code === 'ESRCH' ? 'gone' : 'unknown'; }
+        return 'unknown';
     }
 }
 
@@ -115,10 +136,7 @@ export function readProcessStartTime(pid: number): string | null {
  * the cost of being wrong is signalling a stranger.
  */
 export function isSameProcess(pid: unknown, startTime: unknown): boolean {
-    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
-    if (typeof startTime !== 'string' || startTime.length === 0) return false;
-    const current = readProcessStartTime(pid);
-    return current !== null && current === startTime;
+    return processIdentity(pid, startTime) === 'same';
 }
 
 /** Sleep helper. */
@@ -560,7 +578,21 @@ export class WorkerSupervisor {
         if (container) {
             const until = Date.now() + timeoutMs;
             do {
-                if (await dockerRunning(record.dockerManagement) === false) return true;
+                if (await dockerRunning(record.dockerManagement) === false) {
+                    this.finish(record, { exitCode: null });
+                    return true;
+                }
+                if (Date.now() >= until) return false;
+                await delay(Math.min(EXIT_POLL_MS, Math.max(1, until - Date.now())));
+            } while (true);
+        }
+        if (record.adopted) {
+            const until = Date.now() + timeoutMs;
+            do {
+                if (processIdentity(record.pid, record.pidStartTime) === 'gone') {
+                    this.finish(record, { exitCode: null });
+                    return true;
+                }
                 if (Date.now() >= until) return false;
                 await delay(Math.min(EXIT_POLL_MS, Math.max(1, until - Date.now())));
             } while (true);
@@ -781,7 +813,7 @@ export class WorkerSupervisor {
                     });
                     return;
                 }
-                if (!isSameProcess(record.pid, record.pidStartTime)) {
+                if (processIdentity(record.pid, record.pidStartTime) === 'gone') {
                     if (record.monitor) clearInterval(record.monitor);
                     record.monitor = null;
                     this.finish(record, { exitCode: null, signal: null });
@@ -796,13 +828,14 @@ export class WorkerSupervisor {
         return true;
     }
 
-    /** Stop every running worker; used by hub shutdown. */
+    /** Stop recorded Docker containers too: a terminal CLI is not container death. */
     async stopAll(
         options?: { timeoutMs?: number; processGroup?: boolean },
     ): Promise<Array<StopResult & { session: string }>> {
         const results: Array<StopResult & { session: string }> = [];
         for (const session of this.registry.list()) {
-            if (!this.isRunning(session)) continue;
+            if (!this.isRunning(session)
+                && !(session.process && dockerName(session.process as ProcessRecord))) continue;
             try { results.push({ session: session.id, ...(await this.stop(session, options)) }); }
             catch { results.push({ session: session.id, ok: false, how: 'cleanup-failed', forced: false }); }
         }

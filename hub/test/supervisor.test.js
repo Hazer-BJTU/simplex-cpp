@@ -8,11 +8,13 @@
  * leave.
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { PROCESS_STATE, isSameProcess, readProcessStartTime } from '../src/launch/supervisor.ts';
+import { PROCESS_STATE, isSameProcess, processIdentity, readProcessStartTime } from '../src/launch/supervisor.ts';
 import { sessionDir, workerConfigPath } from '../src/launch/config-render.ts';
 import { until } from './helpers/worker.js';
 import { startTestHub } from './helpers/hub.js';
@@ -273,6 +275,29 @@ describe('worker supervisor', () => {
 });
 
 describe('process identity helpers', () => {
+    it('does not mistake a hidden procfs entry for termination', () => {
+        const startTime = readProcessStartTime(process.pid);
+        const original = fs.readFileSync;
+        fs.readFileSync = (path, ...args) => {
+            if (path === `/proc/${process.pid}/stat`) {
+                throw Object.assign(new Error('hidden proc entry'), { code: 'ENOENT' });
+            }
+            return original(path, ...args);
+        };
+        syncBuiltinESMExports();
+        try { assert.equal(processIdentity(process.pid, startTime), 'unknown'); }
+        finally { fs.readFileSync = original; syncBuiltinESMExports(); }
+    });
+    it('keeps missing or malformed identity unknown instead of claiming termination', () => {
+        assert.equal(processIdentity(process.pid, null), 'unknown');
+        assert.equal(processIdentity(process.pid, 'unavailable'), 'unknown');
+        assert.equal(processIdentity(-1, '123'), 'unknown');
+        assert.equal(processIdentity(2147483647, null), 'unknown');
+        if (process.platform === 'linux') {
+            assert.equal(processIdentity(2147483647, '123'), 'gone');
+            assert.equal(processIdentity(process.pid, readProcessStartTime(process.pid)), 'same');
+        }
+    });
     it('reads a start time for a live process', () => {
         const startTime = readProcessStartTime(process.pid);
         assert.equal(typeof startTime, 'string');
