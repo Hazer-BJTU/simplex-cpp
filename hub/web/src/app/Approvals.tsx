@@ -28,6 +28,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { ConfirmationPrompt } from '../../../shared/protocol.ts';
 import { profileCount } from '../lib/profile.ts';
 import { usePanel, useVisiblePanel } from '../state/usePanel.ts';
+import { viewProjection } from '../state/viewProjection.ts';
 import { Badge, Button } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Dialog, DialogButton, DialogContent } from '../ui/overlays.tsx';
@@ -286,13 +287,9 @@ function DecisionLabel({ waiting, children }: { waiting: boolean; children: stri
 
 export function Approvals() {
     profileCount('approvals');
-    // Only prompt identities trigger this subscription, not logs or messages.
-    const prompts = useVisiblePanel(true, state => {
-        const open: ConfirmationPrompt[] = [];
-        for (const view of state.views.values()) open.push(...view.confirmations.values());
-        return open.filter(prompt => prompt.settled_at === null)
-            .sort((a, b) => a.received_at.localeCompare(b.received_at));
-    });
+    // Read the pre-indexed projection: unrelated events do no prompt scan/sort.
+    // Actual prompt changes still reach the panel synchronously.
+    const prompts = useVisiblePanel(true, state => viewProjection(state.views).prompts);
 
     // Which prompts the operator has deferred. Deferring is remembered against
     // the prompt, so it does not come back on the next render (D17) — but the

@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { parse, stringify } from 'yaml';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -32,6 +33,20 @@ function supervisorOverrides(extra = {}) {
             ...extra,
         },
     };
+}
+
+/** Memory capture does not fence asynchronous file creation or disk writes. */
+async function waitForWorkerLog(path, fragments) {
+    return until(async () => {
+        let content;
+        try {
+            content = await readFile(path, 'utf8');
+        } catch (error) {
+            if (error.code === 'ENOENT') return false;
+            throw error;
+        }
+        return fragments.every(fragment => content.includes(fragment)) ? content : false;
+    }, { label: `worker log contents at ${path}`, timeout: 5000 });
 }
 
 describe('worker supervisor', () => {
@@ -79,15 +94,41 @@ describe('worker supervisor', () => {
 
     it('captures worker output in memory and on disk', async () => {
         const { ctx, session } = await setup();
-        await ctx.hub.supervisor.start(session);
-        await until(() => ctx.hub.supervisor.logs(session).some(
-            (line) => line.includes('fixture: connected')), { label: 'worker log lines', timeout: 5000 });
-        const lines = ctx.hub.supervisor.logs(session);
-        assert.ok(lines.some((line) => line.includes(`session=${session.id}`)));
-        assert.ok(lines.some((line) => line.includes('stderr line')));
         const logPath = join(sessionDir(ctx.config, session.id), 'logs', 'worker.log');
-        assert.ok(existsSync(logPath));
-        await until(() => readFileSync(logPath, 'utf8').includes('fixture: connected'));
+        const fragments = [`session=${session.id}`, 'fixture: connected', 'stderr line'];
+        const original = fs.createWriteStream;
+        let releaseOpen;
+        // Hold only this log's open callback, making the memory-before-file
+        // ordering deterministic without sleeping or slowing live routing.
+        fs.createWriteStream = (path, options) => {
+            if (path !== logPath) return original(path, options);
+            return original(path, { ...options, fs: {
+                open(path, flags, mode, callback) {
+                    releaseOpen = () => fs.open(path, flags, mode, callback);
+                },
+                write: fs.write,
+                writev: fs.writev,
+                close: fs.close,
+            } });
+        };
+        syncBuiltinESMExports();
+        try {
+            const started = await ctx.hub.supervisor.start(session);
+            assert.equal(started.ok, true, started.error);
+            await until(() => fragments.every(fragment => ctx.hub.supervisor.logs(session)
+                .some(line => line.includes(fragment))), { label: 'worker log lines', timeout: 5000 });
+            assert.equal(typeof releaseOpen, 'function');
+            assert.equal(existsSync(logPath), false, 'memory logs arrive before the held disk open');
+            const diskContents = waitForWorkerLog(logPath, fragments);
+            releaseOpen();
+            releaseOpen = null;
+            const disk = await diskContents;
+            for (const fragment of fragments) assert.ok(disk.includes(fragment));
+        } finally {
+            releaseOpen?.();
+            fs.createWriteStream = original;
+            syncBuiltinESMExports();
+        }
     });
 
     it('preserves interleaved UTF-8 bytes and both EOF fragments from a real child', async () => {
@@ -108,8 +149,7 @@ describe('worker supervisor', () => {
         assert.ok(lines.includes('fixture: stdout EOF�'));
         assert.equal(lines.some((line) => line.includes('�fixture: independent stderr')), false);
         const logPath = join(sessionDir(ctx.config, session.id), 'logs', 'worker.log');
-        await until(() => readFileSync(logPath, 'utf8').includes('fixture: stdout EOF�\n'));
-        assert.match(readFileSync(logPath, 'utf8'), /fixture: stderr EOF\n/);
+        await waitForWorkerLog(logPath, ['fixture: stdout EOF�\n', 'fixture: stderr EOF\n']);
     });
 
     it('bounds a real child partial line while status routing remains responsive', async () => {
@@ -133,10 +173,7 @@ describe('worker supervisor', () => {
             await ctx.hub.supervisor.start(session);
             await until(() => session.latest.status !== null);
             const logPath = join(sessionDir(ctx.config, session.id), 'logs', 'worker.log');
-            await until(() => {
-                const disk = readFileSync(logPath, 'utf8');
-                return disk.includes('fixture: stderr line') && disk.includes('fixture: connected');
-            });
+            await waitForWorkerLog(logPath, ['fixture: stderr line', 'fixture: connected']);
             const source = 'ring-prefix: ' + '中'.repeat(32768);
             const probe = () => session.connection.send({ type: 'signal',
                 data: { operation: 'log_probe', stage: 'ring' } });
@@ -161,8 +198,8 @@ describe('worker supervisor', () => {
             const previousStatus = session.latest.status;
             session.connection.send({ type: 'signal', data: { operation: 'status' } });
             await until(() => session.latest.status !== previousStatus);
-            await until(() => readFileSync(logPath, 'utf8').includes('ring-prefix: '));
-            const diskLine = readFileSync(logPath, 'utf8').split('\n').find(line => line.startsWith('ring-prefix: '));
+            const disk = await waitForWorkerLog(logPath, ['ring-prefix: ']);
+            const diskLine = disk.split('\n').find(line => line.startsWith('ring-prefix: '));
             assert.ok(Buffer.byteLength(diskLine) > Buffer.byteLength(preview), 'ring clipping does not shrink the disk copy');
             const stopped = await ctx.hub.supervisor.stop(session);
             assert.equal(stopped.ok, true);

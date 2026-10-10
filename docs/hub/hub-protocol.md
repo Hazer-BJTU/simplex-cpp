@@ -743,6 +743,12 @@ and does not change worker persistence. Source-aware answer navigation keeps one
 answers use a plain-text rendering window of 32,768 UTF-16 code units with
 surrogate-safe boundaries and explicit section navigation; reasoning always uses literal text.
 
+Display accounting is updated for changed or evicted sessions instead of scanning
+every session on each event. Global open approvals reuse a cached projection
+until confirmation state changes; new prompts, updated previews and settlements
+are published in the same store update. This introduces no approval delay and
+does not change the budgets, eviction policy or approval authority above.
+
 Current workers isolate read-only query pressure from cancellation signals.
 History/answer query and rejection mailboxes are bounded; rejected queries may
 produce `history_error` / `answer_error` with `query_queue_full` or

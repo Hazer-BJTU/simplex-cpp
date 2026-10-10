@@ -502,6 +502,14 @@ repeating the original input. Older or unmatched history remains visible
 separately with an explanation. Candidate history has its own 8 MiB retention
 bound and counts toward the aggregate panel display budget.
 
+The store maintains aggregate display bytes by changed session, including
+evictions and removals. Immutable view/event-record measurements are cached by
+weak identity; replacing a snapshot through the store API indexes it once.
+Global open approvals reuse a sorted projection across unrelated event/log
+updates. Changed previews, new prompts and settlements update that projection
+before subscribers are notified, without a frame or timer delay. These caches
+do not change the display budgets or approval authority.
+
 ## Tests
 
 ```sh
@@ -544,6 +552,21 @@ This fixture uses virtual deadlines and reports query counts before and after
 settlement, retained steps and whether canonical reconciliation completed.
 It measures scheduling rather than wall-clock performance; regression tests also
 cover stale snapshots, changing revisions, reconnects and exhausted retry budgets.
+
+To measure panel accounting and approval selection across 80 inactive sessions,
+500 model responses and 500 log updates:
+
+```sh
+node test/benchmarks/panel-view-projection.mjs
+node test/benchmarks/panel-view-projection.mjs /path/to/older-checkout
+```
+
+The same fixture reports inactive-view field reads, latest-event enumerations,
+retained messages and open approvals. Timings describe state/selector work on
+the local machine, not DOM responsiveness or CI thresholds. Unit tests separately
+check exact byte accounting through replay, snapshot replacement and both
+eviction passes; browser tests verify projection reuse and immediate approval
+updates without changing appearance.
 
 Overlays — menus, dialogs, popovers, tooltips, tabs — are Radix primitives, and
 the reason is specific rather than fashionable: the old panel hand-wrote a focus

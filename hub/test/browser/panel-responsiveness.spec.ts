@@ -15,6 +15,35 @@ async function approval(page: Page, id = 'first', session = 'demo') {
     await expect(page.getByRole('dialog')).toBeVisible();
 }
 
+test('output and logs reuse approval projections while new prompts and settlements remain immediate', async ({ page }) => {
+    await open(page, '?session=demo&panel_profile=1');
+    await approval(page);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await counters(page, true);
+    await page.request.post(`${STUB}/__stub/emit-batch`, { data: {
+        events: Array.from({ length: 80 }, (_, index) => ({ event: 'model_response',
+            data: modelResponse(`Projection burst ${index}`) })),
+    } });
+    await page.request.post(`${STUB}/__stub/message`, { data: {
+        type: 'logs', session: 'demo', lines: ['unrelated output'], dropped: 0,
+    } });
+    await expect(page.getByTestId('transcript')).toContainText('Projection burst 79');
+    const report = await counters(page);
+    expect(report.eventFold?.count).toBe(80);
+    expect(report.viewProjectionScan?.count ?? 0).toBe(0);
+    expect(report.approvalProjection?.count ?? 0).toBe(0);
+    expect(report.approvals?.count ?? 0).toBe(0);
+
+    await approval(page, 'second');
+    await expect(page.getByRole('dialog').getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    expect((await counters(page)).approvalProjection?.count).toBe(1);
+    await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'second' } });
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByTestId('approval-banner')).toHaveCount(1);
+    expect((await counters(page)).approvalProjection?.count).toBe(2);
+});
+
 test('unchanged Markdown and completed rounds do not render for unrelated activity or approvals', async ({ page }) => {
     await open(page, '?session=demo&panel_profile=1');
     await emit(page, 'input_admitted', { operation: 'message' });
