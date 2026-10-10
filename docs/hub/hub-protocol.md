@@ -85,6 +85,8 @@ superseding request. An unsubscribed or pre-eviction reply is consumed without
 changing recovery state. Only a reply to a current zero-cursor subscription can
 satisfy eviction recovery; a late delta or live event cannot clear that requirement.
 Disconnecting invalidates this connection-local bookkeeping.
+A matching subscription rejection also releases the outstanding slot and sends
+an explicitly queued replacement, if any; rejection alone never triggers a retry.
 
 An individual envelope or subscription metadata object larger than the hard
 budget still cannot be sent. Neither can an oversized legacy `subscribed` or

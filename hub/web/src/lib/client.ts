@@ -566,6 +566,23 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             case 'error':
                 confirmations.rejected(message);
                 store.getState().applyError(message);
+                const refusedSubscription = message.request as {
+                    type?: unknown; session?: unknown; since?: unknown; request_id?: unknown;
+                } | undefined;
+                if (refusedSubscription?.type === 'subscribe'
+                    && typeof refusedSubscription.session === 'string'
+                    && refusedSubscription.request_id === undefined) {
+                    const sessionId = refusedSubscription.session;
+                    const pending = legacySubscriptions.get(sessionId);
+                    if (pending && (refusedSubscription.since === undefined
+                        || refusedSubscription.since === pending.cursor)) {
+                        // Rejection completes the outstanding legacy request
+                        // just like a reply. Release only its session and send
+                        // any explicitly queued replacement; never auto-retry.
+                        legacySubscriptions.delete(sessionId);
+                        flushLegacySubscription(sessionId);
+                    }
+                }
                 const refusedSignal = message.request as {
                     type?: unknown; operation?: unknown; session?: unknown;
                 } | undefined;

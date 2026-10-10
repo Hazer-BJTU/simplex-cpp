@@ -46,8 +46,47 @@ async function setup(t) {
         transcript, latest: transcript.at(-1)?.hub_sequence ?? 0, logs: [] });
     const cursors = () => socket.sent.filter(message => message.type === 'subscribe'
         && message.session === 'demo').map(message => message.since);
-    return { store, client, reply, cursors };
+    return { store, client, reply, cursors, socket };
 }
+
+for (const queued of [false, true]) {
+    it(`releases a rejected legacy subscription ${queued ? 'and sends the queued retry' : 'before a later retry'}`, async t => {
+        const { store, client, reply, cursors, socket } = await setup(t);
+        if (queued) client.subscribe('demo');
+        assert.deepEqual(cursors(), [0]);
+        socket.receive({ type: 'error', error: 'unknown_session', message: 'session not available',
+            request: { type: 'subscribe', session: 'demo', since: 0 } });
+        assert.equal(store.getState().notice.code, 'unknown_session');
+        assert.equal(store.getState().connection.state, 'open');
+        assert.equal(socket.readyState, 1);
+        assert.deepEqual(cursors(), queued ? [0, 0] : [0], 'do not automatically retry rejected requests');
+        if (!queued) client.subscribe('demo');
+        assert.deepEqual(cursors(), [0, 0]);
+        reply([event(1)]);
+        assert.equal(store.getState().lastSeq('demo'), 1);
+        client.subscribe('demo');
+        assert.deepEqual(cursors(), [0, 0, 1], 'subsequent subscriptions must also remain unblocked');
+    });
+}
+
+it('only a matching legacy subscription error releases its pending request', async t => {
+    const { client, cursors, socket } = await setup(t);
+    client.subscribe('demo');
+    for (const request of [
+        { type: 'subscribe', session: 'pressure', since: 0 },
+        { type: 'unsubscribe', session: 'demo' },
+        { type: 'signal', session: 'demo', operation: 'options' },
+        { type: 'subscribe', session: 'demo', since: 10 },
+        { type: 'subscribe', session: 'demo', since: 0, request_id: 'paged-request' },
+    ]) {
+        socket.receive({ type: 'error', error: 'unknown_session', request });
+        assert.deepEqual(cursors(), [0]);
+    }
+    // Older error envelopes may identify the operation/session without echoing since.
+    socket.receive({ type: 'error', error: 'unknown_session',
+        request: { type: 'subscribe', session: 'demo' } });
+    assert.deepEqual(cursors(), [0, 0]);
+});
 
 for (const cursor of [0, 4]) {
     for (const reselectFirst of [false, true]) {
