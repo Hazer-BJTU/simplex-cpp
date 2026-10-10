@@ -560,6 +560,7 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
             selected, connected: session?.connected, workerId: session?.identity.worker_id,
             identityState: session?.identity.state, exists: !!view,
             items: view?.items, history: view?.history, confirmations: view?.confirmations,
+            transcriptNotices: view?.transcriptNotices,
             requests: view?.requests, droppedItems: view?.droppedItems,
             runActive: view?.runActive, historyLoading: view?.historyLoading, historyTruncated: view?.historyTruncated,
             historySequence: view?.historySequence, historyWorker: view?.historyWorker,
@@ -749,6 +750,7 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
                 className="min-h-0 flex-1 overflow-y-auto reading-scroll"
             >
                 <div className="reading-width conversation-space" data-testid="reading-surface">
+                    {view?.transcriptNotices?.map(notice => <NoteLine key={notice.id} item={notice} />)}
                     {dropped > 0 && (
                         <p className="text-xs text-ink-faint">
                             {dropped} earlier item{dropped === 1 ? '' : 's'} dropped to keep the

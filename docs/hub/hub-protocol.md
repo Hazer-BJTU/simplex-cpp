@@ -61,6 +61,33 @@ the retained transcript and worker history contract; they are not delivery
 acknowledgements. Never automatically resend an input or confirmation decision
 because of a disconnect: it may already have been processed.
 
+The bundled panel also bounds local display copies. If an inactive view is
+evicted, its transcript cursor, request-chip index and admission deduplication
+state reset together. Reselecting asks for replay from zero; the Hub can only
+return events still in its ring. A replay starting after the expected sequence,
+including a first replay starting after 1, produces an explicit gap notice.
+Eviction, gap and restart notices occupy a separate bounded cache (the latest
+8 notices, at most 16 KiB), so event trimming or transcript replacement cannot
+immediately erase them. Reloading transcript preserves worker-history
+truncation information; successfully compacting that history invalidates it.
+
+Readiness, status, model options and compact results have eviction priority over
+incidental output in the local event cache. This priority still respects the
+per-view limit of 32 event names / 4 MiB; even control envelopes cannot bypass
+the byte bound. None of these display caches changes Worker state or permission
+decisions.
+Inactive control caches may also be evicted if needed for the aggregate 40 MiB
+display target; they then require replacement replay. Selected and currently
+updated views remain exempt from aggregate eviction.
+For legacy Hubs without subscription request IDs, the bundled panel serializes
+subscriptions for each session, keeping at most one outstanding request and one
+superseding request. An unsubscribed or pre-eviction reply is consumed without
+changing recovery state. Only a reply to a current zero-cursor subscription can
+satisfy eviction recovery; a late delta or live event cannot clear that requirement.
+Disconnecting invalidates this connection-local bookkeeping.
+A matching subscription rejection also releases the outstanding slot and sends
+an explicitly queued replacement, if any; rejection alone never triggers a retry.
+
 An individual envelope or subscription metadata object larger than the hard
 budget still cannot be sent. Neither can an oversized legacy `subscribed` or
 `snapshot` response requested without paged replay. Reconnecting alone cannot
