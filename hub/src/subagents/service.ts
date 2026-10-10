@@ -18,6 +18,11 @@ import { ConversationProjection } from './conversation.ts';
 import { isValidSessionId } from '../state/session-id.ts';
 
 interface ParentRef { session_id: string; lifecycle_id: string; worker_id: string }
+/** One startup/timer pass shares its clock and attempt set across the family. */
+interface AutomaticCleanup {
+    now: number;
+    attempted: Set<string>;
+}
 interface ChildRecord {
     session: Session;
     parent: ParentRef;
@@ -576,28 +581,38 @@ export class SubagentService {
     /** Retry only verifiable ownership, with a durable budget and exponential delay. */
     retryCleanup(now = Date.now()): void {
         if (this.closing || this.recovering) return;
+        const automatic: AutomaticCleanup = { now, attempted: new Set() };
         for (const record of this.children.values()) {
             if (!record.removed && !record.uncertainStart
                 && record.session.subagent?.lifecycle === 'cleanup-pending'
                 && (record.cleanupAttempts ?? 0) < MAX_CLEANUP_ATTEMPTS
                 && (record.retryAt ?? 0) <= now && !this.stops.has(record.session.id)) {
                 void this.cascade(record.session,
-                    () => this.options.supervisor.stopProcess(record.session), true).catch(() => {});
+                    () => this.options.supervisor.stopProcess(record.session), automatic).catch(() => {});
             }
         }
     }
 
-    /** Freeze the entire subtree synchronously, then attempt every cleanup. */
-    private cascade(session: Session, stopSelf: () => Promise<StopResult>, automatic = false): Promise<StopResult> {
+    /** Resume durable stop intent without granting descendants a new cleanup budget. */
+    stopAutomatically(session: Session): Promise<StopResult> {
+        return this.cascade(session, () => this.options.supervisor.stopProcess(session), {
+            now: Date.now(), attempted: new Set(),
+        });
+    }
+
+    /** Freeze eligible ownership synchronously, then attempt each eligible cleanup. */
+    private cascade(session: Session, stopSelf: () => Promise<StopResult>, automatic?: AutomaticCleanup): Promise<StopResult> {
         const pending = this.stops.get(session.id);
         if (pending) return pending;
         if (this.children.get(session.id)?.removed) {
             return Promise.resolve({ ok: true, how: 'already-stopped', forced: false });
         }
         const child = this.children.get(session.id);
-        if (automatic && child && this.cleanupPaused(child)) {
-            return Promise.resolve({ ok: false, how: 'operator-recovery-required', forced: false });
+        if (automatic && child) {
+            const deferred = this.deferAutomaticCleanup(child, automatic);
+            if (deferred) return Promise.resolve({ ok: false, how: deferred, forced: false });
         }
+        automatic?.attempted.add(session.id);
         let resolveStop!: (value: StopResult) => void;
         let rejectStop!: (error: unknown) => void;
         const promise = new Promise<StopResult>((resolve, reject) => { resolveStop = resolve; rejectStop = reject; });
@@ -625,7 +640,7 @@ export class SubagentService {
             for (let index = 0; index < descendants.length; index += 4) {
                 const outcomes = await Promise.allSettled(descendants.slice(index, index + 4)
                     .map(record => automatic
-                        ? this.cascade(record.session, () => this.options.supervisor.stopProcess(record.session), true)
+                        ? this.cascade(record.session, () => this.options.supervisor.stopProcess(record.session), automatic)
                         : this.options.supervisor.stop(record.session)));
                 if (outcomes.some(outcome => outcome.status === 'rejected' || !outcome.value.ok)) ok = false;
             }
@@ -734,9 +749,17 @@ export class SubagentService {
             || (record.uncertainStart && (record.cleanupAttempts ?? 0) > 0);
     }
 
-    private freeze(record: ChildRecord, seen = new Set<string>(), automatic = false): void {
+    /** Used before both freezing and starting: neither may bypass persisted backoff. */
+    private deferAutomaticCleanup(record: ChildRecord, automatic: AutomaticCleanup): string | null {
+        if (this.cleanupPaused(record)) return 'operator-recovery-required';
+        if ((record.retryAt ?? 0) > automatic.now) return 'cleanup-backoff';
+        if (automatic.attempted.has(record.session.id)) return 'cleanup-already-attempted';
+        return null;
+    }
+
+    private freeze(record: ChildRecord, seen = new Set<string>(), automatic?: AutomaticCleanup): void {
         if (seen.has(record.session.id)) return;
-        if (automatic && this.cleanupPaused(record)) return;
+        if (automatic && this.deferAutomaticCleanup(record, automatic)) return;
         seen.add(record.session.id);
         this.freezeSession(record);
         for (const child of this.children.values()) {
@@ -855,14 +878,19 @@ export class SubagentService {
                     if (record.session.subagent!.lifecycle === 'starting') this.armStartupDeadline(record);
                 }
             }
+            const automatic: AutomaticCleanup = { now: Date.now(), attempted: new Set() };
             for (const record of recovery) {
-                if (record.session.subagent?.lifecycle === 'cleanup-pending'
-                    && (record.cleanupAttempts ?? 0) < MAX_CLEANUP_ATTEMPTS) {
-                    await this.cascade(record.session,
-                        () => this.options.supervisor.stopProcess(record.session), true).catch(() => {});
-                } else if (record.session.subagent?.lifecycle === 'cleanup-pending') {
-                    record.session.subagent.reason = 'cleanup paused; inspect ownership, then use POST /api/sessions/:id/recover';
+                if (record.session.subagent?.lifecycle !== 'cleanup-pending') continue;
+                const deferred = this.deferAutomaticCleanup(record, automatic);
+                if (deferred) {
+                    record.session.subagent.health = 'degraded';
+                    record.session.subagent.reason = deferred === 'operator-recovery-required'
+                        ? 'cleanup paused; inspect ownership, then use POST /api/sessions/:id/recover'
+                        : `cleanup incomplete; automatic retry ${record.cleanupAttempts}/${MAX_CLEANUP_ATTEMPTS} scheduled`;
                     this.options.changed(record.session);
+                } else {
+                    await this.cascade(record.session,
+                        () => this.options.supervisor.stopProcess(record.session), automatic).catch(() => {});
                 }
             }
         } finally { this.recovering = false; }

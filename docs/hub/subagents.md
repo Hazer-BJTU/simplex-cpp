@@ -336,8 +336,12 @@ retains the directory rather than blocking sibling cleanup forever.
 Recoverable cleanup failures receive at most three automatic attempts, including
 the initial attempt, with ten- and twenty-second delays before subsequent attempts
 (checked every five seconds). Attempt counts are stored with ownership metadata,
-so restarting the Hub does not reset an exhausted budget. Unknown startup ownership
-pauses immediately after the initial stop attempt; repeating `not-started` is not
+so restarting the Hub does not reset an exhausted budget or skip a pending backoff.
+Startup recovery of an ordinary parent's stop intent follows the same policy;
+each child is attempted at most once per automatic pass, including recursive work.
+Paused or deferred descendants are not rewritten by ancestor recovery.
+Unknown startup ownership pauses immediately after the initial stop attempt;
+repeating `not-started` is not
 useful evidence. Paused children remain `cleanup-pending`, consume quota, and expose
 an operator-recovery reason in the list, receive results and Hub warnings.
 

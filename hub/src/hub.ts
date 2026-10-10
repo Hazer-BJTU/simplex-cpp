@@ -370,7 +370,9 @@ export function createHub({
                 }
                 if (restored > 0) log.info(`restored ${restored} session(s) from ${state.path}`);
                 await family.restore();
-                await Promise.allSettled(stopping.map(session => supervisor.stop(session)));
+                // Restoring a parent's stop intent is automatic recovery too;
+                // it must honor each descendant's persisted budget and backoff.
+                await Promise.allSettled(stopping.map(session => family.stopAutomatically(session)));
                 state.schedule(registry.list());
                 return address;
             } catch (error) {
