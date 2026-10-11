@@ -2,8 +2,8 @@
 
 `process_io_lib` provides `ProcessIoEnvironment`, the shared `CaptureBuffer`,
 and the `AnonymousPipeIo` backend. `ProcessHandle` delegates its I/O to this
-package and retains child lifecycle policy. Aggregate capture limits and POSIX
-TTY support follow separately in issue #122.
+package and retains child lifecycle policy. POSIX TTY support follows separately
+in issue #122.
 
 ## Ownership and execution
 
@@ -64,10 +64,22 @@ Absent streams are `nullopt`; an existing stream can contain an empty string.
 A terminal stream will not be duplicated into stdout and stderr.
 
 Capture retains raw bytes, including NUL, partial UTF-8 and ANSI sequences.
-It does not decode text. A configured limit retains a prefix **per stream**;
-zero is unlimited and the pipe default is 4 MiB per stream. Reaching the limit
-marks truncation but continues draining, so full buffers do not block the child.
-A later issue #122 stage changes this to an aggregate budget.
+It does not decode text. One budget applies to all retained bytes in an
+environment: stdout plus stderr for pipes, or terminal output alone. Zero is
+unlimited; the default is 4 MiB **total**, not 4 MiB per stream. This intentionally
+changes the earlier per-stream policy. Labels, escaping and allocator/task
+metadata are not counted; this is not a bound on total process memory.
+
+The first read to consume remaining capacity keeps those bytes. The split
+between stdout and stderr depends on read scheduling; no fixed shares or exact
+cross-stream ordering are promised. Each stream retains its own prefix. Only
+actual discarded bytes mark budget truncation on that stream; exactly filling
+the budget or receiving an empty chunk does not. EOF and full/delta reads do not
+refund retained capacity. Separate environments have separate budgets.
+
+Reaching the limit stops retention, **not drainage**: both readers continue to
+EOF so full pipes do not block the child. Forced shutdown/failure can separately
+mark capture incomplete even when the budget was not reached.
 
 Each stream distinguishes open capture, natural EOF, forced stop and failure.
 Forced stop/failure marks possibly incomplete capture as truncated, even if no

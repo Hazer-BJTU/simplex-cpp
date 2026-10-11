@@ -69,8 +69,13 @@ void CaptureBuffer::append(Stream stream, std::string_view bytes)
     }
     const auto count = _limit == 0
         ? bytes.size()
-        : std::min(bytes.size(), _limit - record.bytes.size());
+        : std::min(bytes.size(), _limit - _retained_bytes);
     record.bytes.append(bytes.substr(0, count));
+    // Charge only after append succeeds. Unlimited capture needs no running
+    // total; bounded arithmetic cannot overflow because count <= remaining.
+    if (_limit != 0) {
+        _retained_bytes += count;
+    }
     record.truncated |= count != bytes.size();
 }
 

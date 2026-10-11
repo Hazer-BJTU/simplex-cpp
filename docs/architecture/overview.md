@@ -73,3 +73,11 @@ requires stopping the context and joining its worker threads first. This
 platform-boundary refactor preserves existing pipe behavior and does not yet
 expose a TTY tool option. Rebuild C++ hosts and plugins together after these
 public layout/type changes; see [the ABI contract](../abi-context.md).
+
+Process output capture uses one raw-byte budget per process: stdout and stderr
+share `LaunchSpec::max_output_bytes` (default 4 MiB; zero means unlimited).
+Retained prefixes depend on read scheduling, with no fixed split between streams.
+Readers continue draining after exhaustion and mark each stream that loses bytes.
+Full/delta reads do not replenish capacity. This replaces the earlier independent
+per-stream limits; allocator/task overhead and formatted output are outside the
+raw-data budget. The same capture component supports a single terminal stream.

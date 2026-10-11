@@ -74,11 +74,14 @@ BOOST_AUTO_TEST_CASE(capture_limit_discards_but_continues_draining_both_streams)
         BOOST_TEST(co_await h.environment->drain_until(std::chrono::steady_clock::now() + 5s));
         BOOST_TEST((co_await h.wait_exit()) == 0);
         const auto snapshot = h.environment->snapshot();
-        BOOST_TEST(snapshot.standard_output->bytes == std::string(37, 'x'));
-        BOOST_TEST(snapshot.standard_error->bytes == std::string(37, 'x'));
+        // Scheduling determines the split, but cannot increase the total.
+        BOOST_TEST(snapshot.standard_output->bytes.size() + snapshot.standard_error->bytes.size() == 37U);
+        BOOST_TEST(snapshot.standard_output->bytes == std::string(snapshot.standard_output->bytes.size(), 'x'));
+        BOOST_TEST(snapshot.standard_error->bytes == std::string(snapshot.standard_error->bytes.size(), 'x'));
         BOOST_TEST(snapshot.standard_output->truncated);
         BOOST_TEST(snapshot.standard_error->truncated);
         BOOST_CHECK(snapshot.standard_output->end == StreamEnd::Eof);
+        BOOST_CHECK(snapshot.standard_error->end == StreamEnd::Eof);
         BOOST_TEST(snapshot.output_complete);
         BOOST_TEST(!snapshot.joined); // Idle input pump still belongs to us.
     });
