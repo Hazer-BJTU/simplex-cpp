@@ -36,6 +36,7 @@ private:
     explicit IoAttachment(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> _impl;
     friend class Child;
+    friend class Terminal;
 };
 
 /**

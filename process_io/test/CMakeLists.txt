@@ -25,3 +25,34 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME process_io_failures COMMAND test_process_io_failures)
     set_tests_properties(process_io_failures PROPERTIES TIMEOUT 15)
 endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(process_pty_child terminal_child.cpp)
+    add_executable(test_process_io_pty test_pty.cpp)
+    target_link_libraries(test_process_io_pty PRIVATE process_io_lib Boost::unit_test_framework)
+    target_compile_definitions(test_process_io_pty PRIVATE
+        PROCESS_IO_CHILD="$<TARGET_FILE:process_io_child>"
+        PROCESS_PTY_CHILD="$<TARGET_FILE:process_pty_child>")
+    add_dependencies(test_process_io_pty process_io_child process_pty_child)
+    add_test(NAME process_io_pty COMMAND test_process_io_pty)
+    set_tests_properties(process_io_pty PROPERTIES TIMEOUT 45)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(test_process_io_pty_failures test_pty_failures.cpp)
+    target_link_libraries(test_process_io_pty_failures PRIVATE
+        process_io_lib Boost::unit_test_framework ${CMAKE_DL_LIBS})
+    target_compile_definitions(test_process_io_pty_failures PRIVATE
+        PROCESS_IO_CHILD="$<TARGET_FILE:process_io_child>"
+        PROCESS_PTY_CHILD="$<TARGET_FILE:process_pty_child>")
+    target_link_options(test_process_io_pty_failures PRIVATE
+        "LINKER:--export-dynamic-symbol=posix_openpt"
+        "LINKER:--export-dynamic-symbol=grantpt"
+        "LINKER:--export-dynamic-symbol=setsid"
+        "LINKER:--export-dynamic-symbol=dup2"
+        "LINKER:--export-dynamic-symbol=read"
+        "LINKER:--export-dynamic-symbol=write")
+    add_dependencies(test_process_io_pty_failures process_io_child process_pty_child)
+    add_test(NAME process_io_pty_failures COMMAND test_process_io_pty_failures)
+    set_tests_properties(process_io_pty_failures PROPERTIES TIMEOUT 30)
+endif()

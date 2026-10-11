@@ -121,5 +121,7 @@ spawn/release calls; it attempts every session even if one cleanup fails.
 can no longer each retain the full limit. Allocation follows read scheduling;
 each stream keeps a prefix and reports its own discarded bytes. Both pipes
 continue draining after exhaustion. This raw-data budget does not include
-allocator/task overhead, and reads do not replenish it. The Linux PTY backend
-and model-facing tty/output/end_input changes remain later steps of #122.
+allocator/task overhead, and reads do not replenish it. `process_io::PosixPtyIo`
+now supplies a Linux PTY backend for explicit host composition with
+`subprocess::Child`. `ProcessHandle` still selects pipes; model-facing
+tty/output/end_input and handle selection remain the next step of #122.

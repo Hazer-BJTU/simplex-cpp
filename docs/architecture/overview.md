@@ -80,4 +80,11 @@ Retained prefixes depend on read scheduling, with no fixed split between streams
 Readers continue draining after exhaustion and mark each stream that loses bytes.
 Full/delta reads do not replenish capacity. This replaces the earlier independent
 per-stream limits; allocator/task overhead and formatted output are outside the
-raw-data budget. The same capture component supports a single terminal stream.
+raw-data budget. The Linux `PosixPtyIo` backend uses the same capture component
+for a single merged terminal stream. Native PTY allocation, controlling-terminal
+launch and resize stay in `utils/subprocess`; the environment supervises input
+and output tasks. Host code can compose it with `subprocess::Child` now, while
+model-facing TTY selection remains a subsequent integration step. Defaults are
+canonical input, echo off, 80×24 and `TERM=dumb`; terminal EOF is a conditional
+request, not a pipe half-close. Shutdown can drain to a deadline, then close and
+join even if descendants retain the slave.

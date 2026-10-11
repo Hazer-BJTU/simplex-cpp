@@ -15,7 +15,7 @@ namespace process_io {
 
 using Executor = boost::asio::strand<boost::asio::any_io_executor>;
 enum class InputEndMode { Unsupported, HalfClose, TerminalEof };
-enum class InputPhase { NotStarted, Open, EndRequested, Ended, PeerClosed, Stopped, Failed };
+enum class InputPhase { NotStarted, Open, EndRequested, Ended, PeerClosed, Stopped, Failed, Unsupported };
 enum class InputResult { Accepted, Closed, Unsupported };
 enum class ResizeResult { Applied, Unsupported };
 
@@ -30,6 +30,8 @@ struct Capabilities {
  * Stream absence, empty content, EOF, forced stop and read failure are distinct.
  * output_complete means capture ended, not lossless output or joined tasks.
  * joined is the explicit cancel_and_join() fence, not a child-exit observation.
+ * Unsupported records a queued terminal EOF rejected by the actual terminal
+ * mode when the writer reached it; input_end_requested still records acceptance.
  * failure retains the first unexpected I/O/task error, also rethrown after join.
  */
 struct Snapshot {

@@ -20,7 +20,7 @@ using namespace std::chrono_literals;
 struct Harness {
     asio::io_context context;
     process_io::Executor strand{asio::make_strand(context)};
-    std::unique_ptr<process_io::AnonymousPipeIo> environment;
+    std::unique_ptr<process_io::ProcessIoEnvironment> environment;
     std::unique_ptr<subprocess::Child> child;
 
     explicit Harness(std::size_t cap = 4 * 1024 * 1024)
