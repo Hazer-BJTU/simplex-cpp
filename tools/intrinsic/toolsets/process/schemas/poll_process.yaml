@@ -43,7 +43,7 @@ argument_schema:
       type: boolean
       default: true
       description: >-
-        Include new stdout and stderr and advance both output cursors for each
+        Include new output and advance both output cursors for each
         selected session. Default: true. False leaves the cursors unchanged.
     release_exited:
       type: boolean

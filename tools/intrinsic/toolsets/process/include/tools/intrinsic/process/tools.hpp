@@ -115,7 +115,7 @@
 // putting bytes in a live child's input, ending it. They are SerialWrite rather
 // than ParallWrite because their ORDER is observable out there — two launches
 // contend for the same files, two stdin writes are what the child reads in that
-// order (and a `close_input` beside one of them can drop the other outright,
+// order (and a `end_input` beside one of them can drop the other outright,
 // since a send onto a closed channel is discarded). Note what does NOT decide
 // that: the handle's stdin channel is thread-safe, so overlapping writes cannot
 // corrupt memory. That is the store's concurrency contract doing its job, and
@@ -431,7 +431,7 @@ public:
 ///
 /// SerialWrite (the bytes are the child's next input and a signal ends it, so
 /// the order two calls arrive in is what the child gets — and one carrying
-/// `close_input` can drop another outright) / RequireConfirm (it is input to,
+/// `end_input` can drop another outright) / RequireConfirm (it is input to,
 /// or the end of, a live process).
 ///
 /// The signal is CARRIED, not delivered by this layer: `term` and `kill` map

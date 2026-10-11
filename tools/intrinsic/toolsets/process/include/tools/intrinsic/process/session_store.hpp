@@ -97,9 +97,9 @@
 
 namespace tools::intrinsic {
 
-/// Which stream a read targets. Both is the common case for a tool result —
-/// a model reading a command's output usually wants stderr next to stdout.
-enum class OutputStream { Stdout, Stderr, Both };
+/// Host-only stream selection. Both means every present stream, including
+/// Terminal. Model tools always use Both and expose generic output.
+enum class OutputStream { Stdout, Stderr, Both, Terminal };
 
 /// One stream's captured text as a reader receives it: the bytes asked for,
 /// and whether the capture behind them stopped at the spec's cap.
@@ -114,6 +114,8 @@ struct OutputSlice {
 struct OutputRead {
     OutputSlice standard_output;
     OutputSlice standard_error;
+    std::optional<OutputSlice> terminal_output;
+    std::size_t terminal_cursor = 0;
     std::size_t stdout_cursor = 0;
     std::size_t stderr_cursor = 0;
 };
@@ -126,9 +128,9 @@ struct OutputRead {
 /// one reports an exit code with half its output:
 ///
 ///   exited          the child is gone (its exit code is readable).
-///   output_drained  both output pipes have hit EOF and the readers have
-///                   finished, so the captured text is everything the child
-///                   will ever produce.
+///   output_drained  all present streams ended (EOF, failure or forced stop).
+///                   This does not imply lossless capture; inspect truncation
+///                   and I/O failure separately.
 ///
 /// The gap between them is ordinary, not exotic. The handle's await task
 /// records the exit the moment it observes the child, while the readers are
@@ -142,6 +144,9 @@ struct SessionSnapshot {
     process::ExecutionResult result;
     bool exited = false;
     bool output_drained = false;
+    process_io::InputPhase input_phase = process_io::InputPhase::NotStarted;
+    bool input_end_requested = false;
+    std::string io_error;
 };
 
 /// What a spawn answers with: the session's id, whether the child finished
@@ -297,14 +302,46 @@ public:
      *        captured buffer, and the cursor DOES NOT move: a full read is
      *        an observation, not a consumption, so it cannot cost a
      *        concurrent delta reader its unread bytes.
+     * @param text false preserves raw bytes. true replaces invalid UTF-8 and
+     *        holds incomplete suffixes until more bytes, EOF or truncation.
+     *        Cursors always count raw bytes. Raw and text readers share cursors;
+     *        hosts should use one representation consistently for delta reads.
      * @return nullopt when no session has that id.
      */
     boost::asio::awaitable<std::optional<OutputRead>> read_output(
-        SessionId id, OutputStream stream, bool full);
+        SessionId id, OutputStream stream, bool full, bool text = false);
+
+    /// Owned model-facing observation, retained even after session removal.
+    struct SessionRead {
+        SessionSnapshot snapshot;
+        std::optional<OutputRead> output;
+        bool released = false;
+    };
+
+    /// Read text and optionally release an exited child. When release is
+    /// possible, first finish shutdown/drain, then project final captured bytes
+    /// and snapshot before removing the session. Running children are never
+    /// stopped by this operation: their incomplete UTF-8 suffix stays pending.
+    /// include_output=false leaves cursors untouched and intentionally discards
+    /// output on release. Concurrent readers still share consuming cursors;
+    /// exactly one concurrent release reports success. Missing ID = nullopt.
+    boost::asio::awaitable<std::optional<SessionRead>> read_session(
+        SessionId id, bool full, bool include_output, bool release);
+
+    /// Absent members mean the caller did not request that action.
+    struct InputWriteResult {
+        std::optional<process_io::InputResult> input;
+        std::optional<process_io::InputResult> end;
+    };
+    /// Report each requested queue admission honestly. Missing session = nullopt.
+    /// One session strand orders input then end; runtime outcomes live in snapshot.
+    boost::asio::awaitable<std::optional<InputWriteResult>> send_input(
+        SessionId id, std::string input, bool end_input);
 
     /// Queue text for the child's stdin, and optionally end stdin after it.
     /// Await ordered backend acceptance, not delivery or consumption (see
-    /// ProcessHandle::write_input). False = no session with that id.
+    /// ProcessHandle::write_input). False = no session with that id; true
+    /// does not imply admission. New consumers should use send_input().
     boost::asio::awaitable<bool> write_input(
         SessionId id, std::string input, bool close_input);
 
@@ -429,10 +466,16 @@ private:
         boost::asio::strand<boost::asio::any_io_executor> strand;
         // Bytes of each stream already handed to a delta reader. Touched
         // only on `strand`.
+        std::size_t terminal_cursor = 0;
         std::size_t stdout_cursor = 0;
         std::size_t stderr_cursor = 0;
     };
     using SessionPtr = std::shared_ptr<Session>;
+
+    static boost::asio::awaitable<OutputRead> read_output_on_session(
+        SessionPtr session, OutputStream stream, bool full, bool text);
+    /// Remove only this owned session, after its shutdown fence has completed.
+    bool remove_session(const SessionPtr& session);
 
     /// Atomically convert one capacity reservation into a published session.
     /// Allocation failure leaves the reservation/table unchanged.

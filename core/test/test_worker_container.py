@@ -132,7 +132,7 @@ def scenario(cancel):
                 assert (root / "sessions/integration/state/readable.md").exists()
                 if not cancel:
                     assert len(requests) == 2
-                    assert "stdout (" in transcript and "stderr (" in transcript
+                    assert "output (" in transcript and "[stdout]" in transcript and "[stderr]" in transcript
                     assert "fixture-finished" in transcript
                 else:
                     assert len(requests) == 1

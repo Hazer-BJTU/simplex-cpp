@@ -102,7 +102,7 @@ def scenario(mode):
                 assert len(requests) == 2, len(requests)
                 if mode == 'continue':
                     assert 'Run exchange limit' in output and 'Run completed' in output, output
-                    assert 'stdout (' in output and 'stderr (' in output, output
+                    assert 'output (' in output and '[stdout]' in output and '[stderr]' in output, output
                     assert '\\x1b[31mstderr-marker' in output and '\x1b' not in output, output
                 else:
                     assert 'Tool FAILED' in output, output

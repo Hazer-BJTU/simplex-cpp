@@ -1,6 +1,7 @@
 #include "process/process_handle.hpp"
 #include "subprocess/child.hpp"
 #include "process_io/anonymous_pipe.hpp"
+#include "process_io/posix_pty.hpp"
 #include "logging/logger.hpp"
 #include <boost/asio/experimental/awaitable_operators.hpp>
 #include <format>
@@ -20,7 +21,9 @@ ProcessHandle::ProcessHandle(LaunchSpec spec, boost::asio::any_io_executor execu
 
 ProcessHandle::ProcessHandle(LaunchSpec spec, process_io::Executor strand)
     : _spec(std::move(spec)), _strand(std::move(strand)),
-      _io(std::make_unique<process_io::AnonymousPipeIo>(_strand, _spec.max_output_bytes))
+      _io(_spec.tty
+          ? std::unique_ptr<process_io::ProcessIoEnvironment>(std::make_unique<process_io::PosixPtyIo>(_strand, _spec.max_output_bytes))
+          : std::make_unique<process_io::AnonymousPipeIo>(_strand, _spec.max_output_bytes))
 {
     const auto attachment = _io->prepare_attachment();
     _process_ptr = std::make_unique<subprocess::Child>(_spec, _strand, attachment);
@@ -145,10 +148,14 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
         // A failed watcher cannot publish a terminal status. Shutdown may
         // later do so only after its independent recovery probe/reap succeeds.
         record_terminal_state();
-        // A dead child cannot read: close the stdin faucet so the write task
-        // drains and finishes too. This is what lets a handle quiesce without
-        // the owner remembering to close_input() first.
-        co_await _io->request_input_end();
+        // A dead child cannot consume more input. Cancel terminal input
+        // without closing its shared output master; pipe input can finish
+        // through its ordinary end-of-input path.
+        if (_spec.tty) {
+            co_await _io->cancel_input();
+        } else {
+            co_await _io->request_input_end();
+        }
         co_return;
     } catch(const boost::system::system_error& e) {
         if (e.code() == boost::asio::error::operation_aborted) {
@@ -300,6 +307,7 @@ boost::asio::awaitable<process_io::InputResult> ProcessHandle::write_input(std::
     co_return co_await boost::asio::co_spawn(_strand,
         [self = shared_from_this(), message = std::move(message)]() mutable
             -> boost::asio::awaitable<process_io::InputResult> {
+            if (self->exited()) co_return process_io::InputResult::Closed;
             co_return co_await self->_io->enqueue_input(std::move(message));
         }, boost::asio::use_awaitable);
 }
@@ -499,25 +507,41 @@ const std::string& ProcessHandle::standard_error() const {
 }
 
 bool ProcessHandle::stdout_truncated() const {
-    return _io->capture().view(process_io::Stream::Stdout)->truncated;
+    return _io->capture().view(process_io::Stream::Stdout).value().truncated;
 }
 
 bool ProcessHandle::stderr_truncated() const {
-    return _io->capture().view(process_io::Stream::Stderr)->truncated;
+    return _io->capture().view(process_io::Stream::Stderr).value().truncated;
 }
 
 bool ProcessHandle::output_drained() const noexcept {
     return _io->capture().complete();
 }
 
+process_io::Snapshot ProcessHandle::io_snapshot() const {
+    return _io->snapshot();
+}
+const process_io::CaptureBuffer& ProcessHandle::capture() const noexcept {
+    return _io->capture();
+}
+
 ExecutionResult ProcessHandle::snapshot() const {
     ExecutionResult result;
     result.spec = _spec;
     result.execution = status();
-    result.stdout_text = standard_output();
-    result.stderr_text = standard_error();
-    result.stdout_truncated = stdout_truncated();
-    result.stderr_truncated = stderr_truncated();
+    const auto& capture = _io->capture();
+    if (const auto stream = capture.view(process_io::Stream::Stdout)) {
+        result.stdout_text = stream->bytes;
+        result.stdout_truncated = stream->truncated;
+    }
+    if (const auto stream = capture.view(process_io::Stream::Stderr)) {
+        result.stderr_text = stream->bytes;
+        result.stderr_truncated = stream->truncated;
+    }
+    if (const auto stream = capture.view(process_io::Stream::Terminal)) {
+        result.terminal_text = stream->bytes;
+        result.terminal_truncated = stream->truncated;
+    }
     return result;
 }
 

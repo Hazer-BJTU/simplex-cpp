@@ -117,6 +117,8 @@ struct LaunchSpec {
     std::optional<std::vector<std::string>> environment;
     // true (default) => the child inherits the parent's environment.
     bool inherit_environment = true;
+    // Allocate a real terminal; false preserves separate anonymous pipes.
+    bool tty = false;
     // The directory the child starts in. Disengaged (the default) => the
     // child inherits the PARENT's working directory, which is what a plain
     // fork/exec gives; engaged => the manager changes into it in the child
@@ -144,6 +146,7 @@ inline void to_json(nlohmann::json& j, const LaunchSpec& s) {
         {"detach_on_timeout", s.detach_on_timeout},
         {"max_output_bytes", s.max_output_bytes},
         {"inherit_environment", s.inherit_environment},
+        {"tty", s.tty},
     };
     if (s.environment) j["environment"] = *s.environment;
     if (s.working_directory) j["working_directory"] = *s.working_directory;
@@ -162,6 +165,8 @@ inline void from_json(const nlohmann::json& j, LaunchSpec& s) {
         it->get_to(s.max_output_bytes);
     if (auto it = j.find("inherit_environment"); it != j.end())
         it->get_to(s.inherit_environment);
+    if (auto it = j.find("tty"); it != j.end()) it->get_to(s.tty);
+    else s.tty = false;
     if (auto it = j.find("pid"); it != j.end()) it->get_to(s.pid);
     if (auto it = j.find("started_at"); it != j.end())
         s.started_at = std::chrono::sys_time<std::chrono::milliseconds>{
@@ -230,6 +235,8 @@ struct ExecutionResult {
     ExecutionStatus execution;
     std::optional<std::string> stdout_text;
     std::optional<std::string> stderr_text;
+    std::optional<std::string> terminal_text;
+    bool terminal_truncated = false;
     bool stdout_truncated = false;
     bool stderr_truncated = false;
 };
@@ -240,7 +247,9 @@ inline void to_json(nlohmann::json& j, const ExecutionResult& r) {
         {"execution", r.execution},
         {"stdout_truncated", r.stdout_truncated},
         {"stderr_truncated", r.stderr_truncated},
+        {"terminal_truncated", r.terminal_truncated},
     };
+    if (r.terminal_text) j["terminal_text"] = *r.terminal_text;
     if (r.stdout_text) j["stdout_text"] = *r.stdout_text;
     if (r.stderr_text) j["stderr_text"] = *r.stderr_text;
 }
@@ -248,6 +257,11 @@ inline void to_json(nlohmann::json& j, const ExecutionResult& r) {
 inline void from_json(const nlohmann::json& j, ExecutionResult& r) {
     if (auto it = j.find("spec"); it != j.end()) it->get_to(r.spec);
     if (auto it = j.find("execution"); it != j.end()) it->get_to(r.execution);
+    if (auto it = j.find("terminal_text"); it != j.end() && !it->is_null())
+        r.terminal_text = it->get<std::string>();
+    else r.terminal_text.reset();
+    if (auto it = j.find("terminal_truncated"); it != j.end()) it->get_to(r.terminal_truncated);
+    else r.terminal_truncated = false;
     if (auto it = j.find("stdout_text"); it != j.end() && !it->is_null())
         r.stdout_text = it->get<std::string>();
     else r.stdout_text.reset();

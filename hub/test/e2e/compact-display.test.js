@@ -1,9 +1,9 @@
 /** Complete compact text through the real C++ worker, Hub, replay and panel store. */
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { e2eSkip, startE2eHub } from '../helpers/e2e.js';
+import { copyFileSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { e2eSkip, startE2eHub, WORKER_BIN } from '../helpers/e2e.js';
 import { connectWorker, until } from '../helpers/worker.js';
 import { compactSummary } from '../helpers/compact.js';
 import { sessionDir } from '../../src/launch/config-render.ts';
@@ -14,9 +14,28 @@ for (const bytes of [8192, 32768]) {
     it(`preserves a ${bytes}-byte committed compact summary through live and replay delivery`,
         { skip: e2eSkip, timeout: 60000 }, async t => {
             const ctx = await startE2eHub();
-            // Leave room for a near-limit summary alongside the installed tool
-            // declarations. Compact's separate context-budget policy is unchanged.
-            ctx.config.worker.systemPromptFile = 'prompts/general_agent.yaml';
+            // This test covers complete display/replay, not a shipped persona's
+            // size. Keep all installed tools and the production compact budget,
+            // but reserve summary space with a dedicated minimal role prompt.
+            // Prompt paths are installation-relative. Copy only the executable
+            // into a private layout and link unchanged release assets; never
+            // write into the supplied installation (which may be read-only).
+            const originalBin = dirname(resolve(WORKER_BIN));
+            const fixtureRoot = join(ctx.config.dataDir, 'worker');
+            const fixtureBin = join(fixtureRoot, 'bin');
+            mkdirSync(fixtureBin, { recursive: true });
+            copyFileSync(WORKER_BIN, join(fixtureBin, 'simplex_worker'));
+            symlinkSync(join(originalBin, '..', 'lib'), join(fixtureRoot, 'lib'), 'dir');
+            for (const directory of ['plugins', 'schemas', 'prompts']) {
+                symlinkSync(join(originalBin, directory), join(fixtureBin, directory), 'dir');
+            }
+            ctx.config.worker.bin = join(fixtureBin, 'simplex_worker');
+            const promptFile = join(fixtureBin, 'compact-display-prompt.yaml');
+            writeFileSync(promptFile, JSON.stringify({
+                sections: [{ name: 'role', title: 'Role', stability: 'immutable',
+                    text: 'Complete the requested task.' }],
+            }));
+            ctx.config.worker.systemPromptFile = 'compact-display-prompt.yaml';
             const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
             t.after(async () => {
                 await panel.close();
