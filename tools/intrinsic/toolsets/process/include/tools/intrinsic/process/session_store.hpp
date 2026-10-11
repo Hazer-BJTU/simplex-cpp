@@ -72,22 +72,11 @@
 // simply not the last one. Killing a child is a coroutine, and a destructor
 // has no executor left to run one on. So a host ends its children by awaiting
 // shutdown() while its context still runs; the destructor is a
-// last-resort tail that signals whatever is left synchronously (::kill on the
-// pid recorded at spawn) and says so loudly, because a leaked child outlives
-// the process that made it.
-//
-// The destructor therefore reads exactly two things off a handle, and both are
-// chosen because a destructor cannot hop to a strand: the pid, which the
-// spawn stamped and nothing ever writes again, and exited(), which is the
-// handle's one thread-safe observation — a latch, so that "this child was
-// already observed (and therefore reaped)" is answerable from any thread. The
-// pair is what keeps the tail honest: a child that was observed is not
-// signalled, because its pid may already belong to somebody else.
-//
-// Finish all store calls before destroying it. For the fallback destructor's
-// raw-pid cleanup, stop the context and join its workers first, so cleanup does
-// not race the handle's child reaping. Normal shutdown uses shutdown()
-// while the executor is still running.
+// last-resort tail that delegates synchronous cleanup to each owned handle.
+// Finish all store calls, stop the context and join its workers before this
+// fallback, so it cannot race child observation/reaping. An atomic exited()
+// check alone does not make concurrent cleanup safe. Normal shutdown uses
+// shutdown() while the executor is still running.
 //
 
 #include <cstddef>
@@ -99,7 +88,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <sys/types.h>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -440,10 +428,6 @@ private:
         SessionId id;
         HandlePtr handle;
         boost::asio::strand<boost::asio::any_io_executor> strand;
-        /// The pid the handle stamped, copied at spawn because the destructor
-        /// signals it without a strand to read the handle on (the pid is
-        /// written once, at construction, and never again).
-        pid_t pid = -1;
         // Bytes of each stream already handed to a delta reader. Touched
         // only on `strand`.
         std::size_t stdout_cursor = 0;

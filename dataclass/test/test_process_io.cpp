@@ -5,7 +5,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <sys/types.h>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -21,7 +20,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
         .executable = "wc",
         .arguments = {"-l", "notes.txt"},
         .description = "count lines",
-        .pid = pid_t{4212},
+        .pid = process::ProcessId{4212},
         .started_at = std::chrono::system_clock::time_point{
             std::chrono::milliseconds{1750000000123}},
         .initial_wait_timeout_milliseconds = std::uint64_t{1500},
@@ -45,7 +44,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
     BOOST_TEST(back.inherit_environment == spec.inherit_environment);
     // Boost.Test cannot print std::optional, so engaged values are asserted
     // through their contents, never as optionals.
-    BOOST_TEST(back.pid == pid_t{4212});
+    BOOST_TEST(back.pid == process::ProcessId{4212});
     // BOOST_CHECK, not BOOST_TEST: chrono points have no operator<<, so the
     // value must never reach Boost.Test's printer.
     BOOST_CHECK(back.started_at ==
@@ -106,7 +105,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
     BOOST_TEST(back.detach_on_timeout == true);
     BOOST_TEST(back.max_output_bytes == std::uint64_t{4 * 1024 * 1024});
     BOOST_TEST(back.inherit_environment == true);
-    BOOST_TEST(back.pid == pid_t{0});
+    BOOST_TEST(back.pid == process::ProcessId{0});
     BOOST_CHECK(back.started_at ==
                 std::chrono::system_clock::time_point{});
     BOOST_TEST(!back.environment.has_value());
@@ -179,7 +178,7 @@ BOOST_AUTO_TEST_CASE(result_round_trips_spec_status_and_streams)
                 .executable = "echo",
                 .arguments = {"hello"},
                 .description = "echo hello",
-                .pid = pid_t{7},
+                .pid = process::ProcessId{7},
                 .initial_wait_timeout_milliseconds = std::uint64_t{500},
             },
         .execution =
@@ -214,7 +213,7 @@ BOOST_AUTO_TEST_CASE(result_round_trips_spec_status_and_streams)
     BOOST_TEST(back.spec.executable == result.spec.executable);
     BOOST_TEST(back.spec.arguments == result.spec.arguments);
     BOOST_TEST(back.spec.description == result.spec.description);
-    BOOST_TEST(back.spec.pid == pid_t{7});
+    BOOST_TEST(back.spec.pid == process::ProcessId{7});
     BOOST_TEST(back.spec.initial_wait_timeout_milliseconds == std::uint64_t{500});
     BOOST_CHECK(back.execution.state == process::ProcessState::Exited);
     BOOST_TEST(back.execution.exit_code.has_value());
@@ -238,7 +237,7 @@ BOOST_AUTO_TEST_CASE(result_meta_only_shape_omits_stream_keys)
                 .executable = "sleep",
                 .arguments = {"30"},
                 .description = "sleep 30",
-                .pid = pid_t{99},
+                .pid = process::ProcessId{99},
                 .initial_wait_timeout_milliseconds = std::uint64_t{30000},
             },
         .execution =
@@ -276,7 +275,7 @@ BOOST_AUTO_TEST_CASE(null_and_absent_optionals_read_as_disengaged)
     };
     const process::ExecutionResult result =
         result_j.get<process::ExecutionResult>();
-    BOOST_TEST(result.spec.pid == pid_t{0});
+    BOOST_TEST(result.spec.pid == process::ProcessId{0});
     BOOST_TEST(!result.stdout_text.has_value());
 }
 
@@ -307,6 +306,18 @@ BOOST_AUTO_TEST_CASE(unknown_keys_are_ignored)
     const process::ExecutionResult result =
         j.get<process::ExecutionResult>();
     BOOST_TEST(result.spec.executable == std::string("cat"));
-    BOOST_TEST(result.spec.pid == pid_t{5});
+    BOOST_TEST(result.spec.pid == process::ProcessId{5});
     BOOST_TEST(result.stdout_text.value() == "meow");
+}
+
+BOOST_AUTO_TEST_CASE(process_id_round_trips_beyond_native_signed_pid_range)
+{
+    process::LaunchSpec spec;
+    spec.pid = process::ProcessId{1} << 40;
+    const nlohmann::json encoded = spec;
+    BOOST_TEST(encoded.at("pid").is_number_unsigned());
+    BOOST_TEST(encoded.get<process::LaunchSpec>().pid == spec.pid);
+    // Previously persisted positive integer identifiers retain their value.
+    const auto legacy = nlohmann::json{{"pid", 4212}}.get<process::LaunchSpec>();
+    BOOST_TEST(legacy.pid == process::ProcessId{4212});
 }

@@ -890,3 +890,21 @@ BOOST_AUTO_TEST_CASE(shutdown_settles_a_backpressured_stdin_pump)
     BOOST_TEST(handle->exited());
     BOOST_TEST(handle->output_drained());
 }
+
+BOOST_AUTO_TEST_CASE(platform_extraction_preserves_per_stream_capture_baseline)
+{
+    // Issue #122 deliberately changes this policy only in its shared-budget
+    // PR. Both streams fit individually even though their sum exceeds the cap.
+    auto result = run_scenario(process::LaunchSpec{
+        .executable = "/bin/sh",
+        .arguments = {"-c", "printf 123456; printf abcdef >&2"},
+        .initial_wait_timeout_milliseconds = 5000,
+        .max_output_bytes = 8,
+    });
+    BOOST_TEST(result.finished_on_time);
+    BOOST_TEST(result.handle->status().exit_code.value() == 0);
+    BOOST_TEST(result.handle->standard_output() == "123456");
+    BOOST_TEST(result.handle->standard_error() == "abcdef");
+    BOOST_TEST(!result.handle->stdout_truncated());
+    BOOST_TEST(!result.handle->stderr_truncated());
+}

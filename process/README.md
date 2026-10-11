@@ -18,7 +18,7 @@ assembled environment ([see below](#how-the-executable-is-resolved)),
 pipe wiring, pid + start-time stamps; failures
 there throw `process::ProcessException`, never a boost type. Afterwards
 strand-driven coroutines feed stdin through a thread-safe channel, drain
-stdout/stderr incrementally under the spec's shared output cap (the
+stdout/stderr incrementally under the existing per-stream output cap (the
 readers keep draining past the cap so the child never blocks; the result
 reports which streams were truncated), and race the spec's initial-wait
 deadline (kill or detach; a restarted watcher records the aftermath
@@ -28,8 +28,8 @@ class comment for the full lifetime contract. Tests: the exception
 contract plus the handle lifecycle against harmless coreutils (echo /
 false / cat / env / sleep / seq, plus temp-dir fixtures for executable
 resolution and for the spec-supplied PATH); richer
-fixtures follow in the container build. Consumers link the `process_iface`
-INTERFACE target. A destructive-labelled suite
+fixtures follow in the container build. Consumers link the `process_lib`
+shared-library target. A destructive-labelled suite
 (`test_process_destructive`: 300-round fd/pid leak audit, a destruction
 storm over live children, stdin-after-death handling) runs wherever the
 environment is disposable — in the build container, or anywhere with
@@ -62,3 +62,30 @@ the requested executable and description in the error.
 
 Only bare names are passed to Boost.Process's `find_executable()`. Explicit paths
 are resolved directly, avoiding its PATH-entry concatenation for absolute paths.
+
+## Platform boundary
+
+`utils/subprocess` owns the private Boost.Process object, environment merging,
+executable resolution, spawn attachments, signal/reap calls, shell selection,
+and executable-location lookup. `ProcessHandle` retains lifecycle policy,
+strand serialization, initial-wait timeouts, the pidfd polling workaround,
+and (until the next extraction) pipe I/O and capture. See the
+[utility contract](../utils/subprocess/README.md).
+
+Public identifiers use `process::ProcessId` (`std::uint64_t`, zero before
+launch). A PID is diagnostic data; only an owned child can perform resource
+actions. `ProcessException` remains available through its original header as
+an alias of the utility exception, preserving stage/context diagnostics.
+Public C++ layout and exception type identity have changed: rebuild hosts and
+plugins together for v0.5; this is not binary-compatible with v0.4 plugins.
+
+`emergency_cleanup()` is a synchronous, noexcept fallback delegated to the
+owned child. Finish store calls, stop its executor and join worker threads
+before using it. It may kill/reap but cannot join suspended coroutine tasks;
+normal teardown must await `shutdown()` while the context runs. An atomic
+`exited()` check is not a substitute for this quiescence requirement.
+
+This first step of issue #122 preserves pipe behavior, including the existing
+per-stream capture limit. The separate shared-budget change, transactional
+startup, and Linux PTY backend remain subsequent steps; no TTY option is exposed
+by this refactor.

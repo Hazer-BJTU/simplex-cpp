@@ -1,0 +1,4 @@
+add_executable(test_subprocess_platform test_platform.cpp)
+target_link_libraries(test_subprocess_platform PRIVATE subprocess_lib Boost::unit_test_framework)
+add_test(NAME subprocess_platform COMMAND test_subprocess_platform)
+set_tests_properties(subprocess_platform PROPERTIES TIMEOUT 20)

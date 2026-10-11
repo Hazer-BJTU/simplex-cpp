@@ -1,4 +1,5 @@
 #include "tools/intrinsic/hub_remote_call/schemas.hpp"
+#include "subprocess/platform.hpp"
 
 #include <cstdlib>
 #include <system_error>
@@ -16,7 +17,7 @@ std::filesystem::path schema_directory()
         return directory;
     }
     std::error_code error;
-    const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    const auto executable = subprocess::executable_location(error);
     if (!error && !executable.empty()) {
         const auto installed = executable.parent_path() / "schemas" / "hub_remote_call";
         if (std::filesystem::is_directory(installed, error)) {

@@ -97,3 +97,5 @@ endif()
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
+
+target_link_libraries(tools_intrinsic_process PRIVATE subprocess_lib)

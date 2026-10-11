@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 #include <utility>
-#include <boost/dll/runtime_symbol_info.hpp>
+#include "subprocess/platform.hpp"
 
 namespace load {
 namespace {
@@ -69,7 +69,7 @@ std::filesystem::path storage_child(
 
 /** Directory holding the running executable: the root of installed assets. */
 std::filesystem::path executable_directory() {
-    const auto executable = boost::dll::program_location();
+    const auto executable = subprocess::executable_location();
     return std::filesystem::path(executable.string()).parent_path();
 }
 

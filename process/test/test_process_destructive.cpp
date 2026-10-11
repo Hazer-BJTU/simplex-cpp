@@ -5,6 +5,7 @@
 
 #include <cctype>
 #include <cerrno>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>

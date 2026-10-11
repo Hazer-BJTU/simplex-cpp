@@ -32,6 +32,8 @@ Browser / operator
 | `model_io` dataclasses | Serializable conversation and loop progress | Live sockets, subscriptions, process handles |
 | `llm` | Configured provider instances and model exchange interfaces | Tool execution and disk saves |
 | `tools` | Dispatch, trust checks, complete tool results | Model inference policy |
+| `process` | Child lifecycle policy, deadlines, serialized observation, current pipe capture | Native launch/signal/reap implementation |
+| `utils/subprocess` | Owned native child, opaque launch attachment, shell and executable-location helpers | Session IDs, tool approval, capture policy |
 | `io` / `intercom` | JSON routing / reusable text WebSocket transport | Conversation semantics |
 | Hub | Sessions, launch supervision, operator access, event presentation | Authoritative conversation state |
 
@@ -62,3 +64,11 @@ process tasks are joined as part of cleanup.
 
 Read [the loop lifecycle](agent-loop.md), [persistence](state-and-persistence.md),
 and [security boundaries](security.md) before extending execution behavior.
+
+Process identifiers are diagnostic `uint64_t` values, not handles for resource
+actions. Process management hides Boost.Process behind an owned implementation.
+The normal asynchronous shutdown joins tasks; emergency synchronous cleanup
+requires stopping the context and joining its worker threads first. This
+platform-boundary refactor preserves existing pipe behavior and does not yet
+expose a TTY tool option. Rebuild C++ hosts and plugins together after these
+public layout/type changes; see [the ABI contract](../abi-context.md).

@@ -73,8 +73,9 @@
 // exited() is the one OBSERVATION that crosses that line, because a shutdown
 // path has no strand to hop to: a destructor cannot co_await, and the single
 // question it must answer is "is this child already observed and reaped?" —
-// answering it wrongly means signalling a pid the kernel may have handed to
-// somebody else. So terminality is a LATCH (std::atomic<bool>, written once
+// Cleanup still requires a quiescent executor: the latch alone cannot
+// protect a later resource action against concurrent reaping. Terminality is
+// a latch (std::atomic<bool>, written once
 // by the watcher or shutdown recovery after reaping, never unwritten) rather than
 // only the strand-owned _final_status; status()/snapshot()/output still
 // belong to the strand exactly as before.
@@ -94,8 +95,9 @@
 // v2 arms the pidfd after a waitpid probe, and a child exiting in that gap
 // would otherwise be lost to asio's edge-triggered epoll forever.
 //
-// Output capture is capped by the spec's max_output_bytes (shared by both
-// streams, 0 = unlimited). The readers keep DRAINING past the cap and
+// Output capture currently applies max_output_bytes separately to each
+// stream (0 = unlimited). A shared budget is planned in issue #122 PR 4.
+// The readers keep DRAINING past the cap and
 // discard the excess — a reader that stopped would block the child on a
 // full pipe — and stdout_truncated()/stderr_truncated() report which
 // captured text stopped at the cap.
@@ -117,19 +119,20 @@
 #include <boost/asio.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/asio/experimental/awaitable_operators.hpp>
-#include <boost/process.hpp>
 #include <boost/system.hpp>
-#include <boost/process/environment.hpp>
 
 #include "process/process_exceptions.hpp"
 #include "dataclass/process_spec.hpp"
 #include "logging/logger.hpp"
 
+namespace subprocess {
+class Child;
+}
+
 namespace process {
 
 class ProcessHandle : public std::enable_shared_from_this<ProcessHandle> {
 public:
-    using ProcessPtr = std::unique_ptr<boost::process::process>;
     using MsgChannel = boost::asio::experimental::concurrent_channel<void(boost::system::error_code, std::string)>;
     static constexpr size_t READBUFFER_SIZE = 4096u;
 
@@ -137,7 +140,7 @@ private:
     // Identity + policy — the spec, stamped by the constructor with the
     // child's pid and start time. Never mutated after construction.
     LaunchSpec _spec;
-    ProcessPtr _process_ptr;
+    std::unique_ptr<subprocess::Child> _process_ptr;
 
     // Monotonic anchor for every duration this class computes. started_at
     // (in the spec) is the wall-clock timestamp for reports; system_clock
@@ -307,10 +310,18 @@ public:
      */
     boost::asio::awaitable<void> shutdown();
 
+    /**
+     * Last-resort synchronous direct-child cleanup. Stop the context and join
+     * all worker threads before calling; no lifecycle operation may race it.
+     * Does not join suspended I/O tasks or replace shutdown(). Repeated calls
+     * use owned process state, never a cached diagnostic PID. Never throws.
+     */
+    void emergency_cleanup() noexcept;
+
     // -- observation (strand-owned state: call on the strand or at rest) ----
 
     [[nodiscard]] const LaunchSpec& spec() const noexcept;
-    [[nodiscard]] pid_t pid() const noexcept;
+    [[nodiscard]] ProcessId pid() const noexcept;
     [[nodiscard]] std::chrono::system_clock::time_point started_at() const noexcept;
 
     // True after the watcher or shutdown recovery observes and reaps the child.

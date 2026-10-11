@@ -8,9 +8,6 @@
 #include <stdexcept>
 #include <utility>
 
-#include <cerrno>
-#include <csignal>
-
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -40,49 +37,12 @@ ProcessSessionStore::ProcessSessionStore(
 
 ProcessSessionStore::~ProcessSessionStore()
 {
-    // The last-resort tail, not the shutdown mechanism — shutdown() is
-    // (see the header). Dropping the table is NOT enough on its own: each
-    // handle's await task holds a reference to its own handle until the
-    // child's terminal state is observed, so this destructor's release is
-    // rarely the last one, the handle's own destructor does not run, and the
-    // child would keep running with nobody left to manage it.
-    //
-    // So the signal is sent HERE, synchronously, with ::kill on the pid the
-    // spawn recorded — a destructor cannot await the handle's own coroutine
-    // terminate(). SIGKILL rather than SIGTERM: this path is reached when a
-    // host forgot to shut down, and a polite signal a nobody is watching for
-    // would leave the child running anyway.
-    //
-    // The two reads below are the two that a destructor is allowed to make,
-    // and the choice is deliberate rather than convenient:
-    //
-    //   the pid     copied into the Session at spawn, so this runs off the
-    //               handle entirely — and the value was written once, before
-    //               the handle was shared with anyone.
-    //   exited()    the handle's one thread-safe observation (a latch, see
-    //               process_handle.hpp). It has to be: the question this path
-    //               asks is "was this child already observed?", and a child
-    //               that was observed was also REAPED, so its pid may already
-    //               belong to somebody else. Killing on a stale pid is the one
-    //               failure here that hurts a stranger, so it is answered
-    //               properly even though a destructor cannot hop to a strand.
-    //               The race this replaces — reading strand-owned state from
-    //               the wrong thread and calling the answer luck — is what the
-    //               latch exists to remove.
+    // Callers must quiesce the context and join workers before this fallback.
+    // The owned handle, rather than a copied PID, coordinates cleanup/reaping.
+    // Normal shutdown still awaits shutdown() while the executor is running.
     for (const auto& [id, session] : _sessions) {
-        if (!session->handle || session->handle->exited() || session->pid <= 0) {
-            continue;
-        }
-        const pid_t pid = session->pid;
-        logging::Logger::warning(std::format(
-            "process session store destroyed while session {} (pid {}) is "
-            "still running; killing it. A host should await shutdown() "
-            "before dropping the store",
-            id, static_cast<int>(pid)));
-        if (::kill(pid, SIGKILL) != 0 && errno != ESRCH) {
-            logging::Logger::error(std::format(
-                "killing session {} (pid {}) during store destruction failed: "
-                "errno {}", id, static_cast<int>(pid), errno));
+        if (session->handle) {
+            session->handle->emergency_cleanup();
         }
     }
     _sessions.clear();
@@ -165,11 +125,6 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
         .id = id,
         .handle = handle,
         .strand = session_strand,
-        // Read here, before the handle is shared with any task: the pid is
-        // stamped by the constructor and never written again, and this copy is
-        // what lets the destructor signal the child without touching the
-        // handle at all (the header's shutdown note).
-        .pid = handle->pid(),
         .stdout_cursor = 0,
         .stderr_cursor = 0,
     });

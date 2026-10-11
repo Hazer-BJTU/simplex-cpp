@@ -15,3 +15,5 @@ install(DIRECTORY schemas/ DESTINATION bin/schemas/modality_assist)
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
+
+target_link_libraries(tools_intrinsic_modality_assist PRIVATE subprocess_lib)

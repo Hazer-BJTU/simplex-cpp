@@ -1,4 +1,5 @@
 #include "tools/intrinsic/process/tools.hpp"
+#include "subprocess/platform.hpp"
 
 #include <cstddef>
 #include <filesystem>
@@ -68,41 +69,6 @@ std::string_view signal_word(Signal signal)
         case Signal::Kill:      return "kill";
     }
     return ""; // unreachable; keeps -Wreturn-type quiet
-}
-
-/// The shell a run_command call is run BY, and the flag that tells it the next
-/// argument is the command line rather than a script file or an option.
-///
-/// The model names a command, not an interpreter (schemas/run_command.yaml), so
-/// which shell that is has to be answered here, once, and the answer is the
-/// platform's own: bash where the host has one, and the POSIX sh otherwise —
-/// which POSIX guarantees is there, and under which every command line that
-/// does not reach for bash extensions behaves the same.
-///
-/// The interpreter is named by its CONVENTIONAL ABSOLUTE PATH, and handed to
-/// the launch as a path: the manager uses a path that exists exactly as written
-/// (process/src/process_handle.cpp, resolution step 1), so nothing the model
-/// puts in `environment` — PATH included — can change which interpreter reads
-/// the line. The chosen interpreter remains in the session snapshot; reports omit
-/// the executable and arguments to avoid repeating the invocation.
-///
-/// One branch only, because this whole toolset is POSIX: the session store
-/// signals pids and includes <sys/types.h>, so there is no build of this layer
-/// whose platform shell is something else.
-struct Shell {
-    std::string executable;
-    std::string_view command_flag;
-};
-
-[[nodiscard]] Shell platform_shell()
-{
-    for (const std::string_view candidate : {"/bin/bash", "/usr/bin/bash"}) {
-        std::error_code ignored;
-        if (std::filesystem::is_regular_file(candidate, ignored)) {
-            return Shell{std::string(candidate), "-c"};
-        }
-    }
-    return Shell{"/bin/sh", "-c"};
 }
 
 } // namespace
@@ -405,7 +371,7 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
 {
     const std::string command =
         require_string(query, "command", "the command line to run");
-    const Shell shell = platform_shell();
+    const auto shell = subprocess::platform_shell();
 
     process::LaunchSpec spec;
     // The interpreter IS the executable, and the command line is ONE argument
@@ -415,7 +381,8 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
     // makes this tool different from spawn_process, which promises that nothing
     // parses what it was given.
     spec.executable = shell.executable;
-    spec.arguments = {std::string(shell.command_flag), command};
+    spec.arguments = shell.argument_prefix;
+    spec.arguments.push_back(command);
     // The session's label, and the reason this call needs no `description`
     // argument: every later report about the session — a poll's record, a read,
     // a launch failure — then says which command it is about, so a model

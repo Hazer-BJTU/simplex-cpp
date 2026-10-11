@@ -13,3 +13,5 @@ endif()
 target_compile_definitions(tools_intrinsic_hub_remote_call PRIVATE
     SIMPLEX_HUB_REMOTE_CALL_SCHEMA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/schemas")
 install(DIRECTORY schemas/ DESTINATION bin/schemas/hub_remote_call)
+
+target_link_libraries(tools_intrinsic_hub_remote_call PRIVATE subprocess_lib)
