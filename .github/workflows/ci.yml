@@ -211,7 +211,7 @@ jobs:
   # reason that still holds: installing a browser needs root, and the floor
   # matrix has no business asking for it. (The Node requirement that also
   # justified the split stopped applying when the hub's floor moved to 22.18,
-  # which is above what Vite and Vitest ask for.)
+  # which satisfies the panel build toolchain.)
   #
   # No C++ tree is needed: the browser tests drive `test/browser/stub-hub.mjs`,
   # a server that speaks the panel protocol and can be told to emit an event,

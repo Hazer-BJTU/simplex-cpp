@@ -41,6 +41,7 @@ const skip = available ? false : `core documentation not present at ${DOC_PATH}`
 const WORKER_PATH = join(hubRoot, '..', 'core', 'src', 'application.cpp');
 const MODEL_IO_PATH = join(hubRoot, '..', 'dataclass', 'include', 'dataclass', 'model_io.hpp');
 const OUTBOX_PATH = join(hubRoot, '..', 'core', 'include', 'core', 'event_outbox.hpp');
+const PROTOCOL_PATH = join(hubRoot, '..', 'core', 'src', 'protocol.cpp');
 const workerSkip = [WORKER_PATH, MODEL_IO_PATH, OUTBOX_PATH].every(existsSync)
     ? false : 'Worker C++ sources are not present in this standalone Hub';
 
@@ -120,6 +121,37 @@ function sourceFragment(text, pattern, label) {
 }
 
 describe('worker protocol drift', { skip }, () => {
+    it('documents history turn and response fields from their actual projection sites', {
+        skip: existsSync(PROTOCOL_PATH) ? false : 'Worker projection source is not present',
+    }, () => {
+        const protocol = readFileSync(PROTOCOL_PATH, 'utf8');
+        const markdown = readDocument();
+        const history = sourceFragment(protocol, /nlohmann::json history_page\(([\s\S]*?)\n\}/, 'history page projection');
+        const turn = sourceFragment(history, /nlohmann::json projected = \{([\s\S]*?)\};/, 'history turn initialization');
+        const step = sourceFragment(protocol, /nlohmann::json step = \{([\s\S]*?)\};/, 'history step initialization');
+        const keys = text => [...text.matchAll(/\{"([a-z_]+)",/g)].map(match => match[1]);
+        const assigned = (text, name) => [...text.matchAll(new RegExp(`${name}\\["([a-z_]+)"\\] =`, 'g'))]
+            .map(match => match[1]);
+        function check(heading, required, optional) {
+            assert.ok(required.length > 0 && optional.length > 0, PARSER_HINT);
+            const rows = firstTable(section(markdown, heading), heading);
+            assert.deepEqual(rows.map(row => identifier(row[0])).sort(), [...new Set([...required, ...optional])].sort());
+            for (const row of rows) {
+                assert.equal(row[1].startsWith('Optional'), !required.includes(identifier(row[0])),
+                    `incorrect optionality for ${heading} ${row[0]}`);
+            }
+        }
+        check('#### History turn fields', keys(turn), assigned(history, 'projected'));
+        const required = [...keys(step), 'omitted_parts'];
+        check('#### History step fields', required,
+            [...assigned(protocol, 'step')].filter(key => !required.includes(key)));
+        const turns = section(markdown, '#### History turn fields');
+        const steps = section(markdown, '#### History step fields');
+        assert.match(turns, /preserved across Continue/i);
+        assert.match(steps, /distinct from the turn's input source/);
+        assert.match(steps, /Optional decimal string/);
+    });
+
     it('keeps status capability examples and glossary aligned with the Worker', { skip: workerSkip }, () => {
         const worker = readFileSync(WORKER_PATH, 'utf8');
         const capabilities = sourceFragment(worker,

@@ -203,6 +203,7 @@ jobs:
       - name: Publish or verify tested Hub package through npm OIDC
         working-directory: hub
         run: |
+          shopt -s nullglob
           archive=(hub-release/*.tgz)
           test "${#archive[@]}" -eq 1
           node scripts/check-release-package.mjs "${archive[0]}"
@@ -269,6 +270,7 @@ jobs:
       - name: Publish or verify tested Hub package through npm OIDC
         working-directory: hub
         run: |
+          shopt -s nullglob
           archive=(hub-release/*.tgz)
           test "${#archive[@]}" -eq 1
           node scripts/check-release-package.mjs "${archive[0]}"

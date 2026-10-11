@@ -5,7 +5,7 @@ import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { after, test } from 'node:test';
 import { parse } from 'yaml';
 
@@ -25,6 +25,30 @@ test('publish and recovery runners populate locked runtime dependencies before o
         assert.match(step.run, /--omit=dev\b/);
         assert.match(step.run, /--ignore-scripts\b/);
         assert.doesNotMatch(step.run, /--offline\b/);
+    }
+});
+
+test('publish and recovery reject zero or multiple archives before invoking artifact validators', () => {
+    const workflow = parse(readFileSync(new URL('../../.github/workflows/release-worker.yml', import.meta.url), 'utf8'));
+    for (const job of ['publish-hub', 'recover']) {
+        const steps = workflow.jobs[job].steps;
+        const run = steps.find(step => step.run?.includes('scripts/publish-release.mjs')).run;
+        const validator = run.indexOf('node scripts/check-release-package.mjs');
+        assert.ok(validator > 0);
+        const admission = run.slice(0, validator);
+        const root = mkdtempSync(join(directory, `${job}-archives-`));
+        mkdirSync(join(root, 'hub-release'));
+        function admitted() {
+            return spawnSync('bash', ['-e', '-c', admission + '\nprintf "%s" "${archive[0]}"'],
+                { cwd: root, encoding: 'utf8' });
+        }
+        assert.notEqual(admitted().status, 0, `${job}: empty glob must fail at admission`);
+        writeFileSync(join(root, 'hub-release/one.tgz'), 'one');
+        const single = admitted();
+        assert.equal(single.status, 0);
+        assert.equal(single.stdout, 'hub-release/one.tgz');
+        writeFileSync(join(root, 'hub-release/two.tgz'), 'two');
+        assert.notEqual(admitted().status, 0, `${job}: ambiguous archive must fail at admission`);
     }
 });
 

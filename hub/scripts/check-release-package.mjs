@@ -5,6 +5,7 @@ import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDocumentationAsset, validateDocumentationImages } from './documentation.mjs';
 
 if (process.argv.length !== 3) {
     process.stderr.write('Usage: node scripts/check-release-package.mjs PACKAGE.tgz\n');
@@ -22,7 +23,7 @@ const allowed = [
 ];
 for (const member of members) {
     if (member.startsWith('package/dist/docs/') && !member.endsWith('/')
-        && !member.endsWith('.md')) {
+        && !member.endsWith('.md') && !isDocumentationAsset(member.slice('package/dist/docs/'.length))) {
         throw new Error(`Non-documentation file in packaged docs: ${member}`);
     }
     if (member.endsWith('/panel-redesign-plan.md')) {
@@ -57,7 +58,6 @@ for (const required of [
 if (!members.some(member => /^package\/dist\/web\/dist\/assets\/[^/]+\.js$/.test(member))) {
     throw new Error('The built panel JavaScript is missing from the npm package');
 }
-process.stdout.write(`Validated ${members.length} npm package files\n`);
 
 // The preceding npm ci/build fills npm's cache. Install only the exact locked
 // production dependencies offline beside the actual artifact, so a missing
@@ -66,6 +66,8 @@ const root = mkdtempSync(join(tmpdir(), 'simplex-packed-runtime-'));
 try {
     execFileSync('tar', ['-xzf', archive, '-C', root]);
     const installed = join(root, 'package');
+    const images = validateDocumentationImages(join(installed, 'dist', 'docs'));
+    process.stdout.write(`Validated ${members.length} npm package files and ${images} local documentation images\n`);
     copyFileSync(fileURLToPath(new URL('../package-lock.json', import.meta.url)),
         join(installed, 'package-lock.json'));
     execFileSync('npm', ['ci', '--omit=dev', '--ignore-scripts', '--offline', '--no-audit', '--no-fund'],

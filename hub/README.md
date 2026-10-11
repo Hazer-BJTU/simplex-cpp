@@ -295,19 +295,29 @@ directory; command-line paths resolve against the working directory.
 | `dataDir` | `~/.simplex/hub` | hub state, generated worker configs, logs, JSONL event logs, worker snapshots |
 | `panel.token` | `""` | shared panel token; required for a non-loopback listener |
 | `worker.bin` | `../build/bin/simplex_worker` | worker executable |
+| `worker.args`, `worker.connectHost` | `[]`, `""` | direct-binary flags and a host reachable from workers; empty host derives from the listener |
 | `worker.systemPromptFile` | `prompts/coding_agent.yaml` | default prompt for new sessions, relative to the worker's installation directory |
 | `worker.threads`, `worker.maxExchanges`, `worker.eventCapacity` | `1`, `512`, `1024` | defaults copied into generated worker configurations |
+| `worker.autoCompactThreshold` | `0` | last-exchange total-token threshold; zero disables automatic compact; when enabled, exchange-limit exhaustion also triggers it |
+| `worker.maxAutoCompactions` | `5` | maximum successful automatic compactions per user request; positive integer |
 | `worker.hubRemoteCall` | `true` | include the optional remote-call toolset config for new sessions |
 | `worker.confirmationTimeoutMs` | `120000` | confirmation deadline written into the worker configuration |
+| `worker.payloadCapacity`, `worker.signalCapacity`, `worker.writeCapacity` | `256` each | independent request, signal and outbound queue capacities |
+| `worker.initialBackoffMs`, `worker.maxBackoffMs`, `worker.idleTimeoutSeconds` | `250`, `10000`, `0` | reconnect backoff and optional idle timeout; zero disables idle expiry |
 | `worker.stopTimeoutMs`, `worker.sigtermGraceMs`, `worker.sigkillGraceMs` | `15000`, `5000`, `2000` | the stop escalation ladder |
 | `worker.persistence` | `{enabled: true, readable: false}` | worker snapshot policy |
 | `worker.memoryRetention` | `{maxArchives: 5}` | compact archive cleanup defaults for new worker configs; zero disables cleanup |
+| `worker.environment` | `{workspace: "", platform: "", software: []}` | descriptive environment context injected into new worker state |
 | `providerProfiles` | `deepseek`, `mock` | copied into the generated worker configuration; a session picks one by name |
 | `launcher.kind` | `simplex-worker` | `simplex-worker` or `command` |
 | `launcher.command`, `launcher.args` | `[]` | template and extra arguments for the `command` launcher |
 | `launcher.cwd`, `launcher.pidFile` | `""` | working directory, and the pid file for a launcher that daemonizes |
+| `launcher.dockerManagementEnv` | `[]` | additional environment names retained for Docker management; values are persisted privately |
 | `mock.enabled`, `mock.listen`, `mock.profile`, `mock.scenario` | `false`, `127.0.0.1:0`, `mock`, `auto` | offline provider |
+| `mock.slowMs`, `mock.toolCommand` | `1500`, `""` | slow-scenario delay and optional proposed command override |
+| `subagents` | `maxLive: 16`, `maxChildren: 4`, `maxDepth: 3`, `startupTimeoutMs: 30000`, `maxReceipts: 200`, `receiptTtlMs: 3600000`, `conversationBytes: 1 MiB` | family quotas, startup deadline and operation/conversation retention bounds |
 | `limits.transcriptEvents` | `5000` | envelopes retained per session for panel replay |
+| `limits.transcriptBytes`, `limits.logRingBytes` | `32 MiB`, `256 KiB` | replay/log memory ceilings; the log ring minimum is 64 bytes |
 | `limits.logLines`, `limits.logBytes`, `limits.logFiles` | `500`, `8 MiB`, `2` | captured worker output |
 | `limits.maxMessageBytes` | `32 MiB` | largest accepted WebSocket message |
 | `limits.pingIntervalMs` | `30000` | worker connection ping interval; `0` disables |
@@ -429,18 +439,9 @@ older workers without that classification receive general failure wording.
 
 ## Files on disk
 
-```
-<dataDir>/
-  hub.json                        sessions, tokens, process records
-  sessions/<session>/
-    config/config.yaml            persistent worker configuration
-    state/state.json              authoritative worker snapshot
-    state/readable.md             optional human-readable copy
-    memory/<ordinal>-<time>-<run>/state.md   compact archives
-    logs/worker.log                captured worker output (rotated)
-    events.jsonl                  best-effort event copy and disk-omission markers
-    session.lock                  exclusive worker ownership
-```
+See the [canonical data-directory layout](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/configurations.md#directory-and-startup-configuration)
+for the startup file, configuration library, session snapshots and flat headless
+storage. State and memory paths follow each worker's saved configuration.
 
 Conversation state lives in the worker's snapshot, not in the hub. The panel can
 read it; nothing can replace, edit, or reset it.
@@ -454,9 +455,9 @@ Child-path validation rejects absolute paths and lexical `..` traversal, but
 does not resolve symlinks. A symlink within the session can point state or
 memory outside it; these paths are not a filesystem sandbox. The operator must
 trust or constrain workers with filesystem access.
-After a successful compact, worker-owned cleanup applies the configured count
-limit (5 by default) to recognized archives, preserving the current archive.
-Cleanup failures are visible beside the saved summary. Failed/cancelled attempts,
+After successful, failed and cancelled compact attempts, worker-owned cleanup
+applies the configured count limit (5 by default) to recognized archives,
+preserving the current recovery archive. Cleanup failures remain visible;
 unexpected files and empty directories can remain, so limits are cleanup targets
 rather than disk quotas. The hub never deletes a remote path from an event.
 The old `workers/`, `events/`,
@@ -681,7 +682,7 @@ ABI fingerprint the C++ jobs depend on.
 | Job | Subject | Notes |
 | --- | --- | --- |
 | `hub-test` | the suite and the type checker on the declared Node floor (22.18) and the current release (24) | no C++ tree needed; drives stand-in workers over real WebSockets |
-| `hub-panel` | the panel build and its browser tests | Node 24 only: Vite and Vitest both require more than the hub's floor, and installing a browser needs root |
+| `hub-panel` | the panel build and its browser tests | Node 24 on the host runner for privileged browser dependency installation; the build also supports the Hub's Node 22.18 floor |
 | `hub-e2e` | the hub against the *staged release* worker from `portable-release` | the first workload that runs a release binary rather than a ctest executable |
 
 Between them they also assert things a reader might otherwise assume:

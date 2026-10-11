@@ -12,6 +12,7 @@ const harmlessRootFiles = new Set([
 ]);
 const outOfScopeWorkflows = new Set([
     '.github/workflows/docs.yml', '.github/workflows/release-worker.yml',
+    '.github/workflows/panel-performance.yml',
 ]);
 
 /** Unknown paths deliberately select native validation. No extension exclusions. */
