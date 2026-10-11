@@ -76,3 +76,28 @@ foreground launcher and its config snapshot intact so the Hub can supervise it.
 For custom images, verify executable paths and runtime libraries before debugging
 WebSocket routing. Logs from the foreground process are captured under the
 session's `logs/worker.log`.
+
+## Process terminals (v0.5)
+
+Process tools use separate pipes by default. For a program that requires a real
+terminal, the model can opt into `tty: true` in `spawn_process` or `run_command`.
+The Linux worker allocates its own controlling PTY; the worker container does
+**not** need `docker run -t`, an attached console, privileged mode or host terminal
+mounts. It does need a usable `/dev/pts` (devpts) and `/dev/ptmx`, plus Linux kernel
+4.13 or newer. Standard Docker containers provide these devices. A deployment
+that masks them or forbids allocation receives a tool error for TTY launches;
+the worker never silently substitutes pipes, and ordinary pipe launches remain
+available.
+
+Terminal stdout/stderr merge into one `output` block. Initial settings are
+canonical input, echo off, 80×24 and `TERM=dumb`; child programs can change them.
+Control sequences and carriage returns remain in the result. The panel displays
+text, not a reconstructed terminal screen. `end_input` requests EOF; it neither
+physically half-closes a PTY nor guarantees that the child exits. Unsupported
+terminal modes are reported in subsequent read/poll metadata.
+
+Cancelling an agent run leaves existing process sessions available. Worker
+shutdown joins owned process and I/O tasks; it terminates the direct child and
+bounds capture drainage. Closing the terminal can hang up descendant slave
+holders, but this is not a guarantee of process-tree cleanup. IDs from a previous
+worker instance do not identify live sessions after restart.

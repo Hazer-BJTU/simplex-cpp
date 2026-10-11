@@ -205,5 +205,21 @@ does not remove otherwise valid tools. CMake installs all declarations/skill.
 
 Tests cover YAML/settled-query agreement, approval and scheduling, real pipe/PTY
 execution, delta/full/poll cursors, UTF-8 projection, input admission, unsupported
-EOF, lifecycle rollback and shared capture limits. The next issue #122 stage
-adds final worker/container/release composition checks.
+EOF, lifecycle rollback and shared capture limits. Final integration coverage:
+
+- `hub/test/e2e/process-tty.test.js`: real worker, approval, cancellation without
+  destroying an existing terminal, ordered input/EOF, merged output, panel text
+  parsing and final release.
+- `core/test/test_lifecycle_container.py`: terminal IDs across worker restart,
+  exclusive ownership, terminal child reaping and descendant-held pipe shutdown.
+- `installed_terminal_runtime` in `test_tools`: execute both backends from the
+  staged installation; repeated PTY allocation failures roll back without
+  breaking pipe launches when `SIMPLEX_TEST_NO_PTY=1`.
+- CI's staged-runtime matrix hides source declarations and exercises the installed
+  tools on Ubuntu 22.04 and AlmaLinux 9. Hub E2E also mounts an empty `/dev/pts`
+  in a disposable runtime container to exercise actual terminal unavailability.
+
+Run the negative test only in a container whose devpts has intentionally been
+masked. Setting the expectation on a normal host is a test failure, not a backend
+configuration switch. The release package contains no test executable; CI copies
+it into its temporary staged layout for this check.

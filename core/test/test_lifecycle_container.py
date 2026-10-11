@@ -239,6 +239,40 @@ with tempfile.TemporaryDirectory() as directory:
         shutdown(second, peer) # Must exit before the inherited pipe reaches EOF.
         os.kill(child, 0)
 
+        # Retained terminal IDs, like pipe IDs above, cannot alias a session
+        # created by the restarted worker even when its persistent state returns.
+        terminal_owner, peer = start('terminal-recovery')
+        arguments = {'executable': '/bin/sh', 'arguments': ['-c', 'printf TTY-FIRST'],
+                     'tty': True, 'expected_runtime_milliseconds': 1000, 'auto_release': False}
+        result = peer.run('spawn_process', arguments)
+        old_terminal = re.search(r'proc_[0-9a-f-]+_\d+', result).group()
+        shutdown(terminal_owner, peer)
+        terminal_owner, peer = start('terminal-recovery')
+        arguments['arguments'] = ['-c', 'printf TTY-SECOND']
+        result = peer.run('spawn_process', arguments)
+        new_terminal = re.search(r'proc_[0-9a-f-]+_\d+', result).group()
+        assert old_terminal != new_terminal
+        stale = peer.run('read_process', {'session_id': old_terminal})
+        assert 'no live process session' in stale and 'TTY-SECOND' not in stale, stale
+        current = peer.run('read_process', {'session_id': new_terminal, 'full': True})
+        assert 'TTY-SECOND' in current, current
+        shutdown(terminal_owner, peer)
+
+        # A live terminal child belongs to worker shutdown even though it is
+        # independent of agent-run cancellation. Observe its PID disappearing.
+        terminal_owner, peer = start('terminal-owner')
+        result = peer.run('spawn_process', {'executable': '/bin/sleep',
+            'arguments': ['30'], 'tty': True, 'expected_runtime_milliseconds': 0})
+        terminal_pid = int(re.search(r'\[\[pid\]\]: (\d+)', result).group(1))
+        children.append(terminal_pid)
+        os.kill(terminal_pid, 0)
+        shutdown(terminal_owner, peer)
+        try:
+            os.kill(terminal_pid, 0)
+            raise AssertionError('terminal child survived worker shutdown')
+        except ProcessLookupError:
+            children.remove(terminal_pid)
+
         # Crash with an executed child still alive: CLOEXEC must prevent that
         # child from retaining ownership of the parent's session lock.
         owner, peer = start()
@@ -259,7 +293,7 @@ with tempfile.TemporaryDirectory() as directory:
         (bad / 'state.json').unlink()
         repaired, peer = start('broken')
         shutdown(repaired, peer)
-        print('worker ownership, recovery non-aliasing, and pipe lifetime: passed')
+        print('worker ownership, TTY recovery non-aliasing, terminal shutdown and pipe lifetime: passed')
     finally:
         for process, log in workers:
             if process.poll() is None:
