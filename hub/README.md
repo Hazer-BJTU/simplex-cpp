@@ -493,6 +493,15 @@ by result order or attaches them to an ID-bearing call. Argument comparison is
 bounded; over-budget comparisons also remain unmatched. Headless approval
 counts include only unsettled prompts.
 
+Each round fold indexes calls by display key and ID, preserving the first
+retained occurrence and original presentation order. Settled calls replace a
+stable array slot; only unresolved ID-less proposals enter the per-name legacy
+candidate index. Model-claimed keys are tracked as responses arrive instead of
+being rebuilt for every dispatch. Same-name legacy argument matching still
+checks candidates and rejects ambiguity; these indexes do not weaken that
+evidence requirement. Indexes belong to a single fold and are rebuilt from
+retained events after replay, trimming or approval changes.
+
 History refreshes are assembled in a separate bounded candidate and published
 only after all pages agree on worker, revision, total and cursor progression.
 Failed refreshes preserve the last published projection. Input `source` and
@@ -567,6 +576,20 @@ the local machine, not DOM responsiveness or CI thresholds. Unit tests separatel
 check exact byte accounting through replay, snapshot replacement and both
 eviction passes; browser tests verify projection reuse and immediate approval
 updates without changing appearance.
+
+To compare tool matching over 32 exchanges with 32 identified calls per
+exchange, reversed results and paired omission notices:
+
+```sh
+node test/benchmarks/panel-tool-matching.mjs
+node test/benchmarks/panel-tool-matching.mjs /path/to/older-checkout
+```
+
+Test-only wrappers count full-call array visits, copies of model-claimed keys
+and linear membership checks while preserving native results. Both reports
+include the SHA-256 of the complete presentation so behavior can be compared
+alongside the work removed. The timing includes instrumentation and measures
+the pure fold, not browser latency; there is no timing assertion in CI.
 
 Overlays — menus, dialogs, popovers, tooltips, tabs — are Radix primitives, and
 the reason is specific rather than fashionable: the old panel hand-wrote a focus

@@ -204,6 +204,16 @@ interface Draft {
     compactResult: CompactResult | null;
     assistant: AssistantBlock[];
     calls: ToolCall[];
+    /** Stable slots survive replacing a call with its settled presentation. */
+    callByKey: Map<string, number>;
+    /** First retained occurrence, including a result whose proposal was evicted. */
+    callById: Map<string, number>;
+    /** Only unresolved ID-less proposals participate in legacy result matching. */
+    legacyByName: Map<string, Set<number>>;
+    /** Incremental union of the call keys claimed by all model responses. */
+    claimedCalls: Set<string>;
+    /** Latest response's membership, for paired omission-notice accounting. */
+    latestModelCalls: Set<string>;
     problems: Problem[];
     timeline: TimelineEntry[];
     protocol: EventItem[];
@@ -242,6 +252,11 @@ function newDraft(key: string, index: number, kind: 'prelude' | 'run'): Draft {
         compactResult: null,
         assistant: [],
         calls: [],
+        callByKey: new Map(),
+        callById: new Map(),
+        legacyByName: new Map(),
+        claimedCalls: new Set(),
+        latestModelCalls: new Set(),
         problems: [],
         timeline: [],
         protocol: [],
@@ -370,6 +385,27 @@ function resultsOf(envelope: WorkerEnvelope): ResultView[] {
 }
 
 /**
+ * Append in presentation order and index its stable slot. Key/ID lookup keeps
+ * the first retained occurrence, matching the previous linear lookup even if
+ * malformed/replayed data supplies a proposal after an orphan result. Orphan
+ * results never become candidates for ID-less proposal matching.
+ */
+function appendCall(draft: Draft, call: ToolCall): void {
+    const slot = draft.calls.length;
+    draft.calls.push(call);
+    if (!draft.callByKey.has(call.key)) draft.callByKey.set(call.key, slot);
+    if (call.id && !draft.callById.has(call.id)) draft.callById.set(call.id, slot);
+    if (!call.id && !call.result) {
+        let slots = draft.legacyByName.get(call.name);
+        if (!slots) {
+            slots = new Set();
+            draft.legacyByName.set(call.name, slots);
+        }
+        slots.add(slot);
+    }
+}
+
+/**
  * Add a batch of proposed calls to a round, merging by identity.
  *
  * `tool_calls` and `model_response.invokes` describe the same batch: core emits
@@ -393,9 +429,9 @@ function addCalls(
         const key = view.id || pairedKeys?.[ordinal]
             || JSON.stringify(['legacy-call', sourceKey(item), ordinal]);
         keys.push(key);
-        if (draft.calls.some((call) => call.key === key)) continue;
+        if (draft.callByKey.has(key)) continue;
         const prompt = promptFor(prompts, view);
-        draft.calls.push({
+        appendCall(draft, {
             key,
             id: view.id,
             name: view.name,
@@ -422,7 +458,8 @@ function pairedCallKeys(draft: Draft, views: readonly CallView[], omitted: numbe
     if (!keys || !model || keys.length !== views.length
         || omittedToolItems(obj(model.envelope.data)?.invokes) !== omitted) return undefined;
     const matches = views.every((view, index) => {
-        const call = draft.calls.find(call => call.key === keys[index]);
+        const slot = draft.callByKey.get(keys[index]!);
+        const call = slot === undefined ? undefined : draft.calls[slot];
         if (!call || draft.settled.has(call.key)) return false;
         if (view.id || call.id) return view.id === call.id;
         return view.name === call.name && sameArguments(view.args, call.args);
@@ -464,12 +501,16 @@ function settle(
  * displayed separately, never attached by arrival order or to an identified
  * call. A complete id-less batch is still ambiguous if its calls are identical.
  */
-function matchCall(draft: Draft, result: ResultView): ToolCall | null {
-    if (result.id) return draft.calls.find((call) => call.id === result.id) ?? null;
-    const candidates = draft.calls.filter(call => !call.id && !call.result
-        && call.name === result.name
-        && (result.args === undefined || sameArguments(call.args, result.args)));
-    return candidates.length === 1 ? candidates[0]! : null;
+function matchCall(draft: Draft, result: ResultView): number | null {
+    if (result.id) return draft.callById.get(result.id) ?? null;
+    let match: number | null = null;
+    for (const slot of draft.legacyByName.get(result.name) ?? []) {
+        const call = draft.calls[slot]!;
+        if (result.args !== undefined && !sameArguments(call.args, result.args)) continue;
+        if (match !== null) return null;
+        match = slot;
+    }
+    return match;
 }
 
 /** Stable retained identity, scoped independently of reused execution IDs. */
@@ -827,6 +868,8 @@ export function buildRounds(
             const message = obj(envelope.data) ?? {};
             const cost = costLine(message.cost);
             const callIds = addCalls(run, prompts, invokesOf(envelope), item);
+            for (const key of callIds) run.claimedCalls.add(key);
+            run.latestModelCalls = new Set(callIds);
             run.pendingCallBatch = callIds;
             run.assistant.push({
                 key: item.id,
@@ -850,21 +893,20 @@ export function buildRounds(
         if (name === 'tool_calls') {
             const run = groups.execution(envelope);
             track(run, item);
-            const claimed = new Set(run.assistant.flatMap((block) => [...block.callIds]));
             const views = batchOf(envelope);
             const keys = addCalls(run, prompts, views, item,
                 pairedCallKeys(run, views, omittedToolItems(envelope.data)));
             for (const key of keys) {
                 // A card the model response already claims is drawn with it, in
                 // the response's place rather than the batch's.
-                if (!claimed.has(key)) run.timeline.push({ kind: 'calls', key });
+                if (!run.claimedCalls.has(key)) run.timeline.push({ kind: 'calls', key });
             }
             const omitted = omittedToolItems(envelope.data);
             const model = run.assistant.at(-1);
             // The committed response and following batch describe the same
             // proposals. Do not double-count their identical display omission.
             const paired = model !== undefined && keys.length === model.callIds.length
-                && keys.every(key => model.callIds.includes(key))
+                && keys.every(key => run.latestModelCalls.has(key))
                 && omittedToolItems(obj(model.envelope.data)?.invokes) === omitted;
             if (omitted > 0 && !paired) {
                 run.timeline.push({ kind: 'tool_omission', key: `${item.id}-omitted-calls`, count: omitted, category: 'calls' });
@@ -877,14 +919,14 @@ export function buildRounds(
             run.pendingCallBatch = null;
             track(run, item);
             for (const result of derivations?.resultsOf(envelope) ?? resultsOf(envelope)) {
-                const call = matchCall(run, result);
-                if (!call) {
+                const at = matchCall(run, result);
+                if (at === null) {
                     // A result whose proposal is not in this transcript: a
                     // replay can begin mid-turn. Shown rather than dropped.
                     const output = derivations?.outputOf(result) ?? parseToolOutput(result.text);
                     const key = `orphan-${item.id}-${run.calls.length}`;
                     run.timeline.push({ kind: 'calls', key });
-                    run.calls.push({
+                    appendCall(run, {
                         key,
                         id: result.id,
                         name: result.name,
@@ -903,9 +945,14 @@ export function buildRounds(
                     });
                     continue;
                 }
-                const at = run.calls.indexOf(call);
+                const call = run.calls[at]!;
                 run.calls[at] = settle(run, call, result, envelope, derivations);
                 run.settled.add(call.key);
+                if (!call.id) {
+                    const slots = run.legacyByName.get(call.name)!;
+                    slots.delete(at);
+                    if (slots.size === 0) run.legacyByName.delete(call.name);
+                }
             }
             const omitted = omittedToolItems(envelope.data);
             if (omitted > 0) {

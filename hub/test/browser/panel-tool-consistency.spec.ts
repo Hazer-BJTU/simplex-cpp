@@ -1,6 +1,34 @@
 import { expect, test } from '@playwright/test';
 import { call, emit, modelResponse, open, toolResult } from './harness.ts';
 
+test('identified batches retain call order and disclosure state through reversed results and replay', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    const proposals = Array.from({ length: 24 }, (_, index) =>
+        call(`batch-${index}`, 'run_command', { command: `echo ${index}` }));
+    await emit(page, 'model_response', modelResponse('', { invokes: proposals }));
+    await emit(page, 'tool_calls', proposals);
+    const cards = page.getByTestId('tool-card');
+    await expect(cards).toHaveCount(24);
+    await cards.nth(0).getByTestId('tool-details').locator('summary').first().click();
+    await expect(cards.nth(0).getByTestId('tool-details')).toHaveAttribute('open', '');
+    await emit(page, 'tool_results', [...proposals].reverse().map(proposal =>
+        toolResult(proposal.id, proposal.name, `Answer ${proposal.id}`)));
+    await expect(cards.nth(0)).toHaveAttribute('data-status', 'ok');
+    await expect(cards.nth(0)).toContainText('Answer batch-0');
+    await expect(cards.nth(0)).not.toContainText('Answer batch-23');
+    await expect(cards.nth(0).getByTestId('tool-details')).toHaveAttribute('open', '');
+    await emit(page, 'run_finished', { status: 'completed' });
+    await page.reload();
+    await expect(cards).toHaveCount(24);
+    for (const index of [0, 12, 23]) {
+        const card = cards.nth(index);
+        await expect(card).toHaveAttribute('data-status', 'ok');
+        await card.getByTestId('tool-details').locator('summary').first().click();
+        await expect(card).toContainText(`Answer batch-${index}`);
+    }
+});
+
 test('legacy tools have one card per exchange through live updates and replay', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
