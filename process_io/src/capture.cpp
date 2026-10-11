@@ -52,6 +52,15 @@ std::optional<StreamView> CaptureBuffer::view(Stream stream) const
     return StreamView{record->bytes, record->truncated, record->end, record->error};
 }
 
+const std::string& CaptureBuffer::bytes(Stream stream) const
+{
+    const auto& record = _streams[index(stream)];
+    if (!record) {
+        throw std::invalid_argument("output stream does not exist in this environment");
+    }
+    return record->bytes;
+}
+
 void CaptureBuffer::append(Stream stream, std::string_view bytes)
 {
     auto& record = require(stream);

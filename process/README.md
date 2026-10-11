@@ -17,14 +17,12 @@ throw at `Stage::Environment`), executable resolution against that same
 assembled environment ([see below](#how-the-executable-is-resolved)),
 pipe wiring, pid + start-time stamps; failures
 there throw `process::ProcessException`, never a boost type. Afterwards
-strand-driven coroutines feed stdin through a thread-safe channel, drain
-stdout/stderr incrementally under the existing per-stream output cap (the
-readers keep draining past the cap so the child never blocks; the result
-reports which streams were truncated), and race the spec's initial-wait
-deadline (kill or detach; a restarted watcher records the aftermath
-either way). The handle must live in a `shared_ptr` — the background
-tasks keep it alive until the child's terminal state is observed; see the
-class comment for the full lifetime contract. Tests: the exception
+the handle delegates input ordering, pumps and raw capture to
+`process_io::ProcessIoEnvironment`. Startup also schedules its independently
+supervised child watcher. Initial waiting applies a grace-period timeout (kill
+or detach), but is no longer necessary to start observation or perform cleanup.
+The handle must live in a `shared_ptr`; the watcher retains it until exit or
+shutdown. Tests: the exception
 contract plus the handle lifecycle against harmless coreutils (echo /
 false / cat / env / sleep / seq, plus temp-dir fixtures for executable
 resolution and for the spec-supplied PATH); richer
@@ -68,8 +66,10 @@ are resolved directly, avoiding its PATH-entry concatenation for absolute paths.
 `utils/subprocess` owns the private Boost.Process object, environment merging,
 executable resolution, spawn attachments, signal/reap calls, shell selection,
 and executable-location lookup. `ProcessHandle` retains lifecycle policy,
-strand serialization, initial-wait timeouts, the pidfd polling workaround,
-and (until the next extraction) pipe I/O and capture. See the
+strand serialization, initial-wait timeouts and the pidfd polling workaround.
+`process_io` owns the pipes, input queue, reader/writer tasks and captured bytes.
+All three layers reuse one strand per child; no nested strand or duplicated
+capture buffer is introduced. See the
 [utility contract](../utils/subprocess/README.md).
 
 Public identifiers use `process::ProcessId` (`std::uint64_t`, zero before
@@ -85,7 +85,37 @@ before using it. It may kill/reap but cannot join suspended coroutine tasks;
 normal teardown must await `shutdown()` while the context runs. An atomic
 `exited()` check is not a substitute for this quiescence requirement.
 
-This first step of issue #122 preserves pipe behavior, including the existing
-per-stream capture limit. The separate shared-budget change, transactional
-startup, and Linux PTY backend remain subsequent steps; no TTY option is exposed
-by this refactor.
+## Startup, input and cleanup
+
+Construct the handle, await `start_background_io_tasks()`, then optionally await
+`await_initial_execution()`. A supplied strand is reused by the handle and its
+I/O environment, so session cursor consumption and capture updates serialize.
+Construction may prepare an unpublished environment exclusively before a
+context runs; all subsequent mutation is strand-owned. Observation is also
+allowed after the context and all worker threads have quiesced.
+
+`write_input()` and `close_input()` are now **awaitable** and return
+`process_io::InputResult`. Await them in order. `Accepted` means queued, not
+written or consumed; `Closed` rejects a new request. Pipe input-end follows all
+accepted bytes. There is no second channel inside ProcessHandle and no new
+pending-input memory quota. Direct C++ consumers must migrate former
+fire-and-forget calls to `co_await`; model-facing tool arguments are unchanged.
+
+Startup failure joins started pumps and terminates/reaps the child before
+throwing. `shutdown()` works even if startup or the initial wait was never
+called. It stops admission, signals the child, allows a bounded output drain,
+then cancels/joins the environment and watcher before reporting the first
+failure. A cancelled initial wait does not detach an unsupervised process:
+the independent watcher remains active, and the owner can still shut it down.
+Unexpected I/O failures are retained and reported by cleanup rather than only
+logged. Expected broken stdin is a closed-peer outcome.
+
+ProcessSessionStore reserves capacity before launch and publishes only after
+startup. Failure during allocation/publication or cancellation during initial
+waiting rolls back the child, tasks, table entry and capacity reservation before
+propagating the original failure. Shutdown still excludes concurrent store
+spawn/release calls; it attempts every session even if one cleanup fails.
+
+The existing per-stream output cap is preserved in this third step of #122.
+The shared-budget change and Linux PTY backend remain subsequent steps; no TTY
+option or model-facing output/input schema change is included here.

@@ -47,7 +47,7 @@ struct Snapshot {
 /** Independent child I/O, with no process ID, reaper, timeout or tool policy.
  * Construct with the SAME strand used by child lifecycle/session observations.
  * Awaitable operations marshal onto that strand and can be called from other
- * executors. prepare_attachment() and snapshot() must run directly on it;
+ * executors. snapshot() must run directly on it;
  * snapshot/cursor consumption must be one operation without co_await in between.
  * Keep the environment alive throughout outstanding method calls. The executor
  * context must outlive it. Explicit cancel_and_join() is the resource fence.
@@ -58,8 +58,9 @@ public:
     [[nodiscard]] virtual Executor executor() const = 0;
     [[nodiscard]] virtual Capabilities capabilities() const noexcept = 0;
 
-    /// Once only, before launching the child. The attachment borrows this
-    /// environment until launch completes. A failed launch must still be
+    /// Once only, before launching the child. May run during exclusive
+    /// construction before publication, or on executor(); never concurrently.
+    /// The attachment borrows this environment until launch completes. A failed launch must still be
     /// followed by cancel_and_join(); that path needs no child or start().
     virtual subprocess::IoAttachment prepare_attachment() = 0;
     /// After successful launch. Supervises all pumps; repeated start is an error.
@@ -73,7 +74,15 @@ public:
     /// Reject later input without closing output. Already accepted input can
     /// still be delivered; this does not itself request EOF or join anything.
     virtual boost::asio::awaitable<void> stop_admission() = 0;
+    /// Discard pending input and abort its transport while preserving output
+    /// drainage. Forced shutdown, unlike ordered request_input_end(). The pump
+    /// completion is still joined by cancel_and_join().
+    virtual boost::asio::awaitable<void> cancel_input() = 0;
     [[nodiscard]] virtual Snapshot snapshot() const = 0;
+    /// Borrowed capture storage. Read on executor(), or after the context and
+    /// all worker threads have quiesced. Never suspend between observing bytes
+    /// and updating a cursor. Does not copy capture or check thread identity.
+    [[nodiscard]] virtual const CaptureBuffer& capture() const noexcept = 0;
     /// Permit natural capture until the deadline. False means time expired;
     /// does not close transports. Caller cancellation can interrupt this wait.
     virtual boost::asio::awaitable<bool> drain_until(

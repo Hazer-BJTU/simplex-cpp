@@ -1112,3 +1112,55 @@ BOOST_AUTO_TEST_CASE(store_incarnations_never_alias_historical_ids)
     first.run(first.store->shutdown());
     second.run(second.store->shutdown());
 }
+
+BOOST_AUTO_TEST_CASE(cancelled_spawn_rolls_back_publication_child_and_slot)
+{
+    namespace asio = boost::asio;
+    asio::io_context io;
+    auto strand = asio::make_strand(io);
+    auto store = std::make_shared<tools::intrinsic::ProcessSessionStore>(strand, 1);
+    asio::cancellation_signal cancel;
+    bool completed = false;
+    std::exception_ptr failure;
+    process::LaunchSpec spec;
+    spec.executable = "sleep";
+    spec.arguments = {"30"};
+    spec.initial_wait_timeout_milliseconds = 10000;
+    asio::co_spawn(strand, store->spawn(spec), asio::bind_cancellation_slot(cancel.slot(),
+        [&](std::exception_ptr error, auto) {
+            failure = error;
+            completed = true;
+        }));
+    auto supervisor = asio::co_spawn(strand, [&]() -> asio::awaitable<void> {
+        asio::steady_timer timer(strand);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while ((co_await store->size()) == 0) {
+            BOOST_REQUIRE((std::chrono::steady_clock::now() < deadline));
+            timer.expires_after(std::chrono::milliseconds(5));
+            co_await timer.async_wait(asio::use_awaitable);
+        }
+        const auto listed = co_await store->snapshots();
+        BOOST_REQUIRE(listed.size() == 1u);
+        const auto pid = listed.front().result.spec.pid;
+        cancel.emit(asio::cancellation_type::all);
+        while (!completed) {
+            BOOST_REQUIRE((std::chrono::steady_clock::now() < deadline));
+            timer.expires_after(std::chrono::milliseconds(5));
+            co_await timer.async_wait(asio::use_awaitable);
+        }
+        BOOST_REQUIRE(failure);
+        try { std::rethrow_exception(failure); }
+        catch (const boost::system::system_error& error) {
+            BOOST_TEST(error.code() == asio::error::operation_aborted);
+        }
+        BOOST_TEST((co_await store->size()) == 0u);
+        BOOST_TEST(::kill(pid, 0) == -1);
+        BOOST_TEST(errno == ESRCH);
+        spec.initial_wait_timeout_milliseconds = 1;
+        const auto next = co_await store->spawn(spec);
+        BOOST_TEST(!next.id.empty());
+        co_await store->shutdown();
+    }, asio::use_future);
+    io.run();
+    supervisor.get();
+}

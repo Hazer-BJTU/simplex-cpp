@@ -1,9 +1,9 @@
 # Process I/O environments
 
 `process_io_lib` provides `ProcessIoEnvironment`, the shared `CaptureBuffer`,
-and the `AnonymousPipeIo` backend. This is the second stage of issue #122:
-the existing `ProcessHandle` still owns its original pipe implementation.
-Migration, aggregate capture limits and POSIX TTY support follow separately.
+and the `AnonymousPipeIo` backend. `ProcessHandle` delegates its I/O to this
+package and retains child lifecycle policy. Aggregate capture limits and POSIX
+TTY support follow separately in issue #122.
 
 ## Ownership and execution
 
@@ -15,13 +15,16 @@ when to stop a child and how long to drain descendant-held output pipes.
 Construct the environment with the **same strand** used for child lifecycle and
 session observation. Awaitable methods marshal work to that strand, including
 calls from another io_context. `prepare_attachment()` and `snapshot()` are
-synchronous strand-only operations and reject calls elsewhere. A borrowed
-snapshot and any session cursor updates must be consumed without suspension;
+synchronous operations. `snapshot()` requires its strand; attachment preparation
+also permits exclusive construction before publication, when no task can access
+the environment. `capture()` exposes borrowed const storage for strand-side or
+fully quiescent observation. A borrowed snapshot and any session cursor updates must be consumed without suspension;
 copy bytes explicitly when they must survive later capture mutations.
 
 The normal sequence is:
 
-1. Construct `AnonymousPipeIo` and call `prepare_attachment()` once on its strand.
+1. Construct `AnonymousPipeIo` and call `prepare_attachment()` once, either on
+   its strand or during exclusive construction before publishing the object.
 2. Launch `subprocess::Child` with that attachment. The environment must outlive
    the borrowed attachment and the synchronous launch.
 3. Await `start()` once after successful launch to supervise all three pumps.
@@ -44,7 +47,9 @@ An input accepted before shutdown can be discarded during forced cleanup.
 
 `stop_admission()` rejects subsequent input after its await completes, without
 closing output or requesting EOF. `request_input_end()` also closes admission,
-then drains accepted input and closes pipe stdin. `EndRequested`, `Ended`,
+then drains accepted input and closes pipe stdin. `cancel_input()` instead
+discards pending input and cancels the writer while output continues draining;
+the lifecycle owner uses it before signalling a child during forced shutdown. `EndRequested`, `Ended`,
 `PeerClosed`, `Stopped` and `Failed` distinguish the outcome. Broken stdin is
 normal peer closure, not a fatal pump error. On POSIX, `subprocess::PipeWriter`
 prevents SIGPIPE from terminating the host without changing the process-wide

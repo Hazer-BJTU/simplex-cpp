@@ -106,6 +106,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(test_shutdown_failures PRIVATE ${CMAKE_DL_LIBS})
     target_link_options(test_shutdown_failures PRIVATE
         "LINKER:--export-dynamic-symbol=waitpid"
-        "LINKER:--export-dynamic-symbol=kill")
+        "LINKER:--export-dynamic-symbol=kill"
+        "LINKER:--export-dynamic-symbol=_ZN10process_io15AnonymousPipeIo5startEv"
+        "LINKER:--export-dynamic-symbol=_ZN5tools9intrinsic19ProcessSessionStore15publish_sessionESt10shared_ptrINS1_7SessionEE")
     set_tests_properties(test_shutdown_failures PROPERTIES TIMEOUT 15)
 endif()

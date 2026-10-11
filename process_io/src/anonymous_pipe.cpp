@@ -41,6 +41,7 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
     bool accepting = false;
     bool end_requested = false;
     bool stopping = false;
+    bool input_stopped = false;
     bool joined = false;
     std::size_t active_tasks = 0;
     std::exception_ptr failure;
@@ -82,27 +83,34 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
         return code;
     }
 
-    /// Strand-only, idempotent. Mark forced capture endings before closing
-    /// descriptors, while in-flight buffers remain alive until their tasks join.
-    void abort() noexcept
+    /// Stop input without ending output capture. No signal is sent to the child.
+    void abort_input() noexcept
     {
-        stopping = true;
+        input_stopped = true;
         accepting = false;
         queue.clear();
         if (input_phase == InputPhase::Open || input_phase == InputPhase::EndRequested
             || input_phase == InputPhase::NotStarted) {
             input_phase = InputPhase::Stopped;
         }
-        capture.finish(Stream::Stdout, StreamEnd::Stopped);
-        capture.finish(Stream::Stderr, StreamEnd::Stopped);
-        close(input);
-        close(output);
-        close(error);
+        if (close(input)) input_phase = InputPhase::Failed;
         try {
             wake_input.cancel();
         } catch (...) {
             remember(std::current_exception());
         }
+    }
+
+    /// Strand-only, idempotent. Mark forced capture endings before closing
+    /// descriptors, while in-flight buffers remain alive until their tasks join.
+    void abort() noexcept
+    {
+        stopping = true;
+        abort_input();
+        capture.finish(Stream::Stdout, StreamEnd::Stopped);
+        capture.finish(Stream::Stderr, StreamEnd::Stopped);
+        close(output);
+        close(error);
     }
 
     /// Exactly one completion callback per successfully spawned pump. Retain
@@ -179,7 +187,7 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
 
     asio::awaitable<void> write()
     {
-        while (!stopping) {
+        while (!stopping && !input_stopped) {
             if (queue.empty()) {
                 if (end_requested) {
                     input_phase = close(input) ? InputPhase::Failed : InputPhase::Ended;
@@ -197,7 +205,7 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
             queue.pop_front();
             boost::system::error_code code;
             co_await input.write(bytes, code);
-            if (stopping) {
+            if (stopping || input_stopped) {
                 co_return;
             }
             if (code == asio::error::broken_pipe || code == asio::error::eof) {
@@ -230,7 +238,7 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
         // Startup has no suspension until all pumps are supervised. A partial
         // scheduling failure aborts and joins whatever was already spawned.
         co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
-        if (started || stopping || !prepared || !input.is_open()
+        if (started || stopping || input_stopped || !prepared || !input.is_open()
             || !output.is_open() || !error.is_open()) {
             throw std::logic_error("start requires one successful, unused pipe attachment launch");
         }
@@ -278,7 +286,6 @@ Capabilities AnonymousPipeIo::capabilities() const noexcept
 subprocess::IoAttachment AnonymousPipeIo::prepare_attachment()
 {
     auto& state = *_state;
-    state.require_strand();
     if (state.prepared || state.started || state.stopping) {
         throw std::logic_error("process I/O attachment can only be prepared once");
     }
@@ -329,6 +336,20 @@ asio::awaitable<void> AnonymousPipeIo::stop_admission()
             state->accepting = false;
             co_return;
         }, asio::use_awaitable);
+}
+
+asio::awaitable<void> AnonymousPipeIo::cancel_input()
+{
+    co_await asio::co_spawn(_state->strand,
+        [state = _state]() -> asio::awaitable<void> {
+            state->abort_input();
+            co_return;
+        }, asio::use_awaitable);
+}
+
+const CaptureBuffer& AnonymousPipeIo::capture() const noexcept
+{
+    return _state->capture;
 }
 
 Snapshot AnonymousPipeIo::snapshot() const

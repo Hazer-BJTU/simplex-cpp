@@ -49,12 +49,11 @@
 // owned values, never references to mutable session state. release() joins
 // exited handles outside the table mutex before removing their entries.
 //
-// THE STORE OWNS THE LIFECYCLE CONTRACT. ProcessHandle's contract
-// (process_handle.hpp) says: start the io tasks, then keep driving the handle
-// to a terminal observation, or it keeps itself alive forever. spawn() honours
-// that in full — construct, start the io tasks, then drive the handle through
-// await_initial_execution(), either inline (when an initial-wait window was
-// asked for) or on a detached task (when it was not).
+// THE STORE OWNS THE LIFECYCLE CONTRACT. Startup supervises both I/O and
+// child observation before publishing a session. Initial waiting is optional;
+// no-wait launches need no detached waiter. Launch, startup, publication and
+// initial-wait failures/cancellation roll back the child, tasks, session entry
+// and capacity reservation before propagating the original error.
 //
 // spawn() is therefore the one call that may TAKE TIME, bounded by that window,
 // and that is deliberate: it is what lets one launch serve both a command whose
@@ -304,7 +303,7 @@ public:
         SessionId id, OutputStream stream, bool full);
 
     /// Queue text for the child's stdin, and optionally end stdin after it.
-    /// Ordering is the handle's channel's; delivery is not awaited (see
+    /// Await ordered backend acceptance, not delivery or consumption (see
     /// ProcessHandle::write_input). False = no session with that id.
     boost::asio::awaitable<bool> write_input(
         SessionId id, std::string input, bool close_input);
@@ -434,6 +433,10 @@ private:
         std::size_t stderr_cursor = 0;
     };
     using SessionPtr = std::shared_ptr<Session>;
+
+    /// Atomically convert one capacity reservation into a published session.
+    /// Allocation failure leaves the reservation/table unchanged.
+    void publish_session(SessionPtr session);
 
     /// Find and copy session ownership under the table mutex.
     [[nodiscard]] SessionPtr find_session(const SessionId& id) const;

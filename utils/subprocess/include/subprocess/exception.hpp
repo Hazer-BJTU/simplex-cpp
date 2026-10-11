@@ -25,8 +25,9 @@ namespace subprocess {
  * failed launch (executable not found, fork/exec failure) by throwing
  * boost::system::system_error; the process manager translates that into this
  * type at the boundary so the rest of the tree never catches boost types.
- * Runtime pipe errors are boolean/channel signals by design and do not route
- * through exceptions.
+ * Expected pipe closure is an admission/completion result. Unexpected backend
+ * errors are retained and reported by ProcessHandle::shutdown() after joining
+ * owned work; diagnostic context is added without abandoning cleanup.
  */
 class ProcessException : public std::runtime_error {
 public:

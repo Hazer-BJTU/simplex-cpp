@@ -729,14 +729,13 @@ void SendProcessTool::write_attributes(model_io::InvokeQuery& query) const
     // observable, while here it is. Two calls to one child land in the order
     // they arrive — that is what the child reads and what it does — and when
     // one of them carries `close_input` the other can be DROPPED outright,
-    // since a send onto a closed channel is discarded. So the batch's call
+    // since input after an end request is rejected. So the batch's call
     // order is what the child sees, which is only true if the batch runs these
     // one at a time.
     //
-    // Note what does NOT decide it: the handle's stdin channel is a
-    // concurrent_channel, so overlapping sends cannot corrupt memory. That is
-    // the store's concurrency contract doing its job; it says nothing about
-    // whether the two orders mean the same thing.
+    // The I/O environment serializes queue acceptance on the session strand.
+    // That prevents data races, but does not make different input/end orders
+    // equivalent; tool-level SerialWrite still matters.
     //
     // RequireConfirm: it is input to a live process, which can do anything with
     // it — and, for the same reason, the signal that ends one.
@@ -794,8 +793,9 @@ boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
         result.field("signal", signal_word(signal));
         result.field("signalled", signalled);
     }
-    // Queued, not delivered: write_input is fire-and-forget by design (the
-    // pump owns delivery), so the result must not claim the child has read it.
+    // The store awaits queue admission, not pump delivery or child consumption.
+    // Its boolean retains the session-existence contract, so this legacy tool
+    // result is not evidence that the child has read the requested input.
     // A model that needs to know reads the output back.
     if (byte_count != 0) {
         result.field("note",

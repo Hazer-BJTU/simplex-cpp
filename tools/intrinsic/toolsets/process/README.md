@@ -878,7 +878,9 @@ that cleanup does not race child reaping. Normal shutdown awaits
   return owned values. `release()` checks the atomic exit latch, joins owned I/O outside the
   table mutex, then removes the entry in one table critical section. Concurrent launches reserve capacity
   before startup, and failed launches return their reservation. The store starts
-  I/O tasks and drives each handle through its initial wait and terminal watch.
+  I/O environment and independent child watcher before publishing each session.
+  Initial waiting is optional; startup/publication failure or cancellation rolls
+  back all owned work and the reserved capacity before returning an error.
 - **`process/tools.hpp`** — the five `ToolInterface` implementations. Each
   checks its arguments in `ensure_arguments()` and writes the defaults into the
   query there (so the security check and the human confirmation see settled
