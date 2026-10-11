@@ -17,7 +17,8 @@
 #   - module-private third-party deps, declared in the module's own
 #     CMakeLists so the dependency travels with the module
 #
-# Per-module dependencies are documented in `dependency.md`.
+# Per-module dependencies are declared in package CMakeLists.txt files;
+# pinned external dependencies are documented in third_party/versions/README.md.
 # =============================================================================
 
 cmake_minimum_required(VERSION 3.20)

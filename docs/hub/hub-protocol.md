@@ -170,6 +170,7 @@ Most messages embed this object, produced by `Session.describe()`:
   "created_at": "2026-01-01T00:00:00.000Z",
   "spec": {
     "provider": "mock", "model": "", "threads": 1, "maxExchanges": 512,
+    "autoCompactThreshold": 0, "maxAutoCompactions": 5,
     "systemPromptFile": "prompts/coding_agent.yaml",
     "workspace": "", "platform": "", "software": [],
     "persistence": {"enabled": true, "readable": false}, "restore": "if_present",
@@ -187,6 +188,13 @@ Most messages embed this object, produced by `Session.describe()`:
   "requests": []
 }
 ```
+
+`spec.autoCompactThreshold` is the last-exchange total-token threshold (`0`
+disables automatic compact); `spec.maxAutoCompactions` is the positive per-request
+automatic-compact limit (default `5`). These describe normalized session startup
+defaults. A previously saved worker configuration or selected worker library
+snapshot remains authoritative for actual loop policy; inspect worker status
+for the live policy. See [configuration defaults](configurations.md#directory-and-startup-configuration).
 
 `process` is present when a worker process is known:
 

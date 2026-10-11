@@ -43,6 +43,7 @@ export default defineConfig({
                 ['Remote worker', '/deployment/remote-worker'],
             ]),
             group('Protocol', [
+                ['Worker overview', '/core/index'],
                 ['Simplex Loop Worker Protocol', '/core/worker-protocol'],
                 ['Hub panel protocol', '/hub/hub-protocol'],
                 ['Headless subagents', '/hub/subagents'],
@@ -51,6 +52,7 @@ export default defineConfig({
                 ['Principles', '/plugins/overview'],
                 ['Configuration', '/plugins/configuration'],
                 ['Development workflow', '/plugins/development'],
+                ['Shared runtime and ABI', '/abi-context'],
                 ['Tool plugins', '/plugins/tools'],
                 ['Loop hooks', '/plugins/loop-hooks'],
                 ['Model providers', '/plugins/model-providers'],

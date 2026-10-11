@@ -8,8 +8,8 @@
 # on Linux. The dynamic loader does not look beside the executable; it searches
 # DT_RPATH/DT_RUNPATH, then LD_LIBRARY_PATH, then the ldconfig cache. With none
 # of those pointing at the release directory, a staged binary silently resolves
-# libstdc++ from the HOST — which defeats the reason this project bootstraps its
-# own GCC: the whole point is shipping the GCC 14 libstdc++, not borrowing
+# libstdc++ from the HOST — which defeats the reason this project supplies its
+# own GCC toolchain: the release ships the GCC 14 libstdc++ instead of borrowing
 # whatever the target distro happens to have.
 #
 # That failure is invisible in the build image, where /usr/local/lib64 is
@@ -26,6 +26,9 @@
 #   <prefix>/bin/plugins/tools/   dlopen'd toolset modules
 #   <prefix>/bin/plugins/loop/    dlopen'd loop-hook modules
 #   <prefix>/bin/schemas/         editable intrinsic and extension configuration
+#   <prefix>/bin/prompts/         role prompts (coding_agent, general_agent)
+#   <prefix>/bin/prompts/operations/ compact and automatic-continuation prompts
+#   <prefix>/bin/config.example.yaml editable startup template
 #   <prefix>/lib/                 project shared libraries + bundled runtime
 #
 # Plugins keep their build-tree-relative position under bin/ because the host

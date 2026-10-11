@@ -18,6 +18,8 @@ independent operator-controlled ask/deny/approve policy, and a bounded primary
 conversation projection. It retains no event transcript or reasoning/tool history.
 Parent process shutdown/crash cascades; socket disconnect alone preserves the
 family. Confirmed child shutdown deletes its persistence. Clean-fork shares any
-explicit external workspace and is not a sandbox. No C++ subagent tool ships yet.
+explicit external workspace and is not a sandbox. The intrinsic `hub_remote_call`
+toolset supplies `subagent_fork`, `subagent_send` and `subagent_receive` when its
+remote endpoint is configured; the same Hub routes remain usable by other workers.
 See the [complete subagent contract](subagents.md) for configuration snapshots,
 launch support, request deduplication, recovery and cleanup limits.

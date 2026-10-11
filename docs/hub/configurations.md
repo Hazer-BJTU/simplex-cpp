@@ -48,19 +48,42 @@ not moved automatically.
 │   │   └── docker.jsonc
 │   └── worker/
 │       └── default.yaml
-└── sessions/
-    └── <session-id>/
+├── sessions/
+│   └── <session-id>/
+│       ├── config/
+│       │   ├── launch.jsonc
+│       │   ├── config.yaml
+│       │   ├── source.json
+│       │   ├── startup-worker.yaml
+│       │   └── startup-launch.jsonc
+│       ├── state/state.json     # canonical worker state; readable.md is optional
+│       ├── memory/<archive>/state.md
+│       ├── logs/worker.log
+│       ├── events.jsonl
+│       ├── session.lock
+│       └── plan.json
+└── subagents/
+    └── <generated-id>/          # flat roots; parents are recorded in metadata
+        ├── metadata.json
+        ├── operations.json
+        ├── conversation.json   # bounded primary dialogue, no event transcript
         ├── config/
         │   ├── launch.jsonc
         │   ├── config.yaml
-        │   └── source.json
+        │   ├── startup-worker.yaml
+        │   └── startup-launch.jsonc
         ├── state/
         ├── memory/
         ├── logs/
-        ├── events.jsonl
         ├── session.lock
         └── plan.json
 ```
+
+This shows default paths, not files guaranteed to exist before first use.
+Library-selected sessions have `source.json`; supervised launches capture the
+`startup-*` files for clean-fork. State, readable copies, archives, logs and
+plans are written only when their corresponding features produce them.
+Worker state/memory subdirectories may be changed in its saved configuration.
 
 The CLI first reads an explicit `--config` file, or looks for
 `hub.config.jsonc` (then `hub.config.json`) inside the selected root. When no
@@ -80,6 +103,27 @@ per root. Revisions protect concurrent panel edits within that process.
 `local`, `docker` and `default` are seeded when absent at startup. Other library files
 are never replaced by startup. Worker templates are bundled from
 `load/schemas/config.example.yaml`, with a regression check preventing drift.
+
+The commented [Hub startup example](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/hub/hub.config.example.jsonc)
+covers the validated key paths; its coverage is checked against `defaultConfig()`.
+Provider profile contents are owned by each model plugin and remain open-ended.
+In particular, API-created sessions without library selectors use these defaults:
+
+| Startup key | Default | Effect on new generated worker configurations |
+| --- | --- | --- |
+| `worker.maxExchanges` | `512` | Ordinary loop exchange allowance |
+| `worker.autoCompactThreshold` | `0` | Last-exchange total-token threshold; zero disables automatic compact. When enabled, exchange allowance exhaustion also triggers it. |
+| `worker.maxAutoCompactions` | `5` | Positive maximum of successful automatic compactions per user request |
+
+Per-session `autoCompactThreshold` and `maxAutoCompactions` override these initial
+defaults. They map to worker YAML `worker.auto_compact_threshold` and
+`worker.max_auto_compactions`; they are not transport byte ceilings. Existing saved
+`config.yaml` files are reused. A session using a worker library file takes loop
+policy from that YAML rather than these startup defaults; edit its `worker` section
+and apply the file while stopped. Compact itself is exempt from the ordinary
+threshold/exchange allowance and never recursively triggers compact. See the
+[automatic compact contract](../core/worker-protocol.md#automatic-context-compaction)
+for final-answer priority, cancellation and the per-request loop guard.
 
 ## Launch configuration
 
@@ -270,6 +314,8 @@ independent operator-controlled ask/deny/approve policy, and a bounded primary
 conversation projection. It retains no event transcript or reasoning/tool history.
 Parent process shutdown/crash cascades; socket disconnect alone preserves the
 family. Confirmed child shutdown deletes its persistence. Clean-fork shares any
-explicit external workspace and is not a sandbox. No C++ subagent tool ships yet.
+explicit external workspace and is not a sandbox. The intrinsic `hub_remote_call`
+toolset supplies `subagent_fork`, `subagent_send` and `subagent_receive` when the
+worker's remote endpoint is configured.
 See the [complete subagent contract](subagents.md) for configuration snapshots,
 launch support, request deduplication, recovery and cleanup limits.

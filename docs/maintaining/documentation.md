@@ -60,8 +60,12 @@ and [VitePress deployment guidance](https://vitepress.dev/guide/deploy).
 
 ## Release packaging and validation
 
-Hub npm staging includes public Markdown pages from `docs/`. If those references change, update `hub/scripts/stage-release.mjs`
-and validate an actual packed archive. Do not ship historical design notes.
+Hub npm staging includes public Markdown pages and allow-listed images under
+`docs/**/assets/`. Shared staging/checking rules live in
+`hub/scripts/documentation.mjs`; the artifact checker resolves relative Markdown
+images inside the extracted package, including reference-style images. Test an
+actual packed archive so source-tree assets cannot hide missing packaged files.
+Do not ship site dependencies, generated output or historical design notes.
 
 Run the existing protocol tests after editing wire tables:
 

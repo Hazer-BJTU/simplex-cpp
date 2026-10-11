@@ -2,7 +2,8 @@
     // Copy to hub.config.jsonc (or pass --config) and edit.
     // Comments are allowed; the reader strips them before parsing, and the
     // file stays valid JSON without them. Relative paths resolve against this
-    // file's directory. See hub/README.md for every field.
+    // file's directory. This example covers Hub startup keys; provider fields
+    // belong to each plugin. See docs/hub/configurations.md for library behavior.
     "listen": { "host": "127.0.0.1", "port": 8800 },
     // Omit dataDir to use ~/.simplex/hub. Set an absolute path to relocate it.
 
@@ -25,11 +26,19 @@
     "worker": {
         // Relative to this file; the default assumes an in-tree build tree.
         "bin": "../build/bin/simplex_worker",
+        "args": [],
+        // Address reachable from workers; empty derives from the Hub listener.
+        "connectHost": "",
         // Relative to the worker's installation directory, which is where the
         // worker looks for it; the hub never rewrites it into a local path.
         "systemPromptFile": "prompts/coding_agent.yaml",
         "threads": 1,
         "maxExchanges": 512,
+        // Zero disables automatic compact. A positive last-exchange token
+        // threshold also converts maxExchanges exhaustion into auto compact.
+        "autoCompactThreshold": 0,
+        // Maximum successful automatic compactions per user request.
+        "maxAutoCompactions": 5,
         "eventCapacity": 1024,
         "confirmationTimeoutMs": 120000,
         // Enable hub-backed tools such as plan in new sessions.
@@ -49,7 +58,8 @@
         "sigkillGraceMs": 2000,
         "persistence": { "enabled": true, "readable": false },
         // Copied to new worker configs as persistence.memory_retention.
-        // Applied after successful compact; the current archive is kept.
+        // Applied after successful, failed and cancelled compact attempts; the
+        // current recovery archive is protected.
         // Zero disables cleanup.
         "memoryRetention": { "maxArchives": 5 },
         "environment": { "workspace": "", "platform": "", "software": [] }
@@ -81,8 +91,8 @@
         // "simplex-worker": run worker.bin with --config/--session/--threads.
         // "command": run launcher.command as a template with the placeholders
         // {session}, {config}, {data_dir}, {session_dir}, {endpoint},
-        // {confirm_endpoint}. Use it for a wrapper script or the
-        // installed `simplex run ...` entry point.
+        // {confirm_endpoint}, {tools_endpoint}, {token}, {threads}, {worker_bin}.
+        // Use it for a wrapper script or the installed `simplex run ...` entry point.
         "kind": "simplex-worker",
         "command": [],
         "args": [],
@@ -93,7 +103,10 @@
         "cwd": "",
         // Only for a launcher that daemonizes: absolute path of the pid file
         // the supervisor should signal instead of the spawned process.
-        "pidFile": ""
+        "pidFile": "",
+        // Extra environment names needed for Docker inspection and shutdown.
+        // Their effective startup values are persisted privately; no wildcards.
+        "dockerManagementEnv": []
     },
 
     // Offline model provider for demos and end-to-end tests: no API key needed.
@@ -104,7 +117,9 @@
         "listen": "127.0.0.1:0",
         "profile": "mock",
         "scenario": "auto",
-        "slowMs": 1500
+        "slowMs": 1500,
+        // Empty uses the offline provider's default proposed command.
+        "toolCommand": ""
     },
 
     "limits": {

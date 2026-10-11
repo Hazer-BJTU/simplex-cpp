@@ -508,6 +508,31 @@ separate allowances above. Every shortened part has `truncated: true` and its
 original UTF-8 `bytes`; `omitted_parts` reports parts outside the preview.
 Worker state, provider replay metadata and JSON snapshots keep complete originals.
 
+#### History turn fields
+
+| Field | Requirement | Meaning |
+| --- | --- | --- |
+| `index` | Required integer | Zero-based index in the current canonical turn list; not an execution identity |
+| `user` | Required content array | Bounded ordered user preview; empty for an internal automatic continuation |
+| `steps` | Required array | Ordered model steps included in this page |
+| `omitted_user_parts` | Required integer | User parts outside the display projection |
+| `omitted_steps` | Required integer | Model steps after this page that remain to be fetched |
+| `source` | Optional identity object | Original input provenance: `{worker_id, request_id, run_id}`; preserved across Continue |
+| `internal_input` | Optional string | `auto_compact_continue` identifies the hidden host-owned continuation input |
+
+#### History step fields
+
+| Field | Requirement | Meaning |
+| --- | --- | --- |
+| `index` | Required integer | Zero-based step index within its canonical turn |
+| `content` | Required content array | Ordered answer preview; complete text can be read with `answer` pages |
+| `tool_calls` | Required integer | Number of proposed tool calls; no arguments or results |
+| `omitted_parts` | Required integer | Answer parts outside this response preview |
+| `reasoning` | Optional content object | Bounded reasoning preview; not part of exact-answer pagination |
+| `commit_sequence` | Optional decimal string | Nonzero response commit sequence; legacy/zero values are omitted |
+| `answer_source` | Optional source object | Exact-answer locator when a nonzero commit and current worker identity are available; includes the fingerprint |
+| `execution` | Optional identity object | This response's `{worker_id, request_id, run_id}`; distinct from the turn's input source |
+
 #### Matching history to event replay
 
 Newly integrated ordinary inputs include

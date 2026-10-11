@@ -73,7 +73,8 @@ intentional; it can be refined after observing actual runs.
 
 Root `docs/**`, `assets/**`, `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
 `LICENSE`, `.gitignore`, `.github/ISSUE_TEMPLATE/**`,
-`.github/PULL_REQUEST_TEMPLATE.md`, and the dedicated docs/release workflows do
+`.github/PULL_REQUEST_TEMPLATE.md`, and the dedicated `docs.yml`,
+`release-worker.yml` and manual `panel-performance.yml` workflows do
 not select native work. These community-file exceptions do not exclude other
 `.github/**` files; unknown workflows and automation still select full validation.
 Docs and release workflow behavior is unchanged.
@@ -113,18 +114,13 @@ all actual job results. Selected jobs (including the always-selected Node jobs)
 must succeed. Unselected jobs must be skipped. Failure, cancellation, invalid
 outputs, unexpected success/skip, or a missing result fails the gate.
 
-The `main` ruleset inspected on 2026-10-02 currently requires individual checks:
-`build-test (Debug)`, `build-test (Release)`, `portable-release (Release)`,
-`staged-runtime (almalinux:9)`, `staged-runtime (ubuntu:22.04)`, `hub-e2e`, and
-`hub-panel`. This implementation does not modify GitHub repository settings.
-
-After verifying the first full-validation PR, the repository administrator should
-add **CI gate** as a required check (GitHub Actions integration), then remove the
-conditionally scheduled individual checks. `hub-panel` can remain separately
-required if desired; the gate already covers it and both `hub-test` matrix legs.
-Do not remove the old requirements before the new gate has reported successfully.
+The active **Protect main** ruleset (ID `22719751`), verified on 2026-10-11,
+requires only **CI gate** from the GitHub Actions integration. Conditionally
+scheduled individual jobs are not separate required checks; the gate checks
+their selected/skipped outcomes and both always-selected Node job groups.
+This is the observed repository setting, not a workflow that changes settings.
 A wholly cancelled workflow cannot report a successful gate and cannot satisfy
-this new requirement.
+this requirement.
 
 ## Validation and measurement
 

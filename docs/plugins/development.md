@@ -5,6 +5,9 @@ version headers, compile definitions, compiler, Boost runtime, and support
 libraries. The installed worker archive is a runtime distribution, not a
 standalone plugin SDK.
 
+The [shared runtime and ABI contract](../abi-context.md) explains why the host,
+plugins and compiled dependencies must use one compatible build context.
+
 ## Choose a domain and starting point
 
 | Domain | Working source example |
