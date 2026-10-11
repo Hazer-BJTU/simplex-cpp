@@ -33,6 +33,7 @@ Browser / operator
 | `llm` | Configured provider instances and model exchange interfaces | Tool execution and disk saves |
 | `tools` | Dispatch, trust checks, complete tool results | Model inference policy |
 | `process` | Child lifecycle policy, deadlines, serialized observation, current pipe capture | Native launch/signal/reap implementation |
+| `process_io` | Standalone I/O environment, input ordering, raw capture and pump joins | Child lifetime, tool policy; ProcessHandle migration is a later step |
 | `utils/subprocess` | Owned native child, opaque launch attachment, shell and executable-location helpers | Session IDs, tool approval, capture policy |
 | `io` / `intercom` | JSON routing / reusable text WebSocket transport | Conversation semantics |
 | Hub | Sessions, launch supervision, operator access, event presentation | Authoritative conversation state |

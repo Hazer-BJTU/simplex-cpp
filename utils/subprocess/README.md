@@ -20,7 +20,7 @@ launch. The opaque implementation contains the native launcher attachment;
 callers do not pass tuples of descriptors. Moving an attachment transfers that
 representation; attempting to launch with the moved-from object is rejected.
 The pipes remain caller-owned. This attachment is a launch bridge, not the
-future `ProcessIoEnvironment` abstraction, and must not be retained beyond the
+`ProcessIoEnvironment` abstraction, and must not be retained beyond the
 lifetime of its borrowed objects.
 
 Serialize `running()`, `wait()`, `terminate()` and `request_exit()` on the owning
@@ -65,3 +65,17 @@ CMake's derived release target collection installs this shared library to
 `lib/`, with the normal `$ORIGIN` library RPATH. Boost.Process and Boost.DLL are
 private link dependencies. Public class/type changes require rebuilding C++
 hosts and dynamic plugins together; no v0.4 binary compatibility is promised.
+
+## Safe pipe writes
+
+`PipeWriter` supplies the anonymous-pipe environment with ordered asynchronous
+byte writes. Before launch, `launch_pipe()` supplies the borrowed attachment;
+after launch, `prepare()` transfers its ownership to the platform writer.
+The caller serializes operations and keeps write buffers alive until completion.
+Closing the writer cancels pending readiness waits; owners must still join them.
+
+On POSIX, each nonblocking write temporarily blocks SIGPIPE on the calling
+thread, consumes a newly generated signal on EPIPE, and restores the original
+mask. Already-pending signals and the process-wide disposition are preserved.
+No signal mask is held across coroutine suspension. Broken stdin is an error
+code, not termination of the worker. Native descriptors remain private.

@@ -203,6 +203,8 @@ add_subdirectory(io)
 # functions, so the module depends only on simplex_thirdparty_iface
 # (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
+# Independent child I/O backends; lifecycle migration follows in issue #122 PR 3.
+add_subdirectory(process_io)
 # tools after dataclass + extensions: the tool-invocation layer. It consumes
 # the model_io tool contract (Invocable / InvokeQuery / InvokeReturn) and owns
 # the tool-side failure type (tools::InvokeException), which turns a failed
