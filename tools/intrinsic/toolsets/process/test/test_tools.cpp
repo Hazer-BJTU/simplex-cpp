@@ -2553,3 +2553,30 @@ BOOST_AUTO_TEST_CASE(refused_release_keeps_a_live_partial_character_pending)
         BOOST_TEST(wait_through_tool(f, id, 5000, true).block("output") == "\xe2\x82\xac");
     }
 }
+
+// Also run from stage/bin with source schemas hidden. The negative mode is
+// exercised in a disposable container with /dev/pts replaced by an empty mount.
+BOOST_AUTO_TEST_CASE(installed_terminal_runtime)
+{
+    Fixture f;
+    const char* unavailable = std::getenv("SIMPLEX_TEST_NO_PTY");
+    const bool no_pty = unavailable && std::string_view(unavailable) == "1";
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto tty = f.call(call_for(std::string(tool_names::kRun),
+            {{"command", "test -t 0 && test -t 1 && test -t 2 && printf terminal"}, {"tty", true}}));
+        if (no_pty) {
+            BOOST_REQUIRE(tools::is_error(tty));
+            BOOST_TEST(tty.output.raw.find("allocate terminal descriptor") != std::string::npos);
+        } else {
+            const auto result = f.result_of(tty);
+            BOOST_TEST(result.block("output") == "terminal");
+            BOOST_TEST(result.field("released") == "true");
+        }
+        BOOST_TEST(f.run(f.store->size()) == 0u);
+        const auto pipe = f.result_of(f.call(call_for(std::string(tool_names::kRun),
+            {{"command", "test ! -t 0 && printf pipe"}})));
+        BOOST_TEST(pipe.block("output") == "pipe");
+        BOOST_TEST(pipe.field("tty") == "false");
+        BOOST_TEST(pipe.field("released") == "true");
+    }
+}
