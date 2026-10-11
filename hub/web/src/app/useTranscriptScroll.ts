@@ -1,4 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { profileCount } from '../lib/profile.ts';
+import { ScrollOwnership, TranscriptAnchorIndex } from './scrollAnchors.ts';
 
 const BOTTOM_DISTANCE = 48;
 
@@ -11,81 +13,100 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
     const [following, setFollowing] = useState(true);
     const follows = useRef(true);
     const schedule = useRef<() => void>(() => {});
+    const resume = useRef<() => void>(() => {});
 
     useLayoutEffect(() => {
         const node = scroller.current;
         const content = node?.firstElementChild;
         if (!node || !content || !active) return;
         let frame = 0;
-        let intentUntil = 0;
-        let writing = false;
+        let disposed = false;
+        const ownership = new ScrollOwnership();
+        const index = new TranscriptAnchorIndex(content);
         let anchor: { element: Element; offset: number } | undefined;
 
-        function offset(element: Element): number {
+        function geometry() {
+            return {
+                height: node!.scrollHeight,
+                viewport: node!.clientHeight,
+                width: node!.clientWidth,
+            };
+        }
+        function bounds(element: Element, translations: Map<Element, number>) {
+            profileCount('scrollProbe');
             let translation = 0;
             for (let ancestor: Element | null = element; ancestor && ancestor !== node; ancestor = ancestor.parentElement) {
-                const transform = getComputedStyle(ancestor).transform;
-                if (transform !== 'none') translation += new DOMMatrixReadOnly(transform).m42;
+                let value = translations.get(ancestor);
+                if (value === undefined) {
+                    const transform = getComputedStyle(ancestor).transform;
+                    value = transform === 'none' ? 0 : new DOMMatrixReadOnly(transform).m42;
+                    translations.set(ancestor, value);
+                }
+                translation += value;
             }
             // Entrance transforms do not change layout and must not be treated
             // as history growth that needs compensating scroll writes.
-            return element.getBoundingClientRect().top - node!.getBoundingClientRect().top - translation;
+            const box = element.getBoundingClientRect();
+            return { top: box.top - translation, bottom: box.bottom - translation };
+        }
+        function offset(element: Element): number {
+            return bounds(element, new Map()).top - node!.getBoundingClientRect().top;
         }
         function capture() {
             if (follows.current) {
                 anchor = undefined;
                 return;
             }
+            profileCount('scrollCapture');
+            index.changed(mutation.takeRecords());
             const top = node!.getBoundingClientRect().top;
-            anchor = undefined;
-            for (const element of content!.querySelectorAll('[data-testid="round"], [data-testid="history-turn"]')) {
-                const bounds = element.getBoundingClientRect();
-                if (bounds.bottom > top) {
-                    // An outbox can be trimmed above the message currently
-                    // being read within this same round. Prefer the visible
-                    // message/tool crossing the viewport edge over its parent.
-                    let visible = element;
-                    for (const child of element.querySelectorAll(
-                        '[data-testid="assistant-message"], [data-testid="tool-card"], [data-testid="outbox-item"]',
-                    )) {
-                        const childBounds = child.getBoundingClientRect();
-                        if (childBounds.top <= top && childBounds.bottom > top && visible.contains(child)) visible = child;
-                    }
-                    anchor = { element: visible, offset: offset(visible) };
-                    break;
-                }
-            }
+            const translations = new Map<Element, number>();
+            const element = index.find(top, element => bounds(element, translations));
+            anchor = element ? { element, offset: bounds(element, translations).top - top } : undefined;
         }
         function update() {
             frame = 0;
-            if (!node!.clientHeight) return;
-            writing = true;
+            if (disposed || !node!.clientHeight) return;
             if (follows.current) {
                 node!.scrollTop = node!.scrollHeight - node!.clientHeight;
             } else if (anchor?.element.isConnected) {
                 const currentOffset = offset(anchor.element);
                 node!.scrollTop += currentOffset - anchor.offset;
             }
+            // Read after writing: scrollTop may have been clamped or rounded.
+            ownership.wrote(node!.scrollTop, geometry());
             capture();
-            // Scroll delivery is asynchronous. Clear writer ownership in the
-            // next task, while genuine pointer/keyboard input can still win.
-            queueMicrotask(() => { writing = false; });
         }
         function enqueue() {
-            if (!frame) frame = requestAnimationFrame(update);
+            if (!disposed && !frame) frame = requestAnimationFrame(update);
         }
         function intent() {
-            intentUntil = performance.now() + 1000;
+            ownership.intent(performance.now(), node!.scrollTop, geometry());
         }
         function scroll() {
-            if (!writing && performance.now() < intentUntil) {
-                const value = node!.scrollHeight - node!.scrollTop - node!.clientHeight <= BOTTOM_DISTANCE;
+            const dimensions = geometry();
+            const distance = dimensions.height - node!.scrollTop - dimensions.viewport;
+            if (ownership.readerMoved(node!.scrollTop, performance.now(), dimensions)) {
+                const value = distance <= BOTTOM_DISTANCE;
                 follows.current = value;
                 setFollowing(value);
                 capture();
+            } else if (follows.current && distance > 0.5) {
+                // A superseded PageUp animation or automatic movement must
+                // not leave explicit following stranded above the latest item.
+                enqueue();
             }
         }
         schedule.current = enqueue;
+        resume.current = () => {
+            ownership.resumeFollowing();
+            enqueue();
+        };
+        const mutation = new MutationObserver(records => {
+            index.changed(records);
+            enqueue();
+        });
+        mutation.observe(content, { childList: true, subtree: true });
         const resize = new ResizeObserver(enqueue);
         resize.observe(node);
         resize.observe(content);
@@ -98,11 +119,14 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
         capture();
         enqueue();
         return () => {
+            disposed = true;
             cancelAnimationFrame(frame);
+            mutation.disconnect();
             resize.disconnect();
             node.removeEventListener('scroll', scroll);
             for (const event of ['wheel', 'touchstart', 'pointerdown', 'keydown']) node.removeEventListener(event, intent);
             schedule.current = () => {};
+            resume.current = () => {};
         };
     }, [active, scroller]);
 
@@ -111,7 +135,7 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
     const jumpToLatest = useCallback(() => {
         follows.current = true;
         setFollowing(true);
-        schedule.current();
+        resume.current();
     }, []);
     return { following, jumpToLatest };
 }
