@@ -127,8 +127,11 @@ waits over tight polling; remove completed IDs to avoid repeated immediate retur
 
 Release with `read_process.release` or `poll_process.release_exited` after reading
 needed output. A running child cannot be released. Exit alone permits explicit
-release even if capture is unfinished: later output is discarded and remaining
-I/O is joined. IDs are never reused and only resolve in their originating store.
+release even if capture is unfinished: shutdown first allows bounded drainage
+and joins I/O, then the final capture is converted to text before removal. Any
+remaining incomplete UTF-8 suffix becomes U+FFFD and forced closure is marked
+truncated. A refused release of a running child does not finalize its suffix.
+Status-only polls with release intentionally discard unread output. IDs are never reused and only resolve in their originating store.
 Retained exited sessions still count toward the default 32-session capacity.
 
 ## Send and input-end

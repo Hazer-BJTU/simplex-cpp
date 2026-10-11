@@ -2491,3 +2491,65 @@ BOOST_AUTO_TEST_CASE(invalid_combined_send_is_rejected_before_input_or_end)
     const auto result = wait_through_tool(f, id, 5000, true);
     BOOST_TEST(result.block("output") == "only-this\n");
 }
+
+BOOST_AUTO_TEST_CASE(releasing_exited_sessions_finalizes_pending_utf8_after_capture_shutdown)
+{
+    for (const std::string mode : {"read", "full", "poll"}) {
+        Fixture f;
+        const auto id = spawn_through_tool(f, "sh", {"-c", "sleep 1 & printf '\\342'"});
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (true) {
+            const auto state = f.run(f.store->snapshot(id));
+            BOOST_REQUIRE(state);
+            if (state->exited && state->result.stdout_text == "\xe2") {
+                BOOST_REQUIRE(!state->output_drained);
+                break;
+            }
+            BOOST_REQUIRE(std::chrono::steady_clock::now() < deadline);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        // A normal read holds the partial character without consuming it.
+        const auto pending = f.result_of(f.call(call_for(std::string(tool_names::kRead),
+            {{"session_id", id}})));
+        BOOST_TEST(pending.block("output").empty());
+        BOOST_TEST(pending.field("output_bytes_read") == "0");
+
+        const auto record = mode == "poll"
+            ? f.call(call_for(std::string(tool_names::kPoll),
+                {{"session_ids", {id}}, {"wait_timeout_milliseconds", 0}, {"release_exited", true}}))
+            : f.call(call_for(std::string(tool_names::kRead),
+                {{"session_id", id}, {"release", true}, {"full", mode == "full"}}));
+        BOOST_CHECK_NO_THROW(nlohmann::json(record).dump());
+        const auto result = f.result_of(record);
+        BOOST_TEST(result.block("output") == "\xef\xbf\xbd");
+        BOOST_TEST(result.field("output_truncated") == "true");
+        BOOST_TEST(result.field("output_complete") == "true");
+        BOOST_TEST(!f.run(f.store->snapshot(id)).has_value());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(refused_release_keeps_a_live_partial_character_pending)
+{
+    for (const bool poll : {false, true}) {
+        Fixture f;
+        const auto id = spawn_through_tool(f, "sh", {"-c",
+            "printf '\\342'; read line; printf '\\202\\254'"});
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (true) {
+            const auto state = f.run(f.store->snapshot(id));
+            if (state && state->result.stdout_text == "\xe2") break;
+            BOOST_REQUIRE(std::chrono::steady_clock::now() < deadline);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        const auto record = poll
+            ? f.call(call_for(std::string(tool_names::kPoll),
+                {{"session_ids", {id}}, {"wait_timeout_milliseconds", 0}, {"release_exited", true}}))
+            : f.call(call_for(std::string(tool_names::kRead),
+                {{"session_id", id}, {"release", true}}));
+        BOOST_TEST(f.result_of(record).block("output").empty());
+        BOOST_TEST(f.result_of(record).field("output_truncated") == "false");
+        BOOST_REQUIRE(f.run(f.store->snapshot(id)));
+        f.call(call_for(std::string(tool_names::kSend), {{"session_id", id}, {"input", "\n"}}));
+        BOOST_TEST(wait_through_tool(f, id, 5000, true).block("output") == "\xe2\x82\xac");
+    }
+}

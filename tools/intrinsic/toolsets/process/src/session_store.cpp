@@ -279,6 +279,12 @@ ProcessSessionStore::read_output(SessionId id, OutputStream stream, bool full, b
 {
     auto session = find_session(id);
     if (!session) co_return std::nullopt;
+    co_return co_await read_output_on_session(session, stream, full, text);
+}
+
+boost::asio::awaitable<OutputRead> ProcessSessionStore::read_output_on_session(
+    SessionPtr session, OutputStream stream, bool full, bool text)
+{
     co_return co_await boost::asio::co_spawn(session->strand,
         [session, stream, full, text]() -> boost::asio::awaitable<OutputRead> {
             const auto& capture = session->handle->capture();
@@ -317,6 +323,30 @@ ProcessSessionStore::read_output(SessionId id, OutputStream stream, bool full, b
             read.terminal_cursor = session->terminal_cursor;
             co_return read;
         }, boost::asio::use_awaitable);
+}
+
+boost::asio::awaitable<std::optional<ProcessSessionStore::SessionRead>>
+ProcessSessionStore::read_session(SessionId id, bool full, bool include_output, bool release)
+{
+    auto session = find_session(id);
+    if (!session) co_return std::nullopt;
+
+    // Decide from observed exit, not merely the caller's release request.
+    // Keep ownership across shutdown and projection, even if another caller
+    // concurrently removes the table entry. Never hold the table mutex here.
+    const bool finish = release && session->handle->exited();
+    if (finish) {
+        co_await session->handle->shutdown();
+    }
+    SessionRead result;
+    if (include_output) {
+        result.output = co_await read_output_on_session(session, OutputStream::Both, full, true);
+    }
+    result.snapshot = co_await snapshot_on_session(session);
+    if (finish) {
+        result.released = remove_session(session);
+    }
+    co_return result;
 }
 
 // ---- input ------------------------------------------------------------------
@@ -486,12 +516,18 @@ boost::asio::awaitable<bool> ProcessSessionStore::release(SessionId id)
         co_return false;
     }
     co_await session->handle->shutdown();
+    co_return remove_session(session);
+}
+
+bool ProcessSessionStore::remove_session(const SessionPtr& session)
+{
+    const auto& id = session->id;
     SessionPtr removed;
     {
         const std::lock_guard lock{_sessions_mutex};
         const auto found = _sessions.find(id);
-        if (found == _sessions.end() || !found->second->handle->exited()) {
-            co_return false;
+        if (found == _sessions.end() || found->second != session) {
+            return false;
         }
         // exited() is an atomic, monotonic latch. Lookup, check and removal
         // form one transaction, so exactly one concurrent release succeeds.
@@ -501,7 +537,7 @@ boost::asio::awaitable<bool> ProcessSessionStore::release(SessionId id)
     // Retain ownership until after unlocking: destruction and logging must
     // not extend the table's critical section.
     logging::Logger::debug(std::format("process session {} released", id));
-    co_return true;
+    return true;
 }
 
 } // namespace tools::intrinsic

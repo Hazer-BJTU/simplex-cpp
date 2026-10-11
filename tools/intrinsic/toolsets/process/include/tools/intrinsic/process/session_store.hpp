@@ -311,6 +311,23 @@ public:
     boost::asio::awaitable<std::optional<OutputRead>> read_output(
         SessionId id, OutputStream stream, bool full, bool text = false);
 
+    /// Owned model-facing observation, retained even after session removal.
+    struct SessionRead {
+        SessionSnapshot snapshot;
+        std::optional<OutputRead> output;
+        bool released = false;
+    };
+
+    /// Read text and optionally release an exited child. When release is
+    /// possible, first finish shutdown/drain, then project final captured bytes
+    /// and snapshot before removing the session. Running children are never
+    /// stopped by this operation: their incomplete UTF-8 suffix stays pending.
+    /// include_output=false leaves cursors untouched and intentionally discards
+    /// output on release. Concurrent readers still share consuming cursors;
+    /// exactly one concurrent release reports success. Missing ID = nullopt.
+    boost::asio::awaitable<std::optional<SessionRead>> read_session(
+        SessionId id, bool full, bool include_output, bool release);
+
     /// Absent members mean the caller did not request that action.
     struct InputWriteResult {
         std::optional<process_io::InputResult> input;
@@ -454,6 +471,11 @@ private:
         std::size_t stderr_cursor = 0;
     };
     using SessionPtr = std::shared_ptr<Session>;
+
+    static boost::asio::awaitable<OutputRead> read_output_on_session(
+        SessionPtr session, OutputStream stream, bool full, bool text);
+    /// Remove only this owned session, after its shutdown fence has completed.
+    bool remove_session(const SessionPtr& session);
 
     /// Atomically convert one capacity reservation into a published session.
     /// Allocation failure leaves the reservation/table unchanged.

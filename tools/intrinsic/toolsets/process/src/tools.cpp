@@ -515,35 +515,19 @@ boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
     // out — and it hands back EVERY selected session either way. Which child
     // ended is not decided here; it is readable per session on the snapshots
     // below, and there can be more than one.
-    const WaitOutcome outcome = co_await _store->wait_for_any(ids, wait_timeout);
-    const std::vector<SessionSnapshot>& snapshots = outcome.snapshots;
-
-    // Everything this call needs from the store is taken FIRST, so that the
-    // result can be written in the order a reader wants it — the verdict, the
-    // count of what the table retains, then one record per session — while the
-    // count still describes the table this call LEAVES BEHIND rather than the
-    // one it found (a poll that reaps exited sessions must not report them as
-    // retained).
-    //
-    // The order between the two passes is the contract: every session's output
-    // is read BEFORE anything is released, because a released session's bytes
-    // are gone for good.
-    std::vector<std::optional<OutputRead>> reads;
-    if (include_output) {
-        // The delta, so a poll loop reports what is NEW rather than re-sending
-        // the whole capture every turn.
-        reads.reserve(snapshots.size());
-        for (const SessionSnapshot& snapshot : snapshots) {
-            reads.push_back(co_await _store->read_output(
-                snapshot.id, OutputStream::Both, false, true));
-        }
-    }
-
+    WaitOutcome outcome = co_await _store->wait_for_any(ids, wait_timeout);
+    std::vector<SessionSnapshot> snapshots = std::move(outcome.snapshots);
+    std::vector<std::optional<OutputRead>> reads(snapshots.size());
     std::vector<ProcessSessionStore::SessionId> released;
-    if (release_exited) {
-        for (const SessionSnapshot& snapshot : snapshots) {
-            if (snapshot.exited && co_await _store->release(snapshot.id)) {
-                released.push_back(snapshot.id);
+    for (std::size_t index = 0; index < snapshots.size(); ++index) {
+        auto observation = co_await _store->read_session(
+            snapshots[index].id, false, include_output,
+            release_exited && snapshots[index].exited);
+        if (observation) {
+            snapshots[index] = std::move(observation->snapshot);
+            reads[index] = std::move(observation->output);
+            if (observation->released) {
+                released.push_back(snapshots[index].id);
             }
         }
     }
@@ -661,33 +645,19 @@ boost::asio::awaitable<model_io::Content> ReadProcessTool::invoke(
     const bool full = optional_bool(query, "full", false);
     const bool release = optional_bool(query, "release", false);
 
-    const std::optional<OutputRead> read =
-        co_await _store->read_output(id, OutputStream::Both, full, true);
-    if (!read) {
+    const auto observation = co_await _store->read_session(id, full, true, release);
+    if (!observation) {
         no_such_session(id);
     }
-    // Read BEFORE any release below, so the report describes the session as
-    // it was when its output was taken.
-    const std::optional<SessionSnapshot> snapshot =
-        co_await _store->snapshot(id);
-
+    const auto& read = *observation->output;
     ToolResult result;
-    if (snapshot) {
-        write_session(result, *snapshot);
-    } else {
-        // The session was there for the read and gone for the snapshot, which
-        // is still worth naming: the output below answers for it.
-        result.field("session_id", id);
-    }
+    write_session(result, observation->snapshot);
     result.field("full", full);
-    write_output(result, *read);
-    result.field("output_bytes_read", read->stdout_cursor + read->stderr_cursor + read->terminal_cursor);
-    if (snapshot) result.field("output_complete", snapshot->output_drained);
-
+    write_output(result, read);
+    result.field("output_bytes_read", read.stdout_cursor + read.stderr_cursor + read.terminal_cursor);
+    result.field("output_complete", observation->snapshot.output_drained);
     if (release) {
-        // release() refuses a running child, so this is honest either way:
-        // "released" says what actually happened, not what was asked for.
-        result.field("released", co_await _store->release(id));
+        result.field("released", observation->released);
     }
     co_return result.render();
 }
