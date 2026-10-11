@@ -1,0 +1,163 @@
+#include "subprocess/pipe_writer.hpp"
+
+#include <stdexcept>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/write.hpp>
+#include <boost/system/system_error.hpp>
+
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+#include <boost/asio/posix/stream_descriptor.hpp>
+#include <cerrno>
+#include <csignal>
+#include <pthread.h>
+#include <unistd.h>
+#endif
+
+namespace subprocess {
+namespace asio = boost::asio;
+
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+namespace {
+
+/// This entire function is synchronous. Preserve any already-pending SIGPIPE;
+/// consume only a newly generated one after EPIPE, then restore the exact mask.
+ssize_t write_without_sigpipe(int descriptor, const char* data, std::size_t size,
+                             boost::system::error_code& error)
+{
+    sigset_t blocked;
+    sigset_t previous;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGPIPE);
+    const int block_error = ::pthread_sigmask(SIG_BLOCK, &blocked, &previous);
+    if (block_error != 0) {
+        error.assign(block_error, boost::system::system_category());
+        return -1;
+    }
+    sigset_t pending;
+    ssize_t count = -1;
+    int operation_error = 0;
+    if (::sigpending(&pending) != 0) {
+        operation_error = errno;
+    } else {
+        const bool already_pending = ::sigismember(&pending, SIGPIPE) == 1;
+        count = ::write(descriptor, data, size);
+        operation_error = count < 0 ? errno : 0;
+        if (operation_error == EPIPE && !already_pending) {
+            const timespec immediate{0, 0};
+            while (::sigtimedwait(&blocked, nullptr, &immediate) < 0 && errno == EINTR) {
+            }
+        }
+    }
+    const int restore_error = ::pthread_sigmask(SIG_SETMASK, &previous, nullptr);
+    error.assign(operation_error != 0 ? operation_error : restore_error,
+                 boost::system::system_category());
+    return count;
+}
+
+} // namespace
+#endif
+
+struct PipeWriter::Impl {
+    explicit Impl(asio::any_io_executor executor)
+        : pipe(executor)
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+        , descriptor(executor)
+#endif
+    {}
+
+    asio::writable_pipe pipe;
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+    asio::posix::stream_descriptor descriptor;
+#endif
+    bool prepared = false;
+};
+
+PipeWriter::PipeWriter(asio::any_io_executor executor)
+    : _impl(std::make_unique<Impl>(std::move(executor)))
+{}
+PipeWriter::~PipeWriter() = default;
+
+asio::writable_pipe& PipeWriter::launch_pipe()
+{
+    if (_impl->prepared) {
+        throw std::logic_error("pipe writer is already prepared");
+    }
+    return _impl->pipe;
+}
+
+void PipeWriter::prepare()
+{
+    if (_impl->prepared || !_impl->pipe.is_open()) {
+        throw std::logic_error("pipe writer requires one successful launch");
+    }
+    _impl->prepared = true;
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+    // Transfer, never duplicate: closing the writer must cancel its wait and
+    // end the parent's pipe reference, including during failed startup.
+    const auto native = _impl->pipe.release();
+    boost::system::error_code error;
+    _impl->descriptor.assign(native, error);
+    if (error) {
+        ::close(native);
+        throw boost::system::system_error(error);
+    }
+    _impl->descriptor.native_non_blocking(true);
+#endif
+}
+
+bool PipeWriter::is_open() const noexcept
+{
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+    return _impl->pipe.is_open() || _impl->descriptor.is_open();
+#else
+    return _impl->pipe.is_open();
+#endif
+}
+
+void PipeWriter::close(boost::system::error_code& error) noexcept
+{
+    error.clear();
+    if (_impl->pipe.is_open()) _impl->pipe.close(error);
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+    if (_impl->descriptor.is_open()) {
+        boost::system::error_code next;
+        _impl->descriptor.close(next);
+        if (!error) error = next;
+    }
+#endif
+}
+
+asio::awaitable<std::size_t> PipeWriter::write(
+    std::string_view bytes, boost::system::error_code& error)
+{
+    if (!_impl->prepared) {
+        throw std::logic_error("pipe writer must be prepared before writing");
+    }
+    error.clear();
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+    std::size_t written = 0;
+    while (written < bytes.size()) {
+        const auto count = write_without_sigpipe(_impl->descriptor.native_handle(),
+            bytes.data() + written, bytes.size() - written, error);
+        if (count > 0) {
+            written += static_cast<std::size_t>(count);
+        }
+        if (error == asio::error::interrupted) {
+            continue;
+        }
+        if (error == asio::error::would_block || error == asio::error::try_again) {
+            co_await _impl->descriptor.async_wait(asio::posix::stream_descriptor::wait_write,
+                asio::redirect_error(asio::use_awaitable, error));
+            if (!error) continue;
+        }
+        if (error) break;
+    }
+    co_return written;
+#else
+    co_return co_await asio::async_write(_impl->pipe, asio::buffer(bytes),
+        asio::redirect_error(asio::use_awaitable, error));
+#endif
+}
+
+} // namespace subprocess

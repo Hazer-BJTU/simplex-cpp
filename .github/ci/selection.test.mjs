@@ -5,12 +5,13 @@ import { checkResults } from './gate.mjs';
 
 const nativeTrees = [
     'core', 'dataclass', 'endpoint', 'extensions', 'intercom', 'io', 'llm', 'load',
-    'loop', 'process', 'textedit', 'tools', 'utils', 'versioning', 'third_party',
+    'loop', 'process', 'process_io', 'textedit', 'tools', 'utils', 'versioning', 'third_party',
 ];
 for (const tree of nativeTrees) {
     test(`${tree}: source, docs and runtime resources select the complete chain`, () => {
         for (const file of ['src/a.cpp', 'include/a.hpp', 'test/fixture.json',
             'README.md', 'schemas/skill.yaml', 'scripts/launch', 'prompts/default.yaml']) {
+            assert.equal(categoryForPath(`${tree}/${file}`), 'native');
             assert.deepEqual(classifyPaths([`${tree}/${file}`]), decisionsForCategory('native'));
         }
     });
