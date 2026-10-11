@@ -11,7 +11,7 @@ text: |
   ## Choose and launch
 
   - `run_command`: shell syntax (bash if available, otherwise /bin/sh). Only
-    `command`, `working_directory`, and `expected_runtime_milliseconds` are
+    `command`, `working_directory`, `tty`, and `expected_runtime_milliseconds` are
     accepted. It inherits the host environment; use assignments, `export`, or
     `env -i` inside the command to change it. Complete initial results always
     auto-release.
@@ -26,7 +26,7 @@ text: |
 
   ## Inspect, wait, release
 
-  - Metadata uses `[[key]]: value` before literal stdout/stderr. `finished`
+  - Metadata uses `[[key]]: value` before an `output` block. `finished`
     means the child exited during the initial wait; `output_complete` means
     capture ended, not that nothing was truncated. Nonzero exits are results,
     not tool invocation errors.
@@ -43,20 +43,37 @@ text: |
   - Collect needed output, then release retained sessions with `read_process`
     (`release: true`) or `poll_process` (`release_exited: true`). Exited sessions
     still occupy slots. Release requires exit but not complete capture: it
-    discards later output and does not terminate descendants holding pipes open.
+    discards later output and may discard trailing output; closing a terminal can hang up slave holders.
 
   ## Read and control
 
-  - `read_process` reads one session without waiting; choose stdout/stderr/both.
+  - `read_process` reads generic output without waiting. Pipe stderr is labelled;
+    cross-pipe ordering is not reconstructed. Terminal output appears once.
     Default reads and polls share and advance per-stream cursors; concurrent
     reads may split output. Poll with `include_output: false` for status only.
     `full: true` and launch-result output do not advance cursors, so later delta
     reads may repeat launch output. Stdout/stderr share a capture budget; reads
     do not replenish it. Truncated bytes cannot be recovered.
   - `send_process` queues `input`; include a newline for line-oriented programs
-    and set `close_input: true` when EOF is needed. Queuing does not prove the
+    and set `end_input: true` when EOF is needed. Queuing does not prove the
     child read the bytes. Use `signal: "term"` for graceful stopping, then
     `"kill"` if necessary; poll to confirm exit. Signals target only the direct
     child, not descendants. Unknown IDs fail in read/send.
   - Launch/send require the host's confirmation policy. Respect denials; do not
     retry unchanged to bypass them.
+
+  ## Terminal use
+
+  - Leave `tty: false` for ordinary commands, builds, tests, searches and structured
+    output. Long-running work alone does not need a terminal. Use `tty: true` only
+    for programs requiring a terminal or /dev/tty. It does not add shell flags.
+  - Terminal stdout/stderr merge. Initial defaults: canonical input, echo off,
+    80x24, TERM=dumb. Programs can change these and emit controls, redraws, prompts
+    or echoed input. Output is a stream, not a reconstructed final screen.
+  - `end_input` is a request, not guaranteed exit. Raw/unsupported terminal modes
+    report `input_state: unsupported`; unexpected I/O errors are also visible.
+    `input_end_requested` means accepted, not consumed. Poll to observe results;
+    use `signal` when the program must stop. Input is ordered before end and signal.
+  - Invalid UTF-8 is replaced in tool text. An incomplete character waits for more
+    bytes while capture grows; at EOF or truncation it is replaced. Raw capture
+    limits/cursors count original bytes. Controls and ANSI sequences stay intact.

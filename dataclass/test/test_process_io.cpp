@@ -321,3 +321,21 @@ BOOST_AUTO_TEST_CASE(process_id_round_trips_beyond_native_signed_pid_range)
     const auto legacy = nlohmann::json{{"pid", 4212}}.get<process::LaunchSpec>();
     BOOST_TEST(legacy.pid == process::ProcessId{4212});
 }
+
+BOOST_AUTO_TEST_CASE(terminal_contract_roundtrip_and_old_pipe_default)
+{
+    process::LaunchSpec spec;
+    BOOST_TEST(!nlohmann::json::object().get<process::LaunchSpec>().tty);
+    spec.tty = true;
+    BOOST_TEST(nlohmann::json(spec).get<process::LaunchSpec>().tty);
+    BOOST_CHECK_THROW(nlohmann::json({{"tty", "true"}}).get<process::LaunchSpec>(), nlohmann::json::type_error);
+    process::ExecutionResult result;
+    result.spec = spec;
+    result.terminal_text = "prompt>";
+    result.terminal_truncated = true;
+    const auto restored = nlohmann::json(result).get<process::ExecutionResult>();
+    BOOST_TEST(!restored.stdout_text);
+    BOOST_TEST(!restored.stderr_text);
+    BOOST_TEST(restored.terminal_text.value() == "prompt>");
+    BOOST_TEST(restored.terminal_truncated);
+}

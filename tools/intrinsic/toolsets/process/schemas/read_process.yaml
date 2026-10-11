@@ -3,12 +3,12 @@
 
 name: read_process
 description: >-
-  Read captured stdout and/or stderr for one session, without waiting for
-  completion. By default, return output since the last incremental read of each
-  selected stream and advance those cursors. poll_process shares these cursors.
-  With full: true, return all retained output for the selected streams without
-  advancing the cursors. Output may be truncated at the capture limit. An
-  unknown or released session_id is an error.
+  Read generic output without waiting. Default reads return new bytes and
+  advance the same cursors as poll_process. full: true returns all retained
+  output without consuming it. Pipe stderr is labelled; ordering between pipes
+  is not reconstructed. Terminal output appears once, including controls.
+  Invalid UTF-8 is replaced; a growing incomplete character waits for more bytes.
+  Check output_complete and output_truncated. Unknown or released IDs fail.
 
 type: read_only
 security: trusted
@@ -22,19 +22,12 @@ argument_schema:
       minLength: 1
       description: >-
         Session ID returned by spawn_process or run_command.
-    stream:
-      type: string
-      enum: [stdout, stderr, both]
-      default: both
-      description: >-
-        Output streams to read. Default: both. An incremental read advances
-        only the selected streams; the other stream remains unread.
     full:
       type: boolean
       default: false
       description: >-
-        Return all retained output for the selected streams without advancing
-        their incremental cursors. Default: false. Cannot recover output
+        Return all retained output without advancing
+        incremental cursors. Default: false. Cannot recover output
         discarded because of the capture limit.
     release:
       type: boolean

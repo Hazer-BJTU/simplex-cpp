@@ -505,3 +505,16 @@ describe('markdown fences', () => {
         assert.equal(fenceFor('echo ````'), '`````');
     });
 });
+
+it('displays generic process output while preserving terminal controls and legacy blocks', () => {
+    const text = '\u001b[31mprompt>\r\n€';
+    const result = parseToolOutput(`[[tty]]: true\n[[input_state]]: unsupported\n[[output_truncated]]: false\n\noutput (${Buffer.byteLength(text)} bytes):\n${text}\n`);
+    assert.equal(result.kind, 'document');
+    assert.equal(result.document.blocks.length, 1);
+    assert.equal(result.document.blocks[0].name, 'output');
+    assert.equal(result.document.blocks[0].text, text);
+    assert.deepEqual(result.document.fields.map(field => field.name), ['tty', 'input_state', 'output_truncated']);
+    const legacy = parseToolOutput('stdout (3 bytes):\nold\n\nstderr: (empty)\n');
+    assert.equal(legacy.kind, 'document');
+    assert.deepEqual(legacy.document.blocks.map(block => block.name), ['stdout', 'stderr']);
+});

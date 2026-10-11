@@ -17,26 +17,50 @@
 namespace tools::intrinsic {
 namespace {
 
-// The stream selector's wire words. Both is the default: a model reading a
-// command's output almost always wants stderr next to stdout. Kept here rather
-// than in the shared core because "which of a process's streams" is this
-// family's vocabulary, not every intrinsic tool's.
-std::optional<OutputStream> parse_stream(std::string_view word)
+/// One model-facing block; pipe labels do not imply interleaving. PTY bytes
+/// appear exactly once. OutputRead has already projected UTF-8 on the strand.
+void write_output(ToolResult& result, const OutputRead& read)
 {
-    if (word == "stdout") return OutputStream::Stdout;
-    if (word == "stderr") return OutputStream::Stderr;
-    if (word == "both") return OutputStream::Both;
-    return std::nullopt;
+    std::string text;
+    bool truncated = false;
+    if (read.terminal_output) {
+        text = read.terminal_output->text;
+        truncated = read.terminal_output->truncated;
+    } else {
+        text = read.standard_output.text;
+        if (!read.standard_error.text.empty()) {
+            if (!text.empty()) text = "[stdout]\n" + text + "\n";
+            text += "[stderr]\n" + read.standard_error.text;
+        }
+        truncated = read.standard_output.truncated || read.standard_error.truncated;
+    }
+    result.field("output_truncated", truncated);
+    result.block("output", text, truncated);
 }
 
-std::string_view stream_word(OutputStream stream)
+std::string_view input_phase_word(process_io::InputPhase phase)
 {
-    switch (stream) {
-        case OutputStream::Stdout: return "stdout";
-        case OutputStream::Stderr: return "stderr";
-        case OutputStream::Both:   return "both";
+    using enum process_io::InputPhase;
+    switch (phase) {
+        case NotStarted: return "not_started";
+        case Open: return "open";
+        case EndRequested: return "end_requested";
+        case Ended: return "ended";
+        case PeerClosed: return "peer_closed";
+        case Stopped: return "stopped";
+        case Failed: return "failed";
+        case Unsupported: return "unsupported";
     }
-    return "both"; // unreachable; keeps -Wreturn-type quiet
+    return "unknown";
+}
+std::string_view admission_word(process_io::InputResult result)
+{
+    switch (result) {
+        case process_io::InputResult::Accepted: return "accepted";
+        case process_io::InputResult::Closed: return "closed";
+        case process_io::InputResult::Unsupported: return "unsupported";
+    }
+    return "unknown";
 }
 
 /// What a send_process call asks a child to do about STOPPING — the `signal`
@@ -111,6 +135,13 @@ void ProcessToolBase::write_session(ToolResult& result,
     // The contract's own enum wording ("running" / "exited" / "unknown"),
     // through its ADL serialiser rather than a second spelling here.
     result.field("state", execution.state);
+    result.field("tty", snapshot.result.spec.tty);
+    result.field("input_state", input_phase_word(snapshot.input_phase));
+    result.field("input_end_requested", snapshot.input_end_requested);
+    if (!snapshot.io_error.empty()) result.field("io_error", snapshot.io_error);
+    if (snapshot.input_phase == process_io::InputPhase::Unsupported) {
+        result.field("hint", "Terminal input mode does not support EOF; poll or send a signal.");
+    }
     // Omitted while the child lives, rather than written as nothing: an exit
     // code that is absent is not an exit code that is zero.
     if (execution.exit_code) {
@@ -152,6 +183,7 @@ void ProcessToolBase::settle_launch_arguments(model_io::InvokeQuery& query,
 
     (void)settle_bool(query, "inherit_environment", true);
     (void)settle_bool(query, "auto_release", true);
+    (void)settle_bool(query, "tty", false);
     (void)settle_uint(query, "expected_runtime_milliseconds", default_window);
 
     // working_directory is validated here and left as it came: see the header
@@ -170,6 +202,7 @@ void ProcessToolBase::apply_launch_arguments(const model_io::InvokeQuery& query,
                                              std::uint64_t default_window)
 {
     spec.inherit_environment = optional_bool(query, "inherit_environment", true);
+    spec.tty = optional_bool(query, "tty", false);
     // working_directory stays DISENGAGED when the call did not name one: absent
     // means "inherit the parent's cwd", and an empty string is not a path, so
     // there is nothing to materialize (settle_launch_arguments refuses the
@@ -233,15 +266,9 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
         // The FULL capture, and read with full=true so the delta cursor is left
         // alone — a later read still reports everything, and nothing is
         // silently consumed here.
-        const auto read = co_await _store->read_output(spawned.id, OutputStream::Both, true);
+        const auto read = co_await _store->read_output(spawned.id, OutputStream::Both, true, true);
         if (read) {
-            // Verbatim, both streams, even when a stream printed nothing: the
-            // caller asked for the output, and "stderr: (empty)" is part of
-            // the answer.
-            result.block("stdout", read->standard_output.text,
-                         read->standard_output.truncated);
-            result.block("stderr", read->standard_error.text,
-                         read->standard_error.truncated);
+            write_output(result, *read);
         }
         // Retain sessions whose descendants may still produce output. Automatic
         // release is scoped to this initial call; background completion never
@@ -339,6 +366,7 @@ RunCommandTool::RunCommandTool(StorePtr store, eventbus::AsyncEventBus* bus)
 void RunCommandTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_string(query, "command", "the command line to run");
+    (void)settle_bool(query, "tty", false);
     for (const char* name : {"environment", "inherit_environment", "auto_release"}) {
         if (query.arguments.contains(name)) {
             bad_argument(std::format(
@@ -391,6 +419,7 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
     // Shell commands inherit the host environment with no extra entries.
     // Environment customization belongs in the command, not hidden arguments.
     spec.inherit_environment = true;
+    spec.tty = optional_bool(query, "tty", false);
     spec.environment = std::vector<std::string>{};
     if (const auto directory = optional_string(query, "working_directory"); !directory.empty()) {
         spec.working_directory = directory;
@@ -506,7 +535,7 @@ boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
         reads.reserve(snapshots.size());
         for (const SessionSnapshot& snapshot : snapshots) {
             reads.push_back(co_await _store->read_output(
-                snapshot.id, OutputStream::Both, false));
+                snapshot.id, OutputStream::Both, false, true));
         }
     }
 
@@ -586,10 +615,7 @@ boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
             // A stream that printed nothing is still a block — "(empty)" is
             // the answer to "what is new" — while a call that did not ask for
             // output has none at all.
-            result.block("new_stdout", reads[index]->standard_output.text,
-                         reads[index]->standard_output.truncated);
-            result.block("new_stderr", reads[index]->standard_error.text,
-                         reads[index]->standard_error.truncated);
+            write_output(result, *reads[index]);
         }
     }
 
@@ -606,11 +632,8 @@ ReadProcessTool::ReadProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
 void ReadProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_session_id(query);
-    if (const std::string stream = settle_string(query, "stream", "both");
-        !parse_stream(stream)) {
-        bad_argument(std::format(
-            "property \"stream\" must be one of \"stdout\", \"stderr\", "
-            "\"both\", got \"{}\"", stream));
+    if (find_argument(query, "stream")) {
+        bad_argument("property \"stream\" is no longer supported; read_process returns generic output");
     }
     (void)settle_bool(query, "full", false);
     (void)settle_bool(query, "release", false);
@@ -635,14 +658,11 @@ boost::asio::awaitable<model_io::Content> ReadProcessTool::invoke(
     const model_io::InvokeQuery& query)
 {
     const std::string id = require_session_id(query);
-    // Already validated in ensure_arguments, so the optional is engaged.
-    const OutputStream stream =
-        *parse_stream(optional_string(query, "stream", "both"));
     const bool full = optional_bool(query, "full", false);
     const bool release = optional_bool(query, "release", false);
 
     const std::optional<OutputRead> read =
-        co_await _store->read_output(id, stream, full);
+        co_await _store->read_output(id, OutputStream::Both, full, true);
     if (!read) {
         no_such_session(id);
     }
@@ -659,23 +679,10 @@ boost::asio::awaitable<model_io::Content> ReadProcessTool::invoke(
         // is still worth naming: the output below answers for it.
         result.field("session_id", id);
     }
-    // What the call asked for, echoed back: the result stands on its own in a
-    // transcript, where the call it answers may be well above it.
-    result.field("stream", stream_word(stream));
     result.field("full", full);
-    if (stream == OutputStream::Stdout || stream == OutputStream::Both) {
-        // A block for each stream READ, even when it printed nothing: the
-        // caller asked for this stream, and one that is not in the answer
-        // would read as one that was not asked about.
-        result.block("stdout", read->standard_output.text,
-                     read->standard_output.truncated);
-        result.field("stdout_bytes_read", read->stdout_cursor);
-    }
-    if (stream == OutputStream::Stderr || stream == OutputStream::Both) {
-        result.block("stderr", read->standard_error.text,
-                     read->standard_error.truncated);
-        result.field("stderr_bytes_read", read->stderr_cursor);
-    }
+    write_output(result, *read);
+    result.field("output_bytes_read", read->stdout_cursor + read->stderr_cursor + read->terminal_cursor);
+    if (snapshot) result.field("output_complete", snapshot->output_drained);
 
     if (release) {
         // release() refuses a running child, so this is honest either way:
@@ -695,8 +702,11 @@ SendProcessTool::SendProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
 void SendProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_session_id(query);
+    if (find_argument(query, "close_input")) {
+        bad_argument("property \"close_input\" is no longer supported; use end_input");
+    }
     const std::string input = settle_string(query, "input");
-    const bool close_input = settle_bool(query, "close_input", false);
+    const bool end_input = settle_bool(query, "end_input", false);
     const std::string signal = settle_string(query, "signal");
     if (!parse_signal(signal)) {
         // Checked on the SETTLED value, so the refusal and the payload agree on
@@ -706,13 +716,13 @@ void SendProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
             "property \"signal\" must be one of \"\" (no signal), \"term\" or "
             "\"kill\", got \"{}\"", signal));
     }
-    if (input.empty() && !close_input && signal.empty()) {
+    if (input.empty() && !end_input && signal.empty()) {
         // Nothing to write, nothing to close, nothing to send: the call would
         // do nothing at all, and silently succeeding at nothing is worse than
         // saying so. Checked on the SETTLED values, so the refusal and the
         // payload agree on what an absent `input` came to.
         bad_argument("nothing to do: provide \"input\" to send, "
-                     "\"close_input\": true to end the process's input, or a "
+                     "\"end_input\": true to end the process's input, or a "
                      "\"signal\" (\"term\" or \"kill\") to send it");
     }
 }
@@ -728,7 +738,7 @@ void SendProcessTool::write_attributes(model_io::InvokeQuery& query) const
     // one level further: ParallWrite means the order between writers is not
     // observable, while here it is. Two calls to one child land in the order
     // they arrive — that is what the child reads and what it does — and when
-    // one of them carries `close_input` the other can be DROPPED outright,
+    // one of them carries `end_input` the other can be DROPPED outright,
     // since input after an end request is rejected. So the batch's call
     // order is what the child sees, which is only true if the batch runs these
     // one at a time.
@@ -748,7 +758,7 @@ boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
 {
     const std::string id = require_session_id(query);
     std::string input = optional_string(query, "input");
-    const bool close_input = optional_bool(query, "close_input", false);
+    const bool end_input = optional_bool(query, "end_input", false);
     // Already validated in ensure_arguments, so the optional is engaged.
     const Signal signal = *parse_signal(optional_string(query, "signal"));
     const std::size_t byte_count = input.size();
@@ -757,16 +767,17 @@ boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
     // the signal after. A child told to stop would rarely read what arrived
     // with the same breath, while a child told to quit and THEN stopped has had
     // its chance to.
-    const bool writes = byte_count != 0 || close_input;
-    const bool queued =
-        writes && co_await _store->write_input(id, std::move(input), close_input);
+    const bool writes = byte_count != 0 || end_input;
+    const auto admissions = writes
+        ? co_await _store->send_input(id, std::move(input), end_input)
+        : std::optional<ProcessSessionStore::InputWriteResult>{};
     const bool signalled =
         signal != Signal::None &&
         co_await _store->terminate(id, signal == Signal::Terminate);
 
     const std::optional<SessionSnapshot> snapshot =
         co_await _store->snapshot(id);
-    if (!snapshot && !queued && !signalled) {
+    if (!snapshot && !admissions && !signalled) {
         // Nothing landed and there is no session to describe: the call named an
         // id this table does not know. A signal-only call that DID land is not
         // this case — it answered for a session that was there a moment ago —
@@ -775,54 +786,25 @@ boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
     }
 
     ToolResult result;
-    result.field("session_id", id);
-    if (snapshot) {
-        result.field("state", snapshot->result.execution.state);
-    }
-    // Only the halves the call asked for: a signal-only call has no queued
-    // bytes to report, and `bytes_queued: 0` would read as "it wrote nothing
-    // when it meant to".
-    if (writes) {
-        result.field("bytes_queued", byte_count);
-        result.field("input_closed", close_input);
+    if (snapshot) write_session(result, *snapshot);
+    else result.field("session_id", id);
+    if (admissions) {
+        if (admissions->input) {
+            result.field("input_admission", admission_word(*admissions->input));
+            result.field("bytes_queued", *admissions->input == process_io::InputResult::Accepted ? byte_count : 0);
+        }
+        if (admissions->end) {
+            result.field("end_input_admission", admission_word(*admissions->end));
+            if (!snapshot) result.field("input_end_requested", *admissions->end == process_io::InputResult::Accepted);
+        }
     }
     if (signal != Signal::None) {
-        // What was asked for, then whether it happened: the word is echoed back
-        // because the record's arguments are the settled call the confirmer saw,
-        // and this is what a reader compares against `signalled`.
         result.field("signal", signal_word(signal));
         result.field("signalled", signalled);
+        if (signalled) result.field("hint", "Signal sent; use poll_process to confirm exit.");
     }
-    // The store awaits queue admission, not pump delivery or child consumption.
-    // Its boolean retains the session-existence contract, so this legacy tool
-    // result is not evidence that the child has read the requested input.
-    // A model that needs to know reads the output back.
-    if (byte_count != 0) {
-        result.field("note",
-                     "Input queued; delivery not confirmed.");
-    }
-    if (signalled) {
-        // The signal is sent, but the death is observed by the handle's own
-        // watcher a moment later, so this result may still say "running".
-        // Saying so beats a caller concluding the signal failed.
-        result.field("hint", std::format(
-            "Signal sent; use {} to confirm exit.",
-            tool_names::kPoll));
-    }
-    if (snapshot && snapshot->exited) {
-        // Worth saying plainly: a call to a child that is already gone had
-        // nowhere to land, and nothing else in the result would reveal it. What
-        // it says depends on what was lost — the bytes, the signal, or both.
-        std::string dropped;
-        if (byte_count != 0) dropped = "the input was discarded";
-        if (signal != Signal::None) {
-            if (!dropped.empty()) dropped += " and ";
-            dropped += "no signal was sent";
-        }
-        if (!dropped.empty()) {
-            result.field("warning", std::format(
-                "the process has already exited, so {}", dropped));
-        }
+    if (admissions && admissions->input == process_io::InputResult::Accepted) {
+        result.field("note", "Input queued; delivery and consumption not confirmed.");
     }
     co_return result.render();
 }

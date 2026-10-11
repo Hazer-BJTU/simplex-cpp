@@ -70,8 +70,8 @@ Process identifiers are diagnostic `uint64_t` values, not handles for resource
 actions. Process management hides Boost.Process behind an owned implementation.
 The normal asynchronous shutdown joins tasks; emergency synchronous cleanup
 requires stopping the context and joining its worker threads first. This
-platform-boundary refactor preserves existing pipe behavior and does not yet
-expose a TTY tool option. Rebuild C++ hosts and plugins together after these
+platform boundary preserves default pipe behavior and supports an opt-in `tty`
+tool argument. Rebuild C++ hosts and plugins together after these
 public layout/type changes; see [the ABI contract](../abi-context.md).
 
 Process output capture uses one raw-byte budget per process: stdout and stderr
@@ -84,7 +84,7 @@ raw-data budget. The Linux `PosixPtyIo` backend uses the same capture component
 for a single merged terminal stream. Native PTY allocation, controlling-terminal
 launch and resize stay in `utils/subprocess`; the environment supervises input
 and output tasks. Host code can compose it with `subprocess::Child` now, while
-model-facing TTY selection remains a subsequent integration step. Defaults are
+tools select it with `tty: true` and return one generic `output` block. Defaults are
 canonical input, echo off, 80×24 and `TERM=dumb`; terminal EOF is a conditional
 request, not a pipe half-close. Shutdown can drain to a deadline, then close and
 join even if descendants retain the slave.

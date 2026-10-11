@@ -60,7 +60,7 @@ public:
     /// Ordered acceptance, not delivery or consumption. Closed means rejected.
     /// Await this operation; input now uses the backend queue directly.
     [[nodiscard]] boost::asio::awaitable<process_io::InputResult> write_input(std::string message);
-    /// Sequence pipe EOF after all accepted input. Await before sending signals
+    /// Sequence a backend-dependent input-end request after all accepted input. Await before sending signals
     /// when ordering matters; acceptance does not promise child consumption.
     [[nodiscard]] boost::asio::awaitable<process_io::InputResult> close_input();
     /// Signal the direct child only; the watcher records terminal observation.
@@ -70,7 +70,8 @@ public:
     /** Cancellation-shielded, repeatable best-effort lifetime fence.
      * Stop admission, kill/reap, allow 100 ms of output drainage, then cancel and
      * join I/O and the watcher. Works before start and after partial startup.
-     * Descendants are not killed. Retain the first failure, finish all cleanup,
+     * Direct signals do not target descendants; final PTY close may hang them up.
+     * Retain the first failure, finish all cleanup,
      * then rethrow it; failure is not represented as a successful child exit.
      */
     boost::asio::awaitable<void> shutdown();
@@ -83,6 +84,8 @@ public:
     [[nodiscard]] std::chrono::system_clock::time_point started_at() const noexcept;
     [[nodiscard]] bool exited() const noexcept;
     [[nodiscard]] ExecutionStatus status() const;
+    /// Legacy pipe-only accessors; absent streams throw in TTY mode.
+    /// Use capture() or snapshot() for backend-independent output.
     [[nodiscard]] const std::string& standard_output() const;
     [[nodiscard]] const std::string& standard_error() const;
     [[nodiscard]] bool stdout_truncated() const;
@@ -91,6 +94,9 @@ public:
     /// lossless. Distinct from exited(); shutdown is the explicit join fence.
     [[nodiscard]] bool output_drained() const noexcept;
     [[nodiscard]] ExecutionResult snapshot() const;
+    /// Borrow on the owning strand without suspension; absent streams stay absent.
+    [[nodiscard]] process_io::Snapshot io_snapshot() const;
+    [[nodiscard]] const process_io::CaptureBuffer& capture() const noexcept;
 
 private:
     LaunchSpec _spec;

@@ -2,9 +2,8 @@
 
 `process_io_lib` provides `ProcessIoEnvironment`, the shared `CaptureBuffer`,
 and the `AnonymousPipeIo` and Linux `PosixPtyIo` backends. `ProcessHandle`
-currently selects pipes and retains child lifecycle policy. PTY is available to
-host code through `ProcessIoEnvironment` and `subprocess::Child`; model-facing
-TTY selection and generic output are the next stage of issue #122.
+selects pipes by default or PTY for `LaunchSpec::tty`, retaining child lifecycle policy. PTY is available to
+host code through `ProcessIoEnvironment` and `subprocess::Child`; the tools expose TTY selection and generic output through the same lifecycle.
 
 ## Ownership and execution
 

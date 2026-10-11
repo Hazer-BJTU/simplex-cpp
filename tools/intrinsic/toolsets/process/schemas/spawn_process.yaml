@@ -21,6 +21,15 @@ argument_schema:
   type: object
   required: [executable]
   properties:
+    tty:
+      type: boolean
+      default: false
+      description: >-
+        Allocate a terminal only for programs that need one or interactive
+        prompts. Leave false for ordinary commands, builds, tests and text
+        processing. When true, stdout and stderr merge; programs may emit
+        control sequences, carriage-return redraws, prompts or echoed input
+        that are harder to read. Does not start an interactive shell automatically.
     executable:
       type: string
       minLength: 1

@@ -2,7 +2,7 @@
 
 Child-process management for the core tree: spawning executables (PATH
 resolution, argv, inherited environment), feeding their stdin, collecting
-stdout/stderr incrementally, waiting with optional timeouts (kill or
+pipe stdout/stderr or merged terminal output incrementally, waiting with optional timeouts (kill or
 detach), and terminating stragglers — built on Boost.Process v2 running as
 asio coroutines. It knows nothing about *what* the children are for; the
 typed data contract it speaks lives in `dataclass/include/dataclass/
@@ -15,8 +15,9 @@ the spawn — execve-style environment assembly as a MERGE by key (the
 spec's `KEY=VALUE` entries override inherited ones; malformed entries
 throw at `Stage::Environment`), executable resolution against that same
 assembled environment ([see below](#how-the-executable-is-resolved)),
-pipe wiring, pid + start-time stamps; failures
-there throw `process::ProcessException`, never a boost type. Afterwards
+I/O attachment wiring, pid + start-time stamps. Child launch failures use
+`process::ProcessException`; environment preparation can also throw transport
+or platform-support errors. Afterwards
 the handle delegates input ordering, pumps and raw capture to
 `process_io::ProcessIoEnvironment`. Startup also schedules its independently
 supervised child watcher. Initial waiting applies a grace-period timeout (kill
@@ -67,7 +68,8 @@ are resolved directly, avoiding its PATH-entry concatenation for absolute paths.
 executable resolution, spawn attachments, signal/reap calls, shell selection,
 and executable-location lookup. `ProcessHandle` retains lifecycle policy,
 strand serialization, initial-wait timeouts and the pidfd polling workaround.
-`process_io` owns the pipes, input queue, reader/writer tasks and captured bytes.
+`process_io` owns the pipe/terminal transport, input queue, reader/writer tasks
+and captured bytes.
 All three layers reuse one strand per child; no nested strand or duplicated
 capture buffer is introduced. See the
 [utility contract](../utils/subprocess/README.md).
@@ -123,5 +125,5 @@ each stream keeps a prefix and reports its own discarded bytes. Both pipes
 continue draining after exhaustion. This raw-data budget does not include
 allocator/task overhead, and reads do not replenish it. `process_io::PosixPtyIo`
 now supplies a Linux PTY backend for explicit host composition with
-`subprocess::Child`. `ProcessHandle` still selects pipes; model-facing
-tty/output/end_input and handle selection remain the next step of #122.
+`subprocess::Child`. `ProcessHandle` selects this backend when `LaunchSpec::tty` is true; tools expose
+`tty`, generic `output`, and `end_input` (see the process toolset README).

@@ -3,10 +3,10 @@
 
 name: send_process
 description: >-
-  Queue text for a session's standard input, close that input, and/or send a
+  Queue text for a session's standard input, request its end, and/or send a
   termination signal to the direct child. At least one action is required:
-  nonempty input, close_input: true, or signal: term or kill. Input is queued
-  before closure and signalling, but the call does not wait for the child to
+  nonempty input, end_input: true, or signal: term or kill. Input is queued
+  before input-end and signalling, but the call does not wait for the child to
   read it or exit. Check signalled when sending a signal, then use poll_process
   to observe completion. The session remains available for output reads. An
   unknown or released session_id is an error; an already exited child cannot
@@ -31,13 +31,15 @@ argument_schema:
         Text to queue verbatim for standard input. Default: empty. Include a
         newline ("\n" in JSON) when the program expects a line. Queuing does not
         confirm delivery or consumption by the child.
-    close_input:
+    end_input:
       type: boolean
       default: false
       description: >-
-        Close standard input after queued input has drained, allowing the
-        child to observe EOF. Default: false. Programs that read until EOF may
-        need this to finish. Closing input does not itself terminate the child.
+        Submit queued input and request its end. Pipes close after queued input;
+        terminals request EOF only when their current mode supports it, keeping
+        output open. Acceptance does not guarantee delivery or program exit.
+        poll_process reports input_state (including unsupported or failed).
+        Use signal to stop a program that ignores or cannot accept EOF.
     signal:
       type: string
       enum: ["", "term", "kill"]
@@ -53,9 +55,9 @@ argument_schema:
       properties:
         input:
           minLength: 1
-    - required: [close_input]
+    - required: [end_input]
       properties:
-        close_input:
+        end_input:
           enum: [true]
     - required: [signal]
       properties:

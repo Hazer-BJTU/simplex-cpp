@@ -111,3 +111,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         "LINKER:--export-dynamic-symbol=_ZN5tools9intrinsic19ProcessSessionStore15publish_sessionESt10shared_ptrINS1_7SessionEE")
     set_tests_properties(test_shutdown_failures PROPERTIES TIMEOUT 15)
 endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(test_tools PRIVATE
+        PROCESS_PTY_CHILD="$<TARGET_FILE:process_pty_child>")
+    add_dependencies(test_tools process_pty_child)
+endif()

@@ -1,3 +1,4 @@
+#include "text_output.hpp"
 #include "tools/intrinsic/process/session_store.hpp"
 
 #include <boost/uuid/random_generator.hpp>
@@ -185,11 +186,25 @@ ProcessSessionStore::snapshot_on_session(SessionPtr session)
     co_return co_await boost::asio::co_spawn(
         session->strand,
         [session]() -> boost::asio::awaitable<SessionSnapshot> {
+            const auto io = session->handle->io_snapshot();
+            std::string io_error;
+            if (io.failure) {
+                try {
+                    std::rethrow_exception(io.failure);
+                } catch (const std::exception& error) {
+                    io_error = error.what();
+                } catch (...) {
+                    io_error = "Unknown process I/O failure";
+                }
+            }
             co_return SessionSnapshot{
                 .id = session->id,
                 .result = session->handle->snapshot(),
                 .exited = session->handle->exited(),
                 .output_drained = session->handle->output_drained(),
+                .input_phase = io.input_phase,
+                .input_end_requested = io.input_end_requested,
+                .io_error = std::move(io_error),
             };
         },
         boost::asio::use_awaitable
@@ -260,63 +275,48 @@ boost::asio::awaitable<std::size_t> ProcessSessionStore::size() const
 // ---- output -----------------------------------------------------------------
 
 boost::asio::awaitable<std::optional<OutputRead>>
-ProcessSessionStore::read_output(SessionId id, OutputStream stream, bool full)
+ProcessSessionStore::read_output(SessionId id, OutputStream stream, bool full, bool text)
 {
-    SessionPtr session = find_session(id);
-    if (session == nullptr) {
-        co_return std::nullopt;
-    }
-
-    // Copy output and advance cursors in one strand operation. No suspension
-    // occurs inside this transaction, so delta readers cannot consume twice.
-    co_return co_await boost::asio::co_spawn(
-        session->strand,
-        [session, stream, full]() -> boost::asio::awaitable<OutputRead> {
-            const process::ProcessHandle& handle = *session->handle;
-            const bool want_stdout =
-                stream == OutputStream::Stdout || stream == OutputStream::Both;
-            const bool want_stderr =
-                stream == OutputStream::Stderr || stream == OutputStream::Both;
-
-            // One rule for both streams: full reads the whole buffer and leaves the
-            // cursor where it was (an observation cannot consume another reader's
-            // unread bytes), delta reads from the cursor and advances it.
-            auto take = [full](const std::string& captured, bool truncated,
-                               std::size_t& cursor) -> OutputSlice {
-                if (full) {
-                    return OutputSlice{.text = captured, .truncated = truncated};
+    auto session = find_session(id);
+    if (!session) co_return std::nullopt;
+    co_return co_await boost::asio::co_spawn(session->strand,
+        [session, stream, full, text]() -> boost::asio::awaitable<OutputRead> {
+            const auto& capture = session->handle->capture();
+            auto take = [&](process_io::Stream name, std::size_t& cursor) -> OutputSlice {
+                const auto view = capture.view(name);
+                if (!view) return {};
+                const auto from = full ? 0 : std::min(cursor, view->bytes.size());
+                const auto raw = view->bytes.substr(from);
+                OutputSlice slice;
+                slice.truncated = view->truncated;
+                std::size_t consumed = raw.size();
+                if (text) {
+                    auto projected = detail::text_prefix(raw,
+                        view->truncated || view->end != process_io::StreamEnd::Open);
+                    slice.text = std::move(projected.text);
+                    consumed = projected.consumed;
+                } else {
+                    slice.text = raw;
                 }
-                // The cursor can only exceed the buffer if the buffer shrank, which
-                // it never does — the handle only appends. Clamped anyway: a cursor
-                // past the end would otherwise be an out-of-range substr.
-                const std::size_t from = std::min(cursor, captured.size());
-                OutputSlice slice{
-                    .text = captured.substr(from),
-                    .truncated = truncated,
-                };
-                cursor = captured.size();
+                if (!full) cursor = from + consumed;
                 return slice;
             };
-
             OutputRead read;
-            if (want_stdout) {
-                read.standard_output = take(handle.standard_output(),
-                                            handle.stdout_truncated(),
-                                            session->stdout_cursor);
+            if (stream == OutputStream::Stdout || stream == OutputStream::Both) {
+                read.standard_output = take(process_io::Stream::Stdout, session->stdout_cursor);
             }
-            if (want_stderr) {
-                read.standard_error = take(handle.standard_error(),
-                                           handle.stderr_truncated(),
-                                           session->stderr_cursor);
+            if (stream == OutputStream::Stderr || stream == OutputStream::Both) {
+                read.standard_error = take(process_io::Stream::Stderr, session->stderr_cursor);
             }
-            // The cursors travel back whether or not this read moved them, so a
-            // caller can report where a stream stands without asking again.
+            if ((stream == OutputStream::Terminal || stream == OutputStream::Both)
+                && capture.view(process_io::Stream::Terminal)) {
+                read.terminal_output = take(process_io::Stream::Terminal, session->terminal_cursor);
+            }
             read.stdout_cursor = session->stdout_cursor;
             read.stderr_cursor = session->stderr_cursor;
+            read.terminal_cursor = session->terminal_cursor;
             co_return read;
-        },
-        boost::asio::use_awaitable
-    );
+        }, boost::asio::use_awaitable);
 }
 
 // ---- input ------------------------------------------------------------------
@@ -324,21 +324,26 @@ ProcessSessionStore::read_output(SessionId id, OutputStream stream, bool full)
 boost::asio::awaitable<bool> ProcessSessionStore::write_input(
     SessionId id, std::string input, bool close_input)
 {
-    SessionPtr session = find_session(id);
-    if (session == nullptr) {
-        co_return false;
-    }
+    co_return (co_await send_input(std::move(id), std::move(input), close_input)).has_value();
+}
 
-    // Await backend acceptance in order. A found session still returns true
-    // for compatibility; Closed means the child no longer admits input and
-    // does not imply delivery. The lower-level API exposes that distinction.
-    if (!input.empty()) {
-        co_await session->handle->write_input(std::move(input));
-    }
-    if (close_input) {
-        co_await session->handle->close_input();
-    }
-    co_return true;
+boost::asio::awaitable<std::optional<ProcessSessionStore::InputWriteResult>>
+ProcessSessionStore::send_input(SessionId id, std::string input, bool end_input)
+{
+    auto session = find_session(id);
+    if (!session) co_return std::nullopt;
+    co_return co_await boost::asio::co_spawn(session->strand,
+        [session, input = std::move(input), end_input]() mutable
+            -> boost::asio::awaitable<InputWriteResult> {
+            InputWriteResult result;
+            if (!input.empty()) {
+                result.input = co_await session->handle->write_input(std::move(input));
+            }
+            if (end_input) {
+                result.end = co_await session->handle->close_input();
+            }
+            co_return result;
+        }, boost::asio::use_awaitable);
 }
 
 // ---- waiting ----------------------------------------------------------------
