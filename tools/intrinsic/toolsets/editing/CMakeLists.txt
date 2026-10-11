@@ -14,3 +14,5 @@ install(DIRECTORY schemas/ DESTINATION bin/schemas/editing)
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
+
+target_link_libraries(tools_intrinsic_editing PRIVATE subprocess_lib)

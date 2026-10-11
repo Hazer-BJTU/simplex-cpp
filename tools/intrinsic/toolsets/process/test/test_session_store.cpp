@@ -813,8 +813,8 @@ BOOST_AUTO_TEST_CASE(destroying_the_store_does_not_leak_running_children)
 {
     // The last-resort tail: a host that forgot shutdown() must still not
     // leak children. Dropping the table is not enough on its own — each
-    // handle's await task holds its handle alive, so the destructor signals
-    // the recorded pids itself.
+    // handle's await task holds its handle alive, so the destructor delegates
+    // cleanup through its owned handles.
     Fixture f;
     const auto id = f.spawn_id(spec_for("sleep", {"60"}));
     const pid_t pid = f.run(f.store->snapshot(id))->result.spec.pid;
@@ -831,14 +831,8 @@ BOOST_AUTO_TEST_CASE(destroying_the_store_under_several_workers_still_reaps_chil
     // worker threads, so the table being dropped is one whose strands and
     // handles have really been spread across threads.
     //
-    // What makes the tail answerable is the pair the destructor reads: the pid
-    // copied at spawn (written once, before the handle was shared with anyone)
-    // and exited(), the handle's one thread-safe observation. It reads both
-    // WITHOUT a strand hop, because a destructor cannot make one — and the
-    // answer matters: a child that was observed was also reaped, so its pid may
-    // already belong to somebody else.
-    //
-    // Quiesce the context before raw-pid cleanup to avoid racing child reaping.
+    // Quiesce and join all workers before delegated handle cleanup, so the
+    // synchronous fallback cannot race child observation or resource actions.
     MultiWorkerFixture f;
     const auto id = f.spawn_id(spec_for("sleep", {"60"}));
     const pid_t pid = f.run(f.store->snapshot(id))->result.spec.pid;

@@ -25,11 +25,13 @@
 #include <string>
 #include <vector>
 
-#include <sys/types.h>
-
 #include <nlohmann/json.hpp>
 
 namespace process {
+
+/// Diagnostic OS process identifier, never authority to signal or reap a child.
+/// Zero means no child has been assigned. Resource actions use an owned handle.
+using ProcessId = std::uint64_t;
 
 // ---- state ----------------------------------------------------------------
 
@@ -71,13 +73,9 @@ struct LaunchSpec {
     // Human-readable label carried through to every report about this
     // process; the manager never parses it.
     std::string description;
-    // The Linux pid of the process this spec refers to — literally pid_t,
-    // not a manager-assigned handle. Required: the handle's constructor
-    // stamps it right after spawn, so any spec that has been through a
-    // handle carries it. A hand-built request before that point carries the
-    // sentinel 0 (never a real userspace pid) — "no pid yet" is a plain
-    // value, not a state worth an optional for.
-    pid_t pid = 0;
+    // Stamped after launch; zero before launch. This value is serializable
+    // diagnostic data, not a native handle and not a durable process identity.
+    ProcessId pid = 0;
     // Wall-clock start time as a chrono point — callers subtract, format and
     // compare it directly, no integer unmarshalling. Required like pid, and
     // stamped by the same constructor: the default epoch point (serialises
@@ -102,7 +100,7 @@ struct LaunchSpec {
     // the child running, false kills it. The negation of the legacy
     // kill_on_timeout switch.
     bool detach_on_timeout = true;
-    // Capture cap SHARED by stdout and stderr, in bytes. The handle's
+    // Capture cap per stream in the current pipe backend. The handle's
     // readers keep draining both pipes after the cap is reached and discard
     // the excess (a reader that stopped would block the child on a full
     // pipe); ExecutionResult's stdout_truncated/stderr_truncated then say

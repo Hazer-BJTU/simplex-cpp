@@ -555,7 +555,8 @@ stderr: (empty)
 ```
 
 A stream whose block header says `(truncated, first N bytes)` printed more than
-the capture limit (4 MiB shared between the two streams), and the text under it
+the current per-stream capture limit (4 MiB per stream; a shared budget is
+planned separately in issue #122), and the text under it
 stops there. `*_bytes_read` is the incremental cursor position, not the size of this read.
 `released` reports what actually happened, not what was asked: a running
 process is never released, so it comes back `false`.
@@ -855,11 +856,11 @@ Each handle's await task keeps its own handle alive until the child's terminal
 state is observed, so dropping the table is not the last reference and does not
 stop the children. Killing one is a coroutine, and a destructor has no executor
 to run it on. So a host awaits `shutdown()` **while its context still
-runs**. The destructor is a last-resort tail: it signals the recorded pids
-synchronously and logs loudly.
+runs**. The destructor is a last-resort tail: it delegates synchronous
+kill/reap to each owned handle and reports cleanup failures.
 
 Finish all store calls before destroying the store. Stop the context and join
-its workers before relying on the destructor's fallback `::kill` cleanup, so
+its workers before relying on the handle's fallback `emergency_cleanup()`, so
 that cleanup does not race child reaping. Normal shutdown awaits
 `shutdown()` while the context is still running.
 

@@ -1,4 +1,5 @@
 #include "tools/intrinsic/process/schemas.hpp"
+#include "subprocess/platform.hpp"
 
 #include <cstdlib>
 #include <system_error>
@@ -25,13 +26,13 @@ constexpr const char* kSchemaDirectoryEnv = "SIMPLEX_PROCESS_SCHEMA_DIR";
 /// has no such directory and falls through to the path the build baked in.
 ///
 /// Empty when the running executable cannot be located, which is the honest
-/// answer rather than a guess: /proc is Linux, and a platform without it simply
-/// uses the other two answers.
+/// answer rather than a guess. Lookup is delegated to the shared platform
+/// helper; failure preserves the environment/build-tree fallback behavior.
 std::filesystem::path beside_executable()
 {
     std::error_code failure;
     const std::filesystem::path self =
-        std::filesystem::read_symlink("/proc/self/exe", failure);
+        subprocess::executable_location(failure);
     if (failure || self.empty()) {
         return {};
     }

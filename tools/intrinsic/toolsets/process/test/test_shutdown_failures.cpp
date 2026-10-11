@@ -158,3 +158,25 @@ BOOST_AUTO_TEST_CASE(store_cleans_later_sessions_after_first_handle_fails) {
     check_reaped(second_pid);
     fault_pid = 0;
 }
+
+BOOST_AUTO_TEST_CASE(emergency_cleanup_is_noexcept_and_retryable_after_native_failures)
+{
+    // No executor has run, so the synchronous fallback cannot race a watcher.
+    asio::io_context io;
+    auto handle = std::make_shared<process::ProcessHandle>(spec(), io.get_executor());
+    fault_pid = handle->pid();
+    wait_failures = 1;
+    BOOST_CHECK_NO_THROW(handle->emergency_cleanup());
+    BOOST_TEST(wait_failures.load() == 0);
+    BOOST_TEST(::kill(handle->pid(), 0) == 0);
+
+    signal_failures = 1;
+    BOOST_CHECK_NO_THROW(handle->emergency_cleanup());
+    BOOST_TEST(signal_failures.load() == 0);
+    BOOST_TEST(::kill(handle->pid(), 0) == 0);
+
+    BOOST_CHECK_NO_THROW(handle->emergency_cleanup());
+    check_reaped(handle->pid());
+    BOOST_CHECK_NO_THROW(handle->emergency_cleanup());
+    fault_pid = 0;
+}

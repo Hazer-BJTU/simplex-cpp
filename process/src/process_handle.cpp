@@ -1,4 +1,5 @@
 #include "process/process_handle.hpp"
+#include "subprocess/child.hpp"
 
 #include <boost/scope/scope_exit.hpp>
 #include <algorithm>
@@ -9,16 +10,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-
-namespace {
-
-// The key of an execve-style "KEY=VALUE" entry: everything before the
-// first '='. The value side may contain anything, including more '='.
-constexpr std::string_view env_key(std::string_view entry) {
-    return entry.substr(0, entry.find('='));
-}
-
-} // namespace
 
 namespace process {
 
@@ -31,9 +22,9 @@ ProcessHandle::ProcessHandle(
    _pipe0(_strand),
    _pipe1(_strand),
    _pipe2(_strand),
-   // Buffered on purpose: a full buffer applies backpressure to
-   // write_input() senders instead of parking them, and — the real reason
-   // — close() on an UNBUFFERED channel abandons parked senders' payloads,
+   // Buffered so close() drains accepted payloads. Outstanding asynchronous
+   // sends can still exceed this capacity; it is not a pending-input quota.
+   // close() on an UNBUFFERED channel abandons parked senders' payloads,
    // while a buffered one drains what was sent before turning closed.
    _write_channel(_strand, 16),
    _standard_out(),
@@ -41,175 +32,11 @@ ProcessHandle::ProcessHandle(
    _final_status(),
    _background_tasks()
 {
-    // Assemble the child's environment BEFORE resolving anything: a
-    // spec-supplied PATH must steer the lookup, and a malformed entry is a
-    // launch failure the caller can act on, not a surprise inside the
-    // child's environ.
-    //
-    // The assembly is a MERGE, never a concatenation. execve entries with
-    // duplicated names are undefined (glibc's getenv returns the FIRST
-    // match, so "inherit FOO=old, append FOO=new" would hand the child
-    // "old"), and v2's process_environment passes entries through verbatim
-    // without deduplicating — so uniqueness is this constructor's job: an
-    // explicit entry replaces the inherited entry of the same key, a later
-    // explicit entry replaces an earlier one.
-    std::vector<boost::process::environment::key_value_pair> used_envs;
-    if (_spec.inherit_environment) {
-        auto current_env = boost::process::environment::current();
-        used_envs.assign(current_env.begin(), current_env.end());
-    }
-    if (_spec.environment) {
-        for (const auto& env_config: *_spec.environment) {
-            const auto eq = env_config.find('=');
-            if (env_config.empty() || eq == std::string::npos || eq == 0 ||
-                env_config.find('\0') != std::string::npos) {
-                throw ProcessException(
-                    ProcessException::Stage::Environment,
-                    std::format(
-                        "invalid environment entry, expected KEY=VALUE: \"{}\"",
-                        env_config),
-                    {},
-                    _spec.executable,
-                    _spec.description
-                );
-            }
-            const auto key = env_key(env_config);
-            std::erase_if(used_envs, [&key](const auto& kv) {
-                const std::string_view existing{kv.data(), kv.size()};
-                return env_key(existing) == key;
-            });
-            used_envs.emplace_back(env_config);
-        }
-    }
-
-    // Executable resolution runs against the SAME environment the child
-    // will get — a spec-supplied PATH is honored (including with
-    // inherit_environment=false, where the spec's PATH is the only one).
-    // When the assembled environment carries no PATH at all, resolution
-    // falls back to the PARENT's PATH: a documented convenience so bare
-    // names still resolve; the child's own environment is unaffected by
-    // the fallback and really does ship without a PATH.
-    const bool child_env_has_path = std::any_of(
-        used_envs.begin(), used_envs.end(), [](const auto& kv) {
-            return std::string_view{kv.data(), kv.size()}
-                .starts_with("PATH=");
-        });
-
-    // The PATH half of the rule below, against whichever environment the
-    // comment above selected.
-    const auto search_path = [&](const std::filesystem::path& name) {
-        const boost::process::v2::filesystem::path lookup(name.string());
-        return child_env_has_path
-            ? boost::process::environment::find_executable(lookup, used_envs)
-            : boost::process::environment::find_executable(lookup);
-    };
-
-    // Paths identify exactly one program; only bare names use PATH. Anchor
-    // relative paths (including PATH search results) to the host cwd before
-    // the child changes working_directory, so launch cannot select a different
-    // executable after confirmation.
-    const std::filesystem::path requested{_spec.executable};
-    auto exec_path = requested.has_parent_path()
-        ? boost::process::v2::filesystem::path(requested.string())
-        : search_path(requested);
-    std::error_code resolve_ec;
-    if (!exec_path.empty()) {
-        const auto absolute = std::filesystem::absolute(
-            std::filesystem::path(exec_path.string()), resolve_ec);
-        if (!resolve_ec) {
-            exec_path = boost::process::v2::filesystem::path(absolute.string());
-        }
-    }
-    if (exec_path.empty() || resolve_ec ||
-        !std::filesystem::exists(std::filesystem::path(exec_path.string()),
-                                 resolve_ec)) {
-        throw ProcessException(
-            ProcessException::Stage::ResolveExecutable,
-            "executable not found or path could not be resolved",
-            resolve_ec,
-            _spec.executable,
-            _spec.description
-        );
-    }
-
-    // The start directory is checked HERE rather than left to the launch: v2
-    // applies it as a chdir in the forked child, and a failure there arrives
-    // as a bare ENOENT with nothing saying which path was meant — the launch
-    // context this exception exists to carry. Checked with the non-throwing
-    // overload: a filesystem error (an unreadable parent, a broken symlink)
-    // is reported as the launch failure it is, not as a std::filesystem
-    // exception escaping a constructor.
-    if (_spec.working_directory) {
-        std::error_code dir_ec;
-        const std::filesystem::path start_dir{*_spec.working_directory};
-        if (!std::filesystem::is_directory(start_dir, dir_ec)) {
-            throw ProcessException(
-                ProcessException::Stage::Spawn,
-                std::format(
-                    "working directory is not a directory: \"{}\"",
-                    *_spec.working_directory),
-                {},
-                _spec.executable,
-                _spec.description
-            );
-        }
-    }
-
-    try {
-        // The start directory rides as one more v2 initializer, which is why
-        // the two spawn forms are spelled out instead of building a pack: the
-        // process constructor takes its initializers as variadic arguments,
-        // so an engaged optional cannot simply be "passed as nothing".
-        if (_spec.working_directory) {
-            _process_ptr = std::make_unique<boost::process::process>(
-                _strand,
-                std::move(exec_path),
-                _spec.arguments,
-                boost::process::process_stdio{_pipe0, _pipe1, _pipe2},
-                boost::process::process_environment(used_envs),
-                // From the string, not a path object: this Boost builds
-                // Process against boost::filesystem, while the check above
-                // (and the rest of the tree) speaks std::filesystem — the
-                // two path types do not convert, and the initializer's own
-                // constructor is happy to build its path from the string.
-                boost::process::process_start_dir(*_spec.working_directory)
-            );
-        } else {
-            _process_ptr = std::make_unique<boost::process::process>(
-                _strand,
-                std::move(exec_path),
-                _spec.arguments,
-                boost::process::process_stdio{_pipe0, _pipe1, _pipe2},
-                boost::process::process_environment(used_envs)
-            );
-        }
-
-        _spec.pid = _process_ptr->id();
-        // Two anchors for the same moment, deliberately different clocks:
-        // started_at is the reportable wall-clock stamp (system_clock,
-        // serializable, ISO-8601-formattable), _started_steady the
-        // monotonic anchor every duration is measured from — system_clock
-        // is not guaranteed monotonic (NTP steps), so it must never be the
-        // base of elapsed-time accounting.
-        _spec.started_at = std::chrono::system_clock::now();
-        _started_steady = std::chrono::steady_clock::now();
-    } catch(const std::exception& e) {
-        throw ProcessException(
-            ProcessException::Stage::Spawn,
-            e.what(),
-            {},
-            _spec.executable,
-            _spec.description
-        );
-    } catch(...) {
-        throw ProcessException(
-            ProcessException::Stage::Spawn,
-            "unknown",
-            {},
-            _spec.executable,
-            _spec.description
-        );
-    }
+    const auto attachment = subprocess::IoAttachment::pipes(_pipe0, _pipe1, _pipe2);
+    _process_ptr = std::make_unique<subprocess::Child>(_spec, _strand, attachment);
+    _spec.pid = _process_ptr->id();
+    _spec.started_at = std::chrono::system_clock::now();
+    _started_steady = std::chrono::steady_clock::now();
 }
 
 ProcessHandle::~ProcessHandle()
@@ -226,35 +53,22 @@ ProcessHandle::~ProcessHandle()
     if (_pipe1.is_open()) _pipe1.close(ec);
     if (_pipe2.is_open()) _pipe2.close(ec);
 
-    if (_process_ptr) {
-        // running() is a waitpid(WNOHANG): an exited-unobserved child is
-        // reaped on the way past, so no zombie lingers. A child still
-        // alive at destruction is force-terminated: detach is a
-        // within-lifetime concept (the deadline policy), and destroying a
-        // handle whose child lives is an abandonment this class resolves by
-        // killing it, not by leaking it. terminate(ec) SIGKILLs, reaps and
-        // stores the exit status. Both probes report their failures — a
-        // destructor cannot throw, but it can at least not stay silent.
-        boost::system::error_code run_ec;
-        if (_process_ptr->running(run_ec)) {
-            logging::Logger::warning(std::format(
-                "process handle destroyed while child {} (pid {}) is still "
-                "running; terminating it",
-                _spec.executable, static_cast<int>(_spec.pid)));
-            _process_ptr->terminate(run_ec);
-            if (run_ec) {
-                logging::Logger::warning(std::format(
-                    "terminating child {} (pid {}) during handle destruction "
-                    "failed: {}",
-                    _spec.executable, static_cast<int>(_spec.pid),
-                    run_ec.message()));
-            }
-        } else if (run_ec) {
-            logging::Logger::warning(std::format(
-                "probing child {} (pid {}) during handle destruction failed: "
-                "{}",
-                _spec.executable, static_cast<int>(_spec.pid),
-                run_ec.message()));
+    emergency_cleanup();
+}
+
+void ProcessHandle::emergency_cleanup() noexcept
+{
+    if (!_process_ptr || exited()) {
+        return;
+    }
+    const auto error = _process_ptr->emergency_cleanup();
+    if (error) {
+        // Cleanup itself must remain noexcept even if logging allocates.
+        try {
+            logging::Logger::error(std::format(
+                "emergency cleanup for child {} (pid {}) failed: {}",
+                _spec.executable, _spec.pid, error.message()));
+        } catch (...) {
         }
     }
 }
@@ -348,7 +162,7 @@ boost::asio::awaitable<void> ProcessHandle::background_read_task(
 ) {
     boost::system::error_code ec;
     std::array<char, READBUFFER_SIZE> buffer;
-    // The spec's capture cap, shared by both streams (0 disables it). The
+    // The existing per-stream capture cap (0 disables it). The
     // loop below NEVER stops reading at the cap — a reader that quit would
     // leave the pipe full and block the child on its next write — it just
     // stops KEEPING what arrived past the cap, and the flag goes up the
@@ -464,8 +278,7 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
             ec.clear();
             auto which = co_await (
                 probe.async_wait(boost::asio::use_awaitable) ||
-                _process_ptr->async_wait(
-                    boost::asio::redirect_error(boost::asio::use_awaitable, ec)));
+                _process_ptr->wait(ec));
             if (which.index() == 1) {
                 // The process wait ended. Aborted means the deadline race
                 // cancelled us — the restarted instance owns the final
@@ -863,7 +676,7 @@ boost::asio::awaitable<bool> ProcessHandle::signal_child_on_strand(Signal signal
 
     logging::Logger::debug(std::format(
         "signalled child {} (pid {}) to {}",
-        _spec.executable, static_cast<int>(_spec.pid),
+        _spec.executable, _spec.pid,
         signal == Signal::Kill ? "terminate" : "exit"));
     co_return true;
 }
@@ -874,7 +687,7 @@ const LaunchSpec& ProcessHandle::spec() const noexcept {
     return _spec;
 }
 
-pid_t ProcessHandle::pid() const noexcept {
+ProcessId ProcessHandle::pid() const noexcept {
     return _spec.pid;
 }
 

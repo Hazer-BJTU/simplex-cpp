@@ -3,6 +3,8 @@
 #
 # Umbrella for the small shared utility modules every other package leans on:
 #
+#   - subprocess/ `subprocess_lib` (SHARED): private native child ownership,
+#                 opaque launch attachments, shell and executable location.
 #   - textformat/ `textformat_iface` (INTERFACE): dependency-free plain
 #                 metadata field formatting.
 #   - logging/    `logging_lib` (STATIC): thread-safe console logger
@@ -52,3 +54,6 @@ add_subdirectory(yamlconfig)
 add_subdirectory(eventbus)
 add_subdirectory(asio)
 add_subdirectory(async_eventbus)
+
+# Private process/platform mechanisms; consumes the shared Asio runtime.
+add_subdirectory(subprocess)

@@ -3,7 +3,7 @@ add_library(process_lib SHARED
 )
 target_include_directories(process_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(process_lib PUBLIC
-    boost_process_iface 
+    subprocess_lib
     dataclass_iface 
     logging_lib
     asio_iface)
