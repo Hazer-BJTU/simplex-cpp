@@ -70,6 +70,13 @@ ProcessSessionStore::SessionPtr ProcessSessionStore::find_session(
     return found->second;
 }
 
+void ProcessSessionStore::publish_session(SessionPtr session)
+{
+    const std::lock_guard lock{_sessions_mutex};
+    _sessions.emplace(session->id, session);
+    --_pending_spawns;
+}
+
 // ---- spawn ------------------------------------------------------------------
 
 boost::asio::awaitable<SpawnResult>
@@ -110,89 +117,64 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
     // have no reason to queue behind each other (header, threading).
     auto session_strand = boost::asio::make_strand(_executor);
 
-    // Construction IS the spawn, and it throws ProcessException on failure —
-    // passed through untranslated, since its stage and launch context are
-    // exactly what a caller needs. Nothing has been registered at this point,
-    // so a failed launch leaves the table untouched.
-    auto handle = std::make_shared<process::ProcessHandle>(
-        std::move(spec), session_strand);
-    {
-        const std::lock_guard lock{_sessions_mutex};
-        id = mint_id_locked();
-    }
-
-    auto session = std::make_shared<Session>(Session{
-        .id = id,
-        .handle = handle,
-        .strand = session_strand,
-        .stdout_cursor = 0,
-        .stderr_cursor = 0,
-    });
-
-    // The first half of the handle's lifecycle contract.
-    co_await handle->start_background_io_tasks();
-
-    // Exception-safety limit: if publication throws (for example, bad_alloc),
-    // the capacity reservation is returned, but I/O tasks have already started
-    // and the terminal watcher has not. Full rollback of this partial lifecycle
-    // requires a separate ProcessHandle lifecycle/RAII change.
-    // Publish before the initial wait so concurrent observations can find
-    // the running child. Converting the reservation into an entry is atomic.
-    {
-        const std::lock_guard lock{_sessions_mutex};
-        _sessions.emplace(id, session);
-        --_pending_spawns;
+    HandlePtr handle;
+    SessionPtr session;
+    std::exception_ptr failure;
+    try {
+        handle = std::make_shared<process::ProcessHandle>(std::move(spec), session_strand);
+        {
+            const std::lock_guard lock{_sessions_mutex};
+            id = mint_id_locked();
+        }
+        session = std::make_shared<Session>(Session{
+            .id = id, .handle = handle, .strand = session_strand,
+            .stdout_cursor = 0, .stderr_cursor = 0,
+        });
+        co_await handle->start_background_io_tasks();
+        // Publish only after both I/O and the watcher are supervised. Allocation
+        // failure here, or cancellation during the initial wait, rolls back the
+        // complete child lifetime before returning the reserved capacity.
+        publish_session(session);
         release_reservation.set_active(false);
-    }
-    logging::Logger::debug(std::format(
-        "process session {} spawned (pid {}), initial wait {} ms", id,
-        static_cast<int>(handle->pid()), window));
-
-    if (window == kNoInitialWait) {
-        // No wait requested: drive the handle to its terminal observation in
-        // the background and answer with the id. The await task is DETACHED and
-        // holds the handle alive by shared_ptr, so the observation still
-        // happens even if the session is released meanwhile — which is what the
-        // handle's contract demands (an unobserved handle keeps itself alive
-        // forever).
-        boost::asio::co_spawn(
-            session_strand,
-            [handle]() -> boost::asio::awaitable<void> {
-                // With the deadline disabled, wait for terminal observation
-                // or watcher shutdown. Any watcher failure is retained by
-                // the handle for the explicit shutdown lifetime fence.
-                co_await handle->await_initial_execution();
-            },
-            boost::asio::detached);
-        co_return SpawnResult{.id = id, .finished = false, .output_drained = false};
-    }
-
-    // Both the initial wait and every output-drain check execute on the
-    // session strand, even after a timer or handle operation suspends.
-    co_return co_await boost::asio::co_spawn(
-        session_strand,
-        [session, window]() -> boost::asio::awaitable<SpawnResult> {
-            const auto& handle = session->handle;
-            const bool finished = co_await handle->await_initial_execution();
-            if (finished) {
-                boost::asio::steady_timer drain{session->strand};
-                const auto deadline = std::chrono::steady_clock::now() +
-                                      std::chrono::milliseconds{window};
-                while (!handle->output_drained() &&
-                       std::chrono::steady_clock::now() < deadline) {
-                    drain.expires_after(kExitPollInterval);
-                    co_await drain.async_wait(boost::asio::use_awaitable);
+        if (window == kNoInitialWait) {
+            // Startup already owns the watcher; no detached initial-wait task.
+            co_return SpawnResult{.id = id, .finished = false, .output_drained = false};
+        }
+        co_return co_await boost::asio::co_spawn(session_strand,
+            [session, window]() -> boost::asio::awaitable<SpawnResult> {
+                const auto& handle = session->handle;
+                const bool finished = co_await handle->await_initial_execution();
+                if (finished) {
+                    boost::asio::steady_timer drain(session->strand);
+                    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(window);
+                    while (!handle->output_drained()
+                           && std::chrono::steady_clock::now() < deadline) {
+                        drain.expires_after(kExitPollInterval);
+                        co_await drain.async_wait(boost::asio::use_awaitable);
+                    }
                 }
-            }
-            // A descendant may keep the output pipes open after child exit.
-            co_return SpawnResult{
-                .id = session->id,
-                .finished = finished,
-                .output_drained = finished && handle->output_drained(),
-            };
-        },
-        boost::asio::use_awaitable
-    );
+                co_return SpawnResult{.id = session->id, .finished = finished,
+                    .output_drained = finished && handle->output_drained()};
+            }, boost::asio::use_awaitable);
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
+    if (handle) {
+        try {
+            co_await handle->shutdown();
+        } catch (...) {
+            // Preserve the initiating error. Shutdown has already attempted all
+            // cleanup and joined every owned task before reporting its failure.
+        }
+    }
+    {
+        const std::lock_guard lock{_sessions_mutex};
+        const auto found = _sessions.find(id);
+        if (found != _sessions.end() && found->second == session) _sessions.erase(found);
+    }
+    std::rethrow_exception(failure);
 }
 
 // ---- observation ------------------------------------------------------------
@@ -347,17 +329,14 @@ boost::asio::awaitable<bool> ProcessSessionStore::write_input(
         co_return false;
     }
 
-    // write_input()/close_input() are the handle's two thread-safe entry
-    // points (its concurrent_channel frontends), so no session-strand hop is
-    // needed — and none is wanted: hopping would only add latency to a
-    // fire-and-forget send.
+    // Await backend acceptance in order. A found session still returns true
+    // for compatibility; Closed means the child no longer admits input and
+    // does not imply delivery. The lower-level API exposes that distinction.
     if (!input.empty()) {
-        session->handle->write_input(std::move(input));
+        co_await session->handle->write_input(std::move(input));
     }
     if (close_input) {
-        // Queued messages still drain before the child sees EOF (asio
-        // channels drain on close), so ordering with the write above holds.
-        session->handle->close_input();
+        co_await session->handle->close_input();
     }
     co_return true;
 }

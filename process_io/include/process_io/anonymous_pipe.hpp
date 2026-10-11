@@ -28,7 +28,9 @@ public:
     boost::asio::awaitable<InputResult> enqueue_input(std::string input) override;
     boost::asio::awaitable<InputResult> request_input_end() override;
     boost::asio::awaitable<void> stop_admission() override;
+    boost::asio::awaitable<void> cancel_input() override;
     [[nodiscard]] Snapshot snapshot() const override;
+    [[nodiscard]] const CaptureBuffer& capture() const noexcept override;
     boost::asio::awaitable<bool> drain_until(std::chrono::steady_clock::time_point deadline) override;
     boost::asio::awaitable<void> cancel_and_join() override;
     boost::asio::awaitable<ResizeResult> resize(unsigned columns, unsigned rows) override;

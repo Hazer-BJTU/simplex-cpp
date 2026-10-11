@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE ProcessShutdownFailures
 #include <boost/test/unit_test.hpp>
 #include "tools/intrinsic/process/session_store.hpp"
+#include "process_io/anonymous_pipe.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/use_future.hpp>
@@ -79,11 +80,11 @@ BOOST_AUTO_TEST_CASE(watcher_failure_and_signal_failure_still_join_and_reap) {
     auto handle = std::make_shared<process::ProcessHandle>(spec(), io.get_executor());
     fault_pid = handle->pid();
     auto run = asio::co_spawn(io, [handle]() -> asio::awaitable<void> {
-        co_await handle->start_background_io_tasks();
         // Fail the watcher's initial waitpid, then both its defensive signal
         // and shutdown's first signal. Recovery must preserve the first EIO.
         wait_failures = 1;
         signal_failures = 2;
+        co_await handle->start_background_io_tasks();
         co_await handle->await_initial_execution();
         co_await handle->shutdown();
     }, asio::use_future);
@@ -179,4 +180,92 @@ BOOST_AUTO_TEST_CASE(emergency_cleanup_is_noexcept_and_retryable_after_native_fa
     check_reaped(handle->pid());
     BOOST_CHECK_NO_THROW(handle->emergency_cleanup());
     fault_pid = 0;
+}
+
+// ELF interposition exercises actual rollback boundaries without introducing
+// production fault switches. Successful publication delegates to the real DSO.
+namespace {
+std::atomic<bool> fail_publication{false};
+process::ProcessId unpublished_pid = 0;
+}
+
+namespace tools::intrinsic {
+void ProcessSessionStore::publish_session(SessionPtr session)
+{
+    if (fail_publication.exchange(false)) {
+        unpublished_pid = session->handle->pid();
+        throw std::bad_alloc();
+    }
+    using Function = void (*)(ProcessSessionStore*, SessionPtr);
+    static auto real = reinterpret_cast<Function>(dlsym(RTLD_NEXT,
+        "_ZN5tools9intrinsic19ProcessSessionStore15publish_sessionESt10shared_ptrINS1_7SessionEE"));
+    if (!real) throw std::runtime_error("publication interposition did not resolve real method");
+    real(this, std::move(session));
+}
+}
+
+BOOST_AUTO_TEST_CASE(publication_failure_rolls_back_live_pumps_child_and_capacity)
+{
+    asio::io_context io;
+    auto store = std::make_shared<tools::intrinsic::ProcessSessionStore>(io.get_executor(), 1);
+    auto task = asio::co_spawn(io, [&]() -> asio::awaitable<void> {
+        fail_publication = true;
+        bool failed = false;
+        try {
+            co_await store->spawn(spec());
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        BOOST_TEST(failed);
+        BOOST_TEST(!fail_publication.load());
+        BOOST_TEST(unpublished_pid != 0u);
+        check_reaped(unpublished_pid);
+        BOOST_TEST((co_await store->size()) == 0u);
+        const auto next = co_await store->spawn(spec());
+        BOOST_TEST(!next.id.empty()); // Reservation was returned, capacity is one.
+        co_await store->shutdown();
+    }, asio::use_future);
+    io.run();
+    task.get();
+}
+
+namespace {
+std::atomic<bool> fail_after_pumps_start{false};
+}
+
+namespace process_io {
+asio::awaitable<void> AnonymousPipeIo::start()
+{
+    using Function = asio::awaitable<void> (*)(AnonymousPipeIo*);
+    static auto real = reinterpret_cast<Function>(dlsym(RTLD_NEXT,
+        "_ZN10process_io15AnonymousPipeIo5startEv"));
+    if (!real) throw std::runtime_error("I/O interposition did not resolve real method");
+    co_await real(this);
+    if (fail_after_pumps_start.exchange(false)) {
+        throw std::runtime_error("injected failure after starting I/O pumps");
+    }
+}
+}
+
+BOOST_AUTO_TEST_CASE(startup_failure_after_pumps_start_joins_and_reaps_before_throwing)
+{
+    asio::io_context io;
+    auto handle = std::make_shared<process::ProcessHandle>(spec(), io.get_executor());
+    auto task = asio::co_spawn(io, [&]() -> asio::awaitable<void> {
+        fail_after_pumps_start = true;
+        bool failed = false;
+        try {
+            co_await handle->start_background_io_tasks();
+        } catch (const std::runtime_error& error) {
+            failed = true;
+            BOOST_TEST(std::string(error.what()) == "injected failure after starting I/O pumps");
+        }
+        BOOST_TEST(failed);
+        BOOST_TEST(!fail_after_pumps_start.load());
+        BOOST_TEST(handle->exited());
+        BOOST_TEST(handle->output_drained());
+        check_reaped(handle->pid());
+    }, asio::use_future);
+    io.run(); // No context.stop(): all actually started pumps must be joined.
+    task.get();
 }

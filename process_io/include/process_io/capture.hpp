@@ -40,6 +40,8 @@ public:
 
     /// Empty optional means absent; an existing empty stream has an empty view.
     [[nodiscard]] std::optional<StreamView> view(Stream stream) const;
+    /// Borrowed storage; the same serialized-or-quiescent rule as view().
+    [[nodiscard]] const std::string& bytes(Stream stream) const;
     /// Discards bytes beyond the limit and marks truncation; callers KEEP reading.
     void append(Stream stream, std::string_view bytes);
     /// Finish once. Forced stop and failure mark retained data as incomplete.

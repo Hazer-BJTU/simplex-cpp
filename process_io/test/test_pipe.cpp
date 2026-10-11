@@ -21,7 +21,6 @@ BOOST_AUTO_TEST_CASE(capabilities_and_unstarted_cleanup)
     BOOST_TEST(!capabilities.is_terminal);
     BOOST_TEST(!capabilities.can_resize);
     BOOST_CHECK_THROW((void)h.environment->snapshot(), std::logic_error);
-    BOOST_CHECK_THROW(h.environment->prepare_attachment(), std::logic_error);
     h.run([](Harness& h) -> asio::awaitable<void> {
         BOOST_CHECK((co_await h.environment->enqueue_input("before")) == InputResult::Closed);
         BOOST_CHECK((co_await h.environment->request_input_end()) == InputResult::Closed);
@@ -313,5 +312,32 @@ BOOST_AUTO_TEST_CASE(peer_closure_preserves_sigpipe_disposition_mask_and_existin
         BOOST_REQUIRE(::sigaction(SIGPIPE, nullptr, &after_action) == 0);
         BOOST_CHECK(after_action.sa_handler == original_action.sa_handler);
         BOOST_TEST(after_action.sa_flags == original_action.sa_flags);
+    });
+}
+
+BOOST_AUTO_TEST_CASE(forced_input_stop_preserves_output_until_the_separate_join_fence)
+{
+    Harness h;
+    h.run([](Harness& h) -> asio::awaitable<void> {
+        h.launch("no-read");
+        co_await h.environment->start();
+        co_await h.ready();
+        co_await h.environment->enqueue_input(std::string(1024 * 1024, 'x'));
+        co_await h.pause();
+        co_await h.environment->cancel_input();
+        co_await h.pause();
+        const auto snapshot = h.environment->snapshot();
+        BOOST_TEST(!snapshot.accepting_input);
+        BOOST_TEST(!snapshot.output_complete);
+        BOOST_TEST(!snapshot.joined);
+        BOOST_TEST(!snapshot.failure);
+        BOOST_TEST(!snapshot.input_end_requested);
+        BOOST_CHECK(snapshot.input_phase == InputPhase::Stopped);
+        BOOST_TEST(snapshot.standard_output->bytes == "ready");
+        BOOST_CHECK(snapshot.standard_output->end == StreamEnd::Open);
+        BOOST_CHECK((co_await h.environment->enqueue_input("late")) == InputResult::Closed);
+        BOOST_CHECK((co_await h.environment->request_input_end()) == InputResult::Closed);
+        co_await h.environment->cancel_and_join();
+        BOOST_TEST(h.environment->snapshot().joined);
     });
 }

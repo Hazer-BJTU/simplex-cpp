@@ -216,9 +216,8 @@ BOOST_AUTO_TEST_CASE(stdin_writes_after_close_or_death_are_dropped)
     }
     using process_test::run_scenario;
 
-    // Sent after close_input(): the channel is closed, so the send fails,
-    // the message is logged-and-dropped, and the child sees only what was
-    // queued before the close.
+    // Input after end is explicitly rejected, and the child sees only bytes
+    // accepted before the end request.
     {
         auto s = run_scenario(
             process::LaunchSpec{
@@ -227,22 +226,17 @@ BOOST_AUTO_TEST_CASE(stdin_writes_after_close_or_death_are_dropped)
                 .description = "echo stdin back",
                 .initial_wait_timeout_milliseconds = std::uint64_t{5000},
             },
-            [](process::ProcessHandle& handle) {
-                handle.write_input("first\n");
-                handle.close_input();
-                handle.write_input("dropped\n");
+            {}, [](process::ProcessHandle& handle) -> boost::asio::awaitable<void> {
+                co_await handle.write_input("first\n");
+                co_await handle.close_input();
+                BOOST_CHECK((co_await handle.write_input("dropped\n")) == process_io::InputResult::Closed);
             });
         BOOST_TEST(s.finished_on_time);
         BOOST_TEST(s.handle->standard_output() == "first\n");
     }
 
-    // Sent after the child exited and the await task auto-closed the
-    // channel: same quiet drop, nothing throws, output untouched. The
-    // restart() is required before the second run() — run_scenario already
-    // ran this io_context to exhaustion, and asio leaves a context stopped
-    // after run() returns, so a bare run() would dispatch nothing and the
-    // case would pass vacuously. Only with the restart does the failed
-    // send's completion handler (the logged drop) actually run.
+    // Input after exit is rejected without changing captured output. Restart
+    // the quiescent context to actually execute this awaitable admission check.
     {
         auto s = run_scenario(process::LaunchSpec{
             .executable = "echo",
@@ -252,9 +246,11 @@ BOOST_AUTO_TEST_CASE(stdin_writes_after_close_or_death_are_dropped)
         });
         BOOST_TEST(s.finished_on_time);
 
-        s.handle->write_input("too late\n");
         s.io->restart();
+        auto send = boost::asio::co_spawn(*s.io, s.handle->write_input("too late\n"),
+                                        boost::asio::use_future);
         s.io->run();
+        BOOST_CHECK(send.get() == process_io::InputResult::Closed);
 
         BOOST_TEST(s.handle->standard_output() == "done\n");
     }
