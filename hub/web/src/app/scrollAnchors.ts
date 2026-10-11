@@ -38,32 +38,29 @@ export interface ScrollGeometry {
  * Remember the actual clamped/fractional position accepted by the browser.
  * Unlike a task-local flag, this recognizes delayed/coalesced write echoes.
  * Input extends the intent window but does not erase an outstanding echo.
- * Changed layout dimensions can clamp scrollTop before our next frame; that
- * movement is layout-owned too. Fresh input samples the current dimensions so
- * subsequent wheel/key/drag movement still takes priority.
+ * A smaller scroll range can clamp scrollTop before our next frame. Only the
+ * actual clamp of the previous position is layout-owned; a dimension change
+ * alone cannot explain user movement. Fresh input samples the current position
+ * and dimensions so subsequent wheel/key/drag movement still takes priority.
  */
 export class ScrollOwnership {
     private target: number | null = null;
+    private position: number | null = null;
     private intentUntil = 0;
     private geometry: ScrollGeometry | null = null;
 
-    private layoutChanged(top: number, geometry?: ScrollGeometry): boolean {
-        if (!geometry) return false;
-        const before = this.geometry;
-        const changed = before !== null && (before.height !== geometry.height
-            || before.viewport !== geometry.viewport || before.width !== geometry.width);
-        this.geometry = { ...geometry };
-        if (changed) this.target = top;
-        return changed;
+    private observe(top: number, geometry?: ScrollGeometry): void {
+        this.position = top;
+        if (geometry) this.geometry = { ...geometry };
     }
 
     intent(now: number, top = 0, geometry?: ScrollGeometry): void {
-        this.layoutChanged(top, geometry);
+        if (geometry) this.observe(top, geometry);
         this.intentUntil = now + 1000;
     }
 
     wrote(top: number, geometry?: ScrollGeometry): void {
-        this.layoutChanged(top, geometry);
+        this.observe(top, geometry);
         this.target = top;
     }
 
@@ -73,7 +70,22 @@ export class ScrollOwnership {
     }
 
     readerMoved(top: number, now: number, geometry?: ScrollGeometry): boolean {
-        if (this.layoutChanged(top, geometry)) return false;
+        const before = this.geometry;
+        const previous = this.position;
+        const rangeShrank = geometry && before
+            && geometry.height - geometry.viewport < before.height - before.viewport;
+        const clamped = geometry && previous !== null
+            ? Math.max(0, Math.min(previous, geometry.height - geometry.viewport)) : null;
+        // Reflow alone is not proof of automatic movement. Suppress only the
+        // exact clamp of an out-of-range previous position, including repeated
+        // echoes, and let any additional user movement claim the scroll.
+        const layoutClamp = rangeShrank && previous !== null && clamped !== null
+            && Math.abs(previous - clamped) > 0.5 && Math.abs(top - clamped) <= 0.5;
+        this.observe(top, geometry);
+        if (layoutClamp) {
+            this.target = top;
+            return false;
+        }
         if (this.target !== null && Math.abs(top - this.target) <= 0.5) return false;
         this.target = null;
         return now < this.intentUntil;

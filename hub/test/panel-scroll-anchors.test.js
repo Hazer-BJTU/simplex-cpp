@@ -93,3 +93,37 @@ it('explicit following supersedes old keyboard momentum without suppressing fres
     owner.intent(3);
     assert.equal(owner.readerMoved(700, 4), true);
 });
+
+it('preserves reader movement interleaved with content growth or viewport reflow', () => {
+    const initial = { height: 1000, viewport: 100, width: 500 };
+    for (const changed of [
+        { ...initial, height: 1100 },
+        { ...initial, viewport: 300 },
+        { ...initial, width: 400 },
+        { ...initial, height: 800 },
+    ]) {
+        const owner = new ScrollOwnership();
+        owner.wrote(900, initial);
+        owner.intent(0, 900, initial);
+        // Growth cannot explain upward motion. Even when the range shrinks,
+        // movement beyond the new bottom is input rather than just clamping.
+        assert.equal(owner.readerMoved(600, 1, changed), true);
+        assert.equal(owner.readerMoved(550, 2, changed), true);
+    }
+    const owner = new ScrollOwnership();
+    owner.wrote(900, initial);
+    owner.intent(0, 900, initial);
+    assert.equal(owner.readerMoved(700, 1, { ...initial, height: 1100 }), true,
+        'review regression: content growth must not swallow the upward gesture');
+});
+
+it('recognizes content-shrink clamps without ignoring later movement in the same gesture', () => {
+    const owner = new ScrollOwnership();
+    const initial = { height: 1000, viewport: 100, width: 500 };
+    const smaller = { ...initial, height: 800 };
+    owner.wrote(900, initial);
+    owner.intent(0, 900, initial);
+    assert.equal(owner.readerMoved(700, 1, smaller), false);
+    assert.equal(owner.readerMoved(700, 2, smaller), false);
+    assert.equal(owner.readerMoved(600, 3, smaller), true);
+});

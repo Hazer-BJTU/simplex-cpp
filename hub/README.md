@@ -521,10 +521,11 @@ do not change the display budgets or approval authority.
 
 Transcript scrolling keeps reader intent separate from automatic movement. It
 remembers the browser's accepted scroll position instead of clearing write
-ownership in a microtask; changed content/viewport dimensions can clamp that
-position without restoring following. Fresh wheel/key/drag input still takes
-priority, and Jump to latest supersedes old keyboard momentum and explicitly
-restores following. DOM membership is
+ownership in a microtask. A smaller scroll range can clamp the previous position
+without restoring following; a dimension change alone does not own the scroll.
+Wheel/key/drag movement still takes priority when content grows in the same frame
+or the reader moves beyond the new clamped position. Jump to latest supersedes
+old keyboard momentum and explicitly restores following. DOM membership is
 cached with local mutation invalidation; binary searches read current layout
 boxes, excluding entrance translations, so geometry cannot go stale after
 disclosure or resizing. Nested tool/message anchors preserve the item being read
@@ -612,9 +613,10 @@ npx playwright test panel-scroll.spec.ts --project=chromium
 It reports membership-query and bounding-box counts for twenty frame-separated
 input positions over 150 rounds and over 256 nested tool cards. Regression
 checks bound lookup work without asserting elapsed time, and cover nested
-retention/disclosure, keyboard/scrollbar input, hidden-pane restoration and
-viewport clamping during a recent input window. Existing responsiveness tests
-also cover approval-region resizing and the actual transcript retention limit.
+retention/disclosure, keyboard/scrollbar input, hidden-pane restoration,
+viewport clamping and content growth interleaved with upward reader movement.
+Existing responsiveness tests also cover approval-region resizing and the actual
+transcript retention limit.
 
 Overlays — menus, dialogs, popovers, tooltips, tabs — are Radix primitives, and
 the reason is specific rather than fashionable: the old panel hand-wrote a focus

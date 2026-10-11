@@ -183,3 +183,29 @@ test('viewport clamping inside the input window does not restore following', asy
     expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
     await expect(page.getByRole('button', { name: 'jump to latest' })).toBeVisible();
 });
+
+test('content growth in the same frame does not swallow upward reader movement', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'model_response', modelResponse('Growing transcript.\n\n'.repeat(100)));
+    const scroller = page.getByTestId('transcript');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    await frames(page);
+    const moved = await scroller.evaluate(node => {
+        const before = node.scrollTop;
+        node.dispatchEvent(new WheelEvent('wheel'));
+        const extra = document.createElement('div');
+        extra.style.height = '300px';
+        node.firstElementChild!.append(extra);
+        node.scrollTop = before - 200;
+        return node.scrollTop;
+    });
+    await frames(page);
+    await expect(page.getByRole('button', { name: 'jump to latest' })).toBeVisible();
+    expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - moved)).toBeLessThanOrEqual(2);
+    await emit(page, 'model_response', modelResponse('More output after the gesture.\n\n'.repeat(10)));
+    await frames(page);
+    expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - moved)).toBeLessThanOrEqual(2);
+    await expect(page.getByRole('button', { name: 'jump to latest' })).toBeVisible();
+    await page.getByRole('button', { name: 'jump to latest' }).click();
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+});
