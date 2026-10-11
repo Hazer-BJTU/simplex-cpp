@@ -1,4 +1,6 @@
 #include "subprocess/child.hpp"
+#include "attachment.hpp"
+#include "terminal_launch.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -19,12 +21,6 @@ constexpr std::string_view env_key(std::string_view entry)
 
 } // namespace
 
-struct IoAttachment::Impl {
-    boost::asio::writable_pipe& input;
-    boost::asio::readable_pipe& output;
-    boost::asio::readable_pipe& error;
-};
-
 IoAttachment::IoAttachment(std::unique_ptr<Impl> impl) : _impl(std::move(impl)) {}
 IoAttachment::~IoAttachment() = default;
 IoAttachment::IoAttachment(IoAttachment&&) noexcept = default;
@@ -35,7 +31,7 @@ IoAttachment IoAttachment::pipes(
     boost::asio::readable_pipe& output,
     boost::asio::readable_pipe& error)
 {
-    return IoAttachment(std::make_unique<Impl>(input, output, error));
+    return IoAttachment(std::make_unique<Impl>(&input, &output, &error));
 }
 
 struct Child::Impl {
@@ -52,6 +48,13 @@ Child::Child(const process::LaunchSpec& spec,
             "launch attachment has been moved from", {}, spec.executable,
             spec.description);
     }
+    struct TerminalLaunchGuard {
+        Terminal* terminal;
+        bool success = false;
+        ~TerminalLaunchGuard() {
+            if (terminal) terminal->finish_launch(success);
+        }
+    } terminal_guard{attachment._impl->terminal};
     // Assemble the child's environment BEFORE resolving anything: a
     // spec-supplied PATH must steer the lookup, and a malformed entry is a
     // launch failure the caller can act on, not a surprise inside the
@@ -68,6 +71,12 @@ Child::Child(const process::LaunchSpec& spec,
     if (spec.inherit_environment) {
         auto current_env = boost::process::environment::current();
         used_envs.assign(current_env.begin(), current_env.end());
+    }
+    if (attachment._impl->terminal) {
+        std::erase_if(used_envs, [](const auto& kv) {
+            return std::string_view{kv.data(), kv.size()}.starts_with("TERM=");
+        });
+        used_envs.emplace_back("TERM=dumb");
     }
     if (spec.environment) {
         for (const auto& env_config: *spec.environment) {
@@ -171,15 +180,19 @@ Child::Child(const process::LaunchSpec& spec,
         // the two spawn forms are spelled out instead of building a pack: the
         // process constructor takes its initializers as variadic arguments,
         // so an engaged optional cannot simply be "passed as nothing".
-        if (spec.working_directory) {
+        if (auto* terminal = attachment._impl->terminal) {
+            _impl->process = launch_terminal(executor, exec_path, spec.arguments,
+                used_envs, spec.working_directory, terminal->launch_descriptor());
+            terminal_guard.success = true;
+        } else if (spec.working_directory) {
             _impl->process = std::make_unique<boost::process::process>(
                 executor,
                 std::move(exec_path),
                 spec.arguments,
                 boost::process::process_stdio{
-                    attachment._impl->input,
-                    attachment._impl->output,
-                    attachment._impl->error},
+                    *attachment._impl->input,
+                    *attachment._impl->output,
+                    *attachment._impl->error},
                 boost::process::process_environment(used_envs),
                 // From the string, not a path object: this Boost builds
                 // Process against boost::filesystem, while the check above
@@ -194,13 +207,16 @@ Child::Child(const process::LaunchSpec& spec,
                 std::move(exec_path),
                 spec.arguments,
                 boost::process::process_stdio{
-                    attachment._impl->input,
-                    attachment._impl->output,
-                    attachment._impl->error},
+                    *attachment._impl->input,
+                    *attachment._impl->output,
+                    *attachment._impl->error},
                 boost::process::process_environment(used_envs)
             );
         }
 
+    } catch(const boost::system::system_error& e) {
+        throw ProcessException(ProcessException::Stage::Spawn, e.what(), e.code(),
+            spec.executable, spec.description);
     } catch(const std::exception& e) {
         throw ProcessException(
             ProcessException::Stage::Spawn,
