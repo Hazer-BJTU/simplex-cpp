@@ -49,7 +49,8 @@ int main(int argc, char** argv)
         output("descendant:" + std::to_string(child) + "\n");
         return 0;
     }
-    if (mode == "probe") {
+    if (mode == "probe" || mode == "probe-clean") {
+        if (mode == "probe-clean" && ::getenv("SIMPLEX_PTY_PARENT_ONLY")) return 11;
         winsize size{};
         if (::ioctl(0, TIOCGWINSZ, &size)) return 4;
         const int tty = ::open("/dev/tty", O_RDWR | O_CLOEXEC);

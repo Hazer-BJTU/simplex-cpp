@@ -11,6 +11,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <climits>
+#include <cstdlib>
 #include <boost/scope/scope_exit.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancellation_signal.hpp>
@@ -32,6 +33,12 @@ struct PtyHarness : Harness {
         if (!term.empty()) {
             spec.inherit_environment = false;
             spec.environment = std::vector<std::string>{"TERM=" + term};
+            // Staged-runtime tests need the bundled C++ runtime even with
+            // inheritance disabled. Pass only this fixture dependency; do not
+            // silently restore the parent's entire environment.
+            if (const char* libraries = std::getenv("LD_LIBRARY_PATH")) {
+                spec.environment->push_back(std::string("LD_LIBRARY_PATH=") + libraries);
+            }
         }
         child = std::make_unique<subprocess::Child>(spec, strand, attachment);
     }
@@ -60,9 +67,17 @@ BOOST_AUTO_TEST_CASE(real_controlling_terminal_and_host_defaults)
     const auto session = ::getsid(0);
     const auto group = ::getpgrp();
     const std::string parent_term = ::getenv("TERM") ? ::getenv("TERM") : "";
+    const char* marker = std::getenv("SIMPLEX_PTY_PARENT_ONLY");
+    const std::optional<std::string> old_marker = marker
+        ? std::optional<std::string>(marker) : std::nullopt;
+    BOOST_REQUIRE(::setenv("SIMPLEX_PTY_PARENT_ONLY", "present", 1) == 0);
+    boost::scope::scope_exit restore_marker([&] {
+        if (old_marker) ::setenv("SIMPLEX_PTY_PARENT_ONLY", old_marker->c_str(), 1);
+        else ::unsetenv("SIMPLEX_PTY_PARENT_ONLY");
+    });
     for (const std::string term : {"", "xterm-test"}) {
         PtyHarness h;
-        h.launch_pty("probe", term);
+        h.launch_pty(term.empty() ? "probe" : "probe-clean", term);
         h.run([term](Harness& h) -> asio::awaitable<void> {
             BOOST_TEST(h.environment->capabilities().is_terminal);
             co_await h.environment->start();
