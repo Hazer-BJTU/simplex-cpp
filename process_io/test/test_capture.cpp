@@ -23,7 +23,7 @@ BOOST_AUTO_TEST_CASE(topology_distinguishes_absent_from_empty)
     BOOST_TEST(terminal.view(Stream::Terminal)->bytes == "once");
 }
 
-BOOST_AUTO_TEST_CASE(prefix_limit_counts_raw_bytes_and_preserves_current_per_stream_policy)
+BOOST_AUTO_TEST_CASE(prefix_limit_counts_raw_bytes_across_streams)
 {
     CaptureBuffer capture(OutputTopology::Separate, 4);
     // Deliberately split UTF-8 and include NUL/control bytes: storage is raw.
@@ -34,10 +34,10 @@ BOOST_AUTO_TEST_CASE(prefix_limit_counts_raw_bytes_and_preserves_current_per_str
     BOOST_TEST(capture.view(Stream::Stdout)->bytes == std::string_view("\xe4\xb8\xad\0", 4));
     BOOST_TEST(capture.view(Stream::Stdout)->truncated);
     capture.append(Stream::Stderr, "abcd");
-    BOOST_TEST(capture.view(Stream::Stderr)->bytes == "abcd");
-    BOOST_TEST(!capture.view(Stream::Stderr)->truncated);
+    BOOST_TEST(capture.view(Stream::Stderr)->bytes.empty());
+    BOOST_TEST(capture.view(Stream::Stderr)->truncated);
     capture.append(Stream::Stderr, "");
-    BOOST_TEST(!capture.view(Stream::Stderr)->truncated);
+    BOOST_TEST(capture.view(Stream::Stderr)->truncated);
 }
 
 BOOST_AUTO_TEST_CASE(unlimited_and_single_byte_limits)
@@ -77,4 +77,68 @@ BOOST_AUTO_TEST_CASE(completion_keeps_eof_stop_and_failure_distinct)
     stopped.finish(Stream::Terminal, StreamEnd::Stopped);
     BOOST_TEST(stopped.complete());
     BOOST_TEST(stopped.view(Stream::Terminal)->truncated);
+}
+
+BOOST_AUTO_TEST_CASE(split_reads_share_capacity_and_only_dropped_streams_are_truncated)
+{
+    for (const bool reverse : {false, true}) {
+        const auto first = reverse ? Stream::Stderr : Stream::Stdout;
+        const auto second = reverse ? Stream::Stdout : Stream::Stderr;
+        CaptureBuffer capture(OutputTopology::Separate, 8);
+        capture.append(first, "12");
+        capture.append(second, "abc");
+        capture.append(first, "3456");
+        BOOST_TEST(capture.view(first)->bytes == "12345");
+        BOOST_TEST(capture.view(second)->bytes == "abc");
+        BOOST_TEST(capture.view(first)->truncated);
+        BOOST_TEST(!capture.view(second)->truncated);
+        capture.append(second, "");
+        BOOST_TEST(!capture.view(second)->truncated);
+        capture.finish(first, StreamEnd::Eof);
+        capture.append(second, "def"); // EOF does not refund retained capacity.
+        BOOST_TEST(capture.view(second)->bytes == "abc");
+        BOOST_TEST(capture.view(second)->truncated);
+        capture.finish(second, StreamEnd::Eof);
+        BOOST_TEST(capture.complete());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(exact_shared_boundary_and_empty_stream_do_not_imply_truncation)
+{
+    CaptureBuffer capture(OutputTopology::Separate, 8);
+    capture.append(Stream::Stdout, "12345");
+    capture.append(Stream::Stderr, "abc");
+    capture.finish(Stream::Stdout, StreamEnd::Eof);
+    capture.finish(Stream::Stderr, StreamEnd::Eof);
+    BOOST_TEST(!capture.view(Stream::Stdout)->truncated);
+    BOOST_TEST(!capture.view(Stream::Stderr)->truncated);
+    BOOST_TEST(capture.complete());
+
+    CaptureBuffer one(OutputTopology::Separate, 1);
+    one.append(Stream::Stderr, "x");
+    one.append(Stream::Stdout, "");
+    one.finish(Stream::Stdout, StreamEnd::Eof);
+    one.finish(Stream::Stderr, StreamEnd::Eof);
+    BOOST_TEST(!one.view(Stream::Stdout)->truncated);
+    BOOST_TEST(!one.view(Stream::Stderr)->truncated);
+}
+
+BOOST_AUTO_TEST_CASE(unlimited_pipes_and_terminal_budget_preserve_raw_prefixes)
+{
+    CaptureBuffer pipes(OutputTopology::Separate, 0);
+    const std::string bytes(50000, 'x');
+    pipes.append(Stream::Stdout, bytes);
+    pipes.append(Stream::Stderr, bytes);
+    pipes.append(Stream::Stdout, bytes);
+    BOOST_TEST(pipes.view(Stream::Stdout)->bytes.size() == 100000U);
+    BOOST_TEST(pipes.view(Stream::Stderr)->bytes.size() == 50000U);
+    BOOST_TEST(!pipes.view(Stream::Stdout)->truncated);
+    BOOST_TEST(!pipes.view(Stream::Stderr)->truncated);
+
+    CaptureBuffer terminal(OutputTopology::Terminal, 2);
+    terminal.append(Stream::Terminal, std::string_view("\xe4\xb8\xad", 3));
+    BOOST_TEST(terminal.view(Stream::Terminal)->bytes == std::string_view("\xe4\xb8", 2));
+    BOOST_TEST(terminal.view(Stream::Terminal)->truncated);
+    BOOST_TEST(!terminal.view(Stream::Stdout));
+    BOOST_TEST(!terminal.view(Stream::Stderr));
 }

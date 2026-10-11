@@ -1164,3 +1164,43 @@ BOOST_AUTO_TEST_CASE(cancelled_spawn_rolls_back_publication_child_and_slot)
     io.run();
     supervisor.get();
 }
+
+BOOST_AUTO_TEST_CASE(shared_capture_budget_preserves_full_delta_reads_and_session_isolation)
+{
+    Fixture f;
+    std::vector<std::string> retained;
+    for (int i = 0; i < 2; ++i) {
+        auto spec = spec_for("/bin/sh", {"-c", "printf 123456; printf abcdef >&2"});
+        spec.max_output_bytes = 8;
+        spec.initial_wait_timeout_milliseconds = 5000;
+        const auto spawned = f.run(f.store->spawn(spec));
+        BOOST_REQUIRE(spawned.finished);
+        BOOST_REQUIRE(spawned.output_drained);
+        const auto full = f.run(f.store->read_output(spawned.id, OutputStream::Both, true));
+        BOOST_REQUIRE(full);
+        BOOST_TEST(full->standard_output.text.size() + full->standard_error.text.size() == 8U);
+        BOOST_TEST(std::string("123456").starts_with(full->standard_output.text));
+        BOOST_TEST(std::string("abcdef").starts_with(full->standard_error.text));
+        BOOST_TEST(full->standard_output.truncated == (full->standard_output.text.size() < 6));
+        BOOST_TEST(full->standard_error.truncated == (full->standard_error.text.size() < 6));
+        const auto delta = f.run(f.store->read_output(spawned.id, OutputStream::Both, false));
+        BOOST_REQUIRE(delta);
+        BOOST_TEST(delta->standard_output.text == full->standard_output.text);
+        BOOST_TEST(delta->standard_error.text == full->standard_error.text);
+        const auto empty = f.run(f.store->read_output(spawned.id, OutputStream::Both, false));
+        BOOST_REQUIRE(empty);
+        BOOST_TEST(empty->standard_output.text.empty());
+        BOOST_TEST(empty->standard_error.text.empty());
+        const auto again = f.run(f.store->read_output(spawned.id, OutputStream::Both, true));
+        BOOST_REQUIRE(again);
+        BOOST_TEST(again->standard_output.text == full->standard_output.text);
+        BOOST_TEST(again->standard_error.text == full->standard_error.text);
+        retained.push_back(spawned.id);
+    }
+    // Both captures coexist: one session's retained bytes cannot spend the
+    // other session's budget, and neither budget is refunded by delta reads.
+    BOOST_TEST(f.run(f.store->size()) == 2U);
+    for (const auto& id : retained) {
+        BOOST_TEST(f.run(f.store->release(id)));
+    }
+}

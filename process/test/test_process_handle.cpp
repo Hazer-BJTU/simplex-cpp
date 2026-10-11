@@ -891,10 +891,10 @@ BOOST_AUTO_TEST_CASE(shutdown_settles_a_backpressured_stdin_pump)
     BOOST_TEST(handle->output_drained());
 }
 
-BOOST_AUTO_TEST_CASE(platform_extraction_preserves_per_stream_capture_baseline)
+BOOST_AUTO_TEST_CASE(both_streams_share_one_capture_budget)
 {
-    // Issue #122 deliberately changes this policy only in its shared-budget
-    // PR. Both streams fit individually even though their sum exceeds the cap.
+    // Both streams fit under the old individual caps; their sum does not.
+    // Keep prefixes and report loss per stream without assuming read ordering.
     auto result = run_scenario(process::LaunchSpec{
         .executable = "/bin/sh",
         .arguments = {"-c", "printf 123456; printf abcdef >&2"},
@@ -903,10 +903,14 @@ BOOST_AUTO_TEST_CASE(platform_extraction_preserves_per_stream_capture_baseline)
     });
     BOOST_TEST(result.finished_on_time);
     BOOST_TEST(result.handle->status().exit_code.value() == 0);
-    BOOST_TEST(result.handle->standard_output() == "123456");
-    BOOST_TEST(result.handle->standard_error() == "abcdef");
-    BOOST_TEST(!result.handle->stdout_truncated());
-    BOOST_TEST(!result.handle->stderr_truncated());
+    const auto& out = result.handle->standard_output();
+    const auto& err = result.handle->standard_error();
+    BOOST_TEST(out.size() + err.size() == 8U);
+    BOOST_TEST(std::string("123456").starts_with(out));
+    BOOST_TEST(std::string("abcdef").starts_with(err));
+    BOOST_TEST(result.handle->stdout_truncated() == (out.size() < 6));
+    BOOST_TEST(result.handle->stderr_truncated() == (err.size() < 6));
+    BOOST_TEST(result.handle->output_drained());
 }
 
 BOOST_AUTO_TEST_CASE(shutdown_needs_neither_startup_nor_initial_wait)

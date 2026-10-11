@@ -100,12 +100,11 @@ struct LaunchSpec {
     // the child running, false kills it. The negation of the legacy
     // kill_on_timeout switch.
     bool detach_on_timeout = true;
-    // Capture cap per stream in the current pipe backend. The handle's
-    // readers keep draining both pipes after the cap is reached and discard
-    // the excess (a reader that stopped would block the child on a full
-    // pipe); ExecutionResult's stdout_truncated/stderr_truncated then say
-    // which captured text stopped at the cap. The default is 4 MiB, sized
-    // for "still fits a model context window"; 0 disables the cap.
+    // One raw retained-byte budget per process: stdout + stderr together,
+    // or the terminal stream alone. Default 4 MiB; 0 disables the cap.
+    // Readers keep draining after exhaustion and flag only streams that lose
+    // bytes. Read scheduling determines the split; no fixed shares are promised.
+    // This does not bound allocator, task, metadata or presentation overhead.
     std::uint64_t max_output_bytes = 4 * 1024 * 1024;
     // Additional environment entries for the child, merged INTO the
     // inherited environment by key when inherit_environment is true, or
@@ -222,10 +221,10 @@ inline void from_json(const nlohmann::json& j, ExecutionStatus& e) {
 // captured for this report" — a meta-only status listing, say — never
 // "empty output".
 //
-// The truncated flags say the captured text stops at the spec's
-// max_output_bytes cap: the stream was still drained to EOF past the cap,
-// the excess was discarded — a truncated flag is the only difference
-// between "all the output" and "the first cap bytes of the output".
+// Truncation means a stream lost bytes to the shared max_output_bytes budget,
+// or capture ended early during forced shutdown/failure. A stream may retain
+// fewer bytes than the budget because another stream consumed the capacity.
+// Normal budget exhaustion still drains to EOF; reads never refund capacity.
 struct ExecutionResult {
     LaunchSpec spec;
     ExecutionStatus execution;

@@ -51,7 +51,8 @@ text: |
     Default reads and polls share and advance per-stream cursors; concurrent
     reads may split output. Poll with `include_output: false` for status only.
     `full: true` and launch-result output do not advance cursors, so later delta
-    reads may repeat launch output. Truncated bytes cannot be recovered.
+    reads may repeat launch output. Stdout/stderr share a capture budget; reads
+    do not replenish it. Truncated bytes cannot be recovered.
   - `send_process` queues `input`; include a newline for line-oriented programs
     and set `close_input: true` when EOF is needed. Queuing does not prove the
     child read the bytes. Use `signal: "term"` for graceful stopping, then

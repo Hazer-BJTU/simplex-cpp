@@ -116,6 +116,10 @@ waiting rolls back the child, tasks, table entry and capacity reservation before
 propagating the original failure. Shutdown still excludes concurrent store
 spawn/release calls; it attempts every session even if one cleanup fails.
 
-The existing per-stream output cap is preserved in this third step of #122.
-The shared-budget change and Linux PTY backend remain subsequent steps; no TTY
-option or model-facing output/input schema change is included here.
+`max_output_bytes` now limits stdout and stderr **together** per process. The
+4 MiB default and zero/unlimited setting are unchanged, but two busy streams
+can no longer each retain the full limit. Allocation follows read scheduling;
+each stream keeps a prefix and reports its own discarded bytes. Both pipes
+continue draining after exhaustion. This raw-data budget does not include
+allocator/task overhead, and reads do not replenish it. The Linux PTY backend
+and model-facing tty/output/end_input changes remain later steps of #122.

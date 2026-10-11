@@ -29,9 +29,10 @@ struct StreamView {
 };
 
 /** One prefix-retaining capture store, reusable by pipe and terminal backends.
- * The current limit applies PER STREAM to preserve the legacy pipe behavior;
- * issue #122 PR 4 will change it to a shared per-environment budget. Zero means
- * unlimited. Count raw bytes, not presentation labels or allocator overhead.
+ * One budget covers all present streams. Zero means unlimited. Count raw
+ * retained bytes, not presentation labels or allocator/task overhead. Read
+ * scheduling decides which pipe stream obtains remaining capacity; no fixed
+ * split or reconstructed stdout/stderr interleaving is promised.
  * Mutation and observation require the owning environment's serialization.
  */
 class CaptureBuffer {
@@ -58,6 +59,9 @@ private:
     };
     std::array<std::optional<Record>, 3> _streams;
     std::size_t _limit;
+    // Used only with a finite limit; always <= _limit. EOF/reads do not refund
+    // retained bytes, and each environment owns an independent budget.
+    std::size_t _retained_bytes = 0;
     Record& require(Stream stream);
 };
 

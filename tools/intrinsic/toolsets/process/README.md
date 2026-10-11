@@ -554,10 +554,11 @@ src/main.cpp:12: // TODO
 stderr: (empty)
 ```
 
-A stream whose block header says `(truncated, first N bytes)` printed more than
-the current per-stream capture limit (4 MiB per stream; a shared budget is
-planned separately in issue #122), and the text under it
-stops there. `*_bytes_read` is the incremental cursor position, not the size of this read.
+A stream whose block header says `(truncated, first N bytes)` lost bytes to
+capture limits or an incomplete shutdown/failure. Stdout and stderr share one
+4 MiB raw-byte budget per process by default; the share retained by each stream
+depends on read scheduling. Both pipes continue draining after budget exhaustion,
+but discarded bytes cannot be recovered and reads do not replenish the budget. `*_bytes_read` is the incremental cursor position, not the size of this read.
 `released` reports what actually happened, not what was asked: a running
 process is never released, so it comes back `false`.
 
