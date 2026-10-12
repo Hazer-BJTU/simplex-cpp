@@ -21,15 +21,16 @@ BOOST_AUTO_TEST_CASE(launch_spec_round_trips_with_all_fields)
         .arguments = {"-l", "notes.txt"},
         .description = "count lines",
         .pid = process::ProcessId{4212},
-        .started_at = std::chrono::system_clock::time_point{
-            std::chrono::milliseconds{1750000000123}},
+        .started_at =
+            std::chrono::system_clock::time_point{std::chrono::milliseconds{1750000000123}},
         .initial_wait_timeout_milliseconds = std::uint64_t{1500},
         .detach_on_timeout = false,
         .max_output_bytes = std::uint64_t{2048},
-        .environment = std::vector<std::string>{
-            "PATH=/usr/bin",
-            "LANG=C",
-        },
+        .environment =
+            std::vector<std::string>{
+                "PATH=/usr/bin",
+                "LANG=C",
+            },
         .working_directory = "/srv/notes",
     };
 
@@ -328,7 +329,8 @@ BOOST_AUTO_TEST_CASE(terminal_contract_roundtrip_and_old_pipe_default)
     BOOST_TEST(!nlohmann::json::object().get<process::LaunchSpec>().tty);
     spec.tty = true;
     BOOST_TEST(nlohmann::json(spec).get<process::LaunchSpec>().tty);
-    BOOST_CHECK_THROW(nlohmann::json({{"tty", "true"}}).get<process::LaunchSpec>(), nlohmann::json::type_error);
+    BOOST_CHECK_THROW(
+        nlohmann::json({{"tty", "true"}}).get<process::LaunchSpec>(), nlohmann::json::type_error);
     process::ExecutionResult result;
     result.spec = spec;
     result.terminal_text = "prompt>";

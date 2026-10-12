@@ -21,20 +21,19 @@
 namespace tools::intrinsic {
 namespace {
 
-// How often the waiting reader re-reads the handles' observations. Matched to
-// ProcessHandle's own probe cadence: the await task there notices a missed
-// exit within one such interval, so watching faster would only spin.
+// Poll session observations every 50 ms. Child exit observation has its own
+// 100 ms defensive probe; this polling does not replace or accelerate that probe.
 constexpr auto kExitPollInterval = std::chrono::milliseconds{50};
 
 } // namespace
 
 ProcessSessionStore::ProcessSessionStore(
-    boost::asio::any_io_executor executor,
-    std::size_t max_sessions
-): _executor(std::move(executor)),
-   _max_sessions(max_sessions),
-   _incarnation(boost::uuids::to_string(boost::uuids::random_generator()()))
-{}
+    boost::asio::any_io_executor executor, std::size_t max_sessions)
+    : _executor(std::move(executor)),
+      _max_sessions(max_sessions),
+      _incarnation(boost::uuids::to_string(boost::uuids::random_generator()()))
+{
+}
 
 ProcessSessionStore::~ProcessSessionStore()
 {
@@ -60,8 +59,7 @@ ProcessSessionStore::SessionId ProcessSessionStore::mint_id_locked()
     return std::format("proc_{}_{}", _incarnation, _next_id++);
 }
 
-ProcessSessionStore::SessionPtr ProcessSessionStore::find_session(
-    const SessionId& id) const
+ProcessSessionStore::SessionPtr ProcessSessionStore::find_session(const SessionId& id) const
 {
     const std::lock_guard lock{_sessions_mutex};
     const auto found = _sessions.find(id);
@@ -80,8 +78,7 @@ void ProcessSessionStore::publish_session(SessionPtr session)
 
 // ---- spawn ------------------------------------------------------------------
 
-boost::asio::awaitable<SpawnResult>
-ProcessSessionStore::spawn(process::LaunchSpec spec)
+boost::asio::awaitable<SpawnResult> ProcessSessionStore::spawn(process::LaunchSpec spec)
 {
     SessionId id;
     {
@@ -91,7 +88,8 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
             throw std::runtime_error(std::format(
                 "the process session store is full: {} of {} slots are in use. "
                 "Release an exited session before spawning another",
-                occupied, _max_sessions));
+                occupied,
+                _max_sessions));
         }
         ++_pending_spawns;
     }
@@ -106,11 +104,8 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
     // that is what lets one spawn serve both `ls` and a server, and it is what
     // ProcessHandle::await_initial_execution() was designed to do.
     //
-    // Detach is the one field forced, because the alternative is a leak rather
-    // than a policy: a session is a child a caller can come back to, so a
-    // store that killed a child at the end of its window would be handing out
-    // ids for processes it had just destroyed. A caller that wants the child
-    // dead calls terminate().
+    // The store retains children that outlive this window. Force detach so an
+    // initial wait never becomes an implicit kill; callers signal explicitly.
     spec.detach_on_timeout = true;
     const std::uint64_t window = spec.initial_wait_timeout_milliseconds;
 
@@ -128,8 +123,11 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
             id = mint_id_locked();
         }
         session = std::make_shared<Session>(Session{
-            .id = id, .handle = handle, .strand = session_strand,
-            .stdout_cursor = 0, .stderr_cursor = 0,
+            .id = id,
+            .handle = handle,
+            .strand = session_strand,
+            .stdout_cursor = 0,
+            .stderr_cursor = 0,
         });
         co_await handle->start_background_io_tasks();
         // Publish only after both I/O and the watcher are supervised. Allocation
@@ -141,23 +139,27 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
             // Startup already owns the watcher; no detached initial-wait task.
             co_return SpawnResult{.id = id, .finished = false, .output_drained = false};
         }
-        co_return co_await boost::asio::co_spawn(session_strand,
+        co_return co_await boost::asio::co_spawn(
+            session_strand,
             [session, window]() -> boost::asio::awaitable<SpawnResult> {
                 const auto& handle = session->handle;
                 const bool finished = co_await handle->await_initial_execution();
                 if (finished) {
                     boost::asio::steady_timer drain(session->strand);
-                    const auto deadline = std::chrono::steady_clock::now()
-                        + std::chrono::milliseconds(window);
+                    const auto deadline =
+                        std::chrono::steady_clock::now() + std::chrono::milliseconds(window);
                     while (!handle->output_drained()
                            && std::chrono::steady_clock::now() < deadline) {
                         drain.expires_after(kExitPollInterval);
                         co_await drain.async_wait(boost::asio::use_awaitable);
                     }
                 }
-                co_return SpawnResult{.id = session->id, .finished = finished,
+                co_return SpawnResult{
+                    .id = session->id,
+                    .finished = finished,
                     .output_drained = finished && handle->output_drained()};
-            }, boost::asio::use_awaitable);
+            },
+            boost::asio::use_awaitable);
     } catch (...) {
         failure = std::current_exception();
     }
@@ -173,15 +175,16 @@ ProcessSessionStore::spawn(process::LaunchSpec spec)
     {
         const std::lock_guard lock{_sessions_mutex};
         const auto found = _sessions.find(id);
-        if (found != _sessions.end() && found->second == session) _sessions.erase(found);
+        if (found != _sessions.end() && found->second == session) {
+            _sessions.erase(found);
+        }
     }
     std::rethrow_exception(failure);
 }
 
 // ---- observation ------------------------------------------------------------
 
-boost::asio::awaitable<SessionSnapshot>
-ProcessSessionStore::snapshot_on_session(SessionPtr session)
+boost::asio::awaitable<SessionSnapshot> ProcessSessionStore::snapshot_on_session(SessionPtr session)
 {
     co_return co_await boost::asio::co_spawn(
         session->strand,
@@ -207,12 +210,11 @@ ProcessSessionStore::snapshot_on_session(SessionPtr session)
                 .io_error = std::move(io_error),
             };
         },
-        boost::asio::use_awaitable
-    );
+        boost::asio::use_awaitable);
 }
 
-std::vector<ProcessSessionStore::SessionPtr> ProcessSessionStore::select_sessions(
-    const std::vector<SessionId>& ids) const
+std::vector<ProcessSessionStore::SessionPtr>
+ProcessSessionStore::select_sessions(const std::vector<SessionId>& ids) const
 {
     std::vector<SessionPtr> selected;
     {
@@ -237,10 +239,10 @@ std::vector<ProcessSessionStore::SessionPtr> ProcessSessionStore::select_session
     // order. Lexicographic on "proc_<uuid>_<n>" is not counter order,
     // which is fine: stability is what a reader needs here, and the
     // ids are names rather than magnitudes.
-    std::sort(selected.begin(), selected.end(),
-              [](const SessionPtr& left, const SessionPtr& right) {
-                  return left->id < right->id;
-              });
+    std::sort(
+        selected.begin(), selected.end(), [](const SessionPtr& left, const SessionPtr& right) {
+            return left->id < right->id;
+        });
     return selected;
 }
 
@@ -278,33 +280,44 @@ boost::asio::awaitable<std::optional<OutputRead>>
 ProcessSessionStore::read_output(SessionId id, OutputStream stream, bool full, bool text)
 {
     auto session = find_session(id);
-    if (!session) co_return std::nullopt;
+    if (!session) {
+        co_return std::nullopt;
+    }
     co_return co_await read_output_on_session(session, stream, full, text);
 }
 
 boost::asio::awaitable<OutputRead> ProcessSessionStore::read_output_on_session(
     SessionPtr session, OutputStream stream, bool full, bool text)
 {
-    co_return co_await boost::asio::co_spawn(session->strand,
+    co_return co_await boost::asio::co_spawn(
+        session->strand,
         [session, stream, full, text]() -> boost::asio::awaitable<OutputRead> {
             const auto& capture = session->handle->capture();
             auto take = [&](process_io::Stream name, std::size_t& cursor) -> OutputSlice {
                 const auto view = capture.view(name);
-                if (!view) return {};
+                if (!view) {
+                    return {};
+                }
                 const auto from = full ? 0 : std::min(cursor, view->bytes.size());
                 const auto raw = view->bytes.substr(from);
                 OutputSlice slice;
                 slice.truncated = view->truncated;
                 std::size_t consumed = raw.size();
                 if (text) {
-                    auto projected = detail::text_prefix(raw,
-                        view->truncated || view->end != process_io::StreamEnd::Open);
+                    // A still-open stream may end inside a UTF-8 sequence. Keep
+                    // that raw suffix pending until it grows or capture ends.
+                    auto projected = detail::text_prefix(
+                        raw, view->truncated || view->end != process_io::StreamEnd::Open);
                     slice.text = std::move(projected.text);
                     consumed = projected.consumed;
                 } else {
                     slice.text = raw;
                 }
-                if (!full) cursor = from + consumed;
+                // Projection and cursor advancement have no suspension between
+                // them, so concurrent delta readers cannot consume the same bytes.
+                if (!full) {
+                    cursor = from + consumed;
+                }
                 return slice;
             };
             OutputRead read;
@@ -322,14 +335,17 @@ boost::asio::awaitable<OutputRead> ProcessSessionStore::read_output_on_session(
             read.stderr_cursor = session->stderr_cursor;
             read.terminal_cursor = session->terminal_cursor;
             co_return read;
-        }, boost::asio::use_awaitable);
+        },
+        boost::asio::use_awaitable);
 }
 
 boost::asio::awaitable<std::optional<ProcessSessionStore::SessionRead>>
 ProcessSessionStore::read_session(SessionId id, bool full, bool include_output, bool release)
 {
     auto session = find_session(id);
-    if (!session) co_return std::nullopt;
+    if (!session) {
+        co_return std::nullopt;
+    }
 
     // Decide from observed exit, not merely the caller's release request.
     // Keep ownership across shutdown and projection, even if another caller
@@ -351,8 +367,8 @@ ProcessSessionStore::read_session(SessionId id, bool full, bool include_output, 
 
 // ---- input ------------------------------------------------------------------
 
-boost::asio::awaitable<bool> ProcessSessionStore::write_input(
-    SessionId id, std::string input, bool close_input)
+boost::asio::awaitable<bool>
+ProcessSessionStore::write_input(SessionId id, std::string input, bool close_input)
 {
     co_return (co_await send_input(std::move(id), std::move(input), close_input)).has_value();
 }
@@ -361,10 +377,14 @@ boost::asio::awaitable<std::optional<ProcessSessionStore::InputWriteResult>>
 ProcessSessionStore::send_input(SessionId id, std::string input, bool end_input)
 {
     auto session = find_session(id);
-    if (!session) co_return std::nullopt;
-    co_return co_await boost::asio::co_spawn(session->strand,
-        [session, input = std::move(input), end_input]() mutable
-            -> boost::asio::awaitable<InputWriteResult> {
+    if (!session) {
+        co_return std::nullopt;
+    }
+    co_return co_await boost::asio::co_spawn(
+        session->strand,
+        [session,
+         input = std::move(input),
+         end_input]() mutable -> boost::asio::awaitable<InputWriteResult> {
             InputWriteResult result;
             if (!input.empty()) {
                 result.input = co_await session->handle->write_input(std::move(input));
@@ -373,14 +393,14 @@ ProcessSessionStore::send_input(SessionId id, std::string input, bool end_input)
                 result.end = co_await session->handle->close_input();
             }
             co_return result;
-        }, boost::asio::use_awaitable);
+        },
+        boost::asio::use_awaitable);
 }
 
 // ---- waiting ----------------------------------------------------------------
 
 boost::asio::awaitable<WaitOutcome>
-ProcessSessionStore::wait_for_any(
-    std::vector<SessionId> ids, std::uint64_t timeout_milliseconds)
+ProcessSessionStore::wait_for_any(std::vector<SessionId> ids, std::uint64_t timeout_milliseconds)
 {
     // The selection is taken once, on the way in: the ids are resolved to
     // handles here and the loop below only ever reads those, so a session
@@ -390,8 +410,7 @@ ProcessSessionStore::wait_for_any(
     const std::vector<SessionPtr> selected = select_sessions(ids);
 
     const auto started = std::chrono::steady_clock::now();
-    const auto deadline =
-        started + std::chrono::milliseconds{timeout_milliseconds};
+    const auto deadline = started + std::chrono::milliseconds{timeout_milliseconds};
     // The timer belongs to this call; only handle observations need a strand.
     boost::asio::steady_timer poll{co_await boost::asio::this_coro::executor};
 
@@ -414,9 +433,8 @@ ProcessSessionStore::wait_for_any(
         // for a command that printed and exited promptly — the one thing a
         // caller waiting for a command must not be told
         // (ProcessHandle::output_drained).
-        finished = std::any_of(
-            snapshots.begin(), snapshots.end(),
-            [](const SessionSnapshot& snapshot) {
+        finished =
+            std::any_of(snapshots.begin(), snapshots.end(), [](const SessionSnapshot& snapshot) {
                 return snapshot.exited && snapshot.output_drained;
             });
         if (finished) {
@@ -427,8 +445,7 @@ ProcessSessionStore::wait_for_any(
         // answer. A selection that resolved to nothing breaks here too — there
         // is no child whose ending could end the wait, and holding the call
         // open over an empty table would spend a timeout to learn nothing.
-        if (selected.empty() ||
-            std::chrono::steady_clock::now() >= deadline) {
+        if (selected.empty() || std::chrono::steady_clock::now() >= deadline) {
             break;
         }
         poll.expires_after(kExitPollInterval);
@@ -439,16 +456,16 @@ ProcessSessionStore::wait_for_any(
     outcome.snapshots = std::move(snapshots);
     outcome.finished = finished;
     outcome.timed_out = !finished;
-    outcome.waited_milliseconds = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - started).count());
+    outcome.waited_milliseconds =
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now() - started)
+                                       .count());
     co_return outcome;
 }
 
 // ---- termination and release ------------------------------------------------
 
-boost::asio::awaitable<bool> ProcessSessionStore::terminate(
-    SessionId id, bool graceful)
+boost::asio::awaitable<bool> ProcessSessionStore::terminate(SessionId id, bool graceful)
 {
     SessionPtr session = find_session(id);
     if (session == nullptr) {
@@ -465,8 +482,7 @@ boost::asio::awaitable<bool> ProcessSessionStore::terminate(
     co_return co_await session->handle->terminate();
 }
 
-boost::asio::awaitable<std::size_t> ProcessSessionStore::terminate_all(
-    bool graceful)
+boost::asio::awaitable<std::size_t> ProcessSessionStore::terminate_all(bool graceful)
 {
     // Copy ownership under the table mutex, then signal without holding it.
     const auto selected = select_sessions({});
@@ -476,9 +492,10 @@ boost::asio::awaitable<std::size_t> ProcessSessionStore::terminate_all(
         const HandlePtr& handle = session->handle;
         // Each handle marshals onto its own strand; an already-exited child
         // answers false, which is not counted and not an error.
-        const bool sent = graceful ? co_await handle->request_exit()
-                                   : co_await handle->terminate();
-        if (sent) ++signalled;
+        const bool sent = graceful ? co_await handle->request_exit() : co_await handle->terminate();
+        if (sent) {
+            ++signalled;
+        }
     }
     // Deliberately does NOT wait for the children to die, nor release their
     // sessions: the terminal states are still the await tasks' to observe,
@@ -490,21 +507,24 @@ boost::asio::awaitable<std::size_t> ProcessSessionStore::terminate_all(
 boost::asio::awaitable<void> ProcessSessionStore::shutdown()
 {
     const auto selected = select_sessions({});
-    co_await boost::asio::this_coro::reset_cancellation_state(
-        boost::asio::disable_cancellation());
+    co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
     std::exception_ptr failure;
     for (const auto& session : selected) {
         try {
             co_await session->handle->shutdown();
         } catch (...) {
-            if (!failure) failure = std::current_exception();
+            if (!failure) {
+                failure = std::current_exception();
+            }
         }
     }
     {
         const std::lock_guard lock{_sessions_mutex};
         _sessions.clear();
     }
-    if (failure) std::rethrow_exception(failure);
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
 }
 
 boost::asio::awaitable<bool> ProcessSessionStore::release(SessionId id)

@@ -21,6 +21,8 @@ namespace subprocess {
  */
 class IoAttachment {
 public:
+    /// Build a borrowed attachment for one synchronous launch; ownership of the
+    /// Asio pipe objects stays with the caller and moves never extend their lives.
     static IoAttachment pipes(
         boost::asio::writable_pipe& input,
         boost::asio::readable_pipe& output,
@@ -44,13 +46,19 @@ private:
  * the executable and environment, and performs launch, signal and reap calls.
  * It has no deadline, session, capture or scheduling policy. The owner must
  * serialize operations on one executor and retain this object during wait().
+ * Only one exit observer may be active; running() can reap just like wait().
  * Construction failures throw ProcessException with the original launch stage.
  */
 class Child {
 public:
-    Child(const process::LaunchSpec& spec,
-          boost::asio::any_io_executor executor,
-          const IoAttachment& attachment);
+    /// Assemble the child environment, resolve the executable against its PATH,
+    /// and launch through the supplied attachment. All borrowed transports must
+    /// remain alive until construction returns or throws.
+    Child(
+        const process::LaunchSpec& spec,
+        boost::asio::any_io_executor executor,
+        const IoAttachment& attachment);
+    /// Native ownership fallback, not an asynchronous wait/task completion fence.
     ~Child();
     Child(const Child&) = delete;
     Child& operator=(const Child&) = delete;

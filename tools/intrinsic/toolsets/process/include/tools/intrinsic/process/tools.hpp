@@ -115,10 +115,10 @@
 // putting bytes in a live child's input, ending it. They are SerialWrite rather
 // than ParallWrite because their ORDER is observable out there — two launches
 // contend for the same files, two stdin writes are what the child reads in that
-// order (and a `end_input` beside one of them can drop the other outright,
-// since a send onto a closed channel is discarded). Note what does NOT decide
-// that: the handle's stdin channel is thread-safe, so overlapping writes cannot
-// corrupt memory. That is the store's concurrency contract doing its job, and
+// order (and an `end_input` accepted first rejects a later input request).
+// Note what does NOT decide that: the shared session strand serializes queue
+// admission, so overlapping writes cannot corrupt memory. That is the store's
+// concurrency contract doing its job, and
 // it says nothing about whether two orders mean the same thing.
 //
 // (A scheduler keyed by RESOURCE — `process:proc_3` — could serialise only the
@@ -210,32 +210,31 @@ public:
      * @param bus the bus a RequireConfirm call asks its confirmation question
      *        on; nullptr means the process-wide one. See IntrinsicTool.
      */
-    explicit ProcessToolBase(StorePtr store, std::string_view declaration_file,
-                             eventbus::AsyncEventBus* bus = nullptr);
+    explicit ProcessToolBase(
+        StorePtr store, std::string_view declaration_file, eventbus::AsyncEventBus* bus = nullptr);
 
 protected:
-    /// The session id every tool but spawn takes. A thin wrapper over
+    /// The session id used by read/send operations. A thin wrapper over
     /// require_string() that supplies the one message worth writing once:
     /// where a model is supposed to have got the id from.
-    [[nodiscard]] static std::string require_session_id(
-        const model_io::InvokeQuery& query);
+    [[nodiscard]] static std::string require_session_id(const model_io::InvokeQuery& query);
 
     /// The failure for a session the store does not know. Stage::Invoke, not
     /// ArgumentParse: "session_id must be a string" is a mistake in the call,
-    /// while "proc_3 is gone" is a fact about the world that the arguments
+    /// while "the session is gone" is a fact about the world that the arguments
     /// described correctly — a model fixes the first by re-reading its own
     /// call and the second by polling. The message says so.
     [[noreturn]] static void no_such_session(const std::string& id);
 
-    /// One session as every tool that reports one writes it: id, state, pid,
-    /// exit code, timing, in that order — the fields a reader scans before the
+    /// Common session metadata: identity, lifecycle/input state, exit status,
+    /// description and timing — the fields a reader scans before the
     /// output under them. Shared so the five tools describe a session the same
     /// way, and written into the result rather than returned as a value
     /// because the result is built in order and never taken apart
     /// (tools/intrinsic/tool_result.hpp). Output blocks are added by the tools
     /// that read it.
-    static void write_session(tools::intrinsic::ToolResult& result,
-                              const SessionSnapshot& snapshot);
+    static void
+    write_session(tools::intrinsic::ToolResult& result, const SessionSnapshot& snapshot);
 
     /// The configurable spawn_process launch arguments, settled before
     /// confirmation. run_command validates its smaller public surface separately:
@@ -246,7 +245,7 @@ protected:
     ///                     Environment stage — a failure that would reach the
     ///                     model as a launch that went wrong when it is really
     ///                     the model's own argument to fix.
-    ///   inherit_environment, auto_release, expected_runtime_milliseconds
+    ///   inherit_environment, auto_release, tty, expected_runtime_milliseconds
     ///                     settled at their defaults, @p default_window being
     ///                     the spawn tool's initial wait constant.
     ///   working_directory validated IN PLACE and left as it came: it is the one
@@ -256,25 +255,24 @@ protected:
     ///                     means that. An EMPTY string is refused rather than
     ///                     read as absent — the two are different calls and the
     ///                     empty one cannot be run.
-    static void settle_launch_arguments(model_io::InvokeQuery& query,
-                                        std::uint64_t default_window);
+    static void settle_launch_arguments(model_io::InvokeQuery& query, std::uint64_t default_window);
 
     /// The same arguments, read into `spec` — the pure half, called from
     /// invoke() on a query settle_launch_arguments() already completed.
-    static void apply_launch_arguments(const model_io::InvokeQuery& query,
-                                       process::LaunchSpec& spec,
-                                       std::uint64_t default_window);
+    static void apply_launch_arguments(
+        const model_io::InvokeQuery& query,
+        process::LaunchSpec& spec,
+        std::uint64_t default_window);
 
     /// The body the two launching tools share: run `spec`, then answer with all
     /// of it — the session's facts, whether the child finished inside the
     /// spec's initial-wait window, whether its capture is complete, and the
     /// child's output when there is any to report.
     ///
-    /// It lives here, in the family's base, because spawn_process and
-    /// run_command differ in exactly two things and this is not one of them:
-    /// how the LaunchSpec is built (a program with its arguments, or a command
-    /// line with a shell in front of it), and what @p still_running_hint says
-    /// when the window ran out. Everything else — the fields in their order,
+    /// Both launchers share reporting and initial-wait behavior. Their callers
+    /// supply a LaunchSpec, a still-running hint, and the release policy:
+    /// spawn_process exposes auto_release, while run_command always enables it.
+    /// The common result logic — the fields in their order,
     /// the full-capture read that leaves the delta cursor alone, the three
     /// honest reports of `finished` versus `output_complete`, the translated
     /// launch failure — is the same answer to the same question and is written
@@ -291,14 +289,15 @@ protected:
     ///        output capture is complete and its contents have been copied into
     ///        the result. Nonzero exit codes also qualify. No deferred release
     ///        is scheduled for background work or incomplete output capture.
-    boost::asio::awaitable<model_io::Content> launch_and_report(
-        process::LaunchSpec spec, std::string still_running_hint, bool auto_release);
+    boost::asio::awaitable<model_io::Content>
+    launch_and_report(process::LaunchSpec spec, std::string still_running_hint, bool auto_release);
 
     StorePtr _store;
 };
 
-/// Launch a child process and return the session id that names it from now
-/// on. SerialWrite / RequireConfirm — running an arbitrary executable is the
+/// Launch a child process and report its session id. The session remains usable
+/// unless a completed initial result was automatically released.
+/// SerialWrite / RequireConfirm — running an arbitrary executable is the
 /// call this whole toolset exists to gate.
 class SpawnProcessTool final : public ProcessToolBase {
 public:
@@ -318,13 +317,11 @@ public:
     /// two numbers ever disagree.
     static constexpr std::uint64_t kDefaultExpectedRuntimeMilliseconds = 5000;
 
-    explicit SpawnProcessTool(StorePtr store,
-                             eventbus::AsyncEventBus* bus = nullptr);
+    explicit SpawnProcessTool(StorePtr store, eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;
     void write_attributes(model_io::InvokeQuery& query) const override;
-    boost::asio::awaitable<model_io::Content> invoke(
-        const model_io::InvokeQuery& query) override;
+    boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
 };
 
 /// Run a command LINE through the platform's shell — the same launch as
@@ -366,13 +363,11 @@ public:
     /// numbers ever disagree.
     static constexpr std::uint64_t kDefaultExpectedRuntimeMilliseconds = 3000;
 
-    explicit RunCommandTool(StorePtr store,
-                            eventbus::AsyncEventBus* bus = nullptr);
+    explicit RunCommandTool(StorePtr store, eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;
     void write_attributes(model_io::InvokeQuery& query) const override;
-    boost::asio::awaitable<model_io::Content> invoke(
-        const model_io::InvokeQuery& query) override;
+    boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
 };
 
 /// The state of every session (or the named ones), each with its new output —
@@ -400,13 +395,11 @@ public:
     /// test_tools.cpp loads that file and fails if the two ever disagree.
     static constexpr std::uint64_t kDefaultWaitTimeoutMilliseconds = 30000;
 
-    explicit PollProcessTool(StorePtr store,
-                             eventbus::AsyncEventBus* bus = nullptr);
+    explicit PollProcessTool(StorePtr store, eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;
     void write_attributes(model_io::InvokeQuery& query) const override;
-    boost::asio::awaitable<model_io::Content> invoke(
-        const model_io::InvokeQuery& query) override;
+    boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
 };
 
 /// One session's captured output: the delta since the last read by default,
@@ -414,13 +407,11 @@ public:
 /// cursor or releases the session — both are this layer's bookkeeping.
 class ReadProcessTool final : public ProcessToolBase {
 public:
-    explicit ReadProcessTool(StorePtr store,
-                             eventbus::AsyncEventBus* bus = nullptr);
+    explicit ReadProcessTool(StorePtr store, eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;
     void write_attributes(model_io::InvokeQuery& query) const override;
-    boost::asio::awaitable<model_io::Content> invoke(
-        const model_io::InvokeQuery& query) override;
+    boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
 };
 
 /// Tell a running child something, at any of the three strengths there are:
@@ -440,13 +431,11 @@ public:
 /// without ever calling kill(2) (src/tools.cpp).
 class SendProcessTool final : public ProcessToolBase {
 public:
-    explicit SendProcessTool(StorePtr store,
-                             eventbus::AsyncEventBus* bus = nullptr);
+    explicit SendProcessTool(StorePtr store, eventbus::AsyncEventBus* bus = nullptr);
 
     void ensure_arguments(model_io::InvokeQuery& query) const override;
     void write_attributes(model_io::InvokeQuery& query) const override;
-    boost::asio::awaitable<model_io::Content> invoke(
-        const model_io::InvokeQuery& query) override;
+    boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
 };
 
 } // namespace tools::intrinsic

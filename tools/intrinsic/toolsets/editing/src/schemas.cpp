@@ -17,10 +17,14 @@ std::filesystem::path schema_directory()
         return directory;
     }
     std::error_code error;
+    // Locate the host executable, not the tool library. If lookup or the
+    // installed directory fails, keep the build-time schema path as fallback.
     const auto executable = subprocess::executable_location(error);
     if (!error && !executable.empty()) {
         const auto installed = executable.parent_path() / "schemas" / "editing";
-        if (std::filesystem::is_directory(installed, error)) return installed;
+        if (std::filesystem::is_directory(installed, error)) {
+            return installed;
+        }
     }
     return SIMPLEX_EDITING_SCHEMA_DIR;
 }

@@ -325,8 +325,7 @@ struct Fixture {
     {
         // Join owned child, watcher and I/O tasks before stopping the context.
         if (store) {
-            asio::co_spawn(io, store->shutdown(), asio::use_future)
-                .get();
+            asio::co_spawn(io, store->shutdown(), asio::use_future).get();
         }
         registry.clear();
         set.reset();
@@ -429,17 +428,16 @@ BOOST_AUTO_TEST_CASE(the_registry_answers_the_settled_call_it_ran)
 
     const std::string id = f.spawn("cat", {}, 0);
 
-    const std::vector<model_io::InvokeReturn> records =
-        f.batch(std::vector<model_io::InvokeQuery>{
-            call_for(std::string(tool_names::kSend),
-                     nlohmann::json{{"session_id", id},
-                                    {"input", "hello\n"},
-                                    {"end_input", true}},
-                     "call_send"),
-            call_for(std::string(tool_names::kRead),
-                     nlohmann::json{{"session_id", id}, {"full", true}},
-                     "call_read"),
-        });
+    const std::vector<model_io::InvokeReturn> records = f.batch(std::vector<model_io::InvokeQuery>{
+        call_for(
+            std::string(tool_names::kSend),
+            nlohmann::json{{"session_id", id}, {"input", "hello\n"}, {"end_input", true}},
+            "call_send"),
+        call_for(
+            std::string(tool_names::kRead),
+            nlohmann::json{{"session_id", id}, {"full", true}},
+            "call_read"),
+    });
     BOOST_TEST_REQUIRE(records.size() == std::size_t{2});
 
     // Records are filed by POSITION: results[i] answers queries[i], whatever
@@ -454,16 +452,17 @@ BOOST_AUTO_TEST_CASE(the_registry_answers_the_settled_call_it_ran)
     // ...and the read as the observation, with the defaults written in.
     BOOST_CHECK(records[1].query.type == model_io::InvokeType::ReadOnly);
     BOOST_CHECK(records[1].query.security == model_io::InvokeSecurity::Trusted);
-    BOOST_TEST(records[1].query.arguments ==
-               nlohmann::json({{"session_id", id}, {"full", true},
-                               {"release", false}}));
+    BOOST_TEST(
+        records[1].query.arguments
+        == nlohmann::json({{"session_id", id}, {"full", true}, {"release", false}}));
     // The send's own defaults are in its settled query too: `input` and
     // `end_input` were named, `signal` was not — and settling it wrote the
     // empty word in, so the record shows the call that ran rather than the one
     // that was sent.
-    BOOST_TEST(records[0].query.arguments ==
-               nlohmann::json({{"session_id", id}, {"input", "hello\n"},
-                               {"end_input", true}, {"signal", ""}}));
+    BOOST_TEST(
+        records[0].query.arguments
+        == nlohmann::json(
+            {{"session_id", id}, {"input", "hello\n"}, {"end_input", true}, {"signal", ""}}));
 
     // And the human (here: the fixture's handler) was asked about EXACTLY the
     // call that ran. Two calls in this case ask — the spawn that made the
@@ -527,12 +526,13 @@ BOOST_AUTO_TEST_CASE(a_command_line_runs_through_its_shell_at_the_registry_bound
     BOOST_CHECK(record.query.type == model_io::InvokeType::SerialWrite);
     BOOST_CHECK(record.query.security ==
                 model_io::InvokeSecurity::RequireConfirm);
-    BOOST_TEST(record.query.arguments ==
-               nlohmann::json(
-                   {{"command", line}, {"tty", false},
-                    {"expected_runtime_milliseconds",
-                     tools::intrinsic::RunCommandTool::
-                         kDefaultExpectedRuntimeMilliseconds}}));
+    BOOST_TEST(
+        record.query.arguments
+        == nlohmann::json(
+            {{"command", line},
+             {"tty", false},
+             {"expected_runtime_milliseconds",
+              tools::intrinsic::RunCommandTool::kDefaultExpectedRuntimeMilliseconds}}));
 
     const ResultText result = result_of(record);
     BOOST_TEST(result.field("finished") == "true");
@@ -552,11 +552,10 @@ BOOST_AUTO_TEST_CASE(a_session_is_fed_waited_on_and_read_through_the_registry)
     Fixture f;
     const std::string id = f.spawn("cat", {});
 
-    BOOST_TEST(!tools::is_error(
-        f.call(call_for(std::string(tool_names::kSend),
-                        nlohmann::json{{"session_id", id},
-                                       {"input", "through the registry\n"},
-                                       {"end_input", true}}))));
+    BOOST_TEST(!tools::is_error(f.call(call_for(
+        std::string(tool_names::kSend),
+        nlohmann::json{
+            {"session_id", id}, {"input", "through the registry\n"}, {"end_input", true}}))));
 
     const ResultText waited = result_of(f.call(call_for(
         std::string(tool_names::kPoll),
@@ -884,8 +883,7 @@ BOOST_AUTO_TEST_CASE(kill_wait_and_read_in_one_batch)
     BOOST_TEST(waited.field("exit_code") == "9");
     BOOST_TEST(waited.block("output") == "before the signal\n");
     // The read ran beside the wait and sees the same capture.
-    BOOST_TEST(result_of(records[2]).block("output") ==
-               "before the signal\n");
+    BOOST_TEST(result_of(records[2]).block("output") == "before the signal\n");
 }
 
 BOOST_AUTO_TEST_CASE(a_release_in_one_batch_leaves_the_table_empty_for_the_next_one)
@@ -955,16 +953,16 @@ BOOST_AUTO_TEST_CASE(stdin_writes_and_a_close_keep_their_order_in_one_batch)
     Fixture f;
     const std::string id = f.spawn("cat", {});
 
-    const std::vector<model_io::InvokeReturn> records =
-        f.batch(std::vector<model_io::InvokeQuery>{
-            call_for(std::string(tool_names::kSend),
-                     nlohmann::json{{"session_id", id}, {"input", "first\n"}},
-                     "call_send_a"),
-            call_for(std::string(tool_names::kSend),
-                     nlohmann::json{{"session_id", id}, {"input", "second\n"},
-                                    {"end_input", true}},
-                     "call_send_b"),
-        });
+    const std::vector<model_io::InvokeReturn> records = f.batch(std::vector<model_io::InvokeQuery>{
+        call_for(
+            std::string(tool_names::kSend),
+            nlohmann::json{{"session_id", id}, {"input", "first\n"}},
+            "call_send_a"),
+        call_for(
+            std::string(tool_names::kSend),
+            nlohmann::json{{"session_id", id}, {"input", "second\n"}, {"end_input", true}},
+            "call_send_b"),
+    });
     BOOST_TEST_REQUIRE(records.size() == std::size_t{2});
     for (const model_io::InvokeReturn& record : records) {
         BOOST_CHECK(record.query.type == model_io::InvokeType::SerialWrite);
@@ -1071,8 +1069,7 @@ BOOST_AUTO_TEST_CASE(a_batch_mixing_process_calls_and_probes_keeps_both_rules)
     // The poll took the session's new output, and the full read beside it still
     // sees the whole capture: `full` consumes nothing, so the two do not fight
     // over the same bytes even though they ran together.
-    BOOST_TEST(result_of(records[0]).records()[1].block("output") ==
-               "mixed\n");
+    BOOST_TEST(result_of(records[0]).records()[1].block("output") == "mixed\n");
     // The full read in the parallel phase still sees the whole capture, which is
     // what `full` promises against a neighbour that consumes.
     BOOST_TEST(result_of(records[3]).block("output") == "mixed\n");
@@ -1171,11 +1168,11 @@ BOOST_AUTO_TEST_CASE(tty_selection_reaches_confirmation_before_launch)
 {
     Fixture f;
     const std::string command = "test -t 0 && test -t 1 && test -t 2 && printf confirmed";
-    for (const auto& query : {
-        call_for(std::string(tool_names::kRun), {{"command", command}, {"tty", true}}),
-        call_for(std::string(tool_names::kSpawn),
-            {{"executable", "sh"}, {"arguments", {"-c", command}}, {"tty", true}})
-    }) {
+    for (const auto& query :
+         {call_for(std::string(tool_names::kRun), {{"command", command}, {"tty", true}}),
+          call_for(
+              std::string(tool_names::kSpawn),
+              {{"executable", "sh"}, {"arguments", {"-c", command}}, {"tty", true}})}) {
         const auto record = f.call(query);
         BOOST_CHECK(!tools::is_error(record));
         BOOST_TEST(result_of(record).block("output") == "confirmed");
@@ -1192,7 +1189,8 @@ BOOST_AUTO_TEST_CASE(tty_selection_reaches_confirmation_before_launch)
             co_return event;
         });
     const auto size = f.run(f.store->size());
-    const auto denied = f.call(call_for(std::string(tool_names::kSpawn),
+    const auto denied = f.call(call_for(
+        std::string(tool_names::kSpawn),
         {{"executable", "sleep"}, {"arguments", {"30"}}, {"tty", true}}));
     BOOST_CHECK(tools::is_error(denied));
     BOOST_TEST(f.run(f.store->size()) == size);

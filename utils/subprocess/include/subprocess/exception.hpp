@@ -23,8 +23,8 @@ namespace subprocess {
  *
  * One intended construction site: the spawn path. Boost.Process v2 reports a
  * failed launch (executable not found, fork/exec failure) by throwing
- * boost::system::system_error; the process manager translates that into this
- * type at the boundary so the rest of the tree never catches boost types.
+ * boost::system::system_error; Child translates that into this type so callers
+ * retain the stage and launch context without inspecting native process objects.
  * Expected pipe closure is an admission/completion result. Unexpected backend
  * errors are retained and reported by ProcessHandle::shutdown() after joining
  * owned work; diagnostic context is added without abandoning cleanup.
@@ -37,7 +37,7 @@ public:
         Spawn,             // launching the child process
         Terminate,         // terminating / reaping a running process
         Write,             // feeding the child's stdin
-        Read,              // collecting the child's stdout/stderr
+        Read,              // collecting pipe or merged terminal output
         Unknown
     };
 
@@ -52,9 +52,13 @@ public:
           ec_(ec),
           executable_(std::move(executable)),
           description_(std::move(description))
-    {}
+    {
+    }
 
-    [[nodiscard]] Stage stage() const noexcept { return stage_; }
+    [[nodiscard]] Stage stage() const noexcept
+    {
+        return stage_;
+    }
     [[nodiscard]] const boost::system::error_code& error_code() const noexcept
     {
         return ec_;
@@ -73,13 +77,20 @@ public:
     [[nodiscard]] static constexpr std::string_view stage_phrase(Stage stage) noexcept
     {
         switch (stage) {
-            case Stage::ResolveExecutable: return "while resolving the executable";
-            case Stage::Environment:       return "while assembling the child environment";
-            case Stage::Spawn:             return "while spawning the process";
-            case Stage::Terminate:         return "while terminating the process";
-            case Stage::Write:             return "while writing to the process";
-            case Stage::Read:              return "while reading from the process";
-            case Stage::Unknown:           return "at an unknown stage";
+            case Stage::ResolveExecutable:
+                return "while resolving the executable";
+            case Stage::Environment:
+                return "while assembling the child environment";
+            case Stage::Spawn:
+                return "while spawning the process";
+            case Stage::Terminate:
+                return "while terminating the process";
+            case Stage::Write:
+                return "while writing to the process";
+            case Stage::Read:
+                return "while reading from the process";
+            case Stage::Unknown:
+                return "at an unknown stage";
         }
         return "at an unknown stage"; // unreachable; keeps -Wreturn-type quiet
     }
@@ -123,10 +134,18 @@ private:
             opened = true;
             rendered += piece;
         };
-        if (ec) append(ec.message());
-        if (!executable.empty()) append("executable " + executable);
-        if (!description.empty()) append(description);
-        if (opened) rendered += ')';
+        if (ec) {
+            append(ec.message());
+        }
+        if (!executable.empty()) {
+            append("executable " + executable);
+        }
+        if (!description.empty()) {
+            append(description);
+        }
+        if (opened) {
+            rendered += ')';
+        }
         return rendered;
     }
 

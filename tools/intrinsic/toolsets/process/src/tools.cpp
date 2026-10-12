@@ -29,7 +29,9 @@ void write_output(ToolResult& result, const OutputRead& read)
     } else {
         text = read.standard_output.text;
         if (!read.standard_error.text.empty()) {
-            if (!text.empty()) text = "[stdout]\n" + text + "\n";
+            if (!text.empty()) {
+                text = "[stdout]\n" + text + "\n";
+            }
             text += "[stderr]\n" + read.standard_error.text;
         }
         truncated = read.standard_output.truncated || read.standard_error.truncated;
@@ -42,23 +44,34 @@ std::string_view input_phase_word(process_io::InputPhase phase)
 {
     using enum process_io::InputPhase;
     switch (phase) {
-        case NotStarted: return "not_started";
-        case Open: return "open";
-        case EndRequested: return "end_requested";
-        case Ended: return "ended";
-        case PeerClosed: return "peer_closed";
-        case Stopped: return "stopped";
-        case Failed: return "failed";
-        case Unsupported: return "unsupported";
+        case NotStarted:
+            return "not_started";
+        case Open:
+            return "open";
+        case EndRequested:
+            return "end_requested";
+        case Ended:
+            return "ended";
+        case PeerClosed:
+            return "peer_closed";
+        case Stopped:
+            return "stopped";
+        case Failed:
+            return "failed";
+        case Unsupported:
+            return "unsupported";
     }
     return "unknown";
 }
 std::string_view admission_word(process_io::InputResult result)
 {
     switch (result) {
-        case process_io::InputResult::Accepted: return "accepted";
-        case process_io::InputResult::Closed: return "closed";
-        case process_io::InputResult::Unsupported: return "unsupported";
+        case process_io::InputResult::Accepted:
+            return "accepted";
+        case process_io::InputResult::Closed:
+            return "closed";
+        case process_io::InputResult::Unsupported:
+            return "unsupported";
     }
     return "unknown";
 }
@@ -75,22 +88,35 @@ std::string_view admission_word(process_io::InputResult result)
 /// delivers is that deployment's business (this layer never calls kill(2)
 /// itself), so a model asks for the INTENT and the host answers with the
 /// mechanism.
-enum class Signal { None, Terminate, Kill };
+enum class Signal {
+    None,
+    Terminate,
+    Kill
+};
 
 std::optional<Signal> parse_signal(std::string_view word)
 {
-    if (word.empty()) return Signal::None;
-    if (word == "term") return Signal::Terminate;
-    if (word == "kill") return Signal::Kill;
+    if (word.empty()) {
+        return Signal::None;
+    }
+    if (word == "term") {
+        return Signal::Terminate;
+    }
+    if (word == "kill") {
+        return Signal::Kill;
+    }
     return std::nullopt;
 }
 
 std::string_view signal_word(Signal signal)
 {
     switch (signal) {
-        case Signal::None:      return "";
-        case Signal::Terminate: return "term";
-        case Signal::Kill:      return "kill";
+        case Signal::None:
+            return "";
+        case Signal::Terminate:
+            return "term";
+        case Signal::Kill:
+            return "kill";
     }
     return ""; // unreachable; keeps -Wreturn-type quiet
 }
@@ -99,32 +125,32 @@ std::string_view signal_word(Signal signal)
 
 // ---- ProcessToolBase --------------------------------------------------------
 
-ProcessToolBase::ProcessToolBase(StorePtr store, std::string_view declaration_file,
-                                 eventbus::AsyncEventBus* bus)
+ProcessToolBase::ProcessToolBase(
+    StorePtr store, std::string_view declaration_file, eventbus::AsyncEventBus* bus)
     // The declaration is loaded HERE, in the family's base, so a tool class
     // names its file and has nothing to say about its own name, description or
     // argument schema. A file that cannot be loaded is logged and leaves the
     // tool unnamed, which is how the set skips it (tool_declaration.hpp).
     : DeclaredTool(schema_directory() / declaration_file, bus),
       _store(std::move(store))
-{}
-
-std::string ProcessToolBase::require_session_id(
-    const model_io::InvokeQuery& query)
 {
-    return require_string(query, "session_id",
-                          "the id a previous spawn_process returned");
+}
+
+std::string ProcessToolBase::require_session_id(const model_io::InvokeQuery& query)
+{
+    return require_string(query, "session_id", "the id a previous spawn_process returned");
 }
 
 void ProcessToolBase::no_such_session(const std::string& id)
 {
     invoke_failed(std::format(
         "no live process session named \"{}\". Call {} to see which sessions "
-        "exist", id, tool_names::kPoll));
+        "exist",
+        id,
+        tool_names::kPoll));
 }
 
-void ProcessToolBase::write_session(ToolResult& result,
-                                    const SessionSnapshot& snapshot)
+void ProcessToolBase::write_session(ToolResult& result, const SessionSnapshot& snapshot)
 {
     const process::ExecutionStatus& execution = snapshot.result.execution;
     // What the process IS, then what it is doing: a reader meets the id the
@@ -138,7 +164,9 @@ void ProcessToolBase::write_session(ToolResult& result,
     result.field("tty", snapshot.result.spec.tty);
     result.field("input_state", input_phase_word(snapshot.input_phase));
     result.field("input_end_requested", snapshot.input_end_requested);
-    if (!snapshot.io_error.empty()) result.field("io_error", snapshot.io_error);
+    if (!snapshot.io_error.empty()) {
+        result.field("io_error", snapshot.io_error);
+    }
     if (snapshot.input_phase == process_io::InputPhase::Unsupported) {
         result.field("hint", "Terminal input mode does not support EOF; poll or send a signal.");
     }
@@ -149,23 +177,20 @@ void ProcessToolBase::write_session(ToolResult& result,
     }
     result.field("description", snapshot.result.spec.description);
     if (snapshot.result.spec.working_directory) {
-        result.field("working_directory",
-                     *snapshot.result.spec.working_directory);
+        result.field("working_directory", *snapshot.result.spec.working_directory);
     }
     result.field("pid", snapshot.result.spec.pid);
-    result.field("running_milliseconds",
-                 execution.cumulative_execution_milliseconds);
+    result.field("running_milliseconds", execution.cumulative_execution_milliseconds);
 }
 
-void ProcessToolBase::settle_launch_arguments(model_io::InvokeQuery& query,
-                                              std::uint64_t default_window)
+void ProcessToolBase::settle_launch_arguments(
+    model_io::InvokeQuery& query, std::uint64_t default_window)
 {
     // Settled so the confirmation and the record carry the list the launch
     // gets, `[]` when the model named none (the two spellings launch the same
     // child: the manager merges the entries in, and an empty list merges
     // nothing).
-    const std::vector<std::string> environment =
-        settle_string_list(query, "environment");
+    const std::vector<std::string> environment = settle_string_list(query, "environment");
 
     // Each entry must be the execve KEY=VALUE shape. The manager checks this
     // too and throws at its Environment stage, but that failure would arrive
@@ -177,7 +202,8 @@ void ProcessToolBase::settle_launch_arguments(model_io::InvokeQuery& query,
             bad_argument(std::format(
                 "property \"environment\"[{}] must have the form "
                 "\"KEY=VALUE\" with a non-empty key, got \"{}\"",
-                index, environment[index]));
+                index,
+                environment[index]));
         }
     }
 
@@ -190,16 +216,14 @@ void ProcessToolBase::settle_launch_arguments(model_io::InvokeQuery& query,
     // on this method — absent is a meaning of its own, and "" is not a path.
     if (const std::string directory = optional_string(query, "working_directory");
         find_argument(query, "working_directory") != nullptr && directory.empty()) {
-        bad_argument(
-            "property \"working_directory\" must not be empty: omit it to "
-            "inherit the host's working directory, or name a directory to "
-            "start the process in");
+        bad_argument("property \"working_directory\" must not be empty: omit it to "
+                     "inherit the host's working directory, or name a directory to "
+                     "start the process in");
     }
 }
 
-void ProcessToolBase::apply_launch_arguments(const model_io::InvokeQuery& query,
-                                             process::LaunchSpec& spec,
-                                             std::uint64_t default_window)
+void ProcessToolBase::apply_launch_arguments(
+    const model_io::InvokeQuery& query, process::LaunchSpec& spec, std::uint64_t default_window)
 {
     spec.inherit_environment = optional_bool(query, "inherit_environment", true);
     spec.tty = optional_bool(query, "tty", false);
@@ -229,8 +253,7 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
 {
     try {
         const SpawnResult spawned = co_await _store->spawn(std::move(spec));
-        const std::optional<SessionSnapshot> snapshot =
-            co_await _store->snapshot(spawned.id);
+        const std::optional<SessionSnapshot> snapshot = co_await _store->snapshot(spawned.id);
         if (!snapshot) {
             // Only reachable if the session went away between the spawn and
             // this read — nothing in this module does that, and answering
@@ -273,8 +296,8 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
         // Retain sessions whose descendants may still produce output. Automatic
         // release is scoped to this initial call; background completion never
         // schedules a later release. Copy the captured output before removal.
-        const bool released = auto_release && spawned.output_drained && read
-            && co_await _store->release(spawned.id);
+        const bool released =
+            auto_release && spawned.output_drained && read && co_await _store->release(spawned.id);
         result.field("released", released);
         if (released) {
             co_return result.render();
@@ -285,13 +308,13 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
             // that started something with the same stdout/stderr and exited
             // itself, leaving the pipes open in the descendant's hands. The
             // session is still the way to the rest of it.
-            result.field("hint", std::format(
-                "Output capture incomplete; use {} to collect the rest.",
-                tool_names::kPoll));
+            result.field(
+                "hint",
+                std::format(
+                    "Output capture incomplete; use {} to collect the rest.", tool_names::kPoll));
             co_return result.render();
         }
-        result.field("hint", std::format(
-            "Use {} with release=true when done.", tool_names::kRead));
+        result.field("hint", std::format("Use {} with release=true when done.", tool_names::kRead));
         co_return result.render();
     } catch (const process::ProcessException& failure) {
         // The launch failed: translated at this boundary into the tool
@@ -307,7 +330,8 @@ boost::asio::awaitable<model_io::Content> ProcessToolBase::launch_and_report(
 SpawnProcessTool::SpawnProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
     // Name, description and argument schema: schemas/spawn_process.yaml.
     : ProcessToolBase(std::move(store), "spawn_process.yaml", bus)
-{}
+{
+}
 
 void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -319,8 +343,8 @@ void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
     // the call that will run (tool_base.hpp). run_command has no such argument:
     // there the command IS the label, and its tool fills the spec in directly.
     (void)settle_string(query, "description");
-    // Everything the two launching tools share: environment (validated),
-    // inherit_environment, expected_runtime_milliseconds, working_directory.
+    // Settle all explicit spawn controls, including tty, before confirmation.
+    // run_command has its own smaller public surface and uses fixed defaults.
     settle_launch_arguments(query, kDefaultExpectedRuntimeMilliseconds);
 }
 
@@ -334,8 +358,8 @@ void SpawnProcessTool::write_attributes(model_io::InvokeQuery& query) const
     query.security = model_io::InvokeSecurity::RequireConfirm;
 }
 
-boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
-    const model_io::InvokeQuery& query)
+boost::asio::awaitable<model_io::Content>
+SpawnProcessTool::invoke(const model_io::InvokeQuery& query)
 {
     process::LaunchSpec spec;
     // Read through the pure accessors, on a query ensure_arguments() has
@@ -352,7 +376,8 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
         std::move(spec),
         std::format(
             "Still running; use {} to wait or {} for output.",
-            tool_names::kPoll, tool_names::kRead),
+            tool_names::kPoll,
+            tool_names::kRead),
         optional_bool(query, "auto_release", true));
 }
 
@@ -361,7 +386,8 @@ boost::asio::awaitable<model_io::Content> SpawnProcessTool::invoke(
 RunCommandTool::RunCommandTool(StorePtr store, eventbus::AsyncEventBus* bus)
     // Name, description and argument schema: schemas/run_command.yaml.
     : ProcessToolBase(std::move(store), "run_command.yaml", bus)
-{}
+{
+}
 
 void RunCommandTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -371,13 +397,15 @@ void RunCommandTool::ensure_arguments(model_io::InvokeQuery& query) const
         if (query.arguments.contains(name)) {
             bad_argument(std::format(
                 "property \"{}\" is not supported by run_command; use shell syntax "
-                "for environment changes or spawn_process for explicit launch options", name));
+                "for environment changes or spawn_process for explicit launch options",
+                name));
         }
     }
     (void)settle_uint(query, "expected_runtime_milliseconds", kDefaultExpectedRuntimeMilliseconds);
     if (const auto directory = optional_string(query, "working_directory");
         find_argument(query, "working_directory") != nullptr && directory.empty()) {
-        bad_argument("property \"working_directory\" must not be empty; omit it to inherit the host directory");
+        bad_argument(
+            "property \"working_directory\" must not be empty; omit it to inherit the host directory");
     }
 }
 
@@ -394,11 +422,9 @@ void RunCommandTool::write_attributes(model_io::InvokeQuery& query) const
     query.security = model_io::InvokeSecurity::RequireConfirm;
 }
 
-boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
-    const model_io::InvokeQuery& query)
+boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(const model_io::InvokeQuery& query)
 {
-    const std::string command =
-        require_string(query, "command", "the command line to run");
+    const std::string command = require_string(query, "command", "the command line to run");
     const auto shell = subprocess::platform_shell();
 
     process::LaunchSpec spec;
@@ -424,8 +450,8 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
     if (const auto directory = optional_string(query, "working_directory"); !directory.empty()) {
         spec.working_directory = directory;
     }
-    spec.initial_wait_timeout_milliseconds = optional_uint(
-        query, "expected_runtime_milliseconds", kDefaultExpectedRuntimeMilliseconds);
+    spec.initial_wait_timeout_milliseconds =
+        optional_uint(query, "expected_runtime_milliseconds", kDefaultExpectedRuntimeMilliseconds);
 
     // What the caller is told when the window runs out. It is the one part of
     // the answer that differs from spawn_process's, and it says what a model
@@ -436,17 +462,16 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
     // is told plainly that nothing was waited for at all.
     const std::string tail = std::format(
         " {}: wait; {}: output; {}: signal.",
-        tool_names::kPoll, tool_names::kRead, tool_names::kSend);
-    const std::uint64_t window = optional_uint(
-        query, "expected_runtime_milliseconds",
-        kDefaultExpectedRuntimeMilliseconds);
-    std::string hint =
-        window == ProcessSessionStore::kNoInitialWait
-            ? std::format("Started without waiting.{}", tail)
-            : std::format("Still running after {} ms; not killed.{}", window, tail);
+        tool_names::kPoll,
+        tool_names::kRead,
+        tool_names::kSend);
+    const std::uint64_t window =
+        optional_uint(query, "expected_runtime_milliseconds", kDefaultExpectedRuntimeMilliseconds);
+    std::string hint = window == ProcessSessionStore::kNoInitialWait
+                           ? std::format("Started without waiting.{}", tail)
+                           : std::format("Still running after {} ms; not killed.{}", window, tail);
 
-    co_return co_await launch_and_report(
-        std::move(spec), std::move(hint), true);
+    co_return co_await launch_and_report(std::move(spec), std::move(hint), true);
 }
 
 // ---- poll_process -----------------------------------------------------------
@@ -454,13 +479,13 @@ boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(
 PollProcessTool::PollProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
     // Name, description and argument schema: schemas/poll_process.yaml.
     : ProcessToolBase(std::move(store), "poll_process.yaml", bus)
-{}
+{
+}
 
 void PollProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)settle_string_list(query, "session_ids");
-    (void)settle_uint(query, "wait_timeout_milliseconds",
-                      kDefaultWaitTimeoutMilliseconds);
+    (void)settle_uint(query, "wait_timeout_milliseconds", kDefaultWaitTimeoutMilliseconds);
     (void)settle_bool(query, "include_output", true);
     (void)settle_bool(query, "release_exited", false);
 }
@@ -472,8 +497,8 @@ void PollProcessTool::write_attributes(model_io::InvokeQuery& query) const
     // the children are doing and (with `include_output`) takes each session's
     // new bytes. Both of those touch this layer's own bookkeeping — the table
     // and the cursors — and that bookkeeping is the store's concurrency
-    // contract, not the scheduler's business: the store serialises it on two
-    // levels of strand, so an overlapping poll cannot tear a snapshot or
+    // contract, not the scheduler's business: a table mutex and one shared
+    // strand per session serialize it, so an overlapping poll cannot tear a snapshot or
     // double-hand a byte. `release_exited` removes a table entry, which is
     // again internal.
     //
@@ -499,13 +524,13 @@ void PollProcessTool::write_attributes(model_io::InvokeQuery& query) const
     query.security = model_io::InvokeSecurity::Trusted;
 }
 
-boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
-    const model_io::InvokeQuery& query)
+boost::asio::awaitable<model_io::Content>
+PollProcessTool::invoke(const model_io::InvokeQuery& query)
 {
     const std::vector<ProcessSessionStore::SessionId> ids =
         optional_string_list(query, "session_ids");
-    const std::uint64_t wait_timeout = optional_uint(
-        query, "wait_timeout_milliseconds", kDefaultWaitTimeoutMilliseconds);
+    const std::uint64_t wait_timeout =
+        optional_uint(query, "wait_timeout_milliseconds", kDefaultWaitTimeoutMilliseconds);
     const bool include_output = optional_bool(query, "include_output", true);
     const bool release_exited = optional_bool(query, "release_exited", false);
 
@@ -521,8 +546,7 @@ boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
     std::vector<ProcessSessionStore::SessionId> released;
     for (std::size_t index = 0; index < snapshots.size(); ++index) {
         auto observation = co_await _store->read_session(
-            snapshots[index].id, false, include_output,
-            release_exited && snapshots[index].exited);
+            snapshots[index].id, false, include_output, release_exited && snapshots[index].exited);
         if (observation) {
             snapshots[index] = std::move(observation->snapshot);
             reads[index] = std::move(observation->output);
@@ -578,9 +602,10 @@ boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
             }
             names += id;
         }
-        result.field("hint", std::format(
-            "Output capture incomplete for {}; use {} again.",
-            names, tool_names::kPoll));
+        result.field(
+            "hint",
+            std::format(
+                "Output capture incomplete for {}; use {} again.", names, tool_names::kPoll));
     }
 
     for (std::size_t index = 0; index < snapshots.size(); ++index) {
@@ -611,13 +636,15 @@ boost::asio::awaitable<model_io::Content> PollProcessTool::invoke(
 ReadProcessTool::ReadProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
     // Name, description and argument schema: schemas/read_process.yaml.
     : ProcessToolBase(std::move(store), "read_process.yaml", bus)
-{}
+{
+}
 
 void ReadProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     (void)require_session_id(query);
     if (find_argument(query, "stream")) {
-        bad_argument("property \"stream\" is no longer supported; read_process returns generic output");
+        bad_argument(
+            "property \"stream\" is no longer supported; read_process returns generic output");
     }
     (void)settle_bool(query, "full", false);
     (void)settle_bool(query, "release", false);
@@ -625,7 +652,7 @@ void ReadProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 
 void ReadProcessTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // ReadOnly, unconditionally, for the reason given on PollProcessesTool: a
+    // ReadOnly, unconditionally, for the reason given on PollProcessTool: a
     // read touches nothing outside this host. `full` and the delta both leave
     // the child exactly as they found it; the delta advances a cursor and
     // `release` removes a table entry, and both of those are this layer's own
@@ -638,8 +665,8 @@ void ReadProcessTool::write_attributes(model_io::InvokeQuery& query) const
     query.security = model_io::InvokeSecurity::Trusted;
 }
 
-boost::asio::awaitable<model_io::Content> ReadProcessTool::invoke(
-    const model_io::InvokeQuery& query)
+boost::asio::awaitable<model_io::Content>
+ReadProcessTool::invoke(const model_io::InvokeQuery& query)
 {
     const std::string id = require_session_id(query);
     const bool full = optional_bool(query, "full", false);
@@ -654,7 +681,8 @@ boost::asio::awaitable<model_io::Content> ReadProcessTool::invoke(
     write_session(result, observation->snapshot);
     result.field("full", full);
     write_output(result, read);
-    result.field("output_bytes_read", read.stdout_cursor + read.stderr_cursor + read.terminal_cursor);
+    result.field(
+        "output_bytes_read", read.stdout_cursor + read.stderr_cursor + read.terminal_cursor);
     result.field("output_complete", observation->snapshot.output_drained);
     if (release) {
         result.field("released", observation->released);
@@ -667,7 +695,8 @@ boost::asio::awaitable<model_io::Content> ReadProcessTool::invoke(
 SendProcessTool::SendProcessTool(StorePtr store, eventbus::AsyncEventBus* bus)
     // Name, description and argument schema: schemas/send_process.yaml.
     : ProcessToolBase(std::move(store), "send_process.yaml", bus)
-{}
+{
+}
 
 void SendProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -684,7 +713,8 @@ void SendProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
         // is told the words there are rather than having it read as "none".
         bad_argument(std::format(
             "property \"signal\" must be one of \"\" (no signal), \"term\" or "
-            "\"kill\", got \"{}\"", signal));
+            "\"kill\", got \"{}\"",
+            signal));
     }
     if (input.empty() && !end_input && signal.empty()) {
         // Nothing to write, nothing to close, nothing to send: the call would
@@ -723,8 +753,8 @@ void SendProcessTool::write_attributes(model_io::InvokeQuery& query) const
     query.security = model_io::InvokeSecurity::RequireConfirm;
 }
 
-boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
-    const model_io::InvokeQuery& query)
+boost::asio::awaitable<model_io::Content>
+SendProcessTool::invoke(const model_io::InvokeQuery& query)
 {
     const std::string id = require_session_id(query);
     std::string input = optional_string(query, "input");
@@ -733,20 +763,16 @@ boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
     const Signal signal = *parse_signal(optional_string(query, "signal"));
     const std::size_t byte_count = input.size();
 
-    // What the call asked for, in the order it has to happen: the input first,
-    // the signal after. A child told to stop would rarely read what arrived
-    // with the same breath, while a child told to quit and THEN stopped has had
-    // its chance to.
+    // Await input/end admission before signaling the direct child. This orders
+    // the requests, not child consumption: a signal can still interrupt delivery
+    // or prevent the child from reading bytes that were successfully queued.
     const bool writes = byte_count != 0 || end_input;
-    const auto admissions = writes
-        ? co_await _store->send_input(id, std::move(input), end_input)
-        : std::optional<ProcessSessionStore::InputWriteResult>{};
+    const auto admissions = writes ? co_await _store->send_input(id, std::move(input), end_input)
+                                   : std::optional<ProcessSessionStore::InputWriteResult>{};
     const bool signalled =
-        signal != Signal::None &&
-        co_await _store->terminate(id, signal == Signal::Terminate);
+        signal != Signal::None && co_await _store->terminate(id, signal == Signal::Terminate);
 
-    const std::optional<SessionSnapshot> snapshot =
-        co_await _store->snapshot(id);
+    const std::optional<SessionSnapshot> snapshot = co_await _store->snapshot(id);
     if (!snapshot && !admissions && !signalled) {
         // Nothing landed and there is no session to describe: the call named an
         // id this table does not know. A signal-only call that DID land is not
@@ -756,22 +782,32 @@ boost::asio::awaitable<model_io::Content> SendProcessTool::invoke(
     }
 
     ToolResult result;
-    if (snapshot) write_session(result, *snapshot);
-    else result.field("session_id", id);
+    if (snapshot) {
+        write_session(result, *snapshot);
+    } else {
+        result.field("session_id", id);
+    }
     if (admissions) {
         if (admissions->input) {
             result.field("input_admission", admission_word(*admissions->input));
-            result.field("bytes_queued", *admissions->input == process_io::InputResult::Accepted ? byte_count : 0);
+            result.field(
+                "bytes_queued",
+                *admissions->input == process_io::InputResult::Accepted ? byte_count : 0);
         }
         if (admissions->end) {
             result.field("end_input_admission", admission_word(*admissions->end));
-            if (!snapshot) result.field("input_end_requested", *admissions->end == process_io::InputResult::Accepted);
+            if (!snapshot) {
+                result.field(
+                    "input_end_requested", *admissions->end == process_io::InputResult::Accepted);
+            }
         }
     }
     if (signal != Signal::None) {
         result.field("signal", signal_word(signal));
         result.field("signalled", signalled);
-        if (signalled) result.field("hint", "Signal sent; use poll_process to confirm exit.");
+        if (signalled) {
+            result.field("hint", "Signal sent; use poll_process to confirm exit.");
+        }
     }
     if (admissions && admissions->input == process_io::InputResult::Accepted) {
         result.field("note", "Input queued; delivery and consumption not confirmed.");

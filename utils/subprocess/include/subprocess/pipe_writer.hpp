@@ -29,11 +29,13 @@ public:
     /// After launch, once only. Configure the private nonblocking transport.
     void prepare();
     [[nodiscard]] bool is_open() const noexcept;
+    /// Close whichever transport owns the pipe, preserving the first close error.
+    /// Outstanding readiness waits still need to finish before destruction.
     void close(boost::system::error_code& error) noexcept;
     /// Write all bytes or return a partial count with error. The string storage
     /// must outlive the operation. Closure cancels readiness waits and writes.
-    boost::asio::awaitable<std::size_t> write(
-        std::string_view bytes, boost::system::error_code& error);
+    boost::asio::awaitable<std::size_t>
+    write(std::string_view bytes, boost::system::error_code& error);
 
 private:
     struct Impl;

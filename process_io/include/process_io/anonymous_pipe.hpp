@@ -16,7 +16,10 @@ namespace process_io {
  */
 class AnonymousPipeIo final : public ProcessIoEnvironment {
 public:
+    /// Reuse the supplied strand; the retention limit covers both output pipes.
     explicit AnonymousPipeIo(Executor executor, std::size_t max_output_bytes = 4 * 1024 * 1024);
+    /// Request strand-side cancellation only. Await cancel_and_join() beforehand
+    /// when the caller needs proof that all pumps and completion handlers ended.
     ~AnonymousPipeIo() override;
     AnonymousPipeIo(const AnonymousPipeIo&) = delete;
     AnonymousPipeIo& operator=(const AnonymousPipeIo&) = delete;
@@ -31,7 +34,8 @@ public:
     boost::asio::awaitable<void> cancel_input() override;
     [[nodiscard]] Snapshot snapshot() const override;
     [[nodiscard]] const CaptureBuffer& capture() const noexcept override;
-    boost::asio::awaitable<bool> drain_until(std::chrono::steady_clock::time_point deadline) override;
+    boost::asio::awaitable<bool>
+    drain_until(std::chrono::steady_clock::time_point deadline) override;
     boost::asio::awaitable<void> cancel_and_join() override;
     boost::asio::awaitable<ResizeResult> resize(unsigned columns, unsigned rows) override;
 

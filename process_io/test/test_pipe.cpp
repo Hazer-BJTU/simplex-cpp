@@ -46,7 +46,9 @@ BOOST_AUTO_TEST_CASE(ordered_input_end_after_more_than_sixteen_large_messages)
             std::string message(8193, static_cast<char>('a' + i % 26));
             message[10] = '\0';
             expected += message;
-            BOOST_CHECK((co_await h.environment->enqueue_input(std::move(message))) == InputResult::Accepted);
+            BOOST_CHECK(
+                (co_await h.environment->enqueue_input(std::move(message)))
+                == InputResult::Accepted);
         }
         BOOST_CHECK((co_await h.environment->request_input_end()) == InputResult::Accepted);
         BOOST_CHECK((co_await h.environment->enqueue_input("late")) == InputResult::Closed);
@@ -75,9 +77,14 @@ BOOST_AUTO_TEST_CASE(capture_limit_discards_but_continues_draining_both_streams)
         BOOST_TEST((co_await h.wait_exit()) == 0);
         const auto snapshot = h.environment->snapshot();
         // Scheduling determines the split, but cannot increase the total.
-        BOOST_TEST(snapshot.standard_output->bytes.size() + snapshot.standard_error->bytes.size() == 37U);
-        BOOST_TEST(snapshot.standard_output->bytes == std::string(snapshot.standard_output->bytes.size(), 'x'));
-        BOOST_TEST(snapshot.standard_error->bytes == std::string(snapshot.standard_error->bytes.size(), 'x'));
+        BOOST_TEST(
+            snapshot.standard_output->bytes.size() + snapshot.standard_error->bytes.size() == 37U);
+        BOOST_TEST(
+            snapshot.standard_output->bytes
+            == std::string(snapshot.standard_output->bytes.size(), 'x'));
+        BOOST_TEST(
+            snapshot.standard_error->bytes
+            == std::string(snapshot.standard_error->bytes.size(), 'x'));
         BOOST_TEST(snapshot.standard_output->truncated);
         BOOST_TEST(snapshot.standard_error->truncated);
         BOOST_CHECK(snapshot.standard_output->end == StreamEnd::Eof);
@@ -113,7 +120,9 @@ BOOST_AUTO_TEST_CASE(join_cancels_blocked_input_and_output_and_preserves_prefix)
         h.launch("no-read");
         co_await h.environment->start();
         co_await h.ready();
-        BOOST_CHECK((co_await h.environment->enqueue_input(std::string(1024 * 1024, 'x'))) == InputResult::Accepted);
+        BOOST_CHECK(
+            (co_await h.environment->enqueue_input(std::string(1024 * 1024, 'x')))
+            == InputResult::Accepted);
         co_await h.pause(); // Let a write exceed pipe capacity and suspend.
         const auto began = std::chrono::steady_clock::now();
         co_await h.environment->cancel_and_join();
@@ -157,7 +166,8 @@ BOOST_AUTO_TEST_CASE(launch_failure_and_start_before_launch_are_cleanup_safe)
         BOOST_CHECK_THROW(h.environment->prepare_attachment(), std::logic_error);
         process::LaunchSpec spec;
         spec.executable = "/nonexistent-simplex-process-io-child";
-        BOOST_CHECK_THROW(subprocess::Child(spec, h.strand, attachment), subprocess::ProcessException);
+        BOOST_CHECK_THROW(
+            subprocess::Child(spec, h.strand, attachment), subprocess::ProcessException);
         bool rejected = false;
         try {
             co_await h.environment->start();
@@ -197,7 +207,9 @@ BOOST_AUTO_TEST_CASE(unjoined_facade_destruction_requests_background_cancellatio
         h.launch("no-read");
         co_await h.environment->start();
         co_await h.ready();
-        std::thread destroy([&] { h.environment.reset(); });
+        std::thread destroy([&] {
+            h.environment.reset();
+        });
         destroy.join();
         co_return;
     }); // run() drains all task callbacks rather than requiring context.stop().
@@ -207,24 +219,34 @@ BOOST_AUTO_TEST_CASE(awaitable_operations_marshal_from_another_context_with_thre
 {
     asio::io_context caller;
     auto work = asio::make_work_guard(caller);
-    std::jthread caller_thread([&] { caller.run(); });
+    std::jthread caller_thread([&] {
+        caller.run();
+    });
     Harness h;
     try {
-        h.run([&](Harness& h) -> asio::awaitable<void> {
-            h.launch("echo");
-            co_await asio::co_spawn(caller,
-                [&h]() -> asio::awaitable<void> {
-                    co_await h.environment->start();
-                    BOOST_CHECK_THROW((void)h.environment->snapshot(), std::logic_error);
-                    BOOST_CHECK((co_await h.environment->enqueue_input("cross-context")) == InputResult::Accepted);
-                    BOOST_CHECK((co_await h.environment->request_input_end()) == InputResult::Accepted);
-                    BOOST_TEST(co_await h.environment->drain_until(std::chrono::steady_clock::now() + 5s));
-                    co_await h.environment->cancel_and_join();
-                }, asio::use_awaitable);
-            BOOST_TEST(h.environment->snapshot().standard_output->bytes == "cross-context");
-            BOOST_TEST(h.environment->snapshot().joined);
-            BOOST_TEST((co_await h.wait_exit()) == 0);
-        }, 3);
+        h.run(
+            [&](Harness& h) -> asio::awaitable<void> {
+                h.launch("echo");
+                co_await asio::co_spawn(
+                    caller,
+                    [&h]() -> asio::awaitable<void> {
+                        co_await h.environment->start();
+                        BOOST_CHECK_THROW((void)h.environment->snapshot(), std::logic_error);
+                        BOOST_CHECK(
+                            (co_await h.environment->enqueue_input("cross-context"))
+                            == InputResult::Accepted);
+                        BOOST_CHECK(
+                            (co_await h.environment->request_input_end()) == InputResult::Accepted);
+                        BOOST_TEST(co_await h.environment->drain_until(
+                            std::chrono::steady_clock::now() + 5s));
+                        co_await h.environment->cancel_and_join();
+                    },
+                    asio::use_awaitable);
+                BOOST_TEST(h.environment->snapshot().standard_output->bytes == "cross-context");
+                BOOST_TEST(h.environment->snapshot().joined);
+                BOOST_TEST((co_await h.wait_exit()) == 0);
+            },
+            3);
     } catch (...) {
         caller.stop();
         throw;
@@ -242,16 +264,18 @@ BOOST_AUTO_TEST_CASE(drain_is_interruptible_but_join_shields_caller_cancellation
         asio::cancellation_signal cancel_drain;
         bool drain_done = false;
         std::exception_ptr drain_error;
-        asio::co_spawn(h.strand,
+        asio::co_spawn(
+            h.strand,
             h.environment->drain_until(std::chrono::steady_clock::now() + 30s),
-            asio::bind_cancellation_slot(cancel_drain.slot(),
-                [&](std::exception_ptr error, bool) {
-                    drain_error = error;
-                    drain_done = true;
-                }));
+            asio::bind_cancellation_slot(cancel_drain.slot(), [&](std::exception_ptr error, bool) {
+                drain_error = error;
+                drain_done = true;
+            }));
         co_await h.pause();
         cancel_drain.emit(asio::cancellation_type::all);
-        while (!drain_done) co_await h.pause();
+        while (!drain_done) {
+            co_await h.pause();
+        }
         BOOST_REQUIRE(drain_error);
         try {
             std::rethrow_exception(drain_error);
@@ -266,14 +290,19 @@ BOOST_AUTO_TEST_CASE(drain_is_interruptible_but_join_shields_caller_cancellation
         asio::cancellation_signal cancel_join;
         bool joined = false;
         std::exception_ptr join_error;
-        asio::co_spawn(h.strand, h.environment->cancel_and_join(),
-            asio::bind_cancellation_slot(cancel_join.slot(),
-                [&](std::exception_ptr error) {
-                    join_error = error;
-                    joined = true;
-                }));
-        asio::post(h.strand, [&] { cancel_join.emit(asio::cancellation_type::all); });
-        while (!joined) co_await h.pause();
+        asio::co_spawn(
+            h.strand,
+            h.environment->cancel_and_join(),
+            asio::bind_cancellation_slot(cancel_join.slot(), [&](std::exception_ptr error) {
+                join_error = error;
+                joined = true;
+            }));
+        asio::post(h.strand, [&] {
+            cancel_join.emit(asio::cancellation_type::all);
+        });
+        while (!joined) {
+            co_await h.pause();
+        }
         BOOST_TEST(!join_error);
         BOOST_TEST(h.environment->snapshot().joined);
         BOOST_TEST(h.environment->snapshot().output_complete);

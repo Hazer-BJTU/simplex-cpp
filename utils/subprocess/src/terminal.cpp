@@ -19,13 +19,17 @@ namespace subprocess {
 namespace asio = boost::asio;
 #ifdef __linux__
 struct Terminal::Impl {
+    // Two owners of the same master permit input cancellation without aborting
+    // output reads. The slave is retained only through synchronous child launch.
     asio::posix::stream_descriptor reader;
     asio::posix::stream_descriptor writer;
     detail::Fd slave;
     bool attached = false;
     bool launched = false;
 
-    explicit Impl(asio::any_io_executor executor) : reader(executor), writer(executor)
+    explicit Impl(asio::any_io_executor executor)
+        : reader(executor),
+          writer(executor)
     {
         detail::Fd master(::posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK));
         detail::move_above_stdio(master);
@@ -41,7 +45,9 @@ struct Terminal::Impl {
         settings.c_oflag = OPOST | ONLCR;
         settings.c_cflag = CS8 | CREAD | CLOCAL;
         settings.c_lflag = ICANON | ISIG | IEXTEN; // deliberately no ECHO/ECHONL
-        for (auto& value : settings.c_cc) value = _POSIX_VDISABLE;
+        for (auto& value : settings.c_cc) {
+            value = _POSIX_VDISABLE;
+        }
         settings.c_cc[VINTR] = 3;
         settings.c_cc[VQUIT] = 28;
         settings.c_cc[VERASE] = 127;
@@ -66,9 +72,12 @@ struct Terminal::Impl {
         copy.release();
     }
 
+    /// Probe the master without waiting; an EIO alone is insufficient EOF evidence.
     bool hung_up() noexcept
     {
-        if (!reader.is_open()) return false;
+        if (!reader.is_open()) {
+            return false;
+        }
         pollfd fd{reader.native_handle(), POLLIN, 0};
         return ::poll(&fd, 1, 0) > 0 && (fd.revents & POLLHUP);
     }
@@ -86,11 +95,15 @@ Terminal::Terminal(asio::any_io_executor executor)
     throw std::runtime_error("POSIX PTY backend is supported on Linux only");
 #endif
 }
+
 Terminal::~Terminal() = default;
+
 IoAttachment Terminal::attachment()
 {
 #ifdef __linux__
-    if (_impl->attached) throw std::logic_error("terminal attachment already prepared");
+    if (_impl->attached) {
+        throw std::logic_error("terminal attachment already prepared");
+    }
     _impl->attached = true;
     auto impl = std::make_unique<IoAttachment::Impl>();
     impl->terminal = this;
@@ -99,6 +112,7 @@ IoAttachment Terminal::attachment()
     throw std::runtime_error("POSIX PTY backend is supported on Linux only");
 #endif
 }
+
 bool Terminal::launched() const noexcept
 {
 #ifdef __linux__
@@ -107,30 +121,37 @@ bool Terminal::launched() const noexcept
     return false;
 #endif
 }
+
 int Terminal::launch_descriptor() const
 {
 #ifdef __linux__
-    if (_impl->slave.get() < 0) throw std::logic_error("terminal launch already attempted");
+    if (_impl->slave.get() < 0) {
+        throw std::logic_error("terminal launch already attempted");
+    }
     return _impl->slave.get();
 #else
     throw std::runtime_error("POSIX PTY backend is supported on Linux only");
 #endif
 }
+
 void Terminal::finish_launch(bool success) noexcept
 {
 #ifdef __linux__
     _impl->slave.reset();
-    if (success) _impl->launched = true;
+    if (success) {
+        _impl->launched = true;
+    }
 #else
     (void)success;
 #endif
 }
-asio::awaitable<std::size_t> Terminal::read(asio::mutable_buffer buffer,
-    boost::system::error_code& error)
+
+asio::awaitable<std::size_t>
+Terminal::read(asio::mutable_buffer buffer, boost::system::error_code& error)
 {
 #ifdef __linux__
-    const auto count = co_await _impl->reader.async_read_some(buffer,
-        asio::redirect_error(asio::use_awaitable, error));
+    const auto count = co_await _impl->reader.async_read_some(
+        buffer, asio::redirect_error(asio::use_awaitable, error));
     // Linux master EIO with a confirmed slave hangup is EOF. An injected or
     // device EIO while the slave is still attached remains a real failure.
     if (error.value() == EIO && _impl->launched && _impl->hung_up()) {
@@ -143,12 +164,13 @@ asio::awaitable<std::size_t> Terminal::read(asio::mutable_buffer buffer,
     co_return 0;
 #endif
 }
-asio::awaitable<std::size_t> Terminal::write(std::string_view bytes,
-    boost::system::error_code& error)
+
+asio::awaitable<std::size_t>
+Terminal::write(std::string_view bytes, boost::system::error_code& error)
 {
 #ifdef __linux__
-    const auto count = co_await asio::async_write(_impl->writer, asio::buffer(bytes),
-        asio::redirect_error(asio::use_awaitable, error));
+    const auto count = co_await asio::async_write(
+        _impl->writer, asio::buffer(bytes), asio::redirect_error(asio::use_awaitable, error));
     if (error.value() == EIO && _impl->launched && _impl->hung_up()) {
         error = asio::error::eof;
     }
@@ -159,16 +181,18 @@ asio::awaitable<std::size_t> Terminal::write(std::string_view bytes,
     co_return 0;
 #endif
 }
+
 std::optional<std::string> Terminal::eof_request()
 {
 #ifdef __linux__
     termios settings{};
     detail::check(::tcgetattr(_impl->reader.native_handle(), &settings), "tcgetattr(input end)");
     int discipline = 0;
-    detail::check(::ioctl(_impl->reader.native_handle(), TIOCGETD, &discipline), "TIOCGETD(input end)");
+    detail::check(
+        ::ioctl(_impl->reader.native_handle(), TIOCGETD, &discipline), "TIOCGETD(input end)");
     const auto eof = settings.c_cc[VEOF];
-    if (discipline != N_TTY || !(settings.c_lflag & ICANON)
-        || eof == _POSIX_VDISABLE || (settings.c_lflag & EXTPROC)) {
+    if (discipline != N_TTY || !(settings.c_lflag & ICANON) || eof == _POSIX_VDISABLE
+        || (settings.c_lflag & EXTPROC)) {
         return std::nullopt;
     }
     // Reject settings that consume/transform the EOF byte before canonical
@@ -184,14 +208,18 @@ std::optional<std::string> Terminal::eof_request()
         || ((settings.c_lflag & IEXTEN) && matches(VEOL2))
         || ((settings.c_lflag & ISIG) && (matches(VINTR) || matches(VQUIT) || matches(VSUSP)))
         || ((settings.c_iflag & IXON) && (matches(VSTART) || matches(VSTOP)))
-        || ((settings.c_lflag & IEXTEN) && (matches(VLNEXT) || matches(VWERASE) || matches(VREPRINT)))) {
+        || ((settings.c_lflag & IEXTEN)
+            && (matches(VLNEXT) || matches(VWERASE) || matches(VREPRINT)))) {
         return std::nullopt;
     }
+    // The first EOF flushes a pending canonical line; the second can make the
+    // next read return zero. Settings are observed now, not frozen at launch.
     return std::string(2, static_cast<char>(eof));
 #else
     return std::nullopt;
 #endif
 }
+
 void Terminal::resize(unsigned columns, unsigned rows)
 {
 #ifdef __linux__
@@ -209,21 +237,29 @@ void Terminal::resize(unsigned columns, unsigned rows)
     throw std::runtime_error("terminal resize is unsupported");
 #endif
 }
+
 void Terminal::cancel_input(boost::system::error_code& error) noexcept
 {
     error.clear();
 #ifdef __linux__
-    if (_impl->writer.is_open()) _impl->writer.close(error);
+    if (_impl->writer.is_open()) {
+        _impl->writer.close(error);
+    }
 #endif
 }
+
 void Terminal::close(boost::system::error_code& error) noexcept
 {
     cancel_input(error);
 #ifdef __linux__
     boost::system::error_code other;
-    if (_impl->reader.is_open()) _impl->reader.close(other);
+    if (_impl->reader.is_open()) {
+        _impl->reader.close(other);
+    }
     _impl->slave.reset();
-    if (!error) error = other;
+    if (!error) {
+        error = other;
+    }
 #endif
 }
 } // namespace subprocess
