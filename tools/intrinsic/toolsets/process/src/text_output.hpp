@@ -14,6 +14,8 @@ struct TextPrefix {
 /// controls. Invalid bytes become U+FFFD, one replacement per byte. A valid
 /// incomplete suffix stays unread while capture can grow; at EOF/truncation
 /// it is replaced. Cursors count original bytes, never rendered UTF-8 bytes.
+/// final=true means no retained bytes can complete a pending suffix, even if
+/// the backend is still draining data discarded beyond its capture budget.
 inline TextPrefix text_prefix(std::string_view raw, bool final)
 {
     TextPrefix result;
@@ -35,13 +37,27 @@ inline TextPrefix text_prefix(std::string_view raw, bool final)
             const auto next = static_cast<unsigned char>(raw[from + i]);
             valid = next >= 0x80 && next <= 0xbf;
             if (i == 1) {
-                if (first == 0xe0 && next < 0xa0) valid = false;
-                if (first == 0xed && next > 0x9f) valid = false;
-                if (first == 0xf0 && next < 0x90) valid = false;
-                if (first == 0xf4 && next > 0x8f) valid = false;
+                // Exclude overlong encodings, surrogate code points and values
+                // above U+10FFFF by constraining the first continuation byte.
+                if (first == 0xe0 && next < 0xa0) {
+                    valid = false;
+                }
+                if (first == 0xed && next > 0x9f) {
+                    valid = false;
+                }
+                if (first == 0xf0 && next < 0x90) {
+                    valid = false;
+                }
+                if (first == 0xf4 && next > 0x8f) {
+                    valid = false;
+                }
             }
         }
-        if (valid && raw.size() - from < length && !final) break;
+        // Only a plausible incomplete sequence can wait for more bytes. Invalid
+        // prefixes are replaced immediately so the raw cursor keeps progressing.
+        if (valid && raw.size() - from < length && !final) {
+            break;
+        }
         if (!valid || raw.size() - from < length) {
             result.text += "\xef\xbf\xbd";
             ++result.consumed;

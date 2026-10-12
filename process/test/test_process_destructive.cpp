@@ -226,10 +226,12 @@ BOOST_AUTO_TEST_CASE(stdin_writes_after_close_or_death_are_dropped)
                 .description = "echo stdin back",
                 .initial_wait_timeout_milliseconds = std::uint64_t{5000},
             },
-            {}, [](process::ProcessHandle& handle) -> boost::asio::awaitable<void> {
+            {},
+            [](process::ProcessHandle& handle) -> boost::asio::awaitable<void> {
                 co_await handle.write_input("first\n");
                 co_await handle.close_input();
-                BOOST_CHECK((co_await handle.write_input("dropped\n")) == process_io::InputResult::Closed);
+                BOOST_CHECK(
+                    (co_await handle.write_input("dropped\n")) == process_io::InputResult::Closed);
             });
         BOOST_TEST(s.finished_on_time);
         BOOST_TEST(s.handle->standard_output() == "first\n");
@@ -247,8 +249,8 @@ BOOST_AUTO_TEST_CASE(stdin_writes_after_close_or_death_are_dropped)
         BOOST_TEST(s.finished_on_time);
 
         s.io->restart();
-        auto send = boost::asio::co_spawn(*s.io, s.handle->write_input("too late\n"),
-                                        boost::asio::use_future);
+        auto send = boost::asio::co_spawn(
+            *s.io, s.handle->write_input("too late\n"), boost::asio::use_future);
         s.io->run();
         BOOST_CHECK(send.get() == process_io::InputResult::Closed);
 

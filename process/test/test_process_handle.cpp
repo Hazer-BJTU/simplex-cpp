@@ -119,7 +119,8 @@ BOOST_AUTO_TEST_CASE(feeds_stdin_and_reads_it_back)
             .description = "echo stdin back",
             .initial_wait_timeout_milliseconds = std::uint64_t{5000},
         },
-        {}, [](process::ProcessHandle& handle) -> boost::asio::awaitable<void> {
+        {},
+        [](process::ProcessHandle& handle) -> boost::asio::awaitable<void> {
             // Two writes then close: proves the channel keeps order AND that
             // a closed channel still delivers what was buffered (the child
             // must see both lines before its stdin EOF).
@@ -922,12 +923,18 @@ BOOST_AUTO_TEST_CASE(shutdown_needs_neither_startup_nor_initial_wait)
         spec.executable = "sleep";
         spec.arguments = {"30"};
         auto handle = std::make_shared<process::ProcessHandle>(spec, io.get_executor());
-        auto task = asio::co_spawn(io, [handle, start]() -> asio::awaitable<void> {
-            if (start) co_await handle->start_background_io_tasks();
-            co_await handle->shutdown();
-            co_await handle->shutdown();
-            BOOST_CHECK((co_await handle->write_input("late")) == process_io::InputResult::Closed);
-        }, asio::use_future);
+        auto task = asio::co_spawn(
+            io,
+            [handle, start]() -> asio::awaitable<void> {
+                if (start) {
+                    co_await handle->start_background_io_tasks();
+                }
+                co_await handle->shutdown();
+                co_await handle->shutdown();
+                BOOST_CHECK(
+                    (co_await handle->write_input("late")) == process_io::InputResult::Closed);
+            },
+            asio::use_future);
         io.run();
         task.get();
         BOOST_TEST(handle->exited());
@@ -963,34 +970,40 @@ BOOST_AUTO_TEST_CASE(cancelling_initial_wait_leaves_a_supervised_child)
     spec.arguments = {"30"};
     spec.initial_wait_timeout_milliseconds = 0;
     auto handle = std::make_shared<process::ProcessHandle>(spec, strand);
-    auto task = asio::co_spawn(strand, [handle, strand]() -> asio::awaitable<void> {
-        co_await handle->start_background_io_tasks();
-        asio::cancellation_signal cancel;
-        bool completed = false;
-        std::exception_ptr failure;
-        asio::co_spawn(strand, handle->await_initial_execution(),
-            asio::bind_cancellation_slot(cancel.slot(), [&](std::exception_ptr error, bool) {
-                failure = error;
-                completed = true;
-            }));
-        asio::steady_timer timer(strand);
-        timer.expires_after(std::chrono::milliseconds(10));
-        co_await timer.async_wait(asio::use_awaitable);
-        cancel.emit(asio::cancellation_type::all);
-        while (!completed) {
-            timer.expires_after(std::chrono::milliseconds(5));
+    auto task = asio::co_spawn(
+        strand,
+        [handle, strand]() -> asio::awaitable<void> {
+            co_await handle->start_background_io_tasks();
+            asio::cancellation_signal cancel;
+            bool completed = false;
+            std::exception_ptr failure;
+            asio::co_spawn(
+                strand,
+                handle->await_initial_execution(),
+                asio::bind_cancellation_slot(cancel.slot(), [&](std::exception_ptr error, bool) {
+                    failure = error;
+                    completed = true;
+                }));
+            asio::steady_timer timer(strand);
+            timer.expires_after(std::chrono::milliseconds(10));
             co_await timer.async_wait(asio::use_awaitable);
-        }
-        BOOST_REQUIRE(failure);
-        try { std::rethrow_exception(failure); }
-        catch (const boost::system::system_error& error) {
-            BOOST_TEST(error.code() == asio::error::operation_aborted);
-        }
-        BOOST_TEST(!handle->exited());
-        co_await handle->shutdown();
-        BOOST_TEST(handle->exited());
-        BOOST_TEST(handle->output_drained());
-    }, asio::use_future);
+            cancel.emit(asio::cancellation_type::all);
+            while (!completed) {
+                timer.expires_after(std::chrono::milliseconds(5));
+                co_await timer.async_wait(asio::use_awaitable);
+            }
+            BOOST_REQUIRE(failure);
+            try {
+                std::rethrow_exception(failure);
+            } catch (const boost::system::system_error& error) {
+                BOOST_TEST(error.code() == asio::error::operation_aborted);
+            }
+            BOOST_TEST(!handle->exited());
+            co_await handle->shutdown();
+            BOOST_TEST(handle->exited());
+            BOOST_TEST(handle->output_drained());
+        },
+        asio::use_future);
     io.run();
     task.get();
 }

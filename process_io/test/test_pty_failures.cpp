@@ -11,24 +11,39 @@
 #include <unistd.h>
 
 namespace {
-enum class Fault { None, Allocate, Grant, Session, Dup, Read, Write };
+enum class Fault {
+    None,
+    Allocate,
+    Grant,
+    Session,
+    Dup,
+    Read,
+    Write
+};
 std::atomic<Fault> fault{Fault::None};
 std::atomic<bool> observed{false};
 // Resolve symbols before any fork; no dlsym, C++ static guard or allocation is
 // introduced by the child-side interposition paths.
-const auto real_openpt = reinterpret_cast<int(*)(int)>(::dlsym(RTLD_NEXT, "posix_openpt"));
-const auto real_grantpt = reinterpret_cast<int(*)(int)>(::dlsym(RTLD_NEXT, "grantpt"));
-const auto real_setsid = reinterpret_cast<pid_t(*)()>(::dlsym(RTLD_NEXT, "setsid"));
-const auto real_dup2 = reinterpret_cast<int(*)(int,int)>(::dlsym(RTLD_NEXT, "dup2"));
-const auto real_read = reinterpret_cast<ssize_t(*)(int,void*,size_t)>(::dlsym(RTLD_NEXT, "read"));
-const auto real_write = reinterpret_cast<ssize_t(*)(int,const void*,size_t)>(::dlsym(RTLD_NEXT, "write"));
+const auto real_openpt = reinterpret_cast<int (*)(int)>(::dlsym(RTLD_NEXT, "posix_openpt"));
+const auto real_grantpt = reinterpret_cast<int (*)(int)>(::dlsym(RTLD_NEXT, "grantpt"));
+const auto real_setsid = reinterpret_cast<pid_t (*)()>(::dlsym(RTLD_NEXT, "setsid"));
+const auto real_dup2 = reinterpret_cast<int (*)(int, int)>(::dlsym(RTLD_NEXT, "dup2"));
+const auto real_read =
+    reinterpret_cast<ssize_t (*)(int, void*, size_t)>(::dlsym(RTLD_NEXT, "read"));
+const auto real_write =
+    reinterpret_cast<ssize_t (*)(int, const void*, size_t)>(::dlsym(RTLD_NEXT, "write"));
+/// Inject one failure, leaving subsequent cleanup operations able to succeed.
 bool consume(Fault expected)
 {
-    if (!fault.compare_exchange_strong(expected, Fault::None)) return false;
+    if (!fault.compare_exchange_strong(expected, Fault::None)) {
+        return false;
+    }
     observed = true;
     errno = EIO;
     return true;
 }
+
+/// Restrict read/write failures to PTY masters, preserving errno from the caller.
 bool master(int fd)
 {
     int number;
@@ -37,24 +52,48 @@ bool master(int fd)
     errno = saved;
     return result;
 }
+
 std::size_t descriptors()
 {
-    return std::distance(std::filesystem::directory_iterator("/proc/self/fd"),
-                         std::filesystem::directory_iterator{});
+    return std::distance(
+        std::filesystem::directory_iterator("/proc/self/fd"),
+        std::filesystem::directory_iterator{});
 }
 }
-extern "C" int posix_openpt(int flags) { return consume(Fault::Allocate) ? -1 : real_openpt(flags); }
-extern "C" int grantpt(int fd) noexcept { return consume(Fault::Grant) ? -1 : real_grantpt(fd); }
-extern "C" pid_t setsid() noexcept { return consume(Fault::Session) ? -1 : real_setsid(); }
-extern "C" int dup2(int oldfd, int newfd) noexcept { return consume(Fault::Dup) ? -1 : real_dup2(oldfd, newfd); }
+
+extern "C" int posix_openpt(int flags)
+{
+    return consume(Fault::Allocate) ? -1 : real_openpt(flags);
+}
+
+extern "C" int grantpt(int fd) noexcept
+{
+    return consume(Fault::Grant) ? -1 : real_grantpt(fd);
+}
+
+extern "C" pid_t setsid() noexcept
+{
+    return consume(Fault::Session) ? -1 : real_setsid();
+}
+
+extern "C" int dup2(int oldfd, int newfd) noexcept
+{
+    return consume(Fault::Dup) ? -1 : real_dup2(oldfd, newfd);
+}
+
 extern "C" ssize_t read(int fd, void* data, size_t size)
 {
-    if (fault == Fault::Read && master(fd) && consume(Fault::Read)) return -1;
+    if (fault == Fault::Read && master(fd) && consume(Fault::Read)) {
+        return -1;
+    }
     return real_read(fd, data, size);
 }
+
 extern "C" ssize_t write(int fd, const void* data, size_t size)
 {
-    if (fault == Fault::Write && master(fd) && consume(Fault::Write)) return -1;
+    if (fault == Fault::Write && master(fd) && consume(Fault::Write)) {
+        return -1;
+    }
     return real_write(fd, data, size);
 }
 
@@ -78,7 +117,10 @@ BOOST_AUTO_TEST_CASE(allocation_and_child_setup_failures_roll_back)
             } catch (const subprocess::ProcessException& error) {
                 caught = true;
                 BOOST_TEST(error.error_code().value() == EIO);
-                BOOST_TEST(std::string(error.what()).find(point == Fault::Session ? "PTY setsid" : "PTY dup2") != std::string::npos);
+                BOOST_TEST(
+                    std::string(error.what())
+                        .find(point == Fault::Session ? "PTY setsid" : "PTY dup2")
+                    != std::string::npos);
             } catch (const boost::system::system_error& error) {
                 caught = true;
                 BOOST_TEST(error.code().value() == EIO);
@@ -94,6 +136,7 @@ BOOST_AUTO_TEST_CASE(allocation_and_child_setup_failures_roll_back)
     BOOST_TEST(::waitpid(-1, &status, WNOHANG) == -1);
     BOOST_TEST(errno == ECHILD);
 }
+
 BOOST_AUTO_TEST_CASE(live_slave_eio_is_failure_and_join_still_completes)
 {
     for (const auto point : {Fault::Read, Fault::Write}) {
@@ -110,21 +153,28 @@ BOOST_AUTO_TEST_CASE(live_slave_eio_is_failure_and_join_still_completes)
                 observed = false;
                 fault = point;
                 co_await h.environment->start();
-                if (point == Fault::Write) co_await h.environment->enqueue_input("input\n");
+                if (point == Fault::Write) {
+                    co_await h.environment->enqueue_input("input\n");
+                }
                 const auto deadline = std::chrono::steady_clock::now() + 2s;
-                while (!h.environment->snapshot().failure && std::chrono::steady_clock::now() < deadline) {
+                while (!h.environment->snapshot().failure
+                       && std::chrono::steady_clock::now() < deadline) {
                     co_await h.pause();
                 }
                 BOOST_TEST(observed.load());
                 BOOST_TEST(static_cast<bool>(h.environment->snapshot().failure));
                 if (point == Fault::Read) {
-                    BOOST_CHECK(h.environment->snapshot().terminal_output->end == process_io::StreamEnd::Failed);
+                    BOOST_CHECK(
+                        h.environment->snapshot().terminal_output->end
+                        == process_io::StreamEnd::Failed);
                 } else {
-                    BOOST_CHECK(h.environment->snapshot().input_phase == process_io::InputPhase::Failed);
+                    BOOST_CHECK(
+                        h.environment->snapshot().input_phase == process_io::InputPhase::Failed);
                     BOOST_TEST(!h.environment->snapshot().output_complete);
                 }
-                try { co_await h.environment->cancel_and_join(); }
-                catch (...) {
+                try {
+                    co_await h.environment->cancel_and_join();
+                } catch (...) {
                     BOOST_TEST(h.environment->snapshot().joined);
                     throw;
                 }

@@ -18,13 +18,24 @@
 namespace process_io {
 namespace asio = boost::asio;
 
+/// Strand-owned transport and pump supervision, shared with completion handlers.
+/// The facade may disappear first; no queued bytes or pump buffers borrow it.
 struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
-    enum class Task { Input, Output, Error };
+    enum class Task {
+        Input,
+        Output,
+        Error
+    };
 
     explicit State(Executor executor, std::size_t limit)
-        : strand(std::move(executor)), input(strand), output(strand), error(strand),
-          wake_input(strand), capture(OutputTopology::Separate, limit)
-    {}
+        : strand(std::move(executor)),
+          input(strand),
+          output(strand),
+          error(strand),
+          wake_input(strand),
+          capture(OutputTopology::Separate, limit)
+    {
+    }
 
     Executor strand;
     subprocess::PipeWriter input;
@@ -36,6 +47,7 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
     // One strand defines acceptance order; input-end follows this entire queue.
     std::deque<std::string> queue;
     InputPhase input_phase = InputPhase::NotStarted;
+    // Attachment preparation and task startup are separate one-shot transitions.
     bool prepared = false;
     bool started = false;
     bool accepting = false;
@@ -43,6 +55,7 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
     bool stopping = false;
     bool input_stopped = false;
     bool joined = false;
+    // Count spawned pumps until their completion handlers, not just bodies, finish.
     std::size_t active_tasks = 0;
     std::exception_ptr failure;
 
@@ -53,6 +66,7 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
         }
     }
 
+    /// Keep the first failure through later cleanup; join_tasks() reports it last.
     void remember(std::exception_ptr value) noexcept
     {
         if (!failure) {
@@ -72,7 +86,8 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
         }
     }
 
-    template<class Pipe>
+    /// Nonthrowing transport close that retains errors without skipping other work.
+    template <class Pipe>
     boost::system::error_code close(Pipe& pipe) noexcept
     {
         boost::system::error_code code;
@@ -93,7 +108,9 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
             || input_phase == InputPhase::NotStarted) {
             input_phase = InputPhase::Stopped;
         }
-        if (close(input)) input_phase = InputPhase::Failed;
+        if (close(input)) {
+            input_phase = InputPhase::Failed;
+        }
         try {
             wake_input.cancel();
         } catch (...) {
@@ -132,8 +149,10 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
                 accepting = false;
                 queue.clear();
             } else {
-                capture.finish(task == Task::Output ? Stream::Stdout : Stream::Stderr,
-                               StreamEnd::Failed, code);
+                capture.finish(
+                    task == Task::Output ? Stream::Stdout : Stream::Stderr,
+                    StreamEnd::Failed,
+                    code);
             }
         }
         if (task == Task::Input) {
@@ -146,11 +165,15 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
         --active_tasks;
     }
 
+    /// Register before scheduling so inline completion and scheduling failure
+    /// both leave the join count consistent. The handler owns State until done.
     void spawn(Task task, asio::awaitable<void> operation)
     {
         ++active_tasks;
         try {
-            asio::co_spawn(strand, std::move(operation),
+            asio::co_spawn(
+                strand,
+                std::move(operation),
                 [self = shared_from_this(), task](std::exception_ptr exception) {
                     self->completed(task, exception);
                 });
@@ -160,13 +183,15 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
         }
     }
 
+    /// Drain even when capture is full: retention loss must not block the child.
+    /// The coroutine owns its read buffer for the full asynchronous operation.
     asio::awaitable<void> read(asio::readable_pipe& pipe, Stream stream)
     {
         std::array<char, 4096> buffer;
         while (!stopping) {
             boost::system::error_code code;
-            const auto count = co_await pipe.async_read_some(asio::buffer(buffer),
-                asio::redirect_error(asio::use_awaitable, code));
+            const auto count = co_await pipe.async_read_some(
+                asio::buffer(buffer), asio::redirect_error(asio::use_awaitable, code));
             // abort() may have ended capture while this operation was pending.
             // Its bytes are deliberately not appended past that explicit fence.
             if (stopping) {
@@ -185,6 +210,8 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
         }
     }
 
+    /// Single writer preserves queue order. Input-end closes only after the queue
+    /// drains; timer cancellation is the strand-local wakeup for newly queued work.
     asio::awaitable<void> write()
     {
         while (!stopping && !input_stopped) {
@@ -202,6 +229,8 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
                 continue;
             }
             auto bytes = std::move(queue.front());
+            // Keep this owned string in the coroutine frame while abort_input()
+            // is free to discard the rest of the queue during the write await.
             queue.pop_front();
             boost::system::error_code code;
             co_await input.write(bytes, code);
@@ -220,6 +249,8 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
         }
     }
 
+    /// Await every completion handler before exposing joined or throwing failure.
+    /// Called with cancellation disabled so teardown cannot abandon owned tasks.
     asio::awaitable<void> join_tasks()
     {
         asio::steady_timer pause(strand);
@@ -263,21 +294,28 @@ struct AnonymousPipeIo::State : std::enable_shared_from_this<State> {
 
 AnonymousPipeIo::AnonymousPipeIo(Executor executor, std::size_t max_output_bytes)
     : _state(std::make_shared<State>(std::move(executor), max_output_bytes))
-{}
+{
+}
 
 AnonymousPipeIo::~AnonymousPipeIo()
 {
     // Dispatch, not direct descriptor access from an arbitrary caller thread.
     // Shared state keeps buffers alive through outstanding completion handlers.
     try {
-        asio::dispatch(_state->strand, [state = _state] { state->abort(); });
+        asio::dispatch(_state->strand, [state = _state] {
+            state->abort();
+        });
     } catch (...) {
         // If scheduling itself fails, running tasks/context teardown retain
         // resource ownership. This fallback is deliberately not a join fence.
     }
 }
 
-Executor AnonymousPipeIo::executor() const { return _state->strand; }
+Executor AnonymousPipeIo::executor() const
+{
+    return _state->strand;
+}
+
 Capabilities AnonymousPipeIo::capabilities() const noexcept
 {
     return {OutputTopology::Separate, false, InputEndMode::HalfClose, false};
@@ -295,15 +333,18 @@ subprocess::IoAttachment AnonymousPipeIo::prepare_attachment()
 
 asio::awaitable<void> AnonymousPipeIo::start()
 {
-    co_await asio::co_spawn(_state->strand,
+    co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<void> {
             co_await state->start_tasks();
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<InputResult> AnonymousPipeIo::enqueue_input(std::string input)
 {
-    co_return co_await asio::co_spawn(_state->strand,
+    co_return co_await asio::co_spawn(
+        _state->strand,
         [state = _state, input = std::move(input)]() mutable -> asio::awaitable<InputResult> {
             if (!state->accepting) {
                 co_return InputResult::Closed;
@@ -311,12 +352,14 @@ asio::awaitable<InputResult> AnonymousPipeIo::enqueue_input(std::string input)
             state->queue.push_back(std::move(input));
             state->wake_input.cancel();
             co_return InputResult::Accepted;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<InputResult> AnonymousPipeIo::request_input_end()
 {
-    co_return co_await asio::co_spawn(_state->strand,
+    co_return co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<InputResult> {
             if (state->input_phase != InputPhase::Open || state->stopping) {
                 co_return InputResult::Closed;
@@ -326,25 +369,30 @@ asio::awaitable<InputResult> AnonymousPipeIo::request_input_end()
             state->input_phase = InputPhase::EndRequested;
             state->wake_input.cancel();
             co_return InputResult::Accepted;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<void> AnonymousPipeIo::stop_admission()
 {
-    co_await asio::co_spawn(_state->strand,
+    co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<void> {
             state->accepting = false;
             co_return;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<void> AnonymousPipeIo::cancel_input()
 {
-    co_await asio::co_spawn(_state->strand,
+    co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<void> {
             state->abort_input();
             co_return;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 const CaptureBuffer& AnonymousPipeIo::capture() const noexcept
@@ -356,14 +404,22 @@ Snapshot AnonymousPipeIo::snapshot() const
 {
     const auto& state = *_state;
     state.require_strand();
-    return {state.capture.view(Stream::Stdout), state.capture.view(Stream::Stderr),
-            state.capture.view(Stream::Terminal), state.input_phase, state.accepting,
-            state.end_requested, state.capture.complete(), state.joined, state.failure};
+    return {
+        state.capture.view(Stream::Stdout),
+        state.capture.view(Stream::Stderr),
+        state.capture.view(Stream::Terminal),
+        state.input_phase,
+        state.accepting,
+        state.end_requested,
+        state.capture.complete(),
+        state.joined,
+        state.failure};
 }
 
 asio::awaitable<bool> AnonymousPipeIo::drain_until(std::chrono::steady_clock::time_point deadline)
 {
-    co_return co_await asio::co_spawn(_state->strand,
+    co_return co_await asio::co_spawn(
+        _state->strand,
         [state = _state, deadline]() -> asio::awaitable<bool> {
             asio::steady_timer pause(state->strand);
             while (!state->capture.complete()) {
@@ -375,18 +431,21 @@ asio::awaitable<bool> AnonymousPipeIo::drain_until(std::chrono::steady_clock::ti
                 co_await pause.async_wait(asio::use_awaitable);
             }
             co_return true;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<void> AnonymousPipeIo::cancel_and_join()
 {
     co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
-    co_await asio::co_spawn(_state->strand,
+    co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<void> {
             co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
             state->abort();
             co_await state->join_tasks();
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<ResizeResult> AnonymousPipeIo::resize(unsigned, unsigned)

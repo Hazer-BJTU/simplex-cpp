@@ -14,6 +14,7 @@
 namespace subprocess {
 namespace {
 
+/// Compare environment entries by key; values may themselves contain '='.
 constexpr std::string_view env_key(std::string_view entry)
 {
     return entry.substr(0, entry.find('='));
@@ -21,7 +22,11 @@ constexpr std::string_view env_key(std::string_view entry)
 
 } // namespace
 
-IoAttachment::IoAttachment(std::unique_ptr<Impl> impl) : _impl(std::move(impl)) {}
+IoAttachment::IoAttachment(std::unique_ptr<Impl> impl)
+    : _impl(std::move(impl))
+{
+}
+
 IoAttachment::~IoAttachment() = default;
 IoAttachment::IoAttachment(IoAttachment&&) noexcept = default;
 IoAttachment& IoAttachment::operator=(IoAttachment&&) noexcept = default;
@@ -38,21 +43,30 @@ struct Child::Impl {
     std::unique_ptr<boost::process::process> process;
 };
 
-Child::Child(const process::LaunchSpec& spec,
-             boost::asio::any_io_executor executor,
-             const IoAttachment& attachment)
+Child::Child(
+    const process::LaunchSpec& spec,
+    boost::asio::any_io_executor executor,
+    const IoAttachment& attachment)
     : _impl(std::make_unique<Impl>())
 {
     if (!attachment._impl) {
-        throw ProcessException(ProcessException::Stage::Spawn,
-            "launch attachment has been moved from", {}, spec.executable,
+        throw ProcessException(
+            ProcessException::Stage::Spawn,
+            "launch attachment has been moved from",
+            {},
+            spec.executable,
             spec.description);
     }
     struct TerminalLaunchGuard {
+        // Validation can fail before fork. Close the parent slave on that path
+        // too, and mark a launch successful only after native ownership exists.
         Terminal* terminal;
         bool success = false;
-        ~TerminalLaunchGuard() {
-            if (terminal) terminal->finish_launch(success);
+        ~TerminalLaunchGuard()
+        {
+            if (terminal) {
+                terminal->finish_launch(success);
+            }
         }
     } terminal_guard{attachment._impl->terminal};
     // Assemble the child's environment BEFORE resolving anything: a
@@ -73,25 +87,25 @@ Child::Child(const process::LaunchSpec& spec,
         used_envs.assign(current_env.begin(), current_env.end());
     }
     if (attachment._impl->terminal) {
+        // A predictable fallback for terminal applications. Explicit entries
+        // below may override TERM; the parent environment is never modified.
         std::erase_if(used_envs, [](const auto& kv) {
             return std::string_view{kv.data(), kv.size()}.starts_with("TERM=");
         });
         used_envs.emplace_back("TERM=dumb");
     }
     if (spec.environment) {
-        for (const auto& env_config: *spec.environment) {
+        for (const auto& env_config : *spec.environment) {
             const auto eq = env_config.find('=');
-            if (env_config.empty() || eq == std::string::npos || eq == 0 ||
-                env_config.find('\0') != std::string::npos) {
+            if (env_config.empty() || eq == std::string::npos || eq == 0
+                || env_config.find('\0') != std::string::npos) {
                 throw ProcessException(
                     ProcessException::Stage::Environment,
                     std::format(
-                        "invalid environment entry, expected KEY=VALUE: \"{}\"",
-                        env_config),
+                        "invalid environment entry, expected KEY=VALUE: \"{}\"", env_config),
                     {},
                     spec.executable,
-                    spec.description
-                );
+                    spec.description);
             }
             const auto key = env_key(env_config);
             std::erase_if(used_envs, [&key](const auto& kv) {
@@ -109,19 +123,17 @@ Child::Child(const process::LaunchSpec& spec,
     // falls back to the PARENT's PATH: a documented convenience so bare
     // names still resolve; the child's own environment is unaffected by
     // the fallback and really does ship without a PATH.
-    const bool child_env_has_path = std::any_of(
-        used_envs.begin(), used_envs.end(), [](const auto& kv) {
-            return std::string_view{kv.data(), kv.size()}
-                .starts_with("PATH=");
+    const bool child_env_has_path =
+        std::any_of(used_envs.begin(), used_envs.end(), [](const auto& kv) {
+            return std::string_view{kv.data(), kv.size()}.starts_with("PATH=");
         });
 
     // The PATH half of the rule below, against whichever environment the
     // comment above selected.
     const auto search_path = [&](const std::filesystem::path& name) {
         const boost::process::v2::filesystem::path lookup(name.string());
-        return child_env_has_path
-            ? boost::process::environment::find_executable(lookup, used_envs)
-            : boost::process::environment::find_executable(lookup);
+        return child_env_has_path ? boost::process::environment::find_executable(lookup, used_envs)
+                                  : boost::process::environment::find_executable(lookup);
     };
 
     // Paths identify exactly one program; only bare names use PATH. Anchor
@@ -130,26 +142,24 @@ Child::Child(const process::LaunchSpec& spec,
     // executable after confirmation.
     const std::filesystem::path requested{spec.executable};
     auto exec_path = requested.has_parent_path()
-        ? boost::process::v2::filesystem::path(requested.string())
-        : search_path(requested);
+                         ? boost::process::v2::filesystem::path(requested.string())
+                         : search_path(requested);
     std::error_code resolve_ec;
     if (!exec_path.empty()) {
-        const auto absolute = std::filesystem::absolute(
-            std::filesystem::path(exec_path.string()), resolve_ec);
+        const auto absolute =
+            std::filesystem::absolute(std::filesystem::path(exec_path.string()), resolve_ec);
         if (!resolve_ec) {
             exec_path = boost::process::v2::filesystem::path(absolute.string());
         }
     }
-    if (exec_path.empty() || resolve_ec ||
-        !std::filesystem::exists(std::filesystem::path(exec_path.string()),
-                                 resolve_ec)) {
+    if (exec_path.empty() || resolve_ec
+        || !std::filesystem::exists(std::filesystem::path(exec_path.string()), resolve_ec)) {
         throw ProcessException(
             ProcessException::Stage::ResolveExecutable,
             "executable not found or path could not be resolved",
             resolve_ec,
             spec.executable,
-            spec.description
-        );
+            spec.description);
     }
 
     // The start directory is checked HERE rather than left to the launch: v2
@@ -166,12 +176,10 @@ Child::Child(const process::LaunchSpec& spec,
             throw ProcessException(
                 ProcessException::Stage::Spawn,
                 std::format(
-                    "working directory is not a directory: \"{}\"",
-                    *spec.working_directory),
+                    "working directory is not a directory: \"{}\"", *spec.working_directory),
                 {},
                 spec.executable,
-                spec.description
-            );
+                spec.description);
         }
     }
 
@@ -181,8 +189,13 @@ Child::Child(const process::LaunchSpec& spec,
         // process constructor takes its initializers as variadic arguments,
         // so an engaged optional cannot simply be "passed as nothing".
         if (auto* terminal = attachment._impl->terminal) {
-            _impl->process = launch_terminal(executor, exec_path, spec.arguments,
-                used_envs, spec.working_directory, terminal->launch_descriptor());
+            _impl->process = launch_terminal(
+                executor,
+                exec_path,
+                spec.arguments,
+                used_envs,
+                spec.working_directory,
+                terminal->launch_descriptor());
             terminal_guard.success = true;
         } else if (spec.working_directory) {
             _impl->process = std::make_unique<boost::process::process>(
@@ -190,49 +203,33 @@ Child::Child(const process::LaunchSpec& spec,
                 std::move(exec_path),
                 spec.arguments,
                 boost::process::process_stdio{
-                    *attachment._impl->input,
-                    *attachment._impl->output,
-                    *attachment._impl->error},
+                    *attachment._impl->input, *attachment._impl->output, *attachment._impl->error},
                 boost::process::process_environment(used_envs),
                 // From the string, not a path object: this Boost builds
                 // Process against boost::filesystem, while the check above
                 // (and the rest of the tree) speaks std::filesystem — the
                 // two path types do not convert, and the initializer's own
                 // constructor is happy to build its path from the string.
-                boost::process::process_start_dir(*spec.working_directory)
-            );
+                boost::process::process_start_dir(*spec.working_directory));
         } else {
             _impl->process = std::make_unique<boost::process::process>(
                 executor,
                 std::move(exec_path),
                 spec.arguments,
                 boost::process::process_stdio{
-                    *attachment._impl->input,
-                    *attachment._impl->output,
-                    *attachment._impl->error},
-                boost::process::process_environment(used_envs)
-            );
+                    *attachment._impl->input, *attachment._impl->output, *attachment._impl->error},
+                boost::process::process_environment(used_envs));
         }
 
-    } catch(const boost::system::system_error& e) {
-        throw ProcessException(ProcessException::Stage::Spawn, e.what(), e.code(),
-            spec.executable, spec.description);
-    } catch(const std::exception& e) {
+    } catch (const boost::system::system_error& e) {
         throw ProcessException(
-            ProcessException::Stage::Spawn,
-            e.what(),
-            {},
-            spec.executable,
-            spec.description
-        );
-    } catch(...) {
+            ProcessException::Stage::Spawn, e.what(), e.code(), spec.executable, spec.description);
+    } catch (const std::exception& e) {
         throw ProcessException(
-            ProcessException::Stage::Spawn,
-            "unknown",
-            {},
-            spec.executable,
-            spec.description
-        );
+            ProcessException::Stage::Spawn, e.what(), {}, spec.executable, spec.description);
+    } catch (...) {
+        throw ProcessException(
+            ProcessException::Stage::Spawn, "unknown", {}, spec.executable, spec.description);
     }
 }
 

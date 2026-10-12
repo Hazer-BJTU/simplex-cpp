@@ -6,12 +6,16 @@
 namespace process_io {
 namespace {
 
+/// Stable slots for topology-independent lookups; reject invalid enum values.
 std::size_t index(Stream stream)
 {
     switch (stream) {
-        case Stream::Stdout: return 0;
-        case Stream::Stderr: return 1;
-        case Stream::Terminal: return 2;
+        case Stream::Stdout:
+            return 0;
+        case Stream::Stderr:
+            return 1;
+        case Stream::Terminal:
+            return 2;
     }
     throw std::invalid_argument("unknown process output stream");
 }
@@ -67,9 +71,8 @@ void CaptureBuffer::append(Stream stream, std::string_view bytes)
     if (record.end != StreamEnd::Open) {
         throw std::logic_error("cannot append to an ended output stream");
     }
-    const auto count = _limit == 0
-        ? bytes.size()
-        : std::min(bytes.size(), _limit - _retained_bytes);
+    const auto count =
+        _limit == 0 ? bytes.size() : std::min(bytes.size(), _limit - _retained_bytes);
     record.bytes.append(bytes.substr(0, count));
     // Charge only after append succeeds. Unlimited capture needs no running
     // total; bounded arithmetic cannot overflow because count <= remaining.
@@ -90,6 +93,8 @@ void CaptureBuffer::finish(Stream stream, StreamEnd end, boost::system::error_co
     }
     record.end = end;
     record.error = error;
+    // This flag covers incomplete capture as well as discarded bytes. Natural
+    // EOF preserves any earlier budget truncation without introducing new loss.
     record.truncated |= end == StreamEnd::Stopped || end == StreamEnd::Failed;
 }
 

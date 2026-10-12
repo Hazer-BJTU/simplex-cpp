@@ -12,11 +12,17 @@ namespace {
 std::atomic<int> fail_read{0};
 std::atomic<int> fail_write{0};
 
+/// Fail one owned pipe operation, leaving stdio/reactor descriptors unaffected
+/// and allowing all later cleanup operations to use the real native functions.
 bool inject(int fd, std::atomic<int>& remaining)
 {
-    if (fd <= 2 || remaining.load() == 0) return false;
+    if (fd <= 2 || remaining.load() == 0) {
+        return false;
+    }
     struct stat status{};
-    if (::fstat(fd, &status) != 0 || !S_ISFIFO(status.st_mode)) return false;
+    if (::fstat(fd, &status) != 0 || !S_ISFIFO(status.st_mode)) {
+        return false;
+    }
     int expected = 1;
     return remaining.compare_exchange_strong(expected, 0);
 }
@@ -63,7 +69,8 @@ BOOST_AUTO_TEST_CASE(read_failure_is_visible_and_rethrown_only_after_all_pumps_j
         BOOST_REQUIRE(snapshot.failure);
         BOOST_TEST(!snapshot.joined);
         const auto failed = snapshot.standard_output->end == StreamEnd::Failed
-            ? snapshot.standard_output : snapshot.standard_error;
+                                ? snapshot.standard_output
+                                : snapshot.standard_error;
         BOOST_CHECK(failed->end == StreamEnd::Failed);
         BOOST_TEST(failed->error.value() == EIO);
         BOOST_TEST(failed->truncated);

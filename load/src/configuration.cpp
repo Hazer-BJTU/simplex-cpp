@@ -67,8 +67,12 @@ std::filesystem::path storage_child(
     return (root / child).lexically_normal();
 }
 
-/** Directory holding the running executable: the root of installed assets. */
-std::filesystem::path executable_directory() {
+/**
+ * Directory holding the host executable, not this shared library. Installed
+ * config/prompt assets resolve from this root; mandatory lookup failures propagate.
+ */
+std::filesystem::path executable_directory()
+{
     const auto executable = subprocess::executable_location();
     return std::filesystem::path(executable.string()).parent_path();
 }

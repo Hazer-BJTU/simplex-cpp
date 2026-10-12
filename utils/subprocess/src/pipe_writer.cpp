@@ -22,8 +22,8 @@ namespace {
 
 /// This entire function is synchronous. Preserve any already-pending SIGPIPE;
 /// consume only a newly generated one after EPIPE, then restore the exact mask.
-ssize_t write_without_sigpipe(int descriptor, const char* data, std::size_t size,
-                             boost::system::error_code& error)
+ssize_t write_without_sigpipe(
+    int descriptor, const char* data, std::size_t size, boost::system::error_code& error)
 {
     sigset_t blocked;
     sigset_t previous;
@@ -50,8 +50,8 @@ ssize_t write_without_sigpipe(int descriptor, const char* data, std::size_t size
         }
     }
     const int restore_error = ::pthread_sigmask(SIG_SETMASK, &previous, nullptr);
-    error.assign(operation_error != 0 ? operation_error : restore_error,
-                 boost::system::system_category());
+    error.assign(
+        operation_error != 0 ? operation_error : restore_error, boost::system::system_category());
     return count;
 }
 
@@ -62,9 +62,11 @@ struct PipeWriter::Impl {
     explicit Impl(asio::any_io_executor executor)
         : pipe(executor)
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
-        , descriptor(executor)
+          ,
+          descriptor(executor)
 #endif
-    {}
+    {
+    }
 
     asio::writable_pipe pipe;
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
@@ -75,7 +77,9 @@ struct PipeWriter::Impl {
 
 PipeWriter::PipeWriter(asio::any_io_executor executor)
     : _impl(std::make_unique<Impl>(std::move(executor)))
-{}
+{
+}
+
 PipeWriter::~PipeWriter() = default;
 
 asio::writable_pipe& PipeWriter::launch_pipe()
@@ -118,18 +122,22 @@ bool PipeWriter::is_open() const noexcept
 void PipeWriter::close(boost::system::error_code& error) noexcept
 {
     error.clear();
-    if (_impl->pipe.is_open()) _impl->pipe.close(error);
+    if (_impl->pipe.is_open()) {
+        _impl->pipe.close(error);
+    }
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
     if (_impl->descriptor.is_open()) {
         boost::system::error_code next;
         _impl->descriptor.close(next);
-        if (!error) error = next;
+        if (!error) {
+            error = next;
+        }
     }
 #endif
 }
 
-asio::awaitable<std::size_t> PipeWriter::write(
-    std::string_view bytes, boost::system::error_code& error)
+asio::awaitable<std::size_t>
+PipeWriter::write(std::string_view bytes, boost::system::error_code& error)
 {
     if (!_impl->prepared) {
         throw std::logic_error("pipe writer must be prepared before writing");
@@ -138,8 +146,11 @@ asio::awaitable<std::size_t> PipeWriter::write(
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
     std::size_t written = 0;
     while (written < bytes.size()) {
-        const auto count = write_without_sigpipe(_impl->descriptor.native_handle(),
-            bytes.data() + written, bytes.size() - written, error);
+        const auto count = write_without_sigpipe(
+            _impl->descriptor.native_handle(),
+            bytes.data() + written,
+            bytes.size() - written,
+            error);
         if (count > 0) {
             written += static_cast<std::size_t>(count);
         }
@@ -147,16 +158,23 @@ asio::awaitable<std::size_t> PipeWriter::write(
             continue;
         }
         if (error == asio::error::would_block || error == asio::error::try_again) {
-            co_await _impl->descriptor.async_wait(asio::posix::stream_descriptor::wait_write,
+            // The synchronous attempt already restored its signal mask. Only
+            // descriptor readiness, not SIGPIPE suppression, spans this await.
+            co_await _impl->descriptor.async_wait(
+                asio::posix::stream_descriptor::wait_write,
                 asio::redirect_error(asio::use_awaitable, error));
-            if (!error) continue;
+            if (!error) {
+                continue;
+            }
         }
-        if (error) break;
+        if (error) {
+            break;
+        }
     }
     co_return written;
 #else
-    co_return co_await asio::async_write(_impl->pipe, asio::buffer(bytes),
-        asio::redirect_error(asio::use_awaitable, error));
+    co_return co_await asio::async_write(
+        _impl->pipe, asio::buffer(bytes), asio::redirect_error(asio::use_awaitable, error));
 #endif
 }
 

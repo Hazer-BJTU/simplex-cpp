@@ -8,7 +8,8 @@
 // and a build without the definition would hand the loader an empty path and
 // skip every tool. Fail the build, not the run.
 #ifndef SIMPLEX_PROCESS_SCHEMA_DIR
-#error "tools_intrinsic_process must be built with SIMPLEX_PROCESS_SCHEMA_DIR set (its CMakeLists.txt does)"
+#error                                                                                             \
+    "tools_intrinsic_process must be built with SIMPLEX_PROCESS_SCHEMA_DIR set (its CMakeLists.txt does)"
 #endif
 
 namespace tools::intrinsic {
@@ -31,8 +32,7 @@ constexpr const char* kSchemaDirectoryEnv = "SIMPLEX_PROCESS_SCHEMA_DIR";
 std::filesystem::path beside_executable()
 {
     std::error_code failure;
-    const std::filesystem::path self =
-        subprocess::executable_location(failure);
+    const std::filesystem::path self = subprocess::executable_location(failure);
     if (failure || self.empty()) {
         return {};
     }
@@ -41,7 +41,9 @@ std::filesystem::path beside_executable()
 
 bool directory_exists(const std::filesystem::path& directory)
 {
-    if (directory.empty()) return false;
+    if (directory.empty()) {
+        return false;
+    }
     std::error_code failure;
     return std::filesystem::is_directory(directory, failure);
 }
@@ -61,8 +63,7 @@ std::filesystem::path schema_directory()
     // baked in: only one of the two ever exists in a given tree — a release
     // carries the first, a build tree the second — and taking the one that is
     // really there is what keeps "tested" and "shipped" the same layout.
-    if (const std::filesystem::path installed = beside_executable();
-        directory_exists(installed)) {
+    if (const std::filesystem::path installed = beside_executable(); directory_exists(installed)) {
         return installed;
     }
     return std::filesystem::path(SIMPLEX_PROCESS_SCHEMA_DIR);

@@ -6,8 +6,8 @@
 //
 // ProcessHandle is ONE child per instance, held by shared_ptr, driven by
 // whoever owns it. A model needs something else: a stable name it can come
-// back to across turns ("proc_1"), several children at once, and "what is new
-// since I last looked". This store is that layer — the agent-facing
+// back to across turns ("proc_<store-uuid>_<n>"), several children at once,
+// and "what is new since I last looked". This store is that layer — the agent-facing
 // bookkeeping process/ deliberately does not do, because process/ does not
 // know what a child is FOR.
 //
@@ -20,8 +20,8 @@
 //                      never reused, not even after its session is released.
 //                      Reuse would alias a stale handle in the one place
 //                      aliasing is unrecoverable — a model's context still
-//                      says "proc_1 is the build I started three turns ago",
-//                      and a reused proc_1 would make send_process end a
+//                      identifies a build started three turns ago,
+//                      and a reused id would make send_process end a
 //                      process that model never saw. Growth is the cheap
 //                      side of that trade. A fresh UUID namespaces each store.
 //   READ CURSORS       how much of each stream the model has already been
@@ -39,11 +39,13 @@
 // pending spawn reservations. Copy session ownership before unlocking; never
 // hold the mutex across co_await, process operations or logging.
 //
-// Each session has a strand. Its handle uses a strand layered over that
-// executor, so handle operations and session output/cursor operations cannot
+// Each session, its handle and its I/O environment share the exact same strand,
+// so handle operations and session output/cursor operations cannot
 // run concurrently. Use co_spawn to execute the whole operation on the strand,
 // including continuations after suspension. A dispatch await alone does not
 // change a coroutine's executor and is not a lock.
+// Strand coroutines can still interleave at awaits. Capture projection and
+// consuming cursor updates therefore share a synchronous section with no await.
 //
 // Public coroutines may be awaited from another executor. Observations return
 // owned values, never references to mutable session state. release() joins
@@ -55,7 +57,7 @@
 // initial-wait failures/cancellation roll back the child, tasks, session entry
 // and capacity reservation before propagating the original error.
 //
-// spawn() is therefore the one call that may TAKE TIME, bounded by that window,
+// spawn() may wait for child exit and then capture, each bounded by that window,
 // and that is deliberate: it is what lets one launch serve both a command whose
 // result is wanted now and a server that must simply start. A child that
 // outlives its window is detached and becomes an ordinary live session, so the
@@ -87,7 +89,6 @@
 #include <unordered_map>
 #include <vector>
 
-
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/strand.hpp>
@@ -99,10 +100,15 @@ namespace tools::intrinsic {
 
 /// Host-only stream selection. Both means every present stream, including
 /// Terminal. Model tools always use Both and expose generic output.
-enum class OutputStream { Stdout, Stderr, Both, Terminal };
+enum class OutputStream {
+    Stdout,
+    Stderr,
+    Both,
+    Terminal
+};
 
-/// One stream's captured text as a reader receives it: the bytes asked for,
-/// and whether the capture behind them stopped at the spec's cap.
+/// One stream's owned output slice: raw bytes or projected UTF-8, depending on
+/// read_output(text). Truncation means budget loss or forced/failed capture.
 struct OutputSlice {
     std::string text;
     bool truncated = false;
@@ -158,7 +164,8 @@ struct SessionSnapshot {
 /// server wants the id and nothing else — and which of the two happened is not
 /// something the caller can know in advance, only something the launch can
 /// report. `finished` true means the session is already terminal (its exit
-/// code readable); false means it is a live session to come back to.
+/// code readable); false means no successful exit observation was returned.
+/// A watcher failure can also produce false and is reported during shutdown.
 ///
 /// `output_drained` is the SECOND question, and it is deliberately not folded
 /// into the first. `finished` is a fact about the child; the capture is a fact
@@ -200,8 +207,7 @@ struct WaitOutcome {
  * second table over the same children, each minting ids the other does not
  * know about (the same reason ToolRegistry refuses to be copied).
  */
-class ProcessSessionStore
-    : public std::enable_shared_from_this<ProcessSessionStore> {
+class ProcessSessionStore : public std::enable_shared_from_this<ProcessSessionStore> {
 public:
     using SessionId = std::string;
     using HandlePtr = std::shared_ptr<process::ProcessHandle>;
@@ -219,14 +225,13 @@ public:
     static constexpr std::size_t kDefaultMaxSessions = 32;
 
     explicit ProcessSessionStore(
-        boost::asio::any_io_executor executor,
-        std::size_t max_sessions = kDefaultMaxSessions);
+        boost::asio::any_io_executor executor, std::size_t max_sessions = kDefaultMaxSessions);
     ~ProcessSessionStore();
 
     ProcessSessionStore(const ProcessSessionStore&) = delete;
-    ProcessSessionStore& operator = (const ProcessSessionStore&) = delete;
+    ProcessSessionStore& operator=(const ProcessSessionStore&) = delete;
     ProcessSessionStore(ProcessSessionStore&&) = delete;
-    ProcessSessionStore& operator = (ProcessSessionStore&&) = delete;
+    ProcessSessionStore& operator=(ProcessSessionStore&&) = delete;
 
     /**
      * Launch a child, register it under a fresh session id, and wait out the
@@ -243,12 +248,11 @@ public:
      * That is exactly what ProcessHandle::await_initial_execution() is for
      * (process_handle.hpp): the window is an initial-wait GRACE PERIOD, not a
      * lifetime budget, and a child that outlives it is detached and keeps
-     * running under a fresh await task that records its eventual exit. So the
+     * running under the watcher already started before publication. So the
      * spec's `initial_wait_timeout_milliseconds` is HONOURED here rather than
      * overwritten.
      *
-     * Two fields are still the store's, because the alternative is a leak
-     * rather than a policy:
+     * Two fields have store-level semantics:
      *
      *   detach_on_timeout is forced ON. A session is a child a caller can come
      *   back to, so a store that killed a child at the end of the window would
@@ -287,12 +291,11 @@ public:
     /// across turns rather than in hash order). `ids` empty = all of them;
     /// ids naming no session are skipped, since a caller listing a stale id
     /// is asking a question the snapshot list already answers.
-    boost::asio::awaitable<std::vector<SessionSnapshot>> snapshots(
-        std::vector<SessionId> ids = {}) const;
+    boost::asio::awaitable<std::vector<SessionSnapshot>>
+    snapshots(std::vector<SessionId> ids = {}) const;
 
     /// One session's snapshot, or nullopt when no session has that id.
-    boost::asio::awaitable<std::optional<SessionSnapshot>> snapshot(
-        SessionId id) const;
+    boost::asio::awaitable<std::optional<SessionSnapshot>> snapshot(SessionId id) const;
 
     /**
      * Read captured output for one session.
@@ -308,8 +311,8 @@ public:
      *        hosts should use one representation consistently for delta reads.
      * @return nullopt when no session has that id.
      */
-    boost::asio::awaitable<std::optional<OutputRead>> read_output(
-        SessionId id, OutputStream stream, bool full, bool text = false);
+    boost::asio::awaitable<std::optional<OutputRead>>
+    read_output(SessionId id, OutputStream stream, bool full, bool text = false);
 
     /// Owned model-facing observation, retained even after session removal.
     struct SessionRead {
@@ -325,8 +328,8 @@ public:
     /// include_output=false leaves cursors untouched and intentionally discards
     /// output on release. Concurrent readers still share consuming cursors;
     /// exactly one concurrent release reports success. Missing ID = nullopt.
-    boost::asio::awaitable<std::optional<SessionRead>> read_session(
-        SessionId id, bool full, bool include_output, bool release);
+    boost::asio::awaitable<std::optional<SessionRead>>
+    read_session(SessionId id, bool full, bool include_output, bool release);
 
     /// Absent members mean the caller did not request that action.
     struct InputWriteResult {
@@ -335,15 +338,14 @@ public:
     };
     /// Report each requested queue admission honestly. Missing session = nullopt.
     /// One session strand orders input then end; runtime outcomes live in snapshot.
-    boost::asio::awaitable<std::optional<InputWriteResult>> send_input(
-        SessionId id, std::string input, bool end_input);
+    boost::asio::awaitable<std::optional<InputWriteResult>>
+    send_input(SessionId id, std::string input, bool end_input);
 
     /// Queue text for the child's stdin, and optionally end stdin after it.
     /// Await ordered backend acceptance, not delivery or consumption (see
     /// ProcessHandle::write_input). False = no session with that id; true
     /// does not imply admission. New consumers should use send_input().
-    boost::asio::awaitable<bool> write_input(
-        SessionId id, std::string input, bool close_input);
+    boost::asio::awaitable<bool> write_input(SessionId id, std::string input, bool close_input);
 
     /**
      * Wait for ANY one of these sessions to FINISH, and answer with ALL of
@@ -397,8 +399,8 @@ public:
      *         empty selection nor a timeout of 0 can end on a session that
      *         never finished.
      */
-    boost::asio::awaitable<WaitOutcome> wait_for_any(
-        std::vector<SessionId> ids, std::uint64_t timeout_milliseconds);
+    boost::asio::awaitable<WaitOutcome>
+    wait_for_any(std::vector<SessionId> ids, std::uint64_t timeout_milliseconds);
 
     /// Signal one session's child to end: SIGKILL, or SIGTERM when
     /// @p graceful. The terminal state is still recorded by the await task,
@@ -407,7 +409,7 @@ public:
     boost::asio::awaitable<bool> terminate(SessionId id, bool graceful);
 
     /**
-     * Drop an EXITED session. Its id is spent — nobody gets "proc_3" again.
+     * Drop an EXITED session. Its id is spent and will never be reused.
      *
      * Refuses a session whose child is still running: releasing it would
      * drop the last reference to a live child, and the handle's destructor
@@ -431,8 +433,8 @@ public:
     boost::asio::awaitable<std::size_t> size() const;
 
     /**
-     * End every live child — the host's shutdown path, and the one to call
-     * before dropping the store.
+     * Signal every live direct child without releasing sessions or joining tasks.
+     * Use shutdown(), not this method, before dropping the store.
      *
      * This exists because the destructor CANNOT do it properly: each handle's
      * own await task holds a reference to its handle until the child's
@@ -472,8 +474,10 @@ private:
     };
     using SessionPtr = std::shared_ptr<Session>;
 
-    static boost::asio::awaitable<OutputRead> read_output_on_session(
-        SessionPtr session, OutputStream stream, bool full, bool text);
+    /// Copy/project output and advance raw-byte cursors in one strand operation.
+    /// full=true is observational: it never changes any consuming cursor.
+    static boost::asio::awaitable<OutputRead>
+    read_output_on_session(SessionPtr session, OutputStream stream, bool full, bool text);
     /// Remove only this owned session, after its shutdown fence has completed.
     bool remove_session(const SessionPtr& session);
 
@@ -488,14 +492,12 @@ private:
     [[nodiscard]] SessionId mint_id_locked();
 
     /// The snapshot for `session`, read on its OWN strand.
-    static boost::asio::awaitable<SessionSnapshot> snapshot_on_session(
-        SessionPtr session);
+    static boost::asio::awaitable<SessionSnapshot> snapshot_on_session(SessionPtr session);
 
     /// Copy selected sessions under the mutex, then sort by id after unlocking.
     /// Empty ids select all sessions; unknown ids are skipped. The returned
     /// shared_ptrs remain valid across awaits and concurrent release calls.
-    [[nodiscard]] std::vector<SessionPtr> select_sessions(
-        const std::vector<SessionId>& ids) const;
+    [[nodiscard]] std::vector<SessionPtr> select_sessions(const std::vector<SessionId>& ids) const;
 
     mutable std::mutex _sessions_mutex;
     boost::asio::any_io_executor _executor;

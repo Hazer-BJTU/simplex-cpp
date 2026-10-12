@@ -18,13 +18,21 @@
 namespace process_io {
 namespace asio = boost::asio;
 
+/// One strand owns terminal state, capture and both supervised pumps.
+/// Completion handlers retain this state independently of the public facade.
 struct PosixPtyIo::State : std::enable_shared_from_this<State> {
-    enum class Task { Input, Output };
+    enum class Task {
+        Input,
+        Output
+    };
 
     explicit State(Executor executor, std::size_t limit)
-        : strand(std::move(executor)), terminal(strand),
-          wake_input(strand), capture(OutputTopology::Terminal, limit)
-    {}
+        : strand(std::move(executor)),
+          terminal(strand),
+          wake_input(strand),
+          capture(OutputTopology::Terminal, limit)
+    {
+    }
 
     Executor strand;
     subprocess::Terminal terminal;
@@ -34,6 +42,7 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
     // One strand defines acceptance order; input-end follows this entire queue.
     std::deque<std::string> queue;
     InputPhase input_phase = InputPhase::NotStarted;
+    // Attachment preparation and task startup are separate one-shot transitions.
     bool prepared = false;
     bool started = false;
     bool accepting = false;
@@ -41,6 +50,7 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
     bool stopping = false;
     bool input_stopped = false;
     bool joined = false;
+    // Count completion handlers still outstanding, including failed pump bodies.
     std::size_t active_tasks = 0;
     std::exception_ptr failure;
 
@@ -51,6 +61,7 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
         }
     }
 
+    /// Keep the first failure until the explicit join fence has finished cleanup.
     void remember(std::exception_ptr value) noexcept
     {
         if (!failure) {
@@ -83,7 +94,9 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
         boost::system::error_code code;
         terminal.cancel_input(code);
         remember(code);
-        if (code) input_phase = InputPhase::Failed;
+        if (code) {
+            input_phase = InputPhase::Failed;
+        }
         try {
             wake_input.cancel();
         } catch (...) {
@@ -134,18 +147,23 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
             // input pump too, so natural terminal EOF leaves no orphaned task.
             const auto previous = input_phase;
             abort_input();
-            if (!exception && (previous == InputPhase::Open || previous == InputPhase::EndRequested)) {
+            if (!exception
+                && (previous == InputPhase::Open || previous == InputPhase::EndRequested)) {
                 input_phase = InputPhase::PeerClosed;
             }
         }
         --active_tasks;
     }
 
+    /// Account for the pump before scheduling and undo only a scheduling failure.
+    /// The completion handler retains State until its final bookkeeping is done.
     void spawn(Task task, asio::awaitable<void> operation)
     {
         ++active_tasks;
         try {
-            asio::co_spawn(strand, std::move(operation),
+            asio::co_spawn(
+                strand,
+                std::move(operation),
                 [self = shared_from_this(), task](std::exception_ptr exception) {
                     self->completed(task, exception);
                 });
@@ -155,6 +173,8 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
         }
     }
 
+    /// Drain one merged raw stream, including after the retention budget fills.
+    /// Native PTY EOF normalization is confined to subprocess::Terminal.
     asio::awaitable<void> read()
     {
         std::array<char, 4096> buffer;
@@ -179,11 +199,15 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
         }
     }
 
+    /// Deliver accepted input in order. Once it drains, inspect the current
+    /// terminal mode and perform EOF if supported; output remains independent.
     asio::awaitable<void> write()
     {
         while (!stopping && !input_stopped) {
             if (queue.empty()) {
                 if (end_requested) {
+                    // Queue admission cannot promise EOF support: the child may
+                    // have changed termios since request_input_end() returned.
                     const auto eof = terminal.eof_request();
                     if (!eof) {
                         input_phase = InputPhase::Unsupported;
@@ -191,7 +215,9 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
                     }
                     boost::system::error_code code;
                     co_await terminal.write(*eof, code);
-                    if (stopping || input_stopped) co_return;
+                    if (stopping || input_stopped) {
+                        co_return;
+                    }
                     if (code == asio::error::eof) {
                         input_phase = InputPhase::PeerClosed;
                     } else if (code) {
@@ -210,6 +236,7 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
                 continue;
             }
             auto bytes = std::move(queue.front());
+            // Own the in-flight buffer even if input cancellation clears the queue.
             queue.pop_front();
             boost::system::error_code code;
             co_await terminal.write(bytes, code);
@@ -228,6 +255,8 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
         }
     }
 
+    /// Wait for all pump handlers, then publish joined and report retained failure.
+    /// The caller shields cancellation so input/output ownership cannot be stranded.
     asio::awaitable<void> join_tasks()
     {
         asio::steady_timer pause(strand);
@@ -247,7 +276,8 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
         // scheduling failure aborts and joins whatever was already spawned.
         co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
         if (started || stopping || input_stopped || !prepared || !terminal.launched()) {
-            throw std::logic_error("start requires one successful, unused terminal attachment launch");
+            throw std::logic_error(
+                "start requires one successful, unused terminal attachment launch");
         }
         started = true;
         accepting = true;
@@ -268,21 +298,28 @@ struct PosixPtyIo::State : std::enable_shared_from_this<State> {
 
 PosixPtyIo::PosixPtyIo(Executor executor, std::size_t max_output_bytes)
     : _state(std::make_shared<State>(std::move(executor), max_output_bytes))
-{}
+{
+}
 
 PosixPtyIo::~PosixPtyIo()
 {
     // Dispatch, not direct descriptor access from an arbitrary caller thread.
     // Shared state keeps buffers alive through outstanding completion handlers.
     try {
-        asio::dispatch(_state->strand, [state = _state] { state->abort(); });
+        asio::dispatch(_state->strand, [state = _state] {
+            state->abort();
+        });
     } catch (...) {
         // If scheduling itself fails, running tasks/context teardown retain
         // resource ownership. This fallback is deliberately not a join fence.
     }
 }
 
-Executor PosixPtyIo::executor() const { return _state->strand; }
+Executor PosixPtyIo::executor() const
+{
+    return _state->strand;
+}
+
 Capabilities PosixPtyIo::capabilities() const noexcept
 {
     return {OutputTopology::Terminal, true, InputEndMode::TerminalEof, true};
@@ -300,15 +337,18 @@ subprocess::IoAttachment PosixPtyIo::prepare_attachment()
 
 asio::awaitable<void> PosixPtyIo::start()
 {
-    co_await asio::co_spawn(_state->strand,
+    co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<void> {
             co_await state->start_tasks();
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<InputResult> PosixPtyIo::enqueue_input(std::string input)
 {
-    co_return co_await asio::co_spawn(_state->strand,
+    co_return co_await asio::co_spawn(
+        _state->strand,
         [state = _state, input = std::move(input)]() mutable -> asio::awaitable<InputResult> {
             if (!state->accepting) {
                 co_return InputResult::Closed;
@@ -316,12 +356,14 @@ asio::awaitable<InputResult> PosixPtyIo::enqueue_input(std::string input)
             state->queue.push_back(std::move(input));
             state->wake_input.cancel();
             co_return InputResult::Accepted;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<InputResult> PosixPtyIo::request_input_end()
 {
-    co_return co_await asio::co_spawn(_state->strand,
+    co_return co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<InputResult> {
             if (state->input_phase != InputPhase::Open || state->stopping) {
                 co_return InputResult::Closed;
@@ -331,25 +373,30 @@ asio::awaitable<InputResult> PosixPtyIo::request_input_end()
             state->input_phase = InputPhase::EndRequested;
             state->wake_input.cancel();
             co_return InputResult::Accepted;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<void> PosixPtyIo::stop_admission()
 {
-    co_await asio::co_spawn(_state->strand,
+    co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<void> {
             state->accepting = false;
             co_return;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<void> PosixPtyIo::cancel_input()
 {
-    co_await asio::co_spawn(_state->strand,
+    co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<void> {
             state->abort_input();
             co_return;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 const CaptureBuffer& PosixPtyIo::capture() const noexcept
@@ -361,14 +408,22 @@ Snapshot PosixPtyIo::snapshot() const
 {
     const auto& state = *_state;
     state.require_strand();
-    return {state.capture.view(Stream::Stdout), state.capture.view(Stream::Stderr),
-            state.capture.view(Stream::Terminal), state.input_phase, state.accepting,
-            state.end_requested, state.capture.complete(), state.joined, state.failure};
+    return {
+        state.capture.view(Stream::Stdout),
+        state.capture.view(Stream::Stderr),
+        state.capture.view(Stream::Terminal),
+        state.input_phase,
+        state.accepting,
+        state.end_requested,
+        state.capture.complete(),
+        state.joined,
+        state.failure};
 }
 
 asio::awaitable<bool> PosixPtyIo::drain_until(std::chrono::steady_clock::time_point deadline)
 {
-    co_return co_await asio::co_spawn(_state->strand,
+    co_return co_await asio::co_spawn(
+        _state->strand,
         [state = _state, deadline]() -> asio::awaitable<bool> {
             asio::steady_timer pause(state->strand);
             while (!state->capture.complete()) {
@@ -380,27 +435,32 @@ asio::awaitable<bool> PosixPtyIo::drain_until(std::chrono::steady_clock::time_po
                 co_await pause.async_wait(asio::use_awaitable);
             }
             co_return true;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<void> PosixPtyIo::cancel_and_join()
 {
     co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
-    co_await asio::co_spawn(_state->strand,
+    co_await asio::co_spawn(
+        _state->strand,
         [state = _state]() -> asio::awaitable<void> {
             co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
             state->abort();
             co_await state->join_tasks();
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 asio::awaitable<ResizeResult> PosixPtyIo::resize(unsigned columns, unsigned rows)
 {
-    co_return co_await asio::co_spawn(_state->strand,
+    co_return co_await asio::co_spawn(
+        _state->strand,
         [state = _state, columns, rows]() -> asio::awaitable<ResizeResult> {
             state->terminal.resize(columns, rows);
             co_return ResizeResult::Applied;
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 }
 
 } // namespace process_io

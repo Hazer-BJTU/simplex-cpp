@@ -15,16 +15,23 @@
 namespace process {
 
 ProcessHandle::ProcessHandle(LaunchSpec spec, boost::asio::any_io_executor executor)
-    : ProcessHandle(std::move(spec), executor.target<process_io::Executor>()
-        ? *executor.target<process_io::Executor>() : process_io::Executor(executor))
-{}
+    : ProcessHandle(
+          std::move(spec),
+          executor.target<process_io::Executor>() ? *executor.target<process_io::Executor>()
+                                                  : process_io::Executor(executor))
+{
+}
 
 ProcessHandle::ProcessHandle(LaunchSpec spec, process_io::Executor strand)
-    : _spec(std::move(spec)), _strand(std::move(strand)),
+    : _spec(std::move(spec)),
+      _strand(std::move(strand)),
       _io(_spec.tty
-          ? std::unique_ptr<process_io::ProcessIoEnvironment>(std::make_unique<process_io::PosixPtyIo>(_strand, _spec.max_output_bytes))
-          : std::make_unique<process_io::AnonymousPipeIo>(_strand, _spec.max_output_bytes))
+              ? std::unique_ptr<process_io::ProcessIoEnvironment>(
+                    std::make_unique<process_io::PosixPtyIo>(_strand, _spec.max_output_bytes))
+              : std::make_unique<process_io::AnonymousPipeIo>(_strand, _spec.max_output_bytes))
 {
+    // The environment is still unpublished, so attachment preparation and launch
+    // are exclusive. Child/transport RAII owns rollback if construction throws.
     const auto attachment = _io->prepare_attachment();
     _process_ptr = std::make_unique<subprocess::Child>(_spec, _strand, attachment);
     _spec.pid = _process_ptr->id();
@@ -48,13 +55,16 @@ void ProcessHandle::emergency_cleanup() noexcept
         try {
             logging::Logger::error(std::format(
                 "emergency cleanup for child {} (pid {}) failed: {}",
-                _spec.executable, _spec.pid, error.message()));
+                _spec.executable,
+                _spec.pid,
+                error.message()));
         } catch (...) {
         }
     }
 }
 
-boost::asio::awaitable<void> ProcessHandle::background_await_task() {
+boost::asio::awaitable<void> ProcessHandle::background_await_task()
+{
     using namespace boost::asio::experimental::awaitable_operators;
     // Bound on how long a missed child exit may go unnoticed — see the arm
     // race note below.
@@ -65,14 +75,18 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
 
     // Failed observation is not a terminal child status. Retain the exception
     // separately so shutdown can join this task and retry reaping without
-    // waiting forever for exited(). Close stdin before the defensive signal.
+    // waiting forever for exited(). This path attempts a defensive direct-child
+    // termination; shutdown owns input cancellation and the remaining task joins.
     auto watcher_failed = [&](std::string_view what) {
-        if (!_lifecycle_failure) _lifecycle_failure = std::current_exception();
+        if (!_lifecycle_failure) {
+            _lifecycle_failure = std::current_exception();
+        }
         boost::system::error_code error;
         const bool running = _process_ptr->running(error);
-        if (!error && running) _process_ptr->terminate(error);
-        logging::Logger::error(std::format(
-            "process background await task failed: {}", what));
+        if (!error && running) {
+            _process_ptr->terminate(error);
+        }
+        logging::Logger::error(std::format("process background await task failed: {}", what));
     };
 
     try {
@@ -93,8 +107,7 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
                     "initial waitpid probe failed",
                     probe_ec,
                     _spec.executable,
-                    _spec.description
-                );
+                    _spec.description);
             }
             terminal = true;
         }
@@ -102,12 +115,13 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
         while (!terminal) {
             // Shutdown owns recovery once this watcher has joined. The probe
             // timer bounds the wait even if a failed signal leaves a live child.
-            if (_stop_watcher) co_return;
+            if (_stop_watcher) {
+                co_return;
+            }
             probe.expires_after(probe_interval);
             ec.clear();
-            auto which = co_await (
-                probe.async_wait(boost::asio::use_awaitable) ||
-                _process_ptr->wait(ec));
+            auto which =
+                co_await (probe.async_wait(boost::asio::use_awaitable) || _process_ptr->wait(ec));
             if (which.index() == 1) {
                 // The process wait ended. An aborted native operation is not
                 // terminal observation; shutdown owns recovery when stopping.
@@ -120,8 +134,7 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
                         "background await task exited because of unexpected exception",
                         ec,
                         _spec.executable,
-                        _spec.description
-                    );
+                        _spec.description);
                 }
                 terminal = true; // exit_status_ stored by the wait itself
             } else {
@@ -137,8 +150,7 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
                             "waitpid probe failed",
                             probe_ec,
                             _spec.executable,
-                            _spec.description
-                        );
+                            _spec.description);
                     }
                     terminal = true;
                 }
@@ -157,7 +169,7 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
             co_await _io->request_input_end();
         }
         co_return;
-    } catch(const boost::system::system_error& e) {
+    } catch (const boost::system::system_error& e) {
         if (e.code() == boost::asio::error::operation_aborted) {
             // The probe timer can surface cancellation as a thrown abort.
             // Never publish terminal success from an interrupted observation.
@@ -165,23 +177,24 @@ boost::asio::awaitable<void> ProcessHandle::background_await_task() {
         }
         watcher_failed(e.what());
         co_return;
-    } catch(const std::exception& e) {
+    } catch (const std::exception& e) {
         watcher_failed(e.what());
         co_return;
-    } catch(...) {
+    } catch (...) {
         watcher_failed("unknown error");
         co_return;
     }
 }
 
-void ProcessHandle::record_terminal_state() {
+void ProcessHandle::record_terminal_state()
+{
     ExecutionStatus state;
     state.state = ProcessState::Exited;
     state.exit_code = _process_ptr->exit_code();
     state.cumulative_execution_milliseconds =
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - _started_steady
-    ).count();
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - _started_steady)
+            .count();
     _final_status = std::move(state);
     // The latch AFTER the optional, and that order is the contract: any
     // thread that sees exited() == true is guaranteed — by the release
@@ -194,10 +207,12 @@ boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks()
 {
     std::exception_ptr failure;
     try {
-        co_await boost::asio::co_spawn(_strand,
+        co_await boost::asio::co_spawn(
+            _strand,
             [self = shared_from_this()]() -> boost::asio::awaitable<void> {
                 co_await self->start_background_io_tasks_on_strand();
-            }, boost::asio::use_awaitable);
+            },
+            boost::asio::use_awaitable);
         co_return;
     } catch (const std::logic_error&) {
         // Repeated startup is a caller error, not permission to kill an
@@ -209,13 +224,18 @@ boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks()
     // Also covers cancellation/scheduling failure before the strand body runs.
     // Keep the original failure if cleanup independently reports another error.
     co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
-    try { co_await shutdown(); } catch (...) {}
+    try {
+        co_await shutdown();
+    } catch (...) {
+    }
     std::rethrow_exception(failure);
 }
 
 void ProcessHandle::remember_io_failure(std::exception_ptr failure) noexcept
 {
-    if (_lifecycle_failure || !failure) return;
+    if (_lifecycle_failure || !failure) {
+        return;
+    }
     _lifecycle_failure = failure;
     try {
         std::rethrow_exception(failure);
@@ -224,8 +244,11 @@ void ProcessHandle::remember_io_failure(std::exception_ptr failure) noexcept
             // A backend error may precede later failures on another stream.
             // Do not infer the first error's source from the latest input phase.
             _lifecycle_failure = std::make_exception_ptr(ProcessException(
-                ProcessException::Stage::Unknown, "process I/O failed", error.code(),
-                _spec.executable, _spec.description));
+                ProcessException::Stage::Unknown,
+                "process I/O failed",
+                error.code(),
+                _spec.executable,
+                _spec.description));
         } catch (...) {
             // Diagnostic allocation must not prevent the remaining joins/reap.
         }
@@ -244,12 +267,15 @@ boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks_on_strand(
         co_await _io->start();
         _watcher_active = true;
         try {
-            boost::asio::co_spawn(_strand,
+            boost::asio::co_spawn(
+                _strand,
                 [self = shared_from_this()]() -> boost::asio::awaitable<void> {
                     co_await self->background_await_task();
                 },
                 [self = shared_from_this()](std::exception_ptr error) {
-                    if (error && !self->_lifecycle_failure) self->_lifecycle_failure = error;
+                    if (error && !self->_lifecycle_failure) {
+                        self->_lifecycle_failure = error;
+                    }
                     self->_watcher_active = false;
                 });
         } catch (...) {
@@ -260,21 +286,23 @@ boost::asio::awaitable<void> ProcessHandle::start_background_io_tasks_on_strand(
         failure = std::current_exception();
     }
     if (failure) {
-        if (!_lifecycle_failure) _lifecycle_failure = failure;
+        if (!_lifecycle_failure) {
+            _lifecycle_failure = failure;
+        }
         co_await shutdown_on_strand();
         std::rethrow_exception(failure);
     }
 }
 
-boost::asio::awaitable<bool> ProcessHandle::await_initial_execution() {
+boost::asio::awaitable<bool> ProcessHandle::await_initial_execution()
+{
     // The spawned coroutine retains the strand executor after every await.
     co_return co_await boost::asio::co_spawn(
         _strand,
         [self = shared_from_this()]() -> boost::asio::awaitable<bool> {
             co_return co_await self->await_initial_execution_on_strand();
         },
-        boost::asio::use_awaitable
-    );
+        boost::asio::use_awaitable);
 }
 
 boost::asio::awaitable<bool> ProcessHandle::await_initial_execution_on_strand()
@@ -284,16 +312,21 @@ boost::asio::awaitable<bool> ProcessHandle::await_initial_execution_on_strand()
     }
     _initial_wait_started = true;
     _initial_wait_active = true;
-    boost::scope::scope_exit finished([this] { _initial_wait_active = false; });
-    const auto deadline = _spec.initial_wait_timeout_milliseconds == 0
-        ? std::chrono::steady_clock::time_point::max()
-        : std::chrono::steady_clock::now()
-            + std::chrono::milliseconds(_spec.initial_wait_timeout_milliseconds);
+    boost::scope::scope_exit finished([this] {
+        _initial_wait_active = false;
+    });
+    const auto deadline =
+        _spec.initial_wait_timeout_milliseconds == 0
+            ? std::chrono::steady_clock::time_point::max()
+            : std::chrono::steady_clock::now()
+                  + std::chrono::milliseconds(_spec.initial_wait_timeout_milliseconds);
     boost::asio::steady_timer pause(_strand);
     while (!exited() && _watcher_active && !_stop_watcher && !_lifecycle_failure) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
-            if (!_spec.detach_on_timeout) co_await signal_child_on_strand(Signal::Kill);
+            if (!_spec.detach_on_timeout) {
+                co_await signal_child_on_strand(Signal::Kill);
+            }
             co_return false;
         }
         pause.expires_at(std::min(deadline, now + std::chrono::milliseconds(5)));
@@ -304,20 +337,26 @@ boost::asio::awaitable<bool> ProcessHandle::await_initial_execution_on_strand()
 
 boost::asio::awaitable<process_io::InputResult> ProcessHandle::write_input(std::string message)
 {
-    co_return co_await boost::asio::co_spawn(_strand,
+    co_return co_await boost::asio::co_spawn(
+        _strand,
         [self = shared_from_this(), message = std::move(message)]() mutable
             -> boost::asio::awaitable<process_io::InputResult> {
-            if (self->exited()) co_return process_io::InputResult::Closed;
+            if (self->exited()) {
+                co_return process_io::InputResult::Closed;
+            }
             co_return co_await self->_io->enqueue_input(std::move(message));
-        }, boost::asio::use_awaitable);
+        },
+        boost::asio::use_awaitable);
 }
 
 boost::asio::awaitable<process_io::InputResult> ProcessHandle::close_input()
 {
-    co_return co_await boost::asio::co_spawn(_strand,
+    co_return co_await boost::asio::co_spawn(
+        _strand,
         [self = shared_from_this()]() -> boost::asio::awaitable<process_io::InputResult> {
             co_return co_await self->_io->request_input_end();
-        }, boost::asio::use_awaitable);
+        },
+        boost::asio::use_awaitable);
 }
 
 // ---- termination ------------------------------------------------------------
@@ -333,17 +372,21 @@ boost::asio::awaitable<process_io::InputResult> ProcessHandle::close_input()
 boost::asio::awaitable<void> ProcessHandle::shutdown()
 {
     co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
-    co_await boost::asio::co_spawn(_strand,
+    co_await boost::asio::co_spawn(
+        _strand,
         [self = shared_from_this()]() -> boost::asio::awaitable<void> {
             co_await self->shutdown_on_strand();
-        }, boost::asio::use_awaitable);
+        },
+        boost::asio::use_awaitable);
 }
 
 boost::asio::awaitable<void> ProcessHandle::shutdown_on_strand()
 {
     co_await boost::asio::this_coro::reset_cancellation_state(boost::asio::disable_cancellation());
     auto remember = [this] {
-        if (!_lifecycle_failure) _lifecycle_failure = std::current_exception();
+        if (!_lifecycle_failure) {
+            _lifecycle_failure = std::current_exception();
+        }
     };
     _stop_watcher = true;
     remember_io_failure(_io->snapshot().failure);
@@ -358,9 +401,11 @@ boost::asio::awaitable<void> ProcessHandle::shutdown_on_strand()
         remember();
     }
     try {
-        co_await _io->drain_until(std::chrono::steady_clock::now()
-            + std::chrono::milliseconds(100));
-    } catch (...) { remember(); }
+        co_await _io->drain_until(
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(100));
+    } catch (...) {
+        remember();
+    }
     try {
         co_await _io->cancel_and_join();
     } catch (...) {
@@ -376,37 +421,51 @@ boost::asio::awaitable<void> ProcessHandle::shutdown_on_strand()
     try {
         boost::system::error_code error;
         const bool running = _process_ptr->running(error);
-        if (!error && running) _process_ptr->terminate(error);
-        if (error) {
-            throw ProcessException(ProcessException::Stage::Terminate,
-                "recovering child termination during shutdown failed", error,
-                _spec.executable, _spec.description);
+        if (!error && running) {
+            _process_ptr->terminate(error);
         }
-        if (!exited()) record_terminal_state();
-    } catch (...) { remember(); }
-    if (_lifecycle_failure) std::rethrow_exception(_lifecycle_failure);
+        if (error) {
+            throw ProcessException(
+                ProcessException::Stage::Terminate,
+                "recovering child termination during shutdown failed",
+                error,
+                _spec.executable,
+                _spec.description);
+        }
+        if (!exited()) {
+            record_terminal_state();
+        }
+    } catch (...) {
+        remember();
+    }
+    if (_lifecycle_failure) {
+        std::rethrow_exception(_lifecycle_failure);
+    }
 }
 
-boost::asio::awaitable<bool> ProcessHandle::terminate() {
+boost::asio::awaitable<bool> ProcessHandle::terminate()
+{
     co_return co_await signal_child(Signal::Kill);
 }
 
-boost::asio::awaitable<bool> ProcessHandle::request_exit() {
+boost::asio::awaitable<bool> ProcessHandle::request_exit()
+{
     co_return co_await signal_child(Signal::Graceful);
 }
 
-boost::asio::awaitable<bool> ProcessHandle::signal_child(Signal signal) {
+boost::asio::awaitable<bool> ProcessHandle::signal_child(Signal signal)
+{
     // The spawned coroutine retains the strand executor after every await.
     co_return co_await boost::asio::co_spawn(
         _strand,
         [self = shared_from_this(), signal]() -> boost::asio::awaitable<bool> {
             co_return co_await self->signal_child_on_strand(signal);
         },
-        boost::asio::use_awaitable
-    );
+        boost::asio::use_awaitable);
 }
 
-boost::asio::awaitable<bool> ProcessHandle::signal_child_on_strand(Signal signal) {
+boost::asio::awaitable<bool> ProcessHandle::signal_child_on_strand(Signal signal)
+{
     // Everything below is strand-side state, so the probe and the signal
     // cannot interleave with the await task's own probe.
     if (_process_ptr == nullptr) {
@@ -426,11 +485,12 @@ boost::asio::awaitable<bool> ProcessHandle::signal_child_on_strand(Signal signal
             "probing the child before signalling it failed",
             probe_ec,
             _spec.executable,
-            _spec.description
-        );
+            _spec.description);
     }
 
-    if (!running) co_return false;
+    if (!running) {
+        co_return false;
+    }
 
     // The non-throwing overloads on purpose: the throwing ones raise
     // boost::system::system_error, and this class's boundary is
@@ -444,44 +504,48 @@ boost::asio::awaitable<bool> ProcessHandle::signal_child_on_strand(Signal signal
     if (signal_ec) {
         throw ProcessException(
             ProcessException::Stage::Terminate,
-            signal == Signal::Kill
-                ? "failed to terminate the process"
-                : "failed to request the process to exit",
+            signal == Signal::Kill ? "failed to terminate the process"
+                                   : "failed to request the process to exit",
             signal_ec,
             _spec.executable,
-            _spec.description
-        );
+            _spec.description);
     }
 
     logging::Logger::debug(std::format(
         "signalled child {} (pid {}) to {}",
-        _spec.executable, _spec.pid,
+        _spec.executable,
+        _spec.pid,
         signal == Signal::Kill ? "terminate" : "exit"));
     co_return true;
 }
 
 // ---- observation ------------------------------------------------------------
 
-const LaunchSpec& ProcessHandle::spec() const noexcept {
+const LaunchSpec& ProcessHandle::spec() const noexcept
+{
     return _spec;
 }
 
-ProcessId ProcessHandle::pid() const noexcept {
+ProcessId ProcessHandle::pid() const noexcept
+{
     return _spec.pid;
 }
 
-std::chrono::system_clock::time_point ProcessHandle::started_at() const noexcept {
+std::chrono::system_clock::time_point ProcessHandle::started_at() const noexcept
+{
     return _spec.started_at;
 }
 
-bool ProcessHandle::exited() const noexcept {
+bool ProcessHandle::exited() const noexcept
+{
     // The latch, not _final_status: see the class comment. An acquire pairs
-    // with the release in background_await_task(), so a caller that sees true
+    // with the release in record_terminal_state(), so a caller that sees true
     // also sees whatever the terminal observation published before it.
     return _terminal_observed.load(std::memory_order_acquire);
 }
 
-ExecutionStatus ProcessHandle::status() const {
+ExecutionStatus ProcessHandle::status() const
+{
     if (_final_status) {
         return *_final_status;
     }
@@ -491,41 +555,49 @@ ExecutionStatus ProcessHandle::status() const {
     // started_at: wall clock is for reports, not for measuring).
     ExecutionStatus live;
     live.state = ProcessState::Running;
-    live.cumulative_execution_milliseconds = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - _started_steady
-        ).count());
+    live.cumulative_execution_milliseconds =
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now() - _started_steady)
+                                       .count());
     return live;
 }
 
-const std::string& ProcessHandle::standard_output() const {
+const std::string& ProcessHandle::standard_output() const
+{
     return _io->capture().bytes(process_io::Stream::Stdout);
 }
 
-const std::string& ProcessHandle::standard_error() const {
+const std::string& ProcessHandle::standard_error() const
+{
     return _io->capture().bytes(process_io::Stream::Stderr);
 }
 
-bool ProcessHandle::stdout_truncated() const {
+bool ProcessHandle::stdout_truncated() const
+{
     return _io->capture().view(process_io::Stream::Stdout).value().truncated;
 }
 
-bool ProcessHandle::stderr_truncated() const {
+bool ProcessHandle::stderr_truncated() const
+{
     return _io->capture().view(process_io::Stream::Stderr).value().truncated;
 }
 
-bool ProcessHandle::output_drained() const noexcept {
+bool ProcessHandle::output_drained() const noexcept
+{
     return _io->capture().complete();
 }
 
-process_io::Snapshot ProcessHandle::io_snapshot() const {
+process_io::Snapshot ProcessHandle::io_snapshot() const
+{
     return _io->snapshot();
 }
-const process_io::CaptureBuffer& ProcessHandle::capture() const noexcept {
+const process_io::CaptureBuffer& ProcessHandle::capture() const noexcept
+{
     return _io->capture();
 }
 
-ExecutionResult ProcessHandle::snapshot() const {
+ExecutionResult ProcessHandle::snapshot() const
+{
     ExecutionResult result;
     result.spec = _spec;
     result.execution = status();

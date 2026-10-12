@@ -13,12 +13,43 @@
 
 namespace process_io {
 
+/// Shared with the child owner: one strand serializes lifecycle and I/O state.
 using Executor = boost::asio::strand<boost::asio::any_io_executor>;
-enum class InputEndMode { Unsupported, HalfClose, TerminalEof };
-enum class InputPhase { NotStarted, Open, EndRequested, Ended, PeerClosed, Stopped, Failed, Unsupported };
-enum class InputResult { Accepted, Closed, Unsupported };
-enum class ResizeResult { Applied, Unsupported };
 
+/// How the backend can represent an ordered end of input.
+enum class InputEndMode {
+    Unsupported, // No input-end mechanism is available.
+    HalfClose,   // Close the pipe writer after queued bytes are written.
+    TerminalEof  // Write the terminal's current canonical EOF character.
+};
+
+/// Runtime input state, distinct from the result of accepting a queue request.
+enum class InputPhase {
+    NotStarted,   // Input pumps have not started.
+    Open,         // Input has not ended; accepting_input controls admission.
+    EndRequested, // End was accepted; earlier input may still be pending.
+    Ended,        // The backend performed its input-end operation.
+    PeerClosed,   // The peer stopped accepting input.
+    Stopped,      // The owner forcibly cancelled input.
+    Failed,       // An unexpected input error was retained.
+    Unsupported   // The queued terminal EOF was incompatible with its mode.
+};
+
+/// Immediate admission/capability result; Accepted never guarantees delivery.
+enum class InputResult {
+    Accepted,
+    Closed,
+    Unsupported
+};
+
+/// Result of the optional host-side resize operation.
+enum class ResizeResult {
+    Applied,
+    Unsupported
+};
+
+/// Fixed backend properties. Terminal EOF may still be unsupported at runtime
+/// if the child changes terminal settings after these capabilities are read.
 struct Capabilities {
     OutputTopology topology;
     bool is_terminal;
@@ -35,13 +66,19 @@ struct Capabilities {
  * failure retains the first unexpected I/O/task error, also rethrown after join.
  */
 struct Snapshot {
+    // Exactly the streams belonging to this backend are present. An empty
+    // stream remains present; nullopt means the backend has no such stream.
     std::optional<StreamView> standard_output;
     std::optional<StreamView> standard_error;
     std::optional<StreamView> terminal_output;
     InputPhase input_phase;
+    // Admission may be stopped without ending output capture or requesting EOF.
     bool accepting_input;
+    // Historical acceptance flag, even if delivery later fails or is unsupported.
     bool input_end_requested;
+    // Includes EOF, forced stop and failure; consult each StreamView for its end.
     bool output_complete;
+    // Every owned pump's completion handler has settled at the explicit fence.
     bool joined;
     std::exception_ptr failure;
 };
@@ -49,7 +86,8 @@ struct Snapshot {
 /** Independent child I/O, with no process ID, reaper, timeout or tool policy.
  * Construct with the SAME strand used by child lifecycle/session observations.
  * Awaitable operations marshal onto that strand and can be called from other
- * executors. snapshot() must run directly on it;
+ * executors. The strand serializes synchronous sections, not entire suspended
+ * coroutines; other operations may run at each await. snapshot() must run on it;
  * snapshot/cursor consumption must be one operation without co_await in between.
  * Keep the environment alive throughout outstanding method calls. The executor
  * context must outlive it. Explicit cancel_and_join() is the resource fence.
@@ -62,8 +100,9 @@ public:
 
     /// Once only, before launching the child. May run during exclusive
     /// construction before publication, or on executor(); never concurrently.
-    /// The attachment borrows this environment until launch completes. A failed launch must still be
-    /// followed by cancel_and_join(); that path needs no child or start().
+    /// The attachment borrows this environment until launch completes. A failed
+    /// launch must still be followed by cancel_and_join(); that path needs no
+    /// child or start().
     virtual subprocess::IoAttachment prepare_attachment() = 0;
     /// After successful launch. Supervises all pumps; repeated start is an error.
     virtual boost::asio::awaitable<void> start() = 0;
@@ -87,15 +126,15 @@ public:
     [[nodiscard]] virtual const CaptureBuffer& capture() const noexcept = 0;
     /// Permit natural capture until the deadline. False means time expired;
     /// does not close transports. Caller cancellation can interrupt this wait.
-    virtual boost::asio::awaitable<bool> drain_until(
-        std::chrono::steady_clock::time_point deadline) = 0;
+    virtual boost::asio::awaitable<bool>
+    drain_until(std::chrono::steady_clock::time_point deadline) = 0;
     /// Shield cancellation, stop admission, discard undelivered input, close
     /// transports, join EVERY owned pump, then rethrow the first failure.
     /// Safe before start/after launch failure, and repeatable even after errors.
     virtual boost::asio::awaitable<void> cancel_and_join() = 0;
     /// Optional host-only capability; no native dimensions/descriptors escape.
-    virtual boost::asio::awaitable<ResizeResult> resize(
-        unsigned columns, unsigned rows) = 0;
+    /// A supported resize can still throw for invalid dimensions or OS failure.
+    virtual boost::asio::awaitable<ResizeResult> resize(unsigned columns, unsigned rows) = 0;
 };
 
 } // namespace process_io

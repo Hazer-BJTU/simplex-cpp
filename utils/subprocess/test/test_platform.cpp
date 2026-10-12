@@ -23,8 +23,8 @@ BOOST_AUTO_TEST_CASE(executable_location_identifies_host_not_shared_library)
     BOOST_TEST(executable.filename().string() == "test_subprocess_platform");
     BOOST_TEST(subprocess::executable_location() == executable);
 #if defined(__linux__)
-    BOOST_TEST(std::filesystem::equivalent(
-        executable, std::filesystem::read_symlink("/proc/self/exe")));
+    BOOST_TEST(
+        std::filesystem::equivalent(executable, std::filesystem::read_symlink("/proc/self/exe")));
 #endif
 }
 
@@ -97,12 +97,15 @@ BOOST_AUTO_TEST_CASE(retaining_attachment_does_not_hold_child_pipe_ends_open)
     subprocess::Child child(spec, context.get_executor(), attachment);
     std::string captured;
     boost::system::error_code read_error;
-    auto read = boost::asio::co_spawn(context,
+    auto read = boost::asio::co_spawn(
+        context,
         [&]() -> boost::asio::awaitable<void> {
-            co_await boost::asio::async_read(output,
+            co_await boost::asio::async_read(
+                output,
                 boost::asio::dynamic_buffer(captured),
                 boost::asio::redirect_error(boost::asio::use_awaitable, read_error));
-        }, boost::asio::use_future);
+        },
+        boost::asio::use_future);
     context.run();
     read.get();
     BOOST_TEST(read_error == boost::asio::error::eof);

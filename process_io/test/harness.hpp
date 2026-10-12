@@ -25,8 +25,10 @@ struct Harness {
 
     explicit Harness(std::size_t cap = 4 * 1024 * 1024)
         : environment(std::make_unique<process_io::AnonymousPipeIo>(strand, cap))
-    {}
+    {
+    }
 
+    /// Launch the controlled pipe fixture before any I/O pump is started.
     void launch(const std::string& mode)
     {
         const auto attachment = environment->prepare_attachment();
@@ -43,6 +45,7 @@ struct Harness {
         co_await timer.async_wait(asio::use_awaitable);
     }
 
+    /// Bound fixture exit observation so a broken test fails instead of hanging.
     asio::awaitable<int> wait_exit()
     {
         const auto deadline = std::chrono::steady_clock::now() + 5s;
@@ -53,10 +56,14 @@ struct Harness {
             }
             co_await pause();
         }
-        if (error) throw boost::system::system_error(error);
+        if (error) {
+            throw boost::system::system_error(error);
+        }
         co_return child->exit_code();
     }
 
+    /// Synchronize with the child's explicit marker instead of assuming a delay
+    /// is long enough for startup, even when several executor threads are used.
     asio::awaitable<void> ready()
     {
         const auto deadline = std::chrono::steady_clock::now() + 5s;
@@ -68,9 +75,13 @@ struct Harness {
         }
     }
 
+    /// Execute assertions on the shared strand, join I/O despite test failures,
+    /// then quiesce every executor thread before synchronous native cleanup.
+    /// Preserve the test's first failure if cleanup independently reports another.
     void run(std::function<asio::awaitable<void>(Harness&)> test, std::size_t workers = 1)
     {
-        auto done = asio::co_spawn(strand,
+        auto done = asio::co_spawn(
+            strand,
             [this, test = std::move(test)]() -> asio::awaitable<void> {
                 std::exception_ptr failure;
                 try {
@@ -79,15 +90,24 @@ struct Harness {
                     failure = std::current_exception();
                 }
                 try {
-                    if (environment) co_await environment->cancel_and_join();
+                    if (environment) {
+                        co_await environment->cancel_and_join();
+                    }
                 } catch (...) {
-                    if (!failure) failure = std::current_exception();
+                    if (!failure) {
+                        failure = std::current_exception();
+                    }
                 }
-                if (failure) std::rethrow_exception(failure);
-            }, asio::use_future);
+                if (failure) {
+                    std::rethrow_exception(failure);
+                }
+            },
+            asio::use_future);
         std::vector<std::jthread> threads;
         for (std::size_t i = 1; i < workers; ++i) {
-            threads.emplace_back([this] { context.run(); });
+            threads.emplace_back([this] {
+                context.run();
+            });
         }
         context.run();
         threads.clear();
@@ -105,6 +125,8 @@ struct Harness {
                 failure = std::make_exception_ptr(boost::system::system_error(error));
             }
         }
-        if (failure) std::rethrow_exception(failure);
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
     }
 };

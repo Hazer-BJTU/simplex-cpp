@@ -7,9 +7,9 @@
 // The data half of the process domain, the way model_io.hpp is the data half
 // of the model domain: plain aggregates describing what to launch (and the
 // environment and timeout policy to launch it under), how the execution is
-// going, and what came out. The process/ module's manager (its framework is
-// being written against these types) consumes and produces them; anything
-// async, pipes or platform behaviour lives there, not here.
+// going, and what came out. ProcessHandle consumes and produces these records;
+// async transport and native process mechanisms live in process_io and
+// utils/subprocess, not in this serializable data contract.
 //
 // Same contract rules as model_io.hpp / endpoint_config.hpp: plain aggregates
 // serialised through nlohmann ADL (a to_json/from_json pair next to each
@@ -47,11 +47,13 @@ enum class ProcessState {
     Exited,
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(ProcessState, {
-    {ProcessState::Unknown, "unknown"},
-    {ProcessState::Running, "running"},
-    {ProcessState::Exited, "exited"},
-})
+NLOHMANN_JSON_SERIALIZE_ENUM(
+    ProcessState,
+    {
+        {ProcessState::Unknown, "unknown"},
+        {ProcessState::Running, "running"},
+        {ProcessState::Exited, "exited"},
+    })
 
 // ---- launch request -------------------------------------------------------
 
@@ -118,6 +120,9 @@ struct LaunchSpec {
     // true (default) => the child inherits the parent's environment.
     bool inherit_environment = true;
     // Allocate a real terminal; false preserves separate anonymous pipes.
+    // Terminal output is merged by the OS and appears only as terminal_text.
+    // Unsupported platforms/allocation failures fail launch rather than
+    // silently falling back to pipes after the request has been confirmed.
     bool tty = false;
     // The directory the child starts in. Disengaged (the default) => the
     // child inherits the PARENT's working directory, which is what a plain
@@ -131,54 +136,77 @@ struct LaunchSpec {
     std::optional<std::string> working_directory;
 };
 
-inline void to_json(nlohmann::json& j, const LaunchSpec& s) {
+inline void to_json(nlohmann::json& j, const LaunchSpec& s)
+{
     j = nlohmann::json{
         {"executable", s.executable},
         {"arguments", s.arguments},
         {"description", s.description},
         {"pid", s.pid},
         {"started_at",
-         std::chrono::duration_cast<std::chrono::milliseconds>(
-             s.started_at.time_since_epoch())
+         std::chrono::duration_cast<std::chrono::milliseconds>(s.started_at.time_since_epoch())
              .count()},
-        {"initial_wait_timeout_milliseconds",
-         s.initial_wait_timeout_milliseconds},
+        {"initial_wait_timeout_milliseconds", s.initial_wait_timeout_milliseconds},
         {"detach_on_timeout", s.detach_on_timeout},
         {"max_output_bytes", s.max_output_bytes},
         {"inherit_environment", s.inherit_environment},
         {"tty", s.tty},
     };
-    if (s.environment) j["environment"] = *s.environment;
-    if (s.working_directory) j["working_directory"] = *s.working_directory;
+    if (s.environment) {
+        j["environment"] = *s.environment;
+    }
+    if (s.working_directory) {
+        j["working_directory"] = *s.working_directory;
+    }
 }
 
-inline void from_json(const nlohmann::json& j, LaunchSpec& s) {
-    if (auto it = j.find("executable"); it != j.end()) it->get_to(s.executable);
-    if (auto it = j.find("arguments"); it != j.end()) it->get_to(s.arguments);
-    if (auto it = j.find("description"); it != j.end()) it->get_to(s.description);
-    if (auto it = j.find("initial_wait_timeout_milliseconds");
-        it != j.end())
+inline void from_json(const nlohmann::json& j, LaunchSpec& s)
+{
+    if (auto it = j.find("executable"); it != j.end()) {
+        it->get_to(s.executable);
+    }
+    if (auto it = j.find("arguments"); it != j.end()) {
+        it->get_to(s.arguments);
+    }
+    if (auto it = j.find("description"); it != j.end()) {
+        it->get_to(s.description);
+    }
+    if (auto it = j.find("initial_wait_timeout_milliseconds"); it != j.end()) {
         it->get_to(s.initial_wait_timeout_milliseconds);
-    if (auto it = j.find("detach_on_timeout"); it != j.end())
+    }
+    if (auto it = j.find("detach_on_timeout"); it != j.end()) {
         it->get_to(s.detach_on_timeout);
-    if (auto it = j.find("max_output_bytes"); it != j.end())
+    }
+    if (auto it = j.find("max_output_bytes"); it != j.end()) {
         it->get_to(s.max_output_bytes);
-    if (auto it = j.find("inherit_environment"); it != j.end())
+    }
+    if (auto it = j.find("inherit_environment"); it != j.end()) {
         it->get_to(s.inherit_environment);
-    if (auto it = j.find("tty"); it != j.end()) it->get_to(s.tty);
-    else s.tty = false;
-    if (auto it = j.find("pid"); it != j.end()) it->get_to(s.pid);
-    if (auto it = j.find("started_at"); it != j.end())
+    }
+    if (auto it = j.find("tty"); it != j.end()) {
+        it->get_to(s.tty);
+    } else {
+        s.tty = false;
+    }
+    if (auto it = j.find("pid"); it != j.end()) {
+        it->get_to(s.pid);
+    }
+    if (auto it = j.find("started_at"); it != j.end()) {
         s.started_at = std::chrono::sys_time<std::chrono::milliseconds>{
             std::chrono::milliseconds{it->get<std::int64_t>()}};
+    }
     // JSON null reads as ABSENT — see the never-null round-trip rule in the
     // header comment (same guard detail::read_optional applies in model_io).
-    if (auto it = j.find("environment"); it != j.end() && !it->is_null())
+    if (auto it = j.find("environment"); it != j.end() && !it->is_null()) {
         s.environment = it->get<std::vector<std::string>>();
-    else s.environment.reset();
-    if (auto it = j.find("working_directory"); it != j.end() && !it->is_null())
+    } else {
+        s.environment.reset();
+    }
+    if (auto it = j.find("working_directory"); it != j.end() && !it->is_null()) {
         s.working_directory = it->get<std::string>();
-    else s.working_directory.reset();
+    } else {
+        s.working_directory.reset();
+    }
 }
 
 // ---- execution status -----------------------------------------------------
@@ -195,31 +223,38 @@ struct ExecutionStatus {
     std::uint64_t cumulative_execution_milliseconds = 0;
 };
 
-inline void to_json(nlohmann::json& j, const ExecutionStatus& e) {
+inline void to_json(nlohmann::json& j, const ExecutionStatus& e)
+{
     j = nlohmann::json{
         {"state", e.state},
-        {"cumulative_execution_milliseconds",
-         e.cumulative_execution_milliseconds},
+        {"cumulative_execution_milliseconds", e.cumulative_execution_milliseconds},
     };
-    if (e.exit_code) j["exit_code"] = *e.exit_code;
+    if (e.exit_code) {
+        j["exit_code"] = *e.exit_code;
+    }
 }
 
-inline void from_json(const nlohmann::json& j, ExecutionStatus& e) {
-    if (auto it = j.find("state"); it != j.end()) it->get_to(e.state);
-    if (auto it = j.find("cumulative_execution_milliseconds"); it != j.end())
+inline void from_json(const nlohmann::json& j, ExecutionStatus& e)
+{
+    if (auto it = j.find("state"); it != j.end()) {
+        it->get_to(e.state);
+    }
+    if (auto it = j.find("cumulative_execution_milliseconds"); it != j.end()) {
         it->get_to(e.cumulative_execution_milliseconds);
-    if (auto it = j.find("exit_code"); it != j.end() && !it->is_null())
+    }
+    if (auto it = j.find("exit_code"); it != j.end() && !it->is_null()) {
         e.exit_code = it->get<int>();
-    else e.exit_code.reset();
+    } else {
+        e.exit_code.reset();
+    }
 }
 
 // ---- result ----------------------------------------------------------------
 
 // One process as reported to a caller: the launch spec that started it,
-// echoed verbatim with pid and start time stamped by the handle (spec + pid
-// is the process's identity — the old manager-assigned id and duplicated
-// description are gone), how the execution went, and whichever output
-// streams were captured.
+// echoed verbatim with pid and start time stamped by the handle (diagnostic
+// launch metadata, not authority to access a native process), how the execution
+// went, and whichever output streams were captured.
 // The stream fields carry a _text suffix because bare stdout/stderr collide
 // with the <cstdio> macros of the same name; the wire keys keep the suffix
 // for the usual keys-match-fields rule. Disengaged stream fields mean "not
@@ -241,7 +276,8 @@ struct ExecutionResult {
     bool stderr_truncated = false;
 };
 
-inline void to_json(nlohmann::json& j, const ExecutionResult& r) {
+inline void to_json(nlohmann::json& j, const ExecutionResult& r)
+{
     j = nlohmann::json{
         {"spec", r.spec},
         {"execution", r.execution},
@@ -249,29 +285,51 @@ inline void to_json(nlohmann::json& j, const ExecutionResult& r) {
         {"stderr_truncated", r.stderr_truncated},
         {"terminal_truncated", r.terminal_truncated},
     };
-    if (r.terminal_text) j["terminal_text"] = *r.terminal_text;
-    if (r.stdout_text) j["stdout_text"] = *r.stdout_text;
-    if (r.stderr_text) j["stderr_text"] = *r.stderr_text;
+    if (r.terminal_text) {
+        j["terminal_text"] = *r.terminal_text;
+    }
+    if (r.stdout_text) {
+        j["stdout_text"] = *r.stdout_text;
+    }
+    if (r.stderr_text) {
+        j["stderr_text"] = *r.stderr_text;
+    }
 }
 
-inline void from_json(const nlohmann::json& j, ExecutionResult& r) {
-    if (auto it = j.find("spec"); it != j.end()) it->get_to(r.spec);
-    if (auto it = j.find("execution"); it != j.end()) it->get_to(r.execution);
-    if (auto it = j.find("terminal_text"); it != j.end() && !it->is_null())
+inline void from_json(const nlohmann::json& j, ExecutionResult& r)
+{
+    if (auto it = j.find("spec"); it != j.end()) {
+        it->get_to(r.spec);
+    }
+    if (auto it = j.find("execution"); it != j.end()) {
+        it->get_to(r.execution);
+    }
+    if (auto it = j.find("terminal_text"); it != j.end() && !it->is_null()) {
         r.terminal_text = it->get<std::string>();
-    else r.terminal_text.reset();
-    if (auto it = j.find("terminal_truncated"); it != j.end()) it->get_to(r.terminal_truncated);
-    else r.terminal_truncated = false;
-    if (auto it = j.find("stdout_text"); it != j.end() && !it->is_null())
+    } else {
+        r.terminal_text.reset();
+    }
+    if (auto it = j.find("terminal_truncated"); it != j.end()) {
+        it->get_to(r.terminal_truncated);
+    } else {
+        r.terminal_truncated = false;
+    }
+    if (auto it = j.find("stdout_text"); it != j.end() && !it->is_null()) {
         r.stdout_text = it->get<std::string>();
-    else r.stdout_text.reset();
-    if (auto it = j.find("stderr_text"); it != j.end() && !it->is_null())
+    } else {
+        r.stdout_text.reset();
+    }
+    if (auto it = j.find("stderr_text"); it != j.end() && !it->is_null()) {
         r.stderr_text = it->get<std::string>();
-    else r.stderr_text.reset();
-    if (auto it = j.find("stdout_truncated"); it != j.end())
+    } else {
+        r.stderr_text.reset();
+    }
+    if (auto it = j.find("stdout_truncated"); it != j.end()) {
         it->get_to(r.stdout_truncated);
-    if (auto it = j.find("stderr_truncated"); it != j.end())
+    }
+    if (auto it = j.find("stderr_truncated"); it != j.end()) {
         it->get_to(r.stderr_truncated);
+    }
 }
 
 } // namespace process
