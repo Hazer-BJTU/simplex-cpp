@@ -837,9 +837,9 @@ BOOST_AUTO_TEST_CASE(every_tool_is_declared_by_its_own_yaml_file)
                             // For one the call leaves out, the default contract
                             // holds in BOTH directions: a property the
                             // declaration gives a default to is settled at that
-                            // value, and one it does not is left alone, because
-                            // the implementation settles nothing a model was not
-                            // told about. The second half is what makes a
+                            // value, and a declared property without a default
+                            // is left alone. Hidden runtime defaults are checked
+                            // separately below. The second half is what makes a
                             // DELETED `default:` visible — the settled query
                             // keeps carrying the value, and the guards below
                             // keep a missing key reading as ONE failed
@@ -862,12 +862,16 @@ BOOST_AUTO_TEST_CASE(every_tool_is_declared_by_its_own_yaml_file)
                             }
                         }
                     }
-                    // ... and it settles nothing the declaration does not name,
-                    // so a model reading the schema has been told about every
-                    // field it will see in the record.
+                    // Only run_command's retained runtime tty option is hidden
+                    // from the model. It must still settle to pipe mode; all
+                    // other settled fields must be declared.
                     for (const auto& settled : query.arguments.items()) {
                         BOOST_TEST_CONTEXT("settled " << settled.key()) {
-                            BOOST_TEST(properties.contains(settled.key()));
+                            if (name == tool_names::kRun && settled.key() == "tty") {
+                                BOOST_CHECK(settled.value() == nlohmann::json(false));
+                            } else {
+                                BOOST_TEST(properties.contains(settled.key()));
+                            }
                         }
                     }
                 }
@@ -1274,10 +1278,9 @@ BOOST_AUTO_TEST_CASE(settling_materializes_the_defaults_into_the_query)
     BOOST_CHECK(named_directory.arguments.at("working_directory") ==
                 nlohmann::json("/tmp"));
 
-    // run_command settles by the same rule, and settles NOTHING ELSE: it has no
-    // `description` property at all — the command is the session's label, and
-    // the tool fills the spec in with it rather than asking the model for one —
-    // so a settled call carries only the properties its declaration names.
+    // run_command has no description argument: the command is the session's
+    // label. Its hidden runtime tty option still settles to false, even though
+    // the model-facing declaration does not advertise terminal allocation.
     model_io::InvokeQuery command = call_for(
         std::string(tool_names::kRun), nlohmann::json{{"command", "true"}});
     (void)f.prepare(command);
@@ -2305,7 +2308,7 @@ BOOST_AUTO_TEST_CASE(invalid_auto_release_is_rejected)
     }
 }
 
-BOOST_AUTO_TEST_CASE(run_command_exposes_shell_command_directory_wait_and_tty)
+BOOST_AUTO_TEST_CASE(run_command_exposes_only_shell_command_directory_and_wait)
 {
     Fixture f;
     const auto catalogue = f.set->get_tools();
@@ -2314,8 +2317,8 @@ BOOST_AUTO_TEST_CASE(run_command_exposes_shell_command_directory_wait_and_tty)
     });
     BOOST_REQUIRE(found != catalogue.end());
     const auto& properties = found->argument_schema.at("properties");
-    BOOST_TEST(properties.size() == 4u);
-    BOOST_TEST(properties.contains("tty"));
+    BOOST_TEST(properties.size() == 3u);
+    BOOST_TEST(!properties.contains("tty"));
     BOOST_TEST(properties.contains("command"));
     BOOST_TEST(properties.contains("working_directory"));
     BOOST_TEST(properties.contains("expected_runtime_milliseconds"));

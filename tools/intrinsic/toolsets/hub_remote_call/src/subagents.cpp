@@ -72,7 +72,7 @@ void exact(const Json& object, std::initializer_list<std::string_view> keys)
 
 void argument_budget(const Json& arguments)
 {
-    // Strict dump also validates UTF-8 in nested extras/provider options.
+    // Strict dump also validates UTF-8 in request text and nested provider options.
     std::string encoded;
     try {
         encoded = arguments.dump();
@@ -82,22 +82,17 @@ void argument_budget(const Json& arguments)
     require(encoded.size() <= argument_bytes, "arguments exceed 64 KiB serialized UTF-8");
 }
 
-void validate_content(const Json& parts)
+/** Convert the text-only tool arguments to the existing Hub payload contract. */
+Json send_arguments(Json arguments)
 {
-    require(parts.is_array() && !parts.empty(), "message requires a nonempty content array");
-    for (const auto& part : parts) {
-        exact(part, {"type", "modality", "raw", "extras"});
-        require(one_of(part.value("type", Json()), {"text", "binary", "external_ref"}),
-            "content type must be text, binary or external_ref");
-        require(one_of(part.value("modality", Json()),
-                {"text", "image", "audio", "video", "document"}),
-            "content requires a supported modality");
-        require(part.contains("raw") && part.at("raw").is_string()
-                && !part.at("raw").get_ref<const std::string&>().empty(),
-            "content raw must be a nonempty string");
-        require(!part.contains("extras") || part.at("extras").is_object(),
-            "content extras must be an object");
+    if (arguments.at("operation") == "message") {
+        Json text = std::move(arguments.at("request"));
+        arguments.erase("request");
+        arguments["content"] = Json::array({{
+            {"type", "text"}, {"modality", "text"}, {"raw", std::move(text)}
+        }});
     }
+    return arguments;
 }
 
 void validate_options(const Json& options)
@@ -561,7 +556,14 @@ boost::asio::awaitable<model_io::Content> SubagentToolBase::invoke(
     const bool mutation = route_ != "subagent/receive";
     try {
         const auto identity = identity_();
-        reply = co_await request(query, route_, identity.worker_id, identity.session_id, identity.run_id);
+        // Keep the recorded model call unchanged. Only the outgoing message
+        // uses the Hub's content array; other routes retain their arguments.
+        auto remote_query = query;
+        if (route_ == "subagent/send") {
+            remote_query.arguments = send_arguments(std::move(remote_query.arguments));
+        }
+        reply = co_await request(std::move(remote_query), route_,
+            identity.worker_id, identity.session_id, identity.run_id);
     } catch (const tools::InvokeException& error) {
         // request() exposes only sanitized transport/protocol diagnostics.
         // Preserve those for reads; lost write replies still require inspection.
@@ -617,16 +619,17 @@ SubagentSendTool::SubagentSendTool(endpoint::ResolvedEndpoint endpoint,
 void SubagentSendTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
     try {
-        exact(query.arguments, {"subagent_id", "operation", "content", "options"});
+        exact(query.arguments, {"subagent_id", "operation", "request", "options"});
         const auto& arguments = query.arguments;
         require(identifier(arguments.value("subagent_id", Json())), "subagent_id must be a valid session ID");
         require(one_of(arguments.value("operation", Json()), {"message", "continue", "compact", "stop"}),
             "operation must be message, continue, compact or stop");
         if (arguments.at("operation") == "message") {
-            require(arguments.contains("content"), "message requires content");
-            validate_content(arguments.at("content"));
+            require(arguments.contains("request") && arguments.at("request").is_string()
+                    && !arguments.at("request").get_ref<const std::string&>().empty(),
+                "message requires a nonempty text request");
         } else {
-            require(!arguments.contains("content"), "only message accepts content");
+            require(!arguments.contains("request"), "only message accepts request");
         }
         if (arguments.at("operation") == "stop") {
             require(!arguments.contains("options"), "stop does not accept options");
@@ -634,6 +637,9 @@ void SubagentSendTool::ensure_arguments(model_io::InvokeQuery& query) const
             validate_options(arguments.at("options"));
         }
         argument_budget(arguments);
+        // The Hub enforces the same limit after adding the text-part wrapper.
+        // Reject locally rather than send an oversized remote argument object.
+        argument_budget(send_arguments(arguments));
     } catch (const std::exception& error) {
         bad_argument(error.what());
     }

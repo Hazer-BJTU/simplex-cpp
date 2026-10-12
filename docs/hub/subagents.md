@@ -20,7 +20,7 @@ launch is required for fork. Older Hubs reject unsupported routes with
 | `subagent_fork` | `{}` | Create one clean direct child; return ID and initial lifecycle immediately. |
 | `subagent_receive` | `{}` | List direct children, including temporarily retained terminal status. |
 | `subagent_receive` | `subagent_id`, optional `cursor` (0), `limit` (5, 1–10) | Snapshot of status, recent request outcomes and visible conversation. |
-| `subagent_send` | `subagent_id`, `operation`, operation-specific `content`/`options` | Send message/continue/compact, or request process-family stop. |
+| `subagent_send` | `subagent_id`, `operation`, operation-specific `request`/`options` | Send a text message/continue/compact, or request process-family stop. |
 
 Fork and send are `serial_write`; receive is `read_only`. All three are
 `trusted`: delegation does not add a parent approval prompt. The child's
@@ -35,19 +35,19 @@ send a self-contained task:
 {
   "subagent_id": "subagent-<generated UUID>",
   "operation": "message",
-  "content": [{
-    "type": "text",
-    "modality": "text",
-    "raw": "Inspect the parser without editing files. Return findings with file references."
-  }]
+  "request": "Inspect the parser without editing files. Return findings with file references."
 }
 ```
 
-Only message accepts content; continue/compact forbid it. Optional payload options
+Only message accepts a nonempty text request; continue/compact forbid it. Include
+paths or references and let the child read resources itself. The tool does not
+accept attachments, content arrays or content metadata. Optional payload options
 accept provider-owned `model` keys and reserved empty `tools`. Confirmation options
-are forbidden. Stop forbids content and options. The complete argument object is
-limited to 64 KiB serialized UTF-8; child IDs and routes cannot select an unrelated
-caller, arbitrary launch command or endpoint.
+are forbidden. Stop forbids request and options. The tool converts request into
+one text content part for the Hub route without changing its recorded arguments.
+Both tool and converted wire arguments are limited to 64 KiB serialized UTF-8;
+child IDs and routes cannot select an unrelated caller, arbitrary launch command
+or endpoint.
 
 Results use the intrinsic `[[field]]: value` text format. Send returns a child
 request ID and dispatch state: `sent` means queue admission, not completed work.
@@ -174,7 +174,10 @@ socket deadline. Unknown routes continue to return `not_implemented`.
 | `subagent/send` | `subagent_id`, `operation: stop` | operation ID and stopping state; content/options are forbidden |
 
 All unspecified arguments are rejected. `content` follows normal worker payload
-content rules. `options.model` and the empty reserved `options.tools` are accepted;
+content rules. This is the remote protocol, distinct from the C++ tool's text-only
+`request` argument: the tool sends exactly one `{type: text, modality: text,
+raw: request}` part and no extras. `options.model` and the empty reserved
+`options.tools` are accepted;
 `options.confirmation` is forbidden. The Hub always sends `confirmation.mode: ask`
 and applies the user's independent child policy at the confirmation boundary.
 Compact requires that child's current `context-compact` capability. Continue

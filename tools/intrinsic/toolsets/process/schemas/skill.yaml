@@ -11,8 +11,8 @@ text: |
   ## Choose and launch
 
   - `run_command`: shell syntax (bash if available, otherwise /bin/sh). Only
-    `command`, `working_directory`, `tty`, and `expected_runtime_milliseconds` are
-    accepted. It inherits the host environment; use assignments, `export`, or
+    `command`, `working_directory`, and `expected_runtime_milliseconds` are
+    exposed. It inherits the host environment; use assignments, `export`, or
     `env -i` inside the command to change it. Complete initial results always
     auto-release.
   - `spawn_process`: executable plus literal arguments; no shell quoting,
@@ -64,9 +64,10 @@ text: |
 
   ## Terminal use
 
-  - Leave `tty: false` for ordinary commands, builds, tests, searches and structured
-    output. Long-running work alone does not need a terminal. Use `tty: true` only
-    for programs requiring a terminal or /dev/tty. It does not add shell flags.
+  - With `spawn_process`, leave `tty: false` for ordinary commands, builds, tests,
+    searches and structured output. Long-running work alone does not need a
+    terminal. Use `spawn_process` with `tty: true` only for programs requiring a
+    terminal or /dev/tty. It does not add shell flags.
   - Terminal stdout/stderr merge. Initial defaults: canonical input, echo off,
     80x24, TERM=dumb. Programs can change these and emit controls, redraws, prompts
     or echoed input. Output is a stream, not a reconstructed final screen.

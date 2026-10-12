@@ -1671,6 +1671,9 @@ and never automatically retransmit unknown payloads. The optional C++
 `hub_remote_call` toolset exposes them as
 `subagent_fork`, `subagent_send` and `subagent_receive`, respectively. Fork/send
 use trusted serial-write scheduling; receive uses trusted read-only scheduling.
+The `subagent_send` tool accepts a nonempty text `request` for message operations
+and converts it to one text part in the route's `content` array, without extras.
+Its model-facing arguments do not expose content encoding or modality choices.
 No additional worker endpoint or configuration section is needed. These tools
 preserve dispatch/completion distinctions, have no automatic retries, and display
 bounded primary conversation with pagination and completeness metadata.

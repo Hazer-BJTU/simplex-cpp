@@ -71,10 +71,13 @@ declarations report partial availability without disabling unrelated tools.
   configuration, returns immediately and sends no task. Receive its ID until
   ready and connected, then send self-contained instructions.
 - `subagent_send` requires `subagent_id` and `operation`. Message requires a
-  nonempty payload `content` array of `{type, modality, raw, extras?}` parts.
-  Continue/compact forbid content; stop forbids both content and options.
+  nonempty text `request`. Include resource paths or references and let the child
+  read them itself; the tool does not accept attachments or content metadata.
+  Continue/compact forbid request; stop forbids both request and options.
   Optional options accept provider-owned `model` and reserved empty `tools` only.
-  The complete serialized argument object must fit 64 KiB UTF-8.
+  The tool converts request to one `{type: text, modality: text, raw: request}`
+  part for the existing Hub route, without changing the recorded model call.
+  Both the tool arguments and converted wire arguments must fit 64 KiB UTF-8.
 - `subagent_receive({})` lists direct children. With `subagent_id`, optional
   cursor (default 0) and limit (default 5, 1–10), it returns a snapshot of status,
   latest request outcomes and one primary-conversation page. It does not wait.

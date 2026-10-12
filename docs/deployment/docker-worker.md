@@ -80,7 +80,7 @@ session's `logs/worker.log`.
 ## Process terminals (v0.5)
 
 Process tools use separate pipes by default. For a program that requires a real
-terminal, the model can opt into `tty: true` in `spawn_process` or `run_command`.
+terminal, the model can use `spawn_process` with `tty: true`.
 The Linux worker allocates its own controlling PTY; the worker container does
 **not** need `docker run -t`, an attached console, privileged mode or host terminal
 mounts. It does need a usable `/dev/pts` (devpts) and `/dev/ptmx`, plus Linux kernel
