@@ -59,10 +59,9 @@ it('the real worker forks, sends, receives, continues, compacts and stops throug
                     assert.equal(ctx.hub.subagents.children.get(childId).conversation.value.turns.length, 0);
                     phase = 'message-sent';
                     return invoke('subagent_send', { subagent_id: childId, operation: 'message',
-                        content: [{ type: 'text', modality: 'text',
-                            // Compaction requires a measurable context reduction,
-                            // so give the child enough disposable history.
-                            raw: 'Return the offline child answer. ' + 'Supporting context. '.repeat(2000) }] });
+                        // Compaction requires a measurable context reduction,
+                        // so give the child enough disposable history.
+                        request: 'Return the offline child answer. ' + 'Supporting context. '.repeat(2000) });
                 }
                 case 'message-sent':
                 case 'continue-sent':

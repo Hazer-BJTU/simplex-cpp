@@ -14,8 +14,9 @@ text: |
 
   Delegate independent work with `subagent_fork({})`, then receive the returned ID
   until ready and connected. Send a self-contained task with constraints and a
-  concrete deliverable using `subagent_send` (operation: message, content: a list
-  of {type: text, modality: text, raw: task}). The child has fresh conversation and
+  concrete deliverable using `subagent_send` (operation: message, request: task
+  text). Include paths or references and let the child read resources itself;
+  no attachments are sent. The child has fresh conversation and
   memory; configured workspaces may still be shared. Coordinate shared-file edits.
   Continue useful work between snapshot queries; do not busy-poll. Use receive
   without a target to discover direct children, or with subagent_id/cursor/limit

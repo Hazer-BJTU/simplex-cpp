@@ -82,6 +82,7 @@ model_io::Content call(const std::string& name, Json arguments, Json result,
     const auto tool = set.dispatch(query);
     BOOST_REQUIRE(tool);
     tool->ensure_arguments(query);
+    const auto original_arguments = query.arguments;
     asio::cancellation_signal cancellation;
     int requests = 0;
     const auto peer = [&]() -> asio::awaitable<void> {
@@ -96,7 +97,15 @@ model_io::Content call(const std::string& name, Json arguments, Json result,
         co_await socket.async_read(buffer, asio::use_awaitable);
         ++requests;
         auto data = Json::parse(beast::buffers_to_string(buffer.data())).at("data");
-        BOOST_TEST(data.at("arguments") == query.arguments);
+        auto expected_arguments = original_arguments;
+        if (name == "subagent_send" && expected_arguments.at("operation") == "message") {
+            const auto text = expected_arguments.at("request");
+            expected_arguments.erase("request");
+            expected_arguments["content"] = Json::array({{
+                {"type", "text"}, {"modality", "text"}, {"raw", text}
+            }});
+        }
+        BOOST_TEST(data.at("arguments") == expected_arguments);
         BOOST_TEST(data.at("worker_id") == "worker");
         BOOST_TEST(data.at("session_id") == "parent");
         BOOST_TEST(data.at("run_id") == "run");
@@ -142,13 +151,14 @@ model_io::Content call(const std::string& name, Json arguments, Json result,
     io.run();
     server.get();
     BOOST_TEST(requests == 1);
+    BOOST_TEST(query.arguments == original_arguments);
     return future.get();
 }
 
 Json message()
 {
     return {{"subagent_id", "subagent-child"}, {"operation", "message"},
-        {"content", Json::array({{{"type", "text"}, {"modality", "text"}, {"raw", "task"}}})}};
+        {"request", "task"}};
 }
 
 /** Evaluate the schema keywords used by these declarations independently. */
@@ -231,7 +241,7 @@ BOOST_AUTO_TEST_CASE(subagent_schemas_validation_and_attributes_agree)
             cases.push_back(args);
             args["options"] = {{"model", {{"model", "provider-choice"}}}, {"tools", Json::object()}};
             cases.push_back(args);
-            args["content"] = message().at("content");
+            args["request"] = message().at("request");
             cases.push_back(args);
         }
         for (const Json options : {Json(), Json::array(), Json{{"confirmation", {{"mode", "approve"}}}},
@@ -240,13 +250,22 @@ BOOST_AUTO_TEST_CASE(subagent_schemas_validation_and_attributes_agree)
             args["options"] = options;
             cases.push_back(args);
         }
-        for (const Json content : {Json::array(), Json::array({Json::object()}),
-                Json::array({{{"type", "image"}, {"modality", "image"}, {"raw", "url"}}}),
-                Json::array({{{"type", "text"}, {"raw", "text"}}})}) {
+        for (const Json request : {Json(), Json(""), Json(1), Json(false),
+                Json::array(), Json::object(),
+                Json::array({{{"type", "text"}, {"modality", "text"}, {"raw", "task"}}}),
+                Json("Inspect /workspace/report.txt.\nReturn findings 🌻.")}) {
             auto args = message();
-            args["content"] = content;
+            args["request"] = request;
             cases.push_back(args);
         }
+        for (const char* field : {"content", "type", "modality", "raw", "extras"}) {
+            auto args = message();
+            args[field] = Json::array({{{"type", "text"}, {"modality", "text"}, {"raw", "task"}}});
+            cases.push_back(args);
+        }
+        cases.push_back({{"subagent_id", "subagent-child"}, {"operation", "message"}});
+        cases.push_back({{"subagent_id", "subagent-child"}, {"operation", "message"},
+            {"content", Json::array({{{"type", "text"}, {"modality", "text"}, {"raw", "task"}}})}});
         model_io::InvokeQuery query;
         query.name = name;
         const auto tool = set.dispatch(query);
@@ -272,10 +291,17 @@ BOOST_AUTO_TEST_CASE(subagent_argument_budget_counts_nested_json_and_utf8)
     SubagentSendTool tool(endpoint_for(), std::chrono::milliseconds(100), identity);
     model_io::InvokeQuery query;
     query.arguments = message();
-    auto& raw = query.arguments["content"][0]["raw"];
+    auto& raw = query.arguments["request"];
     raw = "";
-    raw = std::string(65536 - query.arguments.dump().size(), 'a');
-    BOOST_TEST(query.arguments.dump().size() == 65536u);
+    auto wire_arguments = query.arguments;
+    wire_arguments.erase("request");
+    wire_arguments["content"] = Json::array({{
+        {"type", "text"}, {"modality", "text"}, {"raw", ""}
+    }});
+    raw = std::string(65536 - wire_arguments.dump().size(), 'a');
+    wire_arguments["content"][0]["raw"] = raw;
+    BOOST_TEST(wire_arguments.dump().size() == 65536u);
+    BOOST_TEST(query.arguments.dump().size() < 65536u);
     BOOST_CHECK_NO_THROW(tool.ensure_arguments(query));
     raw.get_ref<std::string&>() += 'a';
     BOOST_CHECK_THROW(tool.ensure_arguments(query), tools::InvokeException);
@@ -283,10 +309,24 @@ BOOST_AUTO_TEST_CASE(subagent_argument_budget_counts_nested_json_and_utf8)
     query.arguments["options"] = {{"model", {{"private", std::string(65536, 'x')}}}};
     BOOST_CHECK_THROW(tool.ensure_arguments(query), tools::InvokeException);
     query.arguments = message();
-    query.arguments["content"][0]["extras"] = {{"private", std::string(1, char(0xff))}};
+    query.arguments["request"] = std::string(1, char(0xff));
+    BOOST_CHECK_THROW(tool.ensure_arguments(query), tools::InvokeException);
+    query.arguments = message();
+    query.arguments["options"] = {{"model", {{"private", std::string(1, char(0xff))}}}};
     BOOST_CHECK_EXCEPTION(tool.ensure_arguments(query), tools::InvokeException, [](const auto& error) {
         return std::string(error.what()).find("private") == std::string::npos;
     });
+}
+
+BOOST_AUTO_TEST_CASE(subagent_send_converts_only_request_text_and_preserves_options)
+{
+    auto arguments = message();
+    arguments["request"] = "Inspect /workspace/report.txt.\nReturn findings 🌻; do not edit files.";
+    arguments["options"] = {{"model", {{"model", "provider-choice"}}}, {"tools", Json::object()}};
+    const auto sent = call("subagent_send", arguments, {{"subagent_id", "subagent-child"},
+        {"operation", "message"}, {"request_id", "child-request"}, {"state", "sent"}});
+    BOOST_TEST(sent.raw.find("[[request_id]]: child-request") != std::string::npos);
+    BOOST_TEST(sent.raw.find("[[state]]: sent") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(subagent_result_rendering_retains_outcomes_pagination_and_whitelists_content)

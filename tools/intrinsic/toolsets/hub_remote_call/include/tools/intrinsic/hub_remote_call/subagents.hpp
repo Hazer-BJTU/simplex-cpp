@@ -55,7 +55,10 @@ public:
 
 /**
  * Send message/continue/compact, or stop one direct child. A message requires
- * payload content; continue/compact forbid it; stop also forbids options.
+ * a nonempty text request; continue/compact forbid it; stop also forbids options.
+ * The outgoing Hub payload contains exactly one text part, without extras.
+ * The model's recorded arguments stay unchanged; the child reads referenced
+ * resources itself. Both tool and wire arguments must fit the 64 KiB budget.
  * Only model options and reserved empty tools options are accepted. Child
  * confirmation policy remains operator-owned. Dispatch does not await a run.
  * Stop terminates the process family and deletes persistence after cleanup;
