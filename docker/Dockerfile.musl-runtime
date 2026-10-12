@@ -1,0 +1,7 @@
+# Test the musl installation on a glibc host without rebuilding the sources.
+FROM ubuntu:22.04
+COPY --from=simplex-musl-build-test:experimental /opt/simplex /opt/simplex
+ENV SSL_CERT_FILE=/opt/simplex/share/certs/ca-certificates.crt
+ENV PATH=/opt/simplex/bin:$PATH
+ENTRYPOINT ["/opt/simplex/bin/simplex"]
+CMD ["run", "--help"]

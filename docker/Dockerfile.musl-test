@@ -1,0 +1,26 @@
+# Local experiment only: keep the production launchers and downloader intact.
+FROM simplex-build-musl:experimental AS build
+ARG JOBS=2
+WORKDIR /src
+COPY . .
+RUN cmake -S /src -B /build -G Ninja \
+        -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release \
+        -DSIMPLEX_ENABLE_LTO=OFF \
+        -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+        -DSIMPLEX_BUNDLE_RUNTIME=/opt/simplex-runtime \
+        -DCMAKE_INSTALL_PREFIX=/opt/simplex \
+    && cmake --build /build -j"${JOBS}"
+# Keep failing test diagnostics in an inspectable build image. Tests are run
+# explicitly after the image builds, rather than discarded in a failed layer.
+RUN cmake --install /build --strip \
+    && mkdir -p /opt/simplex/share/certs \
+    && cp /etc/ssl/cert.pem /opt/simplex/share/certs/ca-certificates.crt \
+    && cp /opt/simplex-runtime-packages.txt /opt/simplex/runtime-packages.txt
+# A fixed-prefix experiment makes the ORIGINAL scripts work on a glibc host
+# without a system musl installation. This is not yet a relocatable archive:
+# PT_INTERP cannot resolve $ORIGIN. No application/launcher sources are changed.
+# install(DIRECTORY) gives shared libraries mode 0644, but the ELF interpreter
+# must be executable by the kernel. Restore that bit on the bundled loader.
+RUN chmod 0755 /opt/simplex/lib/ld-musl-x86_64.so.1 \
+    && find /opt/simplex/bin -maxdepth 1 -type f -exec sh -c \
+        'for f do if readelf -l "$f" 2>/dev/null | grep -q INTERP; then patchelf --set-interpreter /opt/simplex/lib/ld-musl-x86_64.so.1 "$f"; fi; done' sh {} +
