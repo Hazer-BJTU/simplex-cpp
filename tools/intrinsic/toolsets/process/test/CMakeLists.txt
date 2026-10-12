@@ -28,8 +28,9 @@
 #                       — every property validated with the declared kind, the
 #                       default contract held in BOTH directions (every declared
 #                       default the value really settled on every call the
-#                       declaration allows, and nothing settled that the file
-#                       does not declare, so a dropped `default:` fails too),
+#                       declaration allows, with run_command's hidden runtime
+#                       tty default checked separately; dropped declared
+#                       defaults fail too),
 #                       every value clause probed from BOTH sides (each enum
 #                       member accepted and one outside refused, `minimum`
 #                       accepted and `minimum - 1` refused,

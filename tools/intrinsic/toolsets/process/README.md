@@ -35,11 +35,14 @@ Environment entries merge by key, or form the entire environment when
 `inherit_environment: false`. An explicit `working_directory` affects only the
 child. Invalid paths or unsupported TTY allocation fail visibly.
 
-`run_command` accepts `command`, `working_directory`, `tty` and
-`expected_runtime_milliseconds`. It uses the shell's `-c` mode, inherits the
-host environment, and always enables initial auto-release. Use shell syntax for
-environment changes, or `spawn_process` for explicit environment/retention.
-TTY does not add `-i`, launch a login shell or rewrite the command.
+`run_command` exposes `command`, `working_directory` and
+`expected_runtime_milliseconds` to the model. It uses the shell's `-c` mode,
+inherits the host environment, and always enables initial auto-release. Use shell
+syntax for environment changes, or `spawn_process` for explicit environment/retention.
+Its runtime still accepts `tty`, defaulting to false, but this parameter is
+omitted from the model-facing schema. Use `spawn_process` for model-requested
+terminal allocation. TTY does not add `-i`, launch a login shell or rewrite the
+command.
 
 Initial waits default to 5000 ms for spawn and 3000 ms for shell commands. At
 the store/tool boundary, zero skips waiting; expiration keeps the child alive.
@@ -194,7 +197,8 @@ does not remove otherwise valid tools. CMake installs all declarations/skill.
 
 ## v0.5 interface migration
 
-- Both launchers add `tty`, default false; old LaunchSpec JSON remains pipe mode.
+- Both launchers support `tty`, default false; only `spawn_process` exposes it
+  in the model-facing schema. Old LaunchSpec JSON remains pipe mode.
 - `read_process.stream` is removed; use the generic `output` block.
 - `send_process.close_input` is replaced by `end_input`.
 - `input_closed` is replaced by acceptance-oriented `input_end_requested` and
