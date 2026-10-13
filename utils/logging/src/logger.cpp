@@ -3,7 +3,89 @@
 #include <iostream>
 #include <thread>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <cerrno>
+#include <csignal>
+#include <pthread.h>
+#endif
+
 namespace logging {
+namespace {
+
+#if defined(__unix__) || defined(__APPLE__)
+/**
+ * Protect one synchronous console write from a disconnected pipe reader.
+ * A Hub crash can close the worker's stdout/stderr while the worker reconnects.
+ * Block SIGPIPE on this thread only, consume only a newly generated signal,
+ * and restore the caller's exact mask, including on ostream exceptions.
+ * Global signal dispositions and signals pending before the write are retained.
+ */
+class ConsoleSignalGuard {
+public:
+    ConsoleSignalGuard() noexcept {
+        ::sigemptyset(&_blocked);
+        ::sigaddset(&_blocked, SIGPIPE);
+        if (::pthread_sigmask(SIG_BLOCK, &_blocked, &_previous) != 0) {
+            return;
+        }
+        _active = true;
+        sigset_t pending;
+        if (::sigpending(&pending) == 0) {
+            _already_pending = ::sigismember(&pending, SIGPIPE) == 1;
+            _safe = true;
+            errno = 0;
+        }
+    }
+
+    ~ConsoleSignalGuard() {
+        if (!_active) {
+            errno = _saved_errno;
+            return;
+        }
+        if (_safe && errno == EPIPE && !_already_pending) {
+            sigset_t pending;
+            if (::sigpending(&pending) == 0 && ::sigismember(&pending, SIGPIPE) == 1) {
+                // A thread-directed pending signal cannot be consumed by another
+                // thread; sigwait therefore completes without waiting for IO.
+                int signal = 0;
+                ::sigwait(&_blocked, &signal);
+            }
+        }
+        ::pthread_sigmask(SIG_SETMASK, &_previous, nullptr);
+        errno = _saved_errno;
+    }
+
+    bool safe() const noexcept {
+        return _safe;
+    }
+    ConsoleSignalGuard(const ConsoleSignalGuard&) = delete;
+    ConsoleSignalGuard& operator=(const ConsoleSignalGuard&) = delete;
+
+private:
+    const int _saved_errno = errno;
+    sigset_t _blocked{};
+    sigset_t _previous{};
+    bool _active = false;
+    bool _safe = false;
+    bool _already_pending = false;
+};
+#endif
+
+/** Console logging is best effort when its original reader has disappeared. */
+void write_console_line(std::ostream& stream, std::string_view line) {
+#if defined(__unix__) || defined(__APPLE__)
+    ConsoleSignalGuard guard;
+    if (!guard.safe()) {
+        return;
+    }
+#endif
+    stream << line;
+    // Flush inside the guard, rather than defer a pipe write until a later
+    // stream operation or process teardown outside the protected scope.
+    stream.flush();
+}
+
+} // namespace
 
 // =============================================================================
 // Static state
@@ -89,9 +171,9 @@ void Logger::log(LogLevel lvl, std::string_view message) {
     if (lvl < _min_level) return;
 
     if (lvl >= LogLevel::error) {
-        std::cerr << line;
+        write_console_line(std::cerr, line);
     } else {
-        std::cout << line;
+        write_console_line(std::cout, line);
     }
 }
 

@@ -10,6 +10,13 @@
 #include <thread>
 #include <vector>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <csignal>
+#include <pthread.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 using namespace logging;
 
 // ============================================================================
@@ -708,3 +715,94 @@ BOOST_AUTO_TEST_CASE(info_is_not_gated)
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+#if defined(__unix__) || defined(__APPLE__)
+BOOST_AUTO_TEST_CASE(closed_console_pipe_preserves_process_signal_policy)
+{
+    for (const bool pending_before : {false, true}) {
+        const pid_t child = ::fork();
+        BOOST_REQUIRE(child >= 0);
+        if (child == 0) {
+            ::signal(SIGPIPE, SIG_DFL);
+            sigset_t blocked;
+            sigset_t original;
+            ::sigemptyset(&blocked);
+            ::sigaddset(&blocked, SIGPIPE);
+            ::pthread_sigmask(SIG_UNBLOCK, &blocked, nullptr);
+            if (pending_before) {
+                ::pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
+                ::raise(SIGPIPE);
+            }
+            ::pthread_sigmask(SIG_BLOCK, nullptr, &original);
+            int descriptors[2];
+            if (::pipe(descriptors) != 0) {
+                ::_exit(10);
+            }
+            ::close(descriptors[0]);
+            if (::dup2(descriptors[1], STDOUT_FILENO) < 0) {
+                ::_exit(11);
+            }
+            if (::dup2(descriptors[1], STDERR_FILENO) < 0) {
+                ::_exit(12);
+            }
+            ::close(descriptors[1]);
+            Logger::set_level(LogLevel::info);
+            Logger::info("reader disappeared while the worker was reconnecting");
+            Logger::error("stderr reader disappeared too");
+            sigset_t current;
+            ::pthread_sigmask(SIG_BLOCK, nullptr, &current);
+            for (int signal = 1; signal < NSIG; ++signal) {
+                if (::sigismember(&original, signal) != ::sigismember(&current, signal)) {
+                    ::_exit(13);
+                }
+            }
+            struct sigaction action{};
+            ::sigaction(SIGPIPE, nullptr, &action);
+            if (action.sa_handler != SIG_DFL) {
+                ::_exit(14);
+            }
+            sigset_t pending;
+            ::sigpending(&pending);
+            if ((::sigismember(&pending, SIGPIPE) == 1) != pending_before) {
+                ::_exit(15);
+            }
+            ::_exit(0);
+        }
+        int status = 0;
+        BOOST_REQUIRE_EQUAL(::waitpid(child, &status, 0), child);
+        BOOST_REQUIRE(WIFEXITED(status));
+        BOOST_CHECK_EQUAL(WEXITSTATUS(status), 0);
+    }
+}
+#endif
+
+#if defined(__unix__) || defined(__APPLE__)
+BOOST_AUTO_TEST_CASE(unrelated_sigpipe_is_not_consumed_by_logging)
+{
+    const pid_t child = ::fork();
+    BOOST_REQUIRE(child >= 0);
+    if (child == 0) {
+        // Generate a signal during a successful stream write, without EPIPE.
+        // The logger must restore the caller's default signal behavior.
+        class SignalBuffer : public std::streambuf {
+            std::streamsize xsputn(const char*, std::streamsize size) override {
+                ::raise(SIGPIPE);
+                return size;
+            }
+        } buffer;
+        ::signal(SIGPIPE, SIG_DFL);
+        sigset_t signal;
+        ::sigemptyset(&signal);
+        ::sigaddset(&signal, SIGPIPE);
+        ::pthread_sigmask(SIG_UNBLOCK, &signal, nullptr);
+        std::cout.rdbuf(&buffer);
+        Logger::set_level(LogLevel::info);
+        Logger::info("unrelated signal during a successful write");
+        ::_exit(16);
+    }
+    int status = 0;
+    BOOST_REQUIRE_EQUAL(::waitpid(child, &status, 0), child);
+    BOOST_REQUIRE(WIFSIGNALED(status));
+    BOOST_CHECK_EQUAL(WTERMSIG(status), SIGPIPE);
+}
+#endif

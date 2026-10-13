@@ -35,7 +35,16 @@ logging::Logger::error("Failed to open '{}': {}", path, ec.message());
 
 ## Dependencies
 
-Standard library only (`<chrono>`, `<format>`, `<mutex>`, `<ostream>`, …). The
+The C++ standard library and, on Unix, POSIX thread signal masks. The
 default minimum level is `LogLevel::info` in release builds and `LogLevel::debug`
 in debug builds (guarded by `DEBUG_BUILD`, defined on `logging_lib` in Debug
 config).
+
+## Disconnected console readers
+
+Each log line is flushed during its synchronous write. On Unix, the writer
+blocks SIGPIPE on the calling thread, consumes a newly generated signal only
+when the write reports EPIPE, and restores the original mask. Existing pending
+signals and global dispositions are preserved. This lets a worker survive a
+Hub crash that closes its log pipes and reconnect to a replacement Hub. Closed
+streams retain their normal error state; discarded log output is not replayed.

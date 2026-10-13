@@ -9,7 +9,7 @@
 # Produces `logging_lib` (SHARED, output name `logging` → liblogging.so), whose
 # PUBLIC include dir exposes logging/logger.hpp (included as
 # "logging/logger.hpp"). The Logger class lives in namespace `logging`. It
-# depends only on the C++ standard library.
+# uses the C++ standard library and POSIX thread signal masks on Unix.
 #
 # Header management is interface-target-only: consumers link `logging_lib` and
 # get its include dir transitively (PUBLIC). No directory-scope includes, no
@@ -45,7 +45,8 @@ target_compile_options(logging_lib PRIVATE
 target_compile_definitions(logging_lib PUBLIC
     $<$<CONFIG:Debug>:LOGGING_DEBUG>
 )
-# No external link deps — the logger uses only the standard library.
+find_package(Threads REQUIRED)
+target_link_libraries(logging_lib PRIVATE Threads::Threads)
 if(LTO_SUPPORT)
     set_target_properties(logging_lib PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
