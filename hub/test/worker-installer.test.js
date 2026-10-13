@@ -86,7 +86,7 @@ function rawTar(root, additions) {
 test('release resolver selects stable official assets and explicit tags', async () => {
     const asset = name => ({ name, browser_download_url: `https://github.com/Hazer-BJTU/simplex-cpp/releases/download/v0.2.0/${name}` });
     const document = { draft: false, prerelease: false, tag_name: 'v0.2.0',
-        assets: [asset(release().archive), asset('SHA256SUMS')] };
+        assets: [asset(release().archive.replace('-glibc2.34', '-musl')), asset(release().archive), asset('SHA256SUMS')] };
     let url;
     const fetcher = async value => { url = value; return new Response(JSON.stringify(document)); };
     assert.equal((await resolveRelease('github', undefined, fetcher)).version, '0.2.0');
@@ -591,4 +591,14 @@ test('recovery rejects an invalid attempt path and preserves the live tree and j
         assert.equal(await readFile(join(destination, 'keep'), 'utf8'), 'keep');
         assert.equal(await exists(join(tx.work, 'transaction.json')), true);
     }
+});
+
+test('installer keeps selecting glibc from a release manifest containing both runtimes', async t => {
+    const f = await fixture(t);
+    const manifest = '0'.repeat(64) + '  ' + f.selected.archive.replace('-glibc2.34', '-musl') + '\n' + f.checksum;
+    const result = await install(f, [], {
+        fetcher: async url => new Response(url === f.selected.checksumUrl ? manifest : f.bytes),
+    });
+    assert.equal(result.code, 0, result.output);
+    assert.match(await readFile(join(f.destination, 'bin/simplex_worker'), 'utf8'), /worker help/);
 });

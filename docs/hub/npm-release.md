@@ -10,7 +10,8 @@ The repository root `VERSION` controls both the worker and Hub versions. A
 the worker build and cross-system tests pass, that workflow prepares a draft
 GitHub Release with verified worker assets, publishes the Hub through npm
 trusted publishing, then makes the draft public. The Hub package is not
-uploaded as a second GitHub asset. Rerunning a partial release verifies exact
+uploaded as a GitHub asset. Worker assets contain glibc and musl archives plus
+a shared `SHA256SUMS`. Rerunning a partial release verifies exact
 GitHub asset bytes and npm tarball integrity before continuing; any mismatch
 fails rather than replacing a published artifact.
 
@@ -93,7 +94,9 @@ gh workflow run release-worker.yml --ref main \
 
 The manual path uses the worker and Hub artifacts from the named tag run. It
 requires that run's tag, source commit, worker build, Hub build, and both
-cross-system tests to match and pass; only release machinery may differ on
+cross-system tests to match and pass. The combined worker-asset assembly must
+also pass, which requires all musl build, cross-system, and Hub E2E checks.
+Only release machinery may differ on
 `main`. It verifies draft assets byte-for-byte and npm's tarball integrity
 before continuing. The source run's artifacts must still be retained (seven
 days by default). Do not rebuild or repack the same version after publishing.

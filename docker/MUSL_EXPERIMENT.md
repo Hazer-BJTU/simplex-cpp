@@ -7,8 +7,8 @@ the whole directory together. Bash and normal shell utilities (`dirname`,
 `readlink`) are required; external tools used by tasks are not bundled.
 
 The existing glibc release, public `simplex` router and downloader are unchanged.
-The musl archive is a separate artifact, built locally or through the manual
-validation workflow below. Only plugins compiled in the same musl build context
+The musl archive is a separate GitHub Release asset, also buildable locally or
+through the manual validation workflow below. Only plugins compiled in the same musl build context
 are supported.
 
 ## Manual CI validation
@@ -22,10 +22,11 @@ gh workflow run musl-portable.yml --ref main
 gh run list --workflow musl-portable.yml
 ```
 
-The workflow only accepts `workflow_dispatch`: PRs, merges to `main` and release
-tags do not start it. It neither publishes images nor uploads GitHub Release
-assets, and it does not add musl to the Hub downloader. Existing PR/main and
-release job graphs are unchanged.
+Daily development uses `workflow_dispatch` only: PRs and merges to `main` do
+not start musl validation. Tag releases reuse it through `workflow_call` and
+wait for all three stages before publishing. The release workflow combines the
+glibc and musl runtime archives with one `SHA256SUMS`; validation-only files
+are excluded. Neither path publishes images or changes the Hub downloader.
 
 Its three stages use the same portable archive:
 
@@ -136,7 +137,9 @@ mv simplex-worker-v0.5.1-linux-x86_64-musl "$HOME/my simplex worker"
   --config /absolute/path/config.yaml --session example
 ```
 
-Use the archive's actual version in these commands. Both `bin/simplex` and
+For GitHub Release downloads, verify the shared manifest with
+`sha256sum --ignore-missing -c SHA256SUMS` instead of the local build's
+`.tar.gz.sha256` file. Use the archive's actual version in these commands. Both `bin/simplex` and
 `bin/simplex_worker` can be placed on PATH or invoked through symbolic links.
 Relative `--config` paths and task paths remain relative to the caller's working
 directory. Configuration, prompt and plugin discovery still use the installed
@@ -224,5 +227,4 @@ argument/PID preservation and explicit/default trust selection.
 
 Container tests share the host kernel and do not establish older-kernel support.
 The workflow covers offline Hub E2E; real-provider inference and opt-in Docker
-ownership tests remain separate. No release workflow or automatic musl download
-choice is introduced.
+ownership tests remain separate. Automatic musl download is not supported.
