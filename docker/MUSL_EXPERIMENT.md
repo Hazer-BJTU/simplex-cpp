@@ -47,7 +47,7 @@ contains the worker `.tar.gz` and `.sha256`, plus `musl-test-support.tar.gz` and
 launcher probe used only by validation. Install only the worker archive; the
 support binaries are not part of the distribution.
 
-The workflow uses `docker/Dockerfile.musl-test` unchanged, with whole-project
+The workflow uses `docker/Dockerfile.musl-test`, with whole-project
 `SIMPLEX_ENABLE_LTO=OFF` (individual targets retain their existing LTO settings).
 An experiment with global LTO on this pinned Alpine/GCC toolchain failed when
 linking `llm_deepseek_chat`: the fortify `vsnprintf` wrapper could not satisfy an
@@ -228,3 +228,18 @@ argument/PID preservation and explicit/default trust selection.
 Container tests share the host kernel and do not establish older-kernel support.
 The workflow covers offline Hub E2E; real-provider inference and opt-in Docker
 ownership tests remain separate. Automatic musl download is not supported.
+
+## Boost.Test signal stacks on CI hosts
+
+The test image rebuilds only Boost.Test 1.91.0 from its checksum-pinned source
+with a Linux signal-stack sizing patch. musl defines a fixed `SIGSTKSZ`, but
+some host kernels require a larger signal frame. Registration then fails with
+`ENOMEM` before tests run, even when plenty of memory is available. The patch
+adds the kernel's `AT_MINSIGSTKSZ` to the handler's `SIGSTKSZ` allowance for
+both allocation and registration. An absent auxv entry contributes zero.
+
+A fault-injection regression simulates a large frame and checks that passing
+tests start while assertions and fatal signals still fail. The same patched
+test library is staged for cross-distribution test executables; production
+worker behavior, entry points, and signal handling are unchanged. The published
+base image need not be replaced for this correction.

@@ -1,0 +1,20 @@
+--- a/boost/test/impl/execution_monitor.ipp
++++ b/boost/test/impl/execution_monitor.ipp
+@@ -176,7 +176,16 @@
+ #  endif
+ 
+ #  ifdef BOOST_TEST_USE_ALT_STACK
+-#    define BOOST_TEST_ALT_STACK_SIZE SIGSTKSZ
++#    if defined(__linux__)
++#      include <sys/auxv.h>
++// musl's constant SIGSTKSZ can be smaller than the running kernel's signal
++// frame (for example on AMX-enabled hosts). Reserve the kernel minimum plus
++// SIGSTKSZ for the handler. Older kernels omit this auxv entry and return 0.
++// Use the same expression for allocation and sigaltstack registration.
++#      define BOOST_TEST_ALT_STACK_SIZE (SIGSTKSZ + ::getauxval(AT_MINSIGSTKSZ))
++#    else
++#      define BOOST_TEST_ALT_STACK_SIZE SIGSTKSZ
++#    endif
+ #  endif
+ 
+ 
