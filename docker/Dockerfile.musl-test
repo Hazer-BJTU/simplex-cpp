@@ -1,0 +1,22 @@
+# Build and prepare the musl package without changing release CI or downloaders.
+ARG BUILD_IMAGE=simplex-build-musl:experimental
+FROM ${BUILD_IMAGE} AS build
+ARG JOBS=2
+WORKDIR /src
+COPY . .
+# Also support incremental experiments based on a previous test image.
+COPY docker/musl-licenses /opt/simplex-runtime-licenses
+RUN cmake -S /src -B /build -G Ninja \
+        -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release \
+        -DSIMPLEX_ENABLE_LTO=OFF \
+        -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
+        -DSIMPLEX_BUNDLE_RUNTIME=/opt/simplex-runtime \
+        -DCMAKE_INSTALL_PREFIX=/opt/simplex \
+    && cmake --build /build -j"${JOBS}"
+# Keep failing test diagnostics in an inspectable build image. Tests are run
+# explicitly after the image builds, rather than discarded in a failed layer.
+RUN if [ -d /opt/simplex ]; then rm -r /opt/simplex; fi \
+    && cmake --install /build --strip \
+    && bash /src/docker/prepare-musl-runtime.sh /opt/simplex
+RUN g++ -std=c++20 -I/opt/simplex-thirdparty/include \
+        /src/docker/musl-launch-probe.cpp -o /src/docker/musl-launch-probe

@@ -1,0 +1,72 @@
+# Experimental musl toolchain. All plugins and runtime libraries are built
+# in this one context; no production launcher or release workflow is changed.
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+ARG JOBS=2
+RUN apk add --no-cache build-base cmake ninja linux-headers openssl-dev \
+        ca-certificates wget bash python3 binutils patchelf pax-utils git
+# Include /usr/local/lib for build-tree tests without leaking LD_LIBRARY_PATH
+# into child processes. The staged package has its own explicit loader path.
+RUN printf '/lib:/usr/local/lib:/usr/lib\n' > /etc/ld-musl-x86_64.path
+
+RUN wget -q -O /tmp/boost.tar.gz \
+        https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz \
+    && echo "5734305f40a76c30f951c9abd409a45a2a19fb546efe4162119250bbe4d3a463  /tmp/boost.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/boost.tar.gz -C /tmp \
+    && cd /tmp/boost_1_91_0 \
+    && ./bootstrap.sh --with-libraries=filesystem,process,program_options,test \
+    && ./b2 -j"${JOBS}" link=shared runtime-link=shared variant=release install \
+    && rm -rf /tmp/boost.tar.gz /tmp/boost_1_91_0
+
+# Vendored third parties -> /opt/simplex-thirdparty, mirroring the tree's
+# third_party/{include,libs} layout.
+#
+# nlohmann/json 3.12.0 — header-only, the release single-header asset.
+RUN mkdir -p /opt/simplex-thirdparty/include/nlohmann \
+    && wget -q -O /opt/simplex-thirdparty/include/nlohmann/json.hpp \
+        https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp \
+    && echo "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63  /opt/simplex-thirdparty/include/nlohmann/json.hpp" | sha256sum -c -
+
+# yaml-cpp 0.9.0 — static library, built PIC because it is consumed through
+# simplex_thirdparty_iface's link directory by MODULE plugin .sos too.
+# The release tag is "yaml-cpp-0.9.0" (the repo prefixes tags with its name;
+# see third_party/versions/yaml-cpp.md), so the auto-extracted directory is
+# yaml-cpp-yaml-cpp-0.9.0. Installed flat, then the archive is moved into
+# libs/ to match the layout the interface target's link directory expects.
+RUN wget -q -O /tmp/yaml-cpp.tar.gz \
+        https://github.com/jbeder/yaml-cpp/archive/refs/tags/yaml-cpp-0.9.0.tar.gz \
+    && echo "25cb043240f828a8c51beb830569634bc7ac603978e0f69d6b63558dadefd49a  /tmp/yaml-cpp.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/yaml-cpp.tar.gz -C /tmp \
+    && cmake -S /tmp/yaml-cpp-yaml-cpp-0.9.0 -B /tmp/yaml-cpp-build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DYAML_BUILD_SHARED_LIBS=OFF \
+        -DYAML_CPP_BUILD_TESTS=OFF \
+        -DYAML_CPP_BUILD_TOOLS=OFF \
+        -DYAML_CPP_BUILD_CONTRIB=OFF \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DCMAKE_INSTALL_PREFIX=/opt/simplex-thirdparty \
+    && cmake --build /tmp/yaml-cpp-build -j"${JOBS}" \
+    && cmake --install /tmp/yaml-cpp-build \
+    && mkdir -p /opt/simplex-thirdparty/libs \
+    && mv /opt/simplex-thirdparty/lib/libyaml-cpp.a \
+        /opt/simplex-thirdparty/libs/ \
+    && rm -rf /opt/simplex-thirdparty/lib \
+        /tmp/yaml-cpp.tar.gz /tmp/yaml-cpp-yaml-cpp-0.9.0 /tmp/yaml-cpp-build
+
+# Collect the entire selected runtime, including musl's ELF loader, instead
+# of relying on the target host's libc or OpenSSL installation.
+RUN mkdir -p /opt/simplex-runtime \
+    && cp -a /usr/local/lib/libboost_*.so* /opt/simplex-runtime/ \
+    && cp -a /usr/lib/libstdc++.so* /usr/lib/libgcc_s.so* /opt/simplex-runtime/ \
+    && cp -L /lib/ld-musl-x86_64.so.1 /opt/simplex-runtime/ld-musl-x86_64.so.1 \
+    && ln -s ld-musl-x86_64.so.1 /opt/simplex-runtime/libc.musl-x86_64.so.1 \
+    && cp -L /usr/lib/libssl.so.3 /usr/lib/libcrypto.so.3 /opt/simplex-runtime/ \
+    && apk info -v > /opt/simplex-runtime-packages.txt
+# GNU tar supplies reproducible archive flags; GNU cp can preserve modes and
+# timestamps without trying to chown files when packaging as a non-root user.
+RUN apk add --no-cache coreutils tar gzip \
+    && apk info -v > /opt/simplex-runtime-packages.txt
+
+COPY docker/musl-licenses /opt/simplex-runtime-licenses
+COPY third_party/license /opt/simplex-thirdparty-licenses
+
+LABEL org.opencontainers.image.title="simplex experimental musl build environment"

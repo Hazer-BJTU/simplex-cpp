@@ -47,6 +47,7 @@
 # then eventbus (independent), then asio (depends only on top-level targets),
 # then async_eventbus (depends on asio_iface).
 # =============================================================================
+add_subdirectory(executable)
 add_subdirectory(textformat)
 add_subdirectory(logging)
 add_subdirectory(fileio)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "executable/location.hpp"
+
 /**
  * @file llm/models.hpp
  * @brief Shared plugin ABI between the llm host and model-provider plugins.
@@ -946,15 +948,12 @@ public:
     /// Load from `<executable_dir>/plugins/llm` (the default install
     /// location — layered below the language plugins' own plugins/ dir).
     std::size_t load_default_models() {
-        boost::system::error_code ec;
-        auto exe = boost::dll::program_location(ec);
+        std::error_code ec;
+        auto exe = executable::location(ec);
         if (ec) {
             return _usable;
         }
-        // Round-trip through .string() so this works whether Boost.DLL was
-        // built against std::filesystem or boost::filesystem.
-        std::filesystem::path exe_path(exe.string());
-        return load_models(exe_path.parent_path() / "plugins" / "llm");
+        return load_models(exe.parent_path() / "plugins" / "llm");
     }
 
     /**

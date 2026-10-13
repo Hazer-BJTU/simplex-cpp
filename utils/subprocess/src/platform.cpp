@@ -1,6 +1,6 @@
 #include "subprocess/platform.hpp"
 
-#include <boost/dll/runtime_symbol_info.hpp>
+#include "executable/location.hpp"
 
 namespace subprocess {
 
@@ -17,7 +17,7 @@ ShellInvocation platform_shell()
 
 std::filesystem::path executable_location(std::error_code& error)
 {
-    return boost::dll::program_location(error);
+    return executable::location(error);
 }
 
 std::filesystem::path executable_location()
