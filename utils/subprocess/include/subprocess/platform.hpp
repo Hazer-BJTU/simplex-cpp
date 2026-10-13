@@ -19,7 +19,8 @@ struct ShellInvocation {
 [[nodiscard]] ShellInvocation platform_shell();
 
 /// Absolute path of the running executable, not the library containing this
-/// helper. Returns an empty path on lookup failure and supplies the error.
+/// helper or the explicitly invoked musl loader. Returns an empty path on
+/// lookup failure and supplies the error.
 [[nodiscard]] std::filesystem::path executable_location(std::error_code& error);
 
 /// Throwing lookup for callers whose installed assets are mandatory.

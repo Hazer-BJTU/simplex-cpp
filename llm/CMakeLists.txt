@@ -31,6 +31,7 @@ add_library(llm_iface INTERFACE)
 target_include_directories(llm_iface INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(llm_iface INTERFACE
     extensions_iface
+    executable_iface
     dataclass_iface
     simplex_versioning
     asio_iface)

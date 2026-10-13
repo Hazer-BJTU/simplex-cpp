@@ -49,7 +49,8 @@ set(_allowed_needed
     "libllm_chat_completions.so" "libllm_responses.so"
     "libssl.so.3" "libcrypto.so.3"
     "libstdc++.so.6" "libm.so.6" "libgcc_s.so.1" "libc.so.6"
-    "ld-linux-x86-64.so.2")
+    "ld-linux-x86-64.so.2"
+    "libc.musl-x86_64.so.1")
 
 set(_failures "")
 

@@ -1,115 +1,179 @@
-# Local musl experiment
+# Musl portable worker build
 
-This is an experimental Linux x86_64 build, not a new release format. It does
-not change the production launcher, downloader, application, or workflows.
-The existing glibc build remains supported as before.
+This Linux x86_64 variant bundles musl's loader, GCC/Boost runtimes, OpenSSL and
+fallback CA data. It can be unpacked into an arbitrary directory on a compatible
+Linux system, including glibc distributions without a musl installation. Keep
+the whole directory together. Bash and normal shell utilities (`dirname`,
+`readlink`) are required; external tools used by tasks are not bundled.
 
-## Build
+The existing glibc release, public `simplex` router, downloader and CI workflows
+are unchanged. The musl archive is a separate manually built artifact. Only
+plugins compiled in the same musl build context are supported.
 
-Run from the repository root. The proxy variables are Docker build arguments,
-not persistent image environment variables. Both cases are needed by the
-package manager and download utilities.
+## Build the base image
+
+From the repository root:
 
 ```bash
-# Optional: source your proxy configuration before these commands.
+# Optional: source your own proxy setup first.
 # source /path/to/setup_proxy.sh
-export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY"
+export http_proxy="${HTTP_PROXY:-}" https_proxy="${HTTPS_PROXY:-}"
 docker build --network host \
   --build-arg HTTP_PROXY --build-arg HTTPS_PROXY \
   --build-arg http_proxy --build-arg https_proxy \
   -f docker/Dockerfile.build-musl -t simplex-build-musl:experimental .
-docker build --target build -f docker/Dockerfile.musl-test \
-  -t simplex-musl-build-test:experimental .
-docker build -f docker/Dockerfile.musl-runtime \
-  -t simplex-musl-test:experimental .
 ```
 
-The base image pins Alpine by digest, but its package repositories remain
-mutable in this first experiment. `/opt/simplex/runtime-packages.txt` records
-installed package versions. Boost 1.91.0, JSON 3.12.0 and yaml-cpp 0.9.0 match
-the repository. All C++ code and plugins use the same Alpine GCC toolchain.
-The project-wide LTO option is off; target-local LTO settings are unchanged.
+The base pins Alpine by digest and verifies downloaded Boost, JSON and yaml-cpp
+sources with SHA-256. Alpine package repositories remain mutable: before
+publishing a tested base, retain its digest and `runtime-packages.txt` and use
+that digest for subsequent worker and third-party plugin builds. The initial
+combination is GCC 15.2.0, musl 1.2.6, OpenSSL 3.5.9 and Boost 1.91.0. Review the
+bundled notices when upgrading these packages. Do not mix glibc plugins with
+musl or assume plugins from another GCC/Boost build are ABI compatible.
 
-## Run
+The image provides `/opt/simplex-thirdparty`, `/opt/simplex-runtime` and
+`/opt/simplex-runtime-licenses`, plus `/opt/simplex-thirdparty-licenses`. Configure the project with
+`-DCMAKE_CXX_COMPILER=g++` explicitly: the repository's unchanged default
+compiler name is `g++-14`, while Alpine supplies `g++`.
+
+## Build, test and package the worker
 
 ```bash
+docker build --target build -f docker/Dockerfile.musl-test \
+  -t simplex-musl-build-test:experimental .
+docker run --rm simplex-musl-build-test:experimental \
+  ctest --test-dir /build --output-on-failure --timeout 120
+# Verify executable discovery when the kernel's executable is the loader:
+docker run --rm simplex-musl-build-test:experimental \
+  /opt/simplex/lib/ld-musl-x86_64.so.1 --library-path /opt/simplex/lib \
+  /build/bin/test_executable_location /build/bin/test_executable_location
+# Move the installation, exercise the real worker, and inspect launcher behavior:
+docker run --rm simplex-musl-build-test:experimental \
+  python3 /src/docker/test-musl-runtime.py /opt/simplex /src \
+  /src/docker/musl-launch-probe
+# Package, verify checksums, extract, relocate, and check missing-license rejection:
+docker run --rm simplex-musl-build-test:experimental \
+  bash /src/docker/test-musl-package.sh
+mkdir -p musl-release
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD/musl-release:/output" simplex-musl-build-test:experimental \
+  bash /src/docker/package-musl-worker.sh /opt/simplex /output
+```
+
+`Dockerfile.musl-test` accepts `BUILD_IMAGE` and `JOBS` build arguments (defaults:
+`simplex-build-musl:experimental`, 2). Project-wide LTO is off in this test
+recipe; target-local settings are unchanged. The build image retains test
+executables and sources; the archive contains the installed worker tree only.
+Packaging checks the compiled version and each ELF object's `DT_NEEDED` entries
+against the bundled libraries, including modules loaded by plugins. It emits
+`simplex-worker-v<VERSION>-linux-x86_64-musl.tar.gz` and a `.tar.gz.sha256` file.
+The existing glibc packager and Hub download selection are not changed.
+
+A custom build can use the same pipeline: install with
+`-DSIMPLEX_BUNDLE_RUNTIME=/opt/simplex-runtime`, then run
+`bash docker/prepare-musl-runtime.sh STAGING_DIR` inside the base image. Always
+use a fresh staging directory. Preparation is intentionally rejected if it has
+already been applied. Keep the repository's installed `$ORIGIN` library paths.
+
+## Run from any directory
+
+```bash
+cd musl-release
+sha256sum -c simplex-worker-v*.tar.gz.sha256
+tar -xzf simplex-worker-v0.5.1-linux-x86_64-musl.tar.gz
+mv simplex-worker-v0.5.1-linux-x86_64-musl "$HOME/my simplex worker"
+"$HOME/my simplex worker/bin/simplex" --version
+"$HOME/my simplex worker/bin/simplex" run --help
+"$HOME/my simplex worker/bin/simplex" run \
+  --config /absolute/path/config.yaml --session example
+```
+
+Use the archive's actual version in these commands. Both `bin/simplex` and
+`bin/simplex_worker` can be placed on PATH or invoked through symbolic links.
+Relative `--config` paths and task paths remain relative to the caller's working
+directory. Configuration, prompt and plugin discovery still use the installed
+application directory. Copy `bin/config.example.yaml` and fill in provider and
+Hub endpoints before starting a real session.
+
+For a glibc-based test container:
+
+```bash
+docker build -f docker/Dockerfile.musl-runtime \
+  -t simplex-musl-test:experimental .
 docker run --rm simplex-musl-test:experimental --version
-docker run --rm simplex-musl-test:experimental run --help
-# Mount a worker configuration and use its configured endpoints/storage:
 docker run --rm -it --network host \
   -v /absolute/path/config.yaml:/config.yaml:ro \
   simplex-musl-test:experimental run --config /config.yaml --session musl-test
 ```
 
-The runtime image is Ubuntu 22.04. It receives the staged worker plus musl,
-libstdc++, libgcc, Boost, OpenSSL and a CA bundle; it does not install a host
-musl package. The original Bash launcher remains in place.
+Container filesystem changes are ephemeral with `--rm`; mount persistence and
+workspace directories explicitly when needed. Arbitrary installation paths do
+not remove Linux kernel, architecture, filesystem executable-permission or
+external-tool requirements. These artifacts are not macOS/Windows executables.
 
-For offline regression tests:
+## How relocation works
 
-```bash
-docker run --rm simplex-musl-build-test:experimental \
-  ctest --test-dir /build --output-on-failure --timeout 120
-```
+`bin/simplex` stays unchanged. In the musl package only, `bin/simplex_worker`
+is a Bash wrapper and `bin/simplex_worker.bin` is the actual ELF executable.
+The wrapper resolves its own symlinks, locates `../lib/ld-musl-x86_64.so.1` and
+executes it with an absolute worker path and `--library-path ../lib`. No wrapper
+shell survives, so the worker keeps the PID and receives signals directly.
+It preserves arguments and the caller's working directory. It does not export
+`LD_LIBRARY_PATH` or `LD_PRELOAD` to commands launched by process tools.
 
-## Scope and known limitations
+The kernel reports the loader in `/proc/self/exe`. `utils/executable` therefore
+uses the main executable's program-header entry on musl, with Boost.DLL as the
+native-platform fallback. Both startup asset discovery and the model dispatcher
+use this helper. No caller-controlled environment override is needed. Installing
+musl globally or patching an absolute ELF interpreter after each move is not
+required. Do not launch `simplex_worker.bin` directly on a host without musl.
 
-- **Fixed prefix:** executable ELF interpreters are patched in the experiment
-  to `/opt/simplex/lib/ld-musl-x86_64.so.1`. This permits the original launcher
-  and executable-relative resource discovery to work. It does not establish
-  arbitrary-directory archive portability. Direct invocation of the bundled
-  loader must separately check executable path discovery before adoption.
-- Shared libraries use installed `$ORIGIN` paths. Do not export a musl
-  `LD_LIBRARY_PATH` into host commands spawned by the process tools.
-- The runtime uses the packaged CA bundle via `SSL_CERT_FILE`. User overrides
-  can be supplied with Docker `-e`. Host trust-store discovery, OpenSSL
-  configuration/provider-module policy and certificate update policy are not
-  implemented by this experiment. No FIPS or legacy-provider support is claimed.
-- Only plugins compiled for this musl build context are supported. Existing
-  glibc plugins are not interchangeable.
-- The build/test image includes the test executables and sources; the runtime
-  image contains only the installed worker tree and its bundled dependencies.
-- Container tests share the host kernel; they do not establish compatibility
-  with older kernels. Download selection, checksums/manifests, licenses and
-  release CI need a separate production-packaging pass before publication.
+## TLS and updates
 
-## Loader-location probe
+The wrapper preserves explicitly provided `SSL_CERT_FILE`, `SSL_CERT_DIR` and
+`OPENSSL_CONF`, including directory-only CA overrides. Otherwise it chooses a
+readable common host CA bundle, falling back to `share/certs/ca-certificates.crt`.
+It selects the package's minimal OpenSSL configuration to avoid implicitly
+loading host-specific provider modules into the bundled library. Ordinary TLS
+uses OpenSSL's built-in default provider. FIPS and legacy provider modules are
+not bundled or claimed to be supported. TLS peer verification remains enabled.
 
-A minimal program calling the same `boost::dll::program_location()` used by
-`utils/subprocess` reported `/tmp/location` on normal execution, but
-`/lib/ld-musl-x86_64.so.1` when invoked explicitly through the loader. This
-confirms that replacing the launcher's `exec` with an explicit loader command
-alone would break executable-relative resource lookup. The fixed PT_INTERP
-experiment avoids that change.
+The chosen CA/config environment is inherited by child processes. Users who
+supply custom OpenSSL configurations must ensure any requested provider modules
+match the bundled library. Library versions, source notices and fallback roots
+travel with the installation; updating the host's OpenSSL does not update the
+packaged copy. Rebuild and redistribute the worker package for runtime security
+fixes and periodically refresh fallback roots.
 
-The tested source snapshot is `83654ed` (the model-tool-schema changes in PR #152);
-this experiment does not modify that PR or publish images.
+## License notices
 
-## Results (2026-10-12)
+Every prepared installation, runtime image and binary archive retains the
+project's root `LICENSE` (MIT), the repository's `third_party_licenses/` (Boost,
+JSON and yaml-cpp), and `share/licenses/` (musl copyright, OpenSSL Apache 2.0,
+GCC GPLv3 plus the Runtime Library Exception, and Mozilla CA data MPL 2.0).
+The runtime notice README records upstream sources; `runtime-packages.txt`
+records the build image's Alpine package versions. The package command refuses
+to create an archive if any expected notice is missing or empty, and the
+relocation test checks the extracted installation's notices too.
 
-- GCC 15.2.0, musl 1.2.6, OpenSSL 3.5.9, Boost 1.91.0.
-- Full Release build passed without application-source changes.
-- Original CTest suite: **104/105 passed**, in about 61 seconds. The single
-  failure is `llm_plugin_boundary_hygiene`: its glibc-only SONAME allowlist
-  rejects `libc.musl-x86_64.so.1` for all three model plugins. In a disposable
-  container, adding only that exact name made the structural check pass.
-  The repository test and locally built experimental images retain the original
-  check, so running the command above still reports that known failure.
-- Additional local TLS SSE executable (`sse_request_e2e`) passed.
-- Ubuntu 22.04: the unchanged launcher runs `--version` and `run --help`.
-  Loader inspection resolves the worker and all five installed plugins using
-  the bundled runtime, including libssl/libcrypto, without system musl.
-- AlmaLinux 9: installed-worker CLI checks, original-launcher CLI checks,
-  launcher relocation/symlink/exec tests, and the real-worker lifecycle suite
-  passed. The lifecycle suite covers ownership, TTY recovery/non-aliasing,
-  terminal shutdown and descendant-held pipe lifetime.
-- Installed tree: approximately **32 MiB**, including approximately 11.5 MiB
-  of selected third-party runtimes. No production archive-size claim is made.
-- Restoring execute permission on the bundled loader is essential: CMake's
-  library-directory install otherwise creates it with mode 0644. The test
-  Dockerfile explicitly restores mode 0755 after installation.
+## Validation
 
-Full Hub JavaScript E2E and real-provider inference were not run in this
-experiment. CA fallback/enterprise trust, old-kernel coverage and movable
-archive installation remain future work; successful container tests do not
-establish those properties.
+Validated on 2026-10-13 with worker version 0.5.1:
+
+- All 106 CTest tests passed in the final musl build environment.
+- Non-root archive creation, checksum verification, extraction, relocation and
+  missing-license rejection passed; the archive is approximately 9.5 MiB.
+- Ubuntu 22.04 passed relocated CLI checks; AlmaLinux 9 passed the complete
+  relocation and real-worker lifecycle suite as an unprivileged user.
+- Explicit-loader executable discovery and the native glibc helper probe passed.
+
+The dependency allowlist now recognizes the musl SONAME. Relocation tests use paths containing
+spaces and Unicode, unrelated working directories and symlink/PATH entry points,
+and exercise real provider loading, worker shutdown, pipe/TTY lifecycle,
+argument/PID preservation and explicit/default trust selection.
+
+Container tests share the host kernel and do not establish older-kernel support.
+Full Hub JavaScript E2E and real-provider inference are separate from these
+local packaging checks. No release workflow or automatic musl download choice
+is introduced by this PR.

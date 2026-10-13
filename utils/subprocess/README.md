@@ -45,8 +45,9 @@ then `/usr/bin/bash`, otherwise `/bin/sh`, with `{"-c"}`. This preserves existin
 behavior, including failure at launch if that selected file is not executable;
 it does not consult a model-controlled PATH or add interactive flags.
 
-`executable_location()` uses Boost.DLL to locate the running executable, even
-when invoked inside this shared library. The error-code overload enables asset
+`executable_location()` delegates to `utils/executable` to locate the running
+application, even inside this shared library or under the bundled musl loader.
+Native launches retain the Boost.DLL fallback. The error-code overload enables asset
 loaders to preserve their fallback order: explicit environment override,
 installed directory beside the executable, then build-time directory. The
 throwing overload serves configuration loading where location is mandatory.
