@@ -3,10 +3,14 @@
 This Linux x86_64 variant bundles musl's loader, GCC/Boost runtimes, OpenSSL and
 fallback CA data. It can be unpacked into an arbitrary directory on a compatible
 Linux system, including glibc distributions without a musl installation. Keep
-the whole directory together. Bash and normal shell utilities (`dirname`,
+the whole directory together; installation paths must not contain `:` because
+the loader treats it as a library search-path separator. Bash and normal shell utilities (`dirname`,
 `readlink`) are required; external tools used by tasks are not bundled.
 
-The existing glibc release, public `simplex` router and downloader are unchanged.
+The public `simplex` router is shared by both package variants. The Hub installer
+selects this package with `--platform linux-amd64-bundled`; use
+`--platform linux-amd64-standard` for the glibc package. Older Hub versions
+without platform selection require manual musl download.
 The musl archive is a separate GitHub Release asset, also buildable locally or
 through the manual validation workflow below. Only plugins compiled in the same musl build context
 are supported.
@@ -26,7 +30,7 @@ Daily development uses `workflow_dispatch` only: PRs and merges to `main` do
 not start musl validation. Tag releases reuse it through `workflow_call` and
 wait for all three stages before publishing. The release workflow combines the
 glibc and musl runtime archives with one `SHA256SUMS`; validation-only files
-are excluded. Neither path publishes images or changes the Hub downloader.
+are excluded. Neither validation path publishes images.
 
 Its three stages use the same portable archive:
 
@@ -227,7 +231,7 @@ argument/PID preservation and explicit/default trust selection.
 
 Container tests share the host kernel and do not establish older-kernel support.
 The workflow covers offline Hub E2E; real-provider inference and opt-in Docker
-ownership tests remain separate. Automatic musl download is not supported.
+ownership tests remain separate. The Hub installer supports musl through the explicit bundled platform tag.
 
 ## Boost.Test signal stacks on CI hosts
 

@@ -21,7 +21,7 @@ const USAGE = `Usage: simplex-hub [options]
 
 Standalone commands:
   install-worker [options]       install/update the worker without starting the Hub
-                                (see install-worker --help)
+                                (requires --platform; see install-worker --help)
 
 Options:
   -c, --config <file>            hub configuration file (default: hub.config.jsonc)

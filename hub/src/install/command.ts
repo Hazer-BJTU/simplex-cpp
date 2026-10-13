@@ -10,14 +10,17 @@ import { atomicWrite, exists } from './files.ts';
 import { smokeCheck, validateHost } from './host.ts';
 import { resolveRelease } from './source.ts';
 import type { Fetch, WorkerRelease } from './source.ts';
+import { WORKER_PLATFORMS, parseWorkerPlatform } from './platform.ts';
+import type { WorkerPlatform } from './platform.ts';
 import { destinationPath, InstallationTransaction } from './transaction.ts';
 import { METADATA, installationAction, normalizeVersion, readInstalled, validateTree } from './version.ts';
 
-export const INSTALL_USAGE = `Usage: simplex-hub install-worker [options]
+export const INSTALL_USAGE = `Usage: simplex-hub install-worker --platform <tag> [options]
 
 Download and install a worker on this host without starting the Hub.
 
 Options:
+  --platform <tag>        required package platform (see supported tags below)
   --source <source>       release source (default: github; only github is supported)
   --version <vX.Y.Z>      published stable version (default: latest stable release)
   --directory <dir>       installation root (default: ~/.simplex/worker)
@@ -28,16 +31,23 @@ Options:
   --overwrite             authorize replacement of an unknown non-empty directory
   -h, --help              show this message
 
+Supported GitHub platforms:
+${Object.entries(WORKER_PLATFORMS).map(([name, entry]) => `  ${name}
+    ${entry.description}`).join('\n')}
+
+Both platforms require Bash and util-linux flock. Bundled also uses dirname/readlink.
+Standard requires the glibc ldd utility; bundled uses its own loader for validation.
 Replacement removes custom/stale files inside the installation root.
 Stop workers using this installation before replacing it. Keep session data elsewhere.
-Linux x86_64, glibc >= 2.34, Bash, util-linux flock, ldd and host OpenSSL 3 are required.
 PATH changes apply to new shells; restart the Hub from an updated shell.
-Directories containing ":" can be installed but cannot be added to PATH; use an absolute command.
+Standard directories containing ":" need an absolute command instead of PATH.
+Bundled installation directories cannot contain ":" (loader search-path separator).
 Downloads install executable code/plugins. SHA256 detects corruption, not publisher identity.
 `;
 
 export interface InstallOptions {
     source: string;
+    platform?: WorkerPlatform;
     version?: string;
     directory: string;
     updatePath?: boolean;
@@ -54,10 +64,14 @@ export function parseInstallArguments(argv: string[], home = homedir()): Install
     for (let index = 0; index < argv.length; index++) {
         const argument = argv[index];
         switch (argument) {
-            case '--source': case '--version': case '--directory': {
+            case '--source': case '--platform': case '--version': case '--directory': {
                 const value = argv[++index];
                 if (!value || value.startsWith('--')) throw new Error(`${argument} requires a value`);
                 if (argument === '--source') options.source = value;
+                else if (argument === '--platform') {
+                    if (options.platform !== undefined) throw new Error('--platform must be specified once');
+                    options.platform = parseWorkerPlatform(value);
+                }
                 else if (argument === '--version') options.version = normalizeVersion(value);
                 else options.directory = value;
                 break;
@@ -78,6 +92,7 @@ export function parseInstallArguments(argv: string[], home = homedir()): Install
         }
     }
     if (options.source !== 'github') throw new Error(`Unsupported source: ${options.source}; only github is supported`);
+    if (!options.help && !options.platform) throw new Error('--platform is required; use install-worker --help for supported tags');
     return options;
 }
 
@@ -107,9 +122,9 @@ export function confirmPath(input: Readable, output: Writable, signal?: AbortSig
 export interface InstallDependencies {
     home?: string;
     fetcher?: Fetch;
-    checkHost?: () => Promise<void>;
-    checkStartup?: (directory: string) => Promise<void>;
-    release?: (source: string, version?: string) => Promise<WorkerRelease>;
+    checkHost?: (platform: WorkerPlatform) => Promise<void>;
+    checkStartup?: (directory: string, platform: WorkerPlatform) => Promise<void>;
+    release?: (source: string, platform: WorkerPlatform, version?: string) => Promise<WorkerRelease>;
     input?: Readable;
     output?: Writable;
     interactive?: boolean;
@@ -125,34 +140,39 @@ export async function installWorker(argv: string[], dependencies: InstallDepende
     const print = (message: string) => output.write(`${message}\n`);
     const options = parseInstallArguments(argv, home);
     if (options.help) { output.write(INSTALL_USAGE); return 0; }
-    await (dependencies.checkHost ?? validateHost)();
+    const platform = options.platform!; // parseInstallArguments requires it unless help was requested.
+    await (dependencies.checkHost ?? validateHost)(platform);
     dependencies.signal?.throwIfAborted();
     const destination = await destinationPath(options.directory, home);
-    const release = await (dependencies.release ?? ((source, version) =>
-        resolveRelease(source, version, dependencies.fetcher, dependencies.signal)))(options.source, options.version);
+    if (platform === 'linux-amd64-bundled' && destination.includes(':')) {
+        throw new Error('Bundled installation directory cannot contain ":" (loader search-path separator)');
+    }
+    const release = await (dependencies.release ?? ((source, target, version) =>
+        resolveRelease(source, target, version, dependencies.fetcher, dependencies.signal)))(options.source, platform, options.version);
+    if (release.platform !== platform) throw new Error('Resolved release does not match the requested platform');
     const transaction = new InstallationTransaction(destination,
         message => print(`Warning: ${message}`), dependencies.removeObsolete);
     await transaction.open();
     try {
         const installed = await readInstalled(destination);
-        print(`Source: github; installed: ${installed?.version ?? 'unknown/not installed'}; target: ${release.version}`);
+        print(`Source: github; platform: ${platform}; installed: ${installed?.version ?? 'unknown/not installed'} (${installed?.platform ?? 'unknown'}); target: ${release.version}`);
         print(`Directory: ${destination}`);
-        const action = installationAction(installed, release.version, options);
+        const action = installationAction(installed, release.version, { ...options, platform });
         const nonempty = await exists(destination) && (await readdir(destination)).length > 0;
         if (!installed && nonempty && !options.overwrite) {
             throw new Error('Unknown non-empty installation directory; replacement requires --overwrite (custom files will be removed)');
         }
         dependencies.signal?.throwIfAborted();
         if (action === 'current') {
-            try { await validateTree(destination); }
+            try { await validateTree(destination, platform); }
             catch (error) { throw new Error(`Current installation is incomplete; use --reinstall: ${(error as Error).message}`); }
             print(`Worker ${release.version} is already current; no replacement needed.`);
         } else {
             print('Preparing the complete release; stop workers using this installation before replacement.');
             await mkdir(transaction.preparation, { mode: 0o700 });
             const tree = await prepareArchive(release, transaction.preparation, dependencies.fetcher, dependencies.signal);
-            await (dependencies.checkStartup ?? smokeCheck)(tree);
-            await atomicWrite(join(tree, METADATA), `${JSON.stringify({ source: 'github', version: release.version,
+            await (dependencies.checkStartup ?? smokeCheck)(tree, platform);
+            await atomicWrite(join(tree, METADATA), `${JSON.stringify({ source: 'github', platform, version: release.version,
                 installedAt: new Date().toISOString() }, null, 2)}\n`);
             dependencies.signal?.throwIfAborted();
             // Once publication begins, finish it or roll it back before honoring cancellation.
