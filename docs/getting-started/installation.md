@@ -7,7 +7,8 @@ The worker release and Hub npm package are installed separately.
 
 | Component | Requirement |
 | --- | --- |
-| Prebuilt worker | Linux x86_64, glibc 2.34 or newer, host OpenSSL 3 libraries, Bash |
+| glibc worker | Linux x86_64, glibc 2.34 or newer, host OpenSSL 3 libraries, Bash |
+| musl worker (manual download) | Linux x86_64, Bash; loader and OpenSSL bundled |
 | Hub | Node.js 22.18 or newer and npm |
 | Hub worker installer | `flock` (util-linux) and `ldd` on the worker host |
 | Model | Credentials and an endpoint supported by an installed provider |
@@ -119,13 +120,21 @@ Download the worker archive and `SHA256SUMS` from
 Run these commands in the download directory containing that release's files:
 
 ```sh
-sha256sum -c SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf simplex-worker-v*-linux-x86_64-glibc2.34.tar.gz
 export PATH="/absolute/path/to/extracted-worker/bin:$PATH"
 simplex run --help
 ```
 
-Replace the example path with the extracted directory. A checksum detects file
+To use musl, download and extract the `linux-x86_64-musl.tar.gz` archive
+instead. It is dynamically linked with a bundled loader and libraries, so it
+does not require host glibc or OpenSSL. Keep the whole tree together; native
+plugins must be compiled for the matching musl build. The Hub installer still
+selects glibc; musl currently requires manual download.
+
+`SHA256SUMS` covers both variants; `--ignore-missing` verifies the archive you
+downloaded without requiring the other variant. Replace the example path with
+the extracted directory. A checksum detects file
 corruption; it does not independently authenticate the publisher. Add the PATH
 export to your shell startup file if desired.
 

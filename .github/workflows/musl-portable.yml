@@ -1,8 +1,9 @@
 name: Musl portable validation
 
-# Deliberately independent of PR/main CI and tag publication.
+# Manual for daily development; also reused by the tag release workflow.
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read

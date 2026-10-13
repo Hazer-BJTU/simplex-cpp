@@ -65,7 +65,10 @@ Open <http://127.0.0.1:8800>. Configure a model and launch a worker using the
 
 Alternatively, download and extract the worker manually from
 [GitHub Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest).
-Keep the extracted directory intact and add its `bin` directory to `PATH`.
+The optional `linux-x86_64-musl` archive bundles its loader and OpenSSL; it
+requires Bash and is available by manual download only. The Hub installer
+continues to select glibc. Keep the extracted directory intact and add its
+`bin` directory to `PATH`.
 See the [installation guide](https://hazer-bjtu.github.io/simplex-cpp/getting-started/installation.html)
 for version selection, replacement behavior, and manual checksum verification.
 

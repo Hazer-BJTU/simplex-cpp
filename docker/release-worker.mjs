@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /** Prepare/recover a draft GitHub release, then finalize it after npm succeeds. */
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
+
+import { validateWorkerAssets } from './worker-release-assets.mjs';
 
 const [mode, assetDirectory] = process.argv.slice(2);
 const tag = process.env.RELEASE_TAG || process.env.GITHUB_REF_NAME;
@@ -14,18 +16,9 @@ if (!['prepare', 'finalize'].includes(mode) || !assetDirectory || !tag || !repo 
 }
 
 const directory = resolve(assetDirectory);
-const archives = (await readdir(directory)).filter(name =>
-    /^simplex-worker-v[0-9]+\.[0-9]+\.[0-9]+-linux-x86_64-glibc2\.34\.tar\.gz$/.test(name));
-if (archives.length !== 1) throw new Error('Expected exactly one worker archive');
-if (!archives[0].startsWith(`simplex-worker-${tag}-`)) {
-    throw new Error(`Worker archive does not match release tag ${tag}`);
-}
-const names = [archives[0], 'SHA256SUMS'];
-const checksum = (await readFile(join(directory, 'SHA256SUMS'), 'utf8')).trim();
-if (!new RegExp(`^[a-f0-9]{64}  ${archives[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`).test(checksum)) {
-    throw new Error('SHA256SUMS must identify exactly the release archive');
-}
-execFileSync('sha256sum', ['-c', 'SHA256SUMS'], { cwd: directory, stdio: 'inherit' });
+// Both runtime variants must be intact before any GitHub mutation. Recovery
+// verifies the exact same combined artifact rather than rebuilding either one.
+const names = await validateWorkerAssets(directory, tag);
 
 function gh(args) {
     execFileSync('gh', args, { stdio: 'inherit' });
@@ -88,7 +81,7 @@ async function verifyAssets(current, allowMissing) {
 let current = await release();
 if (mode === 'prepare') {
     if (!current) {
-        const notes = `Source snapshots are attached automatically by GitHub. The worker asset is for Linux x86_64 (glibc 2.34+, host OpenSSL 3); see README.md inside the archive. The Hub is available separately from npm as @hazer-bjtu/simplex-hub@${tag.slice(1)}.`;
+        const notes = `Source snapshots are attached automatically by GitHub. Worker archives target Linux x86_64: glibc2.34 requires glibc 2.34+ and host OpenSSL 3; musl bundles its loader and OpenSSL and currently requires manual download. Both need Bash; keep the extracted directory intact. SHA256SUMS covers both archives. See README.md inside each archive. The Hub is available separately from npm as @hazer-bjtu/simplex-hub@${tag.slice(1)}.`;
         try {
             gh(['release', 'create', tag, '--repo', repo, '--verify-tag', '--draft',
                 '--title', `Simplex ${tag}`, '--notes', notes]);

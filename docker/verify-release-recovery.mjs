@@ -23,6 +23,7 @@ git(['merge-base', '--is-ancestor', tagCommit, 'HEAD']);
 const allowedChanges = new Set([
     '.github/workflows/release-worker.yml',
     'docker/release-worker.mjs',
+    'docker/worker-release-assets.mjs',
     'docker/verify-release-recovery.mjs',
     'hub/scripts/publish-release.mjs',
     'hub/test/release-worker.test.js',
@@ -60,6 +61,8 @@ const required = new Set([
     'validate-tag',
     'build',
     'build-hub',
+    // Assembly cannot succeed until every musl reusable-workflow job passes.
+    'assemble-worker-assets',
     'target-test (ubuntu:22.04)',
     'target-test (almalinux:9)',
 ]);

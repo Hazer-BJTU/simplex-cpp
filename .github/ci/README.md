@@ -14,7 +14,8 @@ complete local Git diff and derives all native producer/consumer decisions.
 ## Separate manual musl validation
 
 `musl-portable.yml` is dispatched manually and is not a dependency of ordinary
-CI or release publication. It builds Release, tests the portable archive
+CI. Tag releases reuse it and require its success before publishing both worker
+variants. It builds Release, tests the portable archive
 on Ubuntu/AlmaLinux and runs offline Hub E2E. See
 [the musl guide](../../docker/MUSL_EXPERIMENT.md#manual-ci-validation).
 Changes confined to this workflow use the same exact-path exception as other

@@ -80,7 +80,7 @@ jobs:
           retention-days: 1
       - uses: actions/upload-artifact@v4
         with:
-          name: worker-release-assets
+          name: glibc-worker-release-assets
           path: worker-release/
           retention-days: 7
 
@@ -117,7 +117,7 @@ jobs:
           name: release-test-tree
       - uses: actions/download-artifact@v4
         with:
-          name: worker-release-assets
+          name: glibc-worker-release-assets
           path: worker-release
       - name: Test the exact downloadable archive
         run: |
@@ -128,6 +128,39 @@ jobs:
           tar -xzf release-test-tree.tar.gz
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
+
+  musl:
+    needs: validate-tag
+    uses: ./.github/workflows/musl-portable.yml
+
+  assemble-worker-assets:
+    # A successful assembly is also the recovery gate for the entire musl
+    # reusable workflow (build, both target tests and offline Hub E2E).
+    needs: [target-test, musl]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: glibc-worker-release-assets
+          path: glibc-assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: musl-portable
+          path: musl-assets
+      - name: Verify and assemble only the two distributable archives
+        run: node docker/worker-release-assets.mjs glibc-assets musl-assets worker-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-release-assets
+          path: worker-release/
+          if-no-files-found: error
+          retention-days: 7
 
   build-hub:
     needs: validate-tag
@@ -160,7 +193,7 @@ jobs:
           retention-days: 7
 
   prepare-release:
-    needs: [target-test, build-hub]
+    needs: [assemble-worker-assets, build-hub]
     runs-on: ubuntu-latest
     permissions:
       contents: write
