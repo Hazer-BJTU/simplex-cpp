@@ -1,7 +1,20 @@
-# Build and prepare the musl package without changing release CI or downloaders.
+# Build and prepare the musl package with host-compatible Boost.Test monitoring.
 ARG BUILD_IMAGE=simplex-build-musl:experimental
 FROM ${BUILD_IMAGE} AS build
 ARG JOBS=2
+# The published base predates this Boost.Test fix. Rebuild only its test
+# library; no worker production dependency or public entry point changes.
+COPY docker/boost-test-musl-alt-stack.patch /tmp/boost-test-musl-alt-stack.patch
+RUN wget -q -O /tmp/boost.tar.gz \
+        https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz \
+    && echo "5734305f40a76c30f951c9abd409a45a2a19fb546efe4162119250bbe4d3a463  /tmp/boost.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/boost.tar.gz -C /tmp \
+    && cd /tmp/boost_1_91_0 \
+    && patch -p1 < /tmp/boost-test-musl-alt-stack.patch \
+    && ./bootstrap.sh --with-libraries=test \
+    && ./b2 -j"${JOBS}" --with-test link=shared runtime-link=shared variant=release install \
+    && cp -a /usr/local/lib/libboost_unit_test_framework.so* /opt/simplex-runtime/ \
+    && rm -rf /tmp/boost.tar.gz /tmp/boost_1_91_0 /tmp/boost-test-musl-alt-stack.patch
 WORKDIR /src
 COPY . .
 # Also support incremental experiments based on a previous test image.

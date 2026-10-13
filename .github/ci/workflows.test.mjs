@@ -97,3 +97,13 @@ test('musl validation stays manual for development and is reusable for releases'
         assert.doesNotMatch(text, /musl-portable|build-musl|simplex-musl-ci/);
     }
 });
+
+test('musl validates kernel-sized Boost.Test signal stacks before the full suite', () => {
+    const musl = workflows.find(workflow => workflow.name === 'musl-portable.yml').text;
+    const regression = musl.indexOf('bash /src/docker/test-musl-boost-monitor.sh');
+    assert.ok(regression > 0 && regression < musl.indexOf('ctest --test-dir /build'));
+    const recipe = readFileSync(new URL('../../docker/Dockerfile.musl-test', import.meta.url), 'utf8');
+    assert.match(recipe, /patch -p1 < \/tmp\/boost-test-musl-alt-stack\.patch/);
+    assert.match(recipe, /cp -a \/usr\/local\/lib\/libboost_unit_test_framework\.so\* \/opt\/simplex-runtime\//);
+    assert.doesNotMatch(musl + recipe, /BOOST_TEST_USE_ALT_STACK=no|BOOST_TEST_CATCH_SYSTEM_ERRORS=no/);
+});
