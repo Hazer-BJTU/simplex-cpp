@@ -15,7 +15,7 @@ target_include_directories(test_loop_installed_config PRIVATE
 target_compile_definitions(test_loop_installed_config PRIVATE
     SIMPLEX_LOOP_HOOK_SOURCE_ROOT="/nonexistent/simplex-loop-hook-schemas")
 target_link_libraries(test_loop_installed_config PRIVATE
-    loop_lib yamlconfig_iface logging_lib)
+    loop_lib yamlconfig_iface logging_lib executable_iface)
 add_test(NAME test_loop_installed_config
     COMMAND ${CMAKE_COMMAND}
         -Dstage=${CMAKE_CURRENT_BINARY_DIR}/staged_config

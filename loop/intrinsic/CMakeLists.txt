@@ -4,7 +4,7 @@ add_library(loop_intrinsic SHARED src/hook_config.cpp)
 target_include_directories(loop_intrinsic PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(loop_intrinsic PUBLIC loop_lib)
-target_link_libraries(loop_intrinsic PRIVATE yamlconfig_iface logging_lib)
+target_link_libraries(loop_intrinsic PRIVATE yamlconfig_iface logging_lib executable_iface)
 target_compile_definitions(loop_intrinsic PRIVATE
     SIMPLEX_LOOP_HOOK_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/hooks")
 target_compile_options(loop_intrinsic PRIVATE

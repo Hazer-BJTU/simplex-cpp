@@ -1,7 +1,7 @@
 add_library(loop_extensions SHARED src/plugin.cpp)
 target_include_directories(loop_extensions PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(loop_extensions PUBLIC loop_intrinsic)
-target_link_libraries(loop_extensions PRIVATE logging_lib)
+target_link_libraries(loop_extensions PRIVATE logging_lib executable_iface)
 set_target_properties(loop_extensions PROPERTIES OUTPUT_NAME extension_loop_hooks)
 
 function(simplex_install_loop_extension_config name source_file)

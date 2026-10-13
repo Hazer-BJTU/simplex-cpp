@@ -1,7 +1,7 @@
 add_library(tools_extensions SHARED src/plugin.cpp)
 target_include_directories(tools_extensions PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(tools_extensions PUBLIC tools_intrinsic)
-target_link_libraries(tools_extensions PRIVATE yamlconfig_iface logging_lib)
+target_link_libraries(tools_extensions PRIVATE yamlconfig_iface logging_lib executable_iface)
 set_target_properties(tools_extensions PROPERTIES OUTPUT_NAME extension_tools)
 
 # Copy editable YAML into the build layout and install it in the identical layout.

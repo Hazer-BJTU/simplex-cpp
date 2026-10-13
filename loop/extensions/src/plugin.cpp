@@ -1,12 +1,12 @@
 #include "loop/extensions/plugin.hpp"
 
+#include "executable/location.hpp"
 #include "logging/logger.hpp"
-
-#include <boost/dll/runtime_symbol_info.hpp>
 
 #include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 
 namespace loop::extensions {
@@ -26,12 +26,13 @@ bool portable(std::string_view name) noexcept {
 }
 
 std::filesystem::path executable_directory() {
-    boost::system::error_code error;
-    const auto executable = boost::dll::program_location(error);
+    // Use the application path even when its ELF is run by a bundled loader.
+    std::error_code error;
+    const auto executable = executable::location(error);
     if (error) {
-        throw boost::system::system_error(error);
+        throw std::system_error(error);
     }
-    return std::filesystem::path(executable.string()).parent_path();
+    return executable.parent_path();
 }
 
 using Factory = std::unique_ptr<LoopHookInterface>(const intrinsic::HookConfig&);

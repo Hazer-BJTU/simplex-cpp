@@ -77,3 +77,22 @@ test('the version bypass is confined to ordinary CI, not release or documentatio
         assert.doesNotMatch(text, /version-only|ci\/classify\.mjs|outputs\.cpp_validation|outputs\.portable_build/);
     }
 });
+
+test('musl validation is manual-only and does not join ordinary or release CI', () => {
+    const musl = workflows.find((workflow) => workflow.name === 'musl-portable.yml').text;
+    const triggers = musl.slice(musl.indexOf('\non:\n'), musl.indexOf('\npermissions:\n'));
+    assert.match(triggers, /workflow_dispatch:/);
+    assert.doesNotMatch(triggers, /push:|pull_request:|schedule:|workflow_call:/);
+    assert.match(musl, /build-musl:experimental@sha256:[a-f0-9]{64}/);
+    const dockerfile = readFileSync(new URL('../../docker/Dockerfile.musl-test', import.meta.url), 'utf8');
+    assert.match(dockerfile, /CMAKE_BUILD_TYPE=Release/);
+    assert.match(dockerfile, /SIMPLEX_ENABLE_LTO=OFF/);
+    assert.doesNotMatch(musl, /Debug|contents: write|packages: write/);
+    assert.match(musl, /ctest .*--no-tests=error .*--timeout 120/);
+    assert.match(musl, /image: \[ubuntu:22\.04, almalinux:9\]/);
+    assert.match(musl, /SIMPLEX_E2E_REQUIRED: '1'/);
+    for (const name of ['ci.yml', 'release-worker.yml']) {
+        const text = workflows.find((workflow) => workflow.name === name).text;
+        assert.doesNotMatch(text, /musl-portable|build-musl|simplex-musl-ci/);
+    }
+});
