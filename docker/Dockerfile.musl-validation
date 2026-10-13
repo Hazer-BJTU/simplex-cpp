@@ -1,0 +1,13 @@
+# Minimal glibc target with only the shell/Python fixtures' prerequisites.
+# The worker must use its bundled musl/OpenSSL rather than build-image files.
+ARG BASE_IMAGE=ubuntu:22.04
+FROM ${BASE_IMAGE}
+RUN if command -v apt-get >/dev/null 2>&1; then \
+        apt-get update -qq \
+        && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            bash python3 ca-certificates tar gzip \
+        && rm -rf /var/lib/apt/lists/*; \
+    elif command -v dnf >/dev/null 2>&1; then \
+        dnf -y install --setopt=install_weak_deps=False bash python3 ca-certificates tar gzip \
+        && dnf clean all; \
+    else exit 1; fi

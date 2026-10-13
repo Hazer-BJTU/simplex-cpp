@@ -1,7 +1,7 @@
 /** Complete compact text through the real C++ worker, Hub, replay and panel store. */
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { copyFileSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { e2eSkip, startE2eHub, WORKER_BIN } from '../helpers/e2e.js';
 import { connectWorker, until } from '../helpers/worker.js';
@@ -17,7 +17,7 @@ for (const bytes of [8192, 32768]) {
             // This test covers complete display/replay, not a shipped persona's
             // size. Keep all installed tools and the production compact budget,
             // but reserve summary space with a dedicated minimal role prompt.
-            // Prompt paths are installation-relative. Copy only the executable
+            // Prompt paths are installation-relative. Copy the executable(s)
             // into a private layout and link unchanged release assets; never
             // write into the supplied installation (which may be read-only).
             const originalBin = dirname(resolve(WORKER_BIN));
@@ -25,6 +25,17 @@ for (const bytes of [8192, 32768]) {
             const fixtureBin = join(fixtureRoot, 'bin');
             mkdirSync(fixtureBin, { recursive: true });
             copyFileSync(WORKER_BIN, join(fixtureBin, 'simplex_worker'));
+            // A musl distribution separates the entry wrapper from its ELF.
+            // Copy the ELF too: symlinking it would resolve resources beside
+            // the original installation and miss this fixture's private prompt.
+            const workerElf = join(originalBin, 'simplex_worker.bin');
+            if (existsSync(workerElf)) {
+                copyFileSync(workerElf, join(fixtureBin, 'simplex_worker.bin'));
+            }
+            const sharedAssets = join(originalBin, '..', 'share');
+            if (existsSync(sharedAssets)) {
+                symlinkSync(sharedAssets, join(fixtureRoot, 'share'), 'dir');
+            }
             symlinkSync(join(originalBin, '..', 'lib'), join(fixtureRoot, 'lib'), 'dir');
             for (const directory of ['plugins', 'schemas', 'prompts']) {
                 symlinkSync(join(originalBin, directory), join(fixtureBin, directory), 'dir');

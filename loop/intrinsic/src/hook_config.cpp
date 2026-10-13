@@ -1,5 +1,6 @@
 #include "loop/intrinsic/hook_config.hpp"
 
+#include "executable/location.hpp"
 #include "logging/logger.hpp"
 #include "yamlconfig/yaml_json.hpp"
 
@@ -62,8 +63,9 @@ bool portable_name(std::string_view name) noexcept {
 
 std::filesystem::path beside_executable(std::string_view name) {
     std::error_code failure;
-    const std::filesystem::path executable =
-        std::filesystem::read_symlink("/proc/self/exe", failure);
+    // Explicit musl-loader invocation makes /proc/self/exe name the loader.
+    // Configurations belong beside the application, just like its plugins.
+    const auto executable = executable::location(failure);
     if (failure || executable.empty()) {
         return {};
     }

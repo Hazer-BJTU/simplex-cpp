@@ -38,7 +38,8 @@ for (const path of ['hub/src/launch/config-render.ts', 'hub/shared/protocol.ts',
 for (const path of ['hub/web/src/App.tsx', 'hub/test/browser/panel-shell.spec.ts',
     'docs/core/worker-protocol.md', 'docs/.vitepress/config.mts', 'README.md',
     'assets/simplex-logo.svg', '.github/workflows/docs.yml',
-    '.github/workflows/release-worker.yml', '.github/workflows/panel-performance.yml']) {
+    '.github/workflows/release-worker.yml', '.github/workflows/panel-performance.yml',
+    '.github/workflows/musl-portable.yml']) {
     test(`${path} does not require native work`, () => {
         assert.deepEqual(classifyPaths([path]), decisionsForCategory('independent'));
     });

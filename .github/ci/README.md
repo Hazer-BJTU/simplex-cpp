@@ -11,6 +11,16 @@ complete local Git diff and derives all native producer/consumer decisions.
 | Independent docs/panel | Skip | Skip | Skip | Skip |
 | Content-verified version-only | Skip | Skip | Skip | Skip |
 
+## Separate manual musl validation
+
+`musl-portable.yml` is dispatched manually and is not a dependency of ordinary
+CI or release publication. It builds Release, tests the portable archive
+on Ubuntu/AlmaLinux and runs offline Hub E2E. See
+[the musl guide](../../docker/MUSL_EXPERIMENT.md#manual-ci-validation).
+Changes confined to this workflow use the same exact-path exception as other
+out-of-scope workflows; unknown automation paths and Docker packaging changes
+still conservatively select native validation.
+
 ## Verified version-only bypass
 
 `version-only.mjs` checks content before applying the ordinary path rules. The

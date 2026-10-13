@@ -1,0 +1,122 @@
+name: Musl portable validation
+
+# Deliberately independent of PR/main CI and tag publication.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      BUILD_IMAGE: ghcr.io/hazer-bjtu/simplex-cpp/build-musl:experimental@sha256:ded44376b1857de2ad88165a2252381a2118b3d09e6ec766c8770cce83fafaaa
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Actions' Node runtime needs glibc. Run actions on the host and only
+      # compilation/tests inside the pinned musl container.
+      - name: Build portable Release
+        run: |
+          docker build -f docker/Dockerfile.musl-test \
+            --build-arg BUILD_IMAGE="$BUILD_IMAGE" \
+            --build-arg JOBS=2 \
+            -t simplex-musl-ci .
+      - name: Run full CTest suite
+        run: |
+          docker run --rm simplex-musl-ci \
+            ctest --test-dir /build --output-on-failure --no-tests=error --timeout 120
+      - name: Test archive packaging as a non-root user
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" simplex-musl-ci \
+            bash /src/docker/test-musl-package.sh
+      - name: Export portable package and separate test support
+        run: |
+          mkdir -p musl-artifacts
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD/musl-artifacts:/output" simplex-musl-ci bash -euo pipefail -c '
+              bash /src/docker/package-musl-worker.sh /opt/simplex /output
+              tar -C /build/bin -czf /output/musl-test-support.tar.gz \
+                test_tools test_registry_e2e test_reading_tools test_editing_tools \
+                test_load_system_prompt test_hub_remote_call_tools \
+                test_tool_extensions test_loop_extensions test_qwen_plugin test_loop_installed_config
+              cp /src/docker/musl-launch-probe /output/
+            '
+          # Artifact upload does not preserve executable bits. The probe is
+          # restored explicitly; all package/test modes are retained by tar.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: musl-portable
+          path: musl-artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+  target-test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu:22.04, almalinux:9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: musl-portable
+          path: musl-artifacts
+      - name: Prepare target test prerequisites
+        env:
+          TARGET_IMAGE: ${{ matrix.image }}
+        run: |
+          # No compiler, musl package or project source installed at /src.
+          docker build --build-arg BASE_IMAGE="$TARGET_IMAGE" \
+            -f docker/Dockerfile.musl-validation -t simplex-musl-target .
+      - name: Validate exact archive on target as a non-root user
+        run: |
+          chmod +x musl-artifacts/musl-launch-probe
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/repo:ro" -v "$PWD/musl-artifacts:/artifacts:ro" \
+            simplex-musl-target bash /repo/docker/check-musl-portable.sh /artifacts
+
+  hub-e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: musl-portable
+          path: musl-artifacts
+      - name: Extract the tested archive
+        run: |
+          (cd musl-artifacts && sha256sum -c *.tar.gz.sha256)
+          mkdir -p "$RUNNER_TEMP/musl-worker"
+          tar -xzf musl-artifacts/simplex-worker-*.tar.gz \
+            -C "$RUNNER_TEMP/musl-worker" --strip-components=1
+          "$RUNNER_TEMP/musl-worker/bin/simplex" run --help
+          echo "SIMPLEX_WORKER_BIN=$RUNNER_TEMP/musl-worker/bin/simplex_worker" >> "$GITHUB_ENV"
+      - name: Install Hub dependencies
+        working-directory: hub
+        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Run offline E2E against the packaged worker
+        working-directory: hub
+        env:
+          SIMPLEX_E2E_REQUIRED: '1'
+        run: npm run test:e2e

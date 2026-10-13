@@ -6,9 +6,56 @@ Linux system, including glibc distributions without a musl installation. Keep
 the whole directory together. Bash and normal shell utilities (`dirname`,
 `readlink`) are required; external tools used by tasks are not bundled.
 
-The existing glibc release, public `simplex` router, downloader and CI workflows
-are unchanged. The musl archive is a separate manually built artifact. Only
-plugins compiled in the same musl build context are supported.
+The existing glibc release, public `simplex` router and downloader are unchanged.
+The musl archive is a separate artifact, built locally or through the manual
+validation workflow below. Only plugins compiled in the same musl build context
+are supported.
+
+## Manual CI validation
+
+In GitHub Actions, select **Musl portable validation** → **Run workflow** and
+choose the branch to validate. After this workflow is available on the default
+branch, the equivalent CLI command is:
+
+```bash
+gh workflow run musl-portable.yml --ref main
+gh run list --workflow musl-portable.yml
+```
+
+The workflow only accepts `workflow_dispatch`: PRs, merges to `main` and release
+tags do not start it. It neither publishes images nor uploads GitHub Release
+assets, and it does not add musl to the Hub downloader. Existing PR/main and
+release job graphs are unchanged.
+
+Its three stages use the same portable archive:
+
+1. Build **Release** in the published musl base, pinned by digest. Run
+   the complete CTest suite with per-test timeouts, then test non-root packaging,
+   checksum validation, relocation and rejection of missing license notices.
+2. Download that archive on **Ubuntu 22.04 and AlmaLinux 9**. Validate it as a
+   non-root user without installing musl or a compiler. Exercise relocated CLI
+   and worker lifecycle, then load installed schemas, prompts, providers, dynamic
+   tools and loop hooks through separately delivered test executables. Build-time
+   `/src` and `/build` paths are absent, preventing source fallback.
+3. Run the Hub's offline E2E suite against the extracted worker on the GitHub
+   runner, with missing worker prerequisites treated as failures.
+
+Actions run on the glibc host; Docker isolates the musl toolchain. There is no
+Debug build. The `musl-portable` Actions artifact is retained for seven days and
+contains the worker `.tar.gz` and `.sha256`, plus `musl-test-support.tar.gz` and a
+launcher probe used only by validation. Install only the worker archive; the
+support binaries are not part of the distribution.
+
+The workflow uses `docker/Dockerfile.musl-test` unchanged, with whole-project
+`SIMPLEX_ENABLE_LTO=OFF` (individual targets retain their existing LTO settings).
+An experiment with global LTO on this pinned Alpine/GCC toolchain failed when
+linking `llm_deepseek_chat`: the fortify `vsnprintf` wrapper could not satisfy an
+`always_inline` call. This workflow does not disable fortify or change compiler
+policy to work around that incompatibility. Global LTO needs separate validation
+before enabling it for musl.
+Update the workflow's pinned `BUILD_IMAGE` digest when publishing a new tested
+base. Cross-distribution containers share the runner kernel; this is not an
+older-kernel compatibility guarantee. Offline E2E does not test live providers.
 
 ## Build the base image
 
@@ -164,8 +211,10 @@ Validated on 2026-10-13 with worker version 0.5.1:
 - All 106 CTest tests passed in the final musl build environment.
 - Non-root archive creation, checksum verification, extraction, relocation and
   missing-license rejection passed; the archive is approximately 9.5 MiB.
-- Ubuntu 22.04 passed relocated CLI checks; AlmaLinux 9 passed the complete
-  relocation and real-worker lifecycle suite as an unprivileged user.
+- Ubuntu 22.04 and AlmaLinux 9 both passed the complete non-root archive,
+  relocation, worker lifecycle and installed-resource/plugin checks.
+- Offline Hub E2E passed 16 tests against the extracted archive; optional Docker
+  ownership suites were not enabled. Four focused glibc regressions also passed.
 - Explicit-loader executable discovery and the native glibc helper probe passed.
 
 The dependency allowlist now recognizes the musl SONAME. Relocation tests use paths containing
@@ -174,6 +223,6 @@ and exercise real provider loading, worker shutdown, pipe/TTY lifecycle,
 argument/PID preservation and explicit/default trust selection.
 
 Container tests share the host kernel and do not establish older-kernel support.
-Full Hub JavaScript E2E and real-provider inference are separate from these
-local packaging checks. No release workflow or automatic musl download choice
-is introduced by this PR.
+The workflow covers offline Hub E2E; real-provider inference and opt-in Docker
+ownership tests remain separate. No release workflow or automatic musl download
+choice is introduced.
