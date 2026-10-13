@@ -121,6 +121,6 @@ export async function prepareArchive(release: WorkerRelease, work: string,
         chmod: true, noMtime: true });
     operation.throwIfAborted();
     const tree = join(unpack, release.root);
-    await validateTree(tree);
+    await validateTree(tree, release.platform);
     return tree;
 }

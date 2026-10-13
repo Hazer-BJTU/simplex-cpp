@@ -2,10 +2,13 @@
 import { access, lstat, readFile, readdir, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
+import { parseWorkerPlatform } from './platform.ts';
+import type { WorkerPlatform } from './platform.ts';
 
 export const METADATA = '.simplex-worker-install.json';
 export interface InstalledWorker {
     source: 'github';
+    platform: WorkerPlatform;
     version: string;
     installedAt: string;
 }
@@ -40,26 +43,34 @@ export async function readInstalled(directory: string): Promise<InstalledWorker 
         if (value.source !== 'github' || typeof value.version !== 'string'
             || typeof value.installedAt !== 'string') return null;
         normalizeVersion(value.version);
-        return value;
+        // Older installer versions could only install the standard package.
+        const platform = value.platform === undefined ? 'linux-amd64-standard' : parseWorkerPlatform(value.platform);
+        return { ...value, platform };
     } catch {
         return null;
     }
 }
 
 /** Required payload shared by fresh preparation and a current-version no-op. */
-export async function validateTree(directory: string): Promise<void> {
+export async function validateTree(directory: string, platform: WorkerPlatform): Promise<void> {
+    const platformFiles = platform === 'linux-amd64-bundled' ? [
+        'bin/simplex_worker.bin', 'lib/ld-musl-x86_64.so.1',
+        'share/certs/ca-certificates.crt', 'share/openssl/openssl.cnf',
+    ] : [];
     for (const file of [
         'bin/simplex', 'bin/simplex_worker', 'bin/config.example.yaml',
         'bin/prompts/coding_agent.yaml', 'bin/prompts/operations/compact.yaml',
         'bin/schemas/process/skill.yaml', 'bin/schemas/process/run_command.yaml',
         'bin/schemas/process/spawn_process.yaml', 'bin/schemas/process/read_process.yaml',
         'bin/schemas/process/send_process.yaml', 'bin/schemas/process/poll_process.yaml',
-        'LICENSE', 'README.md',
+        'LICENSE', 'README.md', ...platformFiles,
     ]) {
         const stat = await lstat(join(directory, file));
         if (!stat.isFile() || stat.size === 0) throw new Error(`Missing required worker file: ${file}`);
     }
-    for (const executable of ['bin/simplex', 'bin/simplex_worker']) {
+    const platformExecutables = platform === 'linux-amd64-bundled'
+        ? ['bin/simplex_worker.bin', 'lib/ld-musl-x86_64.so.1'] : [];
+    for (const executable of ['bin/simplex', 'bin/simplex_worker', ...platformExecutables]) {
         const path = join(directory, executable);
         if (((await lstat(path)).mode & 0o111) === 0) throw new Error(`Not executable: ${executable}`);
         await access(path, constants.X_OK);
@@ -67,6 +78,12 @@ export async function validateTree(directory: string): Promise<void> {
     for (const folder of ['lib', 'bin/plugins/llm', 'third_party_licenses']) {
         if (!(await lstat(join(directory, folder))).isDirectory()) {
             throw new Error(`Missing required worker directory: ${folder}`);
+        }
+    }
+    if (platform === 'linux-amd64-bundled') {
+        for (const library of ['libssl.so.3', 'libcrypto.so.3']) {
+            const info = await stat(join(directory, 'lib', library));
+            if (!info.isFile() || info.size === 0) throw new Error(`Missing bundled library: ${library}`);
         }
     }
     // At least one provider must be present; old releases need not contain Qwen.
@@ -84,11 +101,11 @@ export async function validateTree(directory: string): Promise<void> {
 
 /** Independent authorization flags must not implicitly authorize each other. */
 export function installationAction(installed: InstalledWorker | null, target: string,
-    flags: { reinstall: boolean; allowDowngrade: boolean }): 'install' | 'current' {
+    flags: { platform: WorkerPlatform; reinstall: boolean; allowDowngrade: boolean }): 'install' | 'current' {
     if (!installed) return 'install';
     const order = compareVersions(target, installed.version);
     if (order < 0 && !flags.allowDowngrade) {
         throw new Error(`Downgrade from ${installed.version} to ${target} requires --allow-downgrade`);
     }
-    return order === 0 && !flags.reinstall ? 'current' : 'install';
+    return order === 0 && installed.platform === flags.platform && !flags.reinstall ? 'current' : 'install';
 }

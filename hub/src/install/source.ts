@@ -1,9 +1,12 @@
 /** Resolve official GitHub release assets without coupling to installation. */
 import { normalizeVersion } from './version.ts';
+import { WORKER_PLATFORMS, parseWorkerPlatform } from './platform.ts';
+import type { WorkerPlatform } from './platform.ts';
 
 const REPOSITORY = 'Hazer-BJTU/simplex-cpp';
 export interface WorkerRelease {
     source: 'github';
+    platform: WorkerPlatform;
     version: string;
     root: string;
     archive: string;
@@ -45,9 +48,10 @@ export async function readBounded(response: Response, limit: number): Promise<Bu
 }
 
 /** Only published stable releases with exactly matching worker/checksum assets qualify. */
-export async function resolveRelease(source: string, requested?: string,
+export async function resolveRelease(source: string, platform: WorkerPlatform, requested?: string,
     fetcher: Fetch = fetch, signal?: AbortSignal): Promise<WorkerRelease> {
     if (source !== 'github') throw new Error(`Unsupported source: ${source}; only github is supported`);
+    parseWorkerPlatform(platform);
     const selector = requested ? `tags/v${normalizeVersion(requested)}` : 'latest';
     const url = `https://api.github.com/repos/${REPOSITORY}/releases/${selector}`;
     const timeout = AbortSignal.timeout(30_000);
@@ -64,7 +68,7 @@ export async function resolveRelease(source: string, requested?: string,
     if (value.tag_name !== `v${version}` || (requested && version !== normalizeVersion(requested))) {
         throw new Error('Release tag does not match the requested stable version');
     }
-    const root = `simplex-worker-v${version}-linux-x86_64-glibc2.34`;
+    const root = `simplex-worker-v${version}-${WORKER_PLATFORMS[platform].suffix}`;
     const archive = `${root}.tar.gz`;
     const assetUrl = (name: string): string => {
         const matches = value.assets.filter(asset => asset.name === name);
@@ -74,6 +78,6 @@ export async function resolveRelease(source: string, requested?: string,
         if (url !== expected) throw new Error(`Unexpected official release asset URL for ${name}`);
         return url;
     };
-    return { source: 'github', version, root, archive,
+    return { source: 'github', platform, version, root, archive,
         archiveUrl: assetUrl(archive), checksumUrl: assetUrl('SHA256SUMS') };
 }

@@ -7,10 +7,10 @@ The worker release and Hub npm package are installed separately.
 
 | Component | Requirement |
 | --- | --- |
-| glibc worker | Linux x86_64, glibc 2.34 or newer, host OpenSSL 3 libraries, Bash |
-| musl worker (manual download) | Linux x86_64, Bash; loader and OpenSSL bundled |
+| `linux-amd64-standard` | Linux x86_64, glibc 2.34 or newer, host OpenSSL 3 libraries, Bash |
+| `linux-amd64-bundled` | Linux x86_64, Bash; loader and OpenSSL bundled |
 | Hub | Node.js 22.18 or newer and npm |
-| Hub worker installer | `flock` (util-linux) and `ldd` on the worker host |
+| Hub worker installer | util-linux `flock`; standard needs `ldd`, bundled needs `dirname` and `readlink` |
 | Model | Credentials and an endpoint supported by an installed provider |
 
 The archive includes C++ runtime libraries, plugins, schemas, and prompts.
@@ -20,20 +20,36 @@ It is not a statically linked binary. Keep its directory structure intact.
 
 ```sh
 npm install -g @hazer-bjtu/simplex-hub
-simplex-hub install-worker --update-path
+simplex-hub install-worker --platform linux-amd64-standard --update-path
 ```
 
 The standalone installation command downloads the latest stable worker from the
 official GitHub Releases, verifies `SHA256SUMS`, checks the extracted tree and
 runtime libraries, and runs a bounded `simplex run --help` startup check. It
 does not start the Hub, load Hub configuration, or require model credentials.
-GitHub is the default and currently the only supported source.
+GitHub is the default and currently the only supported source. `--platform` is
+required and has no default:
+
+| Platform tag | Package / runtime requirements |
+| --- | --- |
+| `linux-amd64-standard` | glibc release; host glibc 2.34+, OpenSSL 3 and `ldd`, with bundled C++ runtimes |
+| `linux-amd64-bundled` | musl release; bundled loader, OpenSSL and runtime dependencies, with no host glibc/OpenSSL requirement |
+
+Both target Linux x86_64 and require Bash and util-linux `flock`. The bundled
+launcher also uses `dirname` and `readlink`. For example:
+
+```sh
+simplex-hub install-worker --platform linux-amd64-bundled --update-path
+```
+
+A release missing the selected platform is rejected; the installer never falls
+back to another package.
 
 The default installation root is `~/.simplex/worker`; choose a different directory
 or a specific stable release with:
 
 ```sh
-simplex-hub install-worker --source github --version v0.2.0 \
+simplex-hub install-worker --platform linux-amd64-standard --source github --version v0.5.4 \
   --directory "$HOME/apps/simplex-worker" --no-update-path
 simplex-hub install-worker --help
 ```
@@ -43,19 +59,27 @@ directly, without a version-named wrapper directory. Keep this structure intact.
 Check the installed binary's version with `simplex --version`, or with
 `<installation>/bin/simplex --version` before adding it to PATH. This prints
 the worker's compiled version without requiring configuration or a session.
-The host must provide `libssl.so.3` and `libcrypto.so.3`; Node's bundled OpenSSL
-does not satisfy that requirement. Startup validation clears development
+For standard packages, the host must provide `libssl.so.3` and `libcrypto.so.3`;
+Node's bundled OpenSSL does not satisfy that requirement. Bundled packages are
+checked with their shipped loader against `bin/simplex_worker.bin`, then started
+through the unchanged `simplex` router and `simplex_worker` wrapper. Their
+certificate bundle, OpenSSL configuration and other release resources are kept.
+Startup validation clears development
 `LD_LIBRARY_PATH`, `LD_PRELOAD`, and `LD_AUDIT` variables.
 
 ### Replacement and versions
 
 | Option / behavior | Meaning |
 | --- | --- |
-| Same installed version | Checks required files and executable permissions, then skips downloading/replacing; still honors PATH updates |
+| Same installed version and platform | Checks required files and executable permissions, then skips downloading/replacing; still honors PATH updates |
+| Different platform | Replaces the whole installation, even at the same version; native plugins must match the chosen package ABI |
 | Newer version | Replaces a recognized installer-managed installation |
 | `--reinstall` | Replaces the current version, for example to repair missing files |
 | `--allow-downgrade` | Authorizes installing an older known version |
 | `--overwrite` | Authorizes replacement of an unknown non-empty directory; does not authorize downgrades or dangerous targets |
+
+Installations made by older Hub versions without platform metadata are treated
+as standard packages. Unknown platform metadata requires `--overwrite`.
 
 Stop workers using this installation before replacing it. The installer does
 not supervise or stop running workers. Complete-tree replacement removes custom
@@ -102,12 +126,14 @@ environment. Other shells require manual PATH configuration. Without changing
 PATH, put the absolute `<installation>/bin/simplex` path in `launcher.command[0]`
 of your saved local launch configuration.
 
-Installation directories containing `:` are supported, but PATH cannot represent
+Standard installation directories containing `:` are supported, but PATH cannot represent
 them because colons separate search entries. `--update-path` therefore reports
 a PATH failure and leaves `.bashrc` unchanged; `--no-update-path` installs normally.
 The installer prints an absolute verification command and saved-launcher guidance
 instead of an unusable PATH export. Use the absolute `bin/simplex` path for these
-installations.
+installations. Bundled installation directories cannot contain `:` because the
+loader interprets it as a library search-path separator. Spaces and Unicode
+characters are supported.
 
 Downloads install executable code and dynamic plugins. Checksums detect
 corruption; a checksum downloaded from the same release does not independently
@@ -129,8 +155,8 @@ simplex run --help
 To use musl, download and extract the `linux-x86_64-musl.tar.gz` archive
 instead. It is dynamically linked with a bundled loader and libraries, so it
 does not require host glibc or OpenSSL. Keep the whole tree together; native
-plugins must be compiled for the matching musl build. The Hub installer still
-selects glibc; musl currently requires manual download.
+plugins must be compiled for the matching musl build. This is the same package
+selected by `--platform linux-amd64-bundled`.
 
 `SHA256SUMS` covers both variants; `--ignore-missing` verifies the archive you
 downloaded without requiring the other variant. Replace the example path with

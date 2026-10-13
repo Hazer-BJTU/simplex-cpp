@@ -9,14 +9,15 @@ import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import * as tar from 'tar';
+import { WORKER_PLATFORMS } from '../src/install/platform.ts';
 import { resolveRelease } from '../src/install/source.ts';
 import { validateArchive, prepareArchive } from '../src/install/archive.ts';
-import { installationAction, compareVersions, normalizeVersion, METADATA } from '../src/install/version.ts';
+import { installationAction, compareVersions, normalizeVersion, METADATA, readInstalled, validateTree } from '../src/install/version.ts';
 import { InstallationTransaction, destinationPath } from '../src/install/transaction.ts';
 import { acquireLock, exists } from '../src/install/files.ts';
 import { START, END, bashQuote, editBashrc, updateBashrc } from '../src/install/bashrc.ts';
 import { installWorker, parseInstallArguments, confirmPath } from '../src/install/command.ts';
-import { smokeCheck, validatePlatform } from '../src/install/host.ts';
+import { smokeCheck, validatePlatform, validateHost } from '../src/install/host.ts';
 
 const exec = promisify(execFile);
 async function sandbox(t) {
@@ -27,15 +28,15 @@ async function sandbox(t) {
     return { root, home, destination: join(home, 'worker') };
 }
 
-function release(version = '0.2.0') {
-    const root = `simplex-worker-v${version}-linux-x86_64-glibc2.34`;
-    return { source: 'github', version, root, archive: `${root}.tar.gz`,
+function release(version = '0.2.0', platform = 'linux-amd64-standard') {
+    const root = `simplex-worker-v${version}-${WORKER_PLATFORMS[platform].suffix}`;
+    return { source: 'github', platform, version, root, archive: `${root}.tar.gz`,
         archiveUrl: 'https://fixture/worker', checksumUrl: 'https://fixture/SHA256SUMS' };
 }
 
-async function fixture(t, { version = '0.2.0', broken = false } = {}) {
+async function fixture(t, { version = '0.2.0', broken = false, platform = 'linux-amd64-standard' } = {}) {
     const context = await sandbox(t);
-    const selected = release(version);
+    const selected = release(version, platform);
     const tree = join(context.root, selected.root);
     for (const dir of ['bin/prompts/operations', 'bin/schemas/process', 'bin/plugins/llm', 'lib', 'third_party_licenses']) {
         await mkdir(join(tree, dir), { recursive: true });
@@ -48,6 +49,28 @@ async function fixture(t, { version = '0.2.0', broken = false } = {}) {
     }
     await writeFile(join(tree, 'bin/simplex'), '#!/bin/bash\nexec "$(dirname "$0")/simplex_worker" "$@"\n', { mode: 0o755 });
     await writeFile(join(tree, 'bin/simplex_worker'), '#!/bin/bash\nprintf "worker help\\n"\n', { mode: broken ? 0o644 : 0o755 });
+    if (platform === 'linux-amd64-bundled') {
+        await mkdir(join(tree, 'share/certs'), { recursive: true });
+        await mkdir(join(tree, 'share/openssl'), { recursive: true });
+        await writeFile(join(tree, 'share/certs/ca-certificates.crt'), 'fixture CA');
+        await writeFile(join(tree, 'share/openssl/openssl.cnf'), 'fixture OpenSSL config');
+        await writeFile(join(tree, 'lib/libssl.so.3'), 'fixture SSL');
+        await writeFile(join(tree, 'lib/libcrypto.so.3'), 'fixture crypto');
+        await rename(join(tree, 'bin/simplex_worker'), join(tree, 'bin/simplex_worker.bin'));
+        await writeFile(join(tree, 'bin/simplex_worker'),
+            await readFile(new URL('../../docker/musl-worker-launcher.sh', import.meta.url)), { mode: 0o755 });
+        // Emulate the loader CLI rather than treating the wrapper as an ELF.
+        await writeFile(join(tree, 'lib/ld-musl-x86_64.so.1'), `#!/bin/bash
+[[ -z "\${LD_LIBRARY_PATH+x}" && -z "\${LD_PRELOAD+x}" && -z "\${LD_AUDIT+x}" ]] || exit 1
+[[ "$1" == --library-path ]] || exit 2
+if [[ "$3" == --list ]]; then
+  [[ "$4" == */bin/simplex_worker.bin ]] || exit 3
+  printf '/lib/ld-musl-x86_64.so.1 (0x10)\nlibc.musl-x86_64.so.1 => /lib/ld-musl-x86_64.so.1 (0x10)\nlibssl.so.3 => %s/libssl.so.3 (0x1)\nlibcrypto.so.3 => %s/libcrypto.so.3 (0x2)\n' "$2" "$2"
+else
+  exec "$3" "\${@:4}"
+fi
+`, { mode: 0o755 });
+    }
     await symlink('libfixture.so.1', join(tree, 'lib/libfixture.so'));
     const archive = join(context.root, 'fixture.tar.gz');
     await tar.c({ file: archive, gzip: true, cwd: context.root }, [selected.root]);
@@ -61,8 +84,10 @@ async function install(context, argv = [], dependencies = {}) {
     let output = '';
     const stream = new PassThrough();
     stream.on('data', chunk => { output += chunk; });
-    const code = await installWorker(['--directory', context.destination, ...argv], {
-        home: context.home, checkHost: async () => {}, checkStartup: async directory => {
+    const code = await installWorker(['--platform', context.selected.platform, '--directory', context.destination, ...argv], {
+        home: context.home, checkHost: async () => {}, checkStartup: async (directory, platform) => {
+            assert.equal(platform, context.selected.platform);
+            if (platform === 'linux-amd64-bundled') return smokeCheck(directory, platform);
             const { stdout } = await exec(join(directory, 'bin/simplex'), ['run', '--help']);
             assert.match(stdout, /worker help/);
         }, release: async () => context.selected, fetcher: context.fetcher,
@@ -89,41 +114,41 @@ test('release resolver selects stable official assets and explicit tags', async 
         assets: [asset(release().archive.replace('-glibc2.34', '-musl')), asset(release().archive), asset('SHA256SUMS')] };
     let url;
     const fetcher = async value => { url = value; return new Response(JSON.stringify(document)); };
-    assert.equal((await resolveRelease('github', undefined, fetcher)).version, '0.2.0');
+    assert.equal((await resolveRelease('github', 'linux-amd64-standard', undefined, fetcher)).version, '0.2.0');
     assert.match(url, /\/releases\/latest$/);
-    await resolveRelease('github', '0.2.0', fetcher);
+    await resolveRelease('github', 'linux-amd64-standard', '0.2.0', fetcher);
     assert.match(url, /\/tags\/v0\.2\.0$/);
-    await assert.rejects(resolveRelease('mirror', undefined, fetcher), /Unsupported source/);
-    await assert.rejects(resolveRelease('github', 'v0.2.1', fetcher), /does not match/);
+    await assert.rejects(resolveRelease('mirror', 'linux-amd64-standard', undefined, fetcher), /Unsupported source/);
+    await assert.rejects(resolveRelease('github', 'linux-amd64-standard', 'v0.2.1', fetcher), /does not match/);
     document.prerelease = true;
-    await assert.rejects(resolveRelease('github', undefined, fetcher), /stable/);
+    await assert.rejects(resolveRelease('github', 'linux-amd64-standard', undefined, fetcher), /stable/);
     document.prerelease = false;
     document.assets.pop();
-    await assert.rejects(resolveRelease('github', undefined, fetcher), /SHA256SUMS/);
+    await assert.rejects(resolveRelease('github', 'linux-amd64-standard', undefined, fetcher), /SHA256SUMS/);
     document.assets.push(asset('SHA256SUMS'), asset('SHA256SUMS'));
-    await assert.rejects(resolveRelease('github', undefined, fetcher), /one SHA256SUMS/);
-    await assert.rejects(resolveRelease('github', undefined, async () => new Response('', { status: 404 })), /HTTP 404/);
+    await assert.rejects(resolveRelease('github', 'linux-amd64-standard', undefined, fetcher), /one SHA256SUMS/);
+    await assert.rejects(resolveRelease('github', 'linux-amd64-standard', undefined, async () => new Response('', { status: 404 })), /HTTP 404/);
     document.assets = [asset(release().archive), { name: 'SHA256SUMS', browser_download_url: 'https://untrusted.example/sums' }];
-    await assert.rejects(resolveRelease('github', undefined, fetcher), /Unexpected official/);
+    await assert.rejects(resolveRelease('github', 'linux-amd64-standard', undefined, fetcher), /Unexpected official/);
 });
 
 test('platform and argument decisions are explicit and numerically ordered', () => {
-    assert.doesNotThrow(() => validatePlatform('linux', 'x64', '2.34'));
+    assert.doesNotThrow(() => validatePlatform('linux-amd64-standard', 'linux', 'x64', '2.34'));
     for (const args of [['darwin', 'x64', '2.40'], ['linux', 'arm64', '2.40'], ['linux', 'x64', '2.33'], ['linux', 'x64', undefined]]) {
-        assert.throws(() => validatePlatform(...args), /require/);
+        assert.throws(() => validatePlatform('linux-amd64-standard', ...args), /require/);
     }
     assert.equal(compareVersions('0.10.0', '0.9.9'), 1);
     assert.equal(compareVersions('1.0.0', '1.0.0'), 0);
     assert.equal(compareVersions('0.2.0', '0.10.0'), -1);
     assert.throws(() => normalizeVersion('v0.2.0-beta'), /Invalid/);
-    const options = parseInstallArguments(['--overwrite']);
+    const options = parseInstallArguments(['--platform', 'linux-amd64-standard', '--overwrite']);
     assert.equal(options.allowDowngrade, false);
     assert.equal(options.updatePath, undefined);
     assert.throws(() => parseInstallArguments(['--update-path', '--no-update-path']), /cannot be combined/);
     assert.throws(() => parseInstallArguments(['--source', 'other']), /Unsupported/);
     assert.throws(() => parseInstallArguments(['--directory']), /requires/);
     assert.throws(() => parseInstallArguments(['--config', 'ignored']), /Unknown/);
-    assert.throws(() => installationAction({ version: '0.3.0' }, '0.2.0', { reinstall: true, allowDowngrade: false }), /allow-downgrade/);
+    assert.throws(() => installationAction({ version: '0.3.0' }, '0.2.0', { platform: 'linux-amd64-standard', reinstall: true, allowDowngrade: false }), /allow-downgrade/);
 });
 
 test('archive preparation validates and retains internal library links', async t => {
@@ -417,9 +442,9 @@ test('startup probe checks host OpenSSL libraries without development loader pat
     process.env.PATH = `${bin}:${process.env.PATH}`;
     process.env.LD_LIBRARY_PATH = '/development-only';
     try {
-        await smokeCheck(f.tree);
+        await smokeCheck(f.tree, 'linux-amd64-standard');
         await writeFile(ldd, '#!/bin/bash\nprintf "libssl.so.3 => not found\\n"\n', { mode: 0o755 });
-        await assert.rejects(smokeCheck(f.tree), /OpenSSL 3/);
+        await assert.rejects(smokeCheck(f.tree, 'linux-amd64-standard'), /OpenSSL 3/);
     } finally {
         process.env.PATH = previous.PATH;
         if (previous.LD_LIBRARY_PATH === undefined) delete process.env.LD_LIBRARY_PATH;
@@ -601,4 +626,174 @@ test('installer keeps selecting glibc from a release manifest containing both ru
     });
     assert.equal(result.code, 0, result.output);
     assert.match(await readFile(join(f.destination, 'bin/simplex_worker'), 'utf8'), /worker help/);
+});
+
+test('platform is mandatory, help lists semantic tags, and invalid selection has no side effects', async t => {
+    assert.throws(() => parseInstallArguments([]), /--platform is required/);
+    assert.throws(() => parseInstallArguments(['--platform']), /requires a value/);
+    for (const tag of ['linux-amd64-musl', 'linux-amd64-glibc', 'linux-arm64-bundled', '__proto__']) {
+        assert.throws(() => parseInstallArguments(['--platform', tag]), /Unsupported platform/);
+    }
+    assert.throws(() => parseInstallArguments(['--platform', 'linux-amd64-standard',
+        '--platform', 'linux-amd64-bundled']), /specified once/);
+    assert.equal(parseInstallArguments(['--help']).help, true);
+    const f = await fixture(t);
+    let touched = false;
+    await assert.rejects(installWorker(['--directory', f.destination], {
+        home: f.home, checkHost: async () => { touched = true; },
+    }), /--platform is required/);
+    assert.equal(touched, false);
+    assert.deepEqual(await readdir(f.home), []);
+    const cli = resolve(import.meta.dirname, '../bin/simplex-hub.ts');
+    const help = (await exec(process.execPath, [cli, 'install-worker', '--help'])).stdout;
+    for (const tag of Object.keys(WORKER_PLATFORMS)) assert.ok(help.includes(tag));
+    assert.match(help, /host glibc >= 2.34 and OpenSSL 3/);
+    assert.match(help, /bundles the musl loader, OpenSSL/);
+});
+
+test('each selected platform resolves exactly its own official asset without fallback', async () => {
+    const url = name => `https://github.com/Hazer-BJTU/simplex-cpp/releases/download/v0.5.4/${name}`;
+    const document = { draft: false, prerelease: false, tag_name: 'v0.5.4', assets:
+        [...Object.keys(WORKER_PLATFORMS).map(tag => release('0.5.4', tag).archive), 'SHA256SUMS']
+            .map(name => ({ name, browser_download_url: url(name) })) };
+    const fetcher = async () => new Response(JSON.stringify(document));
+    for (const platform of Object.keys(WORKER_PLATFORMS)) {
+        const selected = await resolveRelease('github', platform, 'v0.5.4', fetcher);
+        assert.equal(selected.platform, platform);
+        assert.equal(selected.archive, release('0.5.4', platform).archive);
+        assert.equal(selected.archiveUrl, url(selected.archive));
+    }
+    const bundled = release('0.5.4', 'linux-amd64-bundled');
+    document.assets = document.assets.filter(asset => asset.name !== bundled.archive);
+    await assert.rejects(resolveRelease('github', bundled.platform, undefined, fetcher), /must contain one .*musl/);
+    document.assets.push({ name: bundled.archive, browser_download_url: url(bundled.archive).replace('github.com', 'example.com') });
+    await assert.rejects(resolveRelease('github', bundled.platform, undefined, fetcher), /Unexpected official/);
+    document.assets.push({ name: bundled.archive, browser_download_url: url(bundled.archive) });
+    await assert.rejects(resolveRelease('github', bundled.platform, undefined, fetcher), /must contain one/);
+});
+
+test('bundled packages do not need host glibc or ldd but still require Linux amd64', async t => {
+    assert.doesNotThrow(() => validatePlatform('linux-amd64-bundled', 'linux', 'x64', undefined));
+    assert.doesNotThrow(() => validatePlatform('linux-amd64-bundled', 'linux', 'x64', '2.17'));
+    for (const [os, arch] of [['darwin', 'x64'], ['linux', 'arm64']]) {
+        assert.throws(() => validatePlatform('linux-amd64-bundled', os, arch, undefined), /Linux x86_64/);
+    }
+    const { root } = await sandbox(t);
+    const marker = join(root, 'ldd-was-called');
+    await writeFile(join(root, 'ldd'), `#!/bin/bash\ntouch ${bashQuote(marker)}\nexit 1\n`, { mode: 0o755 });
+    const oldPath = process.env.PATH;
+    process.env.PATH = root + ':' + oldPath;
+    try {
+        await validateHost('linux-amd64-bundled');
+        assert.equal(await exists(marker), false);
+        await assert.rejects(validateHost('linux-amd64-standard'), /ldd/);
+        assert.equal(await exists(marker), true);
+    } finally {
+        process.env.PATH = oldPath;
+    }
+});
+
+test('bundled installation uses the complete wrapper layout and supports spaces, relocation and PATH', async t => {
+    const f = await fixture(t, { version: '0.5.4', platform: 'linux-amd64-bundled' });
+    f.destination = join(f.home, 'worker directory 中文');
+    assert.equal((await install(f, ['--update-path'])).code, 0);
+    assert.equal((await readInstalled(f.destination)).platform, 'linux-amd64-bundled');
+    assert.equal((await lstat(join(f.destination, 'bin/simplex_worker.bin'))).mode & 0o111, 0o111);
+    assert.match(await readFile(join(f.destination, 'bin/simplex_worker'), 'utf8'), /exec "\$loader"/);
+    assert.equal(await readFile(join(f.destination, 'share/certs/ca-certificates.crt'), 'utf8'), 'fixture CA');
+    assert.equal(await readFile(join(f.destination, 'share/openssl/openssl.cnf'), 'utf8'), 'fixture OpenSSL config');
+    assert.ok((await readFile(join(f.home, '.bashrc'), 'utf8')).includes(f.destination + '/bin'));
+    const moved = join(f.home, 'relocated worker 中文');
+    await rename(f.destination, moved);
+    await smokeCheck(moved, 'linux-amd64-bundled');
+    const current = await install({ ...f, destination: moved }, [], {
+        fetcher: async () => { throw new Error('current bundle must not redownload'); },
+    });
+    assert.match(current.output, /already current/);
+    await rm(join(moved, 'lib/ld-musl-x86_64.so.1'));
+    await assert.rejects(install({ ...f, destination: moved }), /Current installation is incomplete/);
+});
+
+test('platform switches replace same-version trees and preserve independent downgrade authorization', async t => {
+    const standard = await fixture(t);
+    await install(standard);
+    const metadata = JSON.parse(await readFile(join(standard.destination, METADATA), 'utf8'));
+    delete metadata.platform;
+    await writeFile(join(standard.destination, METADATA), JSON.stringify(metadata));
+    assert.equal((await readInstalled(standard.destination)).platform, 'linux-amd64-standard');
+    assert.match((await install(standard, [], { fetcher: async () => { throw new Error('legacy no-op'); } })).output, /already current/);
+    const bundled = await fixture(t, { platform: 'linux-amd64-bundled' });
+    const target = { ...bundled, home: standard.home, destination: standard.destination };
+    await install(target);
+    assert.equal((await readInstalled(target.destination)).platform, bundled.selected.platform);
+    assert.equal(await exists(join(target.destination, 'bin/simplex_worker.bin')), true);
+    await install(standard);
+    assert.equal((await readInstalled(target.destination)).platform, standard.selected.platform);
+    assert.equal(await exists(join(target.destination, 'bin/simplex_worker.bin')), false);
+    const newer = await fixture(t, { version: '0.5.4', platform: 'linux-amd64-bundled' });
+    await install({ ...newer, home: standard.home, destination: standard.destination });
+    await assert.rejects(install(standard, ['--overwrite', '--reinstall']), /allow-downgrade/);
+    await install(standard, ['--allow-downgrade']);
+    metadata.platform = 'unknown-package';
+    await writeFile(join(standard.destination, METADATA), JSON.stringify(metadata));
+    assert.equal(await readInstalled(standard.destination), null);
+    await assert.rejects(install(standard), /--overwrite/);
+});
+
+test('broken bundled runtime validation leaves the current standard installation intact', async t => {
+    const standard = await fixture(t);
+    await install(standard);
+    const bundle = await fixture(t, { platform: 'linux-amd64-bundled', broken: true });
+    await assert.rejects(install({ ...bundle, home: standard.home, destination: standard.destination }), /Not executable/);
+    assert.equal((await readInstalled(standard.destination)).platform, standard.selected.platform);
+    for (const file of ['bin/simplex_worker.bin', 'lib/ld-musl-x86_64.so.1', 'lib/libssl.so.3', 'lib/libcrypto.so.3',
+        'share/certs/ca-certificates.crt', 'share/openssl/openssl.cnf']) {
+        const valid = await fixture(t, { platform: 'linux-amd64-bundled' });
+        await rm(join(valid.tree, file));
+        await assert.rejects(validateTree(valid.tree, valid.selected.platform));
+    }
+});
+
+test('bundled startup uses only shipped dependencies and clears development injection variables', async t => {
+    const f = await fixture(t, { platform: 'linux-amd64-bundled' });
+    const previous = { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH, LD_PRELOAD: process.env.LD_PRELOAD,
+        LD_AUDIT: process.env.LD_AUDIT };
+    process.env.LD_LIBRARY_PATH = '/development-only';
+    process.env.LD_PRELOAD = '/development-only/preload.so';
+    process.env.LD_AUDIT = '/development-only/audit.so';
+    try {
+        await smokeCheck(f.tree, f.selected.platform);
+    } finally {
+        for (const [name, value] of Object.entries(previous)) {
+            if (value === undefined) delete process.env[name]; else process.env[name] = value;
+        }
+    }
+    const loader = join(f.tree, 'lib/ld-musl-x86_64.so.1');
+    await writeFile(loader, '#!/bin/bash\nprintf "libssl.so.3 => /host/libssl.so.3 (0x1)\\n"\n', { mode: 0o755 });
+    await assert.rejects(smokeCheck(f.tree, f.selected.platform), /outside the package/);
+    await writeFile(loader, '#!/bin/bash\nprintf "/lib/ld-musl-x86_64.so.1 (0x1)\\nlibc.musl-x86_64.so.1 => /lib/ld-musl-x86_64.so.1 (0x2)\\n"\n', { mode: 0o755 });
+    await assert.rejects(smokeCheck(f.tree, f.selected.platform), /outside the package/);
+    await writeFile(loader, '#!/bin/bash\nexit 127\n', { mode: 0o755 });
+    await assert.rejects(smokeCheck(f.tree, f.selected.platform), /bundled loader\/runtime/);
+});
+
+test('bundled preparation selects its exact checksum from a multi-platform manifest', async t => {
+    const f = await fixture(t, { platform: 'linux-amd64-bundled' });
+    const standard = '0'.repeat(64) + '  ' + release().archive + '\n';
+    const work = join(f.root, 'work');
+    await mkdir(work);
+    const tree = await prepareArchive(f.selected, work,
+        async url => new Response(url === f.selected.checksumUrl ? standard + f.checksum : f.bytes));
+    await smokeCheck(tree, f.selected.platform);
+    const another = join(f.root, 'another');
+    await mkdir(another);
+    await assert.rejects(prepareArchive(f.selected, another,
+        async url => new Response(url === f.selected.checksumUrl ? standard : f.bytes)), /exactly one checksum/);
+});
+
+test('bundled colon paths fail before release resolution and workspace creation', async t => {
+    const f = await fixture(t, { platform: 'linux-amd64-bundled' });
+    f.destination = join(f.home, 'colon:worker');
+    await assert.rejects(install(f, [], { release: async () => { throw new Error('must not resolve'); } }), /loader search-path separator/);
+    assert.deepEqual(await readdir(f.home), []);
 });

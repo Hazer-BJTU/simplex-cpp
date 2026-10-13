@@ -44,13 +44,16 @@ worker from the official GitHub Releases:
 
 ```bash
 npm install -g @hazer-bjtu/simplex-hub
-simplex-hub install-worker --update-path
+simplex-hub install-worker --platform linux-amd64-standard --update-path
 ```
 
 The installer verifies the release checksum, installs into `~/.simplex/worker`,
 and updates a managed PATH block in `~/.bashrc`. Use `--directory DIR` to choose
-another installation root. The prebuilt worker requires Linux x86_64,
-glibc 2.34+, OpenSSL 3, and Bash; the installer also requires `flock` and `ldd`.
+another installation root. The required `--platform` selects
+`linux-amd64-standard` (host glibc 2.34+ and OpenSSL 3) or
+`linux-amd64-bundled` (bundled musl loader, OpenSSL and runtime dependencies).
+Both require Bash and util-linux `flock`; `install-worker --help` explains the
+remaining platform requirements.
 
 Open a new Bash shell or reload `~/.bashrc`, then start the Hub:
 
@@ -65,10 +68,7 @@ Open <http://127.0.0.1:8800>. Configure a model and launch a worker using the
 
 Alternatively, download and extract the worker manually from
 [GitHub Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest).
-The optional `linux-x86_64-musl` archive bundles its loader and OpenSSL; it
-requires Bash and is available by manual download only. The Hub installer
-continues to select glibc. Keep the extracted directory intact and add its
-`bin` directory to `PATH`.
+Keep the extracted directory intact and add its `bin` directory to `PATH`.
 See the [installation guide](https://hazer-bjtu.github.io/simplex-cpp/getting-started/installation.html)
 for version selection, replacement behavior, and manual checksum verification.
 

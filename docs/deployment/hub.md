@@ -10,7 +10,7 @@ After installing the Hub npm package, run the standalone installer on the Hub
 host before starting the server:
 
 ```sh
-simplex-hub install-worker --directory "$HOME/.simplex/worker" --update-path
+simplex-hub install-worker --platform linux-amd64-standard --directory "$HOME/.simplex/worker" --update-path
 # Open a new shell or source ~/.bashrc before starting/restarting the Hub.
 ```
 

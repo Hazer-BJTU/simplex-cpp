@@ -81,7 +81,7 @@ async function verifyAssets(current, allowMissing) {
 let current = await release();
 if (mode === 'prepare') {
     if (!current) {
-        const notes = `Source snapshots are attached automatically by GitHub. Worker archives target Linux x86_64: glibc2.34 requires glibc 2.34+ and host OpenSSL 3; musl bundles its loader and OpenSSL and currently requires manual download. Both need Bash; keep the extracted directory intact. SHA256SUMS covers both archives. See README.md inside each archive. The Hub is available separately from npm as @hazer-bjtu/simplex-hub@${tag.slice(1)}.`;
+        const notes = `Source snapshots are attached automatically by GitHub. Worker archives target Linux x86_64: glibc2.34 requires glibc 2.34+ and host OpenSSL 3; musl bundles its loader and OpenSSL. Select linux-amd64-standard or linux-amd64-bundled with the Hub installer --platform option, or download manually. Both need Bash; keep the extracted directory intact. SHA256SUMS covers both archives. See README.md inside each archive. The Hub is available separately from npm as @hazer-bjtu/simplex-hub@${tag.slice(1)}.`;
         try {
             gh(['release', 'create', tag, '--repo', repo, '--verify-tag', '--draft',
                 '--title', `Simplex ${tag}`, '--notes', notes]);

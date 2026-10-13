@@ -30,7 +30,7 @@ For a published installation:
 
 ```sh
 npm install -g @hazer-bjtu/simplex-hub
-simplex-hub install-worker --update-path
+simplex-hub install-worker --platform linux-amd64-standard --update-path
 # Open a new Bash shell or source ~/.bashrc before starting the Hub.
 simplex-hub --help
 ```
@@ -38,13 +38,17 @@ simplex-hub --help
 The package includes the web panel but not the C++ worker. The standalone
 installer fetches the latest stable official GitHub release into
 `~/.simplex/worker`, verifies the checksum and complete tree, and checks startup
-without Hub configuration or credentials. Linux x86_64, glibc >= 2.34, host
-OpenSSL 3, Bash, util-linux `flock`, and `ldd` are required. See [npm releases](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/npm-release.md) for the
+without Hub configuration or credentials. The required `--platform` selects
+`linux-amd64-standard` (host glibc >= 2.34 and OpenSSL 3) or
+`linux-amd64-bundled` (bundled musl loader, OpenSSL and runtime dependencies).
+Both need Linux x86_64, Bash and util-linux `flock`; standard needs `ldd`, while
+bundled needs `dirname` and `readlink`. See [npm releases](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/npm-release.md) for the
 package contents and release process.
 
 Use `--directory DIR` and `--version vX.Y.Z` to select the installation and
 release; `--source github` is the only supported source. Same-version installs
-check required files and skip replacement unless `--reinstall` is set. Known
+check required files and skip replacement when the platform matches, unless
+`--reinstall` is set. Changing platform replaces the complete installation. Known
 downgrades require `--allow-downgrade`; unknown non-empty directories require
 `--overwrite`. These flags are independent, and dangerous targets remain
 forbidden. Stop workers before replacing their complete installation tree;
@@ -62,9 +66,10 @@ Non-interactive use prints a manual command. Malformed markers and symlinked
 installed and returns a nonzero code. Restart the Hub from an updated shell or
 use the absolute installed `bin/simplex` in a saved local launch configuration.
 Managed shell blocks use LF, preserving unrelated lines' original endings.
-A directory containing `:` can be installed but cannot be added to PATH;
+For standard packages, a directory containing `:` can be installed but cannot be added to PATH;
 `--update-path` fails without changing `.bashrc`, and the installer provides
-absolute command/launcher instructions instead of an invalid export.
+absolute command/launcher instructions instead of an invalid export. Bundled
+installation directories cannot contain `:` (loader search-path separator).
 Downloads install executable code/plugins; release checksums detect corruption,
 not independently authenticated publisher identity. See the
 [installation guide](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/getting-started/installation.md)
