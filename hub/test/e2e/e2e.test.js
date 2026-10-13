@@ -493,6 +493,9 @@ describe('end to end with the real worker', { skip }, () => {
             first.child.kill('SIGKILL');
             await waitForExit(first.child);
 
+            // The replacement Hub may take time to start. Exercise several
+            // reconnect attempts with the original log pipe readers gone.
+            await new Promise(resolve => setTimeout(resolve, 2500));
             second = await startHubProcess({ port, dataDir });
             // The restored session must remember the worker's pid, prove it is
             // the same incarnation through /proc, and see it reconnect.
@@ -510,6 +513,13 @@ describe('end to end with the real worker', { skip }, () => {
             const stopped = await api(second.base, '/api/sessions/orphan/stop', { method: 'POST' });
             assert.equal(stopped.body.ok, true, JSON.stringify(stopped.body));
             assert.equal(stopped.body.how, 'shutdown-signal');
+        } catch (error) {
+            const workerLog = join(dataDir, 'sessions/orphan/logs/worker.log');
+            const logs = existsSync(workerLog) ? readFileSync(workerLog, 'utf8').slice(-8192) : '(no worker log)';
+            throw new Error(
+                `${error.message}\nfirst hub:\n${first.output()}\n`
+                + `second hub:\n${second?.output() ?? '(not started)'}\nworker log:\n${logs}`,
+                { cause: error });
         } finally {
             second?.child.kill('SIGTERM');
             if (second) await waitForExit(second.child);
