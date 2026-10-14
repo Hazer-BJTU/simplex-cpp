@@ -11,7 +11,7 @@ in `utils/subprocess`.
 | Tool | Purpose | Scheduling / security |
 | --- | --- | --- |
 | `spawn_process` | Executable and literal argv; explicit environment and auto-release options | SerialWrite / RequireConfirm |
-| `run_command` | Shell command, interpreted by bash at conventional paths or otherwise /bin/sh | SerialWrite / RequireConfirm |
+| `run_command` | Shell command, interpreted by bash at conventional paths or otherwise /bin/sh | SerialWrite / RequireConfirm by default; see bypass policy below |
 | `send_process` | Queue input, request input-end and/or signal a direct child | SerialWrite / RequireConfirm |
 | `read_process` | Immediate generic output, optionally full or releasing an exited session | ReadOnly / Trusted |
 | `poll_process` | Bounded wait for any selected session, report all selected sessions | ReadOnly / Trusted |
@@ -19,8 +19,97 @@ in `utils/subprocess`.
 Names, argument schemas and descriptions are loaded from `schemas/*.yaml`;
 `schemas/skill.yaml` supplies the injected model guidance. Defaults, including
 `tty: false`, are settled before approval and execution. Declared type/security
-fields document C++ attributes; editing YAML does not override those attributes.
+fields document default C++ attributes; changing those fields does not override
+them. Only the explicitly supported `config.bypass` policy changes `run_command`
+classification.
 A rejected launch creates no child or terminal. Respect approval denials.
+
+## Startup command bypass policy
+
+Edit `config.bypass` in `schemas/run_command.yaml` (installed at
+`<prefix>/bin/schemas/process/run_command.yaml`) and restart the worker. This
+configuration is not exposed to the model, merged from tool arguments, or hot
+reloaded. A custom `SIMPLEX_PROCESS_SCHEMA_DIR` selects the entire process schema
+directory; copy the other declarations and skill there as well.
+
+| `mode` | Readonly rule matches | Only trusted rule matches | Neither matches |
+| --- | --- | --- | --- |
+| `strict` (default) | RequireConfirm | RequireConfirm | RequireConfirm |
+| `readonly` | ReadOnly + Trusted | RequireConfirm | RequireConfirm |
+| `permissive` | ReadOnly + Trusted | SerialWrite + Trusted | RequireConfirm |
+
+All RequireConfirm results remain SerialWrite. They use the existing confirmation
+handler, including the worker's ask/approve/deny choice; strict does not override
+that handler. Trusted operations bypass confirmation, including its deny mode.
+Other process tools keep their existing policies. A trusted write is **not** made
+parallel merely because it needs no confirmation.
+
+The packaged YAML contains the default rule lists with per-rule comments. To
+activate them, change only `mode`. To customize, edit `readonly_rules` and
+`trusted_rules`; these arrays replace rather than extend other defaults. Omitting
+a list or supplying `[]` grants no matches in that category. Omitting all config
+uses strict mode with empty lists. A minimal custom example is:
+
+```yaml
+config:
+  bypass:
+    mode: readonly
+    readonly_rules:
+      - 'pwd([[:blank:]]+-[LP])?'
+    trusted_rules: []
+```
+
+Default coverage is intentionally parameter-specific:
+
+- Readonly: `pwd`; `ls`; `cat`; bounded `head`/`tail`; `wc`; `sort` without an
+  output file; `uniq` with at most one input; `grep`/`rg` with selected search
+  flags; `rg --files`; `stat`, `readlink`, and `file` without decompression;
+  `du` with selected display flags; `id`, `whoami`, `uname`, plain `date`;
+  literal `echo`; `true`/`false`.
+- Git: `git --no-pager status` with selected display flags, and
+  `git --no-pager diff --no-ext-diff --no-textconv` with selected display flags
+  and optional paths after `--`; `git --no-pager log --no-show-signature`
+  with selected display/count flags. Plain `git diff` is not bypassed because Git
+  can invoke external diff/text conversion programs.
+- Trusted writes: `mkdir` with optional `-p`; `cp -n -- SOURCE DESTINATION`;
+  `ln -s -- SOURCE DESTINATION`. No replacement flags or recursive copy. These
+  allow creating resources, not deleting or overwriting existing content.
+- Deletion, ordinary `cp`/`mv`, in-place editors, permission changes, signals,
+  destructive Git operations, interpreters, build scripts and package managers
+  are not in either allowlist. They still work through normal confirmation.
+
+Patterns are case-sensitive **POSIX extended regexes** (Boost Regex, classic
+locale). Each pattern must match the entire trimmed, unexpanded simple command,
+with its original quoting retained. Matching a substring or just the executable
+name is insufficient. Literal paths in packaged rules cannot start with `-`,
+even inside quotes; use `./-filename` when necessary. Unsupported path characters
+and flags fall back to confirmation rather than being rejected as tool arguments.
+
+A conservative scanner recognizes single/double quoting and `|`, `&&`, `||`
+chains. Every segment must qualify; all segments must be readonly for ReadOnly
+scheduling. Otherwise permissive mode requires each segment to match either
+category and keeps the whole command serial. Quoted operators are literal text.
+The scanner does not expand or rewrite commands. It requires confirmation for
+redirection, background jobs, semicolons, newlines, shell groups, assignments,
+comments, unquoted globs/tilde, and malformed chains/quotes. Dollars, backticks
+and backslashes require confirmation even inside quotes. Shell functions and
+control structures are outside the supported subset.
+
+Limits are 4,096 command bytes, 16 simple commands, 32 patterns per list and
+1,024 bytes per pattern. A non-recursive regex matcher bounds state exploration
+(10,000 states per match) and its backtracking storage (16 blocks). Unsupported
+syntax, command limits or matcher failures require confirmation for the entire
+command; they never authorize a partly matched chain. Invalid startup config,
+including dormant rules, prevents `run_command` registration with a diagnostic.
+
+**This is a heuristic approval policy, not isolation or proof of safety.** PATH,
+exported functions, shell startup environment, Git configuration (including
+fsmonitor), ripgrep configuration, executable replacements, filesystem objects and symlinks can alter a
+program's effects. ReadOnly describes intended command effects, not the absence
+of process/session bookkeeping or incidental caches. Paths are not confined to
+the configured workspace. A custom broad regex can authorize destructive
+commands; operators are responsible for their lists and execution environment.
+Use strict mode when those assumptions do not hold.
 
 ## Launch
 

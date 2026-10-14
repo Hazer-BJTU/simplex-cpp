@@ -20,6 +20,62 @@ description: >-
 type: serial_write
 security: require_confirm
 
+# Host-only startup configuration, excluded from the model-facing schema.
+# strict: always RequireConfirm; readonly: only readonly_rules bypass;
+# permissive: readonly first, then trusted_rules for serial writes.
+# Lists replace the packaged lists; missing lists mean no rules. Full-match
+# POSIX extended regexes, case-sensitive, classic locale; no shell expansion.
+# Rules are heuristic, not a sandbox. See README.md for syntax/limits and risks.
+config:
+  bypass:
+    mode: strict
+    readonly_rules:
+      # Working directory; no environment or shell expansion.
+      - 'pwd([[:blank:]]+-[LP])?'
+      # Directory listing; explicit short flags only.
+      - 'ls([[:blank:]]+-[aAlhRrtSdFip1]+)*([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))*'
+      # Read files, with no output or execution options.
+      - 'cat([[:blank:]]+-[benstuvAET]+)*([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))+'
+      # Bounded prefix/suffix reads; no follow mode.
+      - '(head|tail)([[:blank:]]+-[nc][[:blank:]]+[0-9]+)?([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))+'
+      # Byte/line/word counts.
+      - 'wc([[:blank:]]+-[clmwL]+)*([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))*'
+      # Sorting without output-file or external-compressor options.
+      - 'sort([[:blank:]]+-[bdfghinruV]+)*([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))*'
+      # Uniq accepts at most one file: a second would be an output file.
+      - 'uniq([[:blank:]]+-[cdui]+)*([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))?'
+      # Grep with explicit read-only flags; quote patterns containing spaces.
+      - 'grep([[:blank:]]+-[EFivnclwxoHh]+)*([[:blank:]]+--)?[[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[^''-][^'']*''|"[^"-][^"]*"|''''|"")([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))*'
+      # Ripgrep search; excludes --pre and all other execution options.
+      - 'rg([[:blank:]]+(-[inlFw]+|--hidden|--no-ignore))*([[:blank:]]+--)?[[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[^''-][^'']*''|"[^"-][^"]*"|''''|"")([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))*'
+      # Ripgrep file listing.
+      - 'rg[[:blank:]]+--files([[:blank:]]+--hidden)?([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))*'
+      # Directory usage with display flags only.
+      - 'du([[:blank:]]+-[shakm]+)*([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))*'
+      # System identity queries, without mutation options.
+      - '(whoami|id|uname([[:blank:]]+-[asnrvmpio]+)?|date)'
+      # File metadata only.
+      - '(stat|readlink)([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))+'
+      # File type without decompression options.
+      - 'file([[:blank:]]+(-b|--mime|--mime-type))*([[:blank:]]+--)?([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))+'
+      # Git status avoids paging; local Git configuration is still trusted.
+      - 'git[[:blank:]]+--no-pager[[:blank:]]+status([[:blank:]]+(--short|--branch|--porcelain))*'
+      # Git log without paging or signature verification programs.
+      - 'git[[:blank:]]+--no-pager[[:blank:]]+log[[:blank:]]+--no-show-signature([[:blank:]]+(--oneline|--stat|--name-only|--all|-n[[:blank:]]+[0-9]+))*'
+      # Git diff explicitly disables external diff and text conversion.
+      - 'git[[:blank:]]+--no-pager[[:blank:]]+diff[[:blank:]]+--no-ext-diff[[:blank:]]+--no-textconv([[:blank:]]+(--stat|--name-only|--cached))*([[:blank:]]+--([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))+)?'
+      # Simple literal output; no command/variable expansion.
+      - 'echo([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))*'
+      # Harmless shell status commands.
+      - '(true|false)'
+    trusted_rules:
+      # Create directories, optionally including parents; never remove existing data.
+      - 'mkdir([[:blank:]]+-p)?[[:blank:]]+(--[[:blank:]]+)?([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*")([[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*"))*'
+      # Copy one source without overwriting a destination; -n and -- are mandatory.
+      - 'cp[[:blank:]]+-n[[:blank:]]+--[[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*")[[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*")'
+      # Create a symbolic link without replacement; no -f or -T options.
+      - 'ln[[:blank:]]+-s[[:blank:]]+--[[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*")[[:blank:]]+([A-Za-z0-9_./][A-Za-z0-9_./:@%+,=-]*|''[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*''|"[A-Za-z0-9_./][A-Za-z0-9_./ :@%+,=-]*")'
+
 argument_schema:
   type: object
   required: [command]

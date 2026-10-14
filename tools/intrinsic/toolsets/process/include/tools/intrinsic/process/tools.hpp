@@ -1,5 +1,7 @@
 #pragma once
 
+#include "tools/intrinsic/process/command_policy.hpp"
+
 //
 // process/tools.hpp — the five process-management tools a model can call
 // ======================================================================
@@ -75,7 +77,7 @@
 //
 //   tool                  InvokeType    InvokeSecurity
 //   spawn_process         SerialWrite   RequireConfirm
-//   run_command           SerialWrite   RequireConfirm
+//   run_command           SerialWrite   RequireConfirm (startup bypass may refine)
 //   poll_process          ReadOnly      Trusted
 //   read_process          ReadOnly      Trusted
 //   send_process          SerialWrite   RequireConfirm
@@ -326,9 +328,9 @@ public:
 
 /// Run a command LINE through the platform's shell — the same launch as
 /// spawn_process, for a caller that holds a line rather than a program and its
-/// arguments. SerialWrite / RequireConfirm, the pair spawn_process declares and
-/// for the same reasons: it runs arbitrary code, and two commands in one batch
-/// contend for the same files.
+/// arguments. Defaults to SerialWrite / RequireConfirm. Startup-only bypass
+/// rules may classify a call as ReadOnly / Trusted or SerialWrite / Trusted.
+/// Unknown shell syntax retains confirmation; the policy is not a sandbox.
 ///
 /// No `description` argument, unlike spawn_process: the command IS the label,
 /// and the spec's description is filled in with it, so every later report about
@@ -368,6 +370,9 @@ public:
     void ensure_arguments(model_io::InvokeQuery& query) const override;
     void write_attributes(model_io::InvokeQuery& query) const override;
     boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
+private:
+    /// Immutable startup policy; never accepts settings from model arguments.
+    CommandPolicy policy_{nlohmann::json::object()};
 };
 
 /// The state of every session (or the named ones), each with its new output —

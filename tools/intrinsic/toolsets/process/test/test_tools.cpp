@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -2629,5 +2630,120 @@ BOOST_AUTO_TEST_CASE(installed_terminal_runtime)
         BOOST_TEST(pipe.block("output") == "pipe");
         BOOST_TEST(pipe.field("tty") == "false");
         BOOST_TEST(pipe.field("released") == "true");
+    }
+}
+
+namespace {
+
+/// Isolated schema package for testing startup settings without touching the
+/// source declarations or leaking environment changes between test cases.
+struct BypassPackage {
+    std::filesystem::path directory;
+    nlohmann::json document;
+
+    BypassPackage()
+    {
+        auto pattern = (std::filesystem::temp_directory_path() / "simplex-bypass-XXXXXX").string();
+        const auto created = ::mkdtemp(pattern.data());
+        if (created == nullptr) {
+            throw std::runtime_error("cannot create policy test directory");
+        }
+        directory = created;
+        const auto source = tools::intrinsic::schema_directory();
+        std::filesystem::copy(source, directory,
+            std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+        const auto declaration = tools::intrinsic::load_tool_declaration(source / "run_command.yaml");
+        document = {
+            {"name", declaration.name},
+            {"description", declaration.description},
+            {"argument_schema", declaration.argument_schema},
+            {"config", declaration.config},
+        };
+    }
+
+    ~BypassPackage()
+    {
+        std::error_code ignored;
+        std::filesystem::remove_all(directory, ignored);
+    }
+
+    /// JSON is a YAML subset and preserves regex escapes exactly.
+    void write()
+    {
+        std::ofstream output(directory / "run_command.yaml");
+        output.exceptions(std::ios::failbit | std::ios::badbit);
+        output << document.dump(2);
+    }
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(run_command_bypass_reaches_the_registry_without_confirmation)
+{
+    BypassPackage package;
+    package.document["config"]["bypass"]["mode"] = "permissive";
+    package.write();
+    SchemaDirectoryOverride override(package.directory);
+    Fixture f;
+    tools::ToolRegistry registry;
+    registry.add(f.set);
+
+    // No confirmation subscriber: trusted reads/writes must actually execute,
+    // while unmatched commands must stop at the security gate.
+    const auto target = package.directory / "created";
+    auto queries = std::vector<model_io::InvokeQuery>{
+        call_for("run_command", {{"command", "echo policy-read"}}, "read"),
+        call_for("run_command", {{"command", "mkdir " + target.string()}}, "write"),
+        call_for("run_command", {{"command", "rm " + target.string()}}, "denied"),
+    };
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+        auto query = queries[i];
+        BOOST_TEST_REQUIRE(f.prepare(query) != nullptr);
+        BOOST_CHECK(query.type == (i == 0 ? model_io::InvokeType::ReadOnly : model_io::InvokeType::SerialWrite));
+        BOOST_CHECK(query.security == (i == 2 ? model_io::InvokeSecurity::RequireConfirm : model_io::InvokeSecurity::Trusted));
+    }
+    const auto records = f.run(registry.execute(queries));
+    BOOST_REQUIRE_EQUAL(records.size(), 3u);
+    BOOST_TEST(!tools::is_error(records[0]));
+    BOOST_TEST(!tools::is_error(records[1]));
+    BOOST_CHECK(stage_of(records[2]) == InvokeException::Stage::SecurityCheck);
+    BOOST_TEST(std::filesystem::is_directory(target));
+
+    // Static snapshot: editing the schema does not change the existing tool.
+    package.document["config"]["bypass"]["mode"] = "strict";
+    package.write();
+    auto existing = call_for("run_command", {{"command", "pwd"}});
+    BOOST_TEST_REQUIRE(f.prepare(existing) != nullptr);
+    BOOST_CHECK(existing.security == model_io::InvokeSecurity::Trusted);
+    Fixture restarted;
+    auto next = call_for("run_command", {{"command", "pwd"}, {"bypass", {{"mode", "permissive"}}}});
+    BOOST_TEST_REQUIRE(restarted.prepare(next) != nullptr);
+    BOOST_CHECK(next.security == model_io::InvokeSecurity::RequireConfirm);
+}
+
+BOOST_AUTO_TEST_CASE(run_command_readonly_mode_and_invalid_config_are_fail_closed)
+{
+    BypassPackage package;
+    package.document["config"]["bypass"]["mode"] = "readonly";
+    package.write();
+    SchemaDirectoryOverride override(package.directory);
+    {
+        Fixture f;
+        auto query = call_for("run_command", {{"command", "mkdir new-dir"}});
+        const auto tool = f.prepare(query);
+        BOOST_CHECK(query.type == model_io::InvokeType::SerialWrite);
+        BOOST_CHECK(query.security == model_io::InvokeSecurity::RequireConfirm);
+        BOOST_CHECK(stage_of(f.run(f.set->execute(tool, query))) == InvokeException::Stage::SecurityCheck);
+    }
+    for (const auto& bad : std::vector<nlohmann::json>{
+             {{"bypass", {{"mode", "wrong"}}}},
+             {{"bypass", {{"readonly_rules", {"["}}}}},
+             {{"bypass", nullptr}},
+             {{"unknown", true}}}) {
+        package.document["config"] = bad;
+        package.write();
+        Fixture f;
+        BOOST_TEST(f.set->dispatch(call_for("run_command")) == nullptr);
+        BOOST_TEST(f.set->dispatch(call_for("spawn_process")) != nullptr);
     }
 }

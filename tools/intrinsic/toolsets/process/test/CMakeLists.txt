@@ -96,6 +96,9 @@ function(intrinsic_process_add_test name)
     set_tests_properties(${name} PROPERTIES TIMEOUT 180)
 endfunction()
 
+intrinsic_process_add_test(test_command_policy)
+set_tests_properties(test_command_policy PROPERTIES TIMEOUT 15)
+
 intrinsic_process_add_test(test_session_store)
 intrinsic_process_add_test(test_tools)
 intrinsic_process_add_test(test_registry_e2e)
