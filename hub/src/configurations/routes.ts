@@ -1,3 +1,4 @@
+import type { ConfigList, ConfigTemplateResponse, ConfigPreviewResponse, ConfigValidateResponse, ConfigRemoveResponse } from '../../ui/configurations.ts';
 /** Configuration APIs share the panel's authentication and authority. */
 import { readJsonBody, sendJson } from '../http/server.ts';
 import type { IncomingMessage } from 'node:http';
@@ -22,25 +23,25 @@ function stringField(body: Record<string, unknown>, key: string): string {
 export function configurationRoutes(store: ConfigurationStore, supervisor: WorkerSupervisor): Record<string, RouteHandler> {
     return {
         'GET /api/configurations': ({ res }) => {
-            sendJson(res, 200, { launch: store.list('launch'), worker: store.list('worker') });
+            sendJson(res, 200, { launch: store.list('launch'), worker: store.list('worker') } satisfies ConfigList);
         },
         'GET /api/configurations/:kind/template': ({ res, params, url }) => {
             const kind = params.kind as ConfigKind;
             store.path(kind, 'template');
             const source = url.searchParams.get('source') ?? 'default';
             if (!['default', 'deployment', 'docker'].includes(source)) throw configError('Unknown template source');
-            sendJson(res, 200, { text: store.template(kind, source as 'default' | 'deployment' | 'docker') });
+            sendJson(res, 200, { text: store.template(kind, source as 'default' | 'deployment' | 'docker') } satisfies ConfigTemplateResponse);
         },
         'POST /api/configurations/preview': async ({ req, res }) => {
             const body = await objectBody(req, 1024 * 1024);
             const launch = launchDocument(stringField(body, 'launch'), store.config);
             const endpoints = launchEndpoints(supervisor.endpointsFor('SESSION_ID', 'SESSION_TOKEN'), launch);
-            sendJson(res, 200, { endpoints });
+            sendJson(res, 200, { endpoints } satisfies ConfigPreviewResponse);
         },
         'POST /api/configurations/:kind/validate': async ({ req, res, params }) => {
             const body = await objectBody(req, 1024 * 1024);
             store.validate(params.kind as ConfigKind, stringField(body, 'text'));
-            sendJson(res, 200, { valid: true });
+            sendJson(res, 200, { valid: true } satisfies ConfigValidateResponse);
         },
         'GET /api/configurations/:kind/:id': ({ res, params }) => {
             sendJson(res, 200, store.read(params.kind as ConfigKind, params.id!));
@@ -54,7 +55,7 @@ export function configurationRoutes(store: ConfigurationStore, supervisor: Worke
         'DELETE /api/configurations/:kind/:id': async ({ req, res, params }) => {
             const body = await objectBody(req, 1024);
             store.remove(params.kind as ConfigKind, params.id!, stringField(body, 'revision'));
-            sendJson(res, 200, { removed: params.id });
+            sendJson(res, 200, { removed: params.id! } satisfies ConfigRemoveResponse);
         },
         'POST /api/configurations/:kind/:id/rename': async ({ req, res, params }) => {
             const body = await objectBody(req, 1024);

@@ -33,10 +33,11 @@
     "build:release": "npm run build && node scripts/stage-release.mjs --prepare && tsc -p tsconfig.release.json && node scripts/stage-release.mjs",
     "version:check": "node ../versioning/sync_version.mjs --check",
     "version:sync": "node ../versioning/sync_version.mjs --write",
-    "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json && tsc -p test/browser/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json && tsc -p test/browser/tsconfig.json && npm run check:ui",
     "test": "node --test test/*.test.js",
     "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.js",
-    "check:panel": "node test/browser/real-hub-check.mjs"
+    "check:panel": "node test/browser/real-hub-check.mjs",
+    "check:ui": "tsc -p tsconfig.ui.json && node scripts/check-ui-boundary.mjs"
   },
   "dependencies": {
     "tar": "^7.5.22",
@@ -45,6 +46,7 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
+    "@babel/parser": "^8.0.7",
     "@playwright/test": "^1.63.0",
     "@radix-ui/react-dialog": "^1.1.23",
     "@radix-ui/react-dropdown-menu": "^2.1.24",

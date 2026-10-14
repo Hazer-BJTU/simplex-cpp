@@ -1,3 +1,4 @@
+import type { RecoveryStatus, RecoveryState } from '../../ui/rest.ts';
 import { readAnswer } from '../worker/answers.ts';
 import { answerQuery } from '../../shared/answers.ts';
 /** Session-level family supervisor and the fixed subagent remote operations. */
@@ -593,13 +594,13 @@ export class SubagentService {
     }
 
     /** Recovery diagnostics contain no launch arguments, tokens or private environment. */
-    recoveryStatus(): { blocked: boolean; reason: string | null } {
+    recoveryStatus(): RecoveryStatus {
         return { blocked: this.recoveryBlocked, reason: this.recoveryBlocked
             ? 'unverified child ownership retained; inspect managed storage and restart the Hub' : null };
     }
 
     /** Inspect one restored child without exposing its private startup snapshot. */
-    recoveryState(session: Session): Record<string, unknown> {
+    recoveryState(session: Session): RecoveryState {
         const record = this.children.get(session.id);
         if (!record) throw new Error('unknown headless lifecycle');
         const automaticRetry = !record.removed && !record.uncertainStart
