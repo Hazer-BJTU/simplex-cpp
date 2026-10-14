@@ -5,6 +5,7 @@ import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyUiPackage } from './verify-ui-package.mjs';
 import { isDocumentationAsset, validateDocumentationImages } from './documentation.mjs';
 
 if (process.argv.length !== 3) {
@@ -47,6 +48,8 @@ for (const required of [
     'package/dist/package.json',
     'package/dist/bin/simplex-hub.js',
     'package/dist/src/config.js',
+    ...['index', 'protocol', 'answers', 'configurations', 'rest'].flatMap(name =>
+        ['js', 'd.ts'].map(extension => `package/dist/ui/${name}.${extension}`)),
     ...['command', 'source', 'platform', 'network', 'archive', 'transaction', 'version', 'files', 'host', 'bashrc']
         .map(name => `package/dist/src/install/${name}.js`),
     'package/dist/schemas/local.jsonc',
@@ -74,6 +77,7 @@ try {
         { cwd: installed, stdio: 'inherit', timeout: 120_000 });
     execFileSync(process.execPath, [fileURLToPath(new URL('./check-worker-installer.mjs', import.meta.url)), installed],
         { stdio: 'inherit', timeout: 60_000 });
+    verifyUiPackage(archive, installed);
 } finally {
     rmSync(root, { recursive: true, force: true });
 }

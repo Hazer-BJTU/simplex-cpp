@@ -13,7 +13,7 @@ export function checkUiBoundary(directory) {
         if (rel.startsWith('..') || isAbsolute(rel)) throw new Error(`SDK dependency escapes ui/: ${file}`);
         if (visited.has(file)) return;
         visited.add(file);
-        const source = parse(readFileSync(file, 'utf8'), { sourceType: 'module', plugins: ['typescript'] });
+        const source = parse(readFileSync(file, 'utf8'), { sourceType: 'module', plugins: file.endsWith('.ts') ? ['typescript'] : [] });
         const constants = new Set();
         for (const node of source.program.body) {
             const declaration = node.declaration ?? node;
@@ -49,7 +49,7 @@ export function checkUiBoundary(directory) {
         }
         function types(node) {
             if (!node || typeof node !== 'object') return;
-            if (node.type === 'TSImportType') dependency(node, node.argument.value);
+            if (node.type === 'TSImportType') dependency(node, node.source.value);
             for (const [key, value] of Object.entries(node)) {
                 if (['loc', 'comments', 'tokens'].includes(key)) continue;
                 if (Array.isArray(value)) value.forEach(types);
@@ -70,6 +70,13 @@ export function checkUiBoundary(directory) {
                 case 'TSTypeAliasDeclaration':
                     return;
                 case 'VariableDeclaration':
+                    if (file.endsWith('.d.ts') && node.declare && node.kind === 'const') {
+                        for (const declaration of node.declarations) {
+                            if (declaration.id.type !== 'Identifier' || (!declaration.init && !declaration.id.typeAnnotation)) fail(declaration, 'Invalid declared constant');
+                            if (declaration.init) constant(declaration.init);
+                        }
+                        return;
+                    }
                     if (node.kind !== 'const' || node.declare) fail(node, 'Only initialized static constants are allowed');
                     for (const declaration of node.declarations) {
                         if (declaration.id.type !== 'Identifier' || !declaration.init) fail(declaration, 'Invalid SDK constant');
@@ -86,7 +93,7 @@ export function checkUiBoundary(directory) {
         for (const entry of readdirSync(directory, { withFileTypes: true })) {
             const path = resolve(directory, entry.name);
             if (entry.isDirectory()) walk(path);
-            else if (entry.name.endsWith('.ts')) inspect(path);
+            else if (/\.(?:ts|js)$/.test(entry.name)) inspect(path);
         }
     }
     walk(root);

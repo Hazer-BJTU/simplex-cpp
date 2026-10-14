@@ -30,7 +30,7 @@
     "dev": "node --watch bin/simplex-hub.ts",
     "dev:panel": "vite",
     "build": "vite build",
-    "build:release": "npm run build && node scripts/stage-release.mjs --prepare && tsc -p tsconfig.release.json && node scripts/stage-release.mjs",
+    "build:release": "npm run build && node scripts/stage-release.mjs --prepare && tsc -p tsconfig.release.json && tsc -p tsconfig.ui.release.json && node scripts/finalize-ui-declarations.mjs && node scripts/stage-release.mjs",
     "version:check": "node ../versioning/sync_version.mjs --check",
     "version:sync": "node ../versioning/sync_version.mjs --write",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json && tsc -p test/browser/tsconfig.json && npm run check:ui",
@@ -71,5 +71,11 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.1",
     "zustand": "^5.0.15"
+  },
+  "exports": {
+    "./ui": {
+      "types": "./dist/ui/index.d.ts",
+      "import": "./dist/ui/index.js"
+    }
   }
 }
