@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import { answerSource, answerPage, type AnswerSource, type AnswerPage } from '../../../shared/answers.ts';
+import { answerSource, answerPage } from '../../../shared/answers.ts';
+import type { AnswerSource, AnswerPage, RestOperations } from '../../../ui/index.ts';
 import { useClient } from './ClientContext.tsx';
 import { usePanel } from '../state/usePanel.ts';
 import { CopyButton } from './Markdown.tsx';
@@ -20,7 +21,7 @@ export const AnswerPages = memo(function AnswerPages({ source }: { source: Answe
         abort.current?.abort();
         abort.current = control;
         setBusy(true); setError('');
-        const query = { source, part, offset };
+        const query = { source, part, offset } satisfies RestOperations['POST /api/sessions/:id/answer']['body'];
         try {
             const value = await client.rest.request<unknown>('POST', `/api/sessions/${encodeURIComponent(session)}/answer`,
                 { body: query, signal: control.signal });

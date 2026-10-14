@@ -2,7 +2,7 @@
  * Request activity and cancellation belong to the conversation and composer.
  */
 import { useState } from 'react';
-import type { SessionDescription } from '../../../shared/protocol.ts';
+import type { SessionDescription } from '../../../ui/index.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { Badge, Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';

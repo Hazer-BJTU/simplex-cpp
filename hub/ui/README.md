@@ -109,4 +109,8 @@ runners. Tools and consumer fixtures are separate directories; neither source
 aliases nor repository `node_modules` can supply consumer imports. Cold checks
 may download locked tooling; all temporary files are removed afterwards. The
 package adds no runtime tools and does not mark the entire Hub side-effect-free.
-Bundled panel migration and complete external examples remain PR 3 of #143.
+The bundled panel imports public contracts through this same barrel; its runtime
+helpers remain private. Read-only external examples live in `examples/ui-sdk`,
+outside the SDK and npm export graph. See the [UI SDK guide](../../docs/hub/ui-sdk.md)
+for authentication, recovery responsibilities and deployment. Public declarations
+require JSDoc; preserve useful field comments when changing a contract.

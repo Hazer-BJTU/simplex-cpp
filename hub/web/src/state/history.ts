@@ -1,5 +1,5 @@
 /** Validate a worker history page before it changes state or advances a cursor. */
-import type { ContentPart, HistoryPage } from '../../../shared/protocol.ts';
+import type { ContentPart, HistoryPage } from '../../../ui/index.ts';
 
 function record(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);

@@ -118,3 +118,14 @@ test('boundary scans emitted JavaScript and follows declaration dependencies', t
     writeFileSync(join(directory, 'constants.d.ts'), 'export type Hidden = import("node:fs").Stats;');
     assert.throws(() => checkUiBoundary(directory), /External/);
 });
+
+test('public SDK declarations have API documentation', () => {
+    for (const file of ['protocol', 'answers', 'configurations', 'rest']) {
+        const ast = parse(readFileSync(join(root, 'ui', `${file}.ts`), 'utf8'), { sourceType: 'module', plugins: ['typescript'] });
+        for (const node of ast.program.body) {
+            if (node.type !== 'ExportNamedDeclaration' || !node.declaration) continue;
+            assert.ok(node.leadingComments?.some(comment => comment.value.startsWith('*')),
+                `${file}: ${node.declaration.id?.name ?? node.declaration.declarations?.[0]?.id.name} needs JSDoc`);
+        }
+    }
+});

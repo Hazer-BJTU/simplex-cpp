@@ -25,7 +25,7 @@
 import { useStore } from 'zustand';
 import { confirmationKey } from '../lib/confirmationDecisions.ts';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ConfirmationPrompt } from '../../../shared/protocol.ts';
+import type { ConfirmationPrompt } from '../../../ui/index.ts';
 import { profileCount } from '../lib/profile.ts';
 import { usePanel, useVisiblePanel } from '../state/usePanel.ts';
 import { viewProjection } from '../state/viewProjection.ts';

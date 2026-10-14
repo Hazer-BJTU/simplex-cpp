@@ -7,12 +7,14 @@
  * connect, and so a lost transcript has a way back (the old panel had four
  * unused REST methods and therefore no such path at all).
  *
- * The response types come from `shared/protocol.ts`, the same file the hub
+ * The response types come from `ui/index.ts`, the same file the hub
  * reads, so a renamed field is a compile error here instead of an `undefined`
  * that renders as a blank panel.
  */
 import type {
     ApiErrorBody,
+    SupervisorAction,
+    RestOperations,
     EventsResponse,
     HubMetadata,
     LogsResponse,
@@ -24,10 +26,10 @@ import type {
     SessionSpec,
     SnapshotView,
     SupervisorResult,
-} from '../../../shared/protocol.ts';
+} from '../../../ui/index.ts';
 
 /** One process action the hub exposes over REST. */
-export type WorkerAction = 'start' | 'stop' | 'restart' | 'force-kill';
+export type WorkerAction = SupervisorAction;
 
 /** Query parameters; a null or undefined value is omitted from the URL. */
 export type Query = Record<string, string | number | boolean | null | undefined>;
@@ -70,18 +72,27 @@ export interface RestOptions {
 
 /** The hub's JSON API. */
 export interface RestClient {
+    /** Send one authenticated HTTP request. The caller must validate untrusted response data. */
     request<T>(method: string, path: string, options?: {
         body?: unknown;
         query?: Query;
         signal?: AbortSignal;
     }): Promise<T>;
+    /** Read public Hub metadata and advertised capabilities. */
     meta(): Promise<HubMetadata>;
+    /** Read operator-visible session descriptions; completed headless sessions may be absent. */
     sessions(): Promise<SessionListResponse>;
+    /** Create an ordinary session without starting its worker. */
     createSession(session: SessionId, spec?: SessionSpec): Promise<SessionResponse>;
+    /** Remove a stopped, disconnected ordinary session and its stored data. */
     deleteSession(id: SessionId): Promise<RemovedResponse>;
+    /** Submit an operator lifecycle action; inspect its result and later process events. */
     worker(id: SessionId, action: WorkerAction, spec?: SessionSpec): Promise<SupervisorResult>;
+    /** Read a bounded Hub transcript delta; this is not worker conversation history. */
     events(id: SessionId, since?: number, limit?: number): Promise<EventsResponse>;
+    /** Read the bounded process-log tail. */
     logs(id: SessionId, limit?: number): Promise<LogsResponse>;
+    /** Read persisted worker artifacts for inspection, not restoration through this API. */
     snapshot(id: SessionId): Promise<SnapshotView>;
 }
 
@@ -172,14 +183,14 @@ export function createRest(options: RestOptions = {}): RestClient {
         meta: () => request<HubMetadata>('GET', '/api/meta'),
         sessions: () => request<SessionListResponse>('GET', '/api/sessions'),
         createSession: (session, spec) => request<SessionResponse>('POST', '/api/sessions', {
-            body: spec === undefined ? { session } : { session, spec },
+            body: (spec === undefined ? { session } : { session, spec }) satisfies RestOperations['POST /api/sessions']['body'],
         }),
         deleteSession: (id) => request<RemovedResponse>(
             'DELETE', `/api/sessions/${encodeURIComponent(id)}`),
         worker: (id, action, spec) => request<SupervisorResult>(
             'POST',
             `/api/sessions/${encodeURIComponent(id)}/${action}`,
-            { body: spec === undefined ? {} : { spec } },
+            { body: (spec === undefined ? {} : { spec }) satisfies RestOperations['POST /api/sessions/:id/start']['body'] },
         ),
         events: (id, since = 0, limit = 0) => request<EventsResponse>(
             'GET',

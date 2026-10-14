@@ -27,7 +27,8 @@ its runtime dependencies when imported. The combined npm package still installs
 those dependencies for the CLI. Only `./ui` is a supported package API; server
 internals and the package root are not exported. Availability starts with the
 release containing the SDK packaging change; older releases do not include it.
-See the [contract reference](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/hub/ui/README.md).
+See the [UI SDK guide](https://hazer-bjtu.github.io/simplex-cpp/hub/ui-sdk.html) and
+[contract maintenance reference](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/hub/ui/README.md).
 
 ## Requirements
 

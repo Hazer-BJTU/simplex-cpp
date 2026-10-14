@@ -47,6 +47,8 @@ for (const mode of ['installed', 'bare']) {
             assert.ok(readFileSync(join(pkg, 'dist/ui', `${name}.${extension}`)).length > 0);
         }
     }
+    assert.match(readFileSync(join(pkg, 'dist/ui/answers.d.ts'), 'utf8'), /UTF-8 bytes/);
+    assert.match(readFileSync(join(pkg, 'dist/ui/rest.d.ts'), 'utf8'), /Operator cleanup action/);
     const graph = checkUiBoundary(join(pkg, 'dist/ui'));
     assert.equal(graph.size, 10);
     cpSync(join(fixtures, 'import-smoke.mjs'), join(consumer, 'import-smoke.mjs'));
@@ -94,6 +96,10 @@ for (const mode of ['installed', 'bare']) {
         const rel = relative(join(pkg, 'dist/ui'), module);
         assert.ok(!rel.startsWith('..') && !isAbsolute(rel) && module.endsWith('.js'),
             `Browser dependency outside the SDK: ${module}`);
+    }
+    if (mode === 'installed') {
+        cpSync(join(toolchain, 'examples'), join(consumer, 'examples'), { recursive: true });
+        execute([join(toolchain, 'scripts/check-ui-examples.mjs'), consumer, installed], consumer);
     }
     console.log(`Packed UI SDK: ${mode} ESM, NodeNext, Bundler and browser graph passed`);
 }

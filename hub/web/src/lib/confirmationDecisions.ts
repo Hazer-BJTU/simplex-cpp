@@ -1,5 +1,5 @@
 import { createStore } from 'zustand/vanilla';
-import type { ConfirmationPrompt, ErrorMessage, SessionDescription } from '../../../shared/protocol.ts';
+import type { ConfirmationPrompt, ErrorMessage, SessionDescription } from '../../../ui/index.ts';
 import type { PanelStoreApi } from '../state/store.ts';
 
 /** Include worker/run identity and prompt creation, never just a reusable ID. */

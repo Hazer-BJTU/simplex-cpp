@@ -42,6 +42,7 @@ for (const required of [
     'package/dist/docs/deployment/hub.md',
     'package/dist/docs/plugins/development.md',
     'package/dist/docs/hub/hub-protocol.md',
+    'package/dist/docs/hub/ui-sdk.md',
     'package/dist/docs/hub/configurations.md',
     'package/dist/docs/hub/npm-release.md',
     'package/dist/docs/hub/worker-adapter.md',

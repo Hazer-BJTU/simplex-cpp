@@ -11,7 +11,7 @@
 import { useStore } from 'zustand';
 import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 import { shallow } from 'zustand/vanilla/shallow';
-import type { SessionDescription, SessionId } from '../../../shared/protocol.ts';
+import type { SessionDescription, SessionId } from '../../../ui/index.ts';
 import { panelStore, type PanelStore } from './store.ts';
 import type { ViewState } from './view.ts';
 

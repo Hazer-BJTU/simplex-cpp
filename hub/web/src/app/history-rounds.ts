@@ -1,5 +1,5 @@
 /** Join bounded history to replay by durable execution and response identities. */
-import type { ExecutionIdentity, HistoryTurn, WorkerEnvelope } from '../../../shared/protocol.ts';
+import type { ExecutionIdentity, HistoryTurn, WorkerEnvelope } from '../../../ui/index.ts';
 import { contentText } from './content.ts';
 import type { AssistantBlock, Round } from './rounds.ts';
 

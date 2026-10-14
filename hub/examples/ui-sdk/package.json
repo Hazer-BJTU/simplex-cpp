@@ -1,0 +1,6 @@
+{
+  "name": "simplex-ui-sdk-examples",
+  "private": true,
+  "type": "module",
+  "description": "Read-only examples; install the locally packed Hub archive before running"
+}

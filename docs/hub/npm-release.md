@@ -125,3 +125,6 @@ uses a positive `files` list; `hub/data`, test results, test sources, and local
 configuration never enter the npm archive. CI packs the actual archive,
 validates its members, installs it, and checks the installed CLI on both the
 minimum supported Node version and Node 24.
+
+The [UI SDK guide](./ui-sdk.md) describes the public contract, client-owned
+recovery responsibilities and packed-package terminal/Web examples.

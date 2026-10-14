@@ -1,6 +1,6 @@
 import { displayBytes } from './view.ts';
 import { indexViewChanges, viewProjection } from './viewProjection.ts';
-import type { SessionPlan } from '../../../shared/protocol.ts';
+import type { SessionPlan } from '../../../ui/index.ts';
 /**
  * @file the panel's store.
  *
@@ -53,7 +53,7 @@ import type {
     SnapshotView,
     TranscriptEpoch,
     WorkerEnvelope,
-} from '../../../shared/protocol.ts';
+} from '../../../ui/index.ts';
 import type { PanelSocketStatus } from '../lib/socket.ts';
 import {
     LOG_CAP,

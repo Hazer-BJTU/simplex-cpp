@@ -11,9 +11,9 @@
  * the client would be testable only through the client, and the point of this
  * layer is that the *offer* is checked separately from the *doing*.
  */
-import type { SessionId } from '../../../shared/protocol.ts';
+import type { SessionId } from '../../../ui/index.ts';
 import type { ConfirmMode, InspectorTab } from '../state/store.ts';
-import type { SessionDescription } from '../../../shared/protocol.ts';
+import type { SessionDescription } from '../../../ui/index.ts';
 
 /** Everything the palette can be asked to do. */
 export type PaletteAction =

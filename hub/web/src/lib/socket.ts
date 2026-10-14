@@ -22,7 +22,7 @@
  * rather than showing up as a render error somewhere downstream.
  */
 import { checkHubEnvelope } from '../../../shared/guards.ts';
-import { PANEL_VERSION, type ErrorCode, type HubMessage, type PanelMessage } from '../../../shared/protocol.ts';
+import { PANEL_VERSION, type ErrorCode, type HubMessage, type PanelMessage } from '../../../ui/index.ts';
 import type { LocationLike } from './token.ts';
 
 /** Reconnect backoff bounds. */

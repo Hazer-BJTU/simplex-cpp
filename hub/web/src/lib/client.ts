@@ -19,7 +19,7 @@ import type {
     SessionId,
     SessionSpec,
     SessionResponse,
-} from '../../../shared/protocol.ts';
+} from '../../../ui/index.ts';
 import type { PanelStoreApi } from '../state/store.ts';
 import { panelStore } from '../state/store.ts';
 import { profile } from './profile.ts';
