@@ -62,8 +62,8 @@ without Hub configuration or credentials. The required `--platform` selects
 `linux-amd64-standard` (host glibc >= 2.34 and OpenSSL 3) or
 `linux-amd64-bundled` (bundled musl loader, OpenSSL and runtime dependencies).
 Both need Linux x86_64, Bash and util-linux `flock`; standard needs `ldd`, while
-bundled needs `dirname` and `readlink`. See [npm releases](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/npm-release.md) for the
-package contents and release process.
+bundled needs `dirname` and `readlink`. See [Hub npm package](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/npm-release.md) for the
+package contents and the public UI SDK.
 
 Use `--directory DIR` and `--version vX.Y.Z` to select the installation and
 release; `--source github` is the only supported source. Same-version installs

@@ -1,130 +1,29 @@
-# Publishing the Hub to npm
+# Hub npm package
 
-The public npm package is `@hazer-bjtu/simplex-hub`. It includes the Hub server,
-configuration templates, built browser panel, and the contract-only ESM
-`@hazer-bjtu/simplex-hub/ui` entry point with TypeScript declarations. It does not include the C++
-worker. Install the worker separately and point `--worker-bin` or a saved launch
-configuration at its executable.
-
-The repository root `VERSION` controls both the worker and Hub versions. A
-`v<VERSION>` tag on `main` runs `.github/workflows/release-worker.yml`. After
-the worker build and cross-system tests pass, that workflow prepares a draft
-GitHub Release with verified worker assets, publishes the Hub through npm
-trusted publishing, then makes the draft public. The Hub package is not
-uploaded as a GitHub asset. Worker assets contain glibc and musl archives plus
-a shared `SHA256SUMS`. Rerunning a partial release verifies exact
-GitHub asset bytes and npm tarball integrity before continuing; any mismatch
-fails rather than replacing a published artifact.
-
-Publish and recovery jobs run on separate runners from the build job. Each first
-downloads the lockfile's production dependencies with lifecycle scripts disabled,
-populating its own npm cache. Package validation then installs those locked
-dependencies offline beside the unpacked artifact and tests its emitted code in
-isolation; it does not depend on source-tree modules or a previous runner's cache.
-
-The same validator checks the packed UI SDK with isolated NodeNext and browser
-consumers, including a bare archive with no dependencies installed. It prepares
-a separate temporary development toolchain from the repository lockfile with
-install scripts disabled; a cold publish/recovery runner may download those
-locked tools. They are neither package runtime dependencies nor dependencies of
-the consumer fixtures. SDK declarations use only ECMAScript types, and the
-browser import graph requires no Node polyfills. Only `./ui` is exported; this
-does not establish a root-level server API or change the CLI executable path.
-The SDK package version remains the repository version, while remote
-compatibility is determined by protocol metadata and advertised capabilities.
-
-Registry probes have a 10-second timeout covering headers and response bodies.
-Preflight retries transient failures up to three times; an unavailable registry
-does not authorize publishing, while a 404 allows the initial publish. The npm
-publish command runs once. Afterwards, up to ten probes with three-second intervals
-wait for a matching published integrity hash. Network failures, timeouts, HTTP
-408/425/429/5xx, and unreadable responses can be retried; authentication failures,
-decoded metadata mismatches and integrity differences fail immediately. A lost
-publish response can still succeed if verification finds the exact tested tarball.
-Exhausted probes leave publication unconfirmed; a later run checks the registry
-again before attempting publication.
-
-## First-time npm setup
-
-The package must already exist before npm can accept a trusted publisher. For
-the first release, the owner of the `@hazer-bjtu` npm scope should publish a
-prerelease from an isolated checkout, reserving stable versions for CI. The
-existing package has already been bootstrapped; do not repeat this step for
-normal releases. For a new package, the initial procedure is:
+The public package `@hazer-bjtu/simplex-hub` includes the Hub server,
+configuration templates, compiled browser panel, and user documentation.
+It requires Node.js 22.18 or newer. No separate panel build is needed.
 
 ```sh
-git clone https://github.com/Hazer-BJTU/simplex-cpp.git /tmp/simplex-npm-bootstrap
-cd /tmp/simplex-npm-bootstrap/hub
-npm ci --ignore-scripts --registry=https://registry.npmjs.org
-npm pkg set version=0.0.0-bootstrap.0
-npm run build:release
-archive=$(npm pack --pack-destination /tmp/simplex-npm-bootstrap --ignore-scripts --silent)
-node scripts/check-release-package.mjs "/tmp/simplex-npm-bootstrap/$archive"
-npm login --registry=https://registry.npmjs.org
-npm publish "/tmp/simplex-npm-bootstrap/$archive" \
-    --registry=https://registry.npmjs.org --access public --tag bootstrap
+npm install -g @hazer-bjtu/simplex-hub
+simplex-hub --help
 ```
 
-Before the manual publish, inspect the archive with `tar -tzf` and confirm
-that it contains no `data/`, tests, or local configuration. The
-publishing account needs permission to publish under `@hazer-bjtu` and must meet
-npm's authentication requirements. The lockfile uses the official registry
-host and pins each dependency's integrity hash. Stable versions are published
-by the release workflow.
+The C++ worker is installed separately. Use `simplex-hub install-worker` with
+an explicit platform, or download a worker archive from GitHub Releases.
+See [Installation](../getting-started/installation.md) for platform requirements,
+worker installation, and starting the Hub.
 
-After the bootstrap appears on npm, configure its GitHub Actions Trusted
-Publisher in the package's npm settings:
+## UI SDK
 
-| Field | Value |
-| --- | --- |
-| GitHub owner | `Hazer-BJTU` |
-| Repository | `simplex-cpp` |
-| Workflow filename | `release-worker.yml` |
-| Environment | Leave empty |
-| Allowed action | Enable direct `npm publish` |
+The package exposes the contract-only ESM entry point
+`@hazer-bjtu/simplex-hub/ui`, including TypeScript declarations. It provides
+public types and protocol constants for independent clients; it does not provide
+a transport, state store, or server API. Importing it does not load the Hub server
+or its runtime dependencies, and browser consumers need no Node polyfills.
 
-The publishing job uses `id-token: write` and requires no npm write token in
-GitHub Secrets. Configure the trust relationship before pushing the release
-tag. Once a version is published, npm does not permit overwriting it; release
-fixes need a new version and tag. A failed job may be rerun for the same tag
-only when the already-published npm tarball and GitHub assets exactly match
-the tested artifacts. If the files differ, create a new version instead.
-
-## Recovering a failed tag run
-
-First retry failed jobs in the original tag workflow. This reuses the same
-artifacts and can resume an existing draft or npm publication. If release
-machinery itself needs a fix after the tag was pushed, merge that fix to
-`main` without changing `VERSION`, then run the same workflow manually:
-
-```sh
-release_tag="v$(cat VERSION)"
-source_run_id=123456789  # Replace with the original tag workflow run ID.
-gh workflow run release-worker.yml --ref main \
-    -f release_tag="$release_tag" -f source_run_id="$source_run_id"
-```
-
-The manual path uses the worker and Hub artifacts from the named tag run. It
-requires that run's tag, source commit, worker build, Hub build, and both
-cross-system tests to match and pass. The combined worker-asset assembly must
-also pass, which requires all musl build, cross-system, and Hub E2E checks.
-Only release machinery may differ on
-`main`. It verifies draft assets byte-for-byte and npm's tarball integrity
-before continuing. The source run's artifacts must still be retained (seven
-days by default). Do not rebuild or repack the same version after publishing.
-
-## Package checks
-
-`npm run build:release` builds the browser panel, emits server JavaScript, and
-stages the runtime templates beside that JavaScript. Public protocol and
-configuration documents and supporting guides from root `docs/` are copied into
-`dist/docs`; historical panel redesign notes are excluded. Node does not type-strip
-`.ts` files inside installed `node_modules`, so the npm package runs compiled
-JavaScript even though development uses TypeScript source directly. The package
-uses a positive `files` list; `hub/data`, test results, test sources, and local
-configuration never enter the npm archive. CI packs the actual archive,
-validates its members, installs it, and checks the installed CLI on both the
-minimum supported Node version and Node 24.
-
-The [UI SDK guide](./ui-sdk.md) describes the public contract, client-owned
-recovery responsibilities and packed-package terminal/Web examples.
+The SDK shares the Hub package version. Compatibility with a running Hub is
+established through protocol metadata and advertised capabilities, not by
+assuming that matching npm versions imply matching remote capabilities.
+See the [UI SDK guide](./ui-sdk.md) for the contract, client responsibilities,
+and terminal/Web examples.

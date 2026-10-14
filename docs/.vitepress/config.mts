@@ -66,7 +66,7 @@ export default defineConfig({
             group('Reference', [
                 ['Command line', '/reference/cli'],
                 ['Configuration library', '/hub/configurations'],
-                ['npm releases', '/hub/npm-release'],
+                ['Hub npm package', '/hub/npm-release'],
                 ['Maintaining the docs', '/maintaining/documentation'],
             ]),
         ],
