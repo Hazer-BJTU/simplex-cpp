@@ -1,7 +1,8 @@
 # Publishing the Hub to npm
 
 The public npm package is `@hazer-bjtu/simplex-hub`. It includes the Hub server,
-configuration templates, and built browser panel. It does not include the C++
+configuration templates, built browser panel, and the contract-only ESM
+`@hazer-bjtu/simplex-hub/ui` entry point with TypeScript declarations. It does not include the C++
 worker. Install the worker separately and point `--worker-bin` or a saved launch
 configuration at its executable.
 
@@ -20,6 +21,17 @@ downloads the lockfile's production dependencies with lifecycle scripts disabled
 populating its own npm cache. Package validation then installs those locked
 dependencies offline beside the unpacked artifact and tests its emitted code in
 isolation; it does not depend on source-tree modules or a previous runner's cache.
+
+The same validator checks the packed UI SDK with isolated NodeNext and browser
+consumers, including a bare archive with no dependencies installed. It prepares
+a separate temporary development toolchain from the repository lockfile with
+install scripts disabled; a cold publish/recovery runner may download those
+locked tools. They are neither package runtime dependencies nor dependencies of
+the consumer fixtures. SDK declarations use only ECMAScript types, and the
+browser import graph requires no Node polyfills. Only `./ui` is exported; this
+does not establish a root-level server API or change the CLI executable path.
+The SDK package version remains the repository version, while remote
+compatibility is determined by protocol metadata and advertised capabilities.
 
 Registry probes have a 10-second timeout covering headers and response bodies.
 Preflight retries transient failures up to three times; an unavailable registry

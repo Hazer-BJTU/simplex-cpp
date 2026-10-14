@@ -11,6 +11,24 @@ The hub implements the server side of
 [`docs/core/worker-protocol.md`](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/core/worker-protocol.md). The worker and
 hub share the direct session-root persistence layout described below.
 
+## UI contract SDK
+
+Release builds also expose the ESM subpath `@hazer-bjtu/simplex-hub/ui` for
+independent TUI and Web clients:
+
+```ts
+import { PANEL_PROTOCOL } from '@hazer-bjtu/simplex-hub/ui';
+import type { PanelMessage, HubMessage } from '@hazer-bjtu/simplex-hub/ui';
+```
+
+This entry point contains types and static constants only; applications own
+transport, validation, state and recovery. It does not start the Hub or require
+its runtime dependencies when imported. The combined npm package still installs
+those dependencies for the CLI. Only `./ui` is a supported package API; server
+internals and the package root are not exported. Availability starts with the
+release containing the SDK packaging change; older releases do not include it.
+See the [contract reference](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/hub/ui/README.md).
+
 ## Requirements
 
 - Node.js 22.18 or newer (developed on 24). The floor is a functional

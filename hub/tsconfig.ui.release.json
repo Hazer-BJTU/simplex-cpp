@@ -1,0 +1,11 @@
+{
+    "extends": "./tsconfig.ui.json",
+    "compilerOptions": {
+        "noEmit": false,
+        "declaration": true,
+        "rootDir": "./ui",
+        "outDir": "./dist/ui",
+        "rewriteRelativeImportExtensions": true
+    },
+    "include": ["ui/**/*.ts"]
+}

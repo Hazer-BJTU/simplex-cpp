@@ -1,11 +1,24 @@
 # UI contracts
 
 This directory owns the Hub's panel-facing wire types and static vocabulary.
-It is the first stage of issue #143. The npm `@hazer-bjtu/simplex-hub/ui`
-subpath is **not published yet**; packaging and external consumers follow in a
-separate PR. Source consumers can use `ui/index.ts`. Existing internal
-`shared/protocol.ts` and `shared/configurations.ts` imports are compatibility
-re-exports, not additional public APIs.
+Release builds expose it through `@hazer-bjtu/simplex-hub/ui`, with ESM constants
+and TypeScript declarations. This entry point first becomes available in the
+release containing issue #143's packaging change; older published versions do
+not provide it. Source consumers can continue using `ui/index.ts` without a
+prebuilt `dist/`. Existing `shared/protocol.ts` and `shared/configurations.ts`
+imports are internal compatibility re-exports.
+
+```ts
+import { PANEL_PROTOCOL, PANEL_VERSION } from '@hazer-bjtu/simplex-hub/ui';
+import type { PanelMessage, HubMessage, RestOperations }
+    from '@hazer-bjtu/simplex-hub/ui';
+```
+
+Only `./ui` is a supported package API. There is no root server API, CommonJS
+entry point, wildcard deep import or source-only export condition. The CLI bin
+remains `simplex-hub`. A normal installation still installs the combined Hub
+package's production dependencies; importing the SDK itself does not load or
+require them. Consumers provide their own transport, validation and state.
 
 ## Ownership
 
@@ -79,5 +92,21 @@ modules too, and rejects functions/classes, external or backwards imports,
 ambient references and executable initializers. The parser is a development
 check dependency only. Tests compare live route declarations to both the static
 inventory and typed operation table, check actual Hub replies and preserve the
-existing protocol drift tests. Publishing emitted declarations and testing the
-packed npm entry point belong to PR 2; bundled panel migration belongs to PR 3.
+existing protocol drift tests.
+
+`build:release` separately emits `dist/ui/*.js` and `*.d.ts`, then rewrites the
+declarations' relative `.ts` specifiers to `.js` so they resolve to installed
+sibling declarations. Package checks inspect both graphs and run NodeNext and
+Bundler consumers outside the checkout with no Node/DOM ambient types. A bare
+archive fixture imports constants without any installed dependencies; an ESM
+smoke blocks network, filesystem writes and timer/listener side effects. A
+browser build checks that its graph stays inside the SDK without Node polyfills.
+
+The same checks run from the existing CI and release package validator. It
+creates a temporary toolchain from the repository lockfile (including development
+dependencies, with install scripts disabled), even on production-only publish
+runners. Tools and consumer fixtures are separate directories; neither source
+aliases nor repository `node_modules` can supply consumer imports. Cold checks
+may download locked tooling; all temporary files are removed afterwards. The
+package adds no runtime tools and does not mark the entire Hub side-effect-free.
+Bundled panel migration and complete external examples remain PR 3 of #143.

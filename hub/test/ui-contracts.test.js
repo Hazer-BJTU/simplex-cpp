@@ -103,3 +103,18 @@ test('representative actual REST replies retain revisions, URL previews, status 
         status: 409, body: { ok: false, error: 'already running' },
     });
 });
+
+test('boundary scans emitted JavaScript and follows declaration dependencies', t => {
+    const directory = mkdtempSync(join(tmpdir(), 'simplex-ui-emitted-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(join(directory, 'index.js'), "export { VERSION } from './constants.js';");
+    writeFileSync(join(directory, 'constants.js'), 'export const VERSION = 1;');
+    writeFileSync(join(directory, 'index.d.ts'), "export { VERSION } from './constants.js';");
+    writeFileSync(join(directory, 'constants.d.ts'), 'export declare const VERSION: 1;');
+    assert.equal(checkUiBoundary(directory).size, 4);
+    writeFileSync(join(directory, 'constants.js'), 'export const VERSION = (() => 1)();');
+    assert.throws(() => checkUiBoundary(directory), /Executable/);
+    writeFileSync(join(directory, 'constants.js'), 'export const VERSION = 1;');
+    writeFileSync(join(directory, 'constants.d.ts'), 'export type Hidden = import("node:fs").Stats;');
+    assert.throws(() => checkUiBoundary(directory), /External/);
+});
