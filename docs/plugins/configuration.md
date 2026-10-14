@@ -144,3 +144,25 @@ driver_model: primary
 There is no provider allowlist. `primary` is a configured instance name and
 `deepseek` is a factory name. Referencing the same entry for two model roles
 still creates two model instances.
+
+### Process command approval
+
+`run_command` supports host-only `config.bypass` in its installed
+`bin/schemas/process/run_command.yaml`. Its packaged default is `mode: strict`,
+which keeps all commands on the existing RequireConfirm path. Change the mode to
+`readonly` to trust only the packaged readonly regex rules, or `permissive` to
+also trust the limited write rules. The first category sets ReadOnly scheduling;
+trusted writes remain serial. The policy is loaded at startup, never supplied by
+the model, and does not affect other process tools.
+
+The default lists cover selected file-reading/search/statistics commands and
+restricted Git queries; trusted writes cover directory creation, non-overwriting
+copy and non-replacing symbolic links. Matching considers complete command
+segments and selected parameters, not just executable names. Unsupported shell
+syntax and regex limits fall back to confirmation. RequireConfirm still obeys
+the worker's ask/approve/deny handler; Trusted bypasses that handler.
+
+See the [process tool guide](https://github.com/Hazer-BJTU/simplex-cpp/tree/main/tools/intrinsic/toolsets/process#startup-command-bypass-policy)
+for the mode matrix, precise syntax, custom configuration, limits and trust
+assumptions. These regexes are approval heuristics, not a filesystem sandbox or
+a guarantee that programs will avoid side effects.

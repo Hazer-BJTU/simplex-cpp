@@ -46,6 +46,7 @@
 # not at add_subdirectory() time.
 # =============================================================================
 add_library(tools_intrinsic_process SHARED
+    src/command_policy.cpp
     src/schemas.cpp
     src/session_store.cpp
     src/tools.cpp

@@ -387,6 +387,18 @@ RunCommandTool::RunCommandTool(StorePtr store, eventbus::AsyncEventBus* bus)
     // Name, description and argument schema: schemas/run_command.yaml.
     : ProcessToolBase(std::move(store), "run_command.yaml", bus)
 {
+    initialize_configuration([this](const nlohmann::json& config) {
+        for (const auto& [key, value] : config.items()) {
+            if (key != "bypass") {
+                configuration_error(key, "unknown run_command configuration field");
+            }
+        }
+        try {
+            policy_ = CommandPolicy(config.value("bypass", nlohmann::json::object()));
+        } catch (const std::invalid_argument& error) {
+            configuration_error("bypass", error.what());
+        }
+    });
 }
 
 void RunCommandTool::ensure_arguments(model_io::InvokeQuery& query) const
@@ -411,15 +423,15 @@ void RunCommandTool::ensure_arguments(model_io::InvokeQuery& query) const
 
 void RunCommandTool::write_attributes(model_io::InvokeQuery& query) const
 {
-    // The pair spawn_process declares, for the same two reasons: a command line
-    // runs arbitrary code (RequireConfirm — and, per security_check.hpp, no
-    // answer means refused), and it changes the machine outside this process,
-    // where two commands in one batch contend for the same files (SerialWrite).
-    //
-    // The shell in front of it does not change either answer: what the
-    // interpreter is asked to do is exactly what was confirmed.
-    query.type = model_io::InvokeType::SerialWrite;
-    query.security = model_io::InvokeSecurity::RequireConfirm;
+    // Classification only changes admission/scheduling, not the command that
+    // is executed. Keep writes serial even when the operator trusts them.
+    const auto decision = policy_.classify(require_string(query, "command", "the command line to run"));
+    query.type = decision == CommandPolicy::Decision::Readonly
+        ? model_io::InvokeType::ReadOnly
+        : model_io::InvokeType::SerialWrite;
+    query.security = decision == CommandPolicy::Decision::Confirm
+        ? model_io::InvokeSecurity::RequireConfirm
+        : model_io::InvokeSecurity::Trusted;
 }
 
 boost::asio::awaitable<model_io::Content> RunCommandTool::invoke(const model_io::InvokeQuery& query)

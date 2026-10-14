@@ -14,7 +14,8 @@ text: |
     `command`, `working_directory`, and `expected_runtime_milliseconds` are
     exposed. It inherits the host environment; use assignments, `export`, or
     `env -i` inside the command to change it. Complete initial results always
-    auto-release.
+    auto-release. Startup policy may bypass approval for selected commands;
+    otherwise await approval and respect denials. Bypass is not a sandbox.
   - `spawn_process`: executable plus literal arguments; no shell quoting,
     expansion, or pipelines. Bare names use PATH; explicit paths never fall back
     to PATH. Relative executable paths resolve against the host directory,
