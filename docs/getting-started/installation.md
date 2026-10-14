@@ -67,6 +67,25 @@ certificate bundle, OpenSSL configuration and other release resources are kept.
 Startup validation clears development
 `LD_LIBRARY_PATH`, `LD_PRELOAD`, and `LD_AUDIT` variables.
 
+### Proxy environment
+
+The downloader reads `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` automatically;
+lowercase `http_proxy`, `https_proxy` and `no_proxy` take precedence. This applies
+to release metadata, checksum files, worker archives and redirected asset hosts.
+Use an HTTP or HTTPS proxy URL, for example:
+
+```sh
+HTTPS_PROXY=http://127.0.0.1:7890 \
+  simplex-hub install-worker --platform linux-amd64-bundled --update-path
+```
+
+If only `HTTP_PROXY` is set, it also handles HTTPS requests. `NO_PROXY` bypasses
+the proxy for matching hosts (optionally scoped to a port); `*` bypasses it for
+all hosts. Without proxy settings downloads connect directly. A configured
+proxy failure is reported without retrying directly. No additional Node.js flag
+is needed, and TLS certificate verification remains enabled. Downloader-owned
+connections are released after each operation, including failure/cancellation.
+
 ### Replacement and versions
 
 | Option / behavior | Meaning |

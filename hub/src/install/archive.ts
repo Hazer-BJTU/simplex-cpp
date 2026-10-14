@@ -7,6 +7,7 @@ import { Transform, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
 import * as tar from 'tar';
+import { withDownloadFetch } from './network.ts';
 import { fetchResponse, readBounded } from './source.ts';
 import type { Fetch, WorkerRelease } from './source.ts';
 import { METADATA, validateTree } from './version.ts';
@@ -94,33 +95,35 @@ export async function validateArchive(file: string, root: string): Promise<void>
 
 /** Download, checksum, decompress with a bound, inspect, then extract the entire tree. */
 export async function prepareArchive(release: WorkerRelease, work: string,
-    fetcher: Fetch = fetch, signal?: AbortSignal): Promise<string> {
-    const operation = signal ? AbortSignal.any([signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000);
-    const checksums = (await readBounded(await fetchResponse(release.checksumUrl, fetcher, operation), 1024 * 1024))
-        .toString('utf8').split(/\r?\n/);
-    const hashes = checksums.flatMap(line => {
-        const match = /^([a-fA-F0-9]{64}) [ *](.+)$/.exec(line);
-        return match?.[2] === release.archive ? [match[1]!.toLowerCase()] : [];
+    fetcher?: Fetch, signal?: AbortSignal): Promise<string> {
+    return withDownloadFetch(fetcher, async download => {
+        const operation = signal ? AbortSignal.any([signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000);
+        const checksums = (await readBounded(await fetchResponse(release.checksumUrl, download, operation), 1024 * 1024))
+            .toString('utf8').split(/\r?\n/);
+        const hashes = checksums.flatMap(line => {
+            const match = /^([a-fA-F0-9]{64}) [ *](.+)$/.exec(line);
+            return match?.[2] === release.archive ? [match[1]!.toLowerCase()] : [];
+        });
+        if (hashes.length !== 1) throw new Error(`SHA256SUMS must contain exactly one checksum for ${release.archive}`);
+        const compressed = join(work, 'download.tar.gz');
+        const response = await fetchResponse(release.archiveUrl, download, operation);
+        if (!response.body) throw new Error('Worker archive download has no body');
+        const hash = createHash('sha256');
+        const hashing = new Transform({ transform(chunk: Buffer, _encoding, done) { hash.update(chunk); done(null, chunk); } });
+        await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
+            byteLimit(MAX_DOWNLOAD), hashing, createWriteStream(compressed, { flags: 'wx', mode: 0o600 }), { signal: operation });
+        if (hash.digest('hex') !== hashes[0]) throw new Error('Worker archive SHA256 checksum mismatch');
+        const uncompressed = join(work, 'download.tar');
+        await pipeline(createReadStream(compressed), createGunzip(), byteLimit(MAX_EXPANDED),
+            createWriteStream(uncompressed, { flags: 'wx', mode: 0o600 }), { signal: operation });
+        await validateArchive(uncompressed, release.root);
+        const unpack = join(work, 'unpack');
+        await mkdir(unpack, { mode: 0o700 });
+        await tar.x({ file: uncompressed, cwd: unpack, strict: true, preserveOwner: false,
+            chmod: true, noMtime: true });
+        operation.throwIfAborted();
+        const tree = join(unpack, release.root);
+        await validateTree(tree, release.platform);
+        return tree;
     });
-    if (hashes.length !== 1) throw new Error(`SHA256SUMS must contain exactly one checksum for ${release.archive}`);
-    const compressed = join(work, 'download.tar.gz');
-    const response = await fetchResponse(release.archiveUrl, fetcher, operation);
-    if (!response.body) throw new Error('Worker archive download has no body');
-    const hash = createHash('sha256');
-    const hashing = new Transform({ transform(chunk: Buffer, _encoding, done) { hash.update(chunk); done(null, chunk); } });
-    await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
-        byteLimit(MAX_DOWNLOAD), hashing, createWriteStream(compressed, { flags: 'wx', mode: 0o600 }), { signal: operation });
-    if (hash.digest('hex') !== hashes[0]) throw new Error('Worker archive SHA256 checksum mismatch');
-    const uncompressed = join(work, 'download.tar');
-    await pipeline(createReadStream(compressed), createGunzip(), byteLimit(MAX_EXPANDED),
-        createWriteStream(uncompressed, { flags: 'wx', mode: 0o600 }), { signal: operation });
-    await validateArchive(uncompressed, release.root);
-    const unpack = join(work, 'unpack');
-    await mkdir(unpack, { mode: 0o700 });
-    await tar.x({ file: uncompressed, cwd: unpack, strict: true, preserveOwner: false,
-        chmod: true, noMtime: true });
-    operation.throwIfAborted();
-    const tree = join(unpack, release.root);
-    await validateTree(tree, release.platform);
-    return tree;
 }

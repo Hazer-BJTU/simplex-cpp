@@ -1,7 +1,11 @@
 /** Resolve official GitHub release assets without coupling to installation. */
+import { withDownloadFetch } from './network.ts';
+import type { DownloadResponse, Fetch } from './network.ts';
 import { normalizeVersion } from './version.ts';
 import { WORKER_PLATFORMS, parseWorkerPlatform } from './platform.ts';
 import type { WorkerPlatform } from './platform.ts';
+
+export type { Fetch } from './network.ts';
 
 const REPOSITORY = 'Hazer-BJTU/simplex-cpp';
 export interface WorkerRelease {
@@ -13,11 +17,10 @@ export interface WorkerRelease {
     archiveUrl: string;
     checksumUrl: string;
 }
-export type Fetch = typeof globalThis.fetch;
 
 /** Bound both headers and streamed response body by the caller's operation timeout. */
-export async function fetchResponse(url: string, fetcher: Fetch, signal: AbortSignal): Promise<Response> {
-    let response: Response;
+export async function fetchResponse(url: string, fetcher: Fetch, signal: AbortSignal): Promise<DownloadResponse> {
+    let response: DownloadResponse;
     try {
         response = await fetcher(url, {
             signal,
@@ -35,7 +38,7 @@ export async function fetchResponse(url: string, fetcher: Fetch, signal: AbortSi
 }
 
 /** Small JSON/checksum responses have a separate memory limit. */
-export async function readBounded(response: Response, limit: number): Promise<Buffer> {
+export async function readBounded(response: DownloadResponse, limit: number): Promise<Buffer> {
     const chunks: Uint8Array[] = [];
     let size = 0;
     if (!response.body) throw new Error('Release response has no body');
@@ -49,35 +52,37 @@ export async function readBounded(response: Response, limit: number): Promise<Bu
 
 /** Only published stable releases with exactly matching worker/checksum assets qualify. */
 export async function resolveRelease(source: string, platform: WorkerPlatform, requested?: string,
-    fetcher: Fetch = fetch, signal?: AbortSignal): Promise<WorkerRelease> {
+    fetcher?: Fetch, signal?: AbortSignal): Promise<WorkerRelease> {
     if (source !== 'github') throw new Error(`Unsupported source: ${source}; only github is supported`);
     parseWorkerPlatform(platform);
     const selector = requested ? `tags/v${normalizeVersion(requested)}` : 'latest';
     const url = `https://api.github.com/repos/${REPOSITORY}/releases/${selector}`;
-    const timeout = AbortSignal.timeout(30_000);
-    const response = await fetchResponse(url, fetcher, signal ? AbortSignal.any([signal, timeout]) : timeout);
-    const value = JSON.parse((await readBounded(response, 2 * 1024 * 1024)).toString('utf8')) as {
-        draft: boolean; prerelease: boolean; tag_name: string;
-        assets: { name: string; browser_download_url: string }[];
-    };
-    if (!value || value.draft !== false || value.prerelease !== false || typeof value.tag_name !== 'string'
-        || !Array.isArray(value.assets) || value.assets.some(asset => !asset || typeof asset.name !== 'string')) {
-        throw new Error('Expected a published stable GitHub release');
-    }
-    const version = normalizeVersion(value.tag_name);
-    if (value.tag_name !== `v${version}` || (requested && version !== normalizeVersion(requested))) {
-        throw new Error('Release tag does not match the requested stable version');
-    }
-    const root = `simplex-worker-v${version}-${WORKER_PLATFORMS[platform].suffix}`;
-    const archive = `${root}.tar.gz`;
-    const assetUrl = (name: string): string => {
-        const matches = value.assets.filter(asset => asset.name === name);
-        if (matches.length !== 1) throw new Error(`Release v${version} must contain one ${name} asset`);
-        const url = matches[0]!.browser_download_url;
-        const expected = `https://github.com/${REPOSITORY}/releases/download/v${version}/${name}`;
-        if (url !== expected) throw new Error(`Unexpected official release asset URL for ${name}`);
-        return url;
-    };
-    return { source: 'github', platform, version, root, archive,
-        archiveUrl: assetUrl(archive), checksumUrl: assetUrl('SHA256SUMS') };
+    return withDownloadFetch(fetcher, async download => {
+        const timeout = AbortSignal.timeout(30_000);
+        const response = await fetchResponse(url, download, signal ? AbortSignal.any([signal, timeout]) : timeout);
+        const value = JSON.parse((await readBounded(response, 2 * 1024 * 1024)).toString('utf8')) as {
+            draft: boolean; prerelease: boolean; tag_name: string;
+            assets: { name: string; browser_download_url: string }[];
+        };
+        if (!value || value.draft !== false || value.prerelease !== false || typeof value.tag_name !== 'string'
+            || !Array.isArray(value.assets) || value.assets.some(asset => !asset || typeof asset.name !== 'string')) {
+            throw new Error('Expected a published stable GitHub release');
+        }
+        const version = normalizeVersion(value.tag_name);
+        if (value.tag_name !== `v${version}` || (requested && version !== normalizeVersion(requested))) {
+            throw new Error('Release tag does not match the requested stable version');
+        }
+        const root = `simplex-worker-v${version}-${WORKER_PLATFORMS[platform].suffix}`;
+        const archive = `${root}.tar.gz`;
+        const assetUrl = (name: string): string => {
+            const matches = value.assets.filter(asset => asset.name === name);
+            if (matches.length !== 1) throw new Error(`Release v${version} must contain one ${name} asset`);
+            const url = matches[0]!.browser_download_url;
+            const expected = `https://github.com/${REPOSITORY}/releases/download/v${version}/${name}`;
+            if (url !== expected) throw new Error(`Unexpected official release asset URL for ${name}`);
+            return url;
+        };
+        return { source: 'github', platform, version, root, archive,
+            archiveUrl: assetUrl(archive), checksumUrl: assetUrl('SHA256SUMS') };
+    });
 }
