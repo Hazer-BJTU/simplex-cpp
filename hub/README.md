@@ -21,7 +21,8 @@ hub share the direct session-root persistence layout described below.
 - A worker installation: use `simplex-hub install-worker`, download a binary
   release manually, or build it with the repository's normal CMake flow.
 - Runtime dependencies: `ws` for WebSockets, `yaml` for operator configuration,
-  and `tar` for validated worker archive extraction. Everything else in
+  `tar` for validated worker archive extraction, and `undici` for installer
+  HTTP(S) requests with environment-based proxy routing. Everything else in
   `package.json` is a development dependency.
 
 ## Quick start
@@ -58,6 +59,12 @@ After publication commits, obsolete backup cleanup failures are warnings and
 do not block PATH handling or later invocations; each attempt uses independent
 staging/backup directories. Genuine rollback failures retain recovery files and
 remain errors.
+
+The downloader automatically honors `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
+(including lowercase forms, which take precedence) for metadata, checksums,
+archives and redirects. Use HTTP(S) proxy URLs; no Node-specific flag is needed.
+Without proxy settings it connects directly; proxy failures do not fall back
+to a direct connection.
 
 `--update-path` replaces only the marked PATH block in `~/.bashrc`.
 `--no-update-path` skips it; unspecified behavior prompts only in a terminal.

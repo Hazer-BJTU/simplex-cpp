@@ -37,6 +37,7 @@ ${Object.entries(WORKER_PLATFORMS).map(([name, entry]) => `  ${name}
 
 Both platforms require Bash and util-linux flock. Bundled also uses dirname/readlink.
 Standard requires the glibc ldd utility; bundled uses its own loader for validation.
+Downloads honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY (lowercase variants take precedence).
 Replacement removes custom/stale files inside the installation root.
 Stop workers using this installation before replacing it. Keep session data elsewhere.
 PATH changes apply to new shells; restart the Hub from an updated shell.

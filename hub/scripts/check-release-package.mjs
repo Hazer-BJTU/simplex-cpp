@@ -47,7 +47,7 @@ for (const required of [
     'package/dist/package.json',
     'package/dist/bin/simplex-hub.js',
     'package/dist/src/config.js',
-    ...['command', 'source', 'platform', 'archive', 'transaction', 'version', 'files', 'host', 'bashrc']
+    ...['command', 'source', 'platform', 'network', 'archive', 'transaction', 'version', 'files', 'host', 'bashrc']
         .map(name => `package/dist/src/install/${name}.js`),
     'package/dist/schemas/local.jsonc',
     'package/dist/schemas/worker.yaml',
