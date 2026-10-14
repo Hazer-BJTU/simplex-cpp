@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+        "target": "ES2023",
+        "lib": ["ES2023"],
+        "types": [],
+        "module": "NodeNext",
+        "moduleResolution": "NodeNext",
+        "strict": true,
+        "exactOptionalPropertyTypes": true,
+        "noUncheckedIndexedAccess": true,
+        "noEmit": true,
+        "allowImportingTsExtensions": true,
+        "verbatimModuleSyntax": true,
+        "skipLibCheck": false
+    },
+    "include": ["ui/**/*.ts", "test/contracts/**/*.ts"]
+}

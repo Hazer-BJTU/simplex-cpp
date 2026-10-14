@@ -1,3 +1,5 @@
+import type { SessionResponse, SessionListResponse, RemovedResponse, LogsResponse, SupervisorResult, SnapshotView } from '../../ui/protocol.ts';
+import type { RecoveryResponse } from '../../ui/rest.ts';
 import { diagnosticPreview, utf8Prefix } from '../protocol/display.ts';
 import { approvalArgumentPreview } from '../protocol/approval-preview.ts';
 import { approvalSnapshot } from '../protocol/approval-snapshot.ts';
@@ -22,7 +24,7 @@ import { selection, snapshotConfigs } from '../configurations/session.ts';
  * renders bounded projections rather than canonical worker records.
  *
  * The message shapes are not declared here: they come from
- * `shared/protocol.ts`, the same module the panel imports, so what this file
+ * `ui/protocol.ts` (re-exported by the panel compatibility path), so what this file
  * sends and what the browser expects cannot drift apart without a type error.
  */
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -61,7 +63,7 @@ import type {
 import type { HubConfig } from '../config.ts';
 import type { Logger } from '../log.ts';
 
-// The version lives in `shared/protocol.ts` so the hub and the panel cannot
+// The version lives in `ui/protocol.ts` so the hub and the panel cannot
 // disagree about it. Re-exported because this module is where a reader expects
 // to find it, and because that is the name every message is stamped with.
 export { PANEL_VERSION };
@@ -81,14 +83,7 @@ export const PANEL_REPLAY_PAGE_BYTES = 512 * 1024;
 const LOG_TAIL_DEFAULT = 200;
 const LOG_TAIL_MAX = 2000;
 
-/** The read-only view of a session's persisted files. */
-export interface SnapshotView {
-    session_id: string;
-    state: unknown;
-    readable: string | null;
-    files: Record<string, string>;
-    state_error?: string;
-}
+export type { SnapshotView } from '../../ui/protocol.ts';
 
 /** One connected panel client. */
 export interface PanelClient {
@@ -705,7 +700,7 @@ export function createPanelApi({
             session.spec = { ...session.spec, ...selected };
             persist({ immediate: true });
             broadcastSession(session);
-            sendJson(res, 200, { session: session.describe() });
+            sendJson(res, 200, { session: session.describe() } satisfies SessionResponse);
         },
         'POST /api/sessions/:id/subagent-policy': async ({ req, res, params }) => {
             const session = requireSession(res, params.id as string, true);
@@ -716,7 +711,7 @@ export function createPanelApi({
                 return;
             }
             subagents.setPolicy(session, body.policy);
-            sendJson(res, 200, { session: session.describe() });
+            sendJson(res, 200, { session: session.describe() } satisfies SessionResponse);
         },
         'GET /api/subagents/recovery': ({ res }) => {
             sendJson(res, 200, subagents?.recoveryStatus() ?? { blocked: false, reason: null });
@@ -742,7 +737,7 @@ export function createPanelApi({
             }
             try {
                 const result = await subagents.recover(session, body.action, body.lifecycle_id);
-                sendJson(res, result.ok ? 200 : 409, { ...result, session: session.describe() });
+                sendJson(res, result.ok ? 200 : 409, { ...result, session: session.describe() } satisfies RecoveryResponse);
             } catch (error) {
                 sendError(res, 409, 'recovery_conflict', error instanceof Error ? error.message : 'recovery failed');
             }
@@ -750,7 +745,7 @@ export function createPanelApi({
         'GET /api/sessions': ({ res }) => {
             sendJson(res, 200, {
                 sessions: listedSessions(),
-            });
+            } satisfies SessionListResponse);
         },
 
         'POST /api/sessions': async ({ req, res }) => {
@@ -780,7 +775,7 @@ export function createPanelApi({
                 session.spec = rawSpec;
                 persist({ immediate: true });
                 broadcastSession(session);
-                sendJson(res, 201, { session: session.describe() });
+                sendJson(res, 201, { session: session.describe() } satisfies SessionResponse);
             } catch (error) {
                 sendError(res, 400, 'invalid_session',
                     error instanceof Error ? error.message : String(error));
@@ -790,7 +785,7 @@ export function createPanelApi({
         'GET /api/sessions/:id': ({ res, params }) => {
             const session = requireSession(res, params.id as string, true);
             if (!session) return;
-            sendJson(res, 200, { session: session.describe() });
+            sendJson(res, 200, { session: session.describe() } satisfies SessionResponse);
         },
 
         'DELETE /api/sessions/:id': ({ res, params }) => {
@@ -808,7 +803,7 @@ export function createPanelApi({
                     error instanceof Error ? error.message : String(error));
                 return;
             }
-            sendJson(res, 200, { removed: session.id });
+            sendJson(res, 200, { removed: session.id } satisfies RemovedResponse);
         },
 
         'POST /api/sessions/:id/start': async ({ req, res, params }) => {
@@ -818,7 +813,7 @@ export function createPanelApi({
             const result = await supervisor.start(session, parsed.spec);
             persist();
             broadcastSession(session);
-            sendJson(res, result.ok ? 200 : 409, result as unknown as Record<string, unknown>);
+            sendJson(res, result.ok ? 200 : 409, result satisfies SupervisorResult);
         },
 
         'POST /api/sessions/:id/stop': async ({ res, params }) => {
@@ -837,7 +832,7 @@ export function createPanelApi({
             const result = await supervisor.restart(session, parsed.spec);
             persist();
             broadcastSession(session);
-            sendJson(res, result.ok ? 200 : 409, result as unknown as Record<string, unknown>);
+            sendJson(res, result.ok ? 200 : 409, result satisfies SupervisorResult);
         },
 
         'POST /api/sessions/:id/force-kill': async ({ res, params }) => {
@@ -846,7 +841,7 @@ export function createPanelApi({
             const result = await supervisor.forceKill(session);
             persist();
             broadcastSession(session);
-            sendJson(res, 200, result as unknown as Record<string, unknown>);
+            sendJson(res, 200, result satisfies SupervisorResult);
         },
 
         'GET /api/sessions/:id/events': ({ res, url, params }) => {
@@ -874,7 +869,7 @@ export function createPanelApi({
                 lines: supervisor.logs(session, { limit }),
                 dropped: session.process?.logs?.dropped ?? 0,
                 log_path: session.process?.logPath ?? null,
-            });
+            } satisfies LogsResponse);
         },
 
         'POST /api/sessions/:id/answer': async ({ req, res, params }) => {
