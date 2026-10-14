@@ -27,7 +27,7 @@ import type {
     SessionId,
     TranscriptEpoch,
     WorkerEnvelope,
-} from '../../../shared/protocol.ts';
+} from '../../../ui/index.ts';
 import { parseCompactResult } from './compact.ts';
 
 /** Envelopes retained per session on the client. */

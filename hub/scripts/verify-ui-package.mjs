@@ -18,9 +18,10 @@ export function verifyUiPackage(archive, installed) {
         execFileSync('npm', ['ci', '--include=dev', '--ignore-scripts', '--prefer-offline', '--no-audit', '--no-fund'], {
             cwd: toolchain, stdio: 'inherit', timeout: 180_000,
         });
-        for (const name of ['check-ui-package.mjs', 'check-ui-boundary.mjs']) {
+        for (const name of ['check-ui-package.mjs', 'check-ui-boundary.mjs', 'check-ui-examples.mjs']) {
             copyFileSync(join(source, 'scripts', name), join(toolchain, 'scripts', name));
         }
+        cpSync(join(source, 'examples/ui-sdk'), join(toolchain, 'examples'), { recursive: true });
         cpSync(join(source, 'test/fixtures/ui-sdk'), join(toolchain, 'fixtures'), { recursive: true });
         execFileSync(process.execPath, [join(toolchain, 'scripts/check-ui-package.mjs'), archive, installed, join(root, 'consumers')], {
             cwd: root, stdio: 'inherit', timeout: 120_000,

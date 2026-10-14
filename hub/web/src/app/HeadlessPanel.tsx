@@ -1,6 +1,6 @@
 /** Minimal lifecycle/security view; headless conversations belong to the parent. */
 import { useState } from 'react';
-import type { SessionDescription } from '../../../shared/protocol.ts';
+import type { SessionDescription } from '../../../ui/index.ts';
 import { useClient } from './ClientContext.tsx';
 
 export function HeadlessPanel({ session }: { session: SessionDescription }) {

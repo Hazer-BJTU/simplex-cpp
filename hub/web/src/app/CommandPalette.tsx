@@ -16,7 +16,7 @@
  * faster to read than one sorted by a score nobody can predict.
  */
 import { useEffect, useMemo, useState } from 'react';
-import type { SessionDescription } from '../../../shared/protocol.ts';
+import type { SessionDescription } from '../../../ui/index.ts';
 import { usePanel, useView } from '../state/usePanel.ts';
 import { Badge } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';

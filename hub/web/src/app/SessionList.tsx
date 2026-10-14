@@ -13,7 +13,7 @@ import type { ConfigList } from './Configurations.tsx';
  * second place for the rows to drift apart.
  */
 import { useEffect, useState, type FormEvent } from 'react';
-import type { SessionDescription } from '../../../shared/protocol.ts';
+import type { SessionDescription } from '../../../ui/index.ts';
 import { usePanel } from '../state/usePanel.ts';
 import { Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';

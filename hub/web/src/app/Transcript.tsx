@@ -30,7 +30,7 @@ import type {
     ConfirmationPrompt,
     HistoryTurn,
     RequestRecord,
-} from '../../../shared/protocol.ts';
+} from '../../../ui/index.ts';
 import { profile, profileCount } from '../lib/profile.ts';
 import { useVisiblePanel, type PanelStore } from '../state/usePanel.ts';
 import type { NoteItem, OutboxItem, TranscriptItem } from '../state/view.ts';

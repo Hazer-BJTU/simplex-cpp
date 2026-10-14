@@ -20,7 +20,7 @@
  * answerable at a glance.
  */
 import { useMemo, useState } from 'react';
-import type { ProcessDescription, SessionDescription } from '../../../shared/protocol.ts';
+import type { ProcessDescription, SessionDescription } from '../../../ui/index.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { statsOf } from '../state/view.ts';
 import { Badge, Button, IconButton } from '../ui/Button.tsx';

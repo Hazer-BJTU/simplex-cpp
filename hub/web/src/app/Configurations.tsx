@@ -7,8 +7,8 @@ import { Button } from '../ui/Button.tsx';
 import { Dialog, DialogContent } from '../ui/overlays.tsx';
 import { ConfigEditor } from './ConfigEditor.tsx';
 
-import type { ConfigKind as Kind, ConfigFile as File, ConfigList } from '../../../shared/configurations.ts';
-export type { ConfigList } from '../../../shared/configurations.ts';
+import type { ConfigKind as Kind, ConfigFile as File, ConfigList, ConfigPreviewResponse, ConfigTemplateResponse, RestOperations } from '../../../ui/index.ts';
+export type { ConfigList } from '../../../ui/index.ts';
 const control = 'config-control h-9 min-w-0 rounded-md border border-line bg-surface px-3 text-sm text-ink transition-colors hover:border-line-strong';
 
 /** Shared picker for session creation and explicit snapshot replacement. */
@@ -53,7 +53,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
     const [notice, setNotice] = useState('');
     const [launch, setLaunch] = useState('local');
     const [worker, setWorker] = useState('default');
-    const [preview, setPreview] = useState<Record<string, string> | null>(null);
+    const [preview, setPreview] = useState<ConfigPreviewResponse['endpoints'] | null>(null);
     const dirty = text !== (file?.text ?? '');
     const stopped = session && !session.connected && !['starting', 'running', 'stopping'].includes(session.process?.state ?? '');
 
@@ -88,7 +88,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
     async function showPreview() {
         const current = kind === 'launch' && text ? text :
             (await rest.request<File>('GET', `/api/configurations/launch/${encodeURIComponent(launch)}`)).text;
-        const result = await rest.request<{ endpoints: Record<string, string> }>('POST', '/api/configurations/preview', { body: { launch: current } });
+        const result = await rest.request<ConfigPreviewResponse>('POST', '/api/configurations/preview', { body: { launch: current } satisfies RestOperations['POST /api/configurations/preview']['body'] });
         setPreview(result.endpoints);
     }
 
@@ -114,7 +114,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                         <Button disabled={busy} onClick={() => {
                             if (!discard()) return;
                             void action(async () => {
-                                const result = await rest.request<{ text: string }>('GET', `/api/configurations/${kind}/template?source=${templateSource}`);
+                                const result = await rest.request<ConfigTemplateResponse>('GET', `/api/configurations/${kind}/template?source=${templateSource}`);
                                 setFile(null); setText(result.text); setName(''); setPreview(null);
                             });
                         }}>New from template</Button>
@@ -124,23 +124,23 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                             disabled={busy} onChange={e => setName(e.target.value)} maxLength={128} />
                         <span className="mr-auto rounded bg-sunken px-2 py-1 font-mono text-xs text-ink-muted">{kind === 'launch' ? '.jsonc' : '.yaml'}{dirty ? ' · Unsaved changes' : ''}</span>
                         <Button variant="primary" disabled={busy || !name || !text} onClick={() => void action(async () => {
-                            const value = await rest.request<File>('PUT', path(name), { body: { text, revision: file?.id === name ? file.revision : null } });
+                            const value = await rest.request<File>('PUT', path(name), { body: { text, revision: file?.id === name ? file.revision : null } satisfies RestOperations['PUT /api/configurations/:kind/:id']['body'] });
                             loaded(value); await refresh(); setNotice('Saved. Existing session snapshots are unchanged.');
                         })}>{file && file.id !== name ? 'Save copy' : 'Save'}</Button>
                         <Button disabled={busy || !text} onClick={() => void action(async () => {
-                            await rest.request('POST', `/api/configurations/${kind}/validate`, { body: { text } });
+                            await rest.request('POST', `/api/configurations/${kind}/validate`, { body: { text } satisfies RestOperations['POST /api/configurations/:kind/validate']['body'] });
                             setNotice('Configuration syntax and required fields are valid. Worker startup checks plugins and local resources.');
                         })}>Validate</Button>
                         <Button disabled={busy || !file} onClick={() => { if (file && discard()) void action(async () => loaded(await rest.request<File>('GET', path(file.id)))); }}>Reload</Button>
                         <Button disabled={busy || !file || file.id === name || !name || dirty} onClick={() => void action(async () => {
                             if (!file) return;
-                            loaded(await rest.request<File>('POST', `${path(file.id)}/rename`, { body: { id: name, revision: file.revision } }));
+                            loaded(await rest.request<File>('POST', `${path(file.id)}/rename`, { body: { id: name, revision: file.revision } satisfies RestOperations['POST /api/configurations/:kind/:id/rename']['body'] }));
                             await refresh();
                         })}>Rename</Button>
                         <Button variant="ghost" className="text-danger" disabled={busy || !file} onClick={() => {
                             if (!file || !window.confirm(`Delete ${file.id}? Existing sessions keep their snapshots.`)) return;
                             void action(async () => {
-                                await rest.request('DELETE', path(file.id), { body: { revision: file.revision } });
+                                await rest.request('DELETE', path(file.id), { body: { revision: file.revision } satisfies RestOperations['DELETE /api/configurations/:kind/:id']['body'] });
                                 setFile(null); setText(''); setName(''); await refresh();
                             });
                         }}>Delete</Button>
@@ -165,7 +165,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                         <Button disabled={busy || !stopped || !launch || !worker} onClick={() => {
                             if (!selected || !window.confirm(`Replace saved configuration for ${selected}? Its conversation state is retained.`)) return;
                             void action(async () => {
-                                await rest.request('POST', `/api/sessions/${encodeURIComponent(selected)}/configurations`, { body: { launchConfig: launch, workerConfig: worker } });
+                                await rest.request('POST', `/api/sessions/${encodeURIComponent(selected)}/configurations`, { body: { launchConfig: launch, workerConfig: worker } satisfies RestOperations['POST /api/sessions/:id/configurations']['body'] });
                                 setNotice(`Configuration applied to ${selected}. Start its worker to load it.`);
                             });
                         }}>Apply to {selected ?? 'selected session'}</Button>

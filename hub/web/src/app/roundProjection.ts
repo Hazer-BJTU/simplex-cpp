@@ -1,4 +1,4 @@
-import type { ConfirmationPrompt, RequestRecord } from '../../../shared/protocol.ts';
+import type { ConfirmationPrompt, RequestRecord } from '../../../ui/index.ts';
 import type { TranscriptItem } from '../state/view.ts';
 import { buildRounds, RoundDerivations, type Round } from './rounds.ts';
 

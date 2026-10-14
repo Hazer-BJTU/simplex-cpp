@@ -1,5 +1,5 @@
 /** Aggregate display accounting and open approvals, indexed by immutable view maps. */
-import type { ConfirmationPrompt, SessionId } from '../../../shared/protocol.ts';
+import type { ConfirmationPrompt, SessionId } from '../../../ui/index.ts';
 import { profileCount } from '../lib/profile.ts';
 import { viewDisplayBytes, type ViewState } from './view.ts';
 

@@ -8,7 +8,7 @@
  * a tool result and core currently projects another, and a reader that knows
  * only the documented one shows `(unnamed call)` and no output at all.
  */
-import type { WorkerEnvelope } from '../../../shared/protocol.ts';
+import type { WorkerEnvelope } from '../../../ui/index.ts';
 
 /** Read a field as a string, or `''`. */
 export function str(value: unknown): string {

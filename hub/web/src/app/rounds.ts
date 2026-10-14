@@ -24,7 +24,7 @@
  * - **A success flag.** The protocol has none: a result is a failure only when
  *   the tool framework annotated one, and "not executed" is a third state.
  */
-import type { ConfirmationPrompt, HistoryTurn, RequestRecord, WorkerEnvelope } from '../../../shared/protocol.ts';
+import type { ConfirmationPrompt, HistoryTurn, RequestRecord, WorkerEnvelope } from '../../../ui/index.ts';
 import { omittedToolItems, toolOmissionCount } from '../../../shared/tool-batches.ts';
 import { parseCompactResult, type CompactResult } from '../state/compact.ts';
 import type {

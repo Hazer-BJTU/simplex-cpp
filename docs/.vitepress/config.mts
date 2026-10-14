@@ -46,6 +46,7 @@ export default defineConfig({
                 ['Worker overview', '/core/index'],
                 ['Simplex Loop Worker Protocol', '/core/worker-protocol'],
                 ['Hub panel protocol', '/hub/hub-protocol'],
+                ['UI SDK and independent clients', '/hub/ui-sdk'],
                 ['Headless subagents', '/hub/subagents'],
             ]),
             group('Plugins', [

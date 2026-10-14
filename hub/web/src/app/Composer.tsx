@@ -19,7 +19,7 @@
  * never be mistaken for a worker message or erase an unfinished draft.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { ContentPart, PayloadOptions } from '../../../shared/protocol.ts';
+import type { ContentPart, PayloadOptions } from '../../../ui/index.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { Button } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
