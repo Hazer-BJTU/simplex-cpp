@@ -9,8 +9,11 @@
  *
  * The variants encode the weight the design asks for — one solid button for the
  * primary action of a view, quiet secondary buttons, and danger reserved for
- * the things that cannot be undone. The old panel had `Force kill` in red and
- * `Delete` as a ghost, which is the weighting exactly backwards.
+ * the things that cannot be undone. Danger is solid like the primary rather
+ * than an outline in red: it stands in for `Send` in the same slot while a run
+ * is active, and an outline there would drop the button's weight at the exact
+ * moment the heaviest action is on offer. The old panel had `Force kill` in red
+ * and `Delete` as a ghost, which is the weighting exactly backwards.
  */
 import type { ComponentPropsWithRef, ReactNode } from 'react';
 
@@ -22,8 +25,7 @@ const VARIANTS: Record<ButtonVariant, string> = {
     secondary: 'border border-line-strong bg-surface text-ink hover:bg-subtle '
         + 'disabled:text-ink-faint disabled:hover:bg-surface',
     ghost: 'text-ink-muted hover:bg-subtle disabled:text-ink-faint disabled:hover:bg-transparent',
-    danger: 'border border-danger-line bg-surface text-danger hover:bg-danger-soft '
-        + 'disabled:border-line disabled:text-ink-faint disabled:hover:bg-surface',
+    danger: 'bg-danger text-danger-ink hover:bg-danger-hover disabled:bg-line-strong',
 };
 
 /** Shared classes, so a button in a menu and a button in a header match. */
