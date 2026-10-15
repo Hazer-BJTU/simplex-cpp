@@ -10,6 +10,7 @@ utils/logging/
 ├── CMakeLists.txt        # builds logging_lib
 ├── README.md             # this file
 ├── include/logging/
+│   ├── console.hpp       # synchronous, SIGPIPE-protected plain output
 │   └── logger.hpp        # public header — #include "logging/logger.hpp"
 ├── src/
 │   └── logger.cpp        # Logger implementation (static state, formatting, I/O)
@@ -48,3 +49,13 @@ when the write reports EPIPE, and restores the original mask. Existing pending
 signals and global dispositions are preserved. This lets a worker survive a
 Hub crash that closes its log pipes and reconnect to a replacement Hub. Closed
 streams retain their normal error state; discarded log output is not replayed.
+
+## Plain console output
+
+`logging/console.hpp` exposes `write_console(stream, text)` for CLI output without
+log formatting. It flushes inside the same thread-local SIGPIPE protection used
+by Logger, returns false on stream failure, and preserves stream exceptions.
+Callers serialize access; the helper does not acquire Logger's mutex or alter
+process-wide signal dispositions. Existing pending SIGPIPE signals stay pending
+because standard signals coalesce. Unrelated explicit SIGPIPE delivery during a
+failed write is outside the helper's guarantee.

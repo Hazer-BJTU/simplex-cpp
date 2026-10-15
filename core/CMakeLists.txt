@@ -28,7 +28,7 @@ target_link_libraries(core_lib PRIVATE tools_intrinsic_modality_assist tools_int
 set_target_properties(core_lib PROPERTIES OUTPUT_NAME simplex_core)
 add_executable(simplex_worker src/main.cpp)
 target_link_libraries(simplex_worker PRIVATE
-    core_lib Boost::program_options simplex_versioning)
+    core_lib Boost::program_options simplex_versioning logging_lib)
 add_dependencies(simplex_worker llm_openai llm_deepseek)
 set_target_properties(simplex_worker PROPERTIES ENABLE_EXPORTS ON)
 if(BUILD_TESTS)

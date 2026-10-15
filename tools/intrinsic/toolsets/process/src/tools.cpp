@@ -19,6 +19,7 @@ namespace {
 
 /// One model-facing block; pipe labels do not imply interleaving. PTY bytes
 /// appear exactly once. OutputRead has already projected UTF-8 on the strand.
+/// Empty pipe streams have no label; stderr-only output starts with [stderr].
 void write_output(ToolResult& result, const OutputRead& read)
 {
     std::string text;
@@ -344,7 +345,8 @@ void SpawnProcessTool::ensure_arguments(model_io::InvokeQuery& query) const
     // there the command IS the label, and its tool fills the spec in directly.
     (void)settle_string(query, "description");
     // Settle all explicit spawn controls, including tty, before confirmation.
-    // run_command has its own smaller public surface and uses fixed defaults.
+    // run_command advertises fewer arguments; its runtime still accepts tty
+    // (default false), with fixed environment and auto-release behavior.
     settle_launch_arguments(query, kDefaultExpectedRuntimeMilliseconds);
 }
 
