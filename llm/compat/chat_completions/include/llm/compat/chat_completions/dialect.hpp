@@ -55,8 +55,10 @@ public:
      */
     virtual bool replay_assistant_reasoning() const { return false; }
 
-    // Native request mode fills only absent defaults and never translates
-    // generation fields. Existing dialects retain the historical policy.
+    // Native request assembly fills absent defaults without translating stored
+    // generation fields. GenerationPreset setters may still produce the shared
+    // reasoning.effort representation; explicit request rules translate it.
+    // Existing non-native dialects retain the historical assembly policy.
     virtual bool native_request() const { return false; }
     virtual bool strict_chunk_transform() const { return false; }
     virtual bool maps_raw_usage() const { return false; }

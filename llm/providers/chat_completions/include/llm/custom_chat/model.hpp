@@ -24,6 +24,10 @@ class CustomChatCompletionsModel final : public chat_completions::ChatCompletion
 protected:
     std::pair<Json, chat_completions::ChatCompletionsDialectPtr>
     exchange_configuration() const override {
+        // Serialize with handle_options() and this provider's virtual
+        // set_generation() overrides. Inherited apply_generation_patch() and
+        // reset_generation() use only the base generation mutex; callers must
+        // serialize those APIs themselves if they need a coordinated update.
         std::lock_guard lock(mutex_);
         return {generation_snapshot(), std::make_shared<ConfigurableDialect>(compatibility_, selected_)};
     }

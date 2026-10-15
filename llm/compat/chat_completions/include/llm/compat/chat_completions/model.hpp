@@ -57,8 +57,9 @@ public:
     const model_io::ModelEndpoint& endpoint() const noexcept { return _endpoint; }
 
 protected:
-    // A provider can atomically snapshot its generation and selected options
-    // into an immutable per-exchange dialect. No state is reread on retries.
+    // Capture generation and an immutable per-exchange dialect once; retries
+    // reuse them. Providers define synchronization with their option setters;
+    // this interface does not guarantee an atomic snapshot across all mutators.
     virtual std::pair<nlohmann::json, ChatCompletionsDialectPtr>
     exchange_configuration() const {
         return {generation_snapshot(), _dialect};

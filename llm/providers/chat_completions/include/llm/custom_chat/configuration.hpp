@@ -73,9 +73,9 @@ class PatchProgram {
                 }
                 node = &node->at(key);
             } else if (node->is_array()) {
-                const auto i = index(key);
-                if (!create && i >= node->size()) return nullptr;
-                node = &node->at(i);
+                const auto slot = index(key);
+                if (!create && slot >= node->size()) return nullptr;
+                node = &node->at(slot);
             } else {
                 throw std::invalid_argument("path traverses a non-container");
             }
@@ -279,8 +279,22 @@ public:
     bool maps_raw_usage() const override { return true; }
     bool replay_assistant_reasoning() const override { return config_->replay; }
     void transform_request(Json& body) const override {
+        // The interpreter supplies this shape. Validate it before message rules
+        // run so direct dialect callers also get path-tagged, payload-free errors.
+        // Request-only patches may deliberately operate on a different shape.
+        if (!config_->messages.empty()) {
+            require(body.is_object() && body.contains("messages")
+                    && body.at("messages").is_array(),
+                    "request/messages must be an array");
+        }
         for (const auto& rule : config_->messages) {
-            for (auto& message : body.at("messages")) {
+            auto& messages = body.at("messages");
+            for (std::size_t i = 0; i < messages.size(); ++i) {
+                auto& message = messages[i];
+                const auto location = "request/messages/" + std::to_string(i);
+                require(message.is_object(), location + " must be an object");
+                require(!message.contains("role") || message.at("role").is_string(),
+                        location + "/role must be a string");
                 if (message.value("role", "") == rule.role) rule.patch.apply(message);
             }
         }

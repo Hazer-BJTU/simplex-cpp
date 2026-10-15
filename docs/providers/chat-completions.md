@@ -166,7 +166,7 @@ usage, even if a response patch edits or deletes that object's fields.
 | `cache_hit` | `/prompt_tokens_details/cached_tokens` |
 
 Omitting a mapping keeps its default. Setting a mapping to `null` disables it.
-An explicit path has no fallback to guessed aliases. Only nonnegative integer
+An explicit pointer is read verbatim; it is not remapped through field-name aliases. Only nonnegative integer
 values representable by `uint64_t` are accepted; strings and floating-point
 values are not coerced. Missing or invalid prompt/generated counts suppress
 the complete cost record. Missing cache counts use the existing `TokenCost`
