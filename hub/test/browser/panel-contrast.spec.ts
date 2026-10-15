@@ -126,6 +126,32 @@ test.describe('contrast', () => {
         const measured = await ratio(page, '[data-testid="approval-banner"]');
         expect(measured.ratio).toBeGreaterThanOrEqual(4.5);
     });
+
+    for (const theme of ['light', 'dark'] as const) {
+        test(`the solid danger fill is readable in the ${theme} theme`, async ({ page }) => {
+            await page.emulateMedia({ colorScheme: theme });
+            await open(page);
+            await page.locator('[data-testid="session-row"][data-session="demo"]').click();
+            await page.request.post(`${STUB}/__stub/confirm`, {
+                data: {
+                    session: 'demo',
+                    confirmation_id: `c-danger-${theme}`,
+                    call: { name: 'run_command', arguments: { command: 'ls' } },
+                },
+            });
+            await page.getByTestId('approval-banner').waitFor();
+            await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+            // The Deny button is the danger variant's solid fill: its own
+            // background is the red, and its label has to sit on it readably
+            // in both themes — light ink on the deep red, dark ink on the
+            // bright one.
+            const measured = await ratio(
+                page,
+                '[data-testid="approval-banner"] button[aria-label="Deny"]',
+            );
+            expect(measured.ratio).toBeGreaterThanOrEqual(4.5);
+        });
+    }
 });
 
 test('the panel has the structure a screen reader needs', async ({ page }) => {

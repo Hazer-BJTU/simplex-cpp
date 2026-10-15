@@ -80,7 +80,9 @@
     --color-ink-muted: var(--ink-muted);
     --color-ink-faint: var(--ink-faint);
 
-    /* The one solid colour in the panel, plus what sits on it. */
+    /* The solid fill for the primary action, plus what sits on it. The
+       danger red is the panel's other solid fill; its ink and hover step
+       are declared with the status tones below. */
     --color-accent: var(--accent);
     --color-accent-hover: var(--accent-hover);
     --color-accent-ink: var(--accent-ink);
@@ -90,8 +92,12 @@
     --color-tip-ink: var(--tip-ink);
     --color-interactive: var(--interactive);
 
-    /* Status tones: a text colour, a tint, and a border, per meaning. */
+    /* Status tones: a text colour, a tint, and a border, per meaning.
+       Danger additionally carries an ink and a hover step, because it is
+       also a solid button fill rather than only a text colour. */
     --color-danger: var(--danger);
+    --color-danger-hover: var(--danger-hover);
+    --color-danger-ink: var(--danger-ink);
     --color-danger-soft: var(--danger-soft);
     --color-danger-line: var(--danger-line);
     --color-warn: var(--warn);
@@ -155,6 +161,8 @@
     --interactive: oklch(0.55 0.16 258);
 
     --danger: oklch(0.47 0.17 22);
+    --danger-hover: oklch(0.53 0.17 22);
+    --danger-ink: oklch(0.985 0.005 22);
     --danger-soft: oklch(0.965 0.02 22);
     --danger-line: oklch(0.85 0.07 22);
     --warn: oklch(0.48 0.1 72);
@@ -202,6 +210,8 @@
     --interactive: oklch(0.72 0.14 255);
 
     --danger: oklch(0.8 0.11 22);
+    --danger-hover: oklch(0.74 0.11 22);
+    --danger-ink: oklch(0.2 0.03 22);
     --danger-soft: oklch(0.28 0.055 22);
     --danger-line: oklch(0.42 0.1 22);
     --warn: oklch(0.85 0.1 84);
