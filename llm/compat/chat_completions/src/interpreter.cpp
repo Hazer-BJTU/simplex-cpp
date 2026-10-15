@@ -351,16 +351,27 @@ ChatCompletionsInterpreter::build_request(
         body.erase("tools");
     }
 
-    body["stream"] = true;
-    body["n"] = 1; // AgentInputState has one model-response slot per exchange.
-    translate_reasoning_envelope(body);
-    // The reader's cost accounting lives on the empty-choices usage trailer,
-    // so the builder always requests it. Key-level: sibling stream_options
-    // survive, and a dialect may still strip the whole object.
-    if (!body["stream_options"].is_object()) {
-        body["stream_options"] = json::object();
+    if (_dialect->native_request()) {
+        if (!body.contains("stream")) body["stream"] = true;
+        if (!body.contains("n")) body["n"] = 1;
+        if (!body.contains("stream_options")) {
+            body["stream_options"] = {{"include_usage", true}};
+        } else if (body["stream_options"].is_object()
+                   && !body["stream_options"].contains("include_usage")) {
+            body["stream_options"]["include_usage"] = true;
+        }
+    } else {
+        body["stream"] = true;
+        body["n"] = 1; // AgentInputState has one model-response slot per exchange.
+        translate_reasoning_envelope(body);
+        // The reader's cost accounting lives on the empty-choices usage trailer,
+        // so the builder always requests it. Key-level: sibling stream_options
+        // survive, and a dialect may still strip the whole object.
+        if (!body["stream_options"].is_object()) {
+            body["stream_options"] = json::object();
+        }
+        body["stream_options"]["include_usage"] = true;
     }
-    body["stream_options"]["include_usage"] = true;
     _dialect->transform_request(body);
 
     HttpRequest request{http::verb::post, where.target, 11};

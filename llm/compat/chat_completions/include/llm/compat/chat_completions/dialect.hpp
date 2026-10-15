@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include "dataclass/endpoint_config.hpp"
+#include "dataclass/model_io.hpp"
 
 namespace llm::chat_completions {
 
@@ -53,6 +54,14 @@ public:
      * the shared default stays off and only thinking-mode providers opt in.
      */
     virtual bool replay_assistant_reasoning() const { return false; }
+
+    // Native request mode fills only absent defaults and never translates
+    // generation fields. Existing dialects retain the historical policy.
+    virtual bool native_request() const { return false; }
+    virtual bool strict_chunk_transform() const { return false; }
+    virtual bool maps_raw_usage() const { return false; }
+    virtual std::optional<model_io::TokenCost> extract_cost(
+        const nlohmann::json&) const { return std::nullopt; }
 
     virtual void transform_request(nlohmann::json&) const {}
 

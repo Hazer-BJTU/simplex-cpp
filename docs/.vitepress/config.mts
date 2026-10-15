@@ -62,6 +62,7 @@ export default defineConfig({
                 ['Support policy', '/providers/index'],
                 ['DeepSeek', '/providers/deepseek'],
                 ['Qwen', '/providers/qwen'],
+                ['Custom Chat Completions', '/providers/chat-completions'],
             ]),
             group('Reference', [
                 ['Command line', '/reference/cli'],

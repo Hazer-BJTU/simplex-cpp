@@ -121,6 +121,8 @@ private:
     std::string _completion_id;
     std::string _model;
     std::optional<nlohmann::json> _usage;
+    bool _mapped_cost = false;
+    std::optional<model_io::TokenCost> _cost;
     std::optional<nlohmann::json> _error;
     model_io::MessageItem _response;
     ChatCompletionStatus _status = ChatCompletionStatus::Streaming;

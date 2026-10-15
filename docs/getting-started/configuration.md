@@ -3,7 +3,8 @@
 Complete provider examples and shared field descriptions are in
 [Support policy](../providers/index.md#provider-configuration),
 [DeepSeek](../providers/deepseek.md#worker-configuration), and
-[Qwen](../providers/qwen.md#worker-configuration).
+[Qwen](../providers/qwen.md#worker-configuration), and
+[Custom Chat Completions](../providers/chat-completions.md#minimal-worker-configuration).
 
 There are three configuration layers. The Hub startup file controls listeners
 and access; a launch file controls how a worker process starts; worker YAML

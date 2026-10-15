@@ -141,13 +141,10 @@ boost::asio::awaitable<model_io::MessageItem> ChatCompletionsModel::converse(
 
     // ---- the reentrancy prologue: everything shared, read ONCE, up front ----
     // Every member touched here is read before the first suspension and never
-    // again, so a concurrent exchange (or a concurrent set_generation()) can
-    // neither tear these values nor be torn by them. The generation knobs are
-    // the one mutable member, hence the snapshot rather than a direct read;
-    // the rest (_endpoint, _dialect, the retry policy) are immutable after
-    // build() and are copied only so nothing below depends on `this`.
-    const json generation = generation_snapshot();
-    const ChatCompletionsDialectPtr dialect = _dialect;
+    // again. Providers may snapshot additional option selections into an owned
+    // dialect together with generation; the default snapshots generation only.
+    // Endpoint and retry policy remain immutable after build().
+    const auto [generation, dialect] = exchange_configuration();
     const endpoint::ResolvedEndpoint where = endpoint::resolve_endpoint(_endpoint);
 
     ChatCompletionsInterpreter interpreter(dialect);
@@ -169,6 +166,17 @@ boost::asio::awaitable<model_io::MessageItem> ChatCompletionsModel::converse(
     if (const auto it = generation.find("model");
         it != generation.end() && it->is_string()) {
         model = it->get_ref<const std::string&>();
+    }
+    if (dialect->native_request()) {
+        // Declarative options can select a different wire model. Attribute
+        // reasoning events to the final request, without modifying it.
+        const auto wire = json::parse(request.body());
+        model.clear();
+        if (wire.is_object()) {
+            const auto selected = wire.find("model");
+            if (selected != wire.end() && selected->is_string())
+                model = selected->get<std::string>();
+        }
     }
     // The reader is captured by raw pointer on purpose: it owns this hook, so
     // a shared_ptr here would be a cycle, and the hook only ever runs from
