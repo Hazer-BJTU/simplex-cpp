@@ -107,3 +107,15 @@ test('musl validates kernel-sized Boost.Test signal stacks before the full suite
     assert.match(recipe, /cp -a \/usr\/local\/lib\/libboost_unit_test_framework\.so\* \/opt\/simplex-runtime\//);
     assert.doesNotMatch(musl + recipe, /BOOST_TEST_USE_ALT_STACK=no|BOOST_TEST_CATCH_SYSTEM_ERRORS=no/);
 });
+
+test('tag releases use the patched musl build and probe its staged Boost.Test', () => {
+    const release = workflows.find(workflow => workflow.name === 'release-worker.yml').text;
+    assert.match(release, /uses: \.\/.github\/workflows\/musl-portable.yml/);
+    const musl = workflows.find(workflow => workflow.name === 'musl-portable.yml').text;
+    assert.match(musl, /bash \/src\/docker\/test-musl-boost-monitor.sh \/opt\/simplex/);
+    const probe = readFileSync(new URL('../../docker/test-musl-boost-monitor.sh', import.meta.url), 'utf8');
+    assert.match(probe, /for mode in build bundled/);
+    assert.match(probe, /"\$loader" --library-path "\$stage\/lib"/);
+    assert.match(probe, /dl_iterate_phdr/);
+    assert.match(probe, /SIMPLEX_EXPECT_BOOST_DIRECTORY="\$stage\/lib"/);
+});

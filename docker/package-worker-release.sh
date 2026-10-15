@@ -26,6 +26,8 @@ if [[ ! -x "$stage/bin/simplex_worker" || ! -x "$stage/bin/simplex" || ! -d "$st
     exit 1
 fi
 
+bash "$repo/docker/check-worker-providers.sh" "$stage"
+
 name="simplex-worker-v${version}-linux-x86_64-glibc2.34"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT

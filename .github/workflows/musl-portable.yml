@@ -31,9 +31,9 @@ jobs:
             --build-arg BUILD_IMAGE="$BUILD_IMAGE" \
             --build-arg JOBS=2 \
             -t simplex-musl-ci .
-      - name: Verify Boost.Test on a simulated large signal-frame host
+      - name: Verify build and bundled Boost.Test on a simulated large signal-frame host
         run: |
-          docker run --rm simplex-musl-ci bash /src/docker/test-musl-boost-monitor.sh
+          docker run --rm simplex-musl-ci bash /src/docker/test-musl-boost-monitor.sh /opt/simplex
       - name: Run full CTest suite
         run: |
           docker run --rm simplex-musl-ci \

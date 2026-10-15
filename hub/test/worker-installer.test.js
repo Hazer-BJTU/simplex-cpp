@@ -797,3 +797,50 @@ test('bundled colon paths fail before release resolution and workspace creation'
     await assert.rejects(install(f, [], { release: async () => { throw new Error('must not resolve'); } }), /loader search-path separator/);
     assert.deepEqual(await readdir(f.home), []);
 });
+
+for (const platform of ['linux-amd64-standard', 'linux-amd64-bundled']) {
+    test(`release and installer provider-presence contracts agree (${platform})`, async t => {
+        const context = await fixture(t, { platform });
+        const plugins = join(context.tree, 'bin/plugins/llm');
+        const validator = new URL('../../docker/check-worker-providers.sh', import.meta.url);
+        const cases = [
+            ['alternative provider without Qwen', true, async () => {
+                await writeFile(join(plugins, 'libllm_alternative.so'), 'provider');
+            }],
+            ['no provider', false, async () => {}],
+            ['unrelated files and empty name', false, async () => {
+                await writeFile(join(plugins, 'README'), 'not a plugin');
+                await writeFile(join(plugins, 'libllm_.so'), 'not a named plugin');
+            }],
+            ['empty provider', false, async () => {
+                await writeFile(join(plugins, 'libllm_empty.so'), '');
+            }],
+            ['directory matching provider name', false, async () => {
+                await mkdir(join(plugins, 'libllm_directory.so'));
+            }],
+            ['broken symlink', false, async () => {
+                await symlink('missing', join(plugins, 'libllm_missing.so'));
+            }],
+            ['valid symlink', true, async () => {
+                await writeFile(join(plugins, 'provider.bin'), 'provider');
+                await symlink('provider.bin', join(plugins, 'libllm_link.so'));
+            }],
+            ['valid provider does not hide an invalid one', false, async () => {
+                await writeFile(join(plugins, 'libllm_valid.so'), 'provider');
+                await writeFile(join(plugins, 'libllm_empty.so'), '');
+            }],
+        ];
+        for (const [name, valid, setup] of cases) {
+            await t.test(name, async () => {
+                await rm(plugins, { recursive: true });
+                await mkdir(plugins);
+                await setup();
+                const checks = [validateTree(context.tree, platform),
+                    exec('bash', [validator.pathname, context.tree])];
+                const results = await Promise.allSettled(checks);
+                assert.deepEqual(results.map(result => result.status),
+                    [valid ? 'fulfilled' : 'rejected', valid ? 'fulfilled' : 'rejected']);
+            });
+        }
+    });
+}
