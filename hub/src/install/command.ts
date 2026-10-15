@@ -35,7 +35,7 @@ Supported GitHub platforms:
 ${Object.entries(WORKER_PLATFORMS).map(([name, entry]) => `  ${name}
     ${entry.description}`).join('\n')}
 
-Both platforms require Bash and util-linux flock. Bundled also uses dirname/readlink.
+Both platforms require Bash and util-linux flock. Bundled also requires the coreutils dirname and readlink utilities.
 Standard requires the glibc ldd utility; bundled uses its own loader for validation.
 Downloads honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY (lowercase variants take precedence).
 Replacement removes custom/stale files inside the installation root.
@@ -158,7 +158,8 @@ export async function installWorker(argv: string[], dependencies: InstallDepende
         const installed = await readInstalled(destination);
         print(`Source: github; platform: ${platform}; installed: ${installed?.version ?? 'unknown/not installed'} (${installed?.platform ?? 'unknown'}); target: ${release.version}`);
         print(`Directory: ${destination}`);
-        const action = installationAction(installed, release.version, { ...options, platform });
+        const { reinstall, allowDowngrade } = options;
+        const action = installationAction(installed, release.version, { platform, reinstall, allowDowngrade });
         const nonempty = await exists(destination) && (await readdir(destination)).length > 0;
         if (!installed && nonempty && !options.overwrite) {
             throw new Error('Unknown non-empty installation directory; replacement requires --overwrite (custom files will be removed)');

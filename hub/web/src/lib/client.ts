@@ -798,10 +798,13 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
 
         async workerAction(sessionId, action, spec) {
             try {
-                const result = await rest.worker(sessionId, action, spec);
+                const result = action === 'force-kill'
+                    ? await rest.forceKill(sessionId)
+                    : await rest.worker(sessionId, action, spec);
                 if (!result.ok) {
                     store.getState().setNotice(
-                        'warn', action, result.error || `the hub refused to ${action}`,
+                        'warn', action, ('error' in result ? result.error : undefined)
+                            || `the hub refused to ${action}`,
                     );
                 }
             } catch (error) {
