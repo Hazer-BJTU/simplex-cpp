@@ -59,7 +59,11 @@
 #       integrate(), the loop-hook events, and the toolset calls below — now
 #       disagrees with a plugin built against v9 about where each member after
 #       `raw` begins. Rebuilt plugins must report v10.
-set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 10)
+#   v11: ChatCompletionsDialect gained native-request and raw-usage hooks;
+#       ChatCompletionsModel gained an exchange snapshot hook, and the shared
+#       ChatCompletionsDelta/Reader layouts changed. Rebuild model plugins and
+#       adapter consumers together; stale dialect vtables must be rejected.
+set(SIMPLEX_LLM_PLUGIN_ABI_VERSION 11)
 
 # Independent contracts for dynamic toolsets and loop hooks.
 # v2: shared intrinsic ToolResult changed layout to buffer metadata/output

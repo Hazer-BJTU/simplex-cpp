@@ -43,6 +43,7 @@ add_subdirectory(compat)
 add_subdirectory(providers/openai)
 add_subdirectory(providers/deepseek)
 add_subdirectory(providers/qwen)
+add_subdirectory(providers/chat_completions)
 
 # Manual demos of the provider stack; built always, not CTest-registered
 # (live API key required).

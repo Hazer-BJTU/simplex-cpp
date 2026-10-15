@@ -1,6 +1,7 @@
 # Model providers
 
-The documented providers are **DeepSeek** and **Qwen**. Provider pages
+The documented providers are **DeepSeek**, **Qwen**, and the configurable
+**Custom Chat Completions** fallback. Provider pages
 record when their repository implementation and configuration were last reviewed;
 the date is not a claim of live service availability or exhaustive remote testing.
 
@@ -8,6 +9,7 @@ the date is not a claim of live service availability or exhaustive remote testin
 | --- | --- | --- | --- |
 | [DeepSeek](deepseek.md) | `deepseek` | Chat Completions | 2026-10-01 |
 | [Qwen](qwen.md) | `qwen` | Chat Completions | 2026-10-04 |
+| [Custom Chat Completions](chat-completions.md) | `chat-completions` | Chat Completions | 2026-10-15 |
 
 The source tree also builds an `openai` provider using the Responses adapter.
 Its presence in the installation does not imply the same support/verification
@@ -22,17 +24,18 @@ implementation.
 
 ## Provider configuration
 
-The [DeepSeek](deepseek.md#worker-configuration) and
-[Qwen](qwen.md#worker-configuration) pages contain complete provider-only
-YAML examples and each plugin's generation controls. Copy the relevant
+The [DeepSeek](deepseek.md#worker-configuration),
+[Qwen](qwen.md#worker-configuration), and
+[Custom Chat Completions](chat-completions.md#minimal-worker-configuration) pages
+contain provider-only YAML examples and each plugin's generation controls. Copy the relevant
 `providers` section into your worker YAML and select its entry name through
 `driver_model` or `modality_assist_model`, as described in
 [Configuration](../getting-started/configuration.md). These are fragments,
 not complete worker files.
 
-The examples include every provider-entry, endpoint, authentication, and
-retry field understood by the worker. Optional alternatives are commented
-out so mutually exclusive settings are not sent together. Generation
+The dedicated provider examples include every provider-entry, endpoint,
+authentication, and retry field understood by the worker. Optional alternatives
+are commented out so mutually exclusive settings are not sent together. Generation
 `config` is an open JSON object: additional request fields are forwarded
 subject to the plugin's transformations and validation. There is no finite
 plugin-defined list of all passthrough fields, and forwarding a field does
@@ -50,7 +53,7 @@ not guarantee that the remote model supports it.
 | `endpoint.auth.scheme` | `bearer` (default), `custom_header`, or `none`. Custom-header authentication uses `header_name` and sends the key without a Bearer prefix. |
 | `endpoint.auth.api_key` | Credential; `${NAME}` references resolve from the worker environment. Omit for unauthenticated endpoints. |
 | `endpoint.auth.header_name` | Defaults to `x-api-key`; relevant only to custom-header authentication. |
-| `endpoint.auth.extras` / `endpoint.extras` | Optional metadata retained in endpoint configuration. Neither plugin uses these to add request fields. |
+| `endpoint.auth.extras` / `endpoint.extras` | Optional metadata retained in endpoint configuration. These providers do not use these to add request fields. |
 | `endpoint.user_agent` | Inherits the plugin-specific default when omitted. |
 | `endpoint.extra_headers` | Additional string-valued headers. Values support environment expansion; these headers are applied after authentication and User-Agent headers and can override them. |
 | `config` | Generation object, default `{}`. Do not nest host-owned `model`, `provider`, `endpoint`, or `retry` here. |
@@ -65,12 +68,17 @@ Environment substitution applies to the selected provider's API key and extra
 header values, not arbitrary YAML strings. Referenced variables must exist and
 be nonempty. Prefer environment references over storing credentials in YAML.
 
-The worker constructs `messages` and `tools` from the current loop state. The
-shared adapter enforces streaming and usage collection (`stream: true` and
+The worker constructs `messages` and `tools` from the current loop state.
+For DeepSeek and Qwen, the shared adapter enforces streaming and usage collection (`stream: true` and
 `stream_options.include_usage: true`), and both providers remove `n`. These are
-request mechanics, not user-configurable alternatives. Other members of
-`stream_options` are preserved. A provider configuration does not supply image
-content: images arrive through message content or the modality-assist tool.
+request mechanics, not user-configurable alternatives for those providers.
+Other members of `stream_options` are preserved.
+
+The custom `chat-completions` plugin instead uses overridable defaults and
+executes user-declared patches last; see its
+[precedence rules](chat-completions.md#request-ownership-and-precedence).
+Images normally arrive through message content or the modality-assist tool;
+custom request patches can explicitly override generated message fields.
 
 When editing an existing Hub session, update its persisted worker configuration
 and restart the worker for startup settings to take effect. Runtime model options

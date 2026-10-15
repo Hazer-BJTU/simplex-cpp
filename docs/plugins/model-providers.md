@@ -85,3 +85,8 @@ Do not make option discovery depend on a live API request. Test failures from
 request construction, transport, provider rejection, exhausted retries, and
 response parsing. Usage reporting should preserve prompt, generated, and cache-hit
 meaning so hooks and clients can calculate costs consistently.
+
+For services with configurable Chat Completions field differences, the bundled
+[Custom Chat Completions provider](../providers/chat-completions.md) can avoid
+writing a new plugin. It supports local model/option declarations, ordered
+request and response patches, and token-count mapping.

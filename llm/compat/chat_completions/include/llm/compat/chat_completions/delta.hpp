@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <exception>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include "dataclass/model_io.hpp"
 
 namespace llm::chat_completions {
 
@@ -30,9 +32,12 @@ struct ChatCompletionsDelta {
     std::vector<ToolCallDelta> tool_calls;
     std::string finish_reason;
     std::optional<nlohmann::json> usage;
+    bool mapped_cost = false;
+    std::optional<model_io::TokenCost> cost;
     std::optional<nlohmann::json> extras;
     bool done = false;
     bool error = false;
+    std::exception_ptr protocol_error;
     bool ignored = false;
 };
 

@@ -46,6 +46,8 @@ void ChatCompletionsReader::clear() {
     _completion_id.clear();
     _model.clear();
     _usage.reset();
+    _mapped_cost = false;
+    _cost.reset();
     _error.reset();
     _response = model_io::MessageItem{};
     _status = ChatCompletionStatus::Streaming;
@@ -53,12 +55,20 @@ void ChatCompletionsReader::clear() {
 
 void ChatCompletionsReader::_accumulate(
     const ChatCompletionsDelta& delta) {
+    if (delta.protocol_error) {
+        _status = ChatCompletionStatus::Failed;
+        std::rethrow_exception(delta.protocol_error);
+    }
     if (!delta.role.empty()) _role = delta.role;
     _content += delta.content;
     _reasoning += delta.reasoning;
     _refusal += delta.refusal;
     if (!delta.finish_reason.empty()) _finish_reason = delta.finish_reason;
-    if (delta.usage) _usage = delta.usage;
+    if (delta.usage) {
+        _usage = delta.usage;
+        _mapped_cost = delta.mapped_cost;
+        _cost = delta.cost;
+    }
 
     for (const auto& fragment : delta.tool_calls) {
         ToolCallState& call = _tool_calls[fragment.index];
@@ -175,7 +185,8 @@ void ChatCompletionsReader::_assemble() {
         result.invokes = std::move(invokes);
     }
 
-    if (_usage && _usage->is_object()) {
+    if (_mapped_cost) result.cost = _cost;
+    if (!_mapped_cost && _usage && _usage->is_object()) {
         model_io::TokenCost cost;
         bool has_cost = false;
         if (auto value = get_uint64(*_usage, "prompt_tokens")) {

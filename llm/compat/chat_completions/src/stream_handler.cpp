@@ -59,9 +59,24 @@ ChatCompletionsDelta ChatCompletionsStreamHandler::_handle_message(
 
     nlohmann::json chunk = nlohmann::json::parse(data, nullptr, false);
     if (chunk.is_discarded()) return ignored(data);
+    std::optional<nlohmann::json> raw_usage;
+    std::optional<model_io::TokenCost> mapped_cost;
+    if (_dialect->maps_raw_usage()) {
+        if (const auto* usage = find_object(chunk, "usage")) {
+            raw_usage = *usage;
+            mapped_cost = _dialect->extract_cost(*usage);
+        }
+    }
     try {
         chunk = _dialect->normalize_chunk(std::move(chunk));
     } catch (...) {
+        if (_dialect->strict_chunk_transform()) {
+            // Deliver the failure on the consumer side. Producer exceptions
+            // otherwise close the SSE channel and lose their rule location.
+            ChatCompletionsDelta failure;
+            failure.protocol_error = std::current_exception();
+            return failure;
+        }
         return ignored(nlohmann::json::parse(data, nullptr, false));
     }
     if (!chunk.is_object()) return ignored(std::move(chunk));
@@ -72,7 +87,11 @@ ChatCompletionsDelta ChatCompletionsStreamHandler::_handle_message(
         result.error = true;
         return result;
     }
-    if (const nlohmann::json* usage = find_object(chunk, "usage")) {
+    if (_dialect->maps_raw_usage()) {
+        result.usage = std::move(raw_usage);
+        result.mapped_cost = true;
+        result.cost = mapped_cost;
+    } else if (const nlohmann::json* usage = find_object(chunk, "usage")) {
         result.usage = *usage;
     }
 
