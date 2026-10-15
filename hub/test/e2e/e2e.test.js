@@ -15,7 +15,8 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { hubRoot } from '../../src/config.ts';
+import { hubRoot, loadConfig } from '../../src/config.ts';
+import { parseArguments } from '../../bin/simplex-hub.ts';
 import { persistenceRoot, sessionDir } from '../../src/launch/config-render.ts';
 import { WORKER_BIN, e2eSkip, startE2eHub } from '../helpers/e2e.js';
 import { connectWorker, until } from '../helpers/worker.js';
@@ -58,6 +59,8 @@ async function startHubProcess({ port, dataDir, mock = true }) {
         '--log-level', 'info',
     ];
     if (mock) args.push('--mock');
+    const { overrides, run } = parseArguments(args.slice(1));
+    const { config } = loadConfig({ file: run.config, overrides });
     const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
@@ -73,7 +76,7 @@ async function startHubProcess({ port, dataDir, mock = true }) {
     }, { timeout: 15000, label: 'hub to start' }).catch((error) => {
         throw new Error(`${error.message}\nhub output:\n${output}`);
     });
-    return { child, base, output: () => output };
+    return { child, base, config, output: () => output };
 }
 
 /** Wait for a hub started as a child to exit. */
@@ -514,7 +517,7 @@ describe('end to end with the real worker', { skip }, () => {
             assert.equal(stopped.body.ok, true, JSON.stringify(stopped.body));
             assert.equal(stopped.body.how, 'shutdown-signal');
         } catch (error) {
-            const workerLog = join(dataDir, 'sessions/orphan/logs/worker.log');
+            const workerLog = join(sessionDir(first.config, 'orphan'), 'logs', 'worker.log');
             const logs = existsSync(workerLog) ? readFileSync(workerLog, 'utf8').slice(-8192) : '(no worker log)';
             throw new Error(
                 `${error.message}\nfirst hub:\n${first.output()}\n`

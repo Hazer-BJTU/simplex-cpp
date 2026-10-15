@@ -87,7 +87,9 @@ export interface RestClient {
     /** Remove a stopped, disconnected ordinary session and its stored data. */
     deleteSession(id: SessionId): Promise<RemovedResponse>;
     /** Submit an operator lifecycle action; inspect its result and later process events. */
-    worker(id: SessionId, action: WorkerAction, spec?: SessionSpec): Promise<SupervisorResult>;
+    worker(id: SessionId, action: Exclude<WorkerAction, 'force-kill'>, spec?: SessionSpec): Promise<SupervisorResult>;
+    /** Force termination; HTTP 200 can still carry a refusal or an unsuccessful stop. */
+    forceKill(id: SessionId): Promise<RestOperations['POST /api/sessions/:id/force-kill']['responses'][200]>;
     /** Read a bounded Hub transcript delta; this is not worker conversation history. */
     events(id: SessionId, since?: number, limit?: number): Promise<EventsResponse>;
     /** Read the bounded process-log tail. */
@@ -192,6 +194,8 @@ export function createRest(options: RestOptions = {}): RestClient {
             `/api/sessions/${encodeURIComponent(id)}/${action}`,
             { body: (spec === undefined ? {} : { spec }) satisfies RestOperations['POST /api/sessions/:id/start']['body'] },
         ),
+        forceKill: (id) => request<RestOperations['POST /api/sessions/:id/force-kill']['responses'][200]>(
+            'POST', `/api/sessions/${encodeURIComponent(id)}/force-kill`),
         events: (id, since = 0, limit = 0) => request<EventsResponse>(
             'GET',
             `/api/sessions/${encodeURIComponent(id)}/events`,
