@@ -247,3 +247,17 @@ tests start while assertions and fatal signals still fail. The same patched
 test library is staged for cross-distribution test executables; production
 worker behavior, entry points, and signal handling are unchanged. The published
 base image need not be replaced for this correction.
+
+The tag release reuses `musl-portable.yml`, including the patched test-image
+build; it does not package directly from the unpatched base. The large-frame
+regression runs against both the build library and the installed library via
+the bundled loader. It asserts that the latter actually resolves Boost.Test
+from the staging tree, preventing a build-host fallback from hiding a stale or
+missing bundled copy.
+
+Both archive formats and the Hub installer require at least one nonempty
+`libllm_<name>.so` provider and reject any matching empty or non-file entry.
+This is a presence check, not an ABI or runtime-loading guarantee. The musl
+packager checks `DT_NEEDED` closure for shipped ELF files; arbitrary `dlopen`
+requests are outside that static check. Relocated worker/plugin tests provide
+separate runtime coverage.

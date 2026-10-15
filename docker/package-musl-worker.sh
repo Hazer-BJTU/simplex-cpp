@@ -17,12 +17,16 @@ fi
 for executable in bin/simplex bin/simplex_worker bin/simplex_worker.bin lib/ld-musl-x86_64.so.1; do
     test -x "$stage/$executable"
 done
+bash "$repo/docker/check-worker-providers.sh" "$stage"
+
 # Reject unprepared or foreign installations instead of mislabeling an asset.
 cmp "$repo/docker/musl-worker-launcher.sh" "$stage/bin/simplex_worker"
 readelf -l "$stage/bin/simplex_worker.bin" | grep -q '/ld-musl-x86_64.so.1'
 test "$("$stage/bin/simplex_worker" --version)" = "$version"
-# Every ELF dependency must be carried in this package; do not silently use
-# libraries installed in the build image. Modules loaded with dlopen count too.
+# Check DT_NEEDED dependencies of every shipped ELF, including plugin DSOs,
+# against the bundled libraries. This does not discover arbitrary runtime
+# dlopen requests or prove loader resolution; relocated runtime tests exercise
+# supported provider/plugin loading separately.
 while IFS= read -r -d '' file; do
     if ! readelf -h "$file" >/dev/null 2>&1; then
         continue

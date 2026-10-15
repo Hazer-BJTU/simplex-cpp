@@ -13,6 +13,8 @@ import tempfile
 source = Path(sys.argv[1]).resolve()
 repo = Path(sys.argv[2]).resolve()
 version = (repo / 'VERSION').read_text().strip()
+subprocess.run(['bash', str(repo / 'docker/check-worker-providers.sh'), str(source)],
+               check=True, timeout=10)
 for notice in ('LICENSE', 'third_party_licenses/boost/LICENSE_1_0.txt',
                'third_party_licenses/nlohmann_json/LICENSE.MIT',
                'third_party_licenses/yaml-cpp/LICENSE',

@@ -32,7 +32,7 @@ test -s "$root/LICENSE"
 test -s "$root/README.md"
 test -d "$root/third_party_licenses"
 test -d "$root/bin/plugins/llm"
-test -s "$root/bin/plugins/llm/libllm_qwen.so"
+bash "$(dirname -- "${BASH_SOURCE[0]}")/check-worker-providers.sh" "$root"
 test -d "$root/lib"
 
 # Run without relying on a development checkout or the build container's
