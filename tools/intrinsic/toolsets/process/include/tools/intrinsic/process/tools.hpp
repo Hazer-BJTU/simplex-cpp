@@ -345,8 +345,9 @@ public:
 /// shell is `sh`, a model never has to know which one it is talking to, and
 /// the host session snapshot retains the selected executable. The shell inherits
 /// the host environment with no added entries. Only command, working_directory,
-/// and expected_runtime_milliseconds are public arguments; environment changes
-/// belong in shell syntax. Complete initial results are always auto-released.
+/// and expected_runtime_milliseconds appear in the model-facing schema. The
+/// runtime also accepts tty (default false) for compatibility; it is intentionally
+/// omitted from that schema and the skill. Environment changes belong in shell syntax. Complete initial results are always auto-released.
 class RunCommandTool final : public ProcessToolBase {
 public:
     /// How long a command is waited for before its child is left running in the

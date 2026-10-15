@@ -1,11 +1,13 @@
 #include "core/application.hpp"
 #include "core/protocol.hpp"
+#include "logging/console.hpp"
 #include "versioning/version.hpp"
 
 #include <boost/program_options.hpp>
 #include <csignal>
 #include <iostream>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -32,14 +34,15 @@ int main(int argc, char** argv) {
         options::variables_map arguments;
         options::store(options::parse_command_line(argc, argv, description), arguments);
         if (arguments.count("help")) {
-            std::cout << "Usage: simplex run [options]\n\n" << description << '\n';
-            return 0;
+            std::ostringstream help;
+            help << "Usage: simplex run [options]\n\n" << description << '\n';
+            return logging::write_console(std::cout, help.str()) ? 0 : 1;
         }
         // Version queries must not require a session, load configuration, or
         // initialize the runtime. Report the version embedded in this binary.
         if (arguments.count("version")) {
-            std::cout << simplex::VERSION_STRING << '\n';
-            return 0;
+            return logging::write_console(
+                std::cout, std::string(simplex::VERSION_STRING) + "\n") ? 0 : 1;
         }
         options::notify(arguments);
         if (thread_count < 1) {
@@ -110,7 +113,7 @@ int main(int argc, char** argv) {
         }
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "Worker: " << error.what() << '\n';
+        logging::write_console(std::cerr, std::string("Worker: ") + error.what() + "\n");
         return 1;
     }
 }

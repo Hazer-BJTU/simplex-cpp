@@ -1,5 +1,6 @@
 """Check worker CLI parsing and local shutdown without model requests or tool invocation."""
 import json
+import os
 import pathlib
 import signal
 import socket
@@ -43,6 +44,26 @@ if sys.argv[2:] == ["run"]:
     assert result.returncode == 0, result.stderr
     assert result.stdout == expected_version + "\n", result.stdout
     assert result.stderr == "", result.stderr
+
+# Close the read end before spawning: the first write deterministically fails,
+# unlike a race with `head`. Python restores SIGPIPE to its default disposition.
+if os.name == "posix":
+    checks = [([*command, "--version"], "stdout"),
+              ([*command, "--help"], "stdout"),
+              ([*command, "--unknown"], "stderr")]
+    if sys.argv[2:] == ["run"]:
+        checks.append(([worker, "--version"], "stdout"))
+    for arguments, destination in checks:
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        try:
+            outputs = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+            outputs[destination] = write_fd
+            result = subprocess.run(arguments, **outputs, timeout=10,
+                                    restore_signals=True)
+        finally:
+            os.close(write_fd)
+        assert result.returncode == 1, (arguments, result.returncode)
 
 for value in ("0", "-1", "1.5", "abc", "999999999999999999999"):
     result = invoke("--session", "demo", "--threads", value)

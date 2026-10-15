@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "logging/logger.hpp"
+#include "logging/console.hpp"
 
 #include <algorithm>
 #include <regex>
@@ -804,5 +805,45 @@ BOOST_AUTO_TEST_CASE(unrelated_sigpipe_is_not_consumed_by_logging)
     BOOST_REQUIRE_EQUAL(::waitpid(child, &status, 0), child);
     BOOST_REQUIRE(WIFSIGNALED(status));
     BOOST_CHECK_EQUAL(WTERMSIG(status), SIGPIPE);
+}
+#endif
+
+#if defined(__unix__) || defined(__APPLE__)
+BOOST_AUTO_TEST_CASE(plain_console_failure_restores_mask_even_when_stream_throws)
+{
+    for (const bool throws : {false, true}) {
+        const pid_t child = ::fork();
+        BOOST_REQUIRE(child >= 0);
+        if (child == 0) {
+            ::signal(SIGPIPE, SIG_DFL);
+            sigset_t blocked;
+            ::sigemptyset(&blocked);
+            ::sigaddset(&blocked, SIGPIPE);
+            ::pthread_sigmask(SIG_UNBLOCK, &blocked, nullptr);
+            int descriptors[2];
+            if (::pipe(descriptors) != 0) ::_exit(10);
+            ::close(descriptors[0]);
+            if (::dup2(descriptors[1], STDOUT_FILENO) < 0) ::_exit(11);
+            ::close(descriptors[1]);
+            std::cout.clear();
+            if (throws) std::cout.exceptions(std::ios::badbit | std::ios::failbit);
+            try {
+                if (write_console(std::cout, "plain CLI output\n") || throws) ::_exit(12);
+            } catch (const std::ios_base::failure&) {
+                if (!throws) ::_exit(13);
+            }
+            sigset_t mask;
+            sigset_t pending;
+            ::pthread_sigmask(SIG_BLOCK, nullptr, &mask);
+            ::sigpending(&pending);
+            if (::sigismember(&mask, SIGPIPE) != 0
+                || ::sigismember(&pending, SIGPIPE) != 0) ::_exit(14);
+            ::_exit(0);
+        }
+        int status = 0;
+        BOOST_REQUIRE_EQUAL(::waitpid(child, &status, 0), child);
+        BOOST_REQUIRE(WIFEXITED(status));
+        BOOST_CHECK_EQUAL(WEXITSTATUS(status), 0);
+    }
 }
 #endif

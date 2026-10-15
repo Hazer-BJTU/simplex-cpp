@@ -1,4 +1,5 @@
 #include "logging/logger.hpp"
+#include "logging/console.hpp"
 
 #include <iostream>
 #include <thread>
@@ -19,6 +20,12 @@ namespace {
  * Block SIGPIPE on this thread only, consume only a newly generated signal,
  * and restore the caller's exact mask, including on ostream exceptions.
  * Global signal dispositions and signals pending before the write are retained.
+ * Standard signals coalesce: when SIGPIPE was already pending, leave it pending
+ * rather than claiming to distinguish an additional signal from this write.
+ * Pipe writes signal the calling thread; another writer cannot consume that
+ * thread-directed signal. We assume no external sender targets this thread or
+ * the process with an unrelated SIGPIPE during an EPIPE write: such a signal
+ * cannot be distinguished from the write's signal.
  */
 class ConsoleSignalGuard {
 public:
@@ -71,21 +78,21 @@ private:
 };
 #endif
 
-/** Console logging is best effort when its original reader has disappeared. */
-void write_console_line(std::ostream& stream, std::string_view line) {
+} // namespace
+
+bool write_console(std::ostream& stream, std::string_view line) {
 #if defined(__unix__) || defined(__APPLE__)
     ConsoleSignalGuard guard;
     if (!guard.safe()) {
-        return;
+        return false;
     }
 #endif
     stream << line;
     // Flush inside the guard, rather than defer a pipe write until a later
     // stream operation or process teardown outside the protected scope.
     stream.flush();
+    return static_cast<bool>(stream);
 }
-
-} // namespace
 
 // =============================================================================
 // Static state
@@ -171,9 +178,9 @@ void Logger::log(LogLevel lvl, std::string_view message) {
     if (lvl < _min_level) return;
 
     if (lvl >= LogLevel::error) {
-        write_console_line(std::cerr, line);
+        write_console(std::cerr, line);
     } else {
-        write_console_line(std::cout, line);
+        write_console(std::cout, line);
     }
 }
 
