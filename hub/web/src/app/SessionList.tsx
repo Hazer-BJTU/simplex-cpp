@@ -182,6 +182,14 @@ export function SessionList({ open, onClose }: {
                         sessions
                     </h2>
                     <span className="flex-1" />
+                    <Tooltip label="Edit launch and worker configurations">
+                        <IconButton
+                            label="Configurations"
+                            onClick={() => setConfiguring(true)}
+                        >
+                            <Glyph name="options" />
+                        </IconButton>
+                    </Tooltip>
                     <Tooltip label="Ask the hub for the session list again">
                         <IconButton
                             label="Refresh the session list"
@@ -215,16 +223,14 @@ export function SessionList({ open, onClose }: {
                             A session is one worker and its transcript. Create one, then start its
                             worker to talk to it.
                         </p>
-                        <button
-                            type="button"
+                        <Button
+                            variant="primary"
+                            size="md"
+                            className="mt-3"
                             onClick={() => setCreating(true)}
-                            className="mt-3 rounded bg-accent px-2.5 py-1 text-xs font-medium
-                                text-accent-ink transition-colors hover:bg-accent-hover
-                                focus-visible:outline-2 focus-visible:outline-offset-1
-                                focus-visible:outline-interactive"
                         >
                             Create a session
-                        </button>
+                        </Button>
                     </div>
                 ) : (
                     <ul className="flex-1 space-y-1 overflow-y-auto px-2 pb-2">
@@ -239,7 +245,6 @@ export function SessionList({ open, onClose }: {
                     </ul>
                 )}
 
-                <Button className="mx-3 my-2 justify-center" onClick={() => setConfiguring(true)}>Configurations</Button>
                 <p className="border-t border-line px-3 py-2 text-xs text-ink-faint">
                     The hub has no delivery acknowledgement: <em>sent</em> is not <em>executed</em>.
                 </p>
