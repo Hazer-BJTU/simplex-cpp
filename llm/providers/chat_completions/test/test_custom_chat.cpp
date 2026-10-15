@@ -308,3 +308,56 @@ BOOST_AUTO_TEST_CASE(option_declaration_order_and_response_failure_over_http) {
     BOOST_CHECK_THROW(exchange(io, model), std::exception);
     server.join();
 }
+
+BOOST_AUTO_TEST_CASE(message_patch_shape_errors_are_path_tagged_and_payload_free) {
+    auto config = std::make_shared<CompatibilityConfig>(configuration());
+    ConfigurableDialect dialect(config);
+    const std::vector<std::pair<Json, std::string>> invalid = {
+        {nullptr, "request/messages"},
+        {Json::array(), "request/messages"},
+        {Json::object(), "request/messages"},
+        {{{"messages", "private-message-value"}}, "request/messages"},
+        {{{"messages", Json::object()}}, "request/messages"},
+        {{{"messages", nullptr}}, "request/messages"},
+        {{{"messages", Json::array({"private-message-value"})}}, "request/messages/0"},
+        {{{"messages", Json::array({Json{{"role", Json::array({"private-role-value"})}}})}},
+         "request/messages/0/role"},
+    };
+    for (const auto& [input, location] : invalid) {
+        auto body = input;
+        BOOST_CHECK_EXCEPTION(dialect.transform_request(body), std::invalid_argument,
+            [&](const std::invalid_argument& error) {
+                const std::string message = error.what();
+                return message.starts_with("chat-completions: " + location)
+                    && message.find("private-message-value") == std::string::npos
+                    && message.find("private-role-value") == std::string::npos;
+            });
+    }
+
+    // A missing role is still an unmatched message; valid assistant rules run.
+    Json body = {{"messages", Json::array({Json::object(),
+        Json{{"role", "assistant"}, {"reasoning_content", "thought"}}})}};
+    dialect.transform_request(body);
+    BOOST_TEST(body["messages"][0].empty());
+    BOOST_TEST(body["messages"][1]["thought"] == "thought");
+
+    // Request-only dialects do not require an interpreter-shaped document.
+    ConfigurableDialect request_only(std::make_shared<CompatibilityConfig>(Json::object()));
+    Json native = {{"custom", true}};
+    request_only.transform_request(native);
+    BOOST_TEST(native == Json({{"custom", true}}));
+}
+
+BOOST_AUTO_TEST_CASE(message_patch_shape_is_checked_again_after_earlier_rules) {
+    Json config = Json::parse(R"({"request":{"message_patches":[
+        {"role":"assistant","patch":[{"op":"set","path":"/role","value":42}]},
+        {"role":"assistant","patch":[]}
+    ]}})");
+    ConfigurableDialect dialect(std::make_shared<CompatibilityConfig>(config));
+    Json body = {{"messages", Json::array({Json{{"role", "assistant"}}})}};
+    BOOST_CHECK_EXCEPTION(dialect.transform_request(body), std::invalid_argument,
+        [](const std::invalid_argument& error) {
+            return std::string(error.what()).starts_with(
+                "chat-completions: request/messages/0/role");
+        });
+}
