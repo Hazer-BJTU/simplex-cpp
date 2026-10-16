@@ -22,5 +22,6 @@ in `boost.md` as well. OpenSSL is resolved by CMake's `FindOpenSSL` with no
 pinned version; its requirement lives in the top-level `CMakeLists.txt`.
 
 SQLite is compiled by `utils/sqlite` for the v1.0.x development cycle. Its
-ownership wrapper is tested independently; application persistence and Docker
-dependency provisioning have not yet been integrated.
+ownership wrapper is tested independently; application persistence has not yet
+been integrated. The build-base Dockerfile provisions the pinned source;
+portable glibc/musl provisioning and CI image digest updates remain separate.

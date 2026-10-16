@@ -7,7 +7,7 @@ one configure — inside one container.
 
 | File | Image | Role |
 | --- | --- | --- |
-| `Dockerfile.build-base` | `…/build-base` | The toolchain base: everything the core tree needs to configure, build and test, **no sources**. Built rarely, published to ghcr, cached hard. |
+| `Dockerfile.build-base` | `…/build-base` | The toolchain base: build/test dependencies including SQLite's amalgamation, **no project sources**. Built rarely, published to ghcr, cached hard. |
 | `Dockerfile.build-context` | `simplex-cpp-build` | `FROM` the base; `COPY`s the tree and runs one configure + build + full ctest. Rebuilt per tree change. |
 | `Dockerfile.build-portable` | `…/build-portable` | Same role as `build-base`, different goal: artifacts that **run on other machines**. See [Which base to use](#which-base-to-use). |
 | `Dockerfile.test-context` | `simplex-cpp-tools-test` | `FROM` the portable base; one configure + Debug build, then it **stays** — the hand-over image for driving the live agent loop (`tools/example/deepseek_chat.cpp`) in a disposable container. See [The manual-test image](#the-manual-test-image). |
@@ -371,6 +371,21 @@ docker run --rm simplex-cpp-build:local tar C /src/build -cf - . | tar C build-i
 
 ### Publishing the base to ghcr (manual)
 
+`Dockerfile.build-base` provisions SQLite 3.54.0 into
+`/opt/simplex-thirdparty/include/sqlite`, verifies the archive SHA3-256, and
+includes its public-domain notice. The project compiles it with its own CMake
+options; the image does not supply a prebuilt SQLite library. Both `gcc-14` and
+`g++-14` resolve to the pinned GCC 14.3.0 toolchain. Full dependency builds use
+`JOBS=1` by default; increase `--build-arg JOBS=N` only within host resources.
+
+For an incremental dependency update, pass
+`--build-arg PROVISIONED_BASE=ghcr.io/hazer-bjtu/simplex-cpp/build-base@sha256:<verified-digest>`
+to reuse an existing dependency layer with BuildKit. That image must already
+contain the pinned GCC, Boost, nlohmann/json and yaml-cpp releases; only the final
+SQLite provisioning/compiler-alias steps are applied. The default
+`PROVISIONED_BASE=toolchain` builds all dependency stages from the pinned GCC
+image. Validate the resulting image before publishing and updating CI digests.
+
 ```bash
 echo <PAT> | docker login ghcr.io -u Hazer-BJTU --password-stdin   # PAT: write:packages
 docker build -f docker/Dockerfile.build-base \
@@ -449,12 +464,14 @@ docker build -f docker/Dockerfile.build-base \
   splitting the context into project@14.2.0 + Boost@14.3.0, a split the
   admission fingerprint cannot see (it hashes only the project-side
   compiler). The base image therefore aliases
-  `/usr/local/bin/g++-14 → g++`, which is what keeps the tree's default
-  pin on the same compiler that built Boost. Verified by the generated
+  `/usr/local/bin/g++-14 → g++` and `/usr/local/bin/gcc-14 → gcc`, keeping
+  both C++ project code and the C SQLite amalgamation on the same compiler
+  release that built Boost. Verified by the generated
   `version.hpp` inside a built image: `GNU-14.3.0`.
 - Artifacts from the image will **not** load against hosts built in any
   other context (e.g. the local WSL g++-14.2.0): the admission gate in
   `extensions/plugin_magic.hpp` rejects exactly that mixing, by
   design. Same context, not portable.
-- Build jobs are capped at `-j4` even inside the container: it shares the
-  host's CPUs, and saturating them destabilizes the WSL services.
+- Project context Dockerfiles use `-j4`; build-base dependency provisioning
+  defaults to `JOBS=1`. Containers share the host's CPUs, so choose resource
+  limits and parallelism that leave the WSL services responsive.

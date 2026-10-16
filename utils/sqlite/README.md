@@ -71,14 +71,16 @@ The two shared libraries use the existing release install rules and RPATHs.
 Choose matching C/C++ compilers explicitly when toolchain aliases differ, for
 example `-DCMAKE_C_COMPILER=/path/to/gcc` together with
 `-DCMAKE_CXX_COMPILER=/path/to/g++`. The local default is `gcc-14`/`g++-14`;
-the C compiler can also come from `CC` or a CMake toolchain file. Existing build
-images may map these two versioned commands to different GCC minor releases.
+the C compiler can also come from `CC` or a CMake toolchain file. Older build
+images may map these two versioned commands to different GCC minor releases;
+the updated `Dockerfile.build-base` aligns both to GCC 14.3.0.
 
 After configuring the project, build `test_sqlite` with `-j1` and run
 `ctest --test-dir BUILD_DIR -R '^test_sqlite$' --output-on-failure`.
 Tests cover copied/empty/NUL-containing text, NULL, bounds, failure recovery,
 transaction rollback, resource lifetimes, disk reopen and busy commit cleanup.
 
-Docker images and CI provisioning do not yet contain this dependency. They must
-be updated before publishing this implementation branch; source files must not
-be committed as a workaround.
+The updated `Dockerfile.build-base` provisions the source at the default path.
+Publishing that image and updating CI's pinned image digest are separate steps.
+Portable glibc and musl image provisioning is still pending; source files must
+not be committed as a workaround.
