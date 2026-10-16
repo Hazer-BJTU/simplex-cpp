@@ -81,6 +81,6 @@ Tests cover copied/empty/NUL-containing text, NULL, bounds, failure recovery,
 transaction rollback, resource lifetimes, disk reopen and busy commit cleanup.
 
 The updated `Dockerfile.build-base` provisions the source at the default path.
-Publishing that image and updating CI's pinned image digest are separate steps.
+The published image is pinned by digest in the ordinary CI build/test job.
 Portable glibc and musl image provisioning is still pending; source files must
 not be committed as a workaround.

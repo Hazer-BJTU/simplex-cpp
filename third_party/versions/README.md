@@ -24,4 +24,5 @@ pinned version; its requirement lives in the top-level `CMakeLists.txt`.
 SQLite is compiled by `utils/sqlite` for the v1.0.x development cycle. Its
 ownership wrapper is tested independently; application persistence has not yet
 been integrated. The build-base Dockerfile provisions the pinned source;
-portable glibc/musl provisioning and CI image digest updates remain separate.
+ordinary CI pins the published image. Portable glibc/musl provisioning remains
+pending.

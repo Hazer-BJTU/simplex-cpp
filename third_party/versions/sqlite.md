@@ -42,9 +42,10 @@ The default source directory is `${SIMPLEX_THIRDPARTY_DIR}/include/sqlite`,
 overridable with `SIMPLEX_SQLITE_SOURCE_DIR`. `docker/Dockerfile.build-base`
 downloads the pinned archive through `docker/install-sqlite-amalgamation.sh`
 and verifies its SHA3-256 before installing these files at the default path.
-Local source files remain excluded from the Docker build context. CI digest
-updates and portable glibc/musl image provisioning are separate steps; older
-images require a separately supplied source directory for local verification.
+Local source files remain excluded from the Docker build context. Ordinary CI
+pins the published build-base image; portable glibc/musl image provisioning is
+still pending. Older images require a separately supplied source directory for
+local verification.
 Application persistence does not yet use SQLite.
 
 The `test_sqlite` target checks runtime identity, copied text bindings,

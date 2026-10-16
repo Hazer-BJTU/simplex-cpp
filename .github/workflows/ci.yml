@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
-      image: ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14@sha256:3d900293f8d5baa5bca188b23ae227d499a16ae6460e3ed8d175b77af50ffbc6
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14@sha256:4618daf101fb052fe78e0207bd84b0183298ff9792fe3f1f63702b43f1286b24
       # If the ghcr package is private, uncomment these:
       # credentials:
       #   username: ${{ github.actor }}
