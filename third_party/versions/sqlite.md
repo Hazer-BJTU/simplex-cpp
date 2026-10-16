@@ -32,12 +32,19 @@ CLI entry point and is not required to embed the library.
 
 ## Integration status
 
-This record prepares the dependency for v1.0.x; it does not enable SQLite in
-CMake, change persistence, or add a runtime library. Docker dependency images
-will be handled separately. The local source directory is also excluded from
-the Docker build context.
+The [SQLite utilities](../../utils/sqlite/README.md) compile `sqlite3.c` as C
+into `sqlite_runtime` (`libsimplex_sqlite3.so`) and provide a C++ RAII wrapper
+through `sqlite_lib` (`libsimplex_sqlite.so`). Compilation uses
+`SQLITE_THREADSAFE=1` and `SQLITE_OMIT_LOAD_EXTENSION=1`. CMake verifies the
+source/header hashes; it does not fetch or fall back to a system SQLite.
 
-A local C compilation and an in-memory smoke check passed: header/runtime
-version agreement, table creation, transactional insertion, prepared query and
-clean statement/connection shutdown. This is not a cross-platform or durability
-qualification.
+The default source directory is `${SIMPLEX_THIRDPARTY_DIR}/include/sqlite`,
+overridable with `SIMPLEX_SQLITE_SOURCE_DIR`. Docker dependency images will be
+handled separately; the source directory remains excluded from their build
+context. Existing images require a separately supplied source directory for
+local verification. Application persistence does not yet use SQLite.
+
+The `test_sqlite` target checks runtime identity, copied text bindings,
+transaction completion/rollback, error handling, connection lifetime, disk
+reopening and write contention. These focused tests are not a full
+cross-platform or durability qualification.

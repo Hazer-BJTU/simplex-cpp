@@ -30,6 +30,11 @@ cmake_minimum_required(VERSION 3.20)
 if(NOT CMAKE_CXX_COMPILER)
     set(CMAKE_CXX_COMPILER g++-14)
 endif()
+# SQLite's amalgamation is C. Toolchain files and explicit compiler selections
+# still take precedence over the local GCC 14 default.
+if(NOT CMAKE_C_COMPILER AND NOT DEFINED ENV{CC} AND NOT CMAKE_TOOLCHAIN_FILE)
+    set(CMAKE_C_COMPILER gcc-14)
+endif()
 
 # One repository version for the worker and Hub. Keep the input in VERSION so
 # the later tag-based release workflow can compare a tag without parsing CMake.
@@ -42,11 +47,11 @@ endif()
 # file(READ) alone does not make VERSION a CMake reconfigure dependency.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
-project(simplex_cpp VERSION "${SIMPLEX_PROJECT_VERSION}" LANGUAGES CXX)
+project(simplex_cpp VERSION "${SIMPLEX_PROJECT_VERSION}" LANGUAGES C CXX)
 
 # ---- LTO probe (shared) -----------------------------------------------------
 include(CheckIPOSupported)
-check_ipo_supported(RESULT LTO_SUPPORT OUTPUT LTO_CHECK_OUTPUT)
+check_ipo_supported(RESULT LTO_SUPPORT OUTPUT LTO_CHECK_OUTPUT LANGUAGES C CXX)
 message(STATUS "Check LTO support: ${LTO_SUPPORT}")
 
 # A few dependency-heavy targets already opt into LTO locally. This switch

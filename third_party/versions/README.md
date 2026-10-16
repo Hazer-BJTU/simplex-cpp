@@ -13,7 +13,7 @@ and copy the listed files into place.
 | ----------------- | --------- | ----------------------------------- |
 | nlohmann/json     | 3.12.0    | [nlohmann_json.md](nlohmann_json.md) |
 | yaml-cpp          | 0.9.0     | [yaml-cpp.md](yaml-cpp.md)          |
-| SQLite (prepared) | 3.54.0    | [sqlite.md](sqlite.md)              |
+| SQLite           | 3.54.0    | [sqlite.md](sqlite.md)              |
 | Boost (system)    | 1.91.0    | [boost.md](boost.md)                |
 
 Boost is a system dependency (built locally, not vendored under
@@ -21,5 +21,6 @@ Boost is a system dependency (built locally, not vendored under
 in `boost.md` as well. OpenSSL is resolved by CMake's `FindOpenSSL` with no
 pinned version; its requirement lives in the top-level `CMakeLists.txt`.
 
-SQLite's source identity and public-domain status are recorded in preparation
-for v1.0.x. It is not yet a CMake dependency or a worker runtime dependency.
+SQLite is compiled by `utils/sqlite` for the v1.0.x development cycle. Its
+ownership wrapper is tested independently; application persistence and Docker
+dependency provisioning have not yet been integrated.
