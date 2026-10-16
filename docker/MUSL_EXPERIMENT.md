@@ -130,11 +130,13 @@ already been applied. Keep the repository's installed `$ORIGIN` library paths.
 
 ## Run from any directory
 
+Replace `vX.Y.Z` below with the version of the archive you built or downloaded.
+
 ```bash
 cd musl-release
 sha256sum -c simplex-worker-v*.tar.gz.sha256
-tar -xzf simplex-worker-v0.5.1-linux-x86_64-musl.tar.gz
-mv simplex-worker-v0.5.1-linux-x86_64-musl "$HOME/my simplex worker"
+tar -xzf simplex-worker-vX.Y.Z-linux-x86_64-musl.tar.gz
+mv simplex-worker-vX.Y.Z-linux-x86_64-musl "$HOME/my simplex worker"
 "$HOME/my simplex worker/bin/simplex" --version
 "$HOME/my simplex worker/bin/simplex" run --help
 "$HOME/my simplex worker/bin/simplex" run \

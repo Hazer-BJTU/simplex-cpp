@@ -27,3 +27,7 @@ established through protocol metadata and advertised capabilities, not by
 assuming that matching npm versions imply matching remote capabilities.
 See the [UI SDK guide](./ui-sdk.md) for the contract, client responsibilities,
 and terminal/Web examples.
+
+Release publishing is maintained by the repository owner. Maintainers can find
+the [release and recovery runbook](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/CONTRIBUTING.md#release-and-recovery-owner-only)
+in the repository's contribution guide.

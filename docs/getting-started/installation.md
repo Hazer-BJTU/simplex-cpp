@@ -46,10 +46,10 @@ A release missing the selected platform is rejected; the installer never falls
 back to another package.
 
 The default installation root is `~/.simplex/worker`; choose a different directory
-or a specific stable release with:
+or a specific stable release with (replace `vX.Y.Z` with the desired published tag):
 
 ```sh
-simplex-hub install-worker --platform linux-amd64-standard --source github --version v0.5.4 \
+simplex-hub install-worker --platform linux-amd64-standard --source github --version vX.Y.Z \
   --directory "$HOME/apps/simplex-worker" --no-update-path
 simplex-hub install-worker --help
 ```
@@ -81,7 +81,9 @@ HTTPS_PROXY=http://127.0.0.1:7890 \
 
 If only `HTTP_PROXY` is set, it also handles HTTPS requests. `NO_PROXY` bypasses
 the proxy for matching hosts (optionally scoped to a port); `*` bypasses it for
-all hosts. Without proxy settings downloads connect directly. A configured
+all hosts only when `*` is the entire value (`NO_PROXY='*'`). A `*` entry
+inside a comma-separated list does not bypass all hosts. Without proxy settings
+downloads connect directly. A configured
 proxy failure is reported without retrying directly. No additional Node.js flag
 is needed, and TLS certificate verification remains enabled. Downloader-owned
 connections are released after each operation, including failure/cancellation.
