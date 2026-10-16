@@ -77,7 +77,9 @@ docker build --network host \
 ```
 
 The base pins Alpine by digest and verifies downloaded Boost, JSON and yaml-cpp
-sources with SHA-256. Alpine package repositories remain mutable: before
+sources with SHA-256. It also provisions SQLite 3.54.0 source with the verified
+SHA3-256 archive checksum and retains its public-domain notice. Alpine package
+repositories remain mutable: before
 publishing a tested base, retain its digest and `runtime-packages.txt` and use
 that digest for subsequent worker and third-party plugin builds. The initial
 combination is GCC 15.2.0, musl 1.2.6, OpenSSL 3.5.9 and Boost 1.91.0. Review the
@@ -86,8 +88,9 @@ musl or assume plugins from another GCC/Boost build are ABI compatible.
 
 The image provides `/opt/simplex-thirdparty`, `/opt/simplex-runtime` and
 `/opt/simplex-runtime-licenses`, plus `/opt/simplex-thirdparty-licenses`. Configure the project with
-`-DCMAKE_CXX_COMPILER=g++` explicitly: the repository's unchanged default
-compiler name is `g++-14`, while Alpine supplies `g++`.
+`-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++` explicitly: the repository's
+default compiler names are `gcc-14` and `g++-14`, while Alpine supplies `gcc`
+and `g++`. SQLite is compiled as C with that same musl toolchain.
 
 ## Build, test and package the worker
 

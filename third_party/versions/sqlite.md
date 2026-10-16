@@ -39,13 +39,14 @@ through `sqlite_lib` (`libsimplex_sqlite.so`). Compilation uses
 source/header hashes; it does not fetch or fall back to a system SQLite.
 
 The default source directory is `${SIMPLEX_THIRDPARTY_DIR}/include/sqlite`,
-overridable with `SIMPLEX_SQLITE_SOURCE_DIR`. `docker/Dockerfile.build-base` and
-`docker/Dockerfile.build-portable` download the pinned archive through
+overridable with `SIMPLEX_SQLITE_SOURCE_DIR`. `docker/Dockerfile.build-base`,
+`docker/Dockerfile.build-portable` and `docker/Dockerfile.build-musl` download
+the pinned archive through
 `docker/install-sqlite-amalgamation.sh` and verify its SHA3-256 before installing
 these files at the default path.
 Local source files remain excluded from the Docker build context. CI and worker
 release workflows pin the published build-base and build-portable images by
-digest. Musl image provisioning remains pending. Older images require a
+digest. The musl CI digest update awaits publication. Older images require a
 separately supplied source directory for local verification.
 Application persistence does not yet use SQLite.
 

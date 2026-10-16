@@ -8,7 +8,8 @@ foreach(_file sqlite3.c sqlite3.h)
         message(FATAL_ERROR
             "Missing ${SIMPLEX_SQLITE_SOURCE_DIR}/${_file}. Populate SQLite 3.54.0 "
             "as described in third_party/versions/sqlite.md, or set "
-            "SIMPLEX_SQLITE_SOURCE_DIR. SQLite is not yet provided by CI images.")
+            "SIMPLEX_SQLITE_SOURCE_DIR. Use an updated build image or supply "
+            "the source directory explicitly.")
     endif()
 endforeach()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS

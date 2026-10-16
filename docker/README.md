@@ -442,6 +442,30 @@ explicit build input. Only GCC executables, headers and runtime libraries are
 copied; Boost and yaml-cpp are built afresh. This preserves the validated
 GCC 14.3.0/glibc 2.34 toolchain without a source bootstrap on cache misses.
 
+### Updating the musl dependency image
+
+`Dockerfile.build-musl` also provisions the verified SQLite 3.54.0 amalgamation
+and its public-domain notice. SQLite is compiled from C source with the musl
+compiler when the project builds; no glibc library is copied into this image.
+The musl project build selects both `-DCMAKE_C_COMPILER=gcc` and
+`-DCMAKE_CXX_COMPILER=g++` explicitly.
+
+For an incremental dependency update, `PROVISIONED_BASE` accepts the exact
+verified digest of an existing build-musl image. It must retain the musl
+compiler, bundled runtime, Python and other pinned dependencies. The default
+`PROVISIONED_BASE=toolchain` builds the complete image from the pinned Alpine
+base. Dependency compilation defaults to `JOBS=1`.
+
+```bash
+docker build -f docker/Dockerfile.build-musl \
+    --build-arg JOBS=1 \
+    -t ghcr.io/hazer-bjtu/simplex-cpp/build-musl:experimental .
+```
+
+After validating and publishing the image, update `BUILD_IMAGE` in
+`.github/workflows/musl-portable.yml` to its verified registry digest. The
+worker release workflow reuses that workflow, so it consumes the same image.
+
 ### Behind a proxy
 
 Two separate channels, neither requiring persistent config changes:
