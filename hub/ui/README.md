@@ -69,9 +69,9 @@ and process IDs are diagnostics, not filesystem or process-control authority.
 The panel WebSocket uses `/panel/ws`, token authentication and the current
 Origin policy. These contracts introduce no cross-origin permission or new
 worker operations. History/input/signals/confirmation remain WebSocket messages.
-See [Hub protocol](../../docs/hub/hub-protocol.md),
-[configuration library](../../docs/hub/configurations.md) and
-[subagents](../../docs/hub/subagents.md) for authoritative behavior.
+See [Hub protocol](https://hazer-bjtu.github.io/simplex-cpp/hub/hub-protocol.html),
+[configuration library](https://hazer-bjtu.github.io/simplex-cpp/hub/configurations.html) and
+[subagents](https://hazer-bjtu.github.io/simplex-cpp/hub/subagents.html) for authoritative behavior.
 
 ## Changing a wire field or route
 
@@ -111,6 +111,6 @@ may download locked tooling; all temporary files are removed afterwards. The
 package adds no runtime tools and does not mark the entire Hub side-effect-free.
 The bundled panel imports public contracts through this same barrel; its runtime
 helpers remain private. Read-only external examples live in `examples/ui-sdk`,
-outside the SDK and npm export graph. See the [UI SDK guide](../../docs/hub/ui-sdk.md)
+outside the SDK and npm export graph. See the [UI SDK guide](https://hazer-bjtu.github.io/simplex-cpp/hub/ui-sdk.html)
 for authentication, recovery responsibilities and deployment. Public declarations
 require JSDoc; preserve useful field comments when changing a contract.
