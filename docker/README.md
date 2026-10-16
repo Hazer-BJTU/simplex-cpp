@@ -459,7 +459,7 @@ base. Dependency compilation defaults to `JOBS=1`.
 ```bash
 docker build -f docker/Dockerfile.build-musl \
     --build-arg JOBS=1 \
-    -t ghcr.io/hazer-bjtu/simplex-cpp/build-musl:experimental .
+    -t ghcr.io/hazer-bjtu/simplex-cpp/build-musl:musl1.2.6-gcc15.2 .
 ```
 
 After validating and publishing the image, update `BUILD_IMAGE` in

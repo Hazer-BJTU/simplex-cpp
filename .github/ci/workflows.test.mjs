@@ -84,7 +84,7 @@ test('musl validation stays manual for development and is reusable for releases'
     assert.match(triggers, /workflow_dispatch:/);
     assert.match(triggers, /workflow_call:/);
     assert.doesNotMatch(triggers, /push:|pull_request:|schedule:/);
-    assert.match(musl, /build-musl:experimental@sha256:[a-f0-9]{64}/);
+    assert.match(musl, /build-musl:musl1\.2\.6-gcc15\.2@sha256:[a-f0-9]{64}/);
     const dockerfile = readFileSync(new URL('../../docker/Dockerfile.musl-test', import.meta.url), 'utf8');
     assert.match(dockerfile, /CMAKE_BUILD_TYPE=Release/);
     assert.match(dockerfile, /SIMPLEX_ENABLE_LTO=OFF/);

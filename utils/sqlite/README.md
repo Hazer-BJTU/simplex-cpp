@@ -82,6 +82,6 @@ transaction rollback, resource lifetimes, disk reopen and busy commit cleanup.
 
 The updated `Dockerfile.build-base`, `Dockerfile.build-portable` and
 `Dockerfile.build-musl` provision the source at the default path. The published
-build-base and build-portable images are pinned by digest in CI and worker
-release workflows. The musl CI digest update awaits publication; source files must not be committed as a
+build-base, build-portable and build-musl images are pinned by digest in CI
+and worker release workflows. Source files must not be committed as a
 workaround.

@@ -45,9 +45,9 @@ the pinned archive through
 `docker/install-sqlite-amalgamation.sh` and verify its SHA3-256 before installing
 these files at the default path.
 Local source files remain excluded from the Docker build context. CI and worker
-release workflows pin the published build-base and build-portable images by
-digest. The musl CI digest update awaits publication. Older images require a
-separately supplied source directory for local verification.
+release workflows pin the published build-base, build-portable and build-musl
+images by digest. Older images require a separately supplied source directory
+for local verification.
 Application persistence does not yet use SQLite.
 
 The `test_sqlite` target checks runtime identity, copied text bindings,

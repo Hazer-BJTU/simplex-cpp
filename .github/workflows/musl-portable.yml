@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      BUILD_IMAGE: ghcr.io/hazer-bjtu/simplex-cpp/build-musl:experimental@sha256:ded44376b1857de2ad88165a2252381a2118b3d09e6ec766c8770cce83fafaaa
+      BUILD_IMAGE: ghcr.io/hazer-bjtu/simplex-cpp/build-musl:musl1.2.6-gcc15.2@sha256:decb35923961db4cc7f06c991cda02174cd3759b153088f6cd2b8998e5a0fa17
     steps:
       - uses: actions/checkout@v4
         with:

@@ -25,5 +25,4 @@ SQLite is compiled by `utils/sqlite` for the v1.0.x development cycle. Its
 ownership wrapper is tested independently; application persistence has not yet
 been integrated. The build-base, build-portable and build-musl Dockerfiles
 provision the pinned source. CI and worker release workflows pin the published
-build-base and build-portable images by digest. The musl CI digest update
-remains pending publication.
+build-base, build-portable and build-musl images by digest.
