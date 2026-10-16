@@ -20,7 +20,8 @@ COPY . .
 # Also support incremental experiments based on a previous test image.
 COPY docker/musl-licenses /opt/simplex-runtime-licenses
 RUN cmake -S /src -B /build -G Ninja \
-        -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+        -DCMAKE_BUILD_TYPE=Release \
         -DSIMPLEX_ENABLE_LTO=OFF \
         -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty \
         -DSIMPLEX_BUNDLE_RUNTIME=/opt/simplex-runtime \

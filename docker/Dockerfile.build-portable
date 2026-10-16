@@ -1,4 +1,4 @@
-# Dockerfile.build-portable — the PORTABLE toolchain base image (no sources).
+# Dockerfile.build-portable — portable toolchain/dependencies (no project sources).
 #
 # Same role as Dockerfile.build-base, one different goal: artifacts built here
 # must RUN on distributions people actually deploy on, not only on the distro
@@ -36,13 +36,13 @@
 #
 # ## Cost
 #
-# Downloads the prebuilt compiler and builds Boost/yaml-cpp with JOBS=4 by
+# Downloads the prebuilt compiler and builds Boost/yaml-cpp with JOBS=1 by
 # default. There is no GCC source build, even when the local cache is empty.
 #
 # ## Build (from the repository root — the root .dockerignore governs it)
 #
 #   docker build -f docker/Dockerfile.build-portable \
-#       --build-arg JOBS=4 \
+#       --build-arg JOBS=1 \
 #       -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3 \
 #       -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:latest .
 #
@@ -54,11 +54,12 @@
 
 # Downloaded compiler source, independent of the tag being produced below.
 # Do not replace this with latest: that would make the toolchain input mutable.
+ARG PROVISIONED_BASE=toolchain
 FROM ghcr.io/hazer-bjtu/simplex-cpp/build-portable@sha256:911758332795a533364858149b8475a4a2a6743de0a11a947e8e89f40d101eb1 AS gcc-toolchain
 
-FROM almalinux:9
+FROM almalinux:9 AS toolchain
 
-ARG JOBS=4
+ARG JOBS=1
 
 # Runtime + build tooling for the TREE (not for building GCC):
 #   openssl-devel  3.5.5, for the asio SSL runtime (no pin by design, see
@@ -81,7 +82,7 @@ ARG JOBS=4
 #                    bootstrap.sh and b2 shell out to them
 RUN dnf -y install --setopt=install_weak_deps=False \
         cmake make openssl-devel binutils \
-        ca-certificates wget tar bzip2 \
+        ca-certificates wget tar bzip2 python3 \
         glibc-devel \
         gmp mpfr libmpc \
         diffutils file which \
@@ -237,8 +238,25 @@ RUN mkdir -p /opt/simplex-runtime \
     && cp -P /usr/local/lib64/libgcc_s.so.1* /opt/simplex-runtime/ \
     && cp -P /usr/local/lib/libboost_*.so* /opt/simplex-runtime/
 
+# BuildKit can reuse a verified portable dependency image for an incremental
+# update. It must already have Python 3, the pinned compiler, Boost, JSON/YAML
+# and bundled runtime; the default builds those stages above. Never use the
+# Debian build-base here: retaining the AlmaLinux/glibc floor is part of the
+# release contract.
+FROM ${PROVISIONED_BASE} AS build-portable
+
+# Python verifies SHA3-256 and reads only the expected ZIP members. Provision
+# the C sources, so SQLite is compiled with each project's selected build flags.
+COPY docker/install-sqlite-amalgamation.sh /tmp/install-sqlite-amalgamation.sh
+RUN bash /tmp/install-sqlite-amalgamation.sh \
+    && rm /tmp/install-sqlite-amalgamation.sh \
+    && test "$(gcc-14 -dumpfullversion)" = 14.3.0 \
+    && test "$(g++-14 -dumpfullversion)" = 14.3.0 \
+    && test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.34"
+COPY third_party/license/sqlite/PUBLIC-DOMAIN.txt /opt/simplex-thirdparty-licenses/sqlite/PUBLIC-DOMAIN.txt
+
 LABEL org.opencontainers.image.title="simplex-cpp build-portable" \
-      org.opencontainers.image.description="Portable toolchain base for building redistributable simplex-cpp binaries: AlmaLinux 9 (glibc 2.34), GCC 14.3.0 from a pinned prebuilt image, Boost 1.91.0 shared, OpenSSL 3.5, vendored nlohmann/json + yaml-cpp" \
+      org.opencontainers.image.description="Portable toolchain base: AlmaLinux 9 (glibc 2.34), GCC 14.3.0, Boost 1.91.0 shared, OpenSSL 3.5, nlohmann/json, yaml-cpp and SQLite 3.54.0 amalgamation" \
       org.opencontainers.image.source="https://github.com/Hazer-BJTU/simplex-cpp" \
       simplex.build.gcc="14.3.0" \
       simplex.build.gcc-origin="prebuilt-image" \
@@ -246,4 +264,5 @@ LABEL org.opencontainers.image.title="simplex-cpp build-portable" \
       simplex.build.distro="almalinux9" \
       simplex.build.boost="1.91.0" \
       simplex.build.nlohmann-json="3.12.0" \
-      simplex.build.yaml-cpp="0.9.0"
+      simplex.build.yaml-cpp="0.9.0" \
+      simplex.build.sqlite="3.54.0"

@@ -11,6 +11,9 @@
 #                 (logging::Logger), standard-library only.
 #   - fileio/     `fileio_lib` (SHARED): atomic file replacement, binary file
 #                 reads, and Base64 conversion, with private POSIX ownership.
+#   - sqlite/     `sqlite_lib` (SHARED): synchronous connection, statement and
+#                 transaction ownership; `sqlite_runtime` (SHARED) compiles
+#                 the pinned C amalgamation once for all project consumers.
 #   - yamlconfig/ `yamlconfig_lib` (SHARED, the one copy of yaml-cpp per
 #                 process and of the conversion itself) + `yamlconfig_iface`
 #                 (INTERFACE wrapper): one-way YAML -> nlohmann JSON config
@@ -51,6 +54,7 @@ add_subdirectory(executable)
 add_subdirectory(textformat)
 add_subdirectory(logging)
 add_subdirectory(fileio)
+add_subdirectory(sqlite)
 add_subdirectory(yamlconfig)
 add_subdirectory(eventbus)
 add_subdirectory(asio)

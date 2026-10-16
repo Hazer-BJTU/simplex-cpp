@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     container:
-      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3@sha256:0dd632a5fe241db22bac21a600ebc02640049beafad5d34ae049a08215d0206b
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3@sha256:7cc0b5add834b54d4cf1c7526ff95a86f5edb01ed8adc409b733aff24be8c2b8
     steps:
       - uses: actions/checkout@v4
         with:

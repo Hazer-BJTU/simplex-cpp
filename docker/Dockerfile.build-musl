@@ -1,7 +1,8 @@
 # Experimental musl toolchain. All plugins and runtime libraries are built
 # in this one context; no production launcher or release workflow is changed.
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-ARG JOBS=2
+ARG PROVISIONED_BASE=toolchain
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS toolchain
+ARG JOBS=1
 RUN apk add --no-cache build-base cmake ninja linux-headers openssl-dev \
         ca-certificates wget bash python3 binutils patchelf pax-utils git
 # Include /usr/local/lib for build-tree tests without leaking LD_LIBRARY_PATH
@@ -69,4 +70,15 @@ RUN apk add --no-cache coreutils tar gzip \
 COPY docker/musl-licenses /opt/simplex-runtime-licenses
 COPY third_party/license /opt/simplex-thirdparty-licenses
 
-LABEL org.opencontainers.image.title="simplex experimental musl build environment"
+# Incremental provisioning may reuse an exact published musl dependency image.
+# Never supply a glibc image here: compiler and bundled runtime must agree.
+FROM ${PROVISIONED_BASE} AS build-musl
+COPY docker/install-sqlite-amalgamation.sh /tmp/install-sqlite-amalgamation.sh
+RUN bash /tmp/install-sqlite-amalgamation.sh \
+    && rm /tmp/install-sqlite-amalgamation.sh \
+    && test -f /lib/ld-musl-x86_64.so.1 \
+    && test "$(gcc -dumpfullversion)" = "$(g++ -dumpfullversion)"
+COPY third_party/license/sqlite/PUBLIC-DOMAIN.txt /opt/simplex-thirdparty-licenses/sqlite/PUBLIC-DOMAIN.txt
+
+LABEL org.opencontainers.image.title="simplex experimental musl build environment" \
+      simplex.build.sqlite="3.54.0"

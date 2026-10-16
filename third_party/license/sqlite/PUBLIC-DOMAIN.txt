@@ -1,0 +1,17 @@
+SQLite public-domain notice
+
+Upstream: https://www.sqlite.org/
+Authoritative statement: https://www.sqlite.org/copyright.html
+
+SQLite's authors have dedicated its deliverable code and documentation to the
+public domain. The original SQLite library may be used, modified and distributed
+as source or compiled code, including in commercial applications, without a
+license from SQLite.
+
+This file records upstream's public-domain status for dependency provenance;
+it does not impose additional terms or relicense SQLite under Simplex's license.
+The original notices remain in the locally obtained SQLite source files.
+
+Upstream distinguishes its deliverable library from some build scripts that
+may have separate licenses. This dependency uses the amalgamation distribution;
+this notice does not make claims about separately obtained scripts or extensions.

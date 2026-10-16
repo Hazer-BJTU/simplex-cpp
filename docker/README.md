@@ -7,7 +7,7 @@ one configure — inside one container.
 
 | File | Image | Role |
 | --- | --- | --- |
-| `Dockerfile.build-base` | `…/build-base` | The toolchain base: everything the core tree needs to configure, build and test, **no sources**. Built rarely, published to ghcr, cached hard. |
+| `Dockerfile.build-base` | `…/build-base` | The toolchain base: build/test dependencies including SQLite's amalgamation, **no project sources**. Built rarely, published to ghcr, cached hard. |
 | `Dockerfile.build-context` | `simplex-cpp-build` | `FROM` the base; `COPY`s the tree and runs one configure + build + full ctest. Rebuilt per tree change. |
 | `Dockerfile.build-portable` | `…/build-portable` | Same role as `build-base`, different goal: artifacts that **run on other machines**. See [Which base to use](#which-base-to-use). |
 | `Dockerfile.test-context` | `simplex-cpp-tools-test` | `FROM` the portable base; one configure + Debug build, then it **stays** — the hand-over image for driving the live agent loop (`tools/example/deepseek_chat.cpp`) in a disposable container. See [The manual-test image](#the-manual-test-image). |
@@ -371,6 +371,21 @@ docker run --rm simplex-cpp-build:local tar C /src/build -cf - . | tar C build-i
 
 ### Publishing the base to ghcr (manual)
 
+`Dockerfile.build-base` provisions SQLite 3.54.0 into
+`/opt/simplex-thirdparty/include/sqlite`, verifies the archive SHA3-256, and
+includes its public-domain notice. The project compiles it with its own CMake
+options; the image does not supply a prebuilt SQLite library. Both `gcc-14` and
+`g++-14` resolve to the pinned GCC 14.3.0 toolchain. Full dependency builds use
+`JOBS=1` by default; increase `--build-arg JOBS=N` only within host resources.
+
+For an incremental dependency update, pass
+`--build-arg PROVISIONED_BASE=ghcr.io/hazer-bjtu/simplex-cpp/build-base@sha256:<verified-digest>`
+to reuse an existing dependency layer with BuildKit. That image must already
+contain the pinned GCC, Boost, nlohmann/json and yaml-cpp releases; only the final
+SQLite provisioning/compiler-alias steps are applied. The default
+`PROVISIONED_BASE=toolchain` builds all dependency stages from the pinned GCC
+image. Validate the resulting image before publishing and updating CI digests.
+
 ```bash
 echo <PAT> | docker login ghcr.io -u Hazer-BJTU --password-stdin   # PAT: write:packages
 docker build -f docker/Dockerfile.build-base \
@@ -388,13 +403,20 @@ without provisioning Boost or the vendored headers locally.
 
 Same flow, one extra step: the CI job that consumes it pins the image by
 digest, so the digest has to be read back after the push and pasted into
-`.github/workflows/ci.yml`.
+`.github/workflows/ci.yml` and `.github/workflows/release-worker.yml`.
+
+The portable recipe also provisions the pinned SQLite amalgamation and its
+public-domain notice. It supports `PROVISIONED_BASE` like build-base, but the
+input must be a verified **portable** image with Python 3 and the matching
+compiler, dependency set and `/opt/simplex-runtime` contents. Never substitute
+the Debian development image. The final stage checks GCC 14.3.0 for C/C++ and
+glibc 2.34; compiled artifacts still need floor checks and target-system tests.
 
 ```bash
 # GCC is downloaded from the pinned original image; no source bootstrap.
-# JOBS defaults to 4 for Boost and yaml-cpp.
+# JOBS defaults to 1 for Boost and yaml-cpp.
 docker build -f docker/Dockerfile.build-portable \
-    --build-arg JOBS=4 \
+    --build-arg JOBS=1 \
     -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3 \
     -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:latest .
 
@@ -419,6 +441,30 @@ Keep that GHCR image version available even after updating the tags: it is an
 explicit build input. Only GCC executables, headers and runtime libraries are
 copied; Boost and yaml-cpp are built afresh. This preserves the validated
 GCC 14.3.0/glibc 2.34 toolchain without a source bootstrap on cache misses.
+
+### Updating the musl dependency image
+
+`Dockerfile.build-musl` also provisions the verified SQLite 3.54.0 amalgamation
+and its public-domain notice. SQLite is compiled from C source with the musl
+compiler when the project builds; no glibc library is copied into this image.
+The musl project build selects both `-DCMAKE_C_COMPILER=gcc` and
+`-DCMAKE_CXX_COMPILER=g++` explicitly.
+
+For an incremental dependency update, `PROVISIONED_BASE` accepts the exact
+verified digest of an existing build-musl image. It must retain the musl
+compiler, bundled runtime, Python and other pinned dependencies. The default
+`PROVISIONED_BASE=toolchain` builds the complete image from the pinned Alpine
+base. Dependency compilation defaults to `JOBS=1`.
+
+```bash
+docker build -f docker/Dockerfile.build-musl \
+    --build-arg JOBS=1 \
+    -t ghcr.io/hazer-bjtu/simplex-cpp/build-musl:musl1.2.6-gcc15.2 .
+```
+
+After validating and publishing the image, update `BUILD_IMAGE` in
+`.github/workflows/musl-portable.yml` to its verified registry digest. The
+worker release workflow reuses that workflow, so it consumes the same image.
 
 ### Behind a proxy
 
@@ -449,12 +495,14 @@ docker build -f docker/Dockerfile.build-base \
   splitting the context into project@14.2.0 + Boost@14.3.0, a split the
   admission fingerprint cannot see (it hashes only the project-side
   compiler). The base image therefore aliases
-  `/usr/local/bin/g++-14 → g++`, which is what keeps the tree's default
-  pin on the same compiler that built Boost. Verified by the generated
+  `/usr/local/bin/g++-14 → g++` and `/usr/local/bin/gcc-14 → gcc`, keeping
+  both C++ project code and the C SQLite amalgamation on the same compiler
+  release that built Boost. Verified by the generated
   `version.hpp` inside a built image: `GNU-14.3.0`.
 - Artifacts from the image will **not** load against hosts built in any
   other context (e.g. the local WSL g++-14.2.0): the admission gate in
   `extensions/plugin_magic.hpp` rejects exactly that mixing, by
   design. Same context, not portable.
-- Build jobs are capped at `-j4` even inside the container: it shares the
-  host's CPUs, and saturating them destabilizes the WSL services.
+- Project context Dockerfiles use `-j4`; build-base dependency provisioning
+  defaults to `JOBS=1`. Containers share the host's CPUs, so choose resource
+  limits and parallelism that leave the WSL services responsive.

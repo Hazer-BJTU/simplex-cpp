@@ -1,9 +1,9 @@
-# Dockerfile.build-base — the simplex-cpp toolchain base image (no sources).
+# Dockerfile.build-base — toolchain/dependencies (no project sources).
 #
 # Everything the core tree needs to configure, build and test, and nothing
 # else: g++-14, CMake, OpenSSL dev, Boost 1.91.0 SHARED with exactly the
 # compiled components the tree links (filesystem, process, program_options, unit_test_framework), and
-# the vendored third parties the core consumes (nlohmann/json, yaml-cpp)
+# the vendored third parties the core consumes (nlohmann/json, yaml-cpp, SQLite)
 # installed under /opt/simplex-thirdparty in the same include/ + libs/ layout
 # as the in-tree third_party/ (so simplex_thirdparty_iface works unchanged
 # via -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty).
@@ -30,10 +30,16 @@
 # When bumping, update tag + digest and the gcc LABEL below, retag and
 # republish.
 #
-# Build jobs are capped at -j4 deliberately: the container shares the host
+# Build jobs default to -j1 deliberately: the container shares the host
 # (WSL) CPUs, and saturating them is known to destabilize the WSL services.
 
-FROM gcc:14.3.0@sha256:4e2d22617a3b4af1ad0150ba6ca3cb8a975c44c1abac6f9a09870b93cb5c363b
+# For a dependency-only update, a previously verified build-base digest can
+# replace the expensive toolchain stage. The default remains a full build.
+# The supplied image must already contain the pinned GCC, Boost, JSON and YAML
+# dependencies below; this option does not upgrade or validate all of them.
+ARG PROVISIONED_BASE=toolchain
+FROM gcc:14.3.0@sha256:4e2d22617a3b4af1ad0150ba6ca3cb8a975c44c1abac6f9a09870b93cb5c363b AS toolchain
+ARG JOBS=1
 
 # Build tooling + OpenSSL development files. binutils (nm/readelf, needed by
 # the llm_plugin_boundary_hygiene ctest) already ships with the gcc image's
@@ -42,6 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake \
         libssl-dev \
         ca-certificates \
+        python3 \
         wget \
     && rm -rf /var/lib/apt/lists/*
 
@@ -56,7 +63,7 @@ RUN wget -q -O /tmp/boost.tar.gz \
     && tar -xzf /tmp/boost.tar.gz -C /tmp \
     && cd /tmp/boost_1_91_0 \
     && ./bootstrap.sh --with-libraries=filesystem,process,program_options,test \
-    && ./b2 -j4 link=shared runtime-link=shared variant=release install \
+    && ./b2 -j"${JOBS}" link=shared runtime-link=shared variant=release install \
     && ldconfig \
     && rm -rf /tmp/boost.tar.gz /tmp/boost_1_91_0
 
@@ -85,7 +92,7 @@ RUN wget -q -O /tmp/yaml-cpp.tar.gz \
         -DYAML_CPP_BUILD_CONTRIB=OFF \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DCMAKE_INSTALL_PREFIX=/opt/simplex-thirdparty \
-    && cmake --build /tmp/yaml-cpp-build -j4 \
+    && cmake --build /tmp/yaml-cpp-build -j"${JOBS}" \
     && cmake --install /tmp/yaml-cpp-build \
     && mkdir -p /opt/simplex-thirdparty/libs \
     && mv /opt/simplex-thirdparty/lib/libyaml-cpp.a \
@@ -112,10 +119,27 @@ RUN ln -s g++ /usr/local/bin/g++-14 \
     && ln -s gcc-nm /usr/local/bin/gcc-nm-14 \
     && ln -s gcc-ranlib /usr/local/bin/gcc-ranlib-14
 
+FROM ${PROVISIONED_BASE} AS build-base
+
+# SQLite is compiled as C by the project, not baked as a prebuilt archive.
+# Its source/header identity is independently checked by utils/sqlite/CMakeLists.
+COPY docker/install-sqlite-amalgamation.sh /tmp/install-sqlite-amalgamation.sh
+RUN bash /tmp/install-sqlite-amalgamation.sh \
+    && rm /tmp/install-sqlite-amalgamation.sh \
+    && ln -sf gcc /usr/local/bin/gcc-14 \
+    && ln -sf g++ /usr/local/bin/g++-14 \
+    && ln -sf gcc-ar /usr/local/bin/gcc-ar-14 \
+    && ln -sf gcc-nm /usr/local/bin/gcc-nm-14 \
+    && ln -sf gcc-ranlib /usr/local/bin/gcc-ranlib-14 \
+    && test "$(gcc-14 -dumpfullversion)" = 14.3.0 \
+    && test "$(g++-14 -dumpfullversion)" = 14.3.0
+COPY third_party/license/sqlite/PUBLIC-DOMAIN.txt /opt/simplex-thirdparty-licenses/sqlite/PUBLIC-DOMAIN.txt
+
 LABEL org.opencontainers.image.title="simplex-cpp build-base" \
-      org.opencontainers.image.description="Toolchain base image for building simplex-cpp: g++-14, Boost 1.91.0 shared, OpenSSL, vendored nlohmann/json + yaml-cpp" \
+      org.opencontainers.image.description="Toolchain base for simplex-cpp: GCC 14.3 C/C++, Boost 1.91.0 shared, OpenSSL, nlohmann/json, yaml-cpp and SQLite 3.54.0 amalgamation" \
       org.opencontainers.image.source="https://github.com/Hazer-BJTU/simplex-cpp" \
       simplex.build.gcc="14.3.0" \
       simplex.build.boost="1.91.0" \
       simplex.build.nlohmann-json="3.12.0" \
-      simplex.build.yaml-cpp="0.9.0"
+      simplex.build.yaml-cpp="0.9.0" \
+      simplex.build.sqlite="3.54.0"
