@@ -314,7 +314,7 @@ jobs:
       # change to the reference release environment must be an explicit,
       # reviewable edit. When the base image is rebuilt, update the digest
       # (docker buildx imagetools inspect <image> prints it).
-      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3@sha256:0dd632a5fe241db22bac21a600ebc02640049beafad5d34ae049a08215d0206b
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3@sha256:7cc0b5add834b54d4cf1c7526ff95a86f5edb01ed8adc409b733aff24be8c2b8
       # credentials:
       #   username: ${{ github.actor }}
       #   password: ${{ secrets.GITHUB_TOKEN }}

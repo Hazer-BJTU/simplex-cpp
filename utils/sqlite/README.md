@@ -81,7 +81,7 @@ Tests cover copied/empty/NUL-containing text, NULL, bounds, failure recovery,
 transaction rollback, resource lifetimes, disk reopen and busy commit cleanup.
 
 The updated `Dockerfile.build-base` and `Dockerfile.build-portable` provision
-the source at the default path. The published build-base image is pinned by
-digest in the ordinary CI build/test job. The portable CI digest update and
-musl provisioning are still pending; source files must not be committed as a
+the source at the default path. The published build-base and build-portable
+images are pinned by digest in CI and worker release workflows. Musl
+provisioning remains pending; source files must not be committed as a
 workaround.

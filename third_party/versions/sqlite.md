@@ -43,10 +43,10 @@ overridable with `SIMPLEX_SQLITE_SOURCE_DIR`. `docker/Dockerfile.build-base` and
 `docker/Dockerfile.build-portable` download the pinned archive through
 `docker/install-sqlite-amalgamation.sh` and verify its SHA3-256 before installing
 these files at the default path.
-Local source files remain excluded from the Docker build context. Ordinary CI
-pins the published build-base image; the portable CI digest update and musl
-image provisioning are still pending. Older images require a separately supplied
-source directory for local verification.
+Local source files remain excluded from the Docker build context. CI and worker
+release workflows pin the published build-base and build-portable images by
+digest. Musl image provisioning remains pending. Older images require a
+separately supplied source directory for local verification.
 Application persistence does not yet use SQLite.
 
 The `test_sqlite` target checks runtime identity, copied text bindings,
