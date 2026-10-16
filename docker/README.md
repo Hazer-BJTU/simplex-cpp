@@ -403,13 +403,20 @@ without provisioning Boost or the vendored headers locally.
 
 Same flow, one extra step: the CI job that consumes it pins the image by
 digest, so the digest has to be read back after the push and pasted into
-`.github/workflows/ci.yml`.
+`.github/workflows/ci.yml` and `.github/workflows/release-worker.yml`.
+
+The portable recipe also provisions the pinned SQLite amalgamation and its
+public-domain notice. It supports `PROVISIONED_BASE` like build-base, but the
+input must be a verified **portable** image with Python 3 and the matching
+compiler, dependency set and `/opt/simplex-runtime` contents. Never substitute
+the Debian development image. The final stage checks GCC 14.3.0 for C/C++ and
+glibc 2.34; compiled artifacts still need floor checks and target-system tests.
 
 ```bash
 # GCC is downloaded from the pinned original image; no source bootstrap.
-# JOBS defaults to 4 for Boost and yaml-cpp.
+# JOBS defaults to 1 for Boost and yaml-cpp.
 docker build -f docker/Dockerfile.build-portable \
-    --build-arg JOBS=4 \
+    --build-arg JOBS=1 \
     -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3 \
     -t ghcr.io/hazer-bjtu/simplex-cpp/build-portable:latest .
 

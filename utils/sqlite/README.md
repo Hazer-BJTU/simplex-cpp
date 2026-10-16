@@ -80,7 +80,8 @@ After configuring the project, build `test_sqlite` with `-j1` and run
 Tests cover copied/empty/NUL-containing text, NULL, bounds, failure recovery,
 transaction rollback, resource lifetimes, disk reopen and busy commit cleanup.
 
-The updated `Dockerfile.build-base` provisions the source at the default path.
-The published image is pinned by digest in the ordinary CI build/test job.
-Portable glibc and musl image provisioning is still pending; source files must
-not be committed as a workaround.
+The updated `Dockerfile.build-base` and `Dockerfile.build-portable` provision
+the source at the default path. The published build-base image is pinned by
+digest in the ordinary CI build/test job. The portable CI digest update and
+musl provisioning are still pending; source files must not be committed as a
+workaround.
