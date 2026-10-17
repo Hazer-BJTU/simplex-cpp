@@ -140,3 +140,51 @@ The protocol currently reports `unsupported_backend` for non-JSON storage.
 SQLite support in [#187](https://github.com/Hazer-BJTU/simplex-cpp/issues/187) will
 read through the C++ backend and return the same JSON state shape. Hub code must
 not acquire database dependencies or read database files directly.
+
+## Hub launcher transport boundary
+
+The Hub's internal `ManagedLauncher` adapter provides the next integration layer.
+It binds `simplex run` and `simplex manage` to one explicitly configured execution
+target and installation. Ordinary sessions still use the existing launch path;
+this adapter is **not yet a selectable launch configuration**. Session data
+separation, managed session adoption and child cleanup follow in #142.
+
+The adapter supports these invocation shapes:
+
+| Target | Invocation | Lifecycle prerequisite |
+| --- | --- | --- |
+| Local | `simplex manage --request BASE64` | Installed `simplex` supports management. |
+| SSH | `ssh [connection options] -T -- HOST 'simplex' 'manage' '--request' 'BASE64'` | Target uses a POSIX command shell; worker ownership must be verified independently of SSH exit. |
+| Docker | `docker [context options] exec CONTAINER simplex manage --request BASE64` | Container already exists and remains running through worker shutdown and allocation removal. |
+
+SSH quotes every remote argument, including executable paths containing spaces or
+apostrophes. Docker uses argument arrays with neither a shell nor a PTY. There is
+no inference from legacy arbitrary command templates, implicit container creation,
+or shared-directory fallback. The existing foreground `docker run --rm` launch
+pattern cannot provide post-exit management access; integration must introduce an
+explicit container lifetime before switching that path.
+
+The transport's `cwd` and environment describe the Hub-side process. Allocation
+paths and the `simplex` executable describe the target. For example, Hub records
+may live in `/home/operator/.simplex-hub`, while the target reference is
+`/srv/simplex/allocations/allocation-1`; the latter need not exist on the Hub.
+The same transport context and executable are used for run and manage. Target
+settings are privately copied when constructing the adapter to prevent mutable
+configuration from redirecting later calls in one lifecycle.
+
+The transport uses asynchronous `spawn`, reads both pipes concurrently and waits
+for process closure before parsing the complete UTF-8 JSON response. Neither pipe
+has a receive-size budget. Nonzero exit cannot be masked by a successful response;
+a successful exit with a malformed, truncated or incorrectly correlated response
+is also an error. Manager-reported failures retain their stable code and optional
+`published` flag. Transport/protocol failures carry an **unknown outcome** and do
+not trigger automatic retries. Callers must inspect/reconcile the same allocation
+identity before deciding whether a mutation can be repeated.
+
+No default timeout is imposed by this low-level transport. Lifecycle integration
+must define interruption and reconciliation together; a hung configured peer can
+leave a call pending. This adapter does not equate termination of SSH or Docker
+CLI processes with remote worker termination. Captured stderr and manager error
+details are private diagnostics: they can contain secrets and must not be placed
+in Panel events or ordinary logs. Public error messages omit argv and raw peer
+output.

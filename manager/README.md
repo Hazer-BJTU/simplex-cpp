@@ -3,8 +3,9 @@
 `manager_lib` implements synchronous, target-local storage operations. The
 `simplex_manager` executable exposes them through `simplex manage`. This is
 phase A of [#142](https://github.com/Hazer-BJTU/simplex-cpp/issues/142): existing
-Hub launchers still use their original local layout. Hub/SSH/Docker management
-transport and clean-fork integration follow in separate PRs.
+Hub launchers still use their original local layout. The Hub now has an internal
+local/SSH/Docker management transport adapter; session lifecycle switching and
+clean-fork integration follow in separate PRs.
 
 See the [management protocol](../docs/reference/management.md) for requests,
 results, ownership rules, and examples.
