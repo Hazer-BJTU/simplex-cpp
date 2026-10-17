@@ -25,7 +25,7 @@ export interface ManagedSessionRecord {
     configuration: string;
     timeoutMs: number;
     /** Last captured lifecycle; used as an exclusive manager lease probe on remote stop. */
-    lifecycle?: { id: string; revision: number };
+    lifecycle?: { id: string; revision: number; dispatch?: 'prepared' | 'pending' | 'completed' };
     /** Persist before removal; failures keep this record available for retry. */
     removing: boolean;
 }
@@ -102,7 +102,8 @@ export function readManagedSession(config: Pick<HubConfig, 'dataDir'>, id: strin
     separateLocalRoot(config, policy);
     if (record.lifecycle && (typeof record.lifecycle.id !== 'string'
         || !/^[A-Za-z0-9_-]{1,128}$/.test(record.lifecycle.id)
-        || !Number.isSafeInteger(record.lifecycle.revision) || record.lifecycle.revision < 1)) {
+        || !Number.isSafeInteger(record.lifecycle.revision) || record.lifecycle.revision < 1
+        || (record.lifecycle.dispatch !== undefined && !['prepared', 'pending', 'completed'].includes(record.lifecycle.dispatch)))) {
         throw new Error('invalid managed lifecycle reference');
     }
     return record;
@@ -163,6 +164,7 @@ function description(record: ManagedSessionRecord, value: Record<string, unknown
 export async function prepareManagedSession(config: HubConfig, id: string, record: ManagedSessionRecord,
     endpoints: WorkerEndpoints, lifecycleId: string): Promise<Record<string, unknown>> {
     if (record.removing) throw new Error('managed session removal is pending; retry deletion');
+    if (managedStartUnconfirmed(record)) throw new Error('previous managed start is unconfirmed; cannot dispatch another worker');
     let revision: number | undefined;
     try {
         const current = await call(record, { operation: 'inspect' });
@@ -177,7 +179,7 @@ export async function prepareManagedSession(config: HubConfig, id: string, recor
     });
     description(record, prepared, 'ready');
     if (!mapping(prepared.effective_configuration)) throw new Error('manager omitted effective configuration');
-    const lifecycle = { id: lifecycleId, revision: prepared.revision as number };
+    const lifecycle = { id: lifecycleId, revision: prepared.revision as number, dispatch: 'prepared' as const };
     // Store the lifecycle before capture: a lost capture reply can be reconciled.
     record.lifecycle = lifecycle;
     publish(config, id, record);
@@ -189,7 +191,37 @@ export async function prepareManagedSession(config: HubConfig, id: string, recor
     return prepared.effective_configuration;
 }
 
-/** A successful exclusive manager operation proves no managed worker still holds its lease. */
+/** Missing dispatch state in an older record is conservative: it may already have launched. */
+export function managedStartUnconfirmed(record: ManagedSessionRecord): boolean {
+    return Boolean(record.lifecycle && record.lifecycle.dispatch !== 'prepared'
+        && record.lifecycle.dispatch !== 'completed');
+}
+
+/** Persist before spawn, covering a crash before hub.json records the process. */
+export function markManagedDispatch(config: HubConfig, id: string, record: ManagedSessionRecord): void {
+    if (!record.lifecycle || record.lifecycle.dispatch !== 'prepared') {
+        throw new Error('managed lifecycle is not prepared for dispatch');
+    }
+    record.lifecycle.dispatch = 'pending';
+    publish(config, id, record);
+}
+
+/**
+ * Only call with evidence that the dispatched foreground command has ended.
+ * Idle lease probes and transport loss are NOT such evidence. Reject stale
+ * callbacks from an earlier lifecycle and never recreate a deleted local record.
+ */
+export function completeManagedDispatch(config: HubConfig, id: string, record: ManagedSessionRecord): void {
+    const current = readManagedSession(config, id);
+    if (!current || current.removing || !record.lifecycle || !current.lifecycle
+        || current.reference.allocationId !== record.reference.allocationId
+        || current.lifecycle.id !== record.lifecycle.id) return;
+    current.lifecycle.dispatch = 'completed';
+    publish(config, id, current);
+    record.lifecycle.dispatch = 'completed';
+}
+
+/** Only a present-time lease probe. It never rules out a dispatched command acquiring its lease later. */
 export async function managedIdle(record: ManagedSessionRecord, timeoutMs = record.timeoutMs): Promise<boolean> {
     if (!record.lifecycle) return false;
     try {

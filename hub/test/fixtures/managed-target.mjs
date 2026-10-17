@@ -15,6 +15,10 @@ if (args[0] === 'run') {
     const config = args[args.indexOf('--config') + 1];
     const id = config.split('/').at(-3);
     const lease = join(root, `${id}.lease`);
+    writeFileSync(join(root, 'dispatched.pid'), String(process.pid));
+    while (existsSync(join(root, 'hold-start'))) await new Promise(resolve => setTimeout(resolve, 10));
+    // Match the real manager resolver: a retired allocation cannot be acquired.
+    if (load(join(root, `${id}.json`)).status !== 'ready') process.exit(1);
     writeFileSync(lease, String(process.pid));
     writeFileSync(join(root, 'last-run.json'), JSON.stringify(args));
     const finish = () => { try { unlinkSync(lease); } catch {} process.exit(0); };

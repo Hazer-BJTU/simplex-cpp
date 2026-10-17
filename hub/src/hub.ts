@@ -362,6 +362,10 @@ export function createHub({
                     const selected = snapshotSelection(config, entry.id);
                     if (selected) session.spec = { ...session.spec, ...selected };
                     if (entry.process) supervisor.adopt(session, entry.process);
+                    // allocation.json is published before dispatch; hub.json may
+                    // still contain no process entry after an interrupted start.
+                    try { supervisor.recoverManaged(session); }
+                    catch { session.closing = true; log.warn(`session ${session.id}: managed recovery requires operator inspection`); }
                     if ((entry.process as { state?: unknown } | null)?.state === 'stopping') {
                         session.closing = true;
                         stopping.push(session);

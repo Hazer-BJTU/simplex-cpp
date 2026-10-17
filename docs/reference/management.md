@@ -259,16 +259,37 @@ Hub does not create, stop or remove this container. Its lifecycle must not use a
 foreground worker as PID 1 with automatic container removal. Configure advertised
 Hub endpoints reachable from the target as with other remote launch profiles.
 
-Remote stop sends the normal shutdown signal, then verifies the manager can
-acquire an exclusive allocation lease. Losing SSH/Docker CLI connectivity is not
-proof of remote exit. If the target cannot be verified idle, stop reports
-`remote-ownership-unconfirmed`; Hub does not signal a remote PID on its own host
-or kill the entire shared container. Remote force-kill is deliberately unsupported
-in this stage. Stop the worker on the target and retry stop/delete if protocol
-shutdown is unavailable. A restarted Hub retains a remote ownership record even
-when the former transport PID no longer exists, until an explicit stop can verify
-that the allocation is idle. Managed clean-fork currently returns
-`unsupported_launch`; legacy subagents are unchanged until phase C.
+Remote stop sends the normal shutdown signal. A successful idle lease probe is
+only a present-time observation: an SSH/Docker command may already be dispatched
+but paused before lease acquisition. Stop therefore also requires durable
+completion evidence for that exact dispatch. For a remote foreground command,
+only an observed successful transport exit establishes completion; transport
+loss, signal termination or a nonzero remote exit remain conservative unknowns.
+The configured executable must run the worker in the foreground, not daemonize.
+
+Hub persists `pending` dispatch intent **before spawning** the transport. It
+records `completed` only after observing the foreground command finish. Recovery
+uses this journal even if the prior registry snapshot contains no process/PID and
+the worker has not connected. Unknown starts participate in shutdown verification
+and block redispatch. Older lifecycle records without dispatch status are also
+treated as unknown. Losing SSH/Docker connectivity cannot turn an idle probe into
+a successful stop, and Hub does not kill the transport merely because the probe
+succeeded.
+
+If stop cannot confirm completion it reports `remote-ownership-unconfirmed` (or
+`managed-ownership-unconfirmed` when no process record exists). Remote force-kill
+is deliberately unsupported in this stage. If the original foreground transport
+is still alive, stopping the worker on its target allows completion to be
+observed. After that transport is lost, later idle probes alone cannot authorize
+restart or prove stop succeeded. An operator may explicitly **delete the session**
+to retire its allocation: manager removal refuses a worker holding its lease and
+creates a tombstone that rejects delayed starts. Only after confirmed retirement
+can Hub kill remaining transports and forget the reference. Deletion is destructive;
+it is not an implicit recovery action or part of ordinary stop. Non-destructive
+recovery of an unknown dispatch requires a future target-side lifecycle fence.
+
+Managed clean-fork currently returns `unsupported_launch`; legacy subagents are
+unchanged until phase C.
 
 ### Storage, retries and transition
 
@@ -283,7 +304,8 @@ Before the first manager call, Hub atomically publishes and syncs its private
 allocation record. Restart reuses the same identity, source and transport even
 if the original configuration-library entry has changed or been deleted. Manager
 inspection supplies the expected revision; preparation refreshes live connection
-endpoints and preserves source settings; startup capture precedes process launch.
+endpoints and preserves source settings; startup capture precedes process launch, and durable dispatch intent precedes
+transport spawning.
 The allocation source/target cannot be changed through the session configuration
 replacement API once bound. Create a new session for such changes. This avoids
 silently abandoning an old allocation or overwriting its state.
@@ -295,7 +317,8 @@ manager explicitly reports it; corruption, unreachable peers and malformed repli
 fail the HTTP request instead of substituting empty state or a local file.
 History and answer queries still use the worker WebSocket protocol.
 
-Deletion records cleanup intent locally, verifies target removal through the
+Deletion (also allowed for a disconnected, unconfirmed managed start) records
+cleanup intent locally, verifies target removal through the
 manager, and only then deletes this session's Hub-local records. A lost reply or
 failed cleanup retains the reference and session for explicit retry. Starting is
 blocked while removal is pending. Uncertain initial preparation is reconciled

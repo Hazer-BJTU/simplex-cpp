@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { HubState } from '../src/state/persist.ts';
+import { createLogger } from '../src/log.ts';
 import { startTestHub } from './helpers/hub.js';
 import { ConfigurationStore, launchDocument } from '../src/configurations/store.ts';
 import { snapshotConfigs } from '../src/configurations/session.ts';
@@ -25,8 +27,14 @@ async function setup(t, remote = false) {
     const executable = join(temp, 'simplex.mjs');
     writeFileSync(executable, `#!${process.execPath}\nimport ${JSON.stringify(new URL('./fixtures/managed-target.mjs', import.meta.url).href)};\n`, { mode: 0o700 });
     const context = await startTestHub({ dataDir, worker: { stopTimeoutMs: 80, sigtermGraceMs: 1000, sigkillGraceMs: 1000 } });
+    const extraHubs = [];
     t.after(async () => {
+        for (const extra of extraHubs) await extra.stop();
         // Explicit operator cleanup of fixture remote workers, outside Hub policy.
+        const dispatched = join(target, 'dispatched.pid');
+        if (existsSync(dispatched) && existsSync(join(target, 'hold-start'))) {
+            try { process.kill(Number(readFileSync(dispatched, 'utf8')), 'SIGTERM'); } catch {}
+        }
         if (existsSync(join(target, 'last-run.json'))) {
             let record;
             try { record = readManagedSession(context.config, 'demo'); } catch {}
@@ -62,7 +70,7 @@ async function setup(t, remote = false) {
         return { status: response.status, body: await response.json() };
     };
     const source = readFileSync(join(dataDir, 'sessions/demo/config/config.yaml'), 'utf8');
-    return { ...context, temp, target, session, store, launch, api, source };
+    return { ...context, temp, target, session, store, launch, api, source, extraHubs };
 }
 
 function operations(ctx) {
@@ -246,7 +254,7 @@ test('a restarted Hub reuses the durable allocation and source after library del
     ctx.store.remove('launch', 'managed', ctx.store.read('launch', 'managed').revision);
     await ctx.hub.stop();
     const restored = await startTestHub({ dataDir: ctx.config.dataDir });
-    t.after(() => restored.hub.stop());
+    ctx.extraHubs.push(restored.hub);
     const session = restored.hub.registry.get('demo');
     assert.ok(session);
     assert.equal((await restored.hub.supervisor.start(session)).ok, true);
@@ -268,7 +276,7 @@ test('remote CLI death is not worker death and manager refusal retains cleanup o
     await until(() => record.child.signalCode === 'SIGKILL');
     assert.equal((await ctx.api('/api/sessions/demo/stop', 'POST')).body.ok, false);
     const deletion = await ctx.api('/api/sessions/demo', 'DELETE');
-    assert.equal(deletion.status, 409);
+    assert.equal(deletion.status, 500);
     assert.ok(ctx.hub.registry.get('demo'));
     assert.equal(readManagedSession(ctx.config, 'demo').reference.allocationId, allocation.reference.allocationId);
     const lease = join(ctx.target, `${allocation.reference.allocationId}.lease`);
@@ -276,6 +284,79 @@ test('remote CLI death is not worker death and manager refusal retains cleanup o
     process.kill(pid, 0);
     process.kill(pid, 'SIGTERM');
     await until(() => !existsSync(lease));
-    assert.equal((await ctx.api('/api/sessions/demo/stop', 'POST')).body.ok, true);
+    assert.equal((await ctx.api('/api/sessions/demo/stop', 'POST')).body.ok, false);
     assert.equal((await ctx.api('/api/sessions/demo', 'DELETE')).status, 200);
+});
+
+test('an idle probe cannot confirm stop while a remote command is dispatched before lease acquisition', async t => {
+    const ctx = await setup(t, true);
+    const barrier = join(ctx.target, 'hold-start');
+    writeFileSync(barrier, '');
+    assert.equal((await ctx.api('/api/sessions/demo/start', 'POST', {})).body.ok, true);
+    await until(() => existsSync(join(ctx.target, 'dispatched.pid')));
+    const record = readManagedSession(ctx.config, 'demo');
+    assert.equal(record.lifecycle.dispatch, 'pending');
+    const lease = join(ctx.target, `${record.reference.allocationId}.lease`);
+    assert.equal(existsSync(lease), false);
+    const stopped = await ctx.api('/api/sessions/demo/stop', 'POST');
+    assert.equal(stopped.body.ok, false);
+    assert.equal(stopped.body.how, 'remote-ownership-unconfirmed');
+    assert.notEqual(ctx.session.process.state, 'exited');
+    assert.equal((await ctx.api('/api/sessions/demo/start', 'POST', {})).body.ok, false);
+    rmSync(barrier);
+    await until(() => existsSync(lease));
+    process.kill(Number(readFileSync(lease, 'utf8')), 'SIGTERM');
+    await until(() => readManagedSession(ctx.config, 'demo').lifecycle.dispatch === 'completed');
+    assert.equal((await ctx.api('/api/sessions/demo/stop', 'POST')).body.ok, true);
+});
+
+test('explicit deletion fences a delayed remote start even after the local transport is lost', async t => {
+    const ctx = await setup(t, true);
+    const barrier = join(ctx.target, 'hold-start');
+    writeFileSync(barrier, '');
+    assert.equal((await ctx.api('/api/sessions/demo/start', 'POST', {})).body.ok, true);
+    await until(() => existsSync(join(ctx.target, 'dispatched.pid')));
+    const record = readManagedSession(ctx.config, 'demo');
+    process.kill(ctx.session.process.pid, 'SIGKILL');
+    assert.equal((await ctx.api('/api/sessions/demo', 'DELETE')).status, 200);
+    rmSync(barrier);
+    const remotePid = Number(readFileSync(join(ctx.target, 'dispatched.pid'), 'utf8'));
+    await until(() => { try { process.kill(remotePid, 0); return false; } catch { return true; } });
+    assert.equal(existsSync(join(ctx.target, `${record.reference.allocationId}.lease`)), false);
+    assert.equal(JSON.parse(readFileSync(join(ctx.target, `${record.reference.allocationId}.json`))).status, 'removed');
+});
+
+test('recovery reconciles durable dispatch without a process entry or connected worker', async t => {
+    const ctx = await setup(t, true);
+    // Save exactly the registry document that predates process publication.
+    new HubState({ config: ctx.config, log: createLogger({ level: 'silent' }) }).flush(ctx.hub.registry.list());
+    const registryPath = join(ctx.config.dataDir, 'hub.json');
+    const beforeDispatch = readFileSync(registryPath);
+    const allocation = await start(ctx);
+    process.kill(ctx.session.process.pid, 'SIGKILL');
+    await until(() => ctx.session.process.child.signalCode === 'SIGKILL');
+    await ctx.hub.stop();
+    writeFileSync(registryPath, beforeDispatch);
+    const restored = await startTestHub({ dataDir: ctx.config.dataDir });
+    ctx.extraHubs.push(restored.hub);
+    const session = restored.hub.registry.get('demo');
+    assert.equal(session.connected, false);
+    assert.ok(session.process, 'recovery must create an unconfirmed ownership record without a stored PID');
+    assert.equal(session.process.pid, null);
+    assert.equal(session.lifecycleId, allocation.lifecycle.id);
+    const count = operations(ctx).length;
+    const outcomes = await restored.hub.supervisor.stopAll({ timeoutMs: 500 });
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].session, 'demo');
+    assert.equal(outcomes[0].ok, false);
+    assert.ok(operations(ctx).slice(count).some(op => op.operation === 'capture_startup'));
+    assert.equal((await restored.hub.supervisor.start(session)).ok, false);
+    const lease = join(ctx.target, `${allocation.reference.allocationId}.lease`);
+    process.kill(Number(readFileSync(lease, 'utf8')), 'SIGTERM');
+    await until(() => !existsSync(lease));
+    // Repeated idle results cannot turn a lost dispatch into confirmed completion.
+    assert.equal((await restored.hub.supervisor.stop(session, { timeoutMs: 150 })).ok, false);
+    const response = await fetch(restored.base + '/api/sessions/demo', { method: 'DELETE' });
+    assert.equal(response.status, 200);
+    await restored.hub.stop();
 });

@@ -38,7 +38,8 @@ import { prepareSessionConfig, applyConfigurationSpec } from './config-file.ts';
 import { normalizeSpec } from './spec.ts';
 import { ManagedLauncher } from './managed-launcher.ts';
 import { bindManagedSession, readManagedSession, prepareManagedSession, managedIdle,
-    removeManagedSession, readManagedState, managedRecordPath } from './managed-sessions.ts';
+    removeManagedSession, readManagedState, managedRecordPath,
+    managedStartUnconfirmed, markManagedDispatch, completeManagedDispatch } from './managed-sessions.ts';
 import type { ManagedSessionRecord } from './managed-sessions.ts';
 import type { NormalizedSpec } from './spec.ts';
 import type { Launcher, InvocationContext } from './launcher.ts';
@@ -384,6 +385,14 @@ export class WorkerSupervisor {
         if (this.isRunning(session)) {
             return { ok: false, error: 'a worker process is already running for this session' };
         }
+        try {
+            const previous = readManagedSession(this.config, session.id);
+            if (previous && managedStartUnconfirmed(previous)) {
+                return { ok: false, error: 'previous managed start is unconfirmed; cannot dispatch another worker' };
+            }
+        } catch {
+            return { ok: false, error: 'cannot validate the managed allocation reference' };
+        }
         this.pending.add(session.id);
         const task = this.startPrepared(session, rawSpec);
         this.pendingTasks.set(session.id, task);
@@ -523,6 +532,7 @@ export class WorkerSupervisor {
 
         let child: ChildProcess;
         try {
+            if (managed) markManagedDispatch(this.config, session.id, managed);
             child = spawn(record.dockerManagement?.executable ?? invocation.command, invocation.args, {
                 cwd: record.dockerManagement?.cwd ?? invocation.cwd,
                 // Startup still inherits all worker/container credentials. Only
@@ -535,6 +545,10 @@ export class WorkerSupervisor {
             });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
+            if (managed) {
+                try { completeManagedDispatch(this.config, session.id, managed); }
+                catch { /* Keep uncertain journal state if completion cannot be saved. */ }
+            }
             this.finish(record, { error: message });
             return { ok: false, error: `cannot spawn ${invocation.command}: ${message}`,
                 config: session.spec };
@@ -548,6 +562,10 @@ export class WorkerSupervisor {
                 // stray immediate resolve keeps this from hanging if it is not.
                 setImmediate(() => resolve(new Error('spawn produced no process')));
             });
+            if (managed) {
+                try { completeManagedDispatch(this.config, session.id, managed); }
+                catch { /* Keep uncertain journal state if completion cannot be saved. */ }
+            }
             this.finish(record, { error: failure.message });
             return { ok: false, error: `cannot spawn ${invocation.command}: ${failure.message}`,
                 config: session.spec };
@@ -581,6 +599,10 @@ export class WorkerSupervisor {
             this.log.error(`session ${session.id}: worker process error: ${error.message}`);
         });
         child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+            if (managed && (managed.launcher.target.kind === 'local' || (code === 0 && signal === null))) {
+                try { completeManagedDispatch(this.config, session.id, managed); }
+                catch { this.log.warn(`session ${session.id}: cannot persist managed command completion; ownership remains unconfirmed`); }
+            }
             // Exit can precede pipe EOF. Capture the remaining bytes before
             // closing the file, but do not wait forever for a descendant that
             // inherited stdout/stderr. The process lifecycle still ends at exit.
@@ -606,14 +628,25 @@ export class WorkerSupervisor {
         return null;
     }
 
+    /** Managed deletion is fenced on the target, including starts not yet holding a lease. */
+    deletionBusy(session: Session): boolean {
+        return this.pending.has(session.id) || session.connected
+            || (this.isRunning(session) && !existsSync(managedRecordPath(this.config, session.id)));
+    }
+
     /** Keep local admission reserved until target removal AND local deletion finish. */
     async removeStorage(session: Session, removeLocal: () => void): Promise<void> {
-        if (this.isRunning(session) || session.connected) throw new Error('session is busy');
+        if (this.deletionBusy(session)) throw new Error('session is busy');
         this.pending.add(session.id);
         session.closing = true;
         const task = (async () => {
             const record = readManagedSession(this.config, session.id);
-            if (record) await removeManagedSession(this.config, session.id, record);
+            if (record) {
+                await removeManagedSession(this.config, session.id, record);
+                // The retired allocation now rejects delayed workers. Only at
+                // this point may we retire a still-running local transport.
+                (session.process as ProcessRecord | null)?.child?.kill('SIGKILL');
+            }
             removeLocal();
         })();
         this.pendingTasks.set(session.id, task);
@@ -633,6 +666,11 @@ export class WorkerSupervisor {
         },
     ): void {
         if (record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed) return;
+        if (record.adopted && record.managed?.launcher.target.kind === 'local'
+            && processIdentity(record.pid, record.pidStartTime) === 'gone') {
+            try { completeManagedDispatch(this.config, record.sessionId, record.managed); }
+            catch { this.log.warn(`session ${record.sessionId}: cannot persist adopted worker completion`); }
+        }
         record.exitedAt = new Date().toISOString();
         record.exitCode = exitCode;
         record.signal = signal;
@@ -640,6 +678,11 @@ export class WorkerSupervisor {
         record.state = error || (exitCode !== 0 && exitCode !== null && !record.stopRequested)
             ? PROCESS_STATE.failed
             : PROCESS_STATE.exited;
+        if (record.managed && record.managed.launcher.target.kind !== 'local'
+            && managedStartUnconfirmed(record.managed)) {
+            record.state = PROCESS_STATE.failed;
+            record.error = 'managed start outcome is unconfirmed; transport exit is not worker completion';
+        }
         try {
             if (closeLog) record.logStream.end();
         } catch { /* already closed */ }
@@ -662,7 +705,9 @@ export class WorkerSupervisor {
         if (record.managed && record.managed.launcher.target.kind !== 'local') {
             const until = Date.now() + timeoutMs;
             do {
-                if (await managedIdle(record.managed, Math.max(1, Math.min(record.managed.timeoutMs, until - Date.now())))) {
+                const idle = await managedIdle(record.managed,
+                    Math.max(1, Math.min(record.managed.timeoutMs, until - Date.now())));
+                if (idle && !managedStartUnconfirmed(record.managed)) {
                     // It is now safe to retire our transport too; this is not
                     // escalation against an unverified remote worker PID.
                     if (record.child && record.child.exitCode === null && record.child.signalCode === null) {
@@ -778,7 +823,8 @@ export class WorkerSupervisor {
             connection?.requestShutdown();
             const until = Date.now() + timeoutMs;
             do {
-                if (await managedIdle(managed, Math.max(1, Math.min(managed.timeoutMs, until - Date.now())))) {
+                const idle = await managedIdle(managed, Math.max(1, Math.min(managed.timeoutMs, until - Date.now())));
+                if (idle && !managedStartUnconfirmed(managed)) {
                     return { ok: true, how: 'manager-idle', forced: false };
                 }
                 if (Date.now() >= until) return { ok: false, how: 'managed-ownership-unconfirmed', forced: false };
@@ -901,7 +947,7 @@ export class WorkerSupervisor {
         let managed: ManagedSessionRecord | null;
         try { managed = readManagedSession(this.config, session.id); }
         catch { return false; }
-        const remoteManaged = managed && managed.launcher.target.kind !== 'local';
+        const remoteManaged = managed && managed.launcher.target.kind !== 'local' && managedStartUnconfirmed(managed);
         const container = dockerName({ command: String(entry.command ?? ''), args: Array.isArray(entry.args) ? entry.args : [] });
         if (!isSameProcess(entry.pid, entry.pid_start_time) && !container && !remoteManaged) return false;
         const record = new ProcessRecord({
@@ -925,10 +971,11 @@ export class WorkerSupervisor {
         });
         record.managed = managed;
         record.dockerManagement = container ? restoreDockerManagement(entry.docker_management, container) : null;
-        record.pid = entry.pid as number;
-        record.pidStartTime = entry.pid_start_time as string;
+        record.pid = typeof entry.pid === 'number' ? entry.pid : null;
+        record.pidStartTime = typeof entry.pid_start_time === 'string' ? entry.pid_start_time : null;
         record.startedAt = typeof entry.started_at === 'string' ? entry.started_at : record.startedAt;
-        record.state = PROCESS_STATE.running;
+        record.state = remoteManaged ? PROCESS_STATE.stopping : PROCESS_STATE.running;
+        if (remoteManaged) record.error = 'managed start outcome is unconfirmed';
         record.adopted = true;
         try { record.stopPolicy = sessionLaunch(this.config, session.id)?.config.worker ?? this.config.worker; }
         catch { this.log.warn(`session ${session.id}: cannot read saved stop policy; using Hub defaults`); }
@@ -955,8 +1002,23 @@ export class WorkerSupervisor {
             record.monitor.unref?.();
         }
         session.process = record;
-        this.log.info(`session ${session.id}: adopted worker pid ${record.pid} from a previous hub run`);
+        this.log.info(remoteManaged
+            ? `session ${session.id}: restored unconfirmed managed lifecycle`
+            : `session ${session.id}: adopted worker pid ${record.pid} from a previous hub run`);
         return true;
+    }
+
+    /** Restore dispatch intent independently of the separately published process/PID entry. */
+    recoverManaged(session: Session): void {
+        const managed = readManagedSession(this.config, session.id);
+        if (!managed || !managedStartUnconfirmed(managed)) return;
+        session.lifecycleId = managed.lifecycle!.id;
+        session.closing = true;
+        if (!session.process && managed.launcher.target.kind !== 'local') {
+            const invocation = new ManagedLauncher(managed.launcher).buildWorkerInvocation(
+                managed.reference, `${managed.reference.directory}/config/config.yaml`, ['--session', session.id]);
+            this.adopt(session, { ...invocation, pid: null, pid_start_time: null });
+        }
     }
 
     /** Stop recorded Docker containers too: a terminal CLI is not container death. */
@@ -967,12 +1029,16 @@ export class WorkerSupervisor {
         await Promise.allSettled([...this.pendingTasks.values()]);
         const results: Array<StopResult & { session: string }> = [];
         for (const session of this.registry.list()) {
-            const record = session.process as ProcessRecord | null;
-            const remoteManaged = record?.managed && record.managed.launcher.target.kind !== 'local';
-            if (!this.isRunning(session) && !(record && dockerName(record)) && !remoteManaged
-                && !(session.connected && existsSync(managedRecordPath(this.config, session.id)))) continue;
-            try { results.push({ session: session.id, ...(await this.stop(session, options)) }); }
-            catch { results.push({ session: session.id, ok: false, how: 'cleanup-failed', forced: false }); }
+            try {
+                const record = session.process as ProcessRecord | null;
+                const durable = readManagedSession(this.config, session.id);
+                const unconfirmed = durable && managedStartUnconfirmed(durable);
+                if (!this.isRunning(session) && !(record && dockerName(record))
+                    && !unconfirmed && !(session.connected && durable)) continue;
+                results.push({ session: session.id, ...(await this.stop(session, options)) });
+            } catch {
+                results.push({ session: session.id, ok: false, how: 'cleanup-failed', forced: false });
+            }
         }
         return results;
     }

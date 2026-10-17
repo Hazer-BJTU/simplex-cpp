@@ -795,7 +795,7 @@ export function createPanelApi({
         'DELETE /api/sessions/:id': async ({ res, params }) => {
             const session = requireSession(res, params.id as string);
             if (!session) return;
-            if (supervisor.isRunning(session) || session.connected) {
+            if (supervisor.deletionBusy(session)) {
                 sendError(res, 409, 'session_busy',
                     'stop the worker and disconnect it before deleting the session');
                 return;
@@ -1024,7 +1024,7 @@ export function createPanelApi({
                 return;
             }
             case 'delete_session': {
-                if (supervisor.isRunning(target) || target.connected) {
+                if (supervisor.deletionBusy(target)) {
                     send(client, {
                         type: 'error', error: 'session_busy',
                         message: 'stop the worker and disconnect it before deleting the session',
