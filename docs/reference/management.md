@@ -2,10 +2,10 @@
 
 `simplex manage` runs a target-local management program installed beside the
 worker. It prepares and inspects managed allocations and removes them after
-worker shutdown. This initial implementation supports local JSON storage.
+worker shutdown. The current backend supports JSON storage.
 Hub launch profiles can opt new ordinary sessions into this interface using
-`management`. Existing profiles remain on their legacy layout; subagent
-clean-fork migration follows in [#142](https://github.com/Hazer-BJTU/simplex-cpp/issues/142).
+`management`. Their headless descendants use the same manager boundary. Existing
+profiles remain on their explicitly supported legacy layout.
 
 ## Invocation and trust
 
@@ -61,6 +61,7 @@ uncertain publication; transport failure does not imply no change occurred.
 | `prepare` (refresh) | `refresh`, `expected_revision` when changing existing overrides | Updates only connection overrides; preserves source YAML verbatim and advances revision. Identical override retries are harmless. |
 | `inspect` | None | Returns status, revision, config path, source/effective configuration and captured startup data when ready. Does not create missing allocations. |
 | `capture_startup` | `lifecycle_id`, `expected_revision` | Captures the effective configuration for that lifecycle. Refuses a changed capture under the same lifecycle ID. |
+| `clean_fork` | `source: {allocation_id, directory, lifecycle_id, revision}`; optional `refresh` | Creates the requested child allocation from a captured parent startup on the same target. Never copies runtime state or archives. |
 | `read_state` | None | Returns `{backend: "json", state, readable}`. Missing state/readable exports are null; corruption is an error. Complete state, including compatible unknown JSON fields, is retained. |
 | `remove` | None | Requires exclusive allocation ownership and no legacy worker lock. Deletes the target root and retires the allocation; repeat removal is safe. |
 
@@ -74,7 +75,7 @@ and `memory` values must remain relative child paths without parent traversal.
 
 Inspect responses contain configuration secrets. They are management data, not
 public Panel session descriptions. `capture_startup` does not launch a process;
-the later launcher adapter must order refresh, capture and launch consistently.
+the launcher orders refresh, capture and launch consistently.
 
 ## Local example
 
@@ -147,7 +148,7 @@ The Hub's internal `ManagedLauncher` adapter provides the next integration layer
 It binds `simplex run` and `simplex manage` to one explicitly configured execution
 target and installation. The **Managed worker** template in the configuration editor enables it for
 new ordinary sessions. Existing profiles and sessions remain on their legacy
-launch path. Child clean-fork and recovery integration follow in #142.
+launch path. Managed children inherit the target binding and use independent allocations.
 
 The adapter supports these invocation shapes:
 
@@ -285,11 +286,15 @@ restart or prove stop succeeded. An operator may explicitly **delete the session
 to retire its allocation: manager removal refuses a worker holding its lease and
 creates a tombstone that rejects delayed starts. Only after confirmed retirement
 can Hub kill remaining transports and forget the reference. Deletion is destructive;
-it is not an implicit recovery action or part of ordinary stop. Non-destructive
+it is not an implicit recovery action or part of ordinary stop. Parent session deletion
+is refused while descendant allocation intents remain unretired, even after the
+parent process exits. Complete child cleanup (or operator recovery) first: an
+unpublished child fork still needs the parent's captured configuration to
+reconcile preparation and create its retirement tombstone. Non-destructive
 recovery of an unknown dispatch requires a future target-side lifecycle fence.
 
-Managed clean-fork currently returns `unsupported_launch`; legacy subagents are
-unchanged until phase C.
+Managed clean-fork uses the captured parent lifecycle and revision; see below.
+Legacy subagents retain their existing launch restrictions and storage layout.
 
 ### Storage, retries and transition
 
@@ -333,3 +338,106 @@ session with worker artifacts is refused; create a fresh session instead. Do not
 copy a generated managed `config.yaml` between directories or delete
 `allocation.json` to bypass lifecycle checks. Phase C completes managed subagent
 storage and the final deployment/migration audit.
+
+## Managed clean-fork and family recovery
+
+The request envelope identifies the **child** allocation. `source` identifies
+its parent's captured startup, on the same configured target/installation. Hub
+chooses a fresh UUID and flat target path; model arguments cannot override either.
+The manager validates both identities and the captured lifecycle/revision, reads
+under a shared parent lease, and publishes under an exclusive child lease. A
+running parent may be forked, but a stale lifecycle or occupied child is refused.
+
+Only captured configuration is inherited. The manager rebases known
+configuration-relative workspace and plugin paths against the parent's target
+config directory. Installation-relative prompt paths remain unchanged. The child
+gets `restore: if_present`, its own persistence root, and refreshed event,
+confirmation and remote-tool URLs. Confirmation policy starts at `ask`, independently
+of the parent. No state, archive, database or WAL file is copied. External
+workspaces and operator-configured resources remain shared: clean-fork is not a sandbox.
+The manager initially replaces inherited identity URLs with non-routable
+`unconfigured.invalid` placeholders; Hub supplies the child's URLs in preparation
+before capture and dispatch. Direct CLI callers must likewise provide `refresh`
+(or prepare with fresh endpoints) before launching the child.
+The inherited source is serialized as JSON (valid YAML); source comments are
+retained on the parent, not reproduced in this derived child configuration.
+
+Hub synchronously reserves local ownership and a durable operation receipt before
+starting asynchronous manager work. The target stores the fork origin alongside
+the child source. Repeating a committed fork uses that source even after parent
+retirement; changing its origin conflicts. A failed/lost reply retains the same
+allocation ID. Cleanup reconciles preparation before removal and never removes
+local bookkeeping until target retirement is confirmed. Tombstones retain only
+allocation and fork identities, not credentials/configuration.
+
+Hub child metadata, operation receipts, conversation projections, launch snapshots,
+logs and `allocation.json` live under `dataDir/subagents/<generated-id>/`.
+Worker data lives separately under `management.root/<allocation-id>/`. Parent
+stop/crash freezes descendant admission, waits for startup and owned output,
+stops descendants first, then calls manager removal. Cleanup failure retains
+ownership and existing bounded retry/backoff/operator-recovery controls. Docker
+containers are operator-retained and must remain reachable through removal.
+
+Recovery reads allocation journals even when process publication was interrupted.
+A matching local PID/start-time known to have exited can settle a dispatch; stale
+lifecycle, missing/unknown identity and remote transport disappearance cannot.
+Unconfirmed remote children remain cleanup-pending, even if the manager currently
+reports idle. An operator may use the existing lifecycle-correlated
+`confirm-terminated` recovery action after verifying termination. The target's
+exclusive lease and tombstone are still required before deleting local records.
+
+### Compatibility and direct-I/O audit
+
+No existing directory is migrated automatically. For new managed sessions select
+the **Managed worker** template and a separate target root. Keep legacy sessions
+on their original profile until finished; create a fresh managed session rather
+than applying management to an occupied legacy directory. A managed parent
+started by the earlier ordinary-session implementation must be stopped and
+restarted once to capture its launch-policy snapshot before clean-fork is available.
+Use a target installation that implements `clean_fork`; an older manager reports
+unsupported operation and no child is launched.
+
+| Hub area | Managed behavior | Legacy compatibility |
+| --- | --- | --- |
+| Configuration library/session selection | Hub-local source/provenance and launch policy only | Existing local YAML preparation |
+| Supervisor startup and clean-fork | Target prepare/capture/clean_fork; Hub launch snapshot | Existing local startup snapshots |
+| Inspector | Full `read_state` result over uncapped stdio; no local fallback | Existing local JSON/readable reads |
+| Ordinary deletion and child cleanup | Target `remove`, then local metadata removal | Existing owned local directory cleanup |
+| History/answer, plans, transcripts, logs, child receipts | Protocol queries and Hub-local records | Same behavior |
+
+The remaining filesystem accesses in legacy branches are intentional transition
+support, not remote fallbacks. A malformed managed allocation record blocks the
+operation instead of selecting legacy storage. Hub has no SQLite access or SQL
+mapping; the future backend adapter remains a manager responsibility.
+
+### Deployment acceptance test
+
+`hub/test/e2e/managed-subagents.test.js` is opt-in. Provision an installation of
+this revision on a retained target, then pass a management policy via
+`SIMPLEX_MANAGED_E2E_POLICY`. The test uses the real C++ worker and manager with
+an offline Hub provider, creates nested children, inspects state, and checks
+that target removal precedes local bookkeeping removal. It makes no target-data
+bind mount and asserts that target allocation paths do not exist on the Hub.
+
+For a Linux retained Docker container using host networking:
+
+```sh
+export SIMPLEX_MANAGED_E2E_POLICY='{
+  "root": "/var/lib/simplex-test/allocations",
+  "executable": "/opt/simplex/bin/simplex",
+  "cwd": "/tmp",
+  "env": {},
+  "target": {"kind":"docker", "command":"docker", "args":[], "container":"simplex-target"}
+}'
+cd hub
+node --test test/e2e/managed-subagents.test.js
+```
+
+For SSH, replace `target` with an SSH binding, for example
+`{"kind":"ssh","command":"ssh","args":["-p","2222"],"host":"user@127.0.0.1"}`.
+This loopback acceptance setup requires the target to reach the Hub's loopback
+listeners (for example, SSH into the same host-networked test container). For
+separate machines use the deployment profile's advertised endpoint origins and
+an accessible provider address; do not expose test listeners to untrusted peers.
+The test does not create or retire containers/SSH servers; keep the environment
+available through cleanup and remove your test infrastructure afterward.

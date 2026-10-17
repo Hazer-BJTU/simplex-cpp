@@ -1,6 +1,10 @@
+import { ManagedLauncher } from '../src/launch/managed-launcher.ts';
+import { ManagementError } from '../src/launch/management.ts';
+import { connectWorker } from './helpers/worker.js';
+import { sessionDir } from '../src/launch/config-render.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, cpSync, existsSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HubState } from '../src/state/persist.ts';
@@ -8,7 +12,7 @@ import { createLogger } from '../src/log.ts';
 import { startTestHub } from './helpers/hub.js';
 import { ConfigurationStore, launchDocument } from '../src/configurations/store.ts';
 import { snapshotConfigs } from '../src/configurations/session.ts';
-import { readManagedSession, separateLocalRoot, managedRecordPath } from '../src/launch/managed-sessions.ts';
+import { readManagedSession, separateLocalRoot, managedRecordPath, bindManagedSession } from '../src/launch/managed-sessions.ts';
 
 // Explicit shutdown inside a recovery test and teardown share the same promise.
 // In particular, never poll an unconfirmed remote dispatch after HTTP handles
@@ -402,5 +406,199 @@ for (const identity of ['matching', 'stale-lifecycle', 'unknown', 'missing']) {
             assert.equal((await restored.hub.supervisor.start(session)).ok, false);
             assert.equal((await restored.hub.supervisor.stop(session, { timeoutMs: 100 })).ok, false);
         }
+    });
+}
+
+/** Exercise actual remote-tool admission/receipts, not the private fork implementation. */
+async function managedFork(ctx, parent, requestId) {
+    const endpoint = new URL(ctx.hub.supervisor.endpointsFor(parent.id, parent.token).tools);
+    endpoint.pathname += '/subagent/clean-fork';
+    const peer = await connectWorker(endpoint.href);
+    peer.send({ type: 'tool_request', data: { worker_id: parent.identity.workerId,
+        session_id: parent.id, run_id: parent.activeRunId, request_id: requestId, arguments: {} } });
+    const response = (await peer.waitFor(value => value.type === 'tool_response')).data;
+    await peer.waitForClose();
+    assert.equal(response.status, 'succeeded', JSON.stringify(response));
+    return ctx.hub.registry.require(response.result.subagent_id);
+}
+
+for (const remote of [false, true]) {
+    test(`managed ${remote ? 'remote' : 'local'} nested forks retain target ownership through cleanup`, async t => {
+        const ctx = await setup(t, remote);
+        writeFileSync(join(ctx.target, 'protocol-worker'), '');
+        const allocation = await start(ctx);
+        await until(() => ctx.session.connected && ctx.session.identity);
+        ctx.session.connection.sendSignal({ type: 'signal', data: { operation: 'test_active' } });
+        await until(() => ctx.session.activeRunId);
+        const child = await managedFork(ctx, ctx.session, 'create-once');
+        assert.equal((await managedFork(ctx, ctx.session, 'create-once')).id, child.id);
+        await until(() => child.subagent.lifecycle === 'ready');
+        const childRecord = readManagedSession(ctx.config, child.id);
+        assert.notEqual(childRecord.reference.allocationId, allocation.reference.allocationId);
+        assert.equal(childRecord.forkSource.allocation_id, allocation.reference.allocationId);
+        assert.equal(child.subagent.policy, 'ask');
+        assert.equal(existsSync(join(sessionDir(ctx.config, child.id), 'state')), false);
+        child.connection.sendSignal({ type: 'signal', data: { operation: 'test_active' } });
+        await until(() => child.activeRunId);
+        const grandchild = await managedFork(ctx, child, 'nested');
+        await until(() => grandchild.subagent.lifecycle === 'ready');
+        const grandRecord = readManagedSession(ctx.config, grandchild.id);
+        assert.equal(grandRecord.forkSource.allocation_id, childRecord.reference.allocationId);
+        // Target mutation can succeed and lose its reply. Retain local ownership,
+        // then reconcile against the tombstone on an explicit cleanup retry.
+        writeFileSync(join(ctx.target, 'drop-remove'), '');
+        assert.equal((await ctx.hub.supervisor.stop(ctx.session)).ok, false);
+        assert.equal(existsSync(sessionDir(ctx.config, grandchild.id)), true);
+        assert.equal((await ctx.api('/api/sessions/demo', 'DELETE')).status, 409,
+            'an unresolved grandchild also keeps the ordinary ancestor allocation available');
+        assert.equal((await ctx.hub.supervisor.stop(ctx.session)).ok, true);
+        assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+        assert.equal(existsSync(sessionDir(ctx.config, grandchild.id)), false);
+        assert.equal(JSON.parse(readFileSync(join(ctx.target, `${childRecord.reference.allocationId}.json`))).status, 'removed');
+        assert.equal(JSON.parse(readFileSync(join(ctx.target, `${grandRecord.reference.allocationId}.json`))).status, 'removed');
+        assert.equal(JSON.parse(readFileSync(join(ctx.target, `${allocation.reference.allocationId}.json`))).status, 'ready');
+    });
+}
+
+for (const remote of [false, true]) {
+    test(`managed ${remote ? 'remote' : 'local'} child recovery preserves dispatch evidence`, async t => {
+        const ctx = await setup(t, remote);
+        writeFileSync(join(ctx.target, 'protocol-worker'), '');
+        await start(ctx);
+        await until(() => ctx.session.connected && ctx.session.identity.workerId);
+        ctx.session.connection.sendSignal({ type: 'signal', data: { operation: 'test_active' } });
+        await until(() => ctx.session.activeRunId);
+        const child = await managedFork(ctx, ctx.session, 'recovery-child');
+        await until(() => child.subagent.lifecycle === 'ready');
+        const allocation = readManagedSession(ctx.config, child.id);
+        const childPath = sessionDir(ctx.config, child.id);
+        const backup = join(ctx.temp, 'child-backup');
+        cpSync(childPath, backup, { recursive: true });
+        const targetPath = join(ctx.target, `${allocation.reference.allocationId}.json`);
+        const targetSnapshot = readFileSync(targetPath);
+        // Preserve the pre-exit ownership documents, simulating an offline Hub.
+        await stopHub(ctx.hub);
+        cpSync(backup, childPath, { recursive: true });
+        writeFileSync(targetPath, targetSnapshot);
+        const restored = await startTestHub({ dataDir: ctx.config.dataDir, worker: { stopTimeoutMs: 100 } });
+        ctx.extraHubs.push(restored.hub);
+        const recovered = restored.hub.registry.require(child.id);
+        if (remote) {
+            assert.equal(recovered.subagent.lifecycle, 'cleanup-pending');
+            assert.equal(readManagedSession(ctx.config, child.id).lifecycle.dispatch, 'pending');
+            assert.equal(restored.hub.subagents.recoveryState(recovered).termination_confirmed, false);
+            assert.equal(restored.hub.subagents.recoveryState(recovered).uncertain_start, true);
+            assert.equal(existsSync(childPath), true);
+            // Only explicit operator attestation can resolve the lost remote
+            // dispatch; removal then acquires the manager lease and tombstone.
+            assert.equal((await restored.hub.subagents.recover(recovered, 'confirm-terminated', recovered.lifecycleId)).ok, true);
+        } else {
+            assert.equal(recovered.subagent.lifecycle, 'stopped');
+        }
+        assert.equal(existsSync(childPath), false);
+        assert.equal(JSON.parse(readFileSync(targetPath)).status, 'removed');
+    });
+}
+
+test('a lost clean-fork response retains its child reservation until target removal succeeds', async t => {
+    const ctx = await setup(t);
+    writeFileSync(join(ctx.target, 'protocol-worker'), '');
+    await start(ctx);
+    await until(() => ctx.session.connected && ctx.session.identity.workerId);
+    ctx.session.connection.sendSignal({ type: 'signal', data: { operation: 'test_active' } });
+    await until(() => ctx.session.activeRunId);
+    writeFileSync(join(ctx.target, 'drop-clean_fork'), '');
+    const child = await managedFork(ctx, ctx.session, 'lost-create');
+    await until(() => child.subagent.lifecycle === 'stopped');
+    const forks = operations(ctx).filter(operation => operation.operation === 'clean_fork');
+    assert.ok(forks.length >= 2);
+    assert.equal(new Set(forks.map(operation => operation.allocation_id)).size, 1);
+    assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+    assert.equal(JSON.parse(readFileSync(join(ctx.target, `${forks[0].allocation_id}.json`))).status, 'removed');
+    assert.equal((await managedFork(ctx, ctx.session, 'lost-create')).id, child.id);
+});
+
+test('an abnormal remote parent exit still stops and retires its managed children', async t => {
+    const ctx = await setup(t, true);
+    writeFileSync(join(ctx.target, 'protocol-worker'), '');
+    await start(ctx);
+    await until(() => ctx.session.connected && ctx.session.identity.workerId);
+    ctx.session.connection.sendSignal({ type: 'signal', data: { operation: 'test_active' } });
+    await until(() => ctx.session.activeRunId);
+    const child = await managedFork(ctx, ctx.session, 'parent-crash');
+    await until(() => child.subagent.lifecycle === 'ready');
+    const allocation = readManagedSession(ctx.config, child.id);
+    ctx.session.connection.sendSignal({ type: 'signal', data: { operation: 'test_crash' } });
+    await until(() => child.subagent.lifecycle === 'stopped');
+    assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+    assert.equal(JSON.parse(readFileSync(join(ctx.target, `${allocation.reference.allocationId}.json`))).status, 'removed');
+    assert.equal(readManagedSession(ctx.config, ctx.session.id).lifecycle.dispatch, 'pending',
+        'an abnormal remote transport exit remains unconfirmed for the parent itself');
+});
+
+test('missing family metadata never discards a durable managed target reference', async t => {
+    const ctx = await setup(t);
+    const id = 'subagent-12345678-1234-4123-8123-123456789abc';
+    bindManagedSession(ctx.config, id, ctx.launch.management, ctx.source);
+    await ctx.hub.subagents.restore();
+    assert.equal(ctx.hub.subagents.recoveryBlocked, true);
+    assert.equal(ctx.hub.supervisor.deletionBusy(ctx.session), true, 'unknown family ownership blocks deletion');
+    assert.ok(readManagedSession(ctx.config, id));
+    assert.equal(existsSync(managedRecordPath(ctx.config, id)), true);
+});
+
+for (const remote of [false, true]) {
+    test(`managed ${remote ? 'remote' : 'local'} parent deletion waits for unpublished child intents to retire`, async t => {
+        const ctx = await setup(t, remote);
+        writeFileSync(join(ctx.target, 'protocol-worker'), '');
+        const parentAllocation = await start(ctx);
+        const parentPath = join(ctx.target, `${parentAllocation.reference.allocationId}.json`);
+        await until(() => ctx.session.connected && ctx.session.identity.workerId);
+        ctx.session.connection.sendSignal({ type: 'signal', data: { operation: 'test_active' } });
+        await until(() => ctx.session.activeRunId);
+        // Fail before the manager publishes ownership, rather than merely losing
+        // the response from an already committed allocation.
+        const barrier = join(ctx.target, 'busy-clean_fork');
+        writeFileSync(barrier, '');
+        const child = await managedFork(ctx, ctx.session, 'unpublished-child');
+        await until(() => child.subagent.lifecycle === 'cleanup-pending'
+            && !ctx.hub.subagents.stops.has(child.id));
+        const childAllocation = readManagedSession(ctx.config, child.id);
+        const childPath = join(ctx.target, `${childAllocation.reference.allocationId}.json`);
+        assert.equal(existsSync(childPath), false);
+        assert.equal((await ctx.hub.supervisor.stop(ctx.session)).ok, false);
+        await until(() => !ctx.hub.supervisor.isRunning(ctx.session) && !ctx.session.connected);
+        assert.equal((await ctx.api('/api/sessions/demo', 'DELETE')).status, 409);
+        const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
+        t.after(() => panel.ws.terminate());
+        await panel.waitFor(message => message.type === 'welcome');
+        panel.send({ v: 1, type: 'delete_session', session: ctx.session.id });
+        const rejected = await panel.waitFor(message => message.type === 'error'
+            && message.request?.type === 'delete_session');
+        assert.equal(rejected.error, 'session_busy');
+        assert.match(rejected.message, /descendant cleanup/);
+        await assert.rejects(ctx.hub.supervisor.removeStorage(ctx.session, () => {
+            assert.fail('blocked deletion must not remove local storage');
+        }), /session is busy/);
+        assert.equal(JSON.parse(readFileSync(parentPath)).status, 'ready');
+        assert.equal(operations(ctx).some(operation => operation.operation === 'remove'
+            && operation.allocation_id === parentAllocation.reference.allocationId), false);
+        assert.equal(existsSync(managedRecordPath(ctx.config, child.id)), true);
+
+        rmSync(barrier);
+        assert.equal((await ctx.hub.subagents.recover(child, 'retry', child.lifecycleId)).ok, true);
+        assert.equal(child.subagent.lifecycle, 'stopped');
+        assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+        assert.equal(JSON.parse(readFileSync(childPath)).status, 'removed');
+        assert.equal([...ctx.hub.subagents.children.values()].filter(record => !record.removed).length, 0,
+            'confirmed child retirement releases its live quota reservation');
+        assert.equal((await ctx.api('/api/sessions/demo', 'DELETE')).status, 200);
+        assert.equal(JSON.parse(readFileSync(parentPath)).status, 'removed');
+        // The child tombstone must still reject a delayed first creation even
+        // after parent retirement; absence alone would not provide that fence.
+        await assert.rejects(new ManagedLauncher(childAllocation.launcher).manage(
+            childAllocation.reference, 'delayed-fork',
+            { operation: 'clean_fork', source: childAllocation.forkSource }), error =>
+            error instanceof ManagementError && error.kind === 'manager' && error.code === 'retired');
     });
 }

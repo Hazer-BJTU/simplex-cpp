@@ -1,6 +1,6 @@
 /** Capture startup configuration and reproduce it with fresh persistence/identity. */
 import { existsSync, readFileSync } from 'node:fs';
-import { join, isAbsolute, resolve, basename } from 'node:path';
+import { join, isAbsolute, resolve, basename, dirname } from 'node:path';
 import { parseDocument, isMap } from 'yaml';
 import type { HubConfig } from '../config.ts';
 import type { Session } from '../state/registry.ts';
@@ -8,7 +8,7 @@ import type { LaunchDocument } from '../configurations/store.ts';
 import { writeConfigFile, launchDocument } from '../configurations/store.ts';
 import { sessionDir } from '../launch/config-render.ts';
 import { privateDirectory } from './storage.ts';
-import { managedRecordPath } from '../launch/managed-sessions.ts';
+import { readManagedSession, bindManagedSession } from '../launch/managed-sessions.ts';
 import { ToolFailure } from '../worker/tool-context.ts';
 
 /** Normalize known path fields, without guessing the meaning of arbitrary provider values. */
@@ -67,8 +67,32 @@ export function supportedLaunch(launch: LaunchDocument): boolean {
 }
 
 export function cleanFork(config: HubConfig, parent: Session, child: Session): void {
-    if (existsSync(managedRecordPath(config, parent.id))) {
-        throw new ToolFailure('unsupported_launch', 'managed clean-fork will be available after the lifecycle migration');
+    const managed = readManagedSession(config, parent.id);
+    if (managed) {
+        if (!managed.lifecycle || managed.lifecycle.id !== parent.lifecycleId || !parent.process
+            || managed.removing || managed.lifecycle.dispatch !== 'pending') {
+            throw new ToolFailure('unsupported_launch', 'parent has no current managed startup capture');
+        }
+        const launchPath = join(sessionDir(config, parent.id), 'config', 'startup-launch.jsonc');
+        privateDirectory(dirname(launchPath));
+        if (!existsSync(launchPath)) {
+            throw new ToolFailure('unsupported_launch', 'restart the managed parent to capture its launch policy before forking');
+        }
+        const launch = launchDocument(readFileSync(launchPath, 'utf8'), config);
+        if ([...(launch.worker?.args ?? [])].some(value => /^--(?:config|session)(?:=|$)/.test(value))) {
+            throw new ToolFailure('unsupported_launch', 'managed worker arguments override identity or configuration');
+        }
+        const directory = join(sessionDir(config, child.id), 'config');
+        privateDirectory(directory, true);
+        writeConfigFile(join(directory, 'launch.jsonc'), JSON.stringify(launch));
+        // Reserve locally before the receipt. No remote mutation happens until
+        // supervised startup after the durable child/receipt commit.
+        bindManagedSession(config, child.id, { ...managed.launcher,
+            root: dirname(managed.reference.directory), timeoutMs: managed.timeoutMs }, '', {
+            allocation_id: managed.reference.allocationId, directory: managed.reference.directory,
+            lifecycle_id: managed.lifecycle.id, revision: managed.lifecycle.revision,
+        });
+        return;
     }
     const source = join(sessionDir(config, parent.id), 'config');
     privateDirectory(source);

@@ -15,9 +15,18 @@ export interface ConnectionRefresh {
     tools_endpoint?: string;
 }
 
-/** Operations supported by the current manager; clean-fork is a later extension. */
+/** Immutable target startup used to reproduce a child without copying runtime state. */
+export interface ForkSource {
+    allocation_id: string;
+    directory: string;
+    lifecycle_id: string;
+    revision: number;
+}
+
+/** Operations supported by the target-side manager. */
 export type ManagementOperation =
     | { operation: 'prepare'; configuration?: string; refresh?: ConnectionRefresh; expected_revision?: number }
+    | { operation: 'clean_fork'; source: ForkSource; refresh?: ConnectionRefresh }
     | { operation: 'inspect' }
     | { operation: 'capture_startup'; lifecycle_id: string; expected_revision: number }
     | { operation: 'read_state' }

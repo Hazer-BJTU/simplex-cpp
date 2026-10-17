@@ -15,6 +15,7 @@ import { createHub } from '../src/hub.ts';
 import { hubRoot } from '../src/config.ts';
 import { createLogger } from '../src/log.ts';
 import { removeChildDirectory, readPrivate, writePrivate } from '../src/subagents/storage.ts';
+import { ConfigurationStore } from '../src/configurations/store.ts';
 import { compactSummary } from './helpers/compact.js';
 const fixture = join(import.meta.dirname, 'fixtures', 'subagent-worker.js');
 const hubs = [];
@@ -599,7 +600,8 @@ it('rejects unsupported daemonizing parents without leaking quota', async () => 
     assert.equal((await rpc(ctx, 'subagent/clean-fork')).error.code, 'unsupported_launch');
     assert.equal(ctx.hub.subagents.children.size, 0);
 });
-it('restores surviving families after an actual Hub process crash and then cascades stop', { timeout: 15000 }, async t => {
+for (const managed of [false, true]) {
+it(`restores ${managed ? 'managed' : 'legacy'} surviving families after an actual Hub process crash and then cascades stop`, { timeout: 20000 }, async t => {
     const { spawn } = await import('node:child_process');
     const { createServer } = await import('node:net');
     const { testConfig } = await import('./helpers/hub.js');
@@ -609,6 +611,20 @@ it('restores surviving families after an actual Hub process crash and then casca
     };
     const config = testConfig({ listen: { host: '127.0.0.1', port: await freePort() },
         toolRequests: { port: await freePort() }, worker: { bin: fixture, stopTimeoutMs: 50, sigtermGraceMs: 50 } });
+    if (managed) {
+        const target = join(config.dataDir, 'target-emulator');
+        mkdirSync(target);
+        writeFileSync(join(target, 'protocol-worker'), '');
+        const executable = join(config.dataDir, 'simplex.mjs');
+        writeFileSync(executable, `#!${globalThis.process.execPath}\nimport ${JSON.stringify(new URL('./fixtures/managed-target.mjs', import.meta.url).href)};\n`, { mode: 0o700 });
+        new ConfigurationStore(config).save('launch', 'crash-managed', JSON.stringify({
+            launcher: { kind: 'command', command: ['unused'] },
+            worker: { stopTimeoutMs: 500, sigtermGraceMs: 1000 },
+            management: { root: `${config.dataDir}-allocations`, executable, cwd: config.dataDir,
+                target: { kind: 'local' }, env: { MANAGED_FIXTURE_ROOT: target,
+                    SIMPLEX_FIXTURE_ACTIVE_SESSION: 'recovery-parent', SIMPLEX_FIXTURE_RECONNECT_MS: '500' } },
+        }), null);
+    }
     const file = join(config.dataDir, 'hub-test.json'); writeFileSync(file, JSON.stringify(config));
     const base = `http://127.0.0.1:${config.listen.port}`;
     let process;
@@ -630,7 +646,8 @@ it('restores surviving families after an actual Hub process crash and then casca
     });
     await launch();
     await api('/api/sessions', { session: 'recovery-parent',
-        spec: { env: { SIMPLEX_FIXTURE_ACTIVE_SESSION: 'recovery-parent', SIMPLEX_FIXTURE_RECONNECT_MS: '500' } } });
+        spec: { ...(managed ? { launchConfig: 'crash-managed', workerConfig: 'default' } : {}),
+            env: { SIMPLEX_FIXTURE_ACTIVE_SESSION: 'recovery-parent', SIMPLEX_FIXTURE_RECONNECT_MS: '500' } } });
     await api('/api/sessions/recovery-parent/start', {});
     await until(async () => (await api('/api/sessions/recovery-parent')).session.connected);
     const storedParent = JSON.parse(readFileSync(join(config.dataDir, 'hub.json'), 'utf8')).sessions[0];
@@ -672,6 +689,7 @@ it('restores surviving families after an actual Hub process crash and then casca
     assert.equal((await api('/api/sessions/recovery-parent/stop', {})).ok, true, output);
     assert.equal(existsSync(sessionDir(config, childId)), false);
 });
+}
 
 it('retires pending headless approvals immediately when shutdown starts', async () => {
     const ctx = await setup();

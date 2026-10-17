@@ -6,7 +6,7 @@ import { parse } from 'yaml';
 import { WebSocket } from 'ws';
 const args = process.argv.slice(2);
 const option = key => args[args.indexOf(key) + 1];
-const config = parse(readFileSync(option('--config'), 'utf8'));
+const config = parse(process.env.SIMPLEX_FIXTURE_CONFIGURATION ?? readFileSync(option('--config'), 'utf8'));
 const session = option('--session');
 const worker = `subagent-fixture-${process.pid}`;
 let socket;

@@ -256,13 +256,53 @@ Json description(const Paths& p, const Json& record) {
     return result;
 }
 
+/** Rebase only configuration-relative paths; prompt paths remain installation-relative. */
+Json fork_configuration(const Paths& parent, const Json& startup) {
+    auto document = startup.at("configuration");
+    const auto rebase = [&](Json& value) {
+        if (value.is_string() && !value.get_ref<const std::string&>().empty()) {
+            const fs::path path(value.get<std::string>());
+            if (path.is_relative()) {
+                value = (parent.config.parent_path() / path).lexically_normal().string();
+            }
+        }
+    };
+    if (document.contains("worker") && document["worker"].contains("environment")
+        && document["worker"]["environment"].contains("workspace")) {
+        rebase(document["worker"]["environment"]["workspace"]);
+    }
+    for (const char* path : {"/plugins/providers", "/plugins/extensions/tools", "/plugins/extensions/loop_hooks"}) {
+        const Json::json_pointer pointer(path);
+        if (!document.contains(pointer)) continue;
+        auto& section = document[pointer];
+        if (section.contains("directories") && section["directories"].is_array()) {
+            for (auto& entry : section["directories"]) rebase(entry);
+        }
+        if (section.contains("enable") && section["enable"].is_array()) {
+            for (auto& entry : section["enable"]) {
+                for (const char* key : {"schema_directory", "config_file"}) {
+                    if (entry.is_object() && entry.contains(key)) rebase(entry[key]);
+                }
+            }
+        }
+    }
+    document["persistence"]["restore"] = "if_present";
+    // Child approval remains independently managed by Hub, even if the parent
+    // source omitted these optional integrations. Identity URLs are supplied by Hub.
+    document["client"]["endpoint"] = "ws://unconfigured.invalid/events";
+    document["security"]["confirmation"]["endpoint"] = "ws://unconfigured.invalid/confirmation";
+    document["hub_remote_call"]["endpoint"] = "ws://unconfigured.invalid/tools";
+    return document;
+}
+
 } // namespace
 
 Error::Error(std::string code_value, std::string message)
     : std::runtime_error(std::move(message)), code(std::move(code_value)) {}
 Error::~Error() = default;
 
-Json execute(const Json& request) {
+Json execute(const Json& input) {
+    auto request = input; // clean_fork derives configuration on the target, never on Hub.
     if (!request.is_object() || request.value("version", 0) != 1) {
         throw Error("invalid_request", "expected management protocol version 1");
     }
@@ -270,9 +310,10 @@ Json execute(const Json& request) {
     const auto id = identifier(request, "allocation_id");
     const auto operation = identifier(request, "operation");
     if (operation != "prepare" && operation != "inspect" && operation != "capture_startup"
-        && operation != "read_state" && operation != "remove") {
+        && operation != "read_state" && operation != "remove" && operation != "clean_fork") {
         throw Error("unsupported_operation", "unsupported management operation");
     }
+    const bool preparing = operation == "prepare" || operation == "clean_fork";
     auto p = paths(request);
     const bool mutation = operation != "inspect" && operation != "read_state";
     std::unique_ptr<fileio::DirectoryTreeLock> namespace_lease;
@@ -291,7 +332,7 @@ Json execute(const Json& request) {
         p = paths(request);
     }
     if (!fs::exists(p.metadata)) {
-        if (operation != "prepare") {
+        if (!preparing) {
             throw Error("not_found", "allocation has no manager metadata");
         }
         fs::create_directories(p.metadata);
@@ -300,7 +341,45 @@ Json execute(const Json& request) {
     auto lease = lock(p, mutation);
     ordinary_path(p.root);
 
-    if (operation == "prepare" && !fs::exists(p.record)) {
+    if (operation == "clean_fork") {
+        if (!request.contains("source") || !request.at("source").is_object()) {
+            throw Error("invalid_request", "clean_fork requires a captured source allocation");
+        }
+        const auto& source = request.at("source");
+        const auto parent_id = identifier(source, "allocation_id");
+        const auto lifecycle = identifier(source, "lifecycle_id");
+        const auto parent = paths(source);
+        if (parent.root == p.root || parent_id == id || !source.contains("revision")
+            || !source.at("revision").is_number_integer() || source.at("revision") <= 0) {
+            throw Error("invalid_request", "clean_fork requires a distinct allocation and captured revision");
+        }
+        if (fs::exists(p.record)) {
+            const auto previous = owned(p, id);
+            if (!previous.contains("fork_source") || previous.at("fork_source") != source) {
+                throw Error("conflict", "allocation belongs to a different fork intent");
+            }
+            // A lost reply can be retried after the parent has stopped or retired.
+            // Reuse the committed source, never the parent's newer configuration.
+            if (previous.at("status") == "removed" || previous.at("status") == "removing") {
+                throw Error("retired", "retired allocation paths cannot be reused");
+            }
+            request["configuration"] = previous.at("configuration");
+        } else {
+            if (!fs::exists(parent.record)) throw Error("not_found", "source allocation is missing");
+            auto parent_lease = lock(parent, false); // Compatible with a running worker.
+            const auto parent_record = owned(parent, parent_id);
+            require_ready(parent_record);
+            verify_reference(parent, parent_id);
+            if (!parent_record.contains("startup")) throw Error("conflict", "source startup is not captured");
+            const auto& startup = parent_record.at("startup");
+            if (startup.at("lifecycle_id") != lifecycle || startup.at("revision") != source.at("revision")) {
+                throw Error("conflict", "source lifecycle or revision changed");
+            }
+            request["configuration"] = fork_configuration(parent, startup).dump();
+        }
+    }
+
+    if (preparing && !fs::exists(p.record)) {
         if (fs::exists(p.root)) {
             throw Error("unmanaged_directory", "existing directories require explicit migration; refusing adoption");
         }
@@ -310,12 +389,13 @@ Json execute(const Json& request) {
         Json initial = {{"version", 1}, {"directory", p.root.string()}, {"allocation_id", id},
             {"status", "preparing"}, {"revision", 1}, {"configuration", request.at("configuration")},
             {"refresh", request.value("refresh", Json::object())}};
+        if (operation == "clean_fork") initial["fork_source"] = request.at("source");
         effective(p, initial); // Validate before claiming or creating the allocation.
         publish(p.record, initial);
     }
 
     auto record = owned(p, id);
-    if (operation == "prepare") {
+    if (preparing) {
         if (record.at("status") == "removed" || record.at("status") == "removing") {
             throw Error("retired", "retired allocation paths cannot be reused");
         }
@@ -384,8 +464,10 @@ Json execute(const Json& request) {
         publish(p.record, record);
         fs::remove_all(p.root); // Does not follow interior symlinks.
         // Retain only a small tombstone; retired allocations must not retain secrets.
+        const auto fork_source = record.value("fork_source", Json(nullptr));
         record = {{"version", 1}, {"directory", p.root.string()}, {"allocation_id", id},
             {"status", "removed"}, {"revision", record.at("revision")}};
+        if (!fork_source.is_null()) record["fork_source"] = fork_source;
         publish(p.record, record);
         return description(p, record);
     }

@@ -7,6 +7,7 @@ import type { HubConfig } from '../config.ts';
 import type { Logger } from '../log.ts';
 import type { Session, SessionRegistry } from '../state/registry.ts';
 import { HubState } from '../state/persist.ts';
+import { readManagedSession, managedStartUnconfirmed, removeManagedSession } from '../launch/managed-sessions.ts';
 import { processIdentity } from '../launch/supervisor.ts';
 import type { WorkerSupervisor, ProcessRecord, StopResult } from '../launch/supervisor.ts';
 import type { ForwardedEnvelope, WorkerConnection } from '../worker/connection.ts';
@@ -108,6 +109,15 @@ export class SubagentService {
     constructor(options: SubagentServiceOptions) {
         this.options = options;
         options.supervisor.cascade = (session, stopSelf) => this.cascade(session, stopSelf);
+        options.supervisor.removalBlocked = session => {
+            // A fork whose target ownership was never published still needs
+            // the parent's captured source to reconcile and retire its intent.
+            // Direct children retain their own descendants until cleanup, so
+            // their reservations protect the entire subtree, even after exit.
+            return this.recoveryBlocked || this.stops.has(session.id)
+                || [...this.children.values()].some(record =>
+                    !record.removed && record.parent.session_id === session.id);
+        };
         options.supervisor.beforeStart = session => {
             if (this.recoveryBlocked) throw new Error('subagent ownership recovery is blocked; inspect managed storage before starting workers');
             const childrenRemain = session.closing && [...this.children.values()].some(record =>
@@ -758,6 +768,8 @@ export class SubagentService {
                     if (!ok) throw new Error('descendant cleanup is incomplete');
                     for (const prompt of [...session.prompts.values()]) prompt.retire('shutdown', 'subagent stopped');
                     (session.connection as WorkerConnection | null)?.terminate('subagent stopped');
+                    const managed = readManagedSession(this.options.config, session.id);
+                    if (managed) await removeManagedSession(this.options.config, session.id, managed);
                     removeChildDirectory(this.options.config.dataDir, session.id);
                     child.removed = true;
                     this.dirtyOperations.delete(session.id);
@@ -886,8 +898,14 @@ export class SubagentService {
                 try {
                     const raw = object(readPrivate(ownedPath(this.options.config.dataDir, id, 'metadata.json'), MAX_OPERATION_BYTES));
                     if (!raw) {
-                        // Metadata is published before spawn, so an incomplete
-                        // reservation without metadata cannot contain a worker.
+                        // Never discard a target reference just because family
+                        // metadata is absent: it may have been lost after remote
+                        // preparation. Keep that ownership for operator inspection.
+                        if (readManagedSession(this.options.config, id)) {
+                            throw new Error('managed allocation has no ownership metadata');
+                        }
+                        // Legacy metadata precedes spawn; an incomplete local
+                        // reservation without it cannot contain a worker.
                         removeChildDirectory(this.options.config.dataDir, id);
                         continue;
                     }
@@ -923,7 +941,18 @@ export class SubagentService {
                         error: typeof raw.error === 'string' ? raw.error.slice(0, 512) : '' };
                     this.children.set(id, record);
                     this.ops(session);
-                    if (record.terminationConfirmed) record.uncertainStart = false;
+                    const managed = readManagedSession(this.options.config, id);
+                    if (managed) {
+                        // Transport PID disappearance is never remote worker
+                        // death. Reuse ordinary-session journal reconciliation,
+                        // including lifecycle-correlated local exit evidence.
+                        if (raw.process && !record.terminationConfirmed) this.options.supervisor.adopt(session, raw.process);
+                        this.options.supervisor.recoverManaged(session);
+                        const current = readManagedSession(this.options.config, id)!;
+                        record.uncertainStart = !record.terminationConfirmed && managedStartUnconfirmed(current)
+                            && (current.launcher.target.kind !== 'local' || !this.options.supervisor.isRunning(session));
+                        if (!managedStartUnconfirmed(current)) record.terminationConfirmed = true;
+                    } else if (record.terminationConfirmed) record.uncertainStart = false;
                     else if (raw.process) {
                         const stored = object(raw.process);
                         const adopted = this.options.supervisor.adopt(session, raw.process);
@@ -960,7 +989,7 @@ export class SubagentService {
                     || !this.options.supervisor.isRunning(parent) || !this.options.supervisor.isRunning(record.session)
                     || (record.session.process && dockerName(record.session.process as ProcessRecord)
                         && !(record.session.process as ProcessRecord).dockerManagement)
-                    || record.session.subagent!.lifecycle === 'cleanup-pending') {
+                    || record.session.closing || record.session.subagent!.lifecycle === 'cleanup-pending') {
                     record.session.subagent!.lifecycle = 'cleanup-pending';
                     record.session.closing = true;
                 } else {

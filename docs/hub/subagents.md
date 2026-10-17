@@ -118,7 +118,7 @@ states are `preparing`, `starting`, `ready`, `stopping`, `stopped` and
 `cleanup-pending`. Failure reasons accompany status; startup failure/timeout
 initiates supervised shutdown and cleanup.
 
-The Hub captures `config/startup-worker.yaml` and `config/startup-launch.jsonc`
+For legacy sessions the Hub captures `config/startup-worker.yaml` and `config/startup-launch.jsonc`
 for each supervised launch. Clean-fork uses that incarnation's startup snapshot,
 not the current configuration library or its public session description. It
 preserves providers/model roles, prompts, plugin admission/configuration,
@@ -138,7 +138,15 @@ retain their resolved meaning after relocation. Prompt files remain relative to
 the worker installation. Arbitrary plugin-specific path fields cannot be inferred;
 use absolute paths for additional external resources.
 
-Initially supported launches are native `simplex-worker` executables and
+Managed launch profiles support local, SSH and retained-container Docker forks.
+The manager captures worker configuration on the target; Hub retains only the
+startup launch policy. Each child has a fresh flat target allocation, while its
+Hub bookkeeping remains in `dataDir/subagents/`. Remote worker paths need not
+exist on the Hub host. See [managed family lifecycle](../reference/management.md#managed-clean-fork-and-family-recovery)
+for preparation, uncertain dispatch, recovery and cleanup. No shared Hub bind
+mount is required; the operator must retain the target/container until cleanup.
+
+Supported legacy launches are native `simplex-worker` executables and
 foreground Docker templates with `--rm`, `--init`, a `{session}`-based `--name`,
 `{session_dir}:{session_dir}` bind and child config/session placeholders.
 Daemonizing/PID-file launches, detached Docker and arbitrary wrapper commands are
@@ -259,8 +267,8 @@ approve a request. Worker Trusted/DefaultDeny behavior is unchanged.
   config/launch.jsonc
   config/startup-worker.yaml
   config/startup-launch.jsonc
-  state/                         # or configured relative directory
-  memory/                        # or configured relative directory
+  state/                         # legacy only; managed state is on the target
+  memory/                        # legacy only; managed archives are on the target
   conversation.json
   operations.json
   plan.json                      # if used
@@ -340,7 +348,8 @@ cleanup. Sibling failures do not skip later siblings. A mere WebSocket disconnec
 does not stop children. A worker incarnation change invalidates its old family.
 
 Deletion waits for confirmed actual process/container termination and owned output
-pipes/log writer closure. A Docker CLI exit alone is insufficient; the Hub inspects
+pipes/log writer closure. Managed families additionally require target-side
+removal before deleting local bookkeeping. For legacy Docker profiles, a Docker CLI exit alone is insufficient; the Hub inspects
 and signals the named container using the resolved startup Docker executable,
 working directory, and a minimized management environment, including `DOCKER_HOST`,
 `DOCKER_CONTEXT` and `DOCKER_CONFIG`. The [allow-list and explicit pass-throughs](./configurations.md#docker-management-environment)

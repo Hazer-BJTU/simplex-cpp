@@ -18,6 +18,7 @@
  * supervisor therefore refuses to start a session whose recorded process is
  * still alive, and a restart always waits for the exit before spawning.
  */
+import { writeConfigFile } from '../configurations/store.ts';
 import { randomUUID } from 'node:crypto';
 import { captureStartup, resolvedStartupLaunch } from '../subagents/fork.ts';
 import { captureDockerManagement, restoreDockerManagement, dockerRunning, signalContainer, dockerName } from '../subagents/docker.ts';
@@ -378,6 +379,8 @@ export class WorkerSupervisor {
     /** Installed by the family coordinator; freezes admission before any await. */
     cascade: ((session: Session, stopSelf: () => Promise<StopResult>) => Promise<StopResult>) | undefined;
     beforeStart: ((session: Session) => void) | undefined;
+    /** Family-owned reservations can outlive the process and still need its allocation. */
+    removalBlocked: ((session: Session) => boolean) | undefined;
 
     /** Start a worker for a session. */
     async start(session: Session, rawSpec?: unknown): Promise<StartResult> {
@@ -435,7 +438,6 @@ export class WorkerSupervisor {
             }
             managed = readManagedSession(this.config, session.id);
             if (saved?.launch.management || managed) {
-                if (session.kind === 'headless') throw new Error('managed clean-fork is not supported yet');
                 if (!managed) {
                     const policy = saved!.launch.management!;
                     managed = bindManagedSession(this.config, session.id,
@@ -495,6 +497,12 @@ export class WorkerSupervisor {
             // Managed capture is authoritative on the target. Legacy clean-fork
             // must not mistake a Hub-side source copy for that captured state.
             if (!managed) captureStartup(this.config, session, readFileSync(configPath, 'utf8'), launch);
+            else {
+                // Transport/CLI policy is Hub-owned; only worker configuration is
+                // captured by the target manager. Both snapshots precede spawn.
+                mkdirSync(join(directory, 'config'), { recursive: true, mode: 0o700 });
+                writeConfigFile(join(directory, 'config', 'startup-launch.jsonc'), JSON.stringify(launch));
+            }
         } catch {
             return { ok: false, error: 'cannot capture authoritative startup snapshot' };
         }
@@ -631,6 +639,7 @@ export class WorkerSupervisor {
     /** Managed deletion is fenced on the target, including starts not yet holding a lease. */
     deletionBusy(session: Session): boolean {
         return this.pending.has(session.id) || session.connected
+            || this.removalBlocked?.(session) === true
             || (this.isRunning(session) && !existsSync(managedRecordPath(this.config, session.id)));
     }
 
@@ -819,6 +828,11 @@ export class WorkerSupervisor {
         if (!record) {
             const managed = readManagedSession(this.config, session.id);
             if (!managed) return { ok: true, how: 'not-started', forced: false };
+            if (session.kind === 'headless' && !managedStartUnconfirmed(managed)) {
+                // No dispatch (or confirmed completion). Target removal still
+                // takes the exclusive lease and fences delayed preparations.
+                return { ok: true, how: 'managed-not-dispatched', forced: false };
+            }
             const connection = session.connection as { requestShutdown(): unknown } | null;
             connection?.requestShutdown();
             const until = Date.now() + timeoutMs;
@@ -1027,6 +1041,9 @@ export class WorkerSupervisor {
         const managed = readManagedSession(this.config, session.id);
         if (!managed || !managedStartUnconfirmed(managed)) return;
         session.lifecycleId = managed.lifecycle!.id;
+        // A matching local process was already adopted above. It remains
+        // supervised and can reconnect normally; pending means running here.
+        if (session.process && managed.launcher.target.kind === 'local' && this.isRunning(session)) return;
         session.closing = true;
         if (!session.process && managed.launcher.target.kind !== 'local') {
             const invocation = new ManagedLauncher(managed.launcher).buildWorkerInvocation(
