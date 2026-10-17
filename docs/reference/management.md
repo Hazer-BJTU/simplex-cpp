@@ -119,6 +119,11 @@ management preparation does not load plugins or validate remote availability.
     └── memory/                # worker-owned archives
 ```
 
+Allocation mutations coordinate on ancestor directory inodes before checking
+for nested allocations. A concurrent parent/child preparation cannot both claim
+the same hierarchy; contention returns `busy` and may be retried. This requires
+readable ancestor directories and local POSIX directory-lock support.
+
 The worker resolves the managed reference through the manager library and keeps
 a shared allocation lease for its lifetime. Management reads may coexist with
 it, while preparation, refresh, capture and removal require exclusive ownership.

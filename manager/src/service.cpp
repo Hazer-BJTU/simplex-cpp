@@ -8,6 +8,7 @@
 #include <system_error>
 #include "fileio/atomic_write.hpp"
 #include "fileio/child_path.hpp"
+#include "fileio/directory_tree_lock.hpp"
 #include "load/persistence.hpp"
 #include "yamlconfig/yaml_json.hpp"
 
@@ -272,8 +273,23 @@ Json execute(const Json& request) {
         && operation != "read_state" && operation != "remove") {
         throw Error("unsupported_operation", "unsupported management operation");
     }
-    const auto p = paths(request);
+    auto p = paths(request);
     const bool mutation = operation != "inspect" && operation != "read_state";
+    std::unique_ptr<fileio::DirectoryTreeLock> namespace_lease;
+    if (mutation) {
+        try {
+            namespace_lease = std::make_unique<fileio::DirectoryTreeLock>(p.root.parent_path());
+        } catch (const std::system_error& error) {
+            if (error.code().value() == EWOULDBLOCK || error.code().value() == EAGAIN) {
+                throw Error("busy", "allocation namespace is in use");
+            }
+            throw;
+        }
+        // The initial lookup is advisory. Recheck ancestry under the namespace
+        // fence and retain it through publication/deletion, before taking the
+        // per-allocation lock. Parent and child roots otherwise use different locks.
+        p = paths(request);
+    }
     if (!fs::exists(p.metadata)) {
         if (operation != "prepare") {
             throw Error("not_found", "allocation has no manager metadata");

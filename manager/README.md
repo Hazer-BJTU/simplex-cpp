@@ -33,6 +33,15 @@ configuration library or provider credentials are expanded during management.
 
 ## Concurrency and recovery
 
+Before a mutation, directory-inode locks coordinate the namespace: existing
+ancestors are locked shared, top down, and the requested parent (or deepest
+existing ancestor) is locked exclusive. Ancestor-allocation checks are repeated
+under that guard, which stays held through directory creation/publication/removal.
+This closes the race where parent and child preparations both passed independent
+checks before either had published its record. Contention returns `busy`, without
+waiting while holding a partial lock chain. These locks create no files in system
+directories and require readable ancestors with directory `flock` support.
+
 Each root has a stable sibling lock and control record in `.simplex-manager`.
 Workers and state readers acquire shared leases; manager mutations require an
 exclusive lease. The worker's existing exclusive `session.lock` still prevents
