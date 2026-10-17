@@ -8,6 +8,7 @@
 #include "core/event_outbox.hpp"
 #include "load/plugins.hpp"
 #include "load/persistence.hpp"
+#include "persistence/store.hpp"
 #include "loop/loop.hpp"
 #include "loop/events.hpp"
 #include "loop/hook_registry.hpp"
@@ -23,11 +24,10 @@
 #include <unordered_set>
 #include <deque>
 #include <iostream>
-#include <ctime>
 #include <type_traits>
 #include <algorithm>
-#include <charconv>
 #include <limits>
+#include <optional>
 
 namespace core {
 namespace asio = boost::asio;
@@ -121,50 +121,6 @@ void inject_environment(
     }
 }
 
-/** Wall-clock metadata only; deadlines and ordering use other mechanisms. */
-std::string timestamp() {
-    const auto now = std::time(nullptr);
-    std::tm utc{};
-    char text[32]{};
-    if (!::gmtime_r(&now, &utc)
-        || std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &utc) == 0) {
-        throw std::runtime_error("cannot format session timestamp");
-    }
-    return text;
-}
-
-/**
- * Plan a never-reused archive pathname without changing disk contents.
- * Derive the ordinal from existing entries so restarts and wall-clock changes
- * cannot reorder archives. Failed attempts also consume their ordinal. The
- * session's existing ownership lock serializes cooperating worker processes.
- */
-std::filesystem::path plan_archive(
-    const std::filesystem::path& directory,
-    const std::string& run
-) {
-    std::uint64_t latest = 0;
-    if (std::filesystem::exists(directory)) {
-        for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-            const auto name = entry.path().filename().string();
-            if (name.size() < 21 || name[20] != '-') continue;
-            std::uint64_t ordinal = 0;
-            const auto parsed = std::from_chars(name.data(), name.data() + 20, ordinal);
-            if (parsed.ec == std::errc{} && parsed.ptr == name.data() + 20) {
-                latest = std::max(latest, ordinal);
-            }
-        }
-    }
-    if (latest == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("compact archive sequence exhausted");
-    }
-    auto ordinal = std::to_string(latest + 1);
-    ordinal.insert(0, 20 - ordinal.size(), '0');
-    auto time = timestamp();
-    std::erase(time, ':');
-    return directory / (ordinal + "-" + time + "-" + run);
-}
-
 /** Queue cancellation must not hide the transport error that closed it. */
 bool channel_shutdown(std::exception_ptr failure) {
     if (!failure) return false;
@@ -177,28 +133,6 @@ bool channel_shutdown(std::exception_ptr failure) {
     } catch (...) {
         return false;
     }
-}
-
-/** Internal bookkeeping stays typed; wire labels remain protocol-compatible. */
-enum class SaveBoundary {
-    BeforeTools,
-    ResultsReady,
-    StepFinished,
-    RunFinished,
-    Cancelled,
-    Shutdown
-};
-
-const char* boundary_name(SaveBoundary boundary) {
-    switch (boundary) {
-        case SaveBoundary::BeforeTools: return "before_tools";
-        case SaveBoundary::ResultsReady: return "results_ready";
-        case SaveBoundary::StepFinished: return "step_finished";
-        case SaveBoundary::RunFinished: return "run_finished";
-        case SaveBoundary::Cancelled: return "cancelled";
-        case SaveBoundary::Shutdown: return "shutdown";
-    }
-    throw std::logic_error("invalid persistence boundary");
 }
 
 std::string run_status(loop::RunStatus status) {
@@ -248,11 +182,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         if (config.transport.write_byte_capacity < intercom::default_write_byte_capacity) {
             throw std::invalid_argument("transport byte capacity must cover the application budget");
         }
+        // Construction performs no I/O; a store exists even when persistence is
+        // disabled so restore/admission checks stay in one place.
+        state_store = persistence::make_json_store(session_id, {
+            config.state_directory, config.memory});
     }
 
     asio::strand<asio::any_io_executor> strand;
     load::Configuration config;
     std::string session_id;
+    /** Authoritative state, compact archives and retention for this session. */
+    std::unique_ptr<persistence::StateStore> state_store;
     std::string worker_id = new_identity();
     std::shared_ptr<llm::LLMModel> driver_model;
     /** Optional model shared with the modality-assist toolset for isolated exchanges. */
@@ -416,23 +356,32 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         };
     }
 
-    /** Required JSON saves latch failure even if RunFinished swallows observers. */
-    void save(SaveBoundary boundary) {
+    /**
+     * Publish the required snapshot and latch failure if it cannot be committed.
+     *
+     * A checkpoint returns only after the store knows whether the state is
+     * durable, so a later tool dispatch can never run behind a write that is
+     * still in flight. The readable export stays a separate, optional view:
+     * its failure is reported without invalidating the authoritative snapshot.
+     */
+    void save(persistence::Boundary boundary) {
         if (!config.persistence || storage_failed) return;
         const auto directory = config.state_directory;
+        persistence::CommitReceipt receipt;
         try {
             if (state.meta.session_id != session_id)
                 throw std::logic_error("hook changed the worker session identity");
-            load::save_state(directory / "state.json", state);
+            receipt = state_store->checkpoint(state, boundary);
         } catch (...) {
             storage_failed = true;
             if (!failure) failure = std::current_exception();
             cancel();
             throw;
         }
-        if (boundary == SaveBoundary::RunFinished
-            || boundary == SaveBoundary::Cancelled) run_saved = true;
-        emit("persisted", {{"boundary", boundary_name(boundary)}, {"format", "json"}});
+        if (boundary == persistence::Boundary::RunFinished
+            || boundary == persistence::Boundary::Cancelled) run_saved = true;
+        emit("persisted", {{"boundary", persistence::boundary_name(boundary)},
+            {"format", persistence::backend_name(receipt.backend)}});
         if (config.readable) {
             try {
                 load::save_state(directory / "readable.md", state, load::StateFormat::Readable);
@@ -493,17 +442,25 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         for (auto& hook : extensions.loop_hooks) hooks.add(std::move(hook));
     }
 
-    /** Restore history unchanged, reconciling only host-owned capabilities. */
+    /**
+     * Restore history unchanged, reconciling only host-owned capabilities.
+     *
+     * A store that exists but cannot be decoded fails startup; it is never
+     * treated as an empty session. `restore: never` bypasses the store instead
+     * of deleting it, so a later save replaces the current state in place.
+     */
     void restore_state() {
-        const auto snapshot = config.state_directory / "state.json";
-        const bool restored = config.persistence && config.restore && std::filesystem::exists(snapshot);
-        if (restored) {
-            state = load::load_state(snapshot);
+        std::optional<model_io::AgentInputState> stored;
+        if (config.persistence && config.restore) {
+            if (auto current = state_store->load_current()) stored = std::move(current->state);
+        }
+        if (stored) {
+            state = std::move(*stored);
             if (state.meta.session_id != session_id)
                 throw std::runtime_error("restored session ID does not match selected session");
         } else {
             state.meta.session_id = session_id;
-            state.meta.created_at = timestamp();
+            state.meta.created_at = persistence::utc_timestamp();
             state.meta.updated_at = state.meta.created_at;
             state.system_prompt = std::move(config.system_prompt);
         }
@@ -597,10 +554,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             emit("tool_calls", display_calls(event.calls));
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolDispatchCheckpoint>([this](const auto&) {
-            save(SaveBoundary::BeforeTools);
+            save(persistence::Boundary::BeforeTools);
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolResultsCheckpoint>([this](const auto&) {
-            save(SaveBoundary::ResultsReady);
+            save(persistence::Boundary::ResultsReady);
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolResultsCommitted>([this](const auto& event) {
             emit("tool_results", display_results(*event.state.turns.back().agent_loop_step.back().invoke_returns));
@@ -609,10 +566,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // read-only checkpoint observers. Recovery snapshots retain the last
         // logical edit timestamp rather than mutating state during publication.
         subscriptions.emplace_back(events.subscribe<loop::EditOnStepFinished>([](const auto& event) {
-            event.state.meta.updated_at = timestamp();
+            event.state.meta.updated_at = persistence::utc_timestamp();
         }));
         subscriptions.emplace_back(events.subscribe<loop::EditOnRunFinished>([](const auto& event) {
-            event.state.meta.updated_at = timestamp();
+            event.state.meta.updated_at = persistence::utc_timestamp();
         }));
         subscriptions.emplace_back(events.subscribe<loop::StepFinished>([this](const auto&) {
             ++history_revision;
@@ -621,10 +578,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             ++history_revision;
         }));
         subscriptions.emplace_back(events.subscribe<loop::StepFinished>([this](const auto&) {
-            if (config.save_step) save(SaveBoundary::StepFinished);
+            if (config.save_step) save(persistence::Boundary::StepFinished);
         }));
         subscriptions.emplace_back(events.subscribe<loop::RunFinished>([this](const auto&) {
-            if (config.save_run) save(SaveBoundary::RunFinished);
+            if (config.save_run) save(persistence::Boundary::RunFinished);
         }));
         subscriptions.emplace_back(events.subscribe<io::SignalEvent>(
             [weak = weak_from_this()](const io::SignalEvent& event) {
@@ -729,29 +686,66 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
     }
 
+    /**
+     * Map the archive directories this retained state names to store records.
+     *
+     * Historical states name absolute archive paths. Only the store can decide
+     * whether such a path still identifies an archive it owns, so the worker
+     * never protects a path by itself.
+     */
+    std::vector<persistence::ArchiveRef> archive_references(
+        const model_io::AgentInputState& retained,
+        const std::filesystem::path& root) const {
+        std::vector<persistence::ArchiveRef> references;
+        for (const auto& path : compact_archive_references(retained, root)) {
+            if (auto reference = state_store->archive_at(path))
+                references.push_back(std::move(*reference));
+        }
+        return references;
+    }
+
     /** Protect authoritative references and any replacement whose publication
      * may have succeeded before a required snapshot write reported failure.
      */
-    load::ArchiveCleanup cleanup_archive(
+    persistence::CleanupResult cleanup_archive(
         const std::filesystem::path& root,
-        const std::filesystem::path& current,
-        std::span<const std::filesystem::path> replacement_references = {}
+        const persistence::ArchiveRef& current,
+        std::span<const persistence::ArchiveRef> replacement_references = {}
     ) {
-        auto references = compact_archive_references(state, root);
-        references.insert(references.end(),
+        persistence::ArchivePruneRequest request;
+        request.current = current;
+        request.referenced = archive_references(state, root);
+        request.referenced.insert(request.referenced.end(),
             replacement_references.begin(), replacement_references.end());
-        return load::prune_memory_archives(root, current, config.memory_retention, references);
+        request.policy = config.memory_retention;
+        return state_store->prune_archives(request);
     }
 
-    /** Run retention on failure/cancellation without replacing its diagnostic.
+    /**
+     * Settle a failed or cancelled attempt, then apply retention.
+     *
      * Export errors remain optional: report through bounded events and logging,
-     * even if the transport cannot admit the notification. No exception escapes.
+     * even if the transport cannot admit the notification. No exception escapes,
+     * so an archive bookkeeping problem can never replace the primary diagnostic
+     * during unwinding. Retention already protects the settled attempt.
      */
-    void cleanup_failed_compact(
+    void settle_failed_compact(
         const std::filesystem::path& root,
-        const std::filesystem::path& current,
-        std::span<const std::filesystem::path> replacement_references
+        const persistence::ArchiveRef& current,
+        persistence::ArchiveOutcome outcome,
+        std::span<const persistence::ArchiveRef> replacement_references
     ) noexcept {
+        try {
+            state_store->finish_archive_attempt(current, outcome);
+        } catch (const std::exception& error) {
+            try {
+                logging::Logger::warning("compact archive settle failed: {}", error.what());
+            } catch (...) {
+                // Optional diagnostics must not replace the original failure.
+            }
+        } catch (...) {
+            // Preserve an original non-standard failure during unwinding too.
+        }
         try {
             const auto cleaned = cleanup_archive(root, current, replacement_references);
             logging::Logger::info("compact archive cleanup: removed {} archives ({} bytes)",
@@ -779,12 +773,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * and failed attempts remain in persistent sequence order for inspection.
      * Every settled archived attempt applies retention, protecting the current
      * evidence and references in retained state. Preflight creates no archive.
-     * The JSON save is the commit boundary: before it succeeds, the live state
+     * The store commit is the boundary: before it reports success the live state
      * is untouched. A published-but-unsynced write stops the worker just like
      * other required snapshot failures. Write failures retain archive references
      * from both the old state and the attempted replacement because publication
-     * may already have occurred. Cancellation during the synchronous
-     * commit does not roll back an already published snapshot.
+     * may already have occurred. Cancellation during the synchronous commit does
+     * not roll back an already published snapshot.
      */
     asio::awaitable<loop::RunResult> compact(
         CompactMode mode, const std::string& call_id = {}) {
@@ -796,34 +790,35 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
         const auto memory_directory = std::filesystem::absolute(
             config.memory).lexically_normal();
-        const auto archive_directory = plan_archive(memory_directory, run_id);
-        const auto archive_file = archive_directory / "state.md";
-        auto plan = plan_compact(state, memory_directory, archive_file);
-        std::filesystem::create_directories(memory_directory);
-        if (!std::filesystem::create_directory(archive_directory)) {
-            throw std::runtime_error("compact archive directory already exists");
-        }
+        // Reserve before preflight so a rejected attempt creates nothing while a
+        // failed attempt still consumes its ordinal and cannot reorder archives.
+        const auto archive = state_store->reserve_archive({run_id});
+        auto plan = plan_compact(state, memory_directory, archive.payload);
+        // Freeze the original state before summarization: the archive is the
+        // evidence that this attempt started, even if the model or the commit
+        // later fails. The payload locator is the only layout detail the worker
+        // needs, for the memory prompt and the compact result.
+        state_store->begin_archive(archive, state);
         bool cleanup_attempted = false;
-        // Lives longer than the exit guard; keep paths only, not another state
-        // copy. Filled before saving so even post-rename failures protect both
-        // recovery candidates, without relying on exception classification.
-        std::vector<std::filesystem::path> replacement_references;
+        // Lives longer than the exit guard; keep archive records only, not
+        // another state copy. Filled before committing so even post-rename
+        // failures protect both recovery candidates.
+        std::vector<persistence::ArchiveRef> replacement_references;
         // Run after the private draft and hook subscriptions are destroyed.
-        // Synchronous best-effort cleanup cannot alter the primary outcome.
+        // Synchronous best-effort settlement cannot alter the primary outcome.
         struct CleanupAttempt {
             Impl& self;
             const std::filesystem::path& root;
-            const std::filesystem::path& current;
+            const persistence::ArchiveRef& current;
             bool& attempted;
-            const std::vector<std::filesystem::path>& replacement_references;
+            const std::vector<persistence::ArchiveRef>& replacement_references;
+            persistence::ArchiveOutcome outcome = persistence::ArchiveOutcome::Failed;
             ~CleanupAttempt() {
-                if (!attempted) {
-                    self.cleanup_failed_compact(root, current, replacement_references);
-                }
+                if (attempted) return;
+                self.settle_failed_compact(root, current, outcome, replacement_references);
             }
-        } cleanup{*this, memory_directory, archive_directory,
+        } cleanup{*this, memory_directory, archive,
             cleanup_attempted, replacement_references};
-        load::save_state(archive_file, state, load::StateFormat::Readable);
 
         auto draft = state;
         draft.tools.clear();
@@ -861,12 +856,16 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 result.status = loop::RunStatus::Failed;
                 result.error = "compact returned an unexpected loop boundary";
             }
+            if (result.status == loop::RunStatus::Cancelled) {
+                cleanup.outcome = persistence::ArchiveOutcome::Cancelled;
+            }
             co_return result;
         }
         // A model may complete concurrently with cancellation. Until the
-        // replacement save begins, cancellation still preserves the old state.
+        // replacement commit begins, cancellation still preserves the old state.
         if (stop.stop_requested()) {
             result.status = loop::RunStatus::Cancelled;
+            cleanup.outcome = persistence::ArchiveOutcome::Cancelled;
             co_return result;
         }
         if (draft.turns.empty() || draft.turns.back().agent_loop_step.empty()) {
@@ -888,7 +887,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // checkpoint produced by the private run before pruning its response.
         model_io::AgentInputState replacement;
         replacement.meta = state.meta;
-        replacement.meta.updated_at = timestamp();
+        replacement.meta.updated_at = persistence::utc_timestamp();
         replacement.tools = state.tools;
         replacement.extras = state.extras;
         model_io::sync_external_status(replacement,
@@ -914,7 +913,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         const auto removed_turns = state.turns.size();
         // Allocate the success event before committing so construction failures
         // cannot be mistaken for an uncommitted operation.
-        Json completed = {{"summary", summary}, {"memory_file", archive_file.string()},
+        Json completed = {{"summary", summary}, {"memory_file", archive.payload.string()},
             {"removed_turns", removed_turns}, {"revision", history_revision + 1},
             {"durable", true}};
         if (mode == CompactMode::Automatic) {
@@ -924,14 +923,16 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
         if (stop.stop_requested()) {
             result.status = loop::RunStatus::Cancelled;
+            cleanup.outcome = persistence::ArchiveOutcome::Cancelled;
             co_return result;
         }
         // A failed parent-directory sync leaves the replacement visible on
         // disk while live state remains old. Protect the union on every failed
-        // write attempt, conservatively including failures before publication.
-        replacement_references = compact_archive_references(replacement, memory_directory);
+        // commit attempt, conservatively including failures before publication.
+        replacement_references = archive_references(replacement, memory_directory);
+        persistence::CommitReceipt receipt;
         try {
-            load::save_state(config.state_directory / "state.json", replacement);
+            receipt = state_store->commit_compaction(archive, replacement);
         } catch (...) {
             storage_failed = true;
             if (!failure) failure = std::current_exception();
@@ -942,7 +943,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         state = std::move(replacement);
         ++history_revision;
         run_saved = true;
-        emit("persisted", {{"boundary", "compact"}, {"format", "json"}});
+        // The attempt is settled once its replacement is durable; the archive
+        // itself stays immutable evidence and is never rewritten.
+        state_store->finish_archive_attempt(archive, persistence::ArchiveOutcome::Succeeded);
+        emit("persisted", {
+            {"boundary", persistence::boundary_name(persistence::Boundary::Compaction)},
+            {"format", persistence::backend_name(receipt.backend)}});
         if (config.readable) {
             try {
                 load::save_state(config.state_directory / "readable.md",
@@ -955,7 +961,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // failed/cancelled attempts against the unchanged authoritative state.
         cleanup_attempted = true;
         try {
-            const auto cleaned = cleanup_archive(memory_directory, archive_directory);
+            const auto cleaned = cleanup_archive(memory_directory, archive);
             completed["archive_cleanup"] = {{"removed_archives", cleaned.removed_archives},
                 {"removed_bytes", cleaned.removed_bytes}};
         } catch (const std::exception& error) {
@@ -1220,7 +1226,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             }
             active = true;
             if (input->operation != InputOperation::Compact) {
-                state.meta.updated_at = timestamp();
+                state.meta.updated_at = persistence::utc_timestamp();
             }
             run_saved = false;
             task_exchanges = compact_exchanges = compact_attempts = compact_successes = 0;
@@ -1248,7 +1254,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             // required save here before reporting durability or admitting input.
             if (input->operation != InputOperation::Compact && !storage_failed && !run_saved
                 && (config.save_run || result.status == loop::RunStatus::Cancelled)) {
-                save(config.save_run ? SaveBoundary::RunFinished : SaveBoundary::Cancelled);
+                save(config.save_run
+                    ? persistence::Boundary::RunFinished
+                    : persistence::Boundary::Cancelled);
             }
             active = false;
             {
@@ -1331,8 +1339,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         co_await control_done.async_receive(asio::use_awaitable);
         try {
             if (config.save_shutdown && !storage_failed) {
-                state.meta.updated_at = timestamp();
-                save(SaveBoundary::Shutdown);
+                state.meta.updated_at = persistence::utc_timestamp();
+                save(persistence::Boundary::Shutdown);
             }
         } catch (...) {
             if (!failure) failure = std::current_exception();

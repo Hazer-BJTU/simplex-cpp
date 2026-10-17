@@ -47,6 +47,27 @@ Legacy launch profiles and existing sessions retain this original layout:
 `state` and `memory` are configurable relative children. The Hub stores its own
 registry and reusable configurations outside individual session roots.
 
+## Backend boundary
+
+The worker reaches authoritative state only through `persistence::StateStore`
+(`persistence/include/persistence/store.hpp`). A store is session-scoped,
+single-writer and confined to the worker strand. `core` asks for a checkpoint, a
+reserved archive, a compaction commit or a retention pass; the storage format
+stays inside the backend. JSON is the only backend in this phase and keeps the
+layout below unchanged. The boundary, its ordering rules and the follow-up work
+are recorded in [the persistence backend contract](persistence-backends.md).
+
+Every store operation is synchronous and reports one of three outcomes:
+`NotCommitted` (the previous state is still authoritative), `Committed`, or
+`Unknown` (publication may have happened with uncertain crash durability). The
+worker stops writing on `Unknown` and keeps its recovery evidence instead of
+retrying. A backend that exposes a revision must refuse a stale write; the JSON
+backend exposes none and rejects an expectation instead of ignoring it.
+
+Compact archives are reserved during preflight, frozen before the summary
+exchange, and never rewritten afterwards; settling the attempt is a separate
+step. Retention policy and deletion targets are unchanged.
+
 ## Checkpoints and restoration
 
 Before dispatching tools, persistence records the tools phase. After dispatch,

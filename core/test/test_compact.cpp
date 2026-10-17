@@ -3,6 +3,7 @@
 #include "core/application.hpp"
 #include "core/protocol.hpp"
 #include "load/persistence.hpp"
+#include "persistence/store.hpp"
 #include <boost/asio/use_future.hpp>
 #include <boost/beast.hpp>
 #include <fstream>
@@ -465,8 +466,10 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
     second.join();
     server.get();
     if (mode == Scenario::PublishedSaveFailure) {
-        BOOST_CHECK_EXCEPTION(worker.get(), load::PersistenceError,
-            [](const auto& error) { return error.published(); });
+        // The store keeps the codec's diagnostic text but reports the recovery
+        // outcome explicitly: rename succeeded, directory sync did not.
+        BOOST_CHECK_EXCEPTION(worker.get(), persistence::StoreError,
+            [](const auto& error) { return error.status() == persistence::CommitStatus::Unknown; });
         BOOST_TEST(successful == 0);
         BOOST_TEST(finished == 0);
         BOOST_TEST(storage_errors == 1);
