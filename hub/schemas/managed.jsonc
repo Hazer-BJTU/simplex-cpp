@@ -1,0 +1,28 @@
+{
+    // Explicitly opts this new session into target-local simplex manage.
+    // These legacy fields are retained for launch-document compatibility only.
+    "launcher": { "kind": "command", "command": ["simplex", "run"] },
+    "management": {
+        "target": { "kind": "local" },
+        // This installation must support both `simplex run` and `simplex manage`.
+        "executable": "simplex",
+        // Hub-local transport cwd and environment. Remote worker environment
+        // belongs to the SSH host/container, not to this env mapping.
+        "cwd": "__HUB_CWD__",
+        "env": {},
+        // Target-local root; Hub assigns a fresh allocation UUID beneath it.
+        // Local targets must be outside the entire Hub dataDir tree.
+        "root": "__WORKER_ROOT__",
+        "timeoutMs": 30000
+    },
+    "worker": {
+        "threads": 1,
+        "args": [],
+        "connectHost": "",
+        "stopTimeoutMs": 15000,
+        "sigtermGraceMs": 5000,
+        "sigkillGraceMs": 2000
+    },
+    "env": {},
+    "endpoints": {}
+}

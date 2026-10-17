@@ -121,6 +121,13 @@ export function prepareSessionConfig(options: RenderSessionConfigOptions): {
         document.setIn(['providers', config.mock.profile, 'endpoint', 'base_url'], mock.baseUrl);
     }
     const result = document.toJS({ maxAliasCount: 100 });
+    applyConfigurationSpec(spec, result);
+    writeDocument(path, document.toString());
+    return { spec, document: result };
+}
+
+/** Project public model/runtime metadata from an effective configuration without opening files. */
+export function applyConfigurationSpec(spec: NormalizedSpec, result: any): void {
     // Session descriptions should continue to identify the model in the file,
     // even if that profile has been removed from the hub defaults.
     if (typeof result.driver_model === 'string') {
@@ -160,8 +167,6 @@ export function prepareSessionConfig(options: RenderSessionConfigOptions): {
         readable: result.persistence?.readable ?? false,
     };
     spec.restore = result.persistence?.restore ?? 'if_present';
-    writeDocument(path, document.toString());
-    return { spec, document: result };
 }
 
 /** Resolve snapshots from saved config, including operator-selected state subdirectories. */

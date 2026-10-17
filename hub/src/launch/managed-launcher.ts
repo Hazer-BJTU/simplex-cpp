@@ -98,7 +98,7 @@ export class ManagedLauncher {
 
     /** Execute one request; callers retain the reference/request identity for reconciliation. */
     manage(
-        reference: AllocationReference, requestId: string, operation: ManagementOperation,
+        reference: AllocationReference, requestId: string, operation: ManagementOperation, signal?: AbortSignal,
     ): Promise<ManagementReply> {
         const request: ManagementRequest = {
             ...operation,
@@ -107,7 +107,7 @@ export class ManagedLauncher {
             allocation_id: reference.allocationId,
             directory: reference.directory,
         };
-        return executeManagement(this.buildManagementInvocation(request), requestId);
+        return executeManagement(this.buildManagementInvocation(request), requestId, signal);
     }
 
     /**

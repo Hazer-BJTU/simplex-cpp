@@ -3,15 +3,20 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { isMap, parseDocument } from 'yaml';
 import { ConfigError, defaultConfig, hubRoot, mergeConfig, parseConfigText, validateConfig } from '../config.ts';
 import { persistenceChild } from '../launch/config-file.ts';
 import type { HubConfig } from '../config.ts';
+import { managementPolicy, separateLocalRoot } from '../launch/managed-sessions.ts';
+import type { ManagementPolicy } from '../launch/managed-sessions.ts';
 
 import type { ConfigKind, ConfigFile } from '../../shared/configurations.ts';
 export type { ConfigKind, ConfigFile } from '../../shared/configurations.ts';
 import { renderSessionConfig } from '../launch/config-render.ts';
 export interface LaunchDocument {
+    /** Optional explicit target management; legacy launch commands are ignored when enabled. */
+    management?: ManagementPolicy;
     launcher: HubConfig['launcher'];
     worker?: Partial<Pick<HubConfig['worker'], 'bin' | 'args' | 'threads' | 'connectHost' | 'stopTimeoutMs' | 'sigtermGraceMs' | 'sigkillGraceMs'>>;
     env?: Record<string, string>;
@@ -103,7 +108,7 @@ export function launchDocument(text: string, config: HubConfig): LaunchDocument 
         throw configError('worker must be a mapping');
     }
     for (const key of Object.keys(value)) {
-        if (!['launcher', 'worker', 'env', 'endpoints'].includes(key)) throw configError(`Unknown launch field: ${key}`);
+        if (!['launcher', 'worker', 'env', 'endpoints', 'management'].includes(key)) throw configError(`Unknown launch field: ${key}`);
     }
     const allowed = ['bin', 'args', 'threads', 'connectHost', 'stopTimeoutMs', 'sigtermGraceMs', 'sigkillGraceMs'] as const;
     for (const key of Object.keys(value.worker ?? {})) {
@@ -141,6 +146,11 @@ export function launchDocument(text: string, config: HubConfig): LaunchDocument 
                 throw configError('Endpoint origins must be ws:// or wss:// URLs without query, fragment or credentials');
             }
         }
+    }
+    if (value.management !== undefined) {
+        value.management = managementPolicy(value.management);
+        separateLocalRoot(config, value.management);
+        if (value.launcher.pidFile) throw configError('managed launch does not support pidFile');
     }
     return value;
 }
@@ -208,7 +218,13 @@ export class ConfigurationStore {
 
     /** Templates are source files, optionally seeded from the current deployment.
      * No session token is stored here; the live addresses are bound at startup. */
-    template(kind: ConfigKind, source: 'default' | 'deployment' | 'docker' = 'default'): string {
+    template(kind: ConfigKind, source: 'default' | 'deployment' | 'docker' | 'managed' = 'default'): string {
+        if (source === 'managed') {
+            if (kind !== 'launch') throw configError('Managed is a launch template');
+            return readFileSync(join(hubRoot, 'schemas', 'managed.jsonc'), 'utf8')
+                .replace('"__HUB_CWD__"', JSON.stringify(homedir()))
+                .replace('"__WORKER_ROOT__"', JSON.stringify(join(homedir(), '.simplex-worker', 'allocations')));
+        }
         if (source === 'docker') {
             if (kind !== 'launch') throw configError('Docker is a launch template');
             return readFileSync(join(hubRoot, 'schemas', 'docker.jsonc'), 'utf8');

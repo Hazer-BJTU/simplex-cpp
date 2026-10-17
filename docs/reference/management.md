@@ -3,9 +3,9 @@
 `simplex manage` runs a target-local management program installed beside the
 worker. It prepares and inspects managed allocations and removes them after
 worker shutdown. This initial implementation supports local JSON storage.
-Existing Hub launchers have **not** switched to this interface yet; automatic
-remote management, Hub-local data separation, and subagent clean-fork integration
-are subsequent work in [#142](https://github.com/Hazer-BJTU/simplex-cpp/issues/142).
+Hub launch profiles can opt new ordinary sessions into this interface using
+`management`. Existing profiles remain on their legacy layout; subagent
+clean-fork migration follows in [#142](https://github.com/Hazer-BJTU/simplex-cpp/issues/142).
 
 ## Invocation and trust
 
@@ -145,9 +145,9 @@ not acquire database dependencies or read database files directly.
 
 The Hub's internal `ManagedLauncher` adapter provides the next integration layer.
 It binds `simplex run` and `simplex manage` to one explicitly configured execution
-target and installation. Ordinary sessions still use the existing launch path;
-this adapter is **not yet a selectable launch configuration**. Session data
-separation, managed session adoption and child cleanup follow in #142.
+target and installation. The **Managed worker** template in the configuration editor enables it for
+new ordinary sessions. Existing profiles and sessions remain on their legacy
+launch path. Child clean-fork and recovery integration follow in #142.
 
 The adapter supports these invocation shapes:
 
@@ -181,10 +181,132 @@ is also an error. Manager-reported failures retain their stable code and optiona
 not trigger automatic retries. Callers must inspect/reconcile the same allocation
 identity before deciding whether a mutation can be repeated.
 
-No default timeout is imposed by this low-level transport. Lifecycle integration
-must define interruption and reconciliation together; a hung configured peer can
-leave a call pending. This adapter does not equate termination of SSH or Docker
+The low-level transport accepts an abort signal. Session integration sets a
+per-command `management.timeoutMs` deadline (30,000 ms by default). A timeout
+kills only the Hub-side transport, reports an unknown outcome, and retains
+the allocation reference for reconciliation. It is not a receive-size limit. This adapter does not equate termination of SSH or Docker
 CLI processes with remote worker termination. Captured stderr and manager error
 details are private diagnostics: they can contain secrets and must not be placed
 in Panel events or ordinary logs. Public error messages omit argv and raw peer
 output.
+
+
+## Opt-in managed sessions
+
+Create a launch configuration using **Managed worker**, edit it, and select it
+with a worker configuration when creating a **new** session. Both the installed
+worker and `simplex manage` must support the allocation contract above. This
+feature is not compatible with older released workers that lack the manager.
+
+The template defaults to local execution, with allocation roots under
+`~/.simplex-worker/allocations` (expanded to an absolute path by the Hub). Each
+session receives a random allocation ID, unrelated to the reusable display
+session ID. A retired allocation path is never reused.
+
+A minimal launch profile is:
+
+```json
+{
+  "launcher": { "kind": "command", "command": ["simplex", "run"] },
+  "management": {
+    "target": { "kind": "local" },
+    "executable": "/opt/simplex/bin/simplex",
+    "root": "/srv/simplex/allocations",
+    "cwd": "/home/operator",
+    "env": {},
+    "timeoutMs": 30000
+  },
+  "worker": { "threads": 2 },
+  "endpoints": {}
+}
+```
+
+When `management` is present, its executable/target replaces the legacy
+`launcher.command`, `launcher.args`, `launcher.cwd`, and `worker.bin` invocation.
+`worker.threads`, `worker.args`, connection-host settings, endpoint overrides and
+stop-policy settings remain applicable. `pidFile` is not supported. The top-level
+launch `env` overlays `management.env`; both apply to the Hub-side transport,
+not to the remote worker environment. For local execution they also reach the
+worker; for SSH/Docker, provision worker credentials in that target environment.
+
+`management.cwd` must be an absolute existing **Hub-local** directory. `root`
+and `executable` refer to the **target**. Local roots must neither contain nor
+be contained by Hub `dataDir`; existing symlink aliases are checked too. Known
+config-relative worker paths remain relative to the target's generated config
+directory; Hub does not resolve them into its local filesystem. Configure
+absolute target paths for existing workspace/assets when appropriate.
+
+### Remote targets
+
+For SSH replace only the target section, and point `executable`/`root` at the
+remote installation/storage:
+
+```json
+{ "kind": "ssh", "command": "ssh", "args": ["-p", "2222"], "host": "worker@example.test" }
+```
+
+For Docker use an **existing retained container**:
+
+```json
+{ "kind": "docker", "command": "docker", "args": ["--context", "my-target"], "container": "simplex-target" }
+```
+
+The operator creates and keeps that container running independently of the
+worker process (for example, an image with `simplex` installed and an idle init
+process). Hub runs both commands using `docker exec`, with no bind mount needed.
+The container must remain available after worker exit until deletion succeeds.
+Hub does not create, stop or remove this container. Its lifecycle must not use a
+foreground worker as PID 1 with automatic container removal. Configure advertised
+Hub endpoints reachable from the target as with other remote launch profiles.
+
+Remote stop sends the normal shutdown signal, then verifies the manager can
+acquire an exclusive allocation lease. Losing SSH/Docker CLI connectivity is not
+proof of remote exit. If the target cannot be verified idle, stop reports
+`remote-ownership-unconfirmed`; Hub does not signal a remote PID on its own host
+or kill the entire shared container. Remote force-kill is deliberately unsupported
+in this stage. Stop the worker on the target and retry stop/delete if protocol
+shutdown is unavailable. A restarted Hub retains a remote ownership record even
+when the former transport PID no longer exists, until an explicit stop can verify
+that the allocation is idle. Managed clean-fork currently returns
+`unsupported_launch`; legacy subagents are unchanged until phase C.
+
+### Storage, retries and transition
+
+Hub-local records remain under `dataDir/sessions/<session-id>/`: source and launch
+snapshots, `allocation.json`, captured logs, transcript and plan. The target owns
+`management.root/<allocation-id>/`: effective configuration reference, state and
+memory. Hub reads no target configuration/state files and owns no backend mapper.
+The source snapshot is input to preparation, not a copy of the generated target
+config reference.
+
+Before the first manager call, Hub atomically publishes and syncs its private
+allocation record. Restart reuses the same identity, source and transport even
+if the original configuration-library entry has changed or been deleted. Manager
+inspection supplies the expected revision; preparation refreshes live connection
+endpoints and preserves source settings; startup capture precedes process launch.
+The allocation source/target cannot be changed through the session configuration
+replacement API once bound. Create a new session for such changes. This avoids
+silently abandoning an old allocation or overwriting its state.
+
+Snapshot inspection returns complete `state` and `readable` values through the
+management pipe, with `files: {}` because target paths are not Hub-local artifact
+paths. It has no former 8 MiB snapshot cutoff. Missing data is null only when the
+manager explicitly reports it; corruption, unreachable peers and malformed replies
+fail the HTTP request instead of substituting empty state or a local file.
+History and answer queries still use the worker WebSocket protocol.
+
+Deletion records cleanup intent locally, verifies target removal through the
+manager, and only then deletes this session's Hub-local records. A lost reply or
+failed cleanup retains the reference and session for explicit retry. Starting is
+blocked while removal is pending. Uncertain initial preparation is reconciled
+with the original source/identity before removal; a missing record is not assumed
+to prove that an earlier remote operation did nothing. Unrelated Hub files and
+other target allocations remain untouched. A corrupt local allocation reference
+fails closed rather than selecting legacy local deletion.
+
+Old sessions and launch profiles continue using their existing layout. There is
+**no automatic migration or adoption**. Applying managed configuration to a legacy
+session with worker artifacts is refused; create a fresh session instead. Do not
+copy a generated managed `config.yaml` between directories or delete
+`allocation.json` to bypass lifecycle checks. Phase C completes managed subagent
+storage and the final deployment/migration audit.

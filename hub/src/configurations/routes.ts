@@ -29,8 +29,8 @@ export function configurationRoutes(store: ConfigurationStore, supervisor: Worke
             const kind = params.kind as ConfigKind;
             store.path(kind, 'template');
             const source = url.searchParams.get('source') ?? 'default';
-            if (!['default', 'deployment', 'docker'].includes(source)) throw configError('Unknown template source');
-            sendJson(res, 200, { text: store.template(kind, source as 'default' | 'deployment' | 'docker') } satisfies ConfigTemplateResponse);
+            if (!['default', 'deployment', 'docker', 'managed'].includes(source)) throw configError('Unknown template source');
+            sendJson(res, 200, { text: store.template(kind, source as 'default' | 'deployment' | 'docker' | 'managed') } satisfies ConfigTemplateResponse);
         },
         'POST /api/configurations/preview': async ({ req, res }) => {
             const body = await objectBody(req, 1024 * 1024);

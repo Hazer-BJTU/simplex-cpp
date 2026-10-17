@@ -233,3 +233,21 @@ test('SSH and Docker adapters execute through configured transport, retaining fu
         assert.equal(reply.diagnostics, 'manager diagnostics');
     }
 });
+
+test('explicit abort bounds a hung transport without treating a partial success as completion', async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 150);
+    try {
+        await assert.rejects(executeManagement(child(`
+            process.stdout.write(${JSON.stringify(JSON.stringify(success))});
+            setInterval(() => {}, 1000);
+        `), request.request_id, controller.signal), error => {
+            assert.equal(error.kind, 'transport');
+            assert.equal(error.code, 'cancelled');
+            assert.equal(error.outcome, 'unknown');
+            return true;
+        });
+    } finally { clearTimeout(timer); }
+    await assert.rejects(executeManagement(child('process.exit(99)'), request.request_id, controller.signal),
+        error => error.code === 'cancelled');
+});

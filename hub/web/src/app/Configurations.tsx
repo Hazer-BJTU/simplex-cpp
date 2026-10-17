@@ -110,6 +110,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                             <option value="default">Default template</option>
                             <option value="deployment">Current Hub deployment</option>
                             {kind === 'launch' && <option value="docker">Docker container</option>}
+                            {kind === 'launch' && <option value="managed">Managed worker</option>}
                         </select>
                         <Button disabled={busy} onClick={() => {
                             if (!discard()) return;

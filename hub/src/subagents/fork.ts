@@ -8,6 +8,7 @@ import type { LaunchDocument } from '../configurations/store.ts';
 import { writeConfigFile, launchDocument } from '../configurations/store.ts';
 import { sessionDir } from '../launch/config-render.ts';
 import { privateDirectory } from './storage.ts';
+import { managedRecordPath } from '../launch/managed-sessions.ts';
 import { ToolFailure } from '../worker/tool-context.ts';
 
 /** Normalize known path fields, without guessing the meaning of arbitrary provider values. */
@@ -66,6 +67,9 @@ export function supportedLaunch(launch: LaunchDocument): boolean {
 }
 
 export function cleanFork(config: HubConfig, parent: Session, child: Session): void {
+    if (existsSync(managedRecordPath(config, parent.id))) {
+        throw new ToolFailure('unsupported_launch', 'managed clean-fork will be available after the lifecycle migration');
+    }
     const source = join(sessionDir(config, parent.id), 'config');
     privateDirectory(source);
     const workerPath = join(source, 'startup-worker.yaml');

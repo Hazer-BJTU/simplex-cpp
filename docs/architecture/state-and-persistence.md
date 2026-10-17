@@ -7,7 +7,28 @@ runtime dependencies and are not restored from this snapshot.
 
 ## Storage ownership
 
-For a Hub-managed worker:
+With an opt-in **Managed worker** launch profile, Hub and target ownership are
+separate:
+
+```text
+Hub: <dataDir>/sessions/<session-id>/
+  config/                 source/launch snapshots and library provenance
+  allocation.json         private target identity and cleanup intent
+  events.jsonl, logs/, plan.json
+
+Target: <management.root>/<allocation-id>/
+  config/config.yaml      generated managed reference
+  state/state.json, state/readable.md
+  memory/, session.lock
+```
+
+Hub invokes `simplex manage` through the selected local/SSH/Docker transport for
+configuration preparation, snapshot inspection and allocation removal. State is
+returned as complete JSON; Hub neither opens target files nor maps databases.
+See [managed sessions](../reference/management.md#opt-in-managed-sessions) for
+configuration, timeout/retry policy and remote lifecycle requirements.
+
+Legacy launch profiles and existing sessions retain this original layout:
 
 ```text
 <dataDir>/sessions/<session-id>/

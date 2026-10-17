@@ -34,7 +34,12 @@ import type { SplitLine } from '../util/ring.ts';
 import { logPreview } from '../util/log-preview.ts';
 import { BoundedWriter } from '../util/bounded-writer.ts';
 import { sessionDir, workerConfigPath } from './config-render.ts';
-import { prepareSessionConfig } from './config-file.ts';
+import { prepareSessionConfig, applyConfigurationSpec } from './config-file.ts';
+import { normalizeSpec } from './spec.ts';
+import { ManagedLauncher } from './managed-launcher.ts';
+import { bindManagedSession, readManagedSession, prepareManagedSession, managedIdle,
+    removeManagedSession, readManagedState, managedRecordPath } from './managed-sessions.ts';
+import type { ManagedSessionRecord } from './managed-sessions.ts';
 import type { NormalizedSpec } from './spec.ts';
 import type { Launcher, InvocationContext } from './launcher.ts';
 import type { LauncherInvocation, WorkerEndpoints } from './invocation.ts';
@@ -213,6 +218,8 @@ export class ProcessRecord {
     /** Fence covering both output pipes and the optional disk writer. */
     ownedIo: Promise<void> = Promise.resolve();
     dockerManagement: DockerManagement | null = null;
+    /** Remote CLI PIDs must never be mistaken for worker ownership. */
+    managed: ManagedSessionRecord | null = null;
     readonly sessionId: string;
     state: ProcessState;
     pid: number | null;
@@ -346,8 +353,14 @@ export class WorkerSupervisor {
         this.onProcessChange = onProcessChange;
     }
 
+    /** Serialize start and deletion across their new asynchronous manager calls. */
+    private readonly pending = new Set<string>();
+    private readonly pendingTasks = new Map<string, Promise<unknown>>();
+    private shuttingDown = false;
+
     /** True when a worker process is believed to be alive for this session. */
     isRunning(session: Session): boolean {
+        if (this.pending.has(session.id)) return true;
         const record = session.process as ProcessRecord | null;
         if (!record) return false;
         return record.state === PROCESS_STATE.starting
@@ -355,9 +368,10 @@ export class WorkerSupervisor {
             || record.state === PROCESS_STATE.stopping;
     }
 
-    /** Worker configuration path for a session (written even when unused). */
+    /** Target configuration reference when managed; legacy Hub-local path otherwise. */
     configPathFor(sessionId: string): string {
-        return workerConfigPath(this.config, sessionId);
+        const record = readManagedSession(this.config, sessionId);
+        return record ? `${record.reference.directory}/config/config.yaml` : workerConfigPath(this.config, sessionId);
     }
 
     /** Installed by the family coordinator; freezes admission before any await. */
@@ -366,9 +380,19 @@ export class WorkerSupervisor {
 
     /** Start a worker for a session. */
     async start(session: Session, rawSpec?: unknown): Promise<StartResult> {
+        if (this.shuttingDown) return { ok: false, error: 'the supervisor is stopping' };
         if (this.isRunning(session)) {
             return { ok: false, error: 'a worker process is already running for this session' };
         }
+        this.pending.add(session.id);
+        const task = this.startPrepared(session, rawSpec);
+        this.pendingTasks.set(session.id, task);
+        try { return await task; }
+        finally { this.pending.delete(session.id); this.pendingTasks.delete(session.id); }
+    }
+
+    /** Called only while this session's local lifecycle admission is reserved. */
+    private async startPrepared(session: Session, rawSpec?: unknown): Promise<StartResult> {
         this.beforeStart?.(session);
         session.closing = false;
         session.lifecycleId = randomUUID();
@@ -383,7 +407,8 @@ export class WorkerSupervisor {
             return { ok: false, error: `cannot create ${directory}: ${message}`,
                 config: specSource };
         }
-        const configPath = workerConfigPath(this.config, session.id);
+        let configPath = workerConfigPath(this.config, session.id);
+        let managed: ManagedSessionRecord | null = null;
         let launchConfig = this.config;
         let launcher = this.launcher;
         let endpoints = this.endpointsFor(session.id, session.token);
@@ -399,13 +424,30 @@ export class WorkerSupervisor {
                 endpoints = launchEndpoints(endpoints, saved.launch);
                 launchSpec = { ...(specSource as object), threads: launchConfig.worker.threads, env: saved.launch.env ?? {}, extraArgs: [] };
             }
-            rendered = prepareSessionConfig({
-                config: launchConfig,
-                sessionId: session.id,
-                rawSpec: launchSpec,
-                endpoints,
-                mock: this.mockProvider?.(),
-            });
+            managed = readManagedSession(this.config, session.id);
+            if (saved?.launch.management || managed) {
+                if (session.kind === 'headless') throw new Error('managed clean-fork is not supported yet');
+                if (!managed) {
+                    const policy = saved!.launch.management!;
+                    managed = bindManagedSession(this.config, session.id,
+                        { ...policy, env: { ...policy.env, ...saved!.launch.env } },
+                        readFileSync(configPath, 'utf8'));
+                }
+                const document = await prepareManagedSession(this.config, session.id, managed, endpoints, session.lifecycleId);
+                const spec = normalizeSpec(launchConfig, { threads: launchConfig.worker.threads,
+                    env: {}, extraArgs: [] });
+                applyConfigurationSpec(spec, document);
+                rendered = { spec, document };
+                configPath = `${managed.reference.directory}/config/config.yaml`;
+            } else {
+                rendered = prepareSessionConfig({
+                    config: launchConfig,
+                    sessionId: session.id,
+                    rawSpec: launchSpec,
+                    endpoints,
+                    mock: this.mockProvider?.(),
+                });
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return { ok: false, error: `cannot prepare session configuration: ${message}`, config: specSource };
@@ -417,7 +459,12 @@ export class WorkerSupervisor {
 
         let invocation: LauncherInvocation;
         try {
-            invocation = launcher.buildInvocation({
+            invocation = managed ? {
+                ...new ManagedLauncher(managed.launcher).buildWorkerInvocation(managed.reference, configPath,
+                    ['--session', session.id, '--threads', String(rendered.spec.threads),
+                        ...launchConfig.worker.args, ...rendered.spec.extraArgs]),
+                pidFile: null,
+            } : launcher.buildInvocation({
                 sessionId: session.id,
                 spec: rendered.spec,
                 configPath,
@@ -436,7 +483,9 @@ export class WorkerSupervisor {
             launch.worker!.threads = rendered.spec.threads;
             // Preserve per-session appended flags in the immutable launch snapshot.
             launch.launcher.args = [...launch.launcher.args, ...rendered.spec.extraArgs];
-            captureStartup(this.config, session, readFileSync(configPath, 'utf8'), launch);
+            // Managed capture is authoritative on the target. Legacy clean-fork
+            // must not mistake a Hub-side source copy for that captured state.
+            if (!managed) captureStartup(this.config, session, readFileSync(configPath, 'utf8'), launch);
         } catch {
             return { ok: false, error: 'cannot capture authoritative startup snapshot' };
         }
@@ -467,7 +516,8 @@ export class WorkerSupervisor {
         });
         const record = new ProcessRecord({ sessionId: session.id, invocation, logPath, logStream, logs });
         record.stopPolicy = { ...launchConfig.worker };
-        try { record.dockerManagement = captureDockerManagement(invocation, launchConfig.launcher.dockerManagementEnv); }
+        record.managed = managed;
+        try { if (!managed) record.dockerManagement = captureDockerManagement(invocation, launchConfig.launcher.dockerManagementEnv); }
         catch { logStream.end(); return { ok: false, error: 'cannot capture Docker management context' }; }
         session.process = record;
 
@@ -546,6 +596,31 @@ export class WorkerSupervisor {
         return { ok: true, pid: record.pid, config: session.spec };
     }
 
+    /** Managed inspection has no Hub-side byte limit or target filesystem fallback. */
+    async managedSnapshot(session: Session): Promise<{ state: unknown; readable: string | null } | null> {
+        const record = readManagedSession(this.config, session.id);
+        if (record) return readManagedState(record);
+        if (sessionLaunch(this.config, session.id)?.launch.management) {
+            throw new Error('managed allocation has not been prepared; start the worker first');
+        }
+        return null;
+    }
+
+    /** Keep local admission reserved until target removal AND local deletion finish. */
+    async removeStorage(session: Session, removeLocal: () => void): Promise<void> {
+        if (this.isRunning(session) || session.connected) throw new Error('session is busy');
+        this.pending.add(session.id);
+        session.closing = true;
+        const task = (async () => {
+            const record = readManagedSession(this.config, session.id);
+            if (record) await removeManagedSession(this.config, session.id, record);
+            removeLocal();
+        })();
+        this.pendingTasks.set(session.id, task);
+        try { await task; }
+        finally { this.pending.delete(session.id); this.pendingTasks.delete(session.id); }
+    }
+
     /** Record process termination and release per-process resources. */
     finish(
         record: ProcessRecord,
@@ -584,6 +659,22 @@ export class WorkerSupervisor {
 
     /** Wait for a record to reach a terminal state. */
     async waitForExit(record: ProcessRecord, timeoutMs: number): Promise<boolean> {
+        if (record.managed && record.managed.launcher.target.kind !== 'local') {
+            const until = Date.now() + timeoutMs;
+            do {
+                if (await managedIdle(record.managed, Math.max(1, Math.min(record.managed.timeoutMs, until - Date.now())))) {
+                    // It is now safe to retire our transport too; this is not
+                    // escalation against an unverified remote worker PID.
+                    if (record.child && record.child.exitCode === null && record.child.signalCode === null) {
+                        record.child.kill('SIGKILL');
+                    }
+                    this.finish(record, { exitCode: null });
+                    return true;
+                }
+                if (Date.now() >= until) return false;
+                await delay(Math.min(250, Math.max(1, until - Date.now())));
+            } while (true);
+        }
         const container = dockerName(record);
         if (container) {
             const until = Date.now() + timeoutMs;
@@ -621,6 +712,7 @@ export class WorkerSupervisor {
         signal: NodeJS.Signals,
         { processGroup = false }: { processGroup?: boolean } = {},
     ): boolean {
+        if (record.managed && record.managed.launcher.target.kind !== 'local') return false;
         const pid = this.targetPid(record);
         if (!pid) {
             this.log.warn(`session ${record.sessionId}: ${signal} not sent: no verified pid to signal`);
@@ -667,6 +759,7 @@ export class WorkerSupervisor {
      * Stop a worker: protocol first, then SIGTERM, then SIGKILL.
      */
     async stop(session: Session, options: { timeoutMs?: number; processGroup?: boolean } = {}): Promise<StopResult> {
+        if (this.pending.has(session.id)) return { ok: false, how: 'management-busy', forced: false };
         return this.cascade ? this.cascade(session, () => this.stopProcess(session, options))
             : this.stopProcess(session, options);
     }
@@ -678,8 +771,22 @@ export class WorkerSupervisor {
         { timeoutMs?: number; processGroup?: boolean } = {},
     ): Promise<StopResult> {
         const record = session.process as ProcessRecord | null;
-        if (!record) return { ok: true, how: 'not-started', forced: false };
+        if (!record) {
+            const managed = readManagedSession(this.config, session.id);
+            if (!managed) return { ok: true, how: 'not-started', forced: false };
+            const connection = session.connection as { requestShutdown(): unknown } | null;
+            connection?.requestShutdown();
+            const until = Date.now() + timeoutMs;
+            do {
+                if (await managedIdle(managed, Math.max(1, Math.min(managed.timeoutMs, until - Date.now())))) {
+                    return { ok: true, how: 'manager-idle', forced: false };
+                }
+                if (Date.now() >= until) return { ok: false, how: 'managed-ownership-unconfirmed', forced: false };
+                await delay(Math.min(250, Math.max(1, until - Date.now())));
+            } while (true);
+        }
         if ((record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed)
+            && (!record.managed || record.managed.launcher.target.kind === 'local')
             && (!dockerName(record) || await dockerRunning(record.dockerManagement) === false)) {
             return { ok: true, how: 'already-exited', forced: false };
         }
@@ -695,6 +802,10 @@ export class WorkerSupervisor {
         }
         if (await this.waitForExit(record, timeoutMs)) {
             return { ok: true, how: 'shutdown-signal', forced: false };
+        }
+
+        if (record.managed && record.managed.launcher.target.kind !== 'local') {
+            return { ok: false, how: 'remote-ownership-unconfirmed', forced: false };
         }
 
         this.log.warn(`session ${session.id}: graceful stop timed out; sending SIGTERM`);
@@ -739,6 +850,7 @@ export class WorkerSupervisor {
      * descendants the worker itself would not have promised to terminate.
      */
     async forceKill(session: Session, options: { processGroup?: boolean } = {}): Promise<StopResult | { ok: false; error: string }> {
+        if (this.pending.has(session.id)) return { ok: false, error: 'session management is in progress' };
         if (!session.process) return { ok: false, error: 'no worker process is recorded for this session' };
         return this.cascade ? this.cascade(session, () => this.forceKillProcess(session, options))
             : this.forceKillProcess(session, options);
@@ -751,8 +863,12 @@ export class WorkerSupervisor {
         const record = session.process as ProcessRecord | null;
         if (!record) return { ok: true, how: 'not-started', forced: false };
         if ((record.state === PROCESS_STATE.exited || record.state === PROCESS_STATE.failed)
+            && (!record.managed || record.managed.launcher.target.kind === 'local')
             && (!dockerName(record) || await dockerRunning(record.dockerManagement) === false)) {
             return { ok: true, how: 'already-exited', forced: false };
+        }
+        if (record.managed && record.managed.launcher.target.kind !== 'local') {
+            return { ok: false, how: 'remote-force-kill-unsupported', forced: false };
         }
         record.stopRequested = true;
         const container = dockerName(record);
@@ -782,8 +898,12 @@ export class WorkerSupervisor {
     adopt(session: Session, stored: unknown): boolean {
         if (typeof stored !== 'object' || stored === null) return false;
         const entry = stored as Record<string, unknown>;
+        let managed: ManagedSessionRecord | null;
+        try { managed = readManagedSession(this.config, session.id); }
+        catch { return false; }
+        const remoteManaged = managed && managed.launcher.target.kind !== 'local';
         const container = dockerName({ command: String(entry.command ?? ''), args: Array.isArray(entry.args) ? entry.args : [] });
-        if (!isSameProcess(entry.pid, entry.pid_start_time) && !container) return false;
+        if (!isSameProcess(entry.pid, entry.pid_start_time) && !container && !remoteManaged) return false;
         const record = new ProcessRecord({
             sessionId: session.id,
             invocation: {
@@ -803,6 +923,7 @@ export class WorkerSupervisor {
                 sizeOf: (line) => Buffer.byteLength(line, 'utf8'),
             }),
         });
+        record.managed = managed;
         record.dockerManagement = container ? restoreDockerManagement(entry.docker_management, container) : null;
         record.pid = entry.pid as number;
         record.pidStartTime = entry.pid_start_time as string;
@@ -815,7 +936,7 @@ export class WorkerSupervisor {
         // The exit of a process this hub did not spawn can only be observed by
         // polling; it is rare and cheap enough to justify keeping the panel
         // honest about a worker that dies while the hub is running.
-        if (container || (typeof record.pidStartTime === 'string' && record.pidStartTime.length > 0)) {
+        if (!remoteManaged && (container || (typeof record.pidStartTime === 'string' && record.pidStartTime.length > 0))) {
             record.monitor = setInterval(() => {
                 if (container) {
                     void dockerRunning(record.dockerManagement).then(running => {
@@ -842,10 +963,14 @@ export class WorkerSupervisor {
     async stopAll(
         options?: { timeoutMs?: number; processGroup?: boolean },
     ): Promise<Array<StopResult & { session: string }>> {
+        this.shuttingDown = true;
+        await Promise.allSettled([...this.pendingTasks.values()]);
         const results: Array<StopResult & { session: string }> = [];
         for (const session of this.registry.list()) {
-            if (!this.isRunning(session)
-                && !(session.process && dockerName(session.process as ProcessRecord))) continue;
+            const record = session.process as ProcessRecord | null;
+            const remoteManaged = record?.managed && record.managed.launcher.target.kind !== 'local';
+            if (!this.isRunning(session) && !(record && dockerName(record)) && !remoteManaged
+                && !(session.connected && existsSync(managedRecordPath(this.config, session.id)))) continue;
             try { results.push({ session: session.id, ...(await this.stop(session, options)) }); }
             catch { results.push({ session: session.id, ok: false, how: 'cleanup-failed', forced: false }); }
         }

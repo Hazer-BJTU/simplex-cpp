@@ -32,6 +32,12 @@ and persistence child paths. Unknown worker fields and provider options remain
 intact. The worker still validates plugin availability and runtime resources.
 Validation failures leave the editor text and the saved file unchanged.
 
+The **Managed worker** launch template opts new ordinary sessions into separate
+target storage through `simplex manage`. It supports local execution, SSH and
+an existing retained Docker container. See [managed sessions](../reference/management.md#opt-in-managed-sessions)
+for the complete `management` fields and lifecycle contract. Existing/default
+launch templates continue using the legacy layout described below.
+
 ## Directory and startup configuration
 
 The default root is `~/.simplex/hub`, resolved using the Hub process's home
@@ -242,7 +248,7 @@ Omitting `hub_remote_call` keeps remote tools disabled. Omitting
 `modality_assist_model` keeps the assistant model disabled. The Hub does not
 re-enable these optional sections on restart.
 
-`persistence.directory` is always `<dataDir>/sessions/<session-id>` for a
+For legacy launch profiles, `persistence.directory` is always `<dataDir>/sessions/<session-id>` for a
 Hub-managed worker. `persistence.state` and `persistence.memory` are relative
 child directories without parent traversal. The worker adds no session ID.
 Changing the state subdirectory does not move old state into the new location.
@@ -264,12 +270,19 @@ normal API; creation replaces any orphaned config snapshot for that ID. This
 creates a new session token. Stop any old worker before recreating its ID if
 the Hub lost its bookkeeping while that worker may still be running.
 
-To update an existing session, stop its worker and wait for disconnection. In
+To update an existing **legacy** session, stop its worker and wait for disconnection. In
 **Configurations**, choose both saved files and select **Apply to …**. This
 replaces the session's configuration snapshot; it does not delete conversation
 state, archives or plans. Unsaved editor changes are not applied. Model and
 prompt changes follow the worker's normal restore semantics: changing a prompt
 file does not replace a system prompt already restored from persisted state.
+
+Managed sessions bind their source and execution target once; replacing that
+snapshot is refused after allocation. Create a new session to change source or
+target. If Hub registry metadata is lost, an existing `allocation.json` prevents
+silently reusing its session ID; retain/recover that ownership record rather than
+replacing the orphaned snapshot. Automatic legacy migration and managed subagent
+clean-fork are not supported in this stage.
 
 Existing API-created sessions without configuration selectors retain the legacy
 startup-file defaults and saved `config.yaml` behavior. They can opt into the
@@ -284,14 +297,14 @@ Requests carrying source text are bounded to 1 MiB of JSON request body.
 | Method and route | Body / result |
 | --- | --- |
 | `GET /api/configurations` | `{launch: string[], worker: string[]}` |
-| `GET /api/configurations/:kind/template?source=default` | `{text}`; source is `default`, `deployment`, or `docker` (launch only) |
+| `GET /api/configurations/:kind/template?source=default` | `{text}`; source is `default`, `deployment`, `docker` or `managed` (last two are launch only) |
 | `GET /api/configurations/:kind/:id` | `{kind, id, text, revision}` |
 | `PUT /api/configurations/:kind/:id` | `{text, revision}`; `revision: null` creates, current revision updates |
 | `POST /api/configurations/:kind/validate` | `{text}` → `{valid: true}` |
 | `DELETE /api/configurations/:kind/:id` | `{revision}` → `{removed}` |
 | `POST /api/configurations/:kind/:id/rename` | `{id, revision}` → updated file record; existing destinations are refused |
 | `POST /api/configurations/preview` | `{launch: sourceText}` → `{endpoints: {events, confirm, tools}}`, using illustrative session identity |
-| `POST /api/sessions/:id/configurations` | `{launchConfig, workerConfig}` → `{session}`; `409` if running or connected |
+| `POST /api/sessions/:id/configurations` | `{launchConfig, workerConfig}` → `{session}`; `409` if running, connected, or already bound to a managed allocation |
 
 Create a session through REST or the panel WebSocket with:
 
