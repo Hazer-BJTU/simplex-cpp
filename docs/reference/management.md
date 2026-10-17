@@ -286,7 +286,11 @@ restart or prove stop succeeded. An operator may explicitly **delete the session
 to retire its allocation: manager removal refuses a worker holding its lease and
 creates a tombstone that rejects delayed starts. Only after confirmed retirement
 can Hub kill remaining transports and forget the reference. Deletion is destructive;
-it is not an implicit recovery action or part of ordinary stop. Non-destructive
+it is not an implicit recovery action or part of ordinary stop. Parent session deletion
+is refused while descendant allocation intents remain unretired, even after the
+parent process exits. Complete child cleanup (or operator recovery) first: an
+unpublished child fork still needs the parent's captured configuration to
+reconcile preparation and create its retirement tombstone. Non-destructive
 recovery of an unknown dispatch requires a future target-side lifecycle fence.
 
 Managed clean-fork uses the captured parent lifecycle and revision; see below.

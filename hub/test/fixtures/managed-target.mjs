@@ -59,6 +59,7 @@ if (args[0] === 'run') {
     try {
         if (existsSync(join(root, `delay-${request.operation}`))) await new Promise(resolve => setTimeout(resolve, 150));
         if (existsSync(join(root, 'offline'))) process.exit(255);
+        if (request.operation === 'clean_fork' && existsSync(join(root, 'busy-clean_fork'))) failure('busy');
         if (active(lease) && !['inspect', 'read_state'].includes(request.operation)) failure('busy');
         if (!record && !['prepare', 'clean_fork'].includes(request.operation)) failure('not_found');
         let result;
@@ -66,6 +67,7 @@ if (args[0] === 'run') {
             case 'clean_fork': {
                 if (!record) {
                     const parent = load(join(root, `${request.source.allocation_id}.json`));
+                    if (parent.status !== 'ready') failure('not_ready');
                     if (parent.startup?.lifecycle_id !== request.source.lifecycle_id
                         || parent.startup?.revision !== request.source.revision) failure('conflict');
                     const configuration = structuredClone(parent.startup.configuration);

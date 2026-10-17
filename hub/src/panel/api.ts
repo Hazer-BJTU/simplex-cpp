@@ -797,7 +797,7 @@ export function createPanelApi({
             if (!session) return;
             if (supervisor.deletionBusy(session)) {
                 sendError(res, 409, 'session_busy',
-                    'stop the worker and disconnect it before deleting the session');
+                    'stop the worker, disconnect it, and finish descendant cleanup before deleting the session');
                 return;
             }
             try {
@@ -1027,7 +1027,7 @@ export function createPanelApi({
                 if (supervisor.deletionBusy(target)) {
                     send(client, {
                         type: 'error', error: 'session_busy',
-                        message: 'stop the worker and disconnect it before deleting the session',
+                        message: 'stop the worker, disconnect it, and finish descendant cleanup before deleting the session',
                         request: message,
                     });
                     return;

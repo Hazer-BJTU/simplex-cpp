@@ -379,6 +379,8 @@ export class WorkerSupervisor {
     /** Installed by the family coordinator; freezes admission before any await. */
     cascade: ((session: Session, stopSelf: () => Promise<StopResult>) => Promise<StopResult>) | undefined;
     beforeStart: ((session: Session) => void) | undefined;
+    /** Family-owned reservations can outlive the process and still need its allocation. */
+    removalBlocked: ((session: Session) => boolean) | undefined;
 
     /** Start a worker for a session. */
     async start(session: Session, rawSpec?: unknown): Promise<StartResult> {
@@ -637,6 +639,7 @@ export class WorkerSupervisor {
     /** Managed deletion is fenced on the target, including starts not yet holding a lease. */
     deletionBusy(session: Session): boolean {
         return this.pending.has(session.id) || session.connected
+            || this.removalBlocked?.(session) === true
             || (this.isRunning(session) && !existsSync(managedRecordPath(this.config, session.id)));
     }
 

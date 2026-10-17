@@ -1,3 +1,5 @@
+import { ManagedLauncher } from '../src/launch/managed-launcher.ts';
+import { ManagementError } from '../src/launch/management.ts';
 import { connectWorker } from './helpers/worker.js';
 import { sessionDir } from '../src/launch/config-render.ts';
 import test from 'node:test';
@@ -447,6 +449,8 @@ for (const remote of [false, true]) {
         writeFileSync(join(ctx.target, 'drop-remove'), '');
         assert.equal((await ctx.hub.supervisor.stop(ctx.session)).ok, false);
         assert.equal(existsSync(sessionDir(ctx.config, grandchild.id)), true);
+        assert.equal((await ctx.api('/api/sessions/demo', 'DELETE')).status, 409,
+            'an unresolved grandchild also keeps the ordinary ancestor allocation available');
         assert.equal((await ctx.hub.supervisor.stop(ctx.session)).ok, true);
         assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
         assert.equal(existsSync(sessionDir(ctx.config, grandchild.id)), false);
@@ -538,6 +542,63 @@ test('missing family metadata never discards a durable managed target reference'
     bindManagedSession(ctx.config, id, ctx.launch.management, ctx.source);
     await ctx.hub.subagents.restore();
     assert.equal(ctx.hub.subagents.recoveryBlocked, true);
+    assert.equal(ctx.hub.supervisor.deletionBusy(ctx.session), true, 'unknown family ownership blocks deletion');
     assert.ok(readManagedSession(ctx.config, id));
     assert.equal(existsSync(managedRecordPath(ctx.config, id)), true);
 });
+
+for (const remote of [false, true]) {
+    test(`managed ${remote ? 'remote' : 'local'} parent deletion waits for unpublished child intents to retire`, async t => {
+        const ctx = await setup(t, remote);
+        writeFileSync(join(ctx.target, 'protocol-worker'), '');
+        const parentAllocation = await start(ctx);
+        const parentPath = join(ctx.target, `${parentAllocation.reference.allocationId}.json`);
+        await until(() => ctx.session.connected && ctx.session.identity.workerId);
+        ctx.session.connection.sendSignal({ type: 'signal', data: { operation: 'test_active' } });
+        await until(() => ctx.session.activeRunId);
+        // Fail before the manager publishes ownership, rather than merely losing
+        // the response from an already committed allocation.
+        const barrier = join(ctx.target, 'busy-clean_fork');
+        writeFileSync(barrier, '');
+        const child = await managedFork(ctx, ctx.session, 'unpublished-child');
+        await until(() => child.subagent.lifecycle === 'cleanup-pending'
+            && !ctx.hub.subagents.stops.has(child.id));
+        const childAllocation = readManagedSession(ctx.config, child.id);
+        const childPath = join(ctx.target, `${childAllocation.reference.allocationId}.json`);
+        assert.equal(existsSync(childPath), false);
+        assert.equal((await ctx.hub.supervisor.stop(ctx.session)).ok, false);
+        await until(() => !ctx.hub.supervisor.isRunning(ctx.session) && !ctx.session.connected);
+        assert.equal((await ctx.api('/api/sessions/demo', 'DELETE')).status, 409);
+        const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
+        t.after(() => panel.ws.terminate());
+        await panel.waitFor(message => message.type === 'welcome');
+        panel.send({ v: 1, type: 'delete_session', session: ctx.session.id });
+        const rejected = await panel.waitFor(message => message.type === 'error'
+            && message.request?.type === 'delete_session');
+        assert.equal(rejected.error, 'session_busy');
+        assert.match(rejected.message, /descendant cleanup/);
+        await assert.rejects(ctx.hub.supervisor.removeStorage(ctx.session, () => {
+            assert.fail('blocked deletion must not remove local storage');
+        }), /session is busy/);
+        assert.equal(JSON.parse(readFileSync(parentPath)).status, 'ready');
+        assert.equal(operations(ctx).some(operation => operation.operation === 'remove'
+            && operation.allocation_id === parentAllocation.reference.allocationId), false);
+        assert.equal(existsSync(managedRecordPath(ctx.config, child.id)), true);
+
+        rmSync(barrier);
+        assert.equal((await ctx.hub.subagents.recover(child, 'retry', child.lifecycleId)).ok, true);
+        assert.equal(child.subagent.lifecycle, 'stopped');
+        assert.equal(existsSync(sessionDir(ctx.config, child.id)), false);
+        assert.equal(JSON.parse(readFileSync(childPath)).status, 'removed');
+        assert.equal([...ctx.hub.subagents.children.values()].filter(record => !record.removed).length, 0,
+            'confirmed child retirement releases its live quota reservation');
+        assert.equal((await ctx.api('/api/sessions/demo', 'DELETE')).status, 200);
+        assert.equal(JSON.parse(readFileSync(parentPath)).status, 'removed');
+        // The child tombstone must still reject a delayed first creation even
+        // after parent retirement; absence alone would not provide that fence.
+        await assert.rejects(new ManagedLauncher(childAllocation.launcher).manage(
+            childAllocation.reference, 'delayed-fork',
+            { operation: 'clean_fork', source: childAllocation.forkSource }), error =>
+            error instanceof ManagementError && error.kind === 'manager' && error.code === 'retired');
+    });
+}

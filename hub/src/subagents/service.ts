@@ -109,6 +109,15 @@ export class SubagentService {
     constructor(options: SubagentServiceOptions) {
         this.options = options;
         options.supervisor.cascade = (session, stopSelf) => this.cascade(session, stopSelf);
+        options.supervisor.removalBlocked = session => {
+            // A fork whose target ownership was never published still needs
+            // the parent's captured source to reconcile and retire its intent.
+            // Direct children retain their own descendants until cleanup, so
+            // their reservations protect the entire subtree, even after exit.
+            return this.recoveryBlocked || this.stops.has(session.id)
+                || [...this.children.values()].some(record =>
+                    !record.removed && record.parent.session_id === session.id);
+        };
         options.supervisor.beforeStart = session => {
             if (this.recoveryBlocked) throw new Error('subagent ownership recovery is blocked; inspect managed storage before starting workers');
             const childrenRemain = session.closing && [...this.children.values()].some(record =>
