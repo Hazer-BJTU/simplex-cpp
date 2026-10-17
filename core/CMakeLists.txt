@@ -23,6 +23,8 @@ set_target_properties(core_protocol PROPERTIES OUTPUT_NAME simplex_core_protocol
 add_library(core_lib SHARED src/application.cpp src/confirmation.cpp src/compact.cpp)
 target_include_directories(core_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(core_lib PUBLIC core_protocol load_lib loop_lib intercom_exchange)
+# The worker uses the persistence contract, never a concrete storage format.
+target_link_libraries(core_lib PRIVATE persistence_lib)
 target_link_libraries(core_lib PRIVATE simplex_versioning fileio_lib tools_intrinsic_process tools_intrinsic_reading tools_intrinsic_editing async_eventbus_iface loop_intrinsic_context_statistic)
 target_link_libraries(core_lib PRIVATE tools_intrinsic_modality_assist tools_intrinsic_hub_remote_call)
 set_target_properties(core_lib PROPERTIES OUTPUT_NAME simplex_core)

@@ -3,7 +3,8 @@ import { isProjectVersion } from './version-only.mjs';
 
 const nativeTrees = new Set([
     'core', 'dataclass', 'endpoint', 'extensions', 'intercom', 'io', 'llm',
-    'load', 'manager', 'loop', 'process', 'process_io', 'textedit', 'tools', 'utils', 'versioning',
+    'load', 'manager', 'loop', 'persistence', 'process', 'process_io', 'textedit',
+    'tools', 'utils', 'versioning',
     'third_party', 'cmake',
 ]);
 

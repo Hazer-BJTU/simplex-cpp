@@ -239,6 +239,10 @@ add_subdirectory(llm)
 add_subdirectory(loop)
 # Startup configuration and provider/extension discovery.
 add_subdirectory(load)
+# Authoritative session persistence contract and its in-tree backend. It depends
+# on the dataclass contract plus load's codec/retention helpers, and the worker
+# consumes only its interface, so no execution module knows a storage format.
+add_subdirectory(persistence)
 # Worker runtime and the public simplex command router.
 add_subdirectory(manager)
 add_subdirectory(core)

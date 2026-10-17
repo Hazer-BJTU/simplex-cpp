@@ -31,6 +31,7 @@ export default defineConfig({
                 ['Overview', '/architecture/overview'],
                 ['Agent loop', '/architecture/agent-loop'],
                 ['State and persistence', '/architecture/state-and-persistence'],
+                ['Persistence backend contract', '/architecture/persistence-backends'],
                 ['Security', '/architecture/security'],
             ]),
             group('Build from source', [
