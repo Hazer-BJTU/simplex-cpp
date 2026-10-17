@@ -10,6 +10,15 @@ import { ConfigurationStore, launchDocument } from '../src/configurations/store.
 import { snapshotConfigs } from '../src/configurations/session.ts';
 import { readManagedSession, separateLocalRoot, managedRecordPath } from '../src/launch/managed-sessions.ts';
 
+// Explicit shutdown inside a recovery test and teardown share the same promise.
+// In particular, never poll an unconfirmed remote dispatch after HTTP handles
+// have already closed: unref'ed polling timers cannot keep Node 22 alive alone.
+const stoppedHubs = new WeakMap();
+function stopHub(hub) {
+    if (!stoppedHubs.has(hub)) stoppedHubs.set(hub, hub.stop());
+    return stoppedHubs.get(hub);
+}
+
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate) {
     const end = Date.now() + 4000;
@@ -29,7 +38,7 @@ async function setup(t, remote = false) {
     const context = await startTestHub({ dataDir, worker: { stopTimeoutMs: 80, sigtermGraceMs: 1000, sigkillGraceMs: 1000 } });
     const extraHubs = [];
     t.after(async () => {
-        for (const extra of extraHubs) await extra.stop();
+        for (const extra of extraHubs) await stopHub(extra);
         // Explicit operator cleanup of fixture remote workers, outside Hub policy.
         const dispatched = join(target, 'dispatched.pid');
         if (existsSync(dispatched) && existsSync(join(target, 'hold-start'))) {
@@ -43,7 +52,7 @@ async function setup(t, remote = false) {
                 if (existsSync(lease)) try { process.kill(Number(readFileSync(lease, 'utf8')), 'SIGTERM'); } catch {}
             }
         }
-        await context.hub.stop();
+        await stopHub(context.hub);
         rmSync(temp, { recursive: true, force: true });
     });
     let transport = { kind: 'local' };
@@ -252,7 +261,7 @@ test('a restarted Hub reuses the durable allocation and source after library del
     const before = await start(ctx);
     await ctx.api('/api/sessions/demo/stop', 'POST');
     ctx.store.remove('launch', 'managed', ctx.store.read('launch', 'managed').revision);
-    await ctx.hub.stop();
+    await stopHub(ctx.hub);
     const restored = await startTestHub({ dataDir: ctx.config.dataDir });
     ctx.extraHubs.push(restored.hub);
     const session = restored.hub.registry.get('demo');
@@ -265,7 +274,7 @@ test('a restarted Hub reuses the durable allocation and source after library del
     assert.equal((await restored.hub.supervisor.managedSnapshot(session)).state.text.length, 10 * 1024 * 1024);
     assert.equal((await restored.hub.supervisor.stop(session)).ok, true);
     // Stop before setup's teardown removes shared fixture storage.
-    await restored.hub.stop();
+    await stopHub(restored.hub);
 });
 
 test('remote CLI death is not worker death and manager refusal retains cleanup ownership', async t => {
@@ -335,7 +344,7 @@ test('recovery reconciles durable dispatch without a process entry or connected 
     const allocation = await start(ctx);
     process.kill(ctx.session.process.pid, 'SIGKILL');
     await until(() => ctx.session.process.child.signalCode === 'SIGKILL');
-    await ctx.hub.stop();
+    await stopHub(ctx.hub);
     writeFileSync(registryPath, beforeDispatch);
     const restored = await startTestHub({ dataDir: ctx.config.dataDir });
     ctx.extraHubs.push(restored.hub);
@@ -358,5 +367,40 @@ test('recovery reconciles durable dispatch without a process entry or connected 
     assert.equal((await restored.hub.supervisor.stop(session, { timeoutMs: 150 })).ok, false);
     const response = await fetch(restored.base + '/api/sessions/demo', { method: 'DELETE' });
     assert.equal(response.status, 200);
-    await restored.hub.stop();
+    await stopHub(restored.hub);
 });
+
+for (const identity of ['matching', 'stale-lifecycle', 'unknown', 'missing']) {
+    test(`local recovery after an offline exit: ${identity} process snapshot`, { skip: process.platform !== 'linux' }, async t => {
+        const ctx = await setup(t);
+        await start(ctx);
+        new HubState({ config: ctx.config, log: createLogger({ level: 'silent' }) }).flush(ctx.hub.registry.list());
+        const registryPath = join(ctx.config.dataDir, 'hub.json');
+        const snapshot = JSON.parse(readFileSync(registryPath, 'utf8'));
+        const allocationPath = managedRecordPath(ctx.config, 'demo');
+        const pending = readFileSync(allocationPath);
+        // Stop the fixture, then restore the two documents as they would have
+        // remained if the worker exited while the Hub was offline.
+        await stopHub(ctx.hub);
+        const entry = snapshot.sessions.find(session => session.id === 'demo');
+        if (identity === 'stale-lifecycle') entry.lifecycle_id = 'older-lifecycle';
+        if (identity === 'unknown') entry.process.pid_start_time = null;
+        if (identity === 'missing') entry.process = null;
+        writeFileSync(registryPath, JSON.stringify(snapshot));
+        writeFileSync(allocationPath, pending);
+        const restored = await startTestHub({ dataDir: ctx.config.dataDir, worker: { stopTimeoutMs: 100 } });
+        ctx.extraHubs.push(restored.hub);
+        const session = restored.hub.registry.get('demo');
+        assert.equal(session.process, null);
+        const dispatch = readManagedSession(ctx.config, 'demo').lifecycle.dispatch;
+        if (identity === 'matching') {
+            assert.equal(dispatch, 'completed');
+            assert.equal((await restored.hub.supervisor.start(session)).ok, true);
+            assert.equal((await restored.hub.supervisor.stop(session)).ok, true);
+        } else {
+            assert.equal(dispatch, 'pending');
+            assert.equal((await restored.hub.supervisor.start(session)).ok, false);
+            assert.equal((await restored.hub.supervisor.stop(session, { timeoutMs: 100 })).ok, false);
+        }
+    });
+}

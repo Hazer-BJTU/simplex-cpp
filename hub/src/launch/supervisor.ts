@@ -935,7 +935,8 @@ export class WorkerSupervisor {
     }
 
     /**
-     * Adopt a process recorded by a previous hub run, when it is still alive.
+     * Adopt a process recorded by a previous hub run, or settle a confirmed
+     * local exit when its saved lifecycle matches the pending dispatch.
      *
      * `stored` is the persisted record (snake_case), not a live ProcessRecord:
      * this is the one place the hub reconstructs supervision from disk, so the
@@ -947,6 +948,19 @@ export class WorkerSupervisor {
         let managed: ManagedSessionRecord | null;
         try { managed = readManagedSession(this.config, session.id); }
         catch { return false; }
+        if (managed && managed.launcher.target.kind === 'local' && managedStartUnconfirmed(managed)) {
+            // hub.json and allocation.json are published independently. An older
+            // process snapshot must never settle (or supervise) a newer dispatch.
+            if (session.lifecycleId !== managed.lifecycle!.id) return false;
+            if (processIdentity(entry.pid, entry.pid_start_time) === 'gone') {
+                // Unlike a remote transport PID, this identifies the actual
+                // worker. Its confirmed absence settles an exit while Hub was
+                // offline; unknown/missing identity remains pending for inspection.
+                try { completeManagedDispatch(this.config, session.id, managed); }
+                catch { this.log.warn(`session ${session.id}: cannot persist recovered dispatch completion`); }
+                return false;
+            }
+        }
         const remoteManaged = managed && managed.launcher.target.kind !== 'local' && managedStartUnconfirmed(managed);
         const container = dockerName({ command: String(entry.command ?? ''), args: Array.isArray(entry.args) ? entry.args : [] });
         if (!isSameProcess(entry.pid, entry.pid_start_time) && !container && !remoteManaged) return false;
