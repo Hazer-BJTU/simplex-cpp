@@ -126,7 +126,12 @@ void run_backend_contract(persistence::StateStore& store) {
             std::invalid_argument);
     }
 
-    const auto archive = archive_once(store, original, run_identity(0));
+    // A failed attempt is settled explicitly; it keeps its archive evidence.
+    const auto failed = archive_once(store, original, run_identity(0));
+    store.finish_archive_attempt(failed, ArchiveOutcome::Failed);
+
+    // A committed attempt settles itself, so no separate success step exists.
+    const auto archive = archive_once(store, original, run_identity(1));
     BOOST_TEST(archive.session_id == store.session_id());
     BOOST_TEST(code(archive.backend) == code(store.backend()));
     BOOST_TEST(!archive.archive_id.empty());
@@ -139,8 +144,6 @@ void run_backend_contract(persistence::StateStore& store) {
     restored = store.load_current();
     BOOST_REQUIRE(restored.has_value());
     BOOST_TEST(Json(restored->state) == Json(replacement));
-
-    store.finish_archive_attempt(archive, ArchiveOutcome::Succeeded);
 
     ArchivePruneRequest prune;
     prune.current = archive;
@@ -235,7 +238,7 @@ BOOST_AUTO_TEST_CASE(archive_naming_never_reuses_a_reserved_ordinal) {
         ordinal.insert(0, 20 - ordinal.size(), '0');
         BOOST_TEST(code(archive.backend) == code(Backend::Json));
         BOOST_TEST(code(archive.kind) == code(persistence::ArchiveKind::LegacyReadable));
-        BOOST_TEST(!archive.restorable);
+        BOOST_TEST(!archive.restorable());
         BOOST_TEST(archive.payload.parent_path().parent_path() == scratch.memory());
         BOOST_TEST(archive.archive_id.starts_with(ordinal + "-"));
         BOOST_TEST(!read_file(archive.payload).empty());
@@ -327,6 +330,27 @@ BOOST_AUTO_TEST_CASE(references_map_only_to_archives_of_this_store) {
     // Nested and foreign paths are not evidence this store owns.
     BOOST_TEST(!store->archive_at(archive.payload.parent_path() / "nested").has_value());
     BOOST_TEST(!store->archive_at(scratch.root / "elsewhere").has_value());
+}
+
+BOOST_AUTO_TEST_CASE(filesystem_failures_surface_as_store_errors) {
+    Scratch scratch;
+    fs::create_directories(scratch.root / "session");
+    // An archive root that is a regular file cannot be scanned or populated.
+    write_file(scratch.memory(), "not a directory");
+    auto store = persistence::make_json_store("session-1", {scratch.state(), scratch.memory()});
+    BOOST_CHECK_EXCEPTION(
+        store->reserve_archive({run_identity(1)}), persistence::StoreError,
+        [](const auto& error) {
+            return code(error.backend()) == code(Backend::Json)
+                && code(error.status()) == code(CommitStatus::NotCommitted);
+        });
+    const auto archive = ArchiveRef{"session-1", "reserved", Backend::Json,
+        persistence::ArchiveKind::LegacyReadable, scratch.memory() / "reserved/state.md"};
+    BOOST_CHECK_EXCEPTION(
+        store->begin_archive(archive, example_state()), persistence::StoreError,
+        [](const auto& error) {
+            return code(error.status()) == code(CommitStatus::NotCommitted);
+        });
 }
 
 BOOST_AUTO_TEST_CASE(archive_references_reject_a_mismatched_payload) {

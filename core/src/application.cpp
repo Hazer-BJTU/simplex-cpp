@@ -774,11 +774,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * Every settled archived attempt applies retention, protecting the current
      * evidence and references in retained state. Preflight creates no archive.
      * The store commit is the boundary: before it reports success the live state
-     * is untouched. A published-but-unsynced write stops the worker just like
-     * other required snapshot failures. Write failures retain archive references
-     * from both the old state and the attempted replacement because publication
-     * may already have occurred. Cancellation during the synchronous commit does
-     * not roll back an already published snapshot.
+     * is untouched, and a committed replacement settles its own attempt. A
+     * published-but-unsynced write stops the worker just like other required
+     * snapshot failures. Write failures retain archive references from both the
+     * old state and the attempted replacement because publication may already
+     * have occurred. Cancellation during the synchronous commit does not roll
+     * back an already published snapshot.
      */
     asio::awaitable<loop::RunResult> compact(
         CompactMode mode, const std::string& call_id = {}) {
@@ -943,9 +944,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         state = std::move(replacement);
         ++history_revision;
         run_saved = true;
-        // The attempt is settled once its replacement is durable; the archive
-        // itself stays immutable evidence and is never rewritten.
-        state_store->finish_archive_attempt(archive, persistence::ArchiveOutcome::Succeeded);
+        // A durable commit settles its own attempt, so success is never a second
+        // fallible step. The archive itself stays immutable evidence.
         emit("persisted", {
             {"boundary", persistence::boundary_name(persistence::Boundary::Compaction)},
             {"format", persistence::backend_name(receipt.backend)}});

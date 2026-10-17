@@ -57,16 +57,21 @@ stays inside the backend. JSON is the only backend in this phase and keeps the
 layout below unchanged. The boundary, its ordering rules and the follow-up work
 are recorded in [the persistence backend contract](persistence-backends.md).
 
-Every store operation is synchronous and reports one of three outcomes:
-`NotCommitted` (the previous state is still authoritative), `Committed`, or
-`Unknown` (publication may have happened with uncertain crash durability). The
-worker stops writing on `Unknown` and keeps its recovery evidence instead of
-retrying. A backend that exposes a revision must refuse a stale write; the JSON
-backend exposes none and rejects an expectation instead of ignoring it.
+Every store operation is synchronous. A checkpoint or compaction commit reports
+one of three outcomes: `NotCommitted` (the previous state is still
+authoritative), `Committed`, or `Unknown` (publication may have happened with
+uncertain crash durability). The worker stops writing on a failure and keeps its
+recovery evidence instead of retrying blindly, and it verifies an `Unknown`
+outcome after reopening. Codec and filesystem failures surface as a store error;
+only a programming error stays outside that contract. A backend that exposes a
+revision must refuse a stale write; the JSON backend exposes none and rejects an
+expectation instead of ignoring it.
 
 Compact archives are reserved during preflight, frozen before the summary
-exchange, and never rewritten afterwards; settling the attempt is a separate
-step. Retention policy and deletion targets are unchanged.
+exchange, and never rewritten afterwards. A committed replacement settles its own
+attempt, so success is never a separate step that could fail after the commit;
+failure, cancellation and interruption are recorded explicitly. Retention policy
+and deletion targets are unchanged.
 
 ## Checkpoints and restoration
 

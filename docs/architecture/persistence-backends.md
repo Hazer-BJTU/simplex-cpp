@@ -47,17 +47,24 @@ retention policy, and defer new archive-reference handling.
    worker therefore cannot dispatch tools behind an outstanding checkpoint.
 4. **Outcomes are three-state.** `NotCommitted` means the previous state is still
    authoritative; `Unknown` means publication may have happened and must be
-   verified after reopening. The worker latches storage failure on `Unknown`,
-   stops further saves and keeps recovery evidence instead of retrying blindly.
+   verified after reopening. Any required-write failure latches storage failure;
+   an `Unknown` outcome is inspected after reopening instead of retried blindly.
+   Codec and filesystem failures are translated into the store error so callers
+   never have to classify a raw `std::filesystem_error`; only programming errors
+   stay outside the contract.
 5. **Revisions are optional.** A backend that reports a revision must enforce an
    expected revision and refuse a stale write. A backend that reports none (JSON)
    rejects a non-empty expectation as a programming error rather than pretending
    to validate it.
-6. **Archive publication and settlement are separate.** Preflight reserves an
-   identity without touching the filesystem, `begin_archive` freezes the original
-   state before summarization, the commit publishes the replacement, and
-   `finish_archive_attempt` records how the attempt settled. A settled archive is
-   never rewritten.
+6. **Archive publication and settlement are ordered, and success is the commit.**
+   Preflight reserves an identity without touching the filesystem, `begin_archive`
+   freezes the original state before summarization, and the commit publishes the
+   replacement. A committed replacement settles its own attempt;
+   `finish_archive_attempt` records only failure, cancellation or interruption, so
+   a backend cannot report a durable commit as failed through a later bookkeeping
+   step. A failed publication keeps its reserved directory and ordinal, and a
+   payload renamed before a directory-sync failure stays as `Unknown` evidence. A
+   settled archive is never rewritten.
 7. **Retention stays exactly as configured.** The current attempt and archives
    named by retained state are protected; other recognized archives are kept
    newest first; unknown files, symlinks and incomplete directories are untouched.
@@ -65,7 +72,8 @@ retention policy, and defer new archive-reference handling.
    protection only. It is not a query or reference-resolution interface.
 8. **No memory or archive query surface.** Listing, paging, reading and search
    remain future work with their own design; the schema discussion in #187 is a
-   prerequisite for PR-C.
+   prerequisite for PR-C. `ArchiveKind` is the single source of truth for
+   restorability, so a reference cannot claim an inconsistent pair.
 
 ## Why not an awaitable contract in this phase
 

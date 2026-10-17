@@ -31,6 +31,11 @@
  * This interface is storage-only. It has no memory or archive query surface:
  * archives are reserved, published, settled and pruned as evidence, never listed,
  * paged, searched or resolved for a client.
+ *
+ * Codec and filesystem failures are reported as StoreError, so a caller can rely
+ * on status() for recovery. Programming errors stay distinguishable: a foreign
+ * archive reference, an invalid enum value or an unsupported revision
+ * expectation throws a standard exception instead of claiming a storage outcome.
  */
 namespace persistence {
 
@@ -100,7 +105,8 @@ struct StoredState {
 /** Result of one required checkpoint or compaction commit. */
 struct CommitReceipt {
     Backend backend = Backend::Json;
-    CommitStatus status = CommitStatus::Committed;
+    /// A default-constructed receipt claims nothing, never an accidental success.
+    CommitStatus status = CommitStatus::NotCommitted;
     /**
      * Backend-scoped operation identity; empty when the backend cannot verify a
      * commit by identity. It correlates diagnostics and recovery evidence and
@@ -158,10 +164,13 @@ struct ArchiveRef {
     std::string archive_id;
     Backend backend = Backend::Json;
     ArchiveKind kind = ArchiveKind::LegacyReadable;
-    /// True when the payload can be decoded back into an AgentInputState.
-    bool restorable = false;
     /// Archived payload on disk; empty for identity-only backends.
     std::filesystem::path payload;
+
+    /// Restorability is derived from the kind so the two cannot disagree.
+    constexpr bool restorable() const noexcept {
+        return kind == ArchiveKind::JsonState;
+    }
 };
 
 /** Inputs that identify one compact attempt before any state is written. */
@@ -170,15 +179,19 @@ struct CompactAttempt {
     std::string run_id;
 };
 
-/** How an archived attempt settled. */
+/**
+ * How an attempt ended without a committed replacement.
+ *
+ * A committed replacement settles its own attempt inside commit_compaction(), so
+ * callers never report success here: success must not be a second, fallible step
+ * after the commit.
+ */
 enum class ArchiveOutcome {
-    /// The replacement was committed; the archive stays immutable evidence.
-    Succeeded,
     /// The attempt ended with a failure diagnostic.
     Failed,
     /// The invocation was cancelled before the replacement committed.
     Cancelled,
-    /// A crash or restart ended the attempt without a settled outcome.
+    /// A backend assigns this when a restart finds an attempt it cannot settle.
     Interrupted,
 };
 
@@ -243,6 +256,10 @@ public:
      *
      * boundary names the protocol checkpoint. Backends that keep no
      * per-boundary metadata, including JSON, validate and ignore it.
+     *
+     * The worker validates that the state belongs to this session before calling
+     * a required checkpoint. A backend that persists session records must enforce
+     * the same rule when it opens them.
      */
     virtual CommitReceipt checkpoint(
         const model_io::AgentInputState& state, Boundary boundary,
@@ -264,8 +281,13 @@ public:
      * Called after preflight accepts the attempt and before summarization, so the
      * attempt is visible while the model is suspended. The caller passes the
      * original state for this attempt, not the last checkpoint, which may be
-     * stale when ordinary saves are disabled. A failed publication leaves no
-     * archive candidate behind and throws StoreError.
+     * stale when ordinary saves are disabled.
+     *
+     * A failed publication keeps the reserved identity: the attempt still
+     * consumes its ordinal, the archive directory is not reused, and a payload
+     * that was renamed into place before a directory-sync failure is reported as
+     * Unknown and left as evidence. Retention ignores such a candidate until it
+     * is a recognized archive.
      */
     virtual void begin_archive(
         const ArchiveRef& archive, const model_io::AgentInputState& original) = 0;
@@ -283,13 +305,16 @@ public:
         std::optional<Revision> expected_revision = std::nullopt) = 0;
 
     /**
-     * Record how an archived attempt settled.
+     * Record that an attempt ended without a committed replacement.
      *
-     * The JSON layout encodes the outcome implicitly: the archive directory
-     * exists exactly when the attempt began and its payload is never rewritten,
-     * so the adapter validates ownership and returns. A database backend stores
-     * the attempt state here for restart recovery. Callers on failure paths must
-     * contain exceptions; the settled primary diagnostic wins.
+     * Success is never reported here: commit_compaction() settles its own
+     * attempt, so a backend cannot turn a durable commit into a failure by
+     * failing a later bookkeeping call. The JSON layout encodes failure,
+     * cancellation and interruption implicitly (the directory exists exactly
+     * when the attempt began, and its payload is never rewritten), so the adapter
+     * validates ownership and returns. A database backend stores the attempt
+     * state here for restart recovery. Callers on unwind paths must contain
+     * exceptions; the settled primary diagnostic wins.
      */
     virtual void finish_archive_attempt(
         const ArchiveRef& archive, ArchiveOutcome outcome) = 0;

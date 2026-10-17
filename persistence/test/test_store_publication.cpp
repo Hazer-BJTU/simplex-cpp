@@ -121,6 +121,47 @@ BOOST_AUTO_TEST_CASE(checkpoint_reports_publication_state_instead_of_failing_bli
     }
 }
 
+BOOST_AUTO_TEST_CASE(begin_archive_reports_publication_and_keeps_its_ordinal) {
+    Scratch scratch;
+    auto store = persistence::make_json_store("session-1", {scratch.state(), scratch.memory()});
+    const auto original = example_state("first");
+    const auto first = store->reserve_archive({"11111111-1111-4111-8111-000000000001"});
+    BOOST_TEST(first.archive_id.starts_with("00000000000000000001-"));
+
+    // A file-sync failure publishes nothing, but the reserved attempt keeps its
+    // identity: ordinals are never reused, so sequence order stays meaningful.
+    {
+        InjectFailure inject(Failure::FileSync);
+        BOOST_CHECK_EXCEPTION(
+            store->begin_archive(first, original),
+            persistence::StoreError,
+            [](const persistence::StoreError& error) {
+                return error.status() == persistence::CommitStatus::NotCommitted;
+            });
+    }
+    BOOST_TEST(!fs::exists(first.payload));
+    BOOST_TEST(fs::exists(first.payload.parent_path()));
+
+    // A rename that outlived a failed directory sync leaves visible evidence and
+    // must be reported as Unknown instead of a clean failure.
+    const auto second = store->reserve_archive({"11111111-1111-4111-8111-000000000002"});
+    BOOST_TEST(second.archive_id.starts_with("00000000000000000002-"));
+    {
+        InjectFailure inject(Failure::DirectorySync);
+        BOOST_CHECK_EXCEPTION(
+            store->begin_archive(second, original),
+            persistence::StoreError,
+            [](const persistence::StoreError& error) {
+                return error.status() == persistence::CommitStatus::Unknown;
+            });
+    }
+    BOOST_TEST(fs::exists(second.payload));
+    BOOST_TEST(!read_file(second.payload).empty());
+
+    const auto third = store->reserve_archive({"11111111-1111-4111-8111-000000000003"});
+    BOOST_TEST(third.archive_id.starts_with("00000000000000000003-"));
+}
+
 BOOST_AUTO_TEST_CASE(commit_compaction_uses_the_same_publication_contract) {
     Scratch scratch;
     auto store = persistence::make_json_store("session-1", {scratch.state(), scratch.memory()});

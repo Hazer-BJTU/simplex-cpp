@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <optional>
 #include <string>
@@ -18,11 +19,35 @@ namespace {
 namespace fs = std::filesystem;
 
 /**
+ * Translate backend failures into the store contract.
+ *
+ * Codec and filesystem failures become StoreError so that callers can rely on
+ * status() for recovery, including the published-but-unsynced case that the
+ * codec reports through PersistenceError::published(). Programming errors such
+ * as an invalid argument are deliberately not converted: they are caller bugs,
+ * not storage outcomes, and must not be reported as a failed write.
+ */
+template<typename Function>
+auto map_failures(Function&& function) -> decltype(function()) {
+    try {
+        return function();
+    } catch (const StoreError&) {
+        throw;
+    } catch (const load::PersistenceError& error) {
+        throw StoreError(error.what(), Backend::Json,
+            error.published() ? CommitStatus::Unknown : CommitStatus::NotCommitted);
+    } catch (const fs::filesystem_error& error) {
+        throw StoreError(error.what(), Backend::Json, CommitStatus::NotCommitted);
+    }
+}
+
+/**
  * Plan a never-reused archive directory without creating it.
  *
  * The ordinal derives from existing entries so restarts and wall-clock changes
- * cannot reorder archives. Failed attempts also consume their ordinal. The
- * session's ownership lock serializes cooperating worker processes.
+ * cannot reorder archives. A reserved attempt keeps its ordinal even when its
+ * publication fails, and the session's ownership lock serializes cooperating
+ * worker processes.
  */
 fs::path plan_archive_directory(const fs::path& root, const std::string& run) {
     std::uint64_t latest = 0;
@@ -68,16 +93,14 @@ public:
     const std::string& session_id() const noexcept override { return session_; }
 
     std::optional<StoredState> load_current() override {
-        const auto file = snapshot();
-        if (!fs::exists(file)) return std::nullopt;
-        try {
+        return map_failures([this]() -> std::optional<StoredState> {
+            const auto file = snapshot();
+            if (!fs::exists(file)) return std::nullopt;
             StoredState stored;
             stored.state = load::load_state(file);
             stored.backend = Backend::Json;
             return stored;
-        } catch (const load::PersistenceError& error) {
-            throw StoreError(error.what(), Backend::Json, CommitStatus::NotCommitted);
-        }
+        });
     }
 
     CommitReceipt checkpoint(
@@ -91,30 +114,30 @@ public:
     }
 
     ArchiveRef reserve_archive(const CompactAttempt& attempt) override {
-        const auto directory = plan_archive_directory(archive_root(), attempt.run_id);
-        return ArchiveRef{session_, directory.filename().string(), Backend::Json,
-            ArchiveKind::LegacyReadable, false, archive_payload(directory)};
+        return map_failures([&] {
+            const auto directory = plan_archive_directory(archive_root(), attempt.run_id);
+            return ArchiveRef{session_, directory.filename().string(), Backend::Json,
+                ArchiveKind::LegacyReadable, archive_payload(directory)};
+        });
     }
 
     void begin_archive(
         const ArchiveRef& archive, const model_io::AgentInputState& original) override {
-        const auto directory = require_archive(archive);
-        fs::create_directories(archive_root());
-        if (!fs::create_directory(directory)) {
-            throw StoreError(
-                "compact archive directory already exists", Backend::Json,
-                CommitStatus::NotCommitted);
-        }
-        try {
+        map_failures([&] {
+            const auto directory = require_archive(archive);
+            fs::create_directories(archive_root());
+            if (!fs::create_directory(directory)) {
+                throw StoreError(
+                    "compact archive directory already exists", Backend::Json,
+                    CommitStatus::NotCommitted);
+            }
+            // A failed write keeps the reserved directory: the attempt consumed
+            // its ordinal, and a payload renamed before a directory-sync failure
+            // is still visible evidence. Retention does not recognize the
+            // directory until it contains its one expected payload.
             load::save_state(
                 archive_payload(directory), original, load::StateFormat::Readable);
-        } catch (const load::PersistenceError& error) {
-            discard_empty_archive(directory);
-            throw StoreError(error.what(), Backend::Json, CommitStatus::NotCommitted);
-        } catch (...) {
-            discard_empty_archive(directory);
-            throw;
-        }
+        });
     }
 
     CommitReceipt commit_compaction(
@@ -128,11 +151,11 @@ public:
     void finish_archive_attempt(
         const ArchiveRef& archive, ArchiveOutcome outcome) override {
         (void)require_archive(archive);
-        // The layout records the outcome implicitly: the directory exists exactly
-        // when the attempt began, and its payload is never rewritten. Validate the
-        // vocabulary instead of writing a marker that nothing would read.
+        // The layout records a failed, cancelled or interrupted attempt
+        // implicitly: the directory exists exactly when the attempt began and its
+        // payload is never rewritten. Validate the vocabulary instead of writing
+        // a marker that nothing would read.
         switch (outcome) {
-            case ArchiveOutcome::Succeeded:
             case ArchiveOutcome::Failed:
             case ArchiveOutcome::Cancelled:
             case ArchiveOutcome::Interrupted:
@@ -142,25 +165,29 @@ public:
     }
 
     CleanupResult prune_archives(const ArchivePruneRequest& request) override {
-        const auto current = require_archive(request.current);
-        std::vector<fs::path> referenced;
-        referenced.reserve(request.referenced.size());
-        for (const auto& archive : request.referenced) {
-            referenced.push_back(require_archive(archive));
-        }
-        const auto cleaned = load::prune_memory_archives(
-            archive_root(), current, request.policy, referenced);
-        return CleanupResult{cleaned.removed_archives, cleaned.removed_bytes};
+        return map_failures([&] {
+            const auto current = require_archive(request.current);
+            std::vector<fs::path> referenced;
+            referenced.reserve(request.referenced.size());
+            for (const auto& archive : request.referenced) {
+                referenced.push_back(require_archive(archive));
+            }
+            const auto cleaned = load::prune_memory_archives(
+                archive_root(), current, request.policy, referenced);
+            return CleanupResult{cleaned.removed_archives, cleaned.removed_bytes};
+        });
     }
 
     std::optional<ArchiveRef> archive_at(const fs::path& directory) const override {
-        if (directory.empty()) return std::nullopt;
-        const auto normalized = fs::absolute(directory).lexically_normal();
-        // Only direct children of this store's archive root can be protected
-        // archives; a nested or foreign path is not evidence this store owns.
-        if (normalized.parent_path() != archive_root()) return std::nullopt;
-        return ArchiveRef{session_, normalized.filename().string(), Backend::Json,
-            ArchiveKind::LegacyReadable, false, archive_payload(normalized)};
+        return map_failures([&]() -> std::optional<ArchiveRef> {
+            if (directory.empty()) return std::nullopt;
+            const auto normalized = fs::absolute(directory).lexically_normal();
+            // Only direct children of this store's archive root can be protected
+            // archives; a nested or foreign path is not evidence this store owns.
+            if (normalized.parent_path() != archive_root()) return std::nullopt;
+            return ArchiveRef{session_, normalized.filename().string(), Backend::Json,
+                ArchiveKind::LegacyReadable, archive_payload(normalized)};
+        });
     }
 
 private:
@@ -214,18 +241,9 @@ private:
             throw std::invalid_argument(
                 "JSON persistence cannot verify an expected revision");
         }
-        try {
+        map_failures([&] {
             load::save_state(snapshot(), state, load::StateFormat::Json);
-        } catch (const load::PersistenceError& error) {
-            throw StoreError(error.what(), Backend::Json,
-                error.published() ? CommitStatus::Unknown : CommitStatus::NotCommitted);
-        }
-    }
-
-    /** Remove only the empty directory this attempt created. */
-    static void discard_empty_archive(const fs::path& directory) noexcept {
-        std::error_code ignored;
-        fs::remove(directory, ignored);
+        });
     }
 
     std::string session_;

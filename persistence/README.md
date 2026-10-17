@@ -20,11 +20,13 @@ Dataclass, loop, tool and provider code stay independent of the backend.
 - `checkpoint` and `commit_compaction` report `NotCommitted`, `Committed` or
   `Unknown`. `Unknown` (for JSON: the rename succeeded but the directory sync
   failed) stops further writes and is verified after reopening, never retried
-  blindly.
+  blindly. Codec and filesystem failures are translated into `StoreError`;
+  programming errors such as a foreign reference stay standard exceptions.
 - `reserve_archive` plans an identity during preflight; `begin_archive` freezes
   the original state before summarization; `commit_compaction` publishes the
-  replacement; `finish_archive_attempt` records how the attempt settled. A settled
-  archive is never rewritten.
+  replacement and settles that attempt. `finish_archive_attempt` records only
+  failure, cancellation or interruption, so a durable commit cannot be turned
+  into a failure by later bookkeeping. A settled archive is never rewritten.
 - `prune_archives` applies the configured retention target. The current attempt
   and archives named by retained state are protected; unknown files, symlinks and
   incomplete directories are untouched. `archive_at` maps a historical on-disk
@@ -35,14 +37,18 @@ Dataclass, loop, tool and provider code stay independent of the backend.
 
 ## JSON adapter
 
-The adapter preserves the pre-#187 behavior exactly, which is why the worker's
-existing tests are the acceptance gate for the refactor:
+The adapter preserves the pre-#187 file layout and worker behavior, which is why
+the worker's existing tests are the acceptance gate for the refactor. The one
+intentional interface difference is the error type: a required write now reports
+a recovery outcome instead of a bare publication flag, with the same message.
 
 - `state.json` is replaced atomically through `load::save_state`, including its
   publication and directory-sync semantics.
 - Compact attempts archive a readable `state.md` into a uniquely named directory
   before the summary exchange. Ordinals are derived from existing entries and are
-  never reused, including by failed attempts.
+  never reused, including by failed attempts. A failed write keeps its reserved
+  directory, and a payload renamed before a directory-sync failure remains as
+  `Unknown` evidence.
 - Retention still uses `load::prune_memory_archives`, which recognizes only the
   ordinal/timestamp/UUID directory name with exactly one `state.md`.
 - The readable `readable.md` export remains a separate, optional view written by
