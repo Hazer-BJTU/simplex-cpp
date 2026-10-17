@@ -2,11 +2,12 @@
 
 `manager_lib` implements synchronous, target-local storage operations. The
 `simplex_manager` executable exposes them through `simplex manage`. This is
-phase A of [#142](https://github.com/Hazer-BJTU/simplex-cpp/issues/142): legacy
+part of [#142](https://github.com/Hazer-BJTU/simplex-cpp/issues/142): legacy
 Hub launch profiles still use their original local layout. The Hub now offers
 an opt-in Managed worker launch template for ordinary local/SSH/Docker sessions,
 with separate target storage and manager-backed inspection/removal. Managed
-clean-fork integration follows in phase C.
+clean-fork derives children from lifecycle-correlated target startup snapshots,
+without copying state or archives.
 
 See the [management protocol](../docs/reference/management.md) for requests,
 results, ownership rules, and examples.
@@ -32,6 +33,13 @@ reference is the worker entry point; it is **not** a standalone copy of the
 source configuration. Do not edit or copy that reference to another directory.
 `inspect` returns both the source text and effective configuration. No user
 configuration library or provider credentials are expanded during management.
+
+`clean_fork` addresses a fresh child allocation and an explicit parent startup
+identity (`source` directory, allocation ID, lifecycle ID and revision). It reads
+the captured configuration under a shared parent lease, rebases known relative
+paths on the target, and creates no state/archive files. A durable fork origin
+and source let repeated requests reconcile after parent retirement. Conflicting
+origin reuse fails; retired children remain fenced by their tombstones.
 
 ## Concurrency and recovery
 

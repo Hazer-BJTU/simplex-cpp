@@ -200,3 +200,62 @@ BOOST_FIXTURE_TEST_CASE(independent_allocations_cannot_be_nested, Fixture) {
     request["directory"] = (temporary / ".simplex-manager/child").string();
     BOOST_CHECK_THROW(call("prepare"), manager::Error);
 }
+
+BOOST_FIXTURE_TEST_CASE(clean_fork_uses_captured_target_configuration_and_no_state, Fixture) {
+    request["configuration"] = R"({"persistence":{"restore":"required","state":"state","memory":"memory"},
+        "worker":{"environment":{"workspace":"../../work"},"system_prompt_file":"prompts/custom.yaml"},
+        "plugins":{"providers":{"directories":["../../providers"]}},
+        "providers":{"test":{"model":"captured"}},"unknown":{"preserved":true}})";
+    call("prepare");
+    request["lifecycle_id"] = "parent-run";
+    request["expected_revision"] = 1;
+    call("capture_startup");
+    fs::create_directories(root / "state");
+    std::ofstream(root / "state/state.json") << "private parent history";
+    fs::create_directories(root / "memory");
+    std::ofstream(root / "memory/archive.md") << "private parent archive";
+    auto worker = manager::resolve_configuration(root / "config/config.yaml", reference());
+    const auto child_root = temporary / "child";
+    Json fork = {{"version", 1}, {"request_id", "fork-1"}, {"operation", "clean_fork"},
+        {"allocation_id", "child-1"}, {"directory", child_root.string()},
+        {"source", {{"allocation_id", "allocation-1"}, {"directory", root.string()},
+            {"lifecycle_id", "parent-run"}, {"revision", 1}}}};
+    const auto child = manager::execute(fork); // Shared parent lease permits a running parent.
+    const auto& config = child.at("effective_configuration");
+    BOOST_TEST(config["providers"]["test"]["model"] == "captured");
+    BOOST_TEST(config["unknown"]["preserved"] == true);
+    BOOST_TEST(config["persistence"]["directory"] == child_root.string());
+    BOOST_TEST(config["persistence"]["restore"] == "if_present");
+    BOOST_TEST(config["client"]["endpoint"] == "ws://unconfigured.invalid/events");
+    BOOST_TEST(config["worker"]["environment"]["workspace"] == (temporary / "work").string());
+    BOOST_TEST(config["worker"]["system_prompt_file"] == "prompts/custom.yaml");
+    BOOST_TEST(config["plugins"]["providers"]["directories"][0] == (temporary / "providers").string());
+    BOOST_TEST(!fs::exists(child_root / "state"));
+    BOOST_TEST(!fs::exists(child_root / "memory"));
+    BOOST_TEST(manager::execute(fork) == child);
+    // Simulate interruption after the ownership/source record was published
+    // but before child files and the ready status became durable.
+    const auto child_record_path = temporary / ".simplex-manager/child.json";
+    Json interrupted;
+    { std::ifstream input(child_record_path); input >> interrupted; }
+    interrupted["status"] = "preparing";
+    fs::remove_all(child_root);
+    { std::ofstream output(child_record_path); output << interrupted; }
+    BOOST_TEST(manager::execute(fork) == child);
+    auto conflict = fork;
+    conflict["source"]["lifecycle_id"] = "another-run";
+    BOOST_CHECK_EXCEPTION(manager::execute(conflict), manager::Error,
+        [](const auto& error) { return code(error, "conflict"); });
+    conflict["directory"] = (temporary / "other-child").string();
+    BOOST_CHECK_EXCEPTION(manager::execute(conflict), manager::Error,
+        [](const auto& error) { return code(error, "conflict"); });
+    BOOST_TEST(!fs::exists(temporary / "other-child"));
+    worker.reset();
+    call("remove");
+    BOOST_TEST(manager::execute(fork) == child); // Lost reply retry does not need live parent.
+    auto remove = fork;
+    remove["operation"] = "remove";
+    manager::execute(remove);
+    BOOST_CHECK_EXCEPTION(manager::execute(fork), manager::Error,
+        [](const auto& error) { return code(error, "retired"); });
+}

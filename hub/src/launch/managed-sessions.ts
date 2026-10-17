@@ -5,7 +5,7 @@ import { dirname, join, resolve, sep, isAbsolute } from 'node:path';
 import { ManagedLauncher } from './managed-launcher.ts';
 import type { ManagedLauncherOptions } from './managed-launcher.ts';
 import { ManagementError, validateAllocation } from './management.ts';
-import type { AllocationReference, ManagementOperation } from './management.ts';
+import type { AllocationReference, ManagementOperation, ForkSource } from './management.ts';
 import { sessionDir } from './config-render.ts';
 import type { HubConfig } from '../config.ts';
 import type { WorkerEndpoints } from './invocation.ts';
@@ -23,6 +23,8 @@ export interface ManagedSessionRecord {
     reference: AllocationReference;
     launcher: ManagedLauncherOptions;
     configuration: string;
+    /** Published before dispatch; target derives the immutable child configuration. */
+    forkSource?: ForkSource;
     timeoutMs: number;
     /** Last captured lifecycle; used as an exclusive manager lease probe on remote stop. */
     lifecycle?: { id: string; revision: number; dispatch?: 'prepared' | 'pending' | 'completed' };
@@ -106,6 +108,16 @@ export function readManagedSession(config: Pick<HubConfig, 'dataDir'>, id: strin
         || (record.lifecycle.dispatch !== undefined && !['prepared', 'pending', 'completed'].includes(record.lifecycle.dispatch)))) {
         throw new Error('invalid managed lifecycle reference');
     }
+    if (record.forkSource !== undefined) {
+        const source: unknown = record.forkSource;
+        if (!mapping(source) || typeof source.allocation_id !== 'string'
+            || typeof source.directory !== 'string' || typeof source.lifecycle_id !== 'string'
+            || !/^[A-Za-z0-9_-]{1,128}$/.test(source.lifecycle_id)
+            || !Number.isSafeInteger(source.revision) || (source.revision as number) < 1) {
+            throw new Error('invalid managed fork source');
+        }
+        validateAllocation({ allocationId: source.allocation_id, directory: source.directory });
+    }
     return record;
 }
 
@@ -126,7 +138,7 @@ function publish(config: Pick<HubConfig, 'dataDir'>, id: string, record: Managed
 
 /** Allocate a fresh target identity only once, even when prepare's reply is lost. */
 export function bindManagedSession(config: HubConfig, id: string, policy: ManagementPolicy,
-    configuration: string): ManagedSessionRecord {
+    configuration: string, forkSource?: ForkSource): ManagedSessionRecord {
     const previous = readManagedSession(config, id);
     if (previous) {
         if (previous.removing) throw new Error('managed session removal is pending; retry deletion');
@@ -142,7 +154,7 @@ export function bindManagedSession(config: HubConfig, id: string, policy: Manage
     const { root, timeoutMs = 30000, ...launcher } = policy;
     const record: ManagedSessionRecord = { version: 1, reference: {
         allocationId, directory: `${root}/${allocationId}`,
-    }, launcher, configuration, timeoutMs, removing: false };
+    }, launcher, configuration, timeoutMs, removing: false, ...(forkSource ? { forkSource } : {}) };
     publish(config, id, record);
     return record;
 }
@@ -165,6 +177,13 @@ export async function prepareManagedSession(config: HubConfig, id: string, recor
     endpoints: WorkerEndpoints, lifecycleId: string): Promise<Record<string, unknown>> {
     if (record.removing) throw new Error('managed session removal is pending; retry deletion');
     if (managedStartUnconfirmed(record)) throw new Error('previous managed start is unconfirmed; cannot dispatch another worker');
+    if (record.forkSource) {
+        const forked = await call(record, { operation: 'clean_fork', source: record.forkSource });
+        description(record, forked, 'ready');
+        if (typeof forked.configuration !== 'string') throw new Error('manager omitted fork configuration');
+        record.configuration = forked.configuration;
+        publish(config, id, record);
+    }
     let revision: number | undefined;
     try {
         const current = await call(record, { operation: 'inspect' });
@@ -249,7 +268,9 @@ export async function removeManagedSession(config: HubConfig, id: string, record
     // Finish an uncertain initial preparation before removal. We cannot treat
     // not_found as successful deletion: prepare may have been delayed remotely.
     try {
-        await call(record, { operation: 'prepare', configuration: record.configuration });
+        await call(record, record.forkSource
+            ? { operation: 'clean_fork', source: record.forkSource }
+            : { operation: 'prepare', configuration: record.configuration });
     } catch (error) {
         if (!(error instanceof ManagementError) || error.kind !== 'manager' || error.code !== 'retired') throw error;
     }

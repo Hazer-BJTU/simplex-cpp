@@ -23,13 +23,17 @@ public:
  * Returns a complete JSON result or throws Error/system errors. No receive or
  * snapshot byte limit is imposed. Callers must keep this blocking API off an
  * IO executor. Only explicitly owned allocations can be changed or removed.
+ * clean_fork addresses the child and names a source allocation/lifecycle/revision;
+ * it derives configuration under the source's shared lease and publishes only
+ * fresh child storage. Retries reuse the captured source, never runtime state.
  */
 nlohmann::json execute(const nlohmann::json& request);
 
 /**
  * Effective configuration and shared allocation lease for a managed worker.
  * Retain the lease through the entire worker lifetime, including shutdown.
- * An exclusive manager mutation cannot run while any such lease is alive.
+ * An exclusive mutation of this allocation cannot run while its lease is alive.
+ * clean_fork may read it as a source without modifying it.
  */
 struct Configuration {
     nlohmann::json document;

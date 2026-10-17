@@ -98,11 +98,14 @@ panel. Neither these pages nor the Hub's transcript replaces `state.json`.
 ## Headless delegation
 
 The Hub supports clean-fork/send/receive remote routes for directly owned headless
-workers. Each child uses a flat `<dataDir>/subagents/<generated-id>/` root, an
+workers. Each child uses a flat `<dataDir>/subagents/<generated-id>/` Hub bookkeeping root, an
 independent operator-controlled ask/deny/approve policy, and a bounded primary
 conversation projection. It retains no event transcript or reasoning/tool history.
 Parent process shutdown/crash cascades; socket disconnect alone preserves the
-family. Confirmed child shutdown deletes its persistence. Unknown launch ownership
+family. Managed children store worker state separately at
+`management.root/<allocation-id>/`; target manager removal must succeed before
+Hub deletes local ownership. Legacy children retain colocated storage.
+Confirmed child shutdown deletes its persistence. Unknown launch ownership
 retains data and quota; bounded retries and an authenticated, lifecycle-bound operator
 recovery API prevent indefinite retry churn without assuming missing records mean
 termination. Clean-fork shares any explicit external workspace and is not a sandbox.

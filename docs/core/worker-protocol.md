@@ -1912,6 +1912,13 @@ Adoption after a restart uses the recorded pid **and** the `/proc/<pid>/stat`
 start time, so a pid that has been reused is never signalled. Adoption fails
 closed: without a recorded start time the process is not adopted at all.
 
+Managed SSH/Docker sessions do not signal a remote worker through the local
+transport PID. Unconfirmed dispatch is retained across restart, including when
+no PID was recorded. A matching local managed incarnation confirmed gone can
+settle its dispatch; a vanished SSH/Docker client cannot. Managed headless
+children follow the same rule and use target-side `clean_fork`/`remove` for
+storage; see [managed family recovery](../reference/management.md#managed-clean-fork-and-family-recovery).
+
 `SIGKILL` to the process group reaches descendants the worker itself does not
 promise to terminate. It is never used implicitly.
 

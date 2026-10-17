@@ -281,8 +281,9 @@ Managed sessions bind their source and execution target once; replacing that
 snapshot is refused after allocation. Create a new session to change source or
 target. If Hub registry metadata is lost, an existing `allocation.json` prevents
 silently reusing its session ID; retain/recover that ownership record rather than
-replacing the orphaned snapshot. Automatic legacy migration and managed subagent
-clean-fork are not supported in this stage.
+replacing the orphaned snapshot. Automatic legacy migration is not supported.
+Managed subagent clean-fork inherits the captured startup and execution target,
+with fresh target storage; see [management](../reference/management.md#managed-clean-fork-and-family-recovery).
 
 Existing API-created sessions without configuration selectors retain the legacy
 startup-file defaults and saved `config.yaml` behavior. They can opt into the

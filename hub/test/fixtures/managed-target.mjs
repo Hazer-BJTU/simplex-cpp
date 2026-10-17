@@ -24,7 +24,19 @@ if (args[0] === 'run') {
     const finish = () => { try { unlinkSync(lease); } catch {} process.exit(0); };
     process.on('SIGTERM', finish);
     process.on('SIGINT', finish);
-    if (existsSync(join(root, 'exit-worker'))) setTimeout(finish, 50);
+    process.on('exit', () => { try { unlinkSync(lease); } catch {} });
+    if (existsSync(join(root, 'protocol-worker'))) {
+        const record = load(join(root, `${id}.json`));
+        const config = parse(record.configuration);
+        config.persistence.directory = record.directory;
+        config.client.endpoint = record.refresh.client_endpoint;
+        config.security ??= {};
+        config.security.confirmation = { endpoint: record.refresh.confirmation_endpoint };
+        config.hub_remote_call = { endpoint: record.refresh.tools_endpoint };
+        process.env.SIMPLEX_FIXTURE_CONFIGURATION = JSON.stringify(config);
+        await import('./subagent-worker.js');
+    }
+    else if (existsSync(join(root, 'exit-worker'))) setTimeout(finish, 50);
     else setInterval(() => {}, 1000);
 } else {
     const request = JSON.parse(Buffer.from(args[2], 'base64').toString('utf8'));
@@ -48,9 +60,28 @@ if (args[0] === 'run') {
         if (existsSync(join(root, `delay-${request.operation}`))) await new Promise(resolve => setTimeout(resolve, 150));
         if (existsSync(join(root, 'offline'))) process.exit(255);
         if (active(lease) && !['inspect', 'read_state'].includes(request.operation)) failure('busy');
-        if (!record && request.operation !== 'prepare') failure('not_found');
+        if (!record && !['prepare', 'clean_fork'].includes(request.operation)) failure('not_found');
         let result;
         switch (request.operation) {
+            case 'clean_fork': {
+                if (!record) {
+                    const parent = load(join(root, `${request.source.allocation_id}.json`));
+                    if (parent.startup?.lifecycle_id !== request.source.lifecycle_id
+                        || parent.startup?.revision !== request.source.revision) failure('conflict');
+                    const configuration = structuredClone(parent.startup.configuration);
+                    configuration.persistence.restore = 'if_present';
+                    configuration.client = { ...configuration.client, endpoint: 'ws://unconfigured.invalid/events' };
+                    configuration.security ??= {};
+                    configuration.security.confirmation ??= {};
+                    configuration.hub_remote_call ??= {};
+                    record = { allocation_id: request.allocation_id, directory: request.directory,
+                        configuration: JSON.stringify(configuration), fork_source: request.source,
+                        refresh: {}, status: 'ready', revision: 1 };
+                }
+                if (JSON.stringify(record.fork_source) !== JSON.stringify(request.source)) failure('conflict');
+                if (record.status !== 'ready') failure('retired');
+                save(); result = describe(); break;
+            }
             case 'prepare':
                 if (!record) record = { allocation_id: request.allocation_id, directory: request.directory,
                     configuration: request.configuration, refresh: request.refresh ?? {}, status: 'ready', revision: 1 };
