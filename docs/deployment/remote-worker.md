@@ -74,8 +74,10 @@ an unknown remote PID or restart the remote process through its local supervisor
 Avoid the Hub's local Start/Restart actions for this manually managed session.
 
 History queries, model events, confirmation, and plans work over the protocol.
-The Hub's snapshot endpoint reads its own filesystem and cannot inspect remote
-`state.json` without an explicitly managed shared storage arrangement. Process
+For this manually launched legacy session, the Hub's snapshot endpoint only
+reads its local filesystem. For remote inspection without shared storage, create
+a new session with an [opt-in managed SSH launch profile](../reference/management.md#remote-targets),
+which routes state access through `simplex manage` on the target. Process
 logs also remain remote. Archive paths reported by the worker are remote paths;
 the Hub does not delete those files.
 

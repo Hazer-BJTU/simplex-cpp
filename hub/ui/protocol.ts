@@ -608,7 +608,7 @@ export interface SnapshotView {
     /** Current lifecycle/state label defined by the enclosing record. */
     state: unknown;
     readable: string | null;
-    /** Diagnostic artifact paths; values are Hub-local, not client-local authority. */
+    /** Legacy diagnostic Hub-local paths. Managed snapshots return an empty map; target paths are not client filesystem authority. */
     files: Record<string, string>;
     /** Optional explanation when persisted state could not be read. */
     state_error?: string | undefined;

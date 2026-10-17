@@ -143,17 +143,19 @@ function decodeReply(
 /**
  * Spawn without a shell or PTY and drain both pipes concurrently through close.
  * There is deliberately no byte limit, maxBuffer, truncation, automatic retry,
- * timeout, or local-filesystem fallback. The configured peer is trusted. The
- * owner must reconcile an interrupted mutation before proceeding with lifecycle
- * changes. A future cancellation policy must preserve that uncertainty.
+ * default timeout, or local-filesystem fallback. A supplied abort signal kills
+ * only the transport and leaves the remote outcome explicitly uncertain. The
+ * configured peer is trusted. The owner must reconcile an interrupted mutation
+ * before proceeding with lifecycle changes.
  */
 export async function executeManagement(
-    invocation: ManagementInvocation, requestId: string,
+    invocation: ManagementInvocation, requestId: string, signal?: AbortSignal,
 ): Promise<ManagementReply> {
     return new Promise((resolve, reject) => {
         const stdout: Buffer[] = [];
         const stderr: Buffer[] = [];
-        let failure: 'spawn_failed' | 'pipe_failed' | null = null;
+        let failure: 'spawn_failed' | 'pipe_failed' | 'cancelled' | null = null;
+        if (signal?.aborted) { reject(new ManagementError('transport', 'cancelled')); return; }
         let child;
         try {
             child = spawn(invocation.command, invocation.args, {
@@ -166,20 +168,31 @@ export async function executeManagement(
             reject(new ManagementError('transport', 'spawn_failed'));
             return;
         }
-        child.on('error', () => { failure = 'spawn_failed'; });
+        const abort = () => {
+            failure = 'cancelled';
+            // Terminate only our transport. A remote mutation may still finish;
+            // destroying pipes cannot imply rollback or authorize worker deletion.
+            child.kill('SIGKILL');
+            child.stdout.destroy();
+            child.stderr.destroy();
+        };
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
+        child.on('error', () => { if (!failure) failure = 'spawn_failed'; });
         child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
         child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
         for (const pipe of [child.stdout, child.stderr]) {
             pipe.on('error', () => { failure = 'pipe_failed'; });
         }
-        child.once('close', (code, signal) => {
+        child.once('close', (code, exitSignal) => {
+            signal?.removeEventListener('abort', abort);
             const diagnostics = Buffer.concat(stderr).toString('utf8');
             if (failure) {
                 reject(new ManagementError('transport', failure, diagnostics));
                 return;
             }
             try {
-                resolve(decodeReply(Buffer.concat(stdout), diagnostics, requestId, code, signal));
+                resolve(decodeReply(Buffer.concat(stdout), diagnostics, requestId, code, exitSignal));
             } catch (error) {
                 reject(error);
             }

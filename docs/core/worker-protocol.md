@@ -1921,8 +1921,10 @@ The hub stores sessions, launch specs, tokens, and process identity in
 `hub.json`. Conversation history is deliberately absent — that is the worker's
 own snapshot. The panel queries a simplified history projection from a connected
 worker advertising `session-history`; those replies are forwarded live without
-being retained in the event transcript. The Hub also provides a local snapshot
-inspection endpoint, which can *read* `<persistence.directory>/<persistence.state>/state.json` and
+being retained in the event transcript. The Hub also provides a snapshot
+inspection endpoint. Managed launch profiles invoke target-side `simplex manage`
+and return complete state/readable data without opening target files; legacy
+profiles read local `<persistence.directory>/<persistence.state>/state.json` and
 `readable.md`; there is no operation to replace, edit, or reset a snapshot,
 because the protocol defines none and inventing one would need a managed
 integration on the worker side.

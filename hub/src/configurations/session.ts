@@ -8,6 +8,7 @@ import type { HubConfig } from '../config.ts';
 import type { WorkerEndpoints } from '../launch/invocation.ts';
 import { ConfigurationStore, launchDocument, workerDocument, writeConfigFile, configError } from './store.ts';
 import type { LaunchDocument } from './store.ts';
+import { managedRecordPath } from '../launch/managed-sessions.ts';
 
 import type { ConfigSelection } from '../../shared/configurations.ts';
 export type { ConfigSelection } from '../../shared/configurations.ts';
@@ -32,6 +33,14 @@ export function snapshotConfigs(store: ConfigurationStore, sessionId: string, se
     store.validate('worker', worker.text);
     const root = sessionDir(store.config, sessionId);
     const destination = join(root, 'config');
+    if (existsSync(managedRecordPath(store.config, sessionId))) {
+        throw configError('Managed allocation configuration is immutable; create a new session to change its source or target', 409);
+    }
+    const managed = launchDocument(launch.text, store.config).management;
+    if (managed && (existsSync(join(root, 'session.lock'))
+        || existsSync(join(destination, 'startup-worker.yaml')) || existsSync(join(root, 'state')))) {
+        throw configError('Legacy worker data requires explicit migration; create a fresh managed session instead', 409);
+    }
     if (existsSync(destination) && !replace) throw configError('Session configuration already exists', 409);
     mkdirSync(root, { recursive: true });
     const temporary = join(root, `.config-${randomUUID()}`);
@@ -41,8 +50,8 @@ export function snapshotConfigs(store: ConfigurationStore, sessionId: string, se
     try {
         writeConfigFile(join(temporary, 'launch.jsonc'), launch.text);
         const doc = workerDocument(worker.text);
-        doc.setIn(['persistence', 'directory'], root);
-        writeConfigFile(join(temporary, 'config.yaml'), doc.toString());
+        if (!managed) doc.setIn(['persistence', 'directory'], root);
+        writeConfigFile(join(temporary, 'config.yaml'), managed ? worker.text : doc.toString());
         writeConfigFile(join(temporary, 'source.json'), JSON.stringify({ ...selected, launchRevision: launch.revision, workerRevision: worker.revision }));
         if (existsSync(destination)) { renameSync(destination, backup); moved = true; }
         try { renameSync(temporary, destination); }
@@ -74,7 +83,7 @@ export function sessionLaunch(config: HubConfig, id: string): { config: HubConfi
     const resolved = mergeConfig(config, { launcher: launch.launcher, worker: launch.worker ?? {} });
     const directory = join(sessionDir(config, id), 'config');
     if (resolved.launcher.cwd) resolved.launcher.cwd = resolve(directory, resolved.launcher.cwd);
-    if (launch.worker?.bin && !isAbsolute(launch.worker.bin)) resolved.worker.bin = resolve(directory, launch.worker.bin);
+    if (!launch.management && launch.worker?.bin && !isAbsolute(launch.worker.bin)) resolved.worker.bin = resolve(directory, launch.worker.bin);
     return { config: resolved, launch };
 }
 

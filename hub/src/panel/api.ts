@@ -359,18 +359,20 @@ export function createPanelApi({
     }
 
     /** Delete restorable history before forgetting an inactive session ID. */
-    function removeSession(session: Session): void {
-        // A later session with the same ID must start empty. The worker owns
-        // this directory, so only remove it after the worker has stopped.
-        transcripts.remove(session.id);
-        rmSync(sessionDir(config, session.id), { recursive: true, force: true });
-        for (const client of clients) {
-            client.replays.delete(session.id);
-            client.subscriptions.delete(session.id);
-        }
-        registry.remove(session.id);
-        persist({ immediate: true });
-        broadcast({ type: 'session_removed', session: session.id });
+    async function removeSession(session: Session): Promise<void> {
+        // For managed sessions, target cleanup must succeed before forgetting
+        // the Hub-local reference. Failures retain retryable cleanup intent.
+        await supervisor.removeStorage(session, () => {
+            transcripts.remove(session.id);
+            rmSync(sessionDir(config, session.id), { recursive: true, force: true });
+            for (const client of clients) {
+                client.replays.delete(session.id);
+                client.subscriptions.delete(session.id);
+            }
+            registry.remove(session.id);
+            persist({ immediate: true });
+            broadcast({ type: 'session_removed', session: session.id });
+        });
     }
 
     // ---------------------------------------------------------------------
@@ -536,7 +538,9 @@ export function createPanelApi({
     }
 
     /** Read the tail of a session's on-disk snapshot, read-only. */
-    function readSnapshot(session: Session): SnapshotView {
+    async function readSnapshot(session: Session): Promise<SnapshotView> {
+        const managed = await supervisor.managedSnapshot(session);
+        if (managed) return { session_id: session.id, ...managed, files: {} };
         let directory: string;
         try {
             directory = sessionStateDirectory(config, session.id);
@@ -788,16 +792,16 @@ export function createPanelApi({
             sendJson(res, 200, { session: session.describe() } satisfies SessionResponse);
         },
 
-        'DELETE /api/sessions/:id': ({ res, params }) => {
+        'DELETE /api/sessions/:id': async ({ res, params }) => {
             const session = requireSession(res, params.id as string);
             if (!session) return;
-            if (supervisor.isRunning(session) || session.connected) {
+            if (supervisor.deletionBusy(session)) {
                 sendError(res, 409, 'session_busy',
                     'stop the worker and disconnect it before deleting the session');
                 return;
             }
             try {
-                removeSession(session);
+                await removeSession(session);
             } catch (error) {
                 sendError(res, 500, 'session_delete_failed',
                     error instanceof Error ? error.message : String(error));
@@ -892,10 +896,10 @@ export function createPanelApi({
                     error instanceof Error ? error.message : 'answer unavailable');
             } finally { res.off('close', close); }
         },
-        'GET /api/sessions/:id/snapshot': ({ res, params }) => {
+        'GET /api/sessions/:id/snapshot': async ({ res, params }) => {
             const session = requireSession(res, params.id as string);
             if (!session) return;
-            sendJson(res, 200, readSnapshot(session));
+            sendJson(res, 200, await readSnapshot(session));
         },
     };
 
@@ -1020,7 +1024,7 @@ export function createPanelApi({
                 return;
             }
             case 'delete_session': {
-                if (supervisor.isRunning(target) || target.connected) {
+                if (supervisor.deletionBusy(target)) {
                     send(client, {
                         type: 'error', error: 'session_busy',
                         message: 'stop the worker and disconnect it before deleting the session',
@@ -1029,7 +1033,7 @@ export function createPanelApi({
                     return;
                 }
                 try {
-                    removeSession(target);
+                    await removeSession(target);
                 } catch (error) {
                     send(client, {
                         type: 'error', error: 'session_delete_failed',

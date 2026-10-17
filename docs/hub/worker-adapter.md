@@ -10,6 +10,16 @@ reconnects, process supervision, persistence, and known limitations.
 For operator setup, see [Hub deployment](../deployment/hub.md). The separate
 [Hub panel protocol](hub-protocol.md) describes browser and management clients.
 
+## Managed ordinary sessions
+
+The configuration editor's **Managed worker** template opts new sessions into
+`simplex manage` for local, SSH or retained-container Docker storage operations.
+Hub bookkeeping and target worker data are separate, and inspection uses the
+manager's complete JSON response. Existing profiles are not migrated implicitly.
+See [management configuration and lifecycle policy](../reference/management.md#opt-in-managed-sessions).
+Managed clean-fork is deferred to the next phase; the delegation description
+below applies to supported legacy launch profiles.
+
 ## Headless delegation
 
 The Hub supports clean-fork/send/receive remote routes for directly owned headless
