@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <optional>
+#include <memory>
+#include "fileio/session_lock.hpp"
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -27,6 +29,8 @@ struct ModelConfiguration {
 
 /** Parsed startup settings. Runtime configuration, never a session snapshot. */
 struct Configuration {
+    /** Managed allocations retain a shared deletion fence through shutdown. */
+    std::shared_ptr<fileio::SessionLock> allocation_lease;
     nlohmann::json document;
     std::filesystem::path directory;
     /** Driver factory and its validated, credential-expanded configuration. */

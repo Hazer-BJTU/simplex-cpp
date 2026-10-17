@@ -46,3 +46,8 @@ add_test(NAME test_persistence_publication COMMAND test_persistence_publication)
 add_executable(test_load_system_prompt test_system_prompt.cpp)
 target_link_libraries(test_load_system_prompt PRIVATE load_lib Boost::unit_test_framework)
 add_test(NAME test_load_system_prompt COMMAND test_load_system_prompt)
+
+add_executable(test_managed_configuration test_managed_configuration.cpp)
+target_link_libraries(test_managed_configuration PRIVATE load_lib manager_lib Boost::unit_test_framework)
+add_test(NAME test_managed_configuration COMMAND test_managed_configuration)
+set_tests_properties(test_managed_configuration PROPERTIES TIMEOUT 30)

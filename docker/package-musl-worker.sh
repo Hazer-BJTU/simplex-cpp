@@ -14,7 +14,7 @@ if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; th
     echo 'invalid repository VERSION' >&2
     exit 1
 fi
-for executable in bin/simplex bin/simplex_worker bin/simplex_worker.bin lib/ld-musl-x86_64.so.1; do
+for executable in bin/simplex bin/simplex_worker bin/simplex_worker.bin bin/simplex_manager bin/simplex_manager.bin lib/ld-musl-x86_64.so.1; do
     test -x "$stage/$executable"
 done
 bash "$repo/docker/check-worker-providers.sh" "$stage"

@@ -6,6 +6,9 @@ It targets glibc 2.34 or newer and uses the host's OpenSSL 3 libraries.
 Keep the directory together: executables locate plugins and libraries relative
 to their own paths.
 
+The adjacent manager is available through `bin/simplex manage --help` for
+target-local storage management. It does not change existing Hub launch behavior.
+
 Extract the archive, then run `bin/simplex run --help` from its root. Create a
 worker configuration from `bin/config.example.yaml`, replace the `YOUR_*`
 provider/model placeholders, and supply the API-key environment variable it

@@ -2,8 +2,8 @@
 # Check the actual downloadable archive after extraction on a target system.
 set -euo pipefail
 
-if (( $# != 1 )); then
-    echo "usage: $0 WORKER_ARCHIVE" >&2
+if (( $# < 1 || $# > 2 )) || [[ ${2:-} != "" && ${2:-} != --layout-only ]]; then
+    echo "usage: $0 WORKER_ARCHIVE [--layout-only]" >&2
     exit 2
 fi
 
@@ -26,6 +26,7 @@ tar -C "$tmp" -xzf "$archive"
 root="$tmp/$name"
 test -x "$root/bin/simplex"
 test -x "$root/bin/simplex_worker"
+test -x "$root/bin/simplex_manager"
 test -s "$root/bin/prompts/coding_agent.yaml"
 test -s "$root/bin/schemas/process/skill.yaml"
 test -s "$root/LICENSE"
@@ -35,9 +36,21 @@ test -d "$root/bin/plugins/llm"
 bash "$(dirname -- "${BASH_SOURCE[0]}")/check-worker-providers.sh" "$root"
 test -d "$root/lib"
 
+# Node-only provider fixtures validate structure without pretending to implement
+# the worker/manager protocol. Production/native validation uses the default.
+if [[ ${2:-} == --layout-only ]]; then
+    echo "validated archive layout: $name"
+    exit 0
+fi
+
 # Run without relying on a development checkout or the build container's
 # library search path. This also exercises the installed command router.
 env -u LD_LIBRARY_PATH "$root/bin/simplex" run --help >/dev/null
+env -u LD_LIBRARY_PATH "$root/bin/simplex" manage --help >/dev/null
+if command -v python3 >/dev/null; then
+    env -u LD_LIBRARY_PATH python3 "$(dirname -- "${BASH_SOURCE[0]}")/../manager/test/test_cli.py" \
+        "$root/bin/simplex_manager" "$root/bin/simplex"
+fi
 if command -v ldd >/dev/null; then
     env -u LD_LIBRARY_PATH ldd -r "$root/bin/simplex_worker" >"$tmp/ldd.out" 2>&1
     if grep -Eq 'not found|undefined symbol' "$tmp/ldd.out"; then

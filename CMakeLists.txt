@@ -240,6 +240,7 @@ add_subdirectory(loop)
 # Startup configuration and provider/extension discovery.
 add_subdirectory(load)
 # Worker runtime and the public simplex command router.
+add_subdirectory(manager)
 add_subdirectory(core)
 
 # ---- Release install rules --------------------------------------------------

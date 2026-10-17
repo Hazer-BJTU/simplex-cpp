@@ -45,6 +45,7 @@ print(json.dumps({"arguments": sys.argv[1:], "pid": os.getpid(),
 sys.exit(int(os.environ["SIMPLEX_LAUNCH_EXIT"]))
 ''')
     worker.chmod(0o755)
+    shutil.copy2(worker, binary_dir / "simplex_manager")
 
     # A relocated tree must not retain its old prefix, or change the caller's cwd.
     moved = root / "relocated prefix"
@@ -70,6 +71,12 @@ sys.exit(int(os.environ["SIMPLEX_LAUNCH_EXIT"]))
         assert observed["pid"] == process.pid, "router must exec, not leave a parent shell"
         assert observed["cwd"] == str(caller), observed
         assert observed["environment"] == "preserved value", observed
+
+        managed = subprocess.run(
+            [entry, "manage", *arguments], cwd=caller, env=environment,
+            capture_output=True, text=True, timeout=5)
+        assert managed.returncode == 37, managed.stderr
+        assert json.loads(managed.stdout)["arguments"] == arguments
 
         # Top-level version queries use the same relocatable exec path, and
         # preserve the worker's output, exit code and remaining arguments.

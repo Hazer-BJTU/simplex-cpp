@@ -15,8 +15,9 @@ test('glibc packaging and extracted-archive checks reject missing/empty provider
     for (const dir of ['bin/plugins/llm', 'bin/prompts', 'bin/schemas/process', 'lib']) {
         mkdirSync(join(stage, dir), { recursive: true });
     }
-    // A real host ELF allows ldd and the CLI smoke check without a worker build.
-    for (const name of ['simplex', 'simplex_worker']) copyFileSync('/bin/true', join(stage, 'bin', name));
+    // Executable placeholders satisfy layout checks; native/package validation
+    // runs the real manager protocol separately, without --layout-only.
+    for (const name of ['simplex', 'simplex_worker', 'simplex_manager']) copyFileSync('/bin/true', join(stage, 'bin', name));
     writeFileSync(join(stage, 'bin/prompts/coding_agent.yaml'), 'fixture');
     writeFileSync(join(stage, 'bin/schemas/process/skill.yaml'), 'fixture');
     const output = join(root, 'output');
@@ -25,8 +26,11 @@ test('glibc packaging and extracted-archive checks reject missing/empty provider
     const provider = join(stage, 'bin/plugins/llm/libllm_alternative.so');
     writeFileSync(provider, 'fixture');
     const archive = pack();
-    const check = () => execFileSync('bash', [join(repo, 'docker/check-worker-release.sh'), archive], { stdio: 'pipe' });
+    const check = () => execFileSync('bash', [join(repo, 'docker/check-worker-release.sh'), archive, '--layout-only'], { stdio: 'pipe' });
     assert.doesNotThrow(check);
+    // A layout fixture must not accidentally satisfy the default runtime checks.
+    assert.throws(() => execFileSync('bash', [join(repo, 'docker/check-worker-release.sh'),
+        archive], { stdio: 'pipe' }));
     const extracted = join(root, 'extracted');
     mkdirSync(extracted);
     execFileSync('tar', ['-xzf', archive, '-C', extracted]);
@@ -44,7 +48,7 @@ test('musl packager and relocated runtime reject an empty provider set before ot
     for (const directory of ['bin/plugins/llm', 'lib']) {
         mkdirSync(join(root, directory), { recursive: true });
     }
-    for (const file of ['bin/simplex', 'bin/simplex_worker', 'bin/simplex_worker.bin',
+    for (const file of ['bin/simplex', 'bin/simplex_worker', 'bin/simplex_worker.bin', 'bin/simplex_manager', 'bin/simplex_manager.bin',
         'lib/ld-musl-x86_64.so.1']) copyFileSync('/bin/true', join(root, file));
     assert.throws(() => execFileSync('bash', [join(repo, 'docker/package-musl-worker.sh'),
         root, join(root, 'output')], { stdio: 'pipe' }), /no model-provider plugin/);

@@ -22,7 +22,10 @@ The auxiliary model is not part of `AgentInputState`, and the current
 
 Build the `simplex` target (`cmake --build build --target simplex`), or build and
 install the complete project with CMake. The build tree and installation both
-provide `bin/simplex` beside `bin/simplex_worker`. Add the installed `bin` directory
+provide `bin/simplex` beside `bin/simplex_worker` and `bin/simplex_manager`.
+The latter implements [`simplex manage`](../manager/README.md) for target-local
+allocation preparation, inspection and cleanup. Existing Hub launchers are not
+yet switched to managed allocations. Add the installed `bin` directory
 to `PATH` to use the public command.
 Copy bin/config.example.yaml to an operator-owned config.yaml. Select the
 provider/model and set credentials. `worker.system_prompt_file` is relative to

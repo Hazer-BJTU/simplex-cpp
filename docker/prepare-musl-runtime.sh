@@ -21,6 +21,12 @@ test -f "$stage/lib/libcrypto.so.3"
 chmod 0755 "$stage/lib/ld-musl-x86_64.so.1"
 mv -- "$worker" "$worker.bin"
 install -m 0755 "$scripts/musl-worker-launcher.sh" "$worker"
+# The manager needs the same bundled loader when installed on glibc hosts.
+manager="$stage/bin/simplex_manager"
+test ! -e "$manager.bin"
+readelf -l "$manager" | grep -q '/ld-musl-x86_64.so.1'
+mv -- "$manager" "$manager.bin"
+install -m 0755 "$scripts/musl-worker-launcher.sh" "$manager"
 mkdir -p "$stage/share/certs" "$stage/share/openssl"
 cp /etc/ssl/cert.pem "$stage/share/certs/ca-certificates.crt"
 cat > "$stage/share/openssl/openssl.cnf" <<'CONFIG'
