@@ -1,3 +1,5 @@
+#include "manager/service.hpp"
+#include "fileio/child_path.hpp"
 #include "load/configuration.hpp"
 #include "yamlconfig/yaml_json.hpp"
 #include <cctype>
@@ -51,20 +53,12 @@ std::filesystem::path storage_child(
     const char* key,
     const std::filesystem::path& root
 ) {
-    const auto value = text(storage, key, key);
-    const std::filesystem::path child(value);
-    if (value.empty() || value.find('\0') != std::string::npos
-        || child.is_absolute() || child.has_root_name()) {
+    try {
+        return fileio::child_path(root, text(storage, key, key));
+    } catch (const std::invalid_argument&) {
         throw std::invalid_argument(std::string("persistence.") + key
-            + " must be a nonempty relative directory");
+            + " must be a nonempty relative directory without parent traversal");
     }
-    for (const auto& component : child) {
-        if (component == "..") {
-            throw std::invalid_argument(std::string("persistence.") + key
-                + " must not contain parent traversal");
-        }
-    }
-    return (root / child).lexically_normal();
 }
 
 /**
@@ -370,6 +364,14 @@ Configuration parse_configuration(
 }
 
 Configuration read_configuration(const std::filesystem::path& file) {
-    return parse_configuration(yamlconfig::load_file(file), std::filesystem::absolute(file).parent_path());
+    auto document = yamlconfig::load_file(file);
+    auto managed = manager::resolve_configuration(file, document);
+    auto result = parse_configuration(
+        managed ? std::move(managed->document) : std::move(document),
+        std::filesystem::absolute(file).parent_path());
+    if (managed) {
+        result.allocation_lease = std::move(managed->lease);
+    }
+    return result;
 }
 } // namespace load

@@ -1,12 +1,13 @@
 # Command-line reference
 
-The installed public worker entry point is `simplex`. Its only subcommand is
-`run`. The launcher preserves arguments and uses `exec` to replace itself with
-the adjacent `simplex_worker` binary, so signals reach the worker directly.
+The installed public worker entry point is `simplex`. It provides `run` for worker sessions and `manage` for target-local storage
+management. The launcher preserves arguments and uses `exec` to replace itself
+with the adjacent executable, so signals reach it directly.
 
 ```sh
 simplex --help
 simplex --version
+simplex manage --help
 simplex run --help
 simplex run --version
 simplex run --config /path/config.yaml --session demo --threads 2
@@ -37,3 +38,7 @@ precedence. Command-line parsing still rejects unknown options.
 The deprecated `simplex_shell` source is not installed or built as a public
 command. The separately installed `simplex-hub` CLI is described in the
 [Hub deployment guide](../deployment/hub.md).
+
+See [Worker storage management](management.md) for the Base64 request/stdout
+contract and allocation ownership. Current Hub launchers still use their original
+layout; their management integration is a separate rollout.

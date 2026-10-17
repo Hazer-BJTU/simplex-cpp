@@ -445,6 +445,11 @@ void save_state(
     }
 }
 
+model_io::AgentInputState decode_state(const Json& document) {
+    check_snapshot(document);
+    return document.get<model_io::AgentInputState>();
+}
+
 model_io::AgentInputState load_state(const fs::path& file) {
     try {
         std::ifstream input(file, std::ios::binary);
@@ -455,8 +460,7 @@ model_io::AgentInputState load_state(const fs::path& file) {
         if (input.bad()) {
             throw std::runtime_error("cannot read JSON snapshot");
         }
-        check_snapshot(document);
-        return document.get<model_io::AgentInputState>();
+        return decode_state(document);
     } catch (const std::exception& error) {
         throw PersistenceError(file.string() + ": " + error.what());
     }

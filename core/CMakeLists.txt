@@ -43,6 +43,6 @@ configure_file(
                      GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/simplex"
     DESTINATION bin COMPONENT simplex_cli)
-add_custom_target(simplex DEPENDS simplex_worker)
+add_custom_target(simplex DEPENDS simplex_worker simplex_manager)
 
 # core/example/shell_server.cpp is deprecated source only; no build/install target.

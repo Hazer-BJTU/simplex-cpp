@@ -26,6 +26,7 @@ tar -C "$tmp" -xzf "$archive"
 root="$tmp/$name"
 test -x "$root/bin/simplex"
 test -x "$root/bin/simplex_worker"
+test -x "$root/bin/simplex_manager"
 test -s "$root/bin/prompts/coding_agent.yaml"
 test -s "$root/bin/schemas/process/skill.yaml"
 test -s "$root/LICENSE"
@@ -38,6 +39,11 @@ test -d "$root/lib"
 # Run without relying on a development checkout or the build container's
 # library search path. This also exercises the installed command router.
 env -u LD_LIBRARY_PATH "$root/bin/simplex" run --help >/dev/null
+env -u LD_LIBRARY_PATH "$root/bin/simplex" manage --help >/dev/null
+if command -v python3 >/dev/null; then
+    env -u LD_LIBRARY_PATH python3 "$(dirname -- "${BASH_SOURCE[0]}")/../manager/test/test_cli.py" \
+        "$root/bin/simplex_manager" "$root/bin/simplex"
+fi
 if command -v ldd >/dev/null; then
     env -u LD_LIBRARY_PATH ldd -r "$root/bin/simplex_worker" >"$tmp/ldd.out" 2>&1
     if grep -Eq 'not found|undefined symbol' "$tmp/ldd.out"; then

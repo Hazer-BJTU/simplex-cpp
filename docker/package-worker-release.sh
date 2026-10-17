@@ -21,7 +21,7 @@ if [[ "$(uname -m)" != x86_64 ]]; then
     echo "this release package targets x86_64 only" >&2
     exit 1
 fi
-if [[ ! -x "$stage/bin/simplex_worker" || ! -x "$stage/bin/simplex" || ! -d "$stage/lib" ]]; then
+if [[ ! -x "$stage/bin/simplex_worker" || ! -x "$stage/bin/simplex" || ! -x "$stage/bin/simplex_manager" || ! -d "$stage/lib" ]]; then
     echo "staging tree is missing required worker files" >&2
     exit 1
 fi

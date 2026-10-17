@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Installed as bin/simplex_worker ONLY in a prepared musl package. Keep the
-# public simplex command router and the worker's argument parser unchanged.
+# Installed beside each .bin executable in a prepared musl package.
+# The public simplex router and executable argument parsers stay unchanged.
 set -euo pipefail
 launcher=${BASH_SOURCE[0]}
 links=0
@@ -19,7 +19,7 @@ done
 directory=$(cd -P -- "$(dirname -- "$launcher")" && pwd)
 root=$(cd -- "$directory/.." && pwd)
 loader="$root/lib/ld-musl-x86_64.so.1"
-worker="$directory/simplex_worker.bin"
+worker="$directory/$(basename -- "$launcher").bin"
 if [[ ! -x "$loader" || ! -x "$worker" ]]; then
     echo 'simplex_worker: bundled loader or worker executable is missing or not executable' >&2
     exit 127

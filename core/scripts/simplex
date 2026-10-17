@@ -8,18 +8,26 @@ Usage: simplex <command> [options]
 
 Commands:
   run       Start a worker session
+  manage    Manage worker allocations on this host
 
 Use "simplex run --help" for worker options.
 Use "simplex --version" to show the compiled worker version.
 HELP
 }
 
+executable=simplex_worker
+kind=worker
 case "${1:-}" in
     ''|-h|--help)
         usage
         exit 0
         ;;
     run)
+        shift
+        ;;
+    manage)
+        executable=simplex_manager
+        kind=manager
         shift
         ;;
     --version)
@@ -50,9 +58,9 @@ while [[ -L "$launcher" ]]; do
 done
 
 directory=$(cd -P -- "$(dirname -- "$launcher")" && pwd)
-worker="$directory/simplex_worker"
+worker="$directory/$executable"
 if [[ ! -f "$worker" || ! -x "$worker" ]]; then
-    printf 'simplex: worker executable is missing or not executable: %s\n' "$worker" >&2
+    printf 'simplex: %s executable is missing or not executable: %s\n' "$kind" "$worker" >&2
     exit 127
 fi
 

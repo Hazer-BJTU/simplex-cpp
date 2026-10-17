@@ -9,11 +9,17 @@ configure_file(
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/schemas/config.example.yaml"
     DESTINATION bin)
 
+# JSON codec stays independent of runtime/provider loading for the manager.
+add_library(load_persistence SHARED src/persistence.cpp)
+target_include_directories(load_persistence PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(load_persistence PUBLIC dataclass_iface PRIVATE fileio_lib)
+set_target_properties(load_persistence PROPERTIES OUTPUT_NAME simplex_load_persistence)
+
 # Startup discovery and configured extension construction.
-add_library(load_lib SHARED src/plugins.cpp src/persistence.cpp src/configuration.cpp src/system_prompt.cpp src/archives.cpp)
+add_library(load_lib SHARED src/plugins.cpp src/configuration.cpp src/system_prompt.cpp src/archives.cpp)
 target_include_directories(load_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(load_lib PUBLIC llm_iface tools_extensions loop_extensions io_lib)
-target_link_libraries(load_lib PRIVATE yamlconfig_iface fileio_lib subprocess_lib)
+target_link_libraries(load_lib PUBLIC fileio_lib load_persistence llm_iface tools_extensions loop_extensions io_lib)
+target_link_libraries(load_lib PRIVATE manager_lib yamlconfig_iface subprocess_lib)
 set_target_properties(load_lib PROPERTIES OUTPUT_NAME simplex_load)
 target_compile_options(load_lib PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>)

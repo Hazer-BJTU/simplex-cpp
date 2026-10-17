@@ -4,7 +4,7 @@
 
 namespace fileio {
 /**
- * Exclusive, nonblocking POSIX advisory ownership of a stable lock file.
+ * Nonblocking POSIX advisory ownership (exclusive by default) of a stable lock file.
  *
  * All writers must cooperate and use the same path on a local filesystem with
  * flock support. Never unlink or replace the lock file while it may be used.
@@ -14,7 +14,9 @@ namespace fileio {
  */
 class SessionLock {
 public:
-    explicit SessionLock(const std::filesystem::path& path);
+    /** Shared leases exclude management mutations while allowing state readers. */
+    enum class Mode { Exclusive, Shared };
+    explicit SessionLock(const std::filesystem::path& path, Mode mode = Mode::Exclusive);
     ~SessionLock();
     SessionLock(const SessionLock&) = delete;
     SessionLock& operator=(const SessionLock&) = delete;

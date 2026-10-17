@@ -79,6 +79,9 @@ void save_state(
     StateFormat format = StateFormat::Json,
     const ReadableOptions& options = {});
 
+/** Validate/decode an already parsed complete snapshot without reading a file. */
+[[nodiscard]] model_io::AgentInputState decode_state(const nlohmann::json& document);
+
 /**
  * Load a JSON snapshot into a newly constructed AgentInputState.
  *
