@@ -8,7 +8,7 @@ This page is the owner-confirmed schema decision for the normalized SQLite
 backend. It supersedes the candidate tables in #187 §3.2, which were explicitly
 discussion input. PR-C implements the executable DDL, the row↔dataclass mapping
 and the scalar codecs; wiring checkpoints, revisions and compaction into the
-worker remains PR-D/PR-E work.
+worker is provided by PR-D for checkpoints; compaction remains PR-E work.
 
 ## Context
 

@@ -22,9 +22,9 @@
  * The schema is owned by sqlite_schema.{hpp,cpp}; this module assumes an
  * already opened store and performs no migration. `replace_current` is the
  * whole-graph rewrite path (D6), while `store_archive_snapshot` only inserts: an
- * archive snapshot is never updated or rewritten. Revision and operation
- * identity are placeholders (0 and empty) until PR-D owns checkpoint
- * scheduling.
+ * archive snapshot is never updated or rewritten. The standalone codec uses
+ * placeholder revision/operation metadata; the SQLite StateStore supplies
+ * authoritative metadata inside the same transaction.
  *
  * Missing vs empty vs null is preserved per field:
  *   - a missing optional row/column is absent;
@@ -97,7 +97,9 @@ std::int64_t store_archive_snapshot(
 /**
  * Rewrite the session's current snapshot as one complete graph.
  *
- * Runs in one transaction: the existing current snapshot row is deleted (its
+ * With own_transaction=false the caller must own the transaction, including
+ * commit/rollback and revision metadata. Otherwise runs in one transaction:
+ * the existing current snapshot row is deleted (its
  * children cascade) and reinserted under the same snapshot id with the new
  * graph, or a current snapshot is inserted when none exists. `sessions`
  * `updated_at` follows `state.meta.updated_at`. Archive snapshots are not
@@ -105,7 +107,7 @@ std::int64_t store_archive_snapshot(
  */
 std::int64_t replace_current(
     sqlite::Database& database, std::string_view session_id,
-    const model_io::AgentInputState& state);
+    const model_io::AgentInputState& state, bool own_transaction = true);
 
 /**
  * Load the session's current snapshot.
@@ -116,7 +118,8 @@ std::int64_t replace_current(
  * read-only connection.
  */
 std::optional<model_io::AgentInputState> load_current(
-    sqlite::Database& database, std::string_view session_id);
+    sqlite::Database& database, std::string_view session_id,
+    bool own_transaction = true);
 
 /** Decode one snapshot graph by id in one read transaction. */
 model_io::AgentInputState decode_snapshot(

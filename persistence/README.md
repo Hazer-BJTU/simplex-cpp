@@ -3,10 +3,8 @@
 `persistence_lib` owns the worker's authoritative `AgentInputState` storage and
 its compact-archive evidence. The contract is `<persistence/store.hpp>`; the JSON
 adapter is `src/json_store.cpp`, and `src/json_archive.cpp` owns that adapter's
-archive layout, recognition and retention. It is the only `StateStore`
-implementation in this phase; the normalized SQLite schema and row codec
-(`src/sqlite_schema.cpp`, `src/sqlite_snapshot.cpp`) land in PR-C without a
-`StateStore` yet.
+archive layout, recognition and retention. The experimental SQLite adapter is `src/sqlite_store.cpp`, using the normalized
+schema and row codec in `src/sqlite_schema.cpp` and `src/sqlite_snapshot.cpp`.
 
 The module exists so that no execution code knows a storage format. `core` asks
 for a checkpoint, a reserved archive, a compaction commit, or a retention pass;
@@ -15,7 +13,7 @@ Dataclass, loop, tool and provider code stay independent of the backend.
 
 ## Contract
 
-- One store per session, one writer at a time, confined to the worker strand. The
+- One store per session, one writer at a time, serialized by the host. The
   contract has no internal locking and no overlapping operations.
 - Every operation is synchronous: it returns only after its durability outcome is
   known. A backend that needs a database writer still completes or fails the call
@@ -96,9 +94,9 @@ reported as `Unknown` and that an attempt without its marker is not recognized.
 ## SQLite schema v1
 
 PR-C adds the executable schema (`src/sqlite_schema.cpp`), its version and
-migration guard, and the normalized row codec (`src/sqlite_snapshot.cpp`). It is
-not yet a `StateStore`: checkpoints, revisions, compaction attempts and worker
-integration arrive in PR-D/PR-E. The owner-confirmed decision record is
+migration guard, and the normalized row codec (`src/sqlite_snapshot.cpp`). PR-D adds the
+`StateStore`, checkpoint revisions and worker integration. Compaction attempts
+remain PR-E work. The owner-confirmed decision record is
 [`docs/architecture/sqlite-schema-v1.md`](../docs/architecture/sqlite-schema-v1.md).
 
 One database belongs to one session at `<state>/state.sqlite3` (D10). A snapshot
@@ -198,8 +196,8 @@ INTEGER with overflow checks.
   current snapshot header (children cascade), reinserts it under the same
   `snapshot_id`, inserts every child row and updates `sessions.updated_at`.
   Archive snapshots are never touched. The stable snapshot id is an internal
-  implementation detail; `revision` and `operation_id` remain placeholders until
-  PR-D.
+  implementation detail; the StateStore sets `revision` and `operation_id` in
+  the same transaction.
 - `store_archive_snapshot` only inserts `kind = 'archive'`; the module exposes no
   update path for an archive.
 - `load_current` and `decode_snapshot` rebuild in one read transaction and
@@ -218,3 +216,36 @@ rejection and transactional migration rollback.
 `UINT64_MAX`, absent/null/empty distinctions, repeated and empty call ids,
 non-deduplication of content, whole-graph replacement, archive immutability,
 cross-snapshot rejection and corruption detection.
+
+## Experimental SQLite checkpoints
+
+Set `persistence.backend: sqlite` explicitly for a **new test session directory**.
+JSON remains the default. The database is `<state>/state.sqlite3`; `format: json`
+remains the compatibility setting for the dataclass exchange representation.
+This phase implements current-state checkpoints and restoration only. Manual
+compact is rejected before admission; nonzero `auto_compact_threshold` with
+SQLite is rejected at startup. Migration and Hub snapshot inspection arrive in
+later phases. Do not select SQLite over an existing JSON session expecting
+migration, or switch back to JSON expecting its old file to be current.
+
+Every checkpoint replaces the current normalized graph and advances its revision
+and random operation ID in one transaction. The caller can require an expected
+revision; stale writes fail. No full snapshot is retained per checkpoint.
+Connections enable foreign keys, WAL and FULL synchronization; database files
+are created with mode 0600. A required failure latches worker storage failure,
+stops admission and prevents shutdown from overwriting recovery evidence.
+COMMIT/directory-sync failures are conservatively `Unknown`: the store refuses
+further writes until reopened. `load_current()` returns the persisted revision
+and operation ID with its graph in one read transaction, permitting comparison
+with the failing operation. SQLite BUSY/FULL/IOERR, corruption, unsupported
+schemas and session mismatch never trigger JSON fallback or an empty session.
+A missing path is the only absent-file case; an existing empty file is rejected.
+
+The application owns one storage thread. `loop::Options::checkpoint` supplies
+awaited barriers after synchronous checkpoint events, before dispatch or result
+projection. The loop's state remains frozen until the storage task completes;
+read-only history/status requests may still run on the application strand.
+Cancellation does not abandon a write: it joins the checkpoint and then follows
+the normal safe boundary. Restore and shutdown checkpoints use the same executor.
+No database transaction spans a model/tool wait. Existing JSON compact archive
+operations retain their synchronous behavior in this phase.

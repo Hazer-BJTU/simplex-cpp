@@ -519,6 +519,7 @@ boost::asio::awaitable<RunResult> run(
                 // never grounds for replay. Preserve results BEFORE projection.
                 state.loop->phase = LoopPhase::Tools;
                 events.publish(ToolDispatchCheckpoint{state});
+                if (options.checkpoint) co_await options.checkpoint(Checkpoint::BeforeTools);
                 std::vector<model_io::InvokeReturn> records;
                 if (stop.stop_requested() || !hook_error.empty()) {
                     records = skipped(*response.invokes);
@@ -531,6 +532,7 @@ boost::asio::awaitable<RunResult> run(
                 state.loop->pending_results = std::move(records);
                 state.loop->phase = LoopPhase::Projection;
                 events.publish(ToolResultsCheckpoint{state});
+                if (options.checkpoint) co_await options.checkpoint(Checkpoint::ResultsReady);
                 project(model, state);
                 // A primary hook error survives closure of its unanswered calls.
                 if (!hook_error.empty()) {
@@ -540,6 +542,7 @@ boost::asio::awaitable<RunResult> run(
                 events.publish(ToolResultsCommitted{state});
                 edit_state<EditOnStepFinished>(events, state);
                 events.publish(StepFinished{state});
+                if (options.checkpoint) co_await options.checkpoint(Checkpoint::StepFinished);
             } else if (!hook_error.empty()) {
                 throw std::runtime_error(hook_error);
             }
@@ -615,6 +618,9 @@ boost::asio::awaitable<RunResult> run(
             // seen the terminal state, so a later exception may only be logged.
             logging::Logger::error("loop finish observer failed: {}", error_text());
         }
+        // A required durability barrier is not an optional observer. Its failure
+        // propagates even when another finish observer already threw.
+        if (options.checkpoint) co_await options.checkpoint(Checkpoint::RunFinished);
     }
     co_return result;
 }

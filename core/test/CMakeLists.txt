@@ -6,7 +6,8 @@ foreach(name configuration confirmation application protocol compact compact_bud
 endforeach()
 set_tests_properties(test_core_congestion PROPERTIES TIMEOUT 60)
 target_link_libraries(test_core_protocol PRIVATE llm_chat_completions)
-target_link_libraries(test_core_application PRIVATE fileio_lib)
+target_link_libraries(test_core_application PRIVATE fileio_lib persistence_lib)
+set_target_properties(test_core_application PROPERTIES ENABLE_EXPORTS ON)
 # The published-snapshot scenario asserts the store's recovery outcome directly.
 target_link_libraries(test_core_compact PRIVATE persistence_lib)
 add_dependencies(test_core_application llm_deepseek llm_qwen)

@@ -931,10 +931,11 @@ std::int64_t store_archive_snapshot(
 
 std::int64_t replace_current(
     sqlite::Database& database, std::string_view session_id,
-    const model_io::AgentInputState& state) {
+    const model_io::AgentInputState& state, bool own_transaction) {
     require_matching_session(session_id, state.meta);
     require_foreign_keys(database);
-    sqlite::Transaction transaction(database);
+    std::unique_ptr<sqlite::Transaction> transaction;
+    if (own_transaction) transaction = std::make_unique<sqlite::Transaction>(database);
     require_session(database, session_id);
 
     const auto current = find_current(database, session_id);
@@ -955,18 +956,19 @@ std::int64_t replace_current(
     }
     insert_graph(database, snapshot_id, state);
     update_session_timestamp(database, session_id, state.meta.updated_at);
-    transaction.commit();
+    if (transaction) transaction->commit();
     return snapshot_id;
 }
 
 std::optional<model_io::AgentInputState> load_current(
-    sqlite::Database& database, std::string_view session_id) {
-    sqlite::Transaction transaction(database);
+    sqlite::Database& database, std::string_view session_id, bool own_transaction) {
+    std::unique_ptr<sqlite::Transaction> transaction;
+    if (own_transaction) transaction = std::make_unique<sqlite::Transaction>(database);
     require_session(database, session_id);
     const auto current = find_current(database, session_id);
     if (!current) return std::nullopt;
     auto state = decode_snapshot_impl(database, *current);
-    transaction.rollback();
+    if (transaction) transaction->rollback();
     return state;
 }
 

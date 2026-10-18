@@ -1,4 +1,5 @@
 #include "core/application.hpp"
+#include <boost/asio/thread_pool.hpp>
 #include "versioning/version.hpp"
 #include "fileio/session_lock.hpp"
 #include "core/confirmation.hpp"
@@ -183,11 +184,24 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
         // Construction performs no I/O; a store exists even when persistence is
         // disabled so restore/admission checks stay in one place.
-        state_store = persistence::make_json_store(session_id, {
-            config.state_directory, config.memory});
+        if (config.persistence_backend == "sqlite") {
+            if (config.auto_compact_threshold != 0) {
+                throw std::invalid_argument("experimental SQLite does not support auto compact");
+            }
+            state_store = persistence::make_sqlite_store(session_id, config.state_directory);
+        } else if (config.persistence_backend == "json") {
+            state_store = persistence::make_json_store(session_id, {
+                config.state_directory, config.memory});
+        } else {
+            throw std::invalid_argument("unsupported persistence backend");
+        }
     }
 
     asio::strand<asio::any_io_executor> strand;
+    // One storage worker serializes blocking database work. All calls are joined
+    // before run() returns; live state stays frozen while a checkpoint awaits.
+    asio::thread_pool storage_executor{1};
+    std::optional<persistence::Revision> storage_revision;
     load::Configuration config;
     std::string session_id;
     /** Authoritative state, compact archives and retention for this session. */
@@ -362,15 +376,19 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * durable, so a later tool dispatch can never run behind a write that is
      * still in flight. The checkpoint is the only automatic storage work: the
      * write-only Markdown view is no longer produced by the worker, and the
-     * complete JSON snapshot is the artifact operators inspect.
+     * complete snapshot is authoritative regardless of its storage backend.
      */
-    void save(persistence::Boundary boundary) {
-        if (!config.persistence || storage_failed) return;
+    asio::awaitable<void> save(persistence::Boundary boundary) {
+        if (!config.persistence || storage_failed) co_return;
         persistence::CommitReceipt receipt;
         try {
             if (state.meta.session_id != session_id)
                 throw std::logic_error("hook changed the worker session identity");
-            receipt = state_store->checkpoint(state, boundary);
+            receipt = co_await asio::co_spawn(storage_executor,
+                [this, boundary]() -> asio::awaitable<persistence::CommitReceipt> {
+                    co_return state_store->checkpoint(state, boundary, storage_revision);
+                }, asio::use_awaitable);
+            storage_revision = receipt.revision;
         } catch (...) {
             storage_failed = true;
             if (!failure) failure = std::current_exception();
@@ -380,20 +398,23 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         if (boundary == persistence::Boundary::RunFinished
             || boundary == persistence::Boundary::Cancelled) run_saved = true;
         emit("persisted", {{"boundary", persistence::boundary_name(boundary)},
-            {"format", persistence::backend_name(receipt.backend)}});
+            {"format", "json"},
+            {"backend", persistence::backend_name(receipt.backend)},
+            {"revision", receipt.revision ? Json(*receipt.revision) : Json()},
+            {"operation_id", receipt.operation_id}});
     }
 
     /** Initialize resources before admission; restored history is never replayed. */
-    void initialize() {
+    asio::awaitable<void> initialize() {
         if (config.legacy_readable) {
             // One startup diagnostic; the value stays accepted so an existing
             // Hub-generated configuration keeps starting unchanged.
             logging::Logger::warning(
                 "persistence.readable is deprecated and ignored: the worker writes "
-                "complete JSON state only and no longer exports readable.md");
+                "complete state only and no longer exports readable.md");
         }
         construct_runtime();
-        restore_state();
+        co_await restore_state();
         install_confirmation();
         install_observers();
     }
@@ -448,10 +469,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * treated as an empty session. `restore: never` bypasses the store instead
      * of deleting it, so a later save replaces the current state in place.
      */
-    void restore_state() {
+    asio::awaitable<void> restore_state() {
         std::optional<model_io::AgentInputState> stored;
         if (config.persistence && config.restore) {
-            if (auto current = state_store->load_current()) stored = std::move(current->state);
+            auto current = co_await asio::co_spawn(storage_executor,
+                [this]() -> asio::awaitable<std::optional<persistence::StoredState>> {
+                    co_return state_store->load_current();
+                }, asio::use_awaitable);
+            if (current) {
+                storage_revision = current->revision;
+                stored = std::move(current->state);
+            }
         }
         if (stored) {
             state = std::move(*stored);
@@ -552,12 +580,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         subscriptions.emplace_back(events.subscribe<loop::BeforeToolBatch>([this](const auto& event) {
             emit("tool_calls", display_calls(event.calls));
         }));
-        subscriptions.emplace_back(events.subscribe<loop::ToolDispatchCheckpoint>([this](const auto&) {
-            save(persistence::Boundary::BeforeTools);
-        }));
-        subscriptions.emplace_back(events.subscribe<loop::ToolResultsCheckpoint>([this](const auto&) {
-            save(persistence::Boundary::ResultsReady);
-        }));
         subscriptions.emplace_back(events.subscribe<loop::ToolResultsCommitted>([this](const auto& event) {
             emit("tool_results", display_results(*event.state.turns.back().agent_loop_step.back().invoke_returns));
         }));
@@ -575,12 +597,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }));
         subscriptions.emplace_back(events.subscribe<loop::RunFinished>([this](const auto&) {
             ++history_revision;
-        }));
-        subscriptions.emplace_back(events.subscribe<loop::StepFinished>([this](const auto&) {
-            if (config.save_step) save(persistence::Boundary::StepFinished);
-        }));
-        subscriptions.emplace_back(events.subscribe<loop::RunFinished>([this](const auto&) {
-            if (config.save_run) save(persistence::Boundary::RunFinished);
         }));
         subscriptions.emplace_back(events.subscribe<io::SignalEvent>(
             [weak = weak_from_this()](const io::SignalEvent& event) {
@@ -947,7 +963,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // fallible step. The archive itself stays immutable evidence.
         emit("persisted", {
             {"boundary", persistence::boundary_name(persistence::Boundary::Compaction)},
-            {"format", persistence::backend_name(receipt.backend)}});
+            {"format", "json"},
+            {"backend", persistence::backend_name(receipt.backend)},
+            {"revision", receipt.revision ? Json(*receipt.revision) : Json()},
+            {"operation_id", receipt.operation_id}});
         // Retention sees the committed replacement. The exit guard handles
         // failed/cancelled attempts against the unchanged authoritative state.
         cleanup_attempted = true;
@@ -1032,7 +1051,23 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             run_saved = false;
             auto result = co_await loop::run(execution_model, registry, events, strand,
                 state, has_message, std::move(message),
-                {config.max_exchanges, config.auto_compact_threshold}, run_stop.get_token());
+                {config.max_exchanges, config.auto_compact_threshold,
+                    [this](loop::Checkpoint boundary) -> asio::awaitable<void> {
+                        switch (boundary) {
+                            case loop::Checkpoint::BeforeTools:
+                                co_await save(persistence::Boundary::BeforeTools);
+                                break;
+                            case loop::Checkpoint::ResultsReady:
+                                co_await save(persistence::Boundary::ResultsReady);
+                                break;
+                            case loop::Checkpoint::StepFinished:
+                                if (config.save_step) co_await save(persistence::Boundary::StepFinished);
+                                break;
+                            case loop::Checkpoint::RunFinished:
+                                if (config.save_run) co_await save(persistence::Boundary::RunFinished);
+                                break;
+                        }
+                    }}, run_stop.get_token());
             add_exchanges(task_exchanges, result.completed_exchanges);
             if (result.status != loop::RunStatus::AutoCompactRequired) co_return result;
             if (storage_failed) {
@@ -1147,6 +1182,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     || state.loop->phase == model_io::LoopPhase::Blocked))
                     throw std::invalid_argument("session requires operator recovery inspection");
                 if (input->operation == InputOperation::Compact) {
+                    if (config.persistence_backend == "sqlite") {
+                        throw std::invalid_argument("experimental SQLite does not support compact");
+                    }
                     if (!config.persistence) {
                         throw std::invalid_argument("compact requires persistence.enabled");
                     }
@@ -1240,12 +1278,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             std::size_t total_exchanges = task_exchanges;
             add_exchanges(total_exchanges, compact_exchanges);
             result.completed_exchanges = total_exchanges;
-            // An earlier RunFinished observer can throw and prevent our slot
-            // from running. The returned state is still final: complete a
-            // required save here before reporting durability or admitting input.
+            // Early exits may not reach the loop's terminal durability barrier.
+            // Save the settled state before reporting completion/admitting input,
+            // including cancellation when ordinary run saves are disabled.
             if (input->operation != InputOperation::Compact && !storage_failed && !run_saved
                 && (config.save_run || result.status == loop::RunStatus::Cancelled)) {
-                save(config.save_run
+                co_await save(config.save_run
                     ? persistence::Boundary::RunFinished
                     : persistence::Boundary::Cancelled);
             }
@@ -1288,7 +1326,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             std::filesystem::create_directories(directory);
             ownership = std::make_unique<fileio::SessionLock>(directory / "session.lock");
         }
-        initialize();
+        co_await initialize();
         asio::co_spawn(strand, process_control(),
             [self = shared_from_this()](std::exception_ptr error) {
                 if (error && !self->stopping) self->fail(error);
@@ -1331,7 +1369,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         try {
             if (config.save_shutdown && !storage_failed) {
                 state.meta.updated_at = persistence::utc_timestamp();
-                save(persistence::Boundary::Shutdown);
+                co_await save(persistence::Boundary::Shutdown);
             }
         } catch (...) {
             if (!failure) failure = std::current_exception();

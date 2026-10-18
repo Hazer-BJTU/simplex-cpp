@@ -3,6 +3,8 @@
 #include "dataclass/model_io.hpp"
 
 #include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/awaitable.hpp>
+#include <functional>
 
 #include <cstddef>
 #include <cstdint>
@@ -86,6 +88,9 @@ struct RunResult {
     RunFailureStage failure_stage = RunFailureStage::Other;
 };
 
+/** Awaited durability boundaries; these do not replace synchronous events. */
+enum class Checkpoint { BeforeTools, ResultsReady, StepFinished, RunFinished };
+
 /** Limits one invocation; it does not change model generation configuration. */
 struct Options {
     /// A present cap must be positive; nullopt is reserved for uncapped hosts.
@@ -94,6 +99,14 @@ struct Options {
     /// Zero disables automatic compaction, including exchange-cap conversion.
     /// Positive values compare strictly against the latest prompt + generated.
     std::uint64_t auto_compact_threshold = 0;
+    /** Optional host durability barrier, awaited after the corresponding event.
+     * The host may read frozen state but must not mutate it. No tool dispatch,
+     * result projection or subsequent model request crosses an unfinished
+     * barrier. Explicit stop requests do not cancel an outstanding checkpoint.
+     * Failure follows the same recovery path as a checkpoint observer failure.
+     */
+    std::function<boost::asio::awaitable<void>(Checkpoint)> checkpoint;
+
 };
 
 } // namespace loop

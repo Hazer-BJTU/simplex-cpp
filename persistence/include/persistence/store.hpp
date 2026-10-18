@@ -16,8 +16,9 @@
  * Authoritative session persistence, independent of its physical representation.
  *
  * The worker owns one store per session and exactly one writer at a time. A
- * store instance is confined to the worker strand: the contract has no internal
- * locking, and no two operations may overlap. Read-only inspection by another
+ * store instance has one serialized owner: the contract has no internal
+ * locking, and no two operations may overlap. The worker awaits blocking
+ * checkpoints on its dedicated storage executor. Read-only inspection by another
  * process uses the backend's own path; it is not part of this interface.
  *
  * Every operation is synchronous. When a call returns, its durability outcome is
@@ -43,9 +44,11 @@ namespace persistence {
 enum class Backend {
     /// Atomic `state.json` replacement with per-attempt JSON state archives.
     Json,
+    /// Transactional normalized state.sqlite3 store (experimental).
+    Sqlite,
 };
 
-/** Stable wire and diagnostic label for a backend ("json"). */
+/** Stable wire and diagnostic label for a backend ("json" or "sqlite"). */
 const char* backend_name(Backend backend);
 
 /**
@@ -100,6 +103,8 @@ struct StoredState {
     Backend backend = Backend::Json;
     /// Revision observed by this read; empty when the backend tracks none.
     std::optional<Revision> revision;
+    /// Last committed operation, available after reopening uncertain writes.
+    std::string operation_id;
 };
 
 /** Result of one required checkpoint or compaction commit. */
@@ -245,7 +250,7 @@ public:
      * Returns nothing only when no store exists yet. A corrupt or unreadable
      * store throws StoreError instead of reporting an empty session, because a
      * damaged session must not look fresh. Loading is read-only: it creates no
-     * file or schema, starts no loop and rebuilds no runtime resource. The worker
+     * authoritative database or schema, starts no loop and rebuilds no runtime resource. The worker
      * reconciles session identity after loading, so a snapshot written by another
      * session is rejected instead of being adopted silently.
      */
@@ -396,3 +401,12 @@ std::unique_ptr<StateStore> make_json_store(
 std::string utc_timestamp();
 
 } // namespace persistence
+
+namespace persistence {
+/** Create an experimental SQLite store. Construction performs no I/O.
+ * Current snapshots only; archive operations fail until SQLite compact support
+ * lands. Missing files are absent on load, never created by inspection.
+ */
+std::unique_ptr<StateStore> make_sqlite_store(
+    std::string session_id, std::filesystem::path state_directory);
+}

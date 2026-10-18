@@ -69,6 +69,8 @@ struct Configuration {
     /** Refreshed from startup configuration even for restored sessions. */
     RuntimeEnvironment environment;
     bool persistence = true;
+    /// Explicit authoritative backend: json (default) or experimental sqlite.
+    std::string persistence_backend = "json";
     /** Direct session root; the worker never appends a session ID. */
     std::filesystem::path storage;
     /** Resolved snapshot directory below storage (persistence.state). */
