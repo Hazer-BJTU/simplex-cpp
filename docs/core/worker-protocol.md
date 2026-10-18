@@ -719,6 +719,15 @@ the synchronous commit does not undo it. Required JSON save failure stops furthe
 admission; a failure after file publication has uncertain durability and is never
 reported as success or user cancellation. The worker emits one terminal `error`
 with `durable: false` and stops, rather than a duplicate `run_finished`.
+An uncertain optional archive settlement or retention also stops the worker with
+this terminal `error`. In that case `storage_error` describes the uncertain
+mutation and `primary_outcome` preserves the compact result as
+`{ "status": string, "error": string, "operation": "compact" | "auto_compact" }`.
+A failed summary or cancellation remains observable; `status: completed` here
+means the compact replacement committed before retention became uncertain, not
+that the original task finished. No continuation, final checkpoint or new input
+is admitted against that uncertain store. Reopen and inspect its evidence before
+resuming; no automatic retry is performed.
 The deprecated `readable.md` export is never written: `persistence.readable` is
 accepted only for compatibility and produces one startup diagnostic.
 

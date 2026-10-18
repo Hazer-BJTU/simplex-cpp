@@ -235,6 +235,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     bool stopping = false;
     bool active = false;
     bool storage_failed = false;
+    /// Optional archive I/O can still make the authoritative store uncertain.
+    std::optional<std::string> optional_storage_failure;
     bool run_saved = false;
     // All counters belong to one admitted request, not an individual loop call.
     std::size_t task_exchanges = 0;
@@ -733,6 +735,19 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         return state_store->prune_archives(request);
     }
 
+    /** Keep the host and store failure latches consistent after optional I/O.
+     * A definitely uncommitted cleanup remains a warning. An uncertain commit
+     * forbids all further writes and admission, but transport stays alive until
+     * consume() emits the terminal error carrying the original compact outcome.
+     */
+    void latch_optional_storage_failure(const persistence::StoreError& error) {
+        if (error.status() != persistence::CommitStatus::Unknown) return;
+        storage_failed = true;
+        if (!failure) failure = std::current_exception();
+        if (!optional_storage_failure) optional_storage_failure = error.what();
+        cancel();
+    }
+
     /**
      * Settle a failed or cancelled attempt, then apply retention.
      *
@@ -747,21 +762,32 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         persistence::ArchiveOutcome outcome,
         const std::vector<persistence::ArchiveRef>& replacement_references
     ) {
+        if (storage_failed && state_store->backend() == persistence::Backend::Sqlite) co_return;
         try {
             co_await asio::co_spawn(storage_executor,
                 [&]() -> asio::awaitable<void> {
                     state_store->finish_archive_attempt(current, outcome);
                     co_return;
                 }, asio::use_awaitable);
+        } catch (const persistence::StoreError& error) {
+            latch_optional_storage_failure(error);
+            logging::Logger::warning("compact archive settle failed: {}", error.what());
         } catch (const std::exception& error) {
             logging::Logger::warning("compact archive settle failed: {}", error.what());
         }
+        // An uncertain settlement must not be followed by another mutation.
+        if (optional_storage_failure
+            || (storage_failed && state_store->backend() == persistence::Backend::Sqlite)) co_return;
         try {
             co_await asio::co_spawn(storage_executor,
                 [&]() -> asio::awaitable<void> {
                     cleanup_archive(root, current, replacement_references);
                     co_return;
                 }, asio::use_awaitable);
+        } catch (const persistence::StoreError& error) {
+            latch_optional_storage_failure(error);
+            logging::Logger::warning("compact archive cleanup failed: {}", error.what());
+            emit("export_error", {{"operation", "archive_cleanup"}, {"message", error.what()}});
         } catch (const std::exception& error) {
             logging::Logger::warning("compact archive cleanup failed: {}", error.what());
             emit("export_error", {{"operation", "archive_cleanup"}, {"message", error.what()}});
@@ -996,6 +1022,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 }, asio::use_awaitable);
             completed["archive_cleanup"] = {{"removed_archives", cleaned.removed_archives},
                 {"removed_bytes", cleaned.removed_bytes}};
+        } catch (const persistence::StoreError& error) {
+            latch_optional_storage_failure(error);
+            completed["archive_cleanup_error"] = error.what();
         } catch (const std::exception& error) {
             completed["archive_cleanup_error"] = error.what();
         }
@@ -1154,7 +1183,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             returned.content.push_back(record.output);
             returned.invoke_return = std::move(record);
             emit("tool_results", display_results({returned}));
-            if (result.status != loop::RunStatus::Completed) {
+            if (result.status != loop::RunStatus::Completed || storage_failed) {
                 finish_controller(result);
                 co_return result;
             }
@@ -1314,8 +1343,15 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             if (storage_failed) {
                 // Preserve the last known recovery file; never overwrite failure evidence.
                 stopping = true;
-                emit("error", {{"message", "required snapshot failed; worker is stopping"},
-                    {"durable", false}});
+                Json diagnostic = {{"message", "required snapshot failed; worker is stopping"},
+                    {"durable", false}};
+                if (optional_storage_failure) {
+                    diagnostic["message"] = "archive storage outcome is uncertain; worker is stopping";
+                    diagnostic["storage_error"] = *optional_storage_failure;
+                    diagnostic["primary_outcome"] = {{"status", run_status(result.status)},
+                        {"error", result.error}, {"operation", failure_operation}};
+                }
+                emit("error", std::move(diagnostic));
             } else {
                 Json finished = {{"status", run_status(result.status)},
                     {"error", result.error}, {"exchanges", result.completed_exchanges},

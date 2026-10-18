@@ -198,19 +198,24 @@ public:
             struct Candidate { std::string id; std::int64_t snapshot; bool protected_archive; };
             std::vector<Candidate> candidates;
             auto query = database.prepare(
-                "SELECT a.archive_id, a.original_snapshot_id, a.outcome FROM archives a "
+                "SELECT a.archive_id, a.original_snapshot_id, a.outcome, s.revision FROM archives a "
                 "JOIN snapshots s ON s.snapshot_id = a.original_snapshot_id "
                 "WHERE a.session_id = ?1 AND a.storage_kind = 'sqlite' "
                 "AND s.session_id = ?1 AND s.kind = 'archive' ORDER BY a.sequence DESC");
             query.bind_text(1, session_);
+            const auto authoritative_revision = current_metadata(database).first;
             std::size_t kept = 0;
             while (query.step() == sqlite::StepResult::Row) {
                 const auto id = query.column_text(0);
-                // An unfinished/recovered attempt remains evidence until a later
-                // operator decision. Do not turn a crash into automatic deletion.
+                // Prepared attempts remain unresolved. An interrupted T1 is
+                // recovery evidence until a later authoritative checkpoint (or
+                // compaction) advances beyond its original revision. Afterwards
+                // it is a settled archive under the existing retention policy.
                 const auto outcome = query.column_text(2);
+                const auto original_revision = static_cast<Revision>(query.column_int64(3));
                 const bool protect = protected_ids.contains(id)
-                    || outcome == "prepared" || outcome == "interrupted";
+                    || outcome == "prepared"
+                    || (outcome == "interrupted" && original_revision >= authoritative_revision);
                 if (protect) ++kept;
                 candidates.push_back({id, query.column_int64(1), protect});
             }

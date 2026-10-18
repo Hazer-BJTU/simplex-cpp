@@ -16,6 +16,9 @@ add_dependencies(test_core_application llm_deepseek llm_qwen)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Inject a single snapshot-directory fsync failure after its successful rename.
     target_link_options(test_core_compact PRIVATE "LINKER:--export-dynamic-symbol=fsync")
+    # Exercise uncertain optional archive settlement/retention after SQLite COMMIT.
+    target_link_options(test_core_auto_compact PRIVATE "LINKER:--export-dynamic-symbol=fsync")
+    target_link_libraries(test_core_auto_compact PRIVATE ${CMAKE_DL_LIBS})
     # Export the test executable's resolver override for interposition in Asio.
     # Keeping the fixture in this executable avoids a test-only DT_NEEDED
     # dependency and removes any need for LD_PRELOAD in staged runtime tests.

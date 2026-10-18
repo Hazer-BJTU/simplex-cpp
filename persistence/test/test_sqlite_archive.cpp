@@ -193,10 +193,67 @@ BOOST_AUTO_TEST_CASE(crash_boundaries_preserve_evidence_without_replaying_summar
             auto latest = prepare(*store, original);
             store->finish_archive_attempt(latest, ArchiveOutcome::Failed);
             store->prune_archives({latest, {}, {1}});
-            BOOST_TEST(scalar(scratch.root, "SELECT COUNT(*) FROM archives") == 2);
+            BOOST_TEST(scalar(scratch.root, "SELECT COUNT(*) FROM archives") == 1);
         }
         if (boundary == 2) BOOST_TEST(scalar(scratch.root, "SELECT COUNT(*) FROM archives WHERE outcome='succeeded'") == 1);
     }
+}
+
+BOOST_AUTO_TEST_CASE(repeated_t1_crashes_do_not_accumulate_resolved_archives) {
+    Scratch scratch;
+    const auto original = state("original");
+    auto store = make_sqlite_store("test", scratch.root);
+    store->checkpoint(original, Boundary::RunFinished);
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        store.reset();
+        const auto child = fork();
+        BOOST_REQUIRE(child >= 0);
+        if (child == 0) {
+            try {
+                auto writer = make_sqlite_store("test", scratch.root);
+                prepare(*writer, original);
+                _exit(0);
+            } catch (...) { _exit(1); }
+        }
+        int status = 0;
+        BOOST_REQUIRE(waitpid(child, &status, 0) == child);
+        BOOST_REQUIRE(WIFEXITED(status));
+        BOOST_REQUIRE(WEXITSTATUS(status) == 0);
+        store = make_sqlite_store("test", scratch.root);
+        const auto recovered = store->load_current();
+        BOOST_REQUIRE(recovered);
+        BOOST_TEST(Json(recovered->state) == Json(original));
+        // Recovery establishes a new authoritative revision before retention.
+        store->checkpoint(recovered->state, Boundary::RunFinished, recovered->revision);
+        const auto current = prepare(*store, original);
+        store->commit_compaction(current, original);
+        store->prune_archives({current, {}, {1}});
+        BOOST_TEST(scalar(scratch.root, "SELECT COUNT(*) FROM archives") == 1);
+        BOOST_TEST(scalar(scratch.root, "SELECT COUNT(*) FROM snapshots WHERE kind='archive'") == 1);
+        BOOST_TEST(Json(archived(scratch.root, current)) == Json(original));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(unresolved_interruption_is_protected_until_authoritative_state_advances) {
+    Scratch scratch;
+    auto store = make_sqlite_store("test", scratch.root);
+    const auto original = state("original");
+    const auto older = prepare(*store, original);
+    store->finish_archive_attempt(older, ArchiveOutcome::Failed);
+    const auto interrupted = prepare(*store, original);
+    store.reset(); // Restart before settlement, without a later checkpoint.
+    store = make_sqlite_store("test", scratch.root);
+    const auto recovered = store->load_current();
+    BOOST_REQUIRE(recovered);
+    // The first mutation reconciles prepared -> interrupted, but merely loading
+    // the old revision is insufficient to discard its original recovery graph.
+    store->prune_archives({older, {}, {1}});
+    BOOST_TEST(scalar(scratch.root, "SELECT COUNT(*) FROM archives") == 2);
+    BOOST_TEST(Json(archived(scratch.root, interrupted)) == Json(original));
+    store->checkpoint(recovered->state, Boundary::RunFinished, recovered->revision);
+    store->prune_archives({older, {}, {1}});
+    BOOST_TEST(scalar(scratch.root, "SELECT COUNT(*) FROM archives") == 1);
+    BOOST_TEST(Json(archived(scratch.root, older)) == Json(original));
 }
 
 BOOST_AUTO_TEST_CASE(archive_can_precede_first_checkpoint) {

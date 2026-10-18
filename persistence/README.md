@@ -264,8 +264,11 @@ leaves evidence untouched; the first successful writer marks abandoned prepared
 attempts `interrupted`. No summarization or tool execution is replayed.
 
 Retention keeps the current attempt, supplied protected references, and prepared
-or interrupted recovery evidence. Other settled archives are retained newest
-first, with the existing default target of five and zero disabling deletion.
+recovery evidence. An interrupted archive remains protected while current state
+is still at its T1 revision; a later authoritative checkpoint or compaction
+resolves that recovery candidate. It then participates in the same newest-first
+retention as other settled archives, with the default target of five and zero
+disabling deletion. Repeated crashes do not permanently expand the protected set.
 Archive rows and their owned graphs are deleted atomically; current state and
 legacy filesystem artifacts are untouched. `removed_bytes` is zero for SQLite:
 freed pages are reusable, not a promise of physical file shrinkage. No automatic
@@ -274,3 +277,8 @@ VACUUM, archive-query API, reference index or permanent JSON duplicate is added.
 Unknown outcomes latch all writes, including settlement and retention. T1's
 operation ID is stored on its archive snapshot; T2's ID is stored on current state.
 The stable archive ID correlates attempt evidence after an interrupted response.
+If optional settlement or retention becomes uncertain, the worker also latches
+storage failure, skips further cleanup/checkpoints/continuation and stops admission.
+Its terminal `error` has `durable: false`, the storage diagnostic, and the original
+compact outcome (failure, cancellation or a successfully committed replacement).
+It does not retry the mutation or clear the store's uncertainty latch.
