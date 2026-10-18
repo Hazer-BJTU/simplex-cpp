@@ -33,11 +33,23 @@ private:
 class Statement;
 class Transaction;
 
-/** Owns an SQLite connection opened read/write, creating the file if needed.
- * Use ":memory:" for a private in-memory database. Paths are UTF-8, may not
- * contain NUL, and are interpreted as filenames, not SQLite URI parameters.
- * Parent directories must already exist. Empty temporary-database paths are
- * deliberately excluded from this initial interface.
+/** How a connection may use its database file. */
+enum class OpenMode {
+    /** Read/write, creating the file and its schema when absent. */
+    ReadWriteCreate,
+    /**
+     * Read-only. The file must already exist; opening a missing path fails
+     * instead of creating an empty database, so inspection can never mutate or
+     * fabricate session storage. ":memory:" is not meaningful in this mode.
+     */
+    ReadOnly,
+};
+
+/** Owns an SQLite connection in the requested mode.
+ * Use ":memory:" for a private in-memory database with the default mode. Paths
+ * are UTF-8, may not contain NUL, and are interpreted as filenames, not SQLite
+ * URI parameters. Parent directories must already exist. Empty
+ * temporary-database paths are deliberately excluded from this interface.
  *
  * This is synchronous I/O. Serialize all operations on a connection, including
  * its statements and transactions; SQLite's mutexes do not serialize entire
@@ -47,7 +59,8 @@ class Transaction;
  */
 class Database {
 public:
-    explicit Database(std::string_view path);
+    explicit Database(
+        std::string_view path, OpenMode mode = OpenMode::ReadWriteCreate);
     ~Database();
 
     Database(const Database&) = delete;
@@ -68,6 +81,13 @@ public:
      * object: `auto query = database.prepare("SELECT ...");`.
      */
     Statement prepare(std::string_view sql);
+
+    /** Row id assigned by the most recent successful INSERT on this connection.
+     * Zero when no row has been inserted. Read it immediately after stepping an
+     * INSERT to completion; other writes on the same connection would replace
+     * the value. The connection must be usable.
+     */
+    std::int64_t last_insert_rowid() const;
 
 private:
     friend class Transaction;

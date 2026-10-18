@@ -110,13 +110,17 @@ int Error::extended_code() const noexcept {
     return _extended_code;
 }
 
-Database::Database(std::string_view path)
+Database::Database(std::string_view path, OpenMode mode)
     : _connection(std::make_shared<detail::Connection>()) {
     check_string(path);
     const std::string filename(path);
+    const int flags =
+        (mode == OpenMode::ReadOnly
+             ? SQLITE_OPEN_READONLY
+             : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
+        | SQLITE_OPEN_FULLMUTEX;
     const int result = sqlite3_open_v2(
-        filename.c_str(), &_connection->handle,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
+        filename.c_str(), &_connection->handle, flags, nullptr);
     if (result != SQLITE_OK) {
         const int code = _connection->handle != nullptr
             ? sqlite3_extended_errcode(_connection->handle) : result;
@@ -135,6 +139,11 @@ void Database::execute(std::string_view sql) {
 
 Statement Database::prepare(std::string_view sql) {
     return Statement(_connection, sql);
+}
+
+std::int64_t Database::last_insert_rowid() const {
+    _connection->check();
+    return sqlite3_last_insert_rowid(_connection->handle);
 }
 
 Statement::Statement(std::shared_ptr<detail::Connection> connection, std::string_view sql)

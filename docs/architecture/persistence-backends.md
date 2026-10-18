@@ -1,6 +1,7 @@
 # Persistence backend contract
 
-**Status:** accepted · #187 PR-A, amended by PR-B · supersedes no earlier decision.
+**Status:** accepted · #187 PR-A, amended by PR-B; PR-C adds the SQLite schema v1
+and its row codec without a backend implementation.
 
 This page records the storage boundary introduced before a normalized SQLite
 backend exists. The planning issue is
@@ -42,7 +43,11 @@ retention policy, and defer new archive-reference handling.
    `<memory>/<archive-id>/{state.json,manifest.json}`. The manifest is published
    atomically after the payload and is the attempt's identity and publication
    marker, so a payload without a matching manifest is incomplete evidence rather
-   than a restorable archive. `readable.md` is no longer written.
+   than a restorable archive. `readable.md` is no longer written. PR-C adds the
+   owner-confirmed normalized SQLite schema v1 and its row codec
+   (`persistence/src/sqlite_schema.cpp`, `persistence/src/sqlite_snapshot.cpp`)
+   but deliberately no `StateStore`, checkpoint or archive implementation; see
+   [SQLite schema v1](sqlite-schema-v1.md).
 3. **Checkpoints are synchronous and ordered.** A call returns only after its
    durability outcome is known. A backend that must run storage work on another
    executor (a database writer) must still complete or fail the call before the
@@ -106,8 +111,9 @@ above stays the acceptance criterion.
   into the JSON backend, because the manifest is storage metadata that `load`
   should not own; the `simplex_load_archives` library therefore no longer exists.
 - One shared library (`simplex_persistence`) stays in the release set.
-- Remaining work: PR-C needs the owner-confirmed schema, and PR-D through PR-H add
-  the database backend, migration tools, Hub integration and the new default.
+- Remaining work: PR-D implements the database backend on the schema recorded in
+  [SQLite schema v1](sqlite-schema-v1.md), and PR-E through PR-H add archive rows,
+  migration tools, Hub integration and the new default.
 
 ## Validation
 
