@@ -17,6 +17,24 @@ export interface ManagementPolicy extends ManagedLauncherOptions {
     timeoutMs?: number;
 }
 
+/** Default target root is a sibling of Hub data, so independent Hub deployments
+ * do not share an allocation namespace and manager removal cannot touch Hub data. */
+export function defaultLocalRoot(config: Pick<HubConfig, 'dataDir'>): string {
+    return `${resolve(config.dataDir)}-workers`;
+}
+
+/** Native API launches use the router beside their configured worker binary.
+ * This deliberately does not infer management for arbitrary command launchers. */
+export function defaultLocalManagement(config: HubConfig, env: Record<string, string>): ManagementPolicy {
+    return managementPolicy({
+        target: { kind: 'local' },
+        executable: join(dirname(config.worker.bin), 'simplex'),
+        cwd: resolve(config.launcher.cwd || process.cwd()),
+        env,
+        root: defaultLocalRoot(config),
+    });
+}
+
 /** Immutable target/source binding, published locally before any target mutation. */
 export interface ManagedSessionRecord {
     version: 1;

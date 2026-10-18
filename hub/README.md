@@ -323,7 +323,7 @@ directory; command-line paths resolve against the working directory.
 | `toolRequests.host`, `toolRequests.port` | inherits `listen.host`, `8801` | independent worker tool-request listener |
 | `toolRequests.timeoutMs`, `toolRequests.maxConnections` | `120000`, `128` | hard per-connection deadline and global upgraded-connection limit |
 | `listen.host`, `listen.port` | `127.0.0.1`, `8800` | panel and API listener |
-| `dataDir` | `~/.simplex/hub` | hub state, generated worker configs, logs, JSONL event logs, worker snapshots |
+| `dataDir` | `~/.simplex/hub` | Hub records, config sources, logs and event history; managed worker allocations are separate |
 | `panel.token` | `""` | shared panel token; required for a non-loopback listener |
 | `worker.bin` | `../build/bin/simplex_worker` | worker executable |
 | `worker.args`, `worker.connectHost` | `[]`, `""` | direct-binary flags and a host reachable from workers; empty host derives from the listener |
@@ -336,7 +336,7 @@ directory; command-line paths resolve against the working directory.
 | `worker.payloadCapacity`, `worker.signalCapacity`, `worker.writeCapacity` | `256` each | independent request, signal and outbound queue capacities |
 | `worker.initialBackoffMs`, `worker.maxBackoffMs`, `worker.idleTimeoutSeconds` | `250`, `10000`, `0` | reconnect backoff and optional idle timeout; zero disables idle expiry |
 | `worker.stopTimeoutMs`, `worker.sigtermGraceMs`, `worker.sigkillGraceMs` | `15000`, `5000`, `2000` | the stop escalation ladder |
-| `worker.persistence` | `{enabled: true, readable: false}` | worker snapshot policy |
+| `worker.persistence` | `{enabled: true, readable: false, backend: "sqlite"}` | worker snapshot policy |
 | `worker.memoryRetention` | `{maxArchives: 5}` | compact archive cleanup defaults for new worker configs; zero disables cleanup |
 | `worker.environment` | `{workspace: "", platform: "", software: []}` | descriptive environment context injected into new worker state |
 | `providerProfiles` | `deepseek`, `mock` | copied into the generated worker configuration; a session picks one by name |
@@ -908,6 +908,10 @@ launch support, request deduplication, recovery and cleanup limits.
 Worker persistence templates now select `backend: sqlite` for new empty sessions.
 `worker.persistence.backend` selects `sqlite` (default) or `json` for generated
 configurations. Existing saved worker configuration remains authoritative.
+New local templates use `management.executable` (default `simplex` on PATH) for
+both run and manage. Fresh native API sessions with SQLite persistence use the
+router beside `worker.bin`. Their target allocations live under `<dataDir>-workers`;
+existing saved launch files and JSON API paths keep their prior policy.
 Managed `simplex manage read_state` returns complete decoded state from either
 backend; Hub never reads SQL. Inspector bounds only its rendered preview.
 Migration/export and archive browsing are not available. Legacy local profiles

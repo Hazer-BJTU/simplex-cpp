@@ -15,12 +15,16 @@ export function testLogLevel() {
 
 /** Merge test defaults into hub configuration overrides. */
 export function testConfig(overrides = {}) {
+    const { worker = {}, ...rest } = overrides;
     const { config } = loadConfig({
         overrides: {
             listen: { host: '127.0.0.1', port: 0 },
             toolRequests: { port: 0 },
             dataDir: mkdtempSync(join(tmpdir(), 'simplex-hub-test-')),
-            ...overrides,
+            ...rest,
+            // General unit fixtures exercise legacy launchers (often fake
+            // processes). Managed/default-SQLite tests opt into that policy.
+            worker: { ...worker, persistence: { backend: 'json', ...worker.persistence } },
         },
     });
     return config;

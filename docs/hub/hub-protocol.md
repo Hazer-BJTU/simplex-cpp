@@ -324,15 +324,20 @@ session uses its own launcher. Configuration CRUD, endpoint preview and explicit
 snapshot replacement are documented in [Configuration API](configurations.md#configuration-api).
 Those routes have the same panel authentication requirements as this API.
 
-Start and restart reuse `sessions/<session>/config/config.yaml` once it exists.
+New native API sessions without selectors use local target-side management when
+SQLite persistence is enabled and no worker source file already exists. They bind
+the router beside `worker.bin` and allocate under `<dataDir>-workers/<allocation-id>`.
+New local templates also enable management; existing saved launch files remain unchanged.
+
+For legacy launches, start and restart reuse `sessions/<session>/config/config.yaml` once it exists.
 Only the hub-owned session root, connection URLs/tokens and active mock URL are
 refreshed. Later spec fields affect only launch parameters (`threads`, `env`,
 `extraArgs`) for legacy sessions. Library-backed sessions instead use their
 saved launch snapshot for threads and environment; apply new snapshots while
 stopped to change their configuration.
 `persistence.state` and `persistence.memory` select relative subdirectories of
-`persistence.directory`, which the hub sets to `<dataDir>/sessions/<session>`.
-Old layouts are not migrated automatically.
+`persistence.directory`. Managed launches bind it to the target allocation;
+legacy launches use `<dataDir>/sessions/<session>`. Old layouts are not migrated automatically.
 
 `snapshot` invokes the saved target-side manager for managed sessions. It returns
 complete decoded current state for JSON or SQLite without opening target files.

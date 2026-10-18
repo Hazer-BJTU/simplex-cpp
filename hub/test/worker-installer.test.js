@@ -564,6 +564,7 @@ test('colon directories install but never produce a misleading PATH command', as
     assert.match(installed.output, /Worker is installed, but PATH update failed:.*PATH cannot represent/);
     assert.doesNotMatch(installed.output, /PATH block updated|export PATH=/);
     assert.match(installed.output, /Verify:.*worker:demo\/bin\/simplex.*run --help/);
+    assert.match(installed.output, /management\.executable/);
     assert.match(installed.output, /launcher.command\[0\]/);
     assert.equal(await readFile(join(f.home, '.bashrc'), 'utf8'), '# unchanged\n');
     assert.equal(await exists(join(f.destination, 'bin/simplex')), true);

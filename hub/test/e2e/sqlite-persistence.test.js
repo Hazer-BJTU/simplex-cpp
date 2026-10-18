@@ -11,6 +11,9 @@ import { snapshotConfigs } from '../../src/configurations/session.ts';
 import { normalizeSpec } from '../../src/launch/spec.ts';
 import { renderWorkerConfig } from '../../src/launch/config-render.ts';
 import { readManagedSession } from '../../src/launch/managed-sessions.ts';
+import { loadConfig, hubRoot, parseConfigText } from '../../src/config.ts';
+import { createHub } from '../../src/hub.ts';
+import { createLogger } from '../../src/log.ts';
 
 it('managed SQLite state survives compact and restart without JSON side copies',
     { skip: e2eSkip, timeout: 90000 }, async t => {
@@ -69,3 +72,108 @@ it('managed SQLite state survives compact and restart without JSON side copies',
         assert.deepEqual(restarted.state.turns, []);
         assert.deepEqual(restarted.state.system_prompt, after.state.system_prompt);
     });
+
+// Use production defaults rather than the general E2E helper's explicit legacy
+// JSON policy. The worker binary and offline provider are the only overrides.
+
+for (const mode of ['api-default', 'bundled-local', 'api-json']) {
+    it(`Inspector reads a completed real-worker run through ${mode}`,
+        { skip: e2eSkip, timeout: 60000 }, async t => {
+            const dataDir = mkdtempSync(join(tmpdir(), 'simplex-default-inspection-'));
+            const { config } = loadConfig({ overrides: {
+                dataDir, listen: { host: '127.0.0.1', port: 0 }, toolRequests: { port: 0 },
+                worker: { bin: WORKER_BIN }, mock: { enabled: true, slowMs: 2000 },
+            } });
+            assert.equal(config.worker.persistence.backend, 'sqlite');
+            const hub = createHub({ config, hubRoot, version: 'test', log: createLogger({ level: 'silent' }) });
+            const address = await hub.start();
+            const base = `http://127.0.0.1:${address.port}`;
+            t.after(async () => {
+                await hub.stop();
+                rmSync(dataDir, { recursive: true, force: true });
+                rmSync(`${dataDir}-workers`, { recursive: true, force: true });
+            });
+            const api = async (path, method = 'GET', body) => {
+                const response = await fetch(`${base}${path}`, { method,
+                    ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify(body) }) });
+                const value = await response.json();
+                assert.ok(response.ok, JSON.stringify(value));
+                return value;
+            };
+            let spec = { provider: 'mock', model: mode === 'api-default' ? 'mock-slow' : 'mock-text',
+                modalityAssistProvider: null, threads: 2 };
+            if (mode === 'bundled-local') {
+                const configs = new ConfigurationStore(config);
+                const local = configs.read('launch', 'local');
+                const launch = parseConfigText(local.text, 'local template');
+                // Only choose the installed executable; retain the shipped
+                // template's management policy and root/cwd settings.
+                launch.management.executable = join(dirname(WORKER_BIN), 'simplex');
+                configs.save('launch', 'local', JSON.stringify(launch), local.revision);
+                const document = renderWorkerConfig({ config, sessionId: mode,
+                    spec: normalizeSpec(config, spec),
+                    endpoints: { events: 'ws://localhost/events', confirm: 'ws://localhost/confirm', tools: 'ws://localhost/tools' },
+                    mock: { baseUrl: hub.mock.baseUrl } });
+                configs.save('worker', 'offline', JSON.stringify(document), null);
+                spec = { launchConfig: 'local', workerConfig: 'offline' };
+            } else if (mode === 'api-json') {
+                spec.persistence = { backend: 'json' };
+            }
+            await api('/api/sessions', 'POST', { session: mode, spec });
+            const started = await api(`/api/sessions/${mode}/start`, 'POST', {});
+            assert.equal(started.ok, true, started.error);
+            const session = hub.registry.get(mode);
+            await until(() => session.workerCapabilities?.names.includes('context-compact'), { timeout: 20000 });
+            const panel = await connectWorker(`ws://127.0.0.1:${address.port}/panel/ws`);
+            t.after(() => panel.close());
+            panel.send({ v: 1, type: 'subscribe', session: mode });
+            await panel.waitFor(value => value.type === 'subscribed');
+            panel.send({ v: 1, type: 'input', session: mode, request_id: 'task',
+                content: [{ type: 'text', modality: 'text', raw: 'A normal saved conversation.' }] });
+            let childAllocation;
+            if (mode === 'api-default') {
+                await until(() => session.activeRunId, { timeout: 5000 });
+                const url = new URL(hub.supervisor.endpointsFor(mode, session.token).tools);
+                url.pathname += '/subagent/clean-fork';
+                const remote = await connectWorker(url.href);
+                t.after(() => remote.close());
+                remote.send({ type: 'tool_request', data: { worker_id: session.identity.workerId,
+                    session_id: mode, run_id: session.activeRunId, request_id: 'fork', arguments: {} } });
+                const response = (await remote.waitFor(value => value.type === 'tool_response')).data;
+                assert.equal(response.status, 'succeeded', JSON.stringify(response));
+                const child = hub.registry.require(response.result.subagent_id);
+                await until(() => child.subagent.lifecycle === 'ready', { timeout: 15000 });
+                childAllocation = readManagedSession(config, child.id);
+                assert.ok(childAllocation);
+                const childState = await hub.supervisor.managedSnapshot(child);
+                assert.equal(childState.backend, 'sqlite');
+                assert.equal(childState.state?.turns.length ?? 0, 0);
+            }
+            const finished = await panel.waitFor(value => value.type === 'event'
+                && value.envelope.event === 'run_finished' && value.envelope.request_id === 'task', { timeout: 20000 });
+            assert.equal(finished.envelope.data.status, 'completed');
+            const snapshot = await api(`/api/sessions/${mode}/snapshot`);
+            assert.ok(snapshot.state, snapshot.state_error);
+            assert.equal(snapshot.state.meta.session_id, mode);
+            assert.equal(snapshot.state.turns.length, 1);
+            const allocation = readManagedSession(config, mode);
+            if (mode === 'api-json') {
+                assert.equal(allocation, null, 'explicit JSON retains legacy API launch compatibility');
+                assert.equal(session.spec.persistence.backend, 'json');
+            } else {
+                assert.equal(snapshot.backend, 'sqlite');
+                assert.equal(session.spec.persistence.backend, 'sqlite');
+                assert.ok(allocation);
+                assert.equal(existsSync(join(allocation.reference.directory, 'state/state.sqlite3')), true);
+                assert.equal(existsSync(join(dataDir, 'sessions', mode, 'state')), false);
+                assert.equal((await api(`/api/sessions/${mode}/stop`, 'POST', {})).ok, true);
+                if (childAllocation) assert.equal(existsSync(childAllocation.reference.directory), false);
+                assert.equal((await api(`/api/sessions/${mode}/start`, 'POST', {})).ok, true);
+                await until(() => session.connection?.isOpen, { timeout: 20000 });
+                const restarted = await api(`/api/sessions/${mode}/snapshot`);
+                assert.deepEqual(restarted.state.turns, snapshot.state.turns);
+                assert.equal(readManagedSession(config, mode).reference.directory, allocation.reference.directory);
+            }
+        });
+}

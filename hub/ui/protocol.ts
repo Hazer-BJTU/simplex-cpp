@@ -237,7 +237,14 @@ export interface SessionSpec {
     /** Configured software descriptions injected into the worker prompt. */
     software?: string[];
     /** Worker persistence settings represented by the session launch description. */
-    persistence?: { enabled?: boolean; readable?: boolean };
+    persistence?: {
+        enabled?: boolean;
+        /** Authoritative store for a new session; saved worker configuration
+         * remains authoritative after its first launch. */
+        backend?: 'json' | 'sqlite';
+        /** Deprecated worker setting, retained for older configurations. */
+        readable?: boolean;
+    };
     /** Worker startup restore policy; future policy names may be added. */
     restore?: 'if_present' | 'never' | string;
     /** Environment overrides for launching the worker; may contain secrets. */

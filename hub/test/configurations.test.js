@@ -202,6 +202,8 @@ test('selected launchers run independently and survive Hub restart without libra
         const store = new ConfigurationStore(ctx.config);
         for (const [name, threads] of [['one', 2], ['two', 3]]) {
             const launch = parseConfigText(store.template('launch'), 'template');
+            // This scenario verifies legacy arbitrary command launchers.
+            delete launch.management;
             launch.launcher.command = [process.execPath, fileURLToPath(new URL('./fixtures/fake-worker.js', import.meta.url)),
                 '--config', '{config}', '--session', '{session}', '--threads', '{threads}'];
             launch.worker.threads = threads;
@@ -331,5 +333,26 @@ test('default worker template is provider-neutral with optional settings comment
             assert.ok(text.indexOf('# modality_assist_model:') < text.indexOf('\nclient:'));
             assert.ok(text.indexOf('# hub_remote_call:') < text.indexOf('\nsecurity:'));
         }
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+
+test('new local template binds management while saved legacy profiles remain unchanged', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'simplex-local-policy-'));
+    try {
+        const config = { ...defaultConfig(), dataDir };
+        const store = new ConfigurationStore(config);
+        const seeded = store.read('launch', 'local');
+        const managed = launchDocument(seeded.text, config);
+        assert.equal(managed.management.target.kind, 'local');
+        assert.equal(managed.management.executable, 'simplex');
+        assert.equal(managed.management.root, `${dataDir}-workers`);
+        const legacy = '// Existing operator launcher\n' + JSON.stringify({
+            launcher: { kind: 'command', command: ['custom-worker', '{config}'] },
+        });
+        store.save('launch', 'local', legacy, seeded.revision);
+        const restarted = new ConfigurationStore(config);
+        assert.equal(restarted.read('launch', 'local').text, legacy);
+        assert.equal(launchDocument(restarted.read('launch', 'local').text, config).management, undefined);
     } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });

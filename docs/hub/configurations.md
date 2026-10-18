@@ -32,11 +32,16 @@ and persistence child paths. Unknown worker fields and provider options remain
 intact. The worker still validates plugin availability and runtime resources.
 Validation failures leave the editor text and the saved file unchanged.
 
-The **Managed worker** launch template opts new ordinary sessions into separate
-target storage through `simplex manage`. It supports local execution, SSH and
-an existing retained Docker container. See [managed sessions](../reference/management.md#opt-in-managed-sessions)
-for the complete `management` fields and lifecycle contract. Existing/default
-launch templates continue using the legacy layout described below.
+New **local** launch templates use `simplex manage` automatically. Their
+`management.executable` selects the router used for both run and inspection;
+`management.cwd` selects its working directory. Allocations live under
+`<dataDir>-workers/<allocation-id>`, outside Hub-owned data. Existing library and
+session snapshots are never rewritten to enable management.
+
+The **Managed worker** template additionally supports explicit local roots, SSH
+and an existing retained Docker container. See [managed sessions](../reference/management.md#opt-in-managed-sessions)
+for its fields and lifecycle contract. Existing legacy and Docker command profiles
+keep the legacy layout described below.
 
 ## Directory and startup configuration
 
@@ -340,5 +345,8 @@ New worker templates select `persistence.backend: sqlite`. A managed allocation
 stores `state/state.sqlite3` on its target, not under the Hub's data directory.
 Existing saved configurations retain their backend; legacy `format: json` keeps
 JSON. Neither configuration refresh nor clean-fork copies/migrates state.
-SQLite snapshot inspection requires the managed launcher; legacy local inspection
-supports JSON only and explicitly reports unsupported SQLite inspection.
+Fresh native API sessions without selectors also bind the router beside
+`worker.bin` when SQLite persistence is enabled, using `<dataDir>-workers`.
+Existing worker files, explicit JSON API sessions and custom command launchers
+retain their prior path. SQLite snapshot inspection requires management; legacy
+local inspection supports JSON only and explicitly diagnoses unsupported SQLite.

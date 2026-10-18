@@ -148,9 +148,13 @@ The database path is not a downloadable JSON artifact.
 
 The Hub's internal `ManagedLauncher` adapter provides the next integration layer.
 It binds `simplex run` and `simplex manage` to one explicitly configured execution
-target and installation. The **Managed worker** template in the configuration editor enables it for
-new ordinary sessions. Existing profiles and sessions remain on their legacy
-launch path. Managed children inherit the target binding and use independent allocations.
+target and installation. New local templates enable it by default, as do fresh
+native API sessions with SQLite persistence and no existing source configuration.
+API launches use the `simplex` router beside `worker.bin`; the local template uses
+`management.executable` (default `simplex` on PATH). Their allocation root is
+`<dataDir>-workers`. The **Managed worker** template supports custom target policy.
+Existing profiles and sessions retain their saved launch path. Managed children
+inherit the target binding and use independent allocations.
 
 The adapter supports these invocation shapes:
 
@@ -196,7 +200,8 @@ output.
 
 ## Opt-in managed sessions
 
-Create a launch configuration using **Managed worker**, edit it, and select it
+For a custom root or target beyond the default local policy, create a launch
+configuration using **Managed worker**, edit it, and select it
 with a worker configuration when creating a **new** session. Both the installed
 worker and `simplex manage` must support the allocation contract above. This
 feature is not compatible with older released workers that lack the manager.
@@ -390,8 +395,8 @@ exclusive lease and tombstone are still required before deleting local records.
 
 ### Compatibility and direct-I/O audit
 
-No existing directory is migrated automatically. For new managed sessions select
-the **Managed worker** template and a separate target root. Keep legacy sessions
+No existing directory is migrated automatically. New local templates are managed;
+select **Managed worker** for an explicit target/root policy. Keep legacy sessions
 on their original profile until finished; create a fresh managed session rather
 than applying management to an occupied legacy directory. A managed parent
 started by the earlier ordinary-session implementation must be stopped and

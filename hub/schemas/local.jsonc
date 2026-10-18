@@ -1,6 +1,8 @@
 {
-    // Runs on the Hub host. Replace "simplex" with its installed absolute path
-    // when it is not on PATH. Arguments are separate entries, never shell text.
+    // Runs on the Hub host through the target-side manager. Set management.executable
+    // to an absolute simplex router when it is not on PATH. Both run and manage
+    // use that same installation. Existing saved launch files are never rewritten.
+    // The launcher command is retained for compatibility; management takes precedence.
     "launcher": {
         "kind": "command",
         "command": [
@@ -10,10 +12,19 @@
             "--threads", "{threads}"
         ],
         "args": [],
-        // Empty cwd uses the session directory. A relative cwd is resolved
-        // against the session's config directory.
+        // Legacy launcher field. management.cwd controls managed local starts.
         "cwd": "",
         "pidFile": ""
+    },
+    "management": {
+        "target": { "kind": "local" },
+        "executable": "simplex",
+        // Hub-local working directory/environment for run and manage.
+        "cwd": "__HUB_CWD__",
+        "env": {},
+        // Separate from Hub data; each session gets an independent allocation UUID.
+        "root": "__WORKER_ROOT__",
+        "timeoutMs": 30000
     },
     "worker": {
         "threads": 1,

@@ -7,8 +7,9 @@ runtime dependencies and are not restored from this snapshot.
 
 ## Storage ownership
 
-With an opt-in **Managed worker** launch profile, Hub and target ownership are
-separate:
+New local launch templates and fresh native API sessions with SQLite persistence
+use target-side management. Explicit **Managed worker** profiles support other
+targets. Hub and target ownership are separate:
 
 ```text
 Hub: <dataDir>/sessions/<session-id>/
@@ -25,6 +26,8 @@ Target: <management.root>/<allocation-id>/
 Hub invokes `simplex manage` through the selected local/SSH/Docker transport for
 configuration preparation, snapshot inspection and allocation removal. State is
 returned as complete JSON; Hub neither opens target files nor maps databases.
+Default local allocations use `<dataDir>-workers` as their management root.
+Existing source files and legacy launch profiles keep their original binding.
 See [managed sessions](../reference/management.md#opt-in-managed-sessions) for
 configuration, timeout/retry policy and remote lifecycle requirements.
 

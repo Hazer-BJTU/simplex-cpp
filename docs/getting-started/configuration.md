@@ -16,7 +16,11 @@ The default data root is `~/.simplex/hub`, overridable with `--data-dir`.
 The Hub seeds `configs/launch/local.jsonc`, `configs/launch/docker.jsonc`, and
 `configs/worker/default.yaml` when absent. Edit these through **Configurations**
 or before startup with a text editor. A session selects one launch and one
-worker file and receives independent copies.
+worker file and receives independent copies. New `local` launch files use the
+same `management.executable` for `simplex run` and `simplex manage`; set it to
+an absolute installed `bin/simplex` path if necessary. Their target allocations
+live under `<dataDir>-workers`, independently of Hub records. Existing saved
+launch files are preserved.
 
 Replace `YOUR_*` values in the worker template. `providers` keys are arbitrary
 configuration names; `plugin` selects an installed implementation. `driver_model`
