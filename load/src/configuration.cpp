@@ -351,11 +351,18 @@ Configuration parse_configuration(
     result.memory = storage_child(storage, "memory", result.storage);
     const auto& retention = object(storage, "memory_retention");
     result.memory_retention.max_archives = number(retention, "max_archives", 5, true);
-    result.persistence_backend = text(storage, "backend", "json");
-    if (result.persistence_backend != "json" && result.persistence_backend != "sqlite") {
+    result.persistence_backend = text(
+        storage, "backend", storage.contains("format") ? "json" : "auto");
+    if ((storage.contains("backend") && result.persistence_backend == "auto")
+        || (result.persistence_backend != "auto"
+            && result.persistence_backend != "json"
+            && result.persistence_backend != "sqlite")) {
         throw std::invalid_argument("persistence.backend must be json or sqlite");
     }
     if (text(storage, "format", "json") != "json") throw std::invalid_argument("persistence format must be json");
+    if (storage.contains("format") && result.persistence_backend == "sqlite") {
+        throw std::invalid_argument("persistence.format: json conflicts with backend: sqlite; remove the legacy format alias");
+    }
     auto restore = text(storage, "restore", "if_present");
     if (restore != "if_present" && restore != "never") throw std::invalid_argument("invalid restore policy");
     result.restore = restore == "if_present";

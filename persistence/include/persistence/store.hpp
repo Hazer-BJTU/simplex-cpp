@@ -44,7 +44,7 @@ namespace persistence {
 enum class Backend {
     /// Atomic `state.json` replacement with per-attempt JSON state archives.
     Json,
-    /// Transactional normalized state.sqlite3 store (experimental).
+    /// Transactional normalized state.sqlite3 store, the new-session default.
     Sqlite,
 };
 
@@ -415,7 +415,7 @@ std::string utc_timestamp();
 } // namespace persistence
 
 namespace persistence {
-/** Create an experimental SQLite store. Construction performs no I/O.
+/** Create a normalized SQLite store. Construction performs no I/O.
  * Current snapshots and immutable compact archives share the same database.
  * Missing files are absent on load, never created by inspection.
  */

@@ -626,6 +626,12 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           ctest --test-dir build --output-on-failure --no-tests=error --timeout 120
 
+      - name: Verify staged SQLite persistence offline
+        run: |
+          cp build/bin/test_persistence_selection stage/bin/
+          export LD_LIBRARY_PATH="$PWD/stage/lib"
+          stage/bin/test_persistence_selection --log_level=error
+
       - name: Load the staged Qwen provider
         run: |
           export LD_LIBRARY_PATH="$PWD/stage/lib"

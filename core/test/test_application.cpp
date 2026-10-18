@@ -123,10 +123,7 @@ sections:
     config.environment.software = {"Test compiler"};
     const auto original_cwd = std::filesystem::current_path();
     config.event_capacity = mode == Mode::Overflow ? 1 : 256;
-    if (mode == Mode::StorageFailure) {
-        std::filesystem::create_directories(config.state_directory / (sqlite ? "state.sqlite3" : "state.json"));
-        config.restore = false;
-    }
+    if (mode == Mode::StorageFailure) config.restore = false;
     if (mode == Mode::Blocked) {
         model_io::AgentInputState state;
         state.meta.session_id = "test";
@@ -170,6 +167,12 @@ sections:
             auto event = Json::parse(beast::buffers_to_string(buffer.data()));
             const auto name = event.at("event").get<std::string>();
             if (name == "ready") {
+                if (mode == Mode::StorageFailure) {
+                    // Inject a write failure after startup validation. A corrupt
+                    // pre-existing store is now rejected even with restore: never.
+                    std::filesystem::create_directories(config.state_directory
+                        / (sqlite ? "state.sqlite3" : "state.json"));
+                }
                 BOOST_TEST(event.at("data").at("capabilities")[0] == "session-history");
                 if (mode == Mode::ProtocolFailure) {
                     socket.binary(true);
@@ -431,6 +434,7 @@ BOOST_AUTO_TEST_CASE(qwen_modality_model_loads_without_replacing_the_driver) {
 BOOST_AUTO_TEST_CASE(unavailable_modality_provider_fails_startup) {
     asio::io_context io;
     load::Configuration config;
+    config.persistence_backend = "json";
     config.directory = std::filesystem::temp_directory_path();
     config.document = Json::object();
     config.persistence = false;
@@ -466,6 +470,7 @@ BOOST_AUTO_TEST_CASE(payload_overflow_rejects_during_model_wait_and_keeps_contro
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
+    config.persistence_backend = "json";
     config.directory = scratch.root;
     config.provider = "fixture";
     config.document = Json::object();
@@ -591,16 +596,18 @@ BOOST_AUTO_TEST_CASE(payload_overflow_rejects_during_model_wait_and_keeps_contro
 
 BOOST_AUTO_TEST_CASE(protocol_failure_survives_payload_queue_shutdown) { scenario(Mode::ProtocolFailure); }
 
-BOOST_AUTO_TEST_CASE(startup_failure_releases_ownership_while_application_survives) {
+void invalid_startup_releases_ownership(bool restore) {
     Scratch scratch;
     asio::io_context io;
     load::Configuration config;
+    config.persistence_backend = "json";
     config.directory = scratch.root;
     config.provider = "fixture";
     config.document = Json::object();
     config.client = load::websocket_endpoint("ws://127.0.0.1:1/events");
     config.storage = scratch.root / "session";
     config.state_directory = config.storage / "state";
+    config.restore = restore;
     const auto snapshot = config.state_directory / "state.json";
     std::filesystem::create_directories(snapshot.parent_path());
     std::ofstream(snapshot) << "invalid json";
@@ -619,6 +626,14 @@ BOOST_AUTO_TEST_CASE(startup_failure_releases_ownership_while_application_surviv
     auto result = asio::co_spawn(io, repaired.run(stop.get_token()), asio::use_future);
     io.run();
     BOOST_CHECK_NO_THROW(result.get());
+}
+
+BOOST_AUTO_TEST_CASE(startup_failure_releases_ownership_while_application_survives) {
+    invalid_startup_releases_ownership(true);
+}
+
+BOOST_AUTO_TEST_CASE(restore_never_still_validates_existing_storage) {
+    invalid_startup_releases_ownership(false);
 }
 
 namespace {
@@ -647,6 +662,7 @@ void options_scenario(Json choices, bool fail = false) {
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
+    config.persistence_backend = "json";
     config.directory = scratch.root;
     config.provider = "fixture";
     config.document = Json::object();
@@ -816,6 +832,7 @@ BOOST_AUTO_TEST_CASE(payload_options_apply_only_between_runs_and_rejection_prese
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
+    config.persistence_backend = "json";
     config.directory = scratch.root;
     config.provider = "fixture";
     config.document = Json::object();
@@ -928,6 +945,7 @@ BOOST_AUTO_TEST_CASE(session_root_lock_is_independent_of_state_path_and_identity
     Scratch scratch;
     asio::io_context io;
     load::Configuration config;
+    config.persistence_backend = "json";
     config.provider = "fixture";
     config.document = Json::object();
     config.client = load::websocket_endpoint("ws://127.0.0.1:1/events");

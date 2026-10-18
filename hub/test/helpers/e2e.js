@@ -45,16 +45,19 @@ export const e2eSkip = e2eAvailable
  * @param {object} [overrides] extra hub configuration.
  */
 export async function startE2eHub(overrides = {}) {
+    const { worker = {}, mock = {}, ...rest } = overrides;
     return startTestHub({
+        ...rest,
         worker: {
             bin: WORKER_BIN,
             threads: 2,
             confirmationTimeoutMs: 60000,
             stopTimeoutMs: 20000,
-            persistence: { enabled: true, readable: true },
-            ...(overrides.worker ?? {}),
+            ...worker,
+            // Legacy JSON fixtures remain explicit even with other worker
+            // overrides. The SQLite suite overrides this policy deliberately.
+            persistence: { enabled: true, readable: true, backend: 'json', ...worker.persistence },
         },
-        mock: { enabled: true, ...(overrides.mock ?? {}) },
-        ...overrides,
+        mock: { enabled: true, ...mock },
     });
 }

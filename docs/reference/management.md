@@ -2,7 +2,7 @@
 
 `simplex manage` runs a target-local management program installed beside the
 worker. It prepares and inspects managed allocations and removes them after
-worker shutdown. The current backend supports JSON storage.
+worker shutdown. The manager supports JSON and normalized SQLite storage.
 Hub launch profiles can opt new ordinary sessions into this interface using
 `management`. Their headless descendants use the same manager boundary. Existing
 profiles remain on their explicitly supported legacy layout.
@@ -62,7 +62,7 @@ uncertain publication; transport failure does not imply no change occurred.
 | `inspect` | None | Returns status, revision, config path, source/effective configuration and captured startup data when ready. Does not create missing allocations. |
 | `capture_startup` | `lifecycle_id`, `expected_revision` | Captures the effective configuration for that lifecycle. Refuses a changed capture under the same lifecycle ID. |
 | `clean_fork` | `source: {allocation_id, directory, lifecycle_id, revision}`; optional `refresh` | Creates the requested child allocation from a captured parent startup on the same target. Never copies runtime state or archives. |
-| `read_state` | None | Returns `{backend: "json", state, readable}`. Missing state/readable exports are null; corruption is an error. Complete state, including compatible unknown JSON fields, is retained. |
+| `read_state` | None | Returns `{backend: "json" | "sqlite", state, readable}`; SQLite also includes current revision and operation ID when present. Missing state/readable exports are null; corruption is an error. Complete state, including compatible unknown JSON fields, is retained. |
 | `remove` | None | Requires exclusive allocation ownership and no legacy worker lock. Deletes the target root and retires the allocation; repeat removal is safe. |
 
 `refresh` is an object with optional `client_endpoint`, `confirmation_endpoint`,
@@ -137,10 +137,12 @@ cannot be reused. Use a fresh directory/identity for a replacement. Existing
 unmanaged roots are never adopted automatically; existing ordinary configuration
 files and Hub sessions remain supported on their original paths.
 
-The protocol currently reports `unsupported_backend` for non-JSON storage.
-SQLite support in [#187](https://github.com/Hazer-BJTU/simplex-cpp/issues/187) will
-read through the C++ backend and return the same JSON state shape. Hub code must
-not acquire database dependencies or read database files directly.
+SQLite inspection reads through the C++ mapper in one read-only transaction and
+returns the same decoded JSON state shape. It never creates a missing database,
+migrates a schema, or falls back to stale JSON after a database error. Schema,
+corruption and transport failures remain explicit. Hub has no SQLite dependency.
+The management pipe remains uncapped; the Inspector displays a bounded preview.
+The database path is not a downloadable JSON artifact.
 
 ## Hub launcher transport boundary
 
@@ -408,7 +410,7 @@ unsupported operation and no child is launched.
 The remaining filesystem accesses in legacy branches are intentional transition
 support, not remote fallbacks. A malformed managed allocation record blocks the
 operation instead of selecting legacy storage. Hub has no SQLite access or SQL
-mapping; the future backend adapter remains a manager responsibility.
+mapping; backend decoding remains a manager responsibility.
 
 ### Deployment acceptance test
 

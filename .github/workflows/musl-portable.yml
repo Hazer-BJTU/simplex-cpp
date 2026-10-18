@@ -51,7 +51,8 @@ jobs:
               tar -C /build/bin -czf /output/musl-test-support.tar.gz \
                 test_tools test_registry_e2e test_reading_tools test_editing_tools \
                 test_load_system_prompt test_hub_remote_call_tools \
-                test_tool_extensions test_loop_extensions test_qwen_plugin test_loop_installed_config
+                test_tool_extensions test_loop_extensions test_qwen_plugin test_loop_installed_config \
+                test_persistence_selection
               cp /src/docker/musl-launch-probe /output/
             '
           # Artifact upload does not preserve executable bits. The probe is

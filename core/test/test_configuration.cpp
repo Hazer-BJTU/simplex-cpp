@@ -278,12 +278,20 @@ BOOST_AUTO_TEST_CASE(transport_capacity_covers_application_budget_and_query_quot
 
 BOOST_AUTO_TEST_CASE(explicit_sqlite_supports_auto_compact) {
     auto value = configuration();
-    BOOST_TEST(load::parse_configuration(value, "/tmp").persistence_backend == "json");
+    BOOST_TEST(load::parse_configuration(value, "/tmp").persistence_backend == "auto");
     value["persistence"]["backend"] = "sqlite";
     BOOST_TEST(load::parse_configuration(value, "/tmp").persistence_backend == "sqlite");
     value["worker"]["auto_compact_threshold"] = 100;
     BOOST_TEST(load::parse_configuration(value, "/tmp").auto_compact_threshold == 100u);
     value["worker"]["auto_compact_threshold"] = 0;
     value["persistence"]["backend"] = "unknown";
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(legacy_format_selects_json_and_conflicting_selection_fails) {
+    auto value = configuration();
+    value["persistence"]["format"] = "json";
+    BOOST_TEST(load::parse_configuration(value, "/tmp").persistence_backend == "json");
+    value["persistence"]["backend"] = "sqlite";
     BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
 }

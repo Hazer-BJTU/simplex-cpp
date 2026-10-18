@@ -334,11 +334,13 @@ stopped to change their configuration.
 `persistence.directory`, which the hub sets to `<dataDir>/sessions/<session>`.
 Old layouts are not migrated automatically.
 
-`snapshot` reads the worker's own files
-(`<persistence.directory>/<persistence.state>/state.json` and, when a historical
-export exists, `readable.md`) without modifying them. The worker owns that state;
-there is no operation to replace, edit, or reset it. Files larger than 8 MiB are
-skipped rather than streamed.
+`snapshot` invokes the saved target-side manager for managed sessions. It returns
+complete decoded current state for JSON or SQLite without opening target files.
+Management pipes and the Hub's cached response are uncapped; the Inspector renders
+a bounded preview. SQLite is not exposed as a downloadable file. Legacy local
+profiles retain JSON/readable inspection with the historical 8 MiB file limit;
+SQLite inspection on a legacy profile reports that a managed launcher is required.
+There is no snapshot replacement/reset or archive-query operation.
 
 ### Worker output and optional disk logs
 
@@ -483,7 +485,7 @@ The browser validates each page before committing it or following its cursor,
 and restarts pagination if the revision changes between pages. The hub forwards
 history replies live without retaining them in the transcript or JSONL log;
 they do not consume the normal event budget or advance its replay cursor.
-The authoritative restorable history remains the worker's `state.json`.
+The authoritative restorable history remains the worker's selected persistence store.
 An offline worker cannot answer a live history query; the panel keeps its last
 displayed page and offers a refresh after reconnection.
 
@@ -791,3 +793,7 @@ log snapshots use a 256 KiB newest tail, with 8 KiB line previews and explicit
 omission notices. Their captured logs and execution inputs are not rewritten.
 Worker correlation/event-name fields above 128 UTF-8 bytes are rejected rather
 than cropped into another identity.
+
+
+Persistence backend selection and managed SQLite inspection follow
+[state and persistence](../architecture/state-and-persistence.md).

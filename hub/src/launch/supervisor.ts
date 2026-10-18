@@ -627,7 +627,7 @@ export class WorkerSupervisor {
     }
 
     /** Managed inspection has no Hub-side byte limit or target filesystem fallback. */
-    async managedSnapshot(session: Session): Promise<{ state: unknown; readable: string | null } | null> {
+    async managedSnapshot(session: Session): Promise<{ state: unknown; readable: string | null; backend: string } | null> {
         const record = readManagedSession(this.config, session.id);
         if (record) return readManagedState(record);
         if (sessionLaunch(this.config, session.id)?.launch.management) {

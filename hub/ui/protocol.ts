@@ -603,6 +603,9 @@ export interface LogsResponse {
 
 /** `GET /api/sessions/:id/snapshot` — the worker's own persisted state, read-only. */
 export interface SnapshotView {
+    /** Authoritative storage kind; absent for older Hub/worker responses. The
+     * state field is decoded JSON even when storage is a SQLite database. */
+    backend?: string;
     /** Hub session identifier; it is not a local filesystem path. */
     session_id: SessionId;
     /** Current lifecycle/state label defined by the enclosing record. */

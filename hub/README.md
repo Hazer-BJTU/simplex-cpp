@@ -903,3 +903,12 @@ retains data and quota; cleanup retries are bounded, with authenticated operator
 diagnostics and lifecycle-bound recovery for retained children.
 See the [complete subagent contract](../docs/hub/subagents.md) for configuration snapshots,
 launch support, request deduplication, recovery and cleanup limits.
+
+
+Worker persistence templates now select `backend: sqlite` for new empty sessions.
+`worker.persistence.backend` selects `sqlite` (default) or `json` for generated
+configurations. Existing saved worker configuration remains authoritative.
+Managed `simplex manage read_state` returns complete decoded state from either
+backend; Hub never reads SQL. Inspector bounds only its rendered preview.
+Migration/export and archive browsing are not available. Legacy local profiles
+can inspect JSON; use a managed launcher for SQLite inspection.

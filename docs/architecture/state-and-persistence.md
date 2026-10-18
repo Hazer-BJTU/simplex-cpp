@@ -18,7 +18,7 @@ Hub: <dataDir>/sessions/<session-id>/
 
 Target: <management.root>/<allocation-id>/
   config/config.yaml      generated managed reference
-  state/state.json
+  state/state.sqlite3     normalized current state and compact archives
   memory/, session.lock
 ```
 
@@ -53,12 +53,10 @@ The worker reaches authoritative state only through `persistence::StateStore`
 single-writer with serialized operations. Current-state I/O runs on a dedicated
 storage executor and is awaited by the worker. `core` asks for a checkpoint, a
 reserved archive, a compaction commit or a retention pass; the storage format
-stays inside the backend. JSON remains the default backend and keeps the
-layout above; since #187 PR-B each archive holds the complete pre-compaction
-state. PR-C adds the owner-confirmed normalized SQLite schema v1 and its row
-codec, connected to the experimental SQLite backend by PR-D; see [SQLite schema v1](sqlite-schema-v1.md). The
-boundary, its ordering rules and the follow-up work are recorded in
-[the persistence backend contract](persistence-backends.md).
+stays inside the backend. New empty sessions default to SQLite. Existing JSON-only
+storage remains JSON when backend selection is omitted. Explicit choices never
+silently migrate or abandon existing history. See [SQLite schema v1](sqlite-schema-v1.md)
+and [the persistence backend contract](persistence-backends.md).
 
 Every store operation is synchronous. A checkpoint or compaction commit reports
 one of three outcomes: `NotCommitted` (the previous state is still
@@ -80,7 +78,7 @@ failure, cancellation and interruption are implicit in the frozen archive plus t
 unchanged authoritative snapshot. Retention policy and deletion targets are
 unchanged.
 
-Experimental `persistence.backend: sqlite` stores normalized current state in
+`persistence.backend: sqlite` stores normalized current state in
 `<state>/state.sqlite3`, with transactional revisions and operation IDs. It
 supports checkpoints, restoration, compact and auto compact. T1 freezes the full
 original state and a prepared attempt, synchronizing current state even when
@@ -89,7 +87,7 @@ marks that attempt succeeded. No transaction spans the model request. Abandoned
 prepared attempts become interrupted on the next writer operation, while
 read-only restoration never rewrites evidence.
 Use a new session directory; backend selection does not migrate existing JSON.
-Migration is deferred. Hub inspection/default-switch integration follows in PR-G/H.
+Migration is deferred. Managed Hub inspection uses the C++ mapper and new empty sessions select SQLite.
 
 ## Checkpoints and restoration
 
@@ -128,7 +126,10 @@ filesystem. Failed or cancelled compaction preserves the original conversation
 and the frozen archive.
 
 After each archived attempt, including failure/cancellation,
-`memory_retention.max_archives` targets five complete JSON archives by default.
+`memory_retention.max_archives` targets five complete archives by default.
+For JSON archives, the filesystem rules below apply. SQLite retention uses the
+same count target and keeps the current attempt plus unresolved prepared or
+interrupted recovery evidence; it never deletes unknown filesystem artifacts.
 Zero disables cleanup. The current attempt and archives explicitly referenced by
 absolute paths in retained state are protected, even above the target.
 Required replacement write failures protect both old and replacement references:
@@ -144,7 +145,7 @@ optional diagnostics. This is a retention target, not a disk quota.
 The Hub's event transcript is an execution record. Its in-memory replay buffer
 starts afresh after Hub restart; JSONL is not automatically replayed into it.
 A connected worker can return bounded display-history pages to restore the
-panel. Neither these pages nor the Hub's transcript replaces `state.json`.
+panel. Neither these pages nor the Hub's transcript replaces the authoritative store.
 
 ## Headless delegation
 
@@ -163,3 +164,27 @@ termination. Clean-fork shares any explicit external workspace and is not a sand
 The optional C++ `hub_remote_call` toolset exposes fork/send/receive operations.
 See the [complete subagent contract](../hub/subagents.md) for configuration snapshots,
 launch support, request deduplication, recovery and cleanup limits.
+
+## Selection, inspection, and backup
+
+New templates explicitly select SQLite. Saved Hub worker configurations are not
+rewritten on upgrade. Legacy `format: json` selects JSON; remove this alias only
+when deliberately creating a separate empty SQLite session. With neither setting,
+JSON-only and SQLite-only stores are detected, empty storage selects SQLite, and
+both stores require an explicit choice. `restore: never` still validates the
+selected store and its session identity before starting fresh. Persistence disabled
+creates no database. Clean-fork copies startup policy, never current state, WAL,
+or archives; each child owns an independent directory and store. An omitted
+backend remains omitted in the captured policy, so an empty child selects SQLite;
+explicit JSON or the legacy format alias keeps the child on JSON.
+
+`simplex manage read_state` is a consistent, read-only current-state projection.
+It uses the saved local/SSH/retained-Docker launcher; Hub must not open a target
+file or fall back to a local copy. JSON results remain complete on the management
+pipe. Inspector rendering is a preview, not a database download. No archive
+browsing, migration, or cross-backend export command is provided in this release.
+
+Use a local filesystem supported by SQLite WAL. For a consistent backup, stop the
+worker, ensure all manager readers have finished, then copy the whole session
+directory including any WAL/SHM files. Never copy only a live `state.sqlite3`.
+Keep JSON sessions on JSON until explicit migration tooling is available.

@@ -5,6 +5,7 @@
 #include <fstream>
 #include <unistd.h>
 #include "manager/service.hpp"
+#include "persistence/store.hpp"
 #include "load/persistence.hpp"
 
 namespace {
@@ -164,14 +165,15 @@ BOOST_FIXTURE_TEST_CASE(interrupted_prepare_and_remove_are_reconcilable, Fixture
     BOOST_TEST(call("remove")["status"] == "removed");
 }
 
-BOOST_FIXTURE_TEST_CASE(unsupported_backend_and_invalid_input_do_not_mutate_storage, Fixture) {
+BOOST_FIXTURE_TEST_CASE(sqlite_empty_inspection_and_invalid_input_do_not_mutate_storage, Fixture) {
     request["configuration"] = "persistence: {state: ../outside}";
     BOOST_CHECK_THROW(call("prepare"), manager::Error);
     BOOST_TEST(!fs::exists(root));
     request["configuration"] = "persistence: {backend: sqlite}";
     call("prepare");
-    BOOST_CHECK_EXCEPTION(call("read_state"), manager::Error,
-        [](const auto& error) { return code(error, "unsupported_backend"); });
+    BOOST_TEST(call("read_state")["backend"] == "sqlite");
+    BOOST_TEST(call("read_state")["state"].is_null());
+    BOOST_TEST(!fs::exists(root / "state/state.sqlite3"));
     BOOST_TEST(!manager::resolve_configuration(temporary / "ordinary.yaml", Json::object()).has_value());
 }
 
@@ -258,4 +260,59 @@ BOOST_FIXTURE_TEST_CASE(clean_fork_uses_captured_target_configuration_and_no_sta
     manager::execute(remove);
     BOOST_CHECK_EXCEPTION(manager::execute(fork), manager::Error,
         [](const auto& error) { return code(error, "retired"); });
+}
+
+BOOST_FIXTURE_TEST_CASE(sqlite_manager_inspects_complete_state_without_writes_or_fallback, Fixture) {
+    request["configuration"] = "persistence: {backend: sqlite}";
+    call("prepare");
+    model_io::AgentInputState original;
+    original.meta.session_id = "worker-session";
+    original.extras = {{"large", std::string(1024 * 1024, 'x')}};
+    auto store = persistence::make_sqlite_store("worker-session", root / "state");
+    const auto receipt = store->checkpoint(original, persistence::Boundary::Shutdown);
+    const auto result = call("read_state");
+    BOOST_TEST(result["backend"] == "sqlite");
+    BOOST_TEST(result["state"] == Json(original));
+    BOOST_TEST(result["revision"] == Json(*receipt.revision));
+    BOOST_TEST(result["readable"].is_null());
+    BOOST_TEST(!fs::exists(root / "state/state.json"));
+    // A corrupt selected database must never expose a stale JSON projection.
+    std::ofstream(root / "state/state.json") << Json(original);
+    std::ofstream(root / "state/state.sqlite3", std::ios::trunc) << "corrupt";
+    BOOST_CHECK_THROW(call("read_state"), std::exception);
+}
+
+BOOST_FIXTURE_TEST_CASE(sqlite_clean_fork_inherits_policy_but_never_parent_database, Fixture) {
+    request["configuration"] = "persistence: {backend: sqlite}";
+    call("prepare");
+    request["lifecycle_id"] = "parent-sqlite";
+    request["expected_revision"] = 1;
+    call("capture_startup");
+    model_io::AgentInputState original;
+    original.meta.session_id = "parent";
+    original.extras = {{"private", "parent-only"}};
+    auto store = persistence::make_sqlite_store("parent", root / "state");
+    store->checkpoint(original, persistence::Boundary::Shutdown);
+    const auto child_root = temporary / "sqlite-child";
+    Json fork = {{"version", 1}, {"request_id", "fork-sqlite"}, {"operation", "clean_fork"},
+        {"allocation_id", "child-sqlite"}, {"directory", child_root.string()},
+        {"source", {{"allocation_id", "allocation-1"}, {"directory", root.string()},
+            {"lifecycle_id", "parent-sqlite"}, {"revision", 1}}}};
+    const auto child = manager::execute(fork);
+    BOOST_TEST(child["effective_configuration"]["persistence"]["backend"] == "sqlite");
+    BOOST_TEST(!fs::exists(child_root / "state"));
+    fork["operation"] = "read_state";
+    const auto empty = manager::execute(fork);
+    BOOST_TEST(empty["backend"] == "sqlite");
+    BOOST_TEST(empty["state"].is_null());
+    BOOST_TEST(!fs::exists(child_root / "state"));
+    auto child_store = persistence::make_sqlite_store("child", child_root / "state");
+    model_io::AgentInputState child_state;
+    child_state.meta.session_id = "child";
+    child_store->checkpoint(child_state, persistence::Boundary::Shutdown);
+    BOOST_TEST(call("read_state")["state"] == Json(original));
+    fork["operation"] = "remove";
+    manager::execute(fork);
+    BOOST_TEST(!fs::exists(child_root));
+    BOOST_TEST(call("read_state")["state"] == Json(original));
 }

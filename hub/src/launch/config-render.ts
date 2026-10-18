@@ -86,8 +86,7 @@ export interface WorkerConfigDocument {
         state: string;
         memory: string;
         memory_retention: { max_archives: number };
-        format: string;
-        readable: boolean;
+        backend: 'json' | 'sqlite';
         restore: string;
         save: { on_step_finished: boolean; on_run_finished: boolean; on_shutdown: boolean };
     };
@@ -184,8 +183,7 @@ export function renderWorkerConfig({
             memory_retention: {
                 max_archives: config.worker.memoryRetention.maxArchives,
             },
-            format: 'json',
-            readable: spec.persistence.readable,
+            backend: spec.persistence.backend ?? 'sqlite',
             restore: spec.restore,
             save: {
                 on_step_finished: true,

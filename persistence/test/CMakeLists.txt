@@ -53,3 +53,9 @@ add_executable(test_persistence_sqlite_archive test_sqlite_archive.cpp)
 target_include_directories(test_persistence_sqlite_archive PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
 target_link_libraries(test_persistence_sqlite_archive PRIVATE persistence_lib sqlite_lib Boost::unit_test_framework)
 add_test(NAME test_persistence_sqlite_archive COMMAND test_persistence_sqlite_archive)
+
+# Backend selection never abandons legacy history; inspection uses a single
+# target-side read transaction and leaves absent stores absent.
+add_executable(test_persistence_selection test_selection.cpp)
+target_link_libraries(test_persistence_selection PRIVATE persistence_lib Boost::unit_test_framework)
+add_test(NAME test_persistence_selection COMMAND test_persistence_selection)

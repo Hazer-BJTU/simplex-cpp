@@ -102,7 +102,7 @@ if (args[0] === 'run') {
                 save(); result = describe(); break;
             case 'read_state':
                 if (existsSync(join(root, 'invalid-state'))) failure('invalid_data');
-                result = { backend: 'json', state: { text: 'x'.repeat(10 * 1024 * 1024), extra: 'preserved' }, readable: '# Full readable state\n' };
+                result = { backend: existsSync(join(root, 'sqlite-state')) ? 'sqlite' : 'json', state: { text: 'x'.repeat(10 * 1024 * 1024), extra: 'preserved' }, readable: '# Full readable state\n' };
                 break;
             case 'remove': record.status = 'removed'; save(); result = describe(); break;
             default: failure('invalid_request');

@@ -162,7 +162,18 @@ export function applyConfigurationSpec(spec: NormalizedSpec, result: any): void 
     spec.workspace = result.worker?.environment?.workspace ?? '';
     spec.platform = result.worker?.environment?.platform ?? '';
     spec.software = result.worker?.environment?.software ?? [];
+    const backend = result.persistence?.backend;
+    if (backend !== undefined && backend !== 'json' && backend !== 'sqlite') {
+        throw new Error('persistence.backend must be json or sqlite');
+    }
+    const format = result.persistence?.format;
+    if (format !== undefined && (format !== 'json' || backend === 'sqlite')) {
+        throw new Error('conflicting or unsupported persistence.format');
+    }
     spec.persistence = {
+        // Saved configuration remains authoritative. Legacy configurations select
+        // JSON; do not replace their choice with current Hub defaults.
+        backend: result.persistence?.backend ?? (result.persistence?.format === 'json' ? 'json' : undefined),
         enabled: result.persistence?.enabled ?? true,
         readable: result.persistence?.readable ?? false,
     };
@@ -179,4 +190,22 @@ export function sessionStateDirectory(config: { dataDir: string }, sessionId: st
     const state = document?.hasIn(['persistence', 'state'])
         ? document.getIn(['persistence', 'state']) : 'state';
     return persistenceChild(sessionDir(config, sessionId), state, 'state');
+}
+
+/** Legacy local inspection must honor saved backend policy instead of exposing
+ * a stale JSON file beside a selected SQLite store. This does not read SQL. */
+export function sessionStateBackend(config: { dataDir: string }, sessionId: string): 'json' | 'sqlite' {
+    const path = workerConfigPath(config, sessionId);
+    const document = existsSync(path) ? readDocument(path) : null;
+    const explicit = document?.getIn(['persistence', 'backend']);
+    const format = document?.getIn(['persistence', 'format']);
+    if (explicit !== undefined && explicit !== 'json' && explicit !== 'sqlite') throw new Error('invalid persistence backend');
+    if (format !== undefined && (format !== 'json' || explicit === 'sqlite')) throw new Error('conflicting persistence format');
+    const directory = sessionStateDirectory(config, sessionId);
+    const json = existsSync(join(directory, 'state.json'));
+    const sqlite = existsSync(join(directory, 'state.sqlite3'));
+    const selected = explicit ?? (format === 'json' ? 'json' : undefined);
+    if ((selected === 'json' && sqlite && !json) || (selected === 'sqlite' && json && !sqlite)
+        || (!selected && json && sqlite)) throw new Error('ambiguous or incompatible persistence backend');
+    return selected ?? (json ? 'json' : 'sqlite');
 }

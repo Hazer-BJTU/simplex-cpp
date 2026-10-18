@@ -81,6 +81,14 @@ One database belongs to exactly one session (`sessions` holds one row). A store
 has one `current` snapshot and any number of immutable `archive` snapshots,
 selected through a partial unique index rather than a cyclic foreign key.
 
+Writable opens also ensure two optional access-path indexes on messages:
+`(snapshot_id, turn_id)` and `(snapshot_id, step_id)`. Foreign-key cascades can
+use these full indexes without knowing a message's slot. They do not change
+v1's data or codec contract; read-only inspection accepts earlier v1 files
+without adding them. Step decoding explicitly includes the existing partial
+index predicate to avoid repeated full-table scans. These are persistence
+access indexes, not a memory search/query feature.
+
 ## Entity diagram
 
 ```text

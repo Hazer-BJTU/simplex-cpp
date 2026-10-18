@@ -252,13 +252,13 @@ export async function managedIdle(record: ManagedSessionRecord, timeoutMs = reco
 }
 
 /** Backend-neutral complete snapshot. Never open a target file or fall back to a local copy. */
-export async function readManagedState(record: ManagedSessionRecord): Promise<{ state: unknown; readable: string | null }> {
+export async function readManagedState(record: ManagedSessionRecord): Promise<{ state: unknown; readable: string | null; backend: string }> {
     const result = await call(record, { operation: 'read_state' });
     if (typeof result.backend !== 'string' || !(result.state === null || mapping(result.state))
         || !(result.readable === null || typeof result.readable === 'string')) {
         throw new Error('manager returned an invalid state projection');
     }
-    return { state: result.state, readable: result.readable };
+    return { state: result.state, readable: result.readable, backend: result.backend };
 }
 
 /** Persist cleanup intent first. Keep it on all failures, including lost success replies. */

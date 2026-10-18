@@ -59,4 +59,6 @@ sed -i 's/context_window_tokens: 128000/context_window_tokens: 777/' "$hook_conf
     "$stage/bin/test_loop_installed_config"
 export SIMPLEX_QWEN_TEST_PLUGIN_DIR="$stage/bin/plugins/llm"
 run_test test_qwen_plugin --run_test=options_defaults_and_atomic_updates
+# Offline normalized SQLite round-trip using only relocated bundled libraries.
+run_test test_persistence_selection
 printf 'musl portable archive and installed resources passed\n'

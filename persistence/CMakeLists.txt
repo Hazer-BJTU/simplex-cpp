@@ -6,7 +6,7 @@
 # without changing the worker. Only this module may know a storage format, so
 # dataclass, loop and provider code stay format-independent.
 add_library(persistence_lib SHARED
-    src/store.cpp src/json_store.cpp src/json_archive.cpp
+    src/selection.cpp src/store.cpp src/json_store.cpp src/json_archive.cpp
     src/sqlite_schema.cpp src/sqlite_snapshot.cpp src/sqlite_store.cpp)
 target_include_directories(persistence_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(persistence_lib
@@ -19,3 +19,7 @@ target_compile_options(persistence_lib PRIVATE
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
+
+# Opt-in developer benchmark; excluded from normal builds and installation.
+add_executable(benchmark_persistence EXCLUDE_FROM_ALL benchmark/store.cpp)
+target_link_libraries(benchmark_persistence PRIVATE persistence_lib)

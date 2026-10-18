@@ -90,8 +90,8 @@ reference, but it has no build target, install rule, or `simplex` subcommand.
 See [the deprecated example](example/README.md).
 
 Session IDs accept 1–128 ASCII letters, digits, underscores or hyphens.
-Snapshots use `<persistence.directory>/<persistence.state>/state.json`; optional Markdown
-uses readable.md in the same directory. `persistence.directory` is the direct
+New empty sessions use `<persistence.directory>/<persistence.state>/state.sqlite3`;
+existing JSON sessions retain `state.json`. Automatic Markdown export is deprecated. `persistence.directory` is the direct
 session root; the worker never appends a session ID. The `state` and `memory`
 subdirectories default to `state` and `memory` and must be relative paths without
 parent traversal. The root holds `session.lock`, shared by every state
@@ -267,16 +267,17 @@ Volatile sections. Empty configuration removes old hints. See
 
 ## Explicit context compaction
 
-The `compact` payload archives the current state as Markdown, generates a
-structured summary without tools, and replaces conversation turns with a final
-`memory.runtime` system-prompt section. The worker publishes the replacement JSON
-snapshot before emitting `compact_finished`. Failed or cancelled attempts retain
+The `compact` payload archives the complete original state, generates a structured
+summary without tools, and replaces conversation turns with a final
+`memory.runtime` system-prompt section. The worker commits the replacement to the
+selected JSON or SQLite backend before emitting `compact_finished`. Failed or cancelled attempts retain
 the original conversation. See [the wire contract](../docs/core/worker-protocol.md#compact-conversation-context)
 for admission rules, failure behavior, and event fields. The hub exposes it as
 **Compact context** in Command mode, gated on the current worker's capabilities.
 
-Archives accumulate under `<persistence.directory>/<persistence.memory>`
-(default subdirectory `memory`), without another session-ID component. Every exported attempt reserves a new numbered directory, so
+SQLite archives remain in `state.sqlite3`. JSON archives accumulate under
+`<persistence.directory>/<persistence.memory>`
+(default subdirectory `memory`), without another session-ID component. For JSON storage, every exported attempt reserves a new numbered directory, so
 restarts and clock changes preserve ordering without replacing earlier files.
 Each archived attempt, including failure and cancellation, applies
 `persistence.memory_retention.max_archives` (5 by default; zero disables cleanup).
@@ -333,3 +334,7 @@ The final exchange count includes task and summary responses, with separate
 is recalculated for the latest segment: an intermediate compact save does not
 imply that a later response was saved. See the
 [protocol contract](../docs/core/worker-protocol.md#automatic-context-compaction).
+
+
+Persistence backend selection and managed SQLite inspection follow
+[state and persistence](../docs/architecture/state-and-persistence.md).

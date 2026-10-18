@@ -24,7 +24,7 @@ results, ownership rules, and examples.
 - `load_persistence` is the existing JSON state codec extracted from `load_lib`.
   State inspection validates through the same decoder and returns the original
   parsed JSON, including unknown compatible fields. It reads a file only once.
-  This boundary is where #187 will add a SQLite-backed JSON projection.
+  This boundary also supplies the SQLite-backed JSON projection, using the C++ mapper.
 
 Raw YAML remains verbatim in the allocation control document. Effective settings
 are composed in memory: only the persistence root and explicitly supplied
@@ -89,3 +89,14 @@ The tests cover shared/exclusive lifetime fencing, legacy locks, wrong identity,
 symlinks, startup capture, interrupted mutation recovery, full 10 MiB state reads,
 and the real CLI/router protocol. No receive-size budget is imposed. Full
 in-memory collection is intentional; argv limits still apply to requests.
+
+## Persistence backends
+
+`read_state` selects the configured backend without changing it. JSON results
+retain compatible unknown fields. SQLite results use the worker's normalized C++
+codec and include `backend: sqlite`, decoded `state`, current `revision` and
+`operation_id`; `readable` is null. Inspection is one read-only transaction and
+never creates a database, upgrades a schema, or falls back to JSON after failure.
+New empty configurations select SQLite; old `format: json` selects JSON. Missing
+backend selection detects a single existing store; mixed stores require a choice.
+No migration/export/archive-reading command is added.

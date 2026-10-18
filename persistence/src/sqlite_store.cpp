@@ -48,8 +48,8 @@ public:
                 return std::nullopt;
             }
             sqlite::Database database(path_.string(), sqlite::OpenMode::ReadOnly);
-            sqlite_schema::inspect_store(database, session_);
             sqlite::Transaction transaction(database);
+            sqlite_schema::inspect_store(database, session_);
             auto state = sqlite_snapshot::load_current(database, session_, false);
             if (!state) return std::nullopt;
             const auto metadata = current_metadata(database);

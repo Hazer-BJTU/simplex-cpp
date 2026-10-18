@@ -205,7 +205,7 @@ test('SSH and Docker adapters execute through configured transport, retaining fu
         const request = JSON.parse(Buffer.from(process.argv.at(-1), 'base64').toString('utf8'));
         process.stderr.write('manager diagnostics');
         process.stdout.write(JSON.stringify({version:1,request_id:request.request_id,ok:true,
-            result:{backend:'json',state:{directory:request.directory, text:'x'.repeat(2*1024*1024)},readable:null}}));
+            result:{backend:process.env.TEST_PERSISTENCE_BACKEND,state:{directory:request.directory, text:'x'.repeat(2*1024*1024)},readable:null}}));
     `, { mode: 0o700 });
     writeFileSync(transport, `#!${process.execPath}\n
         const { spawn } = require('node:child_process');
@@ -222,12 +222,14 @@ test('SSH and Docker adapters execute through configured transport, retaining fu
         child.on('error', () => { process.exitCode=127; });
         child.on('exit', code => { process.exitCode=code ?? 1; });
     `, { mode: 0o700 });
-    for (const target of [
+    for (const backend of ['json', 'sqlite']) for (const target of [
         { kind: 'ssh', command: transport, args: [], host: 'test-host' },
         { kind: 'docker', command: transport, args: [], container: 'test-container' },
     ]) {
-        const launcher = new ManagedLauncher({ ...base, executable, target });
+        const launcher = new ManagedLauncher({ ...base, executable, target,
+            env: { ...base.env, TEST_PERSISTENCE_BACKEND: backend } });
         const reply = await launcher.manage(reference, 'read-1', { operation: 'read_state' });
+        assert.equal(reply.result.backend, backend);
         assert.equal(reply.result.state.directory, reference.directory);
         assert.equal(reply.result.state.text.length, 2 * 1024 * 1024);
         assert.equal(reply.diagnostics, 'manager diagnostics');

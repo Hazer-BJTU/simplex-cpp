@@ -700,3 +700,26 @@ test('session plan shares the conversation area, restores on reload and hides wh
     await update('New plan', 3);
     await expect(conversationTab).toHaveAttribute('aria-selected', 'true');
 });
+
+test('SQLite Inspector bounds its preview and clears legacy readable presentation', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.getByRole('button', { name: 'Show inspector' }).click();
+    await page.getByRole('tab', { name: 'Snapshot' }).click();
+    await page.getByRole('button', { name: 'Load snapshot' }).click();
+    await page.getByRole('button', { name: 'show readable.md' }).click();
+    await expect(page.getByRole('tabpanel')).toContainText('# readable');
+
+    await page.route('**/api/sessions/*/snapshot', (route) => route.fulfill({ json: {
+        session_id: 'demo', backend: 'sqlite', revision: 7,
+        state: { marker: 'decoded database state', payload: 'x'.repeat(100_000) },
+        readable: null, files: {},
+    } }));
+    await page.getByRole('button', { name: 'Load snapshot' }).click();
+    const pane = page.getByRole('tabpanel');
+    await expect(pane).toContainText('SQLite · decoded current state');
+    await expect(pane).toContainText('decoded database state');
+    await expect(pane).toContainText('Inspector preview truncated');
+    await expect(pane).not.toContainText('# readable');
+    expect((await pane.locator('pre').innerText()).length).toBeLessThan(66_000);
+});

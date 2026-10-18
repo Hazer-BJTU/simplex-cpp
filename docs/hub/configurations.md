@@ -62,8 +62,8 @@ not moved automatically.
 │       │   ├── source.json
 │       │   ├── startup-worker.yaml
 │       │   └── startup-launch.jsonc
-│       ├── state/state.json     # canonical worker state
-│       ├── memory/<archive>/    # state.json + manifest.json per attempt
+│       ├── state/state.json     # legacy JSON worker state
+│       ├── memory/<archive>/    # JSON archive; SQLite archives live in its DB
 │       ├── logs/worker.log
 │       ├── events.jsonl
 │       ├── session.lock
@@ -334,3 +334,11 @@ toolset supplies `subagent_fork`, `subagent_send` and `subagent_receive` when th
 worker's remote endpoint is configured.
 See the [complete subagent contract](subagents.md) for configuration snapshots,
 launch support, request deduplication, recovery and cleanup limits.
+
+
+New worker templates select `persistence.backend: sqlite`. A managed allocation
+stores `state/state.sqlite3` on its target, not under the Hub's data directory.
+Existing saved configurations retain their backend; legacy `format: json` keeps
+JSON. Neither configuration refresh nor clean-fork copies/migrates state.
+SQLite snapshot inspection requires the managed launcher; legacy local inspection
+supports JSON only and explicitly reports unsupported SQLite inspection.

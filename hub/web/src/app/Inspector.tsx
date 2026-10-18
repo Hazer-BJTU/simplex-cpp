@@ -244,6 +244,7 @@ function SnapshotPane({ sessionId }: { sessionId: string }) {
 
     const mine = snapshot?.sessionId === sessionId ? snapshot : null;
     const view = mine?.view ?? null;
+    const readableVisible = showReadable && Boolean(view?.readable);
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -256,12 +257,12 @@ function SnapshotPane({ sessionId }: { sessionId: string }) {
                     {mine?.loading ? 'loading…' : 'Load snapshot'}
                 </Button>
                 {view?.state_error && (
-                    <span className="text-danger">state.json could not be parsed: {view.state_error}</span>
+                    <span className="text-danger">Persisted state could not be read: {view.state_error}</span>
                 )}
                 <span className="flex-1" />
                 {view?.readable && (
                     <Button onClick={() => setShowReadable((value) => !value)}>
-                        {showReadable ? 'show state.json' : 'show readable.md'}
+                        {showReadable ? 'show decoded state' : 'show readable.md'}
                     </Button>
                 )}
             </div>
@@ -270,7 +271,7 @@ function SnapshotPane({ sessionId }: { sessionId: string }) {
                 {mine?.error && <p className="text-xs text-danger">{mine.error}</p>}
                 {!mine && (
                     <p className="text-xs text-ink-muted">
-                        The worker's own persisted state, read from the hub's data directory and
+                        The worker's own persisted state, decoded by its target-side manager and
                         never written by the panel.
                     </p>
                 )}
@@ -278,22 +279,24 @@ function SnapshotPane({ sessionId }: { sessionId: string }) {
                 {mine && !view && !mine.error && !mine.loading && (
                     <p className="text-xs text-ink-muted">Nothing loaded yet.</p>
                 )}
-                {view && showReadable && (
+                {view && readableVisible && (
                     <pre className="whitespace-pre-wrap break-words font-mono text-xs text-ink">
                         {view.readable ?? '(no readable.md was written)'}
                     </pre>
                 )}
-                {view && !showReadable && (
+                {view && !readableVisible && (
                     <>
                         <p className="mb-1 text-xs text-ink-muted">
-                            {Object.keys(view.files).length === 0
-                                ? 'No snapshot files exist for this session yet.'
+                            {view.backend === 'sqlite'
+                                ? 'SQLite · decoded current state (not a database download)'
+                                : Object.keys(view.files).length === 0
+                                ? 'Current state returned by the worker manager.'
                                 : `files: ${Object.values(view.files).join(', ')}`}
                         </p>
                         <pre className="whitespace-pre-wrap break-all font-mono text-xs text-ink">
                             {view.state === null
-                                ? '(no state.json)'
-                                : prettyJson(view.state)}
+                                ? '(no persisted current state)'
+                                : snapshotPreview(view.state)}
                         </pre>
                     </>
                 )}
@@ -359,4 +362,12 @@ export function Inspector() {
             </aside>
         </>
     );
+}
+
+/** Bound only the Inspector rendering; the management pipe and cached state
+ * remain complete. Database inspection is not a raw database download. */
+function snapshotPreview(state: unknown): string {
+    const text = JSON.stringify(state, null, 2);
+    const limit = 64 * 1024;
+    return text.length <= limit ? text : `${text.slice(0, limit)}\n… (Inspector preview truncated)`;
 }

@@ -169,8 +169,8 @@ temporary file; automatic cleanup of such abandoned files is not implemented.
 JSON and Markdown destinations are independent operations, with no transaction
 across the two. Neither API interprets startup YAML, derives filenames from
 session IDs, subscribes to loop events, or performs asynchronous/background IO.
-The template's `persistence.format: json` continues to describe restorable
-snapshots; Markdown export is selected explicitly through this API.
+The template selects SQLite for new sessions. Legacy `persistence.format: json`
+selects the JSON backend; Markdown export is available only through this API.
 
 ## Template and installation
 
@@ -401,15 +401,16 @@ before releasing its dependencies. See [IO](../io/README.md) and
 | `state` | `state` | Snapshot subdirectory relative to `directory`. |
 | `memory` | `memory` | Compact archive subdirectory relative to `directory`. |
 | `memory_retention.max_archives` | `5` | Archive-count cleanup target after every archived compact attempt; protected references take precedence; zero disables. |
-| `backend` | `json` | `sqlite` opts into experimental checkpoints, restore and complete database compact archives. Use a new directory; this does not migrate JSON. |
-| `format` | `json` | Existing `AgentInputState` dataclass serialization. |
+| `backend` | auto detection | Empty storage selects SQLite; existing JSON-only storage stays JSON. Explicit `json` / `sqlite` selects one store without migration. |
+| `format` | omitted | Deprecated `json` alias for `backend: json`; conflicts with explicit SQLite. |
 | `restore` | `if_present` | Restore an existing session; create fresh state only when absent. |
 | `save.on_step_finished` | `true` | Save after a completed step's state-edit hooks. |
 | `save.on_run_finished` | `true` | Save after run completion and its state-edit hooks. |
 | `save.on_shutdown` | `true` | Save during orderly shutdown after mutation stops. |
 
-The format is `json`; restoration accepts `if_present` or `never`. Unsupported
-values are startup errors. `never` starts fresh and may replace an existing file. Setting `enabled: false` skips all storage operations.
+The optional legacy format alias is `json`; restoration accepts `if_present` or
+`never`. Unsupported values are startup errors. `never` validates backend and
+session identity, then starts fresh and may replace the authoritative current state. Setting `enabled: false` skips all storage operations.
 Restoration and automatic saving can be controlled independently through the
 save booleans; they do not change loop execution semantics.
 
@@ -417,7 +418,8 @@ Persistence stores the complete `AgentInputState`, including `LoopProgress`,
 pending results, and hook state in `extras`. It does not serialize registries,
 plugin instances, connections, coroutine frames, queued IO messages, or the
 resolved startup configuration. Session identity comes from session state; the
-worker stores JSON at <directory>/<session-id>/state.json.
+worker stores current state at `<directory>/<state>/state.json` or
+`<directory>/<state>/state.sqlite3`, without appending a session ID.
 
 Restoration alone never starts the loop or replays tools. A corrupt or unreadable
 existing state is an error, not an absent session. Loop recovery validation must

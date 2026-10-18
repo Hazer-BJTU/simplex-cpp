@@ -3,6 +3,7 @@
 #include "core/application.hpp"
 #include "core/protocol.hpp"
 #include "load/persistence.hpp"
+#include "persistence/selection.hpp"
 #include <boost/asio/use_future.hpp>
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/beast.hpp>
@@ -74,7 +75,7 @@ struct PollingModel : llm::LLMModel {
 };
 }
 
-BOOST_AUTO_TEST_CASE(stalled_peer_tool_steps_query_flood_cancel_and_terminal_recovery) {
+void stalled_peer_scenario(bool sqlite_backend) {
     const auto root = std::filesystem::temp_directory_path() / ("simplex-congestion-" + core::new_identity());
     struct Cleanup {
         std::filesystem::path root;
@@ -83,6 +84,7 @@ BOOST_AUTO_TEST_CASE(stalled_peer_tool_steps_query_flood_cancel_and_terminal_rec
     asio::io_context context;
     asio::ip::tcp::acceptor acceptor(context, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
+    config.persistence_backend = sqlite_backend ? "sqlite" : "json";
     config.document = Json::object();
     config.provider = "fixture";
     config.directory = root;
@@ -150,7 +152,9 @@ BOOST_AUTO_TEST_CASE(stalled_peer_tool_steps_query_flood_cancel_and_terminal_rec
                 BOOST_TEST(event.at("data").at("omitted_display_events").get<std::size_t>() > 0u);
                 BOOST_TEST(event.at("data").at("omitted_display_events").get<std::size_t>() + previews == 120u);
                 BOOST_TEST(event.at("data").at("coalesced_metadata_events").get<std::size_t>() > 0u);
-                const auto state = load::load_state(config.state_directory / "state.json");
+                const auto state = sqlite_backend
+                    ? persistence::inspect_sqlite_current(config.state_directory)->state
+                    : load::load_state(config.state_directory / "state.json");
                 BOOST_TEST(state.turns.back().agent_loop_step.size() == 40u);
                 BOOST_CHECK(state.loop->status == model_io::LoopStatus::Cancelled);
                 finished = true;
@@ -175,10 +179,19 @@ BOOST_AUTO_TEST_CASE(stalled_peer_tool_steps_query_flood_cancel_and_terminal_rec
     server.get(); worker.get();
 }
 
+BOOST_AUTO_TEST_CASE(stalled_peer_tool_steps_query_flood_cancel_and_terminal_recovery) {
+    stalled_peer_scenario(false);
+}
+
+BOOST_AUTO_TEST_CASE(sqlite_checkpoints_preserve_control_responsiveness_under_congestion) {
+    stalled_peer_scenario(true);
+}
+
 BOOST_AUTO_TEST_CASE(continuous_history_and_status_polling_cannot_starve_second_request_admission) {
     asio::io_context context;
     asio::ip::tcp::acceptor acceptor(context, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
+    config.persistence_backend = "json";
     config.document = Json::object();
     config.directory = std::filesystem::temp_directory_path();
     config.provider = "fixture";

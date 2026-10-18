@@ -1,4 +1,5 @@
 #include "core/application.hpp"
+#include "persistence/selection.hpp"
 #include <boost/asio/thread_pool.hpp>
 #include "versioning/version.hpp"
 #include "fileio/session_lock.hpp"
@@ -186,7 +187,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // disabled so restore/admission checks stay in one place.
         if (config.persistence_backend == "sqlite") {
             state_store = persistence::make_sqlite_store(session_id, config.state_directory);
-        } else if (config.persistence_backend == "json") {
+        } else if (config.persistence_backend == "json" || config.persistence_backend == "auto") {
             state_store = persistence::make_json_store(session_id, {
                 config.state_directory, config.memory});
         } else {
@@ -470,14 +471,28 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      */
     asio::awaitable<void> restore_state() {
         std::optional<model_io::AgentInputState> stored;
-        if (config.persistence && config.restore) {
+        if (config.persistence) {
             auto current = co_await asio::co_spawn(storage_executor,
                 [this]() -> asio::awaitable<std::optional<persistence::StoredState>> {
-                    co_return state_store->load_current();
+                    const auto backend = persistence::select_backend(
+                        config.state_directory, config.persistence_backend);
+                    if (backend == persistence::Backend::Sqlite) {
+                        state_store = persistence::make_sqlite_store(session_id, config.state_directory);
+                    } else {
+                        state_store = persistence::make_json_store(session_id,
+                            {config.state_directory, config.memory});
+                    }
+                    // Even restore: never validates existing storage and identity.
+                    // It starts fresh only after proving this is the selected store.
+                    auto current = state_store->load_current();
+                    if (current && current->state.meta.session_id != session_id) {
+                        throw std::runtime_error("stored session ID does not match selected session");
+                    }
+                    co_return current;
                 }, asio::use_awaitable);
             if (current) {
                 storage_revision = current->revision;
-                stored = std::move(current->state);
+                if (config.restore) stored = std::move(current->state);
             }
         }
         if (stored) {
