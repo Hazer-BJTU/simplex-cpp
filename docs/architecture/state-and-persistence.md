@@ -58,8 +58,7 @@ storage executor and is awaited by the worker. `core` asks for a checkpoint, a
 reserved archive, a compaction commit or a retention pass; the storage format
 stays inside the backend. New empty sessions default to SQLite. Existing JSON-only
 storage remains JSON when backend selection is omitted. Explicit choices never
-silently migrate or abandon existing history. See [SQLite schema v1](sqlite-schema-v1.md)
-and [the persistence backend contract](persistence-backends.md).
+silently migrate or abandon existing history. See [Persistence backend](persistence-backends.md).
 
 Every store operation is synchronous. A checkpoint or compaction commit reports
 one of three outcomes: `NotCommitted` (the previous state is still
@@ -112,20 +111,19 @@ refreshed; stored conversation memory remains.
 
 ## Markdown exports and compaction
 
-Readable Markdown is deprecated since #187 PR-B. The worker no longer writes
+Readable Markdown exports are deprecated. The worker no longer writes
 `readable.md`, and the explicit `load::StateFormat::Readable` exporter is a
 compatibility API that does not participate in saves, compaction or recovery.
-Complete JSON state is the authoritative artifact; use it for inspection and
-restoration. `persistence.readable` is still accepted so existing configurations
+The selected backend stores the complete authoritative state; use the manager
+for inspection and the worker for restoration. `persistence.readable` is still accepted so existing configurations
 start unchanged, but it only produces one startup diagnostic.
 
 Compaction first preflights fixed overhead against a 64 KiB replacement byte
-budget, then archives the complete old state as JSON and runs an isolated
+budget, then archives the complete old state in the selected backend and runs an isolated
 summarization exchange. It validates the summary, then durably publishes the
 replacement before announcing success. The summary replaces prior injected memory
-and removes user turns. The memory prompt names the archive directory and the
-latest complete-state file, both of which are meaningful on the worker's
-filesystem. Failed or cancelled compaction preserves the original conversation
+and removes user turns. For JSON, the memory prompt names the archive directory and complete-state file.
+SQLite archive identifiers describe database records, not filesystem paths. Failed or cancelled compaction preserves the original conversation
 and the frozen archive.
 
 After each archived attempt, including failure/cancellation,
