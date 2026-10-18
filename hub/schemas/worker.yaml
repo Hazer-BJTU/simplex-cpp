@@ -187,13 +187,16 @@ worker:
 # Pre-dispatch/results checkpoints remain enabled independently of save flags.
 persistence:
   enabled: true
+  # json is the default. sqlite is experimental (new directories only):
+  # checkpoints/restore work; compact and auto compact are not yet supported.
+  backend: json
   # Direct session root, relative to this file. No session ID is appended.
   directory: ./data/session
   # Snapshot subdirectory, relative to directory.
   state: state
-  # AgentInputState uses its existing dataclass JSON serialization.
+  # Dataclass exchange format; backend selects the authoritative store.
   format: json
-  # Complete JSON state is the only automatic artifact. The legacy `readable`
+  # Complete state is persisted. The legacy `readable`
   # Markdown export is accepted for compatibility but no longer written.
   # Compact archives the complete original state here before summarizing.
   # Archive subdirectory, relative to directory; old archives are never replaced.
