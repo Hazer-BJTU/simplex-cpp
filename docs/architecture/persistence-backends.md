@@ -1,7 +1,7 @@
 # Persistence backend contract
 
-**Status:** accepted · #187 PR-A, amended by PR-B; PR-C adds the SQLite schema v1
-and its row codec without a backend implementation.
+**Status:** accepted · #187 PR-A–D. JSON is the default; SQLite checkpoints are
+experimental and opt-in.
 
 This page records the storage boundary introduced before a normalized SQLite
 backend exists. The planning issue is
@@ -37,7 +37,7 @@ retention policy, and defer new archive-reference handling.
    `commit_compaction`, `finish_archive_attempt`, `prune_archives`), not after
    files. `core` owns the store; dataclass, loop, tools and providers never see a
    backend type.
-2. **The JSON adapter is the only backend in this phase.** It keeps the
+2. **JSON remains the default backend.** It keeps the
    authoritative `state.json` layout and the archive directory names, and since
    PR-B each attempt archives the complete state as
    `<memory>/<archive-id>/{state.json,manifest.json}`. The manifest is published
@@ -46,7 +46,8 @@ retention policy, and defer new archive-reference handling.
    than a restorable archive. `readable.md` is no longer written. PR-C adds the
    owner-confirmed normalized SQLite schema v1 and its row codec
    (`persistence/src/sqlite_schema.cpp`, `persistence/src/sqlite_snapshot.cpp`)
-   but deliberately no `StateStore`, checkpoint or archive implementation; see
+   and PR-D connects its experimental `StateStore` for checkpoints and restoration;
+   database archives remain deferred. See
    [SQLite schema v1](sqlite-schema-v1.md).
 3. **Checkpoints are synchronous and ordered.** A call returns only after its
    durability outcome is known. A backend that must run storage work on another
@@ -88,14 +89,26 @@ retention policy, and defer new archive-reference handling.
    prerequisite for PR-C. `ArchiveKind` is the single source of truth for
    restorability, so a reference cannot claim an inconsistent pair.
 
-## Why not an awaitable contract in this phase
+## Awaited storage boundaries
 
-The JSON write path is synchronous and already completes before the checkpoint
-returns. Making the contract awaitable now would change checkpoint ordering and
-the loop integration for no observable benefit. PR-D introduces database
-checkpoints and must then either add an awaitable boundary or isolate storage
-work on a dedicated executor while the loop waits; either way, the ordering rule
-above stays the acceptance criterion.
+PR-D keeps the synchronous backend interface and moves current-state I/O onto
+one dedicated storage thread. The worker awaits each operation. The loop exposes
+an optional `Options::checkpoint` coroutine after the synchronous BeforeTools,
+ResultsReady, StepFinished and RunFinished events; event hooks remain synchronous.
+A barrier must settle before tools dispatch, pending results project, or the next
+exchange starts. Terminal barrier failures propagate to the host, even when an
+optional finish observer throws. The worker latches storage failure and refuses
+later writes. Frozen state is borrowed only until the awaited operation completes;
+control and read-only query handling can continue on the application executor.
+Cancellation cannot detach a checkpoint.
+
+SQLite stores the graph, revision and operation ID in one transaction. Read-only
+loads retrieve all three consistently and never create or migrate a database. New
+files use 0600 permissions. Existing invalid files fail rather than being adopted.
+Commit errors are conservatively uncertain; reopen and compare the operation ID
+before deciding what happened. No implicit retry or JSON fallback is allowed.
+SQLite compact and auto compact remain unavailable until PR-E; JSON is still the
+default and migration is not implied by selecting another backend.
 
 ## Consequences
 
@@ -111,8 +124,8 @@ above stays the acceptance criterion.
   into the JSON backend, because the manifest is storage metadata that `load`
   should not own; the `simplex_load_archives` library therefore no longer exists.
 - One shared library (`simplex_persistence`) stays in the release set.
-- Remaining work: PR-D implements the database backend on the schema recorded in
-  [SQLite schema v1](sqlite-schema-v1.md), and PR-E through PR-H add archive rows,
+- Remaining work: PR-E adds database archives on the schema recorded in
+  [SQLite schema v1](sqlite-schema-v1.md), and PR-F through PR-H add
   migration tools, Hub integration and the new default.
 
 ## Validation

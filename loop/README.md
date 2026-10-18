@@ -206,6 +206,15 @@ Child processes that have returned session information may keep running; the loo
 
 ### Host persistence checkpoints
 
+For blocking storage use `Options::checkpoint`, an optional awaited host callback
+with `BeforeTools`, `ResultsReady`, `StepFinished` and `RunFinished` boundaries.
+It runs after the corresponding synchronous event; event hooks remain synchronous.
+Keep state frozen while awaiting storage and do not detach writes on cancellation.
+Dispatch and projection wait for durability. A terminal barrier failure propagates
+rather than being logged as an optional observer failure. Core uses this callback
+with a single storage thread, so network control remains responsive.
+
+
 ToolDispatchCheckpoint and ToolResultsCheckpoint are synchronous, read-only
 boundaries. They expose the same borrowed-state restrictions as other observers.
 The first runs even for a skipped batch and is conservative: a failed observer

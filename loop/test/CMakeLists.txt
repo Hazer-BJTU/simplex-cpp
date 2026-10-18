@@ -1,5 +1,5 @@
 add_executable(test_loop test_loop.cpp)
-target_link_libraries(test_loop PRIVATE loop_lib Boost::unit_test_framework)
+target_link_libraries(test_loop PRIVATE loop_lib persistence_lib Boost::unit_test_framework)
 target_compile_options(test_loop PRIVATE -pthread)
 add_test(NAME test_loop COMMAND test_loop)
 set_tests_properties(test_loop PROPERTIES TIMEOUT 30)

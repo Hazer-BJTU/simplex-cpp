@@ -37,3 +37,13 @@ target_link_libraries(test_persistence_store_publication PRIVATE
     persistence_lib load_persistence Boost::unit_test_framework)
 set_target_properties(test_persistence_store_publication PROPERTIES ENABLE_EXPORTS ON)
 add_test(NAME test_persistence_store_publication COMMAND test_persistence_store_publication)
+
+add_executable(test_persistence_sqlite_store test_sqlite_store.cpp)
+target_link_libraries(test_persistence_sqlite_store PRIVATE
+    persistence_lib sqlite_lib Boost::unit_test_framework)
+add_test(NAME test_persistence_sqlite_store COMMAND test_persistence_sqlite_store)
+
+add_executable(test_persistence_sqlite_faults test_sqlite_faults.cpp)
+target_link_libraries(test_persistence_sqlite_faults PRIVATE
+    persistence_lib sqlite_runtime Boost::unit_test_framework)
+add_test(NAME test_persistence_sqlite_faults COMMAND test_persistence_sqlite_faults)

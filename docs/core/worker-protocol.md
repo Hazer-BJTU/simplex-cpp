@@ -2090,3 +2090,14 @@ New snapshots can contain `loop.status: "auto_compact_required"`. This is a past
 boundary, not a pending action. Old snapshots/configurations remain readable;
 older binaries may reject this new status. Dynamic loop-hook ABI is now 3 because
 `RunResult` gained boundary metadata; rebuild hook plugins against this contract.
+
+### Experimental persistence backend metadata
+
+The `persisted` event retains `format: "json"` for the dataclass exchange format
+and adds `backend` (`json` or experimental `sqlite`), `revision` (integer or null)
+and `operation_id` (empty for JSON). For SQLite these identify the committed
+current snapshot; they are not archive-query identifiers or tool idempotency keys.
+SQLite is opt-in with `persistence.backend: sqlite`. Manual compact is rejected
+before admission, and auto compact is rejected at startup until database archives
+are supported. Manager snapshot inspection currently reports `unsupported_backend`
+for SQLite; it never falls back to an older `state.json`.

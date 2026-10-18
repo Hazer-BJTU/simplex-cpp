@@ -3,6 +3,7 @@
 #include "core/application.hpp"
 #include "core/confirmation.hpp"
 #include "load/persistence.hpp"
+#include "persistence/store.hpp"
 #include "fileio/session_lock.hpp"
 #include <boost/beast.hpp>
 #include <boost/asio/use_future.hpp>
@@ -12,6 +13,27 @@
 #include <iterator>
 #include <thread>
 #include <unistd.h>
+
+#ifdef __linux__
+#include <sys/syscall.h>
+namespace storage_delay {
+std::atomic<bool> armed{false};
+std::atomic<bool> entered{false};
+std::atomic<bool> release{false};
+}
+/** Block one real directory durability fence to exercise control during a save. */
+extern "C" int fsync(int descriptor) {
+    if (storage_delay::armed.exchange(false)) {
+        storage_delay::entered = true;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!storage_delay::release && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        storage_delay::entered = false;
+    }
+    return static_cast<int>(::syscall(SYS_fsync, descriptor));
+}
+#endif
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -55,15 +77,20 @@ struct Scratch {
 };
 
 enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
-                  ProtocolFailure, History, ModelFailure };
+                  ProtocolFailure, History, ModelFailure, StorageWait, CompactUnsupported };
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
 void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote_call = false,
-              const std::string& assist_provider = "deepseek") {
+              const std::string& assist_provider = "deepseek", bool sqlite = false) {
     Scratch scratch;
+#ifdef __linux__
+    storage_delay::release = false;
+    storage_delay::armed = mode == Mode::StorageWait;
+#endif
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
+    config.persistence_backend = sqlite ? "sqlite" : "json";
     config.directory = scratch.root;
     config.provider = "fixture";
     config.document = Json::object();
@@ -97,7 +124,7 @@ sections:
     const auto original_cwd = std::filesystem::current_path();
     config.event_capacity = mode == Mode::Overflow ? 1 : 256;
     if (mode == Mode::StorageFailure) {
-        std::filesystem::create_directories(config.state_directory / "state.json");
+        std::filesystem::create_directories(config.state_directory / (sqlite ? "state.sqlite3" : "state.json"));
         config.restore = false;
     }
     if (mode == Mode::Blocked) {
@@ -105,8 +132,17 @@ sections:
         state.meta.session_id = "test";
         state.loop.emplace();
         state.loop->phase = model_io::LoopPhase::Blocked;
-        load::save_state(config.state_directory / "state.json", state);
+        if (sqlite) {
+            persistence::make_sqlite_store("test", config.state_directory)->checkpoint(
+                state, persistence::Boundary::BeforeTools);
+        } else {
+            load::save_state(config.state_directory / "state.json", state);
+        }
     }
+    auto snapshot = [&] {
+        if (sqlite) return persistence::make_sqlite_store("test", config.state_directory)->load_current()->state;
+        return load::load_state(config.state_directory / "state.json");
+    };
     auto model = std::make_shared<Model>(io.get_executor());
     if (mode == Mode::ModelFailure) model->fail_model = true;
     if (mode == Mode::Cancel || mode == Mode::Stop) model->delay = std::chrono::seconds(10);
@@ -116,6 +152,8 @@ sections:
     int rejected = 0;
     bool cancelled = false;
     bool history_during_run = false;
+    bool storage_status_requested = false;
+    bool storage_status_received = false;
     auto peer = [&]() -> asio::awaitable<void> {
         beast::websocket::stream<asio::ip::tcp::socket> socket(
             co_await acceptor.async_accept(asio::use_awaitable));
@@ -150,6 +188,9 @@ sections:
                         }})}
                     }}
                 };
+                if (mode == Mode::CompactUnsupported) {
+                    input["data"] = {{"operation", "compact"}, {"request_id", "one"}};
+                }
                 co_await send(input);
                 if (mode == Mode::Normal) {
                     co_await send(input);
@@ -166,11 +207,27 @@ sections:
                     stopper.join();
                     continue;
                 }
-                if (mode == Mode::History) continue;
+                if (mode == Mode::History || mode == Mode::StorageWait) continue;
                 Json signal = {{"type", "signal"}, {"data", {
                     {"operation", "cancel"}, {"run_id", mode == Mode::Cancel
                         ? event.at("run_id").get<std::string>() : "stale-run"}}}};
                 co_await send(signal);
+            } else if (name == "model_response" && mode == Mode::StorageWait) {
+#ifdef __linux__
+                for (int attempt = 0; attempt < 100 && !storage_delay::entered; ++attempt) {
+                    asio::steady_timer wait(co_await asio::this_coro::executor, std::chrono::milliseconds(5));
+                    co_await wait.async_wait(asio::use_awaitable);
+                }
+                BOOST_REQUIRE(storage_delay::entered);
+#endif
+                storage_status_requested = true;
+                co_await send(Json{{"type", "signal"}, {"data", {{"operation", "status"}}}});
+            } else if (name == "status" && mode == Mode::StorageWait && storage_status_requested) {
+#ifdef __linux__
+                BOOST_TEST(storage_delay::entered.load());
+                storage_delay::release = true;
+#endif
+                storage_status_received = true;
             } else if (name == "input_committed" && mode == Mode::History) {
                 // Wait for the scripted model to enter its suspended wait;
                 // the assertion is about that interval, not about scheduling
@@ -211,7 +268,7 @@ sections:
                     co_await send(Json{{"type", "signal"}, {"data", {{"operation", "shutdown"}}}});
             } else if (name == "input_rejected") {
                 ++rejected;
-                if (mode == Mode::Blocked)
+                if (mode == Mode::Blocked || mode == Mode::CompactUnsupported)
                     co_await send(Json{{"type", "signal"}, {"data", {{"operation", "shutdown"}}}});
             }
         }
@@ -230,7 +287,7 @@ sections:
         worker.get();
         if (mode == Mode::Overflow) {
             BOOST_TEST(completed == 1);
-            const auto state = load::load_state(config.state_directory / "state.json");
+            const auto state = snapshot();
             BOOST_TEST(state.turns.size() == 1u);
             BOOST_TEST(state.turns[0].agent_loop_step.size() == 1u);
         }
@@ -239,7 +296,7 @@ sections:
             BOOST_TEST(rejected == 1);
             BOOST_TEST(model->maximum.load() == 1);
             BOOST_TEST(model->calls.load() == 2);
-            const auto state = load::load_state(config.state_directory / "state.json");
+            const auto state = snapshot();
             BOOST_TEST(state.turns.size() == 2u);
             for (const auto& turn : state.turns) {
                 BOOST_REQUIRE(turn.user_input.extras);
@@ -301,7 +358,7 @@ sections:
         } else if (mode == Mode::ModelFailure) {
             BOOST_TEST(completed == 2);
             BOOST_TEST(model->calls.load() == 2);
-            const auto state = load::load_state(config.state_directory / "state.json");
+            const auto state = snapshot();
             BOOST_REQUIRE_EQUAL(state.turns.size(), 1u);
             BOOST_REQUIRE_EQUAL(state.turns[0].agent_loop_step.size(), 1u);
             BOOST_REQUIRE(state.turns[0].user_input.extras);
@@ -316,8 +373,11 @@ sections:
             BOOST_TEST(completed == 1);
         } else if (mode == Mode::Cancel || mode == Mode::Stop) {
             if (mode == Mode::Cancel) BOOST_TEST(cancelled);
-            const auto state = load::load_state(config.state_directory / "state.json");
+            const auto state = snapshot();
             BOOST_CHECK(state.loop->status == model_io::LoopStatus::Cancelled);
+        } else if (mode == Mode::StorageWait) {
+            BOOST_TEST(storage_status_received);
+            BOOST_TEST(completed == 1);
         } else if (mode != Mode::Overflow) {
             BOOST_TEST(rejected == 1);
             BOOST_TEST(model->calls.load() == 0);
@@ -339,18 +399,18 @@ sections:
             auto restart = asio::co_spawn(io, restored.run(stop.get_token()), asio::use_future);
             io.run();
             restart.get();
-            const auto snapshot = load::load_state(config.state_directory / "state.json");
-            BOOST_TEST(snapshot.turns.size() == 2u);
-            const auto& signature = *std::prev(snapshot.system_prompt.end());
+            const auto saved_snapshot = snapshot();
+            BOOST_TEST(saved_snapshot.turns.size() == 2u);
+            const auto& signature = *std::prev(saved_snapshot.system_prompt.end());
             BOOST_TEST(signature.name == "signature.runtime");
             BOOST_TEST(signature.title.empty());
             BOOST_TEST(signature.text.find("Hello, restored-provider!") != std::string::npos);
-            BOOST_TEST(snapshot.system_prompt.find("persona")->text == "Initial instructions.");
-            const auto environment = snapshot.system_prompt.find("environment.runtime");
+            BOOST_TEST(saved_snapshot.system_prompt.find("persona")->text == "Initial instructions.");
+            const auto environment = saved_snapshot.system_prompt.find("environment.runtime");
             if (clear) {
-                BOOST_CHECK(environment == snapshot.system_prompt.end());
+                BOOST_CHECK(environment == saved_snapshot.system_prompt.end());
             } else {
-                BOOST_REQUIRE(environment != snapshot.system_prompt.end());
+                BOOST_REQUIRE(environment != saved_snapshot.system_prompt.end());
                 BOOST_TEST(environment->text == "Platform (configured): Replacement platform");
             }
             BOOST_CHECK(std::filesystem::current_path() == original_cwd);
@@ -896,3 +956,16 @@ BOOST_AUTO_TEST_CASE(session_root_lock_is_independent_of_state_path_and_identity
 BOOST_AUTO_TEST_CASE(optional_hub_remote_call_set_advertises_plan_without_startup_network_activity) {
     scenario(Mode::Normal, false, true);
 }
+
+BOOST_AUTO_TEST_CASE(sqlite_application_lifecycle) {
+    for (auto mode : {Mode::Normal, Mode::Cancel, Mode::Stop, Mode::Blocked,
+                      Mode::StorageFailure, Mode::History, Mode::ModelFailure, Mode::CompactUnsupported}) {
+        scenario(mode, false, false, "deepseek", true);
+    }
+}
+
+#ifdef __linux__
+BOOST_AUTO_TEST_CASE(sqlite_checkpoint_does_not_block_control_channel) {
+    scenario(Mode::StorageWait, false, false, "deepseek", true);
+}
+#endif

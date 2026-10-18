@@ -30,6 +30,8 @@ namespace loop {
  *        Pass an empty MessageItem when continuing an existing turn.
  * @param options Optional positive exchange cap and opt-in latest-token threshold.
  *        A null cap is explicitly uncapped; zero threshold disables compaction.
+ *        The optional checkpoint callback is an awaited durability barrier;
+ *        synchronous event hooks keep their existing ordering and semantics.
  * @param stop Thread-safe stop token. While converse() is suspended, a request
  *        emits terminal cancellation on that exchange's serialized executor.
  *        The loop waits for the exchange to exit; it never detaches it. A tool

@@ -12,9 +12,8 @@
  * Executable SQLite schema v1 for one session's authoritative store.
  *
  * The decision record is docs/architecture/sqlite-schema-v1.md. This module owns
- * table creation, version checks and transactional migrations; it deliberately
- * does not implement the persistence::StateStore contract (that is the next
- * phase), so it exposes only what tests and the future adapter need.
+ * table creation, version checks and transactional migrations; the persistence::StateStore adapter uses this module to validate schema
+ * and identity before checkpointing.
  *
  * A store is one database file with one sessions row. Snapshot graphs are
  * normalized: every child row carries snapshot_id and composite foreign keys

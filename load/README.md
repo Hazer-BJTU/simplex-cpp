@@ -401,6 +401,7 @@ before releasing its dependencies. See [IO](../io/README.md) and
 | `state` | `state` | Snapshot subdirectory relative to `directory`. |
 | `memory` | `memory` | Compact archive subdirectory relative to `directory`. |
 | `memory_retention.max_archives` | `5` | Archive-count cleanup target after every archived compact attempt; protected references take precedence; zero disables. |
+| `backend` | `json` | `sqlite` opts into experimental checkpoints/restore; compact and auto compact are unavailable. Use a new directory; this does not migrate JSON. |
 | `format` | `json` | Existing `AgentInputState` dataclass serialization. |
 | `restore` | `if_present` | Restore an existing session; create fresh state only when absent. |
 | `save.on_step_finished` | `true` | Save after a completed step's state-edit hooks. |

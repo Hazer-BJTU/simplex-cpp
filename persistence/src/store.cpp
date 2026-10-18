@@ -9,6 +9,7 @@ namespace persistence {
 const char* backend_name(Backend backend) {
     switch (backend) {
         case Backend::Json: return "json";
+        case Backend::Sqlite: return "sqlite";
     }
     throw std::logic_error("invalid persistence backend");
 }

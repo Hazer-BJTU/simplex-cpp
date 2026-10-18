@@ -1,3 +1,6 @@
+#include "persistence/store.hpp"
+#include <filesystem>
+#include <unistd.h>
 #define BOOST_TEST_MODULE AgentLoop
 
 #include <boost/test/unit_test.hpp>
@@ -1047,4 +1050,80 @@ BOOST_AUTO_TEST_CASE(uncapped_invocation_and_overflow_usage) {
     const auto result = overflow.run(true, input(), 1, {}, 100);
     BOOST_CHECK(!result.last_exchange_tokens);
     BOOST_CHECK(result.auto_compact_reason == loop::AutoCompactReason::ExchangeLimit);
+}
+
+BOOST_AUTO_TEST_CASE(awaited_checkpoint_keeps_io_live_and_never_dispatches_before_durability) {
+    Fixture f;
+    std::stop_source stop;
+    bool control_ran = false;
+    loop::Options options;
+    options.checkpoint = [&](loop::Checkpoint boundary) -> asio::awaitable<void> {
+        if (boundary != loop::Checkpoint::BeforeTools) co_return;
+        BOOST_TEST(f.set->tool->count == 0);
+        asio::post(f.io, [&] { control_ran = true; stop.request_stop(); });
+        asio::steady_timer wait(f.io, std::chrono::milliseconds(10));
+        co_await wait.async_wait(asio::use_awaitable);
+        BOOST_TEST(control_ran);
+        BOOST_TEST(f.set->tool->count == 0);
+    };
+    auto future = asio::co_spawn(f.io, loop::run(f.model, f.registry, f.bus,
+        f.io.get_executor(), f.state, true, input(), options, stop.get_token()), asio::use_future);
+    f.io.run();
+    BOOST_CHECK(future.get().status == loop::RunStatus::Cancelled);
+    BOOST_TEST(f.set->tool->count == 0);
+}
+
+BOOST_AUTO_TEST_CASE(awaited_results_failure_keeps_projection_without_replaying_tools) {
+    Fixture f;
+    loop::Options options;
+    options.checkpoint = [&](loop::Checkpoint boundary) -> asio::awaitable<void> {
+        if (boundary == loop::Checkpoint::ResultsReady) {
+            asio::steady_timer wait(f.io, std::chrono::milliseconds(1));
+            co_await wait.async_wait(asio::use_awaitable);
+            throw std::runtime_error("database full");
+        }
+    };
+    auto future = asio::co_spawn(f.io, loop::run(f.model, f.registry, f.bus,
+        f.io.get_executor(), f.state, true, input(), options), asio::use_future);
+    f.io.run();
+    BOOST_CHECK(future.get().status == loop::RunStatus::Failed);
+    BOOST_CHECK(f.state.loop->phase == model_io::LoopPhase::Projection);
+    BOOST_TEST(f.set->tool->count == 1);
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::Completed);
+    BOOST_TEST(f.set->tool->count == 1);
+}
+
+BOOST_AUTO_TEST_CASE(sqlite_recovery_projects_saved_results_without_reexecuting_tools) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("simplex_loop_sqlite_" + std::to_string(getpid()));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::filesystem::remove_all(path); }
+    } cleanup{root};
+    std::filesystem::remove_all(root);
+    Fixture first;
+    first.state.meta.session_id = "recovery";
+    first.model.fail_projection = true;
+    auto store = persistence::make_sqlite_store("recovery", root);
+    auto checkpoint = first.bus.subscribe<loop::ToolResultsCheckpoint>([&](const auto&) {
+        store->checkpoint(first.state, persistence::Boundary::ResultsReady);
+    });
+    BOOST_CHECK(first.run().status == loop::RunStatus::Failed);
+    BOOST_TEST(first.set->tool->count == 1);
+    store.reset();
+    Fixture restored;
+    restored.model.calls = false;
+    store = persistence::make_sqlite_store("recovery", root);
+    restored.state = std::move(store->load_current()->state);
+    BOOST_CHECK(restored.state.loop->phase == model_io::LoopPhase::Projection);
+    BOOST_CHECK(restored.run(false).status == loop::RunStatus::Completed);
+    BOOST_TEST(restored.set->tool->count == 0);
+    for (auto phase : {model_io::LoopPhase::Tools, model_io::LoopPhase::Blocked}) {
+        restored.state.loop->phase = phase;
+        store->checkpoint(restored.state, persistence::Boundary::BeforeTools);
+        Fixture blocked;
+        blocked.state = std::move(store->load_current()->state);
+        BOOST_CHECK_THROW(blocked.run(false), loop::RecoveryRequired);
+        BOOST_TEST(blocked.set->tool->count == 0);
+    }
 }

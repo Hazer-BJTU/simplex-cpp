@@ -50,12 +50,13 @@ registry and reusable configurations outside individual session roots.
 
 The worker reaches authoritative state only through `persistence::StateStore`
 (`persistence/include/persistence/store.hpp`). A store is session-scoped,
-single-writer and confined to the worker strand. `core` asks for a checkpoint, a
+single-writer with serialized operations. Current-state I/O runs on a dedicated
+storage executor and is awaited by the worker. `core` asks for a checkpoint, a
 reserved archive, a compaction commit or a retention pass; the storage format
-stays inside the backend. JSON is the only backend in this phase and keeps the
+stays inside the backend. JSON remains the default backend and keeps the
 layout above; since #187 PR-B each archive holds the complete pre-compaction
 state. PR-C adds the owner-confirmed normalized SQLite schema v1 and its row
-codec behind no backend yet; see [SQLite schema v1](sqlite-schema-v1.md). The
+codec, connected to the experimental SQLite backend by PR-D; see [SQLite schema v1](sqlite-schema-v1.md). The
 boundary, its ordering rules and the follow-up work are recorded in
 [the persistence backend contract](persistence-backends.md).
 
@@ -78,6 +79,12 @@ attempt, so success is never a separate step that could fail after the commit;
 failure, cancellation and interruption are implicit in the frozen archive plus the
 unchanged authoritative snapshot. Retention policy and deletion targets are
 unchanged.
+
+Experimental `persistence.backend: sqlite` stores normalized current state in
+`<state>/state.sqlite3`, with transactional revisions and operation IDs. It
+supports checkpoints and restoration, but rejects compact and auto compact.
+Use a new session directory; backend selection does not migrate existing JSON.
+Migration, SQLite archive support and Hub inspection are separate later phases.
 
 ## Checkpoints and restoration
 
