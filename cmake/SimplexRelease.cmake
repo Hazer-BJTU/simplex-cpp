@@ -43,7 +43,8 @@
 # explicit list rots: every new module silently ships nothing until someone
 # remembers to add a line, and the failure mode is a release missing a library
 # rather than a build error. The `/test` exclusion keeps test-only artifacts
-# (toyextension, the eventbus DSO fixtures) out of a release. Examples are
+# (toyextension, the eventbus DSO fixtures) out of a release. Benchmark
+# directories are also development-only, even when explicitly built. Examples are
 # excluded by default; manual-test installations can opt back in.
 # =============================================================================
 
@@ -74,11 +75,11 @@ function(_simplex_collect_targets dir out_targets)
     set(_found "")
     get_property(_subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
     foreach(_sub IN LISTS _subdirs)
-# Test directories are skipped WHOLESALE rather than filtered by target
+        # Test and benchmark directories are skipped rather than filtered by target
         # name. Name-based filtering needs every fixture to be recognisably
         # named, which is a convention nobody can enforce; directory position
         # is structural.
-        if(_sub MATCHES "/test(/|$)")
+        if(_sub MATCHES "/(test|benchmark)(/|$)")
             continue()
         endif()
         if(NOT SIMPLEX_INSTALL_EXAMPLES AND _sub MATCHES "/example(/|$)")

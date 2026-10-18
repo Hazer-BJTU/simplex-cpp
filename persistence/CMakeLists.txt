@@ -21,5 +21,4 @@ if(BUILD_TESTS)
 endif()
 
 # Opt-in developer benchmark; excluded from normal builds and installation.
-add_executable(benchmark_persistence EXCLUDE_FROM_ALL benchmark/store.cpp)
-target_link_libraries(benchmark_persistence PRIVATE persistence_lib)
+add_subdirectory(benchmark EXCLUDE_FROM_ALL)
