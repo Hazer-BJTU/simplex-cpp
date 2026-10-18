@@ -71,7 +71,7 @@ revision must refuse a stale write; the JSON backend exposes none and rejects an
 expectation instead of ignoring it.
 
 Compact archives are reserved during preflight, frozen before the summary
-exchange, and never rewritten afterwards. Each archive is a directory containing
+exchange, and never rewritten afterwards. For JSON, each archive is a directory containing
 the complete original `state.json` and a `manifest.json` publication marker that
 is written last; a directory without a complete, self-consistent manifest is
 incomplete evidence and never restorable. A committed replacement settles its own
@@ -82,9 +82,14 @@ unchanged.
 
 Experimental `persistence.backend: sqlite` stores normalized current state in
 `<state>/state.sqlite3`, with transactional revisions and operation IDs. It
-supports checkpoints and restoration, but rejects compact and auto compact.
+supports checkpoints, restoration, compact and auto compact. T1 freezes the full
+original state and a prepared attempt, synchronizing current state even when
+ordinary saves are disabled; T2 atomically replaces current state and
+marks that attempt succeeded. No transaction spans the model request. Abandoned
+prepared attempts become interrupted on the next writer operation, while
+read-only restoration never rewrites evidence.
 Use a new session directory; backend selection does not migrate existing JSON.
-Migration, SQLite archive support and Hub inspection are separate later phases.
+Migration is deferred. Hub inspection/default-switch integration follows in PR-G/H.
 
 ## Checkpoints and restoration
 

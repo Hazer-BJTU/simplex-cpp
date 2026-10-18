@@ -355,9 +355,6 @@ Configuration parse_configuration(
     if (result.persistence_backend != "json" && result.persistence_backend != "sqlite") {
         throw std::invalid_argument("persistence.backend must be json or sqlite");
     }
-    if (result.persistence_backend == "sqlite" && result.auto_compact_threshold != 0) {
-        throw std::invalid_argument("experimental SQLite does not support auto compact");
-    }
     if (text(storage, "format", "json") != "json") throw std::invalid_argument("persistence format must be json");
     auto restore = text(storage, "restore", "if_present");
     if (restore != "if_present" && restore != "never") throw std::invalid_argument("invalid restore policy");

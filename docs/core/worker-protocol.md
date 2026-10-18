@@ -719,6 +719,15 @@ the synchronous commit does not undo it. Required JSON save failure stops furthe
 admission; a failure after file publication has uncertain durability and is never
 reported as success or user cancellation. The worker emits one terminal `error`
 with `durable: false` and stops, rather than a duplicate `run_finished`.
+An uncertain optional archive settlement or retention also stops the worker with
+this terminal `error`. In that case `storage_error` describes the uncertain
+mutation and `primary_outcome` preserves the compact result as
+`{ "status": string, "error": string, "operation": "compact" | "auto_compact" }`.
+A failed summary or cancellation remains observable; `status: completed` here
+means the compact replacement committed before retention became uncertain, not
+that the original task finished. No continuation, final checkpoint or new input
+is admitted against that uncertain store. Reopen and inspect its evidence before
+resuming; no automatic retry is performed.
 The deprecated `readable.md` export is never written: `persistence.readable` is
 accepted only for compatibility and produces one startup diagnostic.
 
@@ -729,6 +738,13 @@ On success the worker emits `persisted` with boundary `compact`, then
 ```json
 {"summary":"Summary text", "memory_file":"/absolute/memory/<archive-id>/state.json", "removed_turns":12, "revision":38, "durable":true}
 ```
+
+New workers also return `archive` with `session_id`, `archive_id`, `storage_kind`
+(`json` or `sqlite`), and `restorable: true`. SQLite results omit `memory_file`;
+the archive is database evidence, not a downloadable file. Accept either a legacy
+nonempty `memory_file` or valid structured archive metadata. These fields do not
+provide archive browsing or retrieval. For SQLite, `archive_cleanup.removed_bytes`
+is zero because deleted pages remain reusable within the database file.
 
 `summary` is the complete accepted text, limited to 32 KiB of original UTF-8
 bytes. Worker display projection and Hub normalization preserve it verbatim,
@@ -893,7 +909,7 @@ may occur in nested dataclass records.
 | `status` | Status object | Snapshot produced by `status` or `cancel`. |
 | `options` | Options object | Available choices and current selections returned in response to the `options` signal. |
 | `history` | Display history page | Read-only response to a `history` payload; not a run event. |
-| `compact_finished` | `{ "summary": string, "memory_file": string, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
+| `compact_finished` | `{ "summary": string, "memory_file"?: string, "archive"?: { "session_id": string, "archive_id": string, "storage_kind": "json" | "sqlite", "restorable": true }, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
 | `answer` | Correlated answer page | Exact read-only content segment; no run admission. |
 | `answer_error` | `{ "request_id": any JSON value or null, "message": string }` | Answer source or cursor is unavailable. |
 | `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
@@ -2097,7 +2113,7 @@ The `persisted` event retains `format: "json"` for the dataclass exchange format
 and adds `backend` (`json` or experimental `sqlite`), `revision` (integer or null)
 and `operation_id` (empty for JSON). For SQLite these identify the committed
 current snapshot; they are not archive-query identifiers or tool idempotency keys.
-SQLite is opt-in with `persistence.backend: sqlite`. Manual compact is rejected
-before admission, and auto compact is rejected at startup until database archives
-are supported. Manager snapshot inspection currently reports `unsupported_backend`
-for SQLite; it never falls back to an older `state.json`.
+SQLite is opt-in with `persistence.backend: sqlite`. Manual and automatic compact
+archive the complete original state inside the session database. No migration or
+archive-content query interface is provided. Existing JSON sessions must retain
+their backend; selecting SQLite is not a conversion operation.

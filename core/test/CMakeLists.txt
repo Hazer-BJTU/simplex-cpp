@@ -10,11 +10,15 @@ target_link_libraries(test_core_application PRIVATE fileio_lib persistence_lib)
 set_target_properties(test_core_application PROPERTIES ENABLE_EXPORTS ON)
 # The published-snapshot scenario asserts the store's recovery outcome directly.
 target_link_libraries(test_core_compact PRIVATE persistence_lib)
+target_link_libraries(test_core_auto_compact PRIVATE persistence_lib)
 add_dependencies(test_core_application llm_deepseek llm_qwen)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Inject a single snapshot-directory fsync failure after its successful rename.
     target_link_options(test_core_compact PRIVATE "LINKER:--export-dynamic-symbol=fsync")
+    # Exercise uncertain optional archive settlement/retention after SQLite COMMIT.
+    target_link_options(test_core_auto_compact PRIVATE "LINKER:--export-dynamic-symbol=fsync")
+    target_link_libraries(test_core_auto_compact PRIVATE ${CMAKE_DL_LIBS})
     # Export the test executable's resolver override for interposition in Asio.
     # Keeping the fixture in this executable avoids a test-only DT_NEEDED
     # dependency and removes any need for LD_PRELOAD in staged runtime tests.
@@ -47,3 +51,8 @@ add_test(NAME core_simplex_launcher
         ${CMAKE_CURRENT_SOURCE_DIR}/test_simplex_launcher.py
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/simplex)
 set_tests_properties(core_simplex_launcher PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+
+add_executable(test_core_sqlite_compact test_sqlite_compact.cpp)
+target_link_libraries(test_core_sqlite_compact PRIVATE core_lib persistence_lib Boost::unit_test_framework)
+add_test(NAME test_core_sqlite_compact COMMAND test_core_sqlite_compact)
+set_tests_properties(test_core_sqlite_compact PROPERTIES TIMEOUT 30)

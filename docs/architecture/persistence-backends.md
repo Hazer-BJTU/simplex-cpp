@@ -47,7 +47,7 @@ retention policy, and defer new archive-reference handling.
    owner-confirmed normalized SQLite schema v1 and its row codec
    (`persistence/src/sqlite_schema.cpp`, `persistence/src/sqlite_snapshot.cpp`)
    and PR-D connects its experimental `StateStore` for checkpoints and restoration;
-   database archives remain deferred. See
+   PR-E adds transactional database archives and retention. See
    [SQLite schema v1](sqlite-schema-v1.md).
 3. **Checkpoints are synchronous and ordered.** A call returns only after its
    durability outcome is known. A backend that must run storage work on another
@@ -107,16 +107,17 @@ loads retrieve all three consistently and never create or migrate a database. Ne
 files use 0600 permissions. Existing invalid files fail rather than being adopted.
 Commit errors are conservatively uncertain; reopen and compare the operation ID
 before deciding what happened. No implicit retry or JSON fallback is allowed.
-SQLite compact and auto compact remain unavailable until PR-E; JSON is still the
-default and migration is not implied by selecting another backend.
+SQLite compact and auto compact use complete database archives. JSON remains the
+default; selecting another backend does not migrate an existing session.
 
 ## Consequences
 
-- Wire fields are unchanged: the `persisted` event keeps its `boundary` labels and
-  reports `format` from the backend, and the compact result still names a real,
-  restorable file through `memory_file` (now the archive's `state.json`). The
-  automatic `readable.md` export is gone; `persistence.readable` and the explicit
-  `load::StateFormat::Readable` export remain accepted and deprecated.
+- `persisted` retains `format: json` as the dataclass exchange format and reports
+  the actual backend separately. Compact results include structured `archive`
+  evidence; `memory_file` is present only for a real JSON archive file. SQLite
+  identifiers are not file paths or retrieval endpoints. Panel validation accepts
+  both legacy file-only results and new structured results.
+
 - The required-save failure that stops the worker now surfaces as a store error
   with the same diagnostic text plus an explicit recovery outcome.
 - `load` keeps the JSON codec and the retention configuration type
@@ -124,9 +125,10 @@ default and migration is not implied by selecting another backend.
   into the JSON backend, because the manifest is storage metadata that `load`
   should not own; the `simplex_load_archives` library therefore no longer exists.
 - One shared library (`simplex_persistence`) stays in the release set.
-- Remaining work: PR-E adds database archives on the schema recorded in
-  [SQLite schema v1](sqlite-schema-v1.md), and PR-F through PR-H add
-  migration tools, Hub integration and the new default.
+- Remaining work: PR-F migration/export/rollback is deferred. PR-G/H combines
+  Hub configuration and current-state inspection, the new-session default switch,
+  and deployment validation. Existing JSON sessions remain supported without
+  automatic migration.
 
 ## Validation
 
@@ -140,3 +142,10 @@ that an attempt without its marker is not recognized, and that the next attempt
 keeps its ordinal. The compact, auto-compact, congestion and application tests
 drive real archives, retention, cancellation and a directory-sync failure through
 the worker.
+
+
+`test_persistence_sqlite_archive` covers original-state equality, T1/T2 crash
+boundaries, stale revision refusal, interruption evidence and retention targets
+0/1/5. SQLite VFS fault injection covers preparation and replacement failures.
+Worker tests exercise manual compact, live history during summarization, automatic
+continuation, cancellation and provider errors with SQLite as well as JSON.

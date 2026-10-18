@@ -77,7 +77,7 @@ struct Scratch {
 };
 
 enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
-                  ProtocolFailure, History, ModelFailure, StorageWait, CompactUnsupported };
+                  ProtocolFailure, History, ModelFailure, StorageWait };
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
 void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote_call = false,
@@ -188,9 +188,6 @@ sections:
                         }})}
                     }}
                 };
-                if (mode == Mode::CompactUnsupported) {
-                    input["data"] = {{"operation", "compact"}, {"request_id", "one"}};
-                }
                 co_await send(input);
                 if (mode == Mode::Normal) {
                     co_await send(input);
@@ -268,7 +265,7 @@ sections:
                     co_await send(Json{{"type", "signal"}, {"data", {{"operation", "shutdown"}}}});
             } else if (name == "input_rejected") {
                 ++rejected;
-                if (mode == Mode::Blocked || mode == Mode::CompactUnsupported)
+                if (mode == Mode::Blocked)
                     co_await send(Json{{"type", "signal"}, {"data", {{"operation", "shutdown"}}}});
             }
         }
@@ -959,7 +956,7 @@ BOOST_AUTO_TEST_CASE(optional_hub_remote_call_set_advertises_plan_without_startu
 
 BOOST_AUTO_TEST_CASE(sqlite_application_lifecycle) {
     for (auto mode : {Mode::Normal, Mode::Cancel, Mode::Stop, Mode::Blocked,
-                      Mode::StorageFailure, Mode::History, Mode::ModelFailure, Mode::CompactUnsupported}) {
+                      Mode::StorageFailure, Mode::History, Mode::ModelFailure}) {
         scenario(mode, false, false, "deepseek", true);
     }
 }

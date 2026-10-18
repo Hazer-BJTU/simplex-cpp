@@ -3,9 +3,74 @@
 #include "core/application.hpp"
 #include "core/protocol.hpp"
 #include "load/persistence.hpp"
+#include "persistence/store.hpp"
 #include <boost/asio/use_future.hpp>
 #include <boost/beast.hpp>
 #include <thread>
+#include <string_view>
+#if defined(__linux__)
+#include <atomic>
+#include <cerrno>
+#include <dlfcn.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+namespace {
+/** Target only the adapter's directory sync after a specific compact mutation.
+ * T1 has completed before the model arms the fault. For retention, skip T2's
+ * sync. All fields are published before the storage thread observes monitoring.
+ */
+struct ArchiveSyncFault {
+    dev_t device{};
+    ino_t inode{};
+    unsigned int skip = 0;
+    std::atomic<bool> monitoring{false};
+    std::atomic<unsigned int> failures{0};
+    std::atomic<unsigned int> writes_after_failure{0};
+
+    void arm(const std::filesystem::path& directory, unsigned int skip_syncs) {
+        struct stat status{};
+        if (::stat(directory.c_str(), &status) != 0) {
+            throw std::runtime_error("cannot inspect archive fault directory");
+        }
+        device = status.st_dev;
+        inode = status.st_ino;
+        skip = skip_syncs;
+        failures.store(0);
+        writes_after_failure.store(0);
+        monitoring.store(true, std::memory_order_release);
+    }
+} archive_sync_fault;
+}
+
+/** Test-executable interposition only: SQLite's own file synchronization stays real. */
+extern "C" int fsync(int descriptor) {
+    auto& fault = archive_sync_fault;
+    if (fault.monitoring.load(std::memory_order_acquire)) {
+        struct stat status{};
+        Dl_info caller{};
+        // SQLite may also sync this directory through its VFS. Inject only at
+        // the persistence adapter's post-COMMIT durability check, not inside SQL.
+        const bool adapter = ::dladdr(__builtin_return_address(0), &caller) != 0
+            && caller.dli_fname
+            && std::string_view(caller.dli_fname).find("libsimplex_persistence.so") != std::string_view::npos;
+        if (::fstat(descriptor, &status) == 0 && S_ISDIR(status.st_mode)
+            && status.st_dev == fault.device && status.st_ino == fault.inode && adapter) {
+            if (fault.failures.load() != 0) {
+                ++fault.writes_after_failure;
+            } else if (fault.skip != 0) {
+                --fault.skip;
+            } else {
+                ++fault.failures;
+                errno = EIO;
+                return -1;
+            }
+        }
+    }
+    return static_cast<int>(::syscall(SYS_fsync, descriptor));
+}
+#endif
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -14,6 +79,7 @@ using State = model_io::AgentInputState;
 
 namespace {
 enum class Mode { Success, Frequent, Budget, LastBudgetSuccess, SummaryFailure, SummaryEmpty, SummaryTools, SummarySaveFailure, Cancel, CancelResume, MemoryContinue, ResumeFailure, ResumeCancel };
+enum class CleanupFault { None, Settlement, Retention };
 
 /** No credentials or shell effects: unknown fixture calls settle through the registry. */
 struct Model : llm::LLMModel {
@@ -23,6 +89,9 @@ struct Model : llm::LLMModel {
     int ordinary = 0;
     int summaries = 0;
     bool waiting = false;
+    bool probe_queued = false;
+    CleanupFault cleanup_fault = CleanupFault::None;
+    std::optional<persistence::Revision> prepared_revision;
     std::vector<State> contexts;
     std::filesystem::path snapshot;
     asio::awaitable<model_io::MessageItem> converse(State state) override {
@@ -36,6 +105,19 @@ struct Model : llm::LLMModel {
         if (summary) {
             ++summaries;
             BOOST_TEST(state.tools.empty());
+#if defined(__linux__)
+            if (cleanup_fault != CleanupFault::None) {
+                // The second payload is queued before failure so the test also
+                // proves the stopping worker cannot admit the next request.
+                while (!probe_queued) {
+                    asio::steady_timer wait(co_await asio::this_coro::executor, std::chrono::milliseconds(1));
+                    co_await wait.async_wait(asio::use_awaitable);
+                }
+                prepared_revision = persistence::make_sqlite_store("test", snapshot.parent_path())
+                    ->load_current()->revision;
+                archive_sync_fault.arm(snapshot.parent_path(), cleanup_fault == CleanupFault::Retention ? 1 : 0);
+            }
+#endif
             if (mode == Mode::SummaryFailure) throw std::runtime_error("summary provider unavailable");
             if (mode == Mode::Cancel) {
                 waiting = true;
@@ -90,11 +172,18 @@ struct Model : llm::LLMModel {
     }
 };
 
-void exercise(Mode mode, bool save_run) {
+void exercise(Mode mode, bool save_run, bool sqlite = false,
+              CleanupFault cleanup_fault = CleanupFault::None) {
     const auto root = std::filesystem::temp_directory_path() / ("simplex-auto-" + core::new_identity());
     struct Cleanup {
         std::filesystem::path path;
-        ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+        ~Cleanup() {
+#if defined(__linux__)
+            archive_sync_fault.monitoring.store(false, std::memory_order_release);
+#endif
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
     } cleanup{root};
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
@@ -104,6 +193,7 @@ void exercise(Mode mode, bool save_run) {
     config.provider = "fixture";
     config.client = load::websocket_endpoint("ws://127.0.0.1:"
         + std::to_string(acceptor.local_endpoint().port()) + "/events");
+    config.persistence_backend = sqlite ? "sqlite" : "json";
     config.storage = root;
     config.state_directory = root / "state";
     config.memory = root / "memory";
@@ -116,14 +206,27 @@ void exercise(Mode mode, bool save_run) {
     config.save_run = save_run;
     config.save_step = config.save_shutdown = false;
     auto model = std::make_shared<Model>(io.get_executor(), mode);
+    model->cleanup_fault = cleanup_fault;
     model->snapshot = config.state_directory / "state.json";
+    auto store = sqlite ? persistence::make_sqlite_store("test", config.state_directory)
+        : persistence::make_json_store("test", {config.state_directory, config.memory});
+    if (cleanup_fault == CleanupFault::Retention) {
+        // Ensure retention actually deletes an older graph before its sync fails.
+        config.memory_retention.max_archives = 1;
+        State evidence;
+        evidence.meta.session_id = "test";
+        evidence.loop.emplace();
+        const auto old = store->reserve_archive({"retention-evidence"});
+        store->begin_archive(old, evidence);
+        store->finish_archive_attempt(old, persistence::ArchiveOutcome::Failed);
+    }
     if (mode == Mode::MemoryContinue) {
         State state;
         state.meta.session_id = "test";
         state.loop.emplace();
         state.system_prompt.add_section("memory.runtime", "Memory", "Goal: finish original task.",
             model_io::SectionStability::Volatile);
-        load::save_state(config.state_directory / "state.json", state);
+        store->checkpoint(state, persistence::Boundary::RunFinished);
     }
     core::Application app(io.get_executor(), config, "test", model);
     std::vector<Json> events;
@@ -145,6 +248,12 @@ void exercise(Mode mode, bool save_run) {
             const auto event = Json::parse(beast::buffers_to_string(buffer.data()));
             events.push_back(event);
             const auto name = event.at("event").get<std::string>();
+            if (cleanup_fault != CleanupFault::None && name == "tool_calls"
+                && event.at("data").at(0).at("name") == "auto_compact") {
+                co_await send("payload", {{"operation", "message"}, {"request_id", "must-not-admit"},
+                    {"content", Json::array({{{"type", "text"}, {"modality", "text"}, {"raw", "next task"}}})}});
+                model->probe_queued = true;
+            }
             if (name == "ready") {
                 Json input = {{"operation", "continue"}, {"request_id", "original"}};
                 if (mode != Mode::MemoryContinue) {
@@ -177,8 +286,11 @@ void exercise(Mode mode, bool save_run) {
                 } else {
                     co_await send("signal", {{"operation", "shutdown"}});
                 }
-            } else if (name == "error" && mode == Mode::SummarySaveFailure) {
+            } else if (name == "error"
+                && (mode == Mode::SummarySaveFailure || cleanup_fault != CleanupFault::None)) {
                 BOOST_TEST(event.at("data").at("durable") == false);
+            } else if (name == "input_rejected" && cleanup_fault != CleanupFault::None) {
+                BOOST_TEST(event.at("request_id") == "must-not-admit");
             } else if (name == "input_rejected" || name == "error") {
                 BOOST_FAIL(event.dump());
             }
@@ -191,7 +303,15 @@ void exercise(Mode mode, bool save_run) {
     watchdog.async_wait([&](auto error) { if (!error) { timed_out = true; app.stop(); } });
     // Cancel the watchdog once the peer has drained; no timing sleeps in assertions.
     std::jthread runner([&] { io.run(); });
-    if (mode == Mode::SummarySaveFailure) {
+    if (cleanup_fault != CleanupFault::None) {
+        BOOST_CHECK_EXCEPTION(worker_done.get(), persistence::StoreError,
+            [&](const auto& error) {
+                const auto operation = cleanup_fault == CleanupFault::Settlement
+                    ? "archive settlement" : "archive retention";
+                return error.status() == persistence::CommitStatus::Unknown
+                    && std::string(error.what()).find(operation) != std::string::npos;
+            });
+    } else if (mode == Mode::SummarySaveFailure) {
         BOOST_CHECK_THROW(worker_done.get(), std::exception);
     } else {
         worker_done.get();
@@ -200,6 +320,48 @@ void exercise(Mode mode, bool save_run) {
     asio::post(io, [&] { watchdog.cancel(); });
     runner.join();
     BOOST_TEST(!timed_out);
+    if (cleanup_fault != CleanupFault::None) {
+        int admissions = 0, starts = 0, terminal_errors = 0, finishes = 0, compact_results = 0;
+        Json terminal;
+        for (const auto& event : events) {
+            const auto name = event.at("event");
+            if (name == "input_admitted") ++admissions;
+            if (name == "run_started") ++starts;
+            if (name == "run_finished") ++finishes;
+            if (name == "error" && event.at("data").value("durable", true) == false) {
+                ++terminal_errors;
+                terminal = event.at("data");
+            }
+            if (name == "tool_results"
+                && event.at("data").at(0).at("invoke_return").at("query").at("name") == "auto_compact") {
+                ++compact_results;
+                BOOST_TEST(event.at("data").at(0).at("invoke_return").at("extras").at("status") ==
+                    (cleanup_fault == CleanupFault::Retention ? "completed" : mode == Mode::Cancel ? "cancelled" : "failed"));
+            }
+        }
+        BOOST_TEST(admissions == 1);
+        BOOST_TEST(starts == 1);
+        BOOST_TEST(terminal_errors == 1);
+        BOOST_TEST(finishes == 0);
+        BOOST_TEST(compact_results == 1);
+        BOOST_TEST(model->ordinary == 2);
+        BOOST_TEST(model->summaries == 1);
+        BOOST_TEST(terminal.at("primary_outcome").at("status") ==
+            (cleanup_fault == CleanupFault::Retention ? "completed" : mode == Mode::Cancel ? "cancelled" : "failed"));
+        if (mode == Mode::SummaryFailure) {
+            BOOST_TEST(terminal.at("primary_outcome").at("error").get<std::string>()
+                .find("summary provider unavailable") != std::string::npos);
+        }
+        BOOST_TEST(terminal.at("storage_error").get<std::string>().find("(unknown)") != std::string::npos);
+        BOOST_REQUIRE(model->prepared_revision);
+        BOOST_TEST(*store->load_current()->revision == *model->prepared_revision
+            + (cleanup_fault == CleanupFault::Retention ? 1 : 0));
+#if defined(__linux__)
+        BOOST_TEST(archive_sync_fault.failures.load() == 1u);
+        BOOST_TEST(archive_sync_fault.writes_after_failure.load() == 0u);
+#endif
+        return;
+    }
     if (mode == Mode::SummarySaveFailure) {
         int errors = 0, terminals = 0, compact_results = 0;
         for (const auto& event : events) {
@@ -232,7 +394,7 @@ void exercise(Mode mode, bool save_run) {
         BOOST_TEST(finishes[0]["data"]["status"] ==
             (mode == Mode::ResumeFailure ? "failed" : "cancelled"));
         BOOST_TEST(finishes[1]["data"]["status"] == "completed");
-        const auto restored = load::load_state(config.state_directory / "state.json");
+        const auto restored = store->load_current()->state;
         BOOST_REQUIRE_EQUAL(restored.turns.size(), 1u);
         const auto& turn = histories.back().at("turns").at(0);
         BOOST_TEST(turn.at("source").at("request_id") == "original");
@@ -289,7 +451,7 @@ void exercise(Mode mode, bool save_run) {
         BOOST_TEST(finished.at("failure").at("operation") == "auto_compact");
     }
     if (save_run || mode == Mode::Cancel) {
-        const auto state = load::load_state(config.state_directory / "state.json");
+        const auto state = store->load_current()->state;
         BOOST_CHECK(state.loop->phase == model_io::LoopPhase::Ready);
         BOOST_TEST(finished.at("durable") == true);
         if (mode == Mode::Success) {
@@ -326,3 +488,20 @@ BOOST_AUTO_TEST_CASE(cancelled_internal_turn_retains_each_execution_on_explicit_
 BOOST_AUTO_TEST_CASE(summary_storage_failure_stops_with_one_failure_terminal) {
     exercise(Mode::SummarySaveFailure, true);
 }
+
+BOOST_AUTO_TEST_CASE(sqlite_auto_compact_lifecycle) {
+    for (auto mode : {Mode::Success, Mode::Frequent, Mode::Budget, Mode::SummaryFailure,
+                     Mode::SummaryEmpty, Mode::SummaryTools, Mode::Cancel, Mode::CancelResume,
+                     Mode::MemoryContinue, Mode::ResumeFailure, Mode::ResumeCancel}) {
+        exercise(mode, true, true);
+    }
+    exercise(Mode::Success, false, true);
+}
+
+#if defined(__linux__)
+BOOST_AUTO_TEST_CASE(uncertain_optional_archive_mutation_emits_terminal_and_stops_admission) {
+    exercise(Mode::SummaryFailure, true, true, CleanupFault::Settlement);
+    exercise(Mode::Cancel, true, true, CleanupFault::Settlement);
+    exercise(Mode::Success, true, true, CleanupFault::Retention);
+}
+#endif

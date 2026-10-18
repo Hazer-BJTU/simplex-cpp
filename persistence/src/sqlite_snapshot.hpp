@@ -74,6 +74,8 @@ private:
 
 /**
  * Insert one complete snapshot graph in a transaction.
+ * With own_transaction=false the caller must commit or roll back its own
+ * transaction, allowing attempt metadata and the graph to publish together.
  *
  * Used for the first current snapshot and for tests; `Current` fails if the
  * session already has one (the partial unique index). `replace_current` is the
@@ -83,16 +85,18 @@ private:
  */
 std::int64_t encode_snapshot(
     sqlite::Database& database, std::string_view session_id,
-    const model_io::AgentInputState& state, SnapshotKind kind);
+    const model_io::AgentInputState& state, SnapshotKind kind, bool own_transaction = true);
 
 /**
  * Insert one immutable archive snapshot graph.
  *
- * Archives are never updated by this module; retention in PR-E deletes them.
+ * Archives are never updated by this module; retention deletes their graphs.
+ * With own_transaction=false the caller owns the transaction and must attach
+ * the archive metadata before committing; the codec does not publish alone.
  */
 std::int64_t store_archive_snapshot(
     sqlite::Database& database, std::string_view session_id,
-    const model_io::AgentInputState& state);
+    const model_io::AgentInputState& state, bool own_transaction = true);
 
 /**
  * Rewrite the session's current snapshot as one complete graph.

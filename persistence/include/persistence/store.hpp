@@ -151,6 +151,8 @@ private:
 enum class ArchiveKind {
     /// Complete JSON state that can be decoded back into an AgentInputState.
     JsonState,
+    /// Complete immutable state graph in the session SQLite database.
+    SqliteSnapshot,
     /**
      * Write-only Markdown left by a worker that predates complete JSON archives.
      * It cannot be decoded back into state, so it is never restorable and never a
@@ -180,7 +182,7 @@ struct ArchiveRef {
 
     /// Restorability is derived from the kind so the two cannot disagree.
     constexpr bool restorable() const noexcept {
-        return kind == ArchiveKind::JsonState;
+        return kind == ArchiveKind::JsonState || kind == ArchiveKind::SqliteSnapshot;
     }
 };
 
@@ -192,6 +194,9 @@ struct CompactAttempt {
      * instead of creating a directory that recognition could not verify.
      */
     std::string run_id;
+    /// Automatic attempts retain their synthetic tool-call identity as evidence.
+    bool automatic = false;
+    std::string call_id;
 };
 
 /**
@@ -213,7 +218,7 @@ enum class ArchiveOutcome {
 /** Storage reclaimed by one retention pass. */
 struct CleanupResult {
     std::size_t removed_archives = 0;
-    /// Total size of the removed state payloads, excluding manifests.
+    /// Removed file payload bytes; SQLite reports zero (pages remain reusable).
     std::uintmax_t removed_bytes = 0;
 };
 
@@ -299,6 +304,12 @@ public:
      * original state for this attempt, not the last checkpoint, which may be
      * stale when ordinary saves are disabled.
      *
+     * SQLite also synchronizes the authoritative current graph in this same
+     * transaction, so a crash during summarization restores unsaved original
+     * edits. Its receipt carries the new revision for T2; expected_revision guards
+     * against a stale original. JSON preserves its existing archive-only behavior
+     * and returns no revision. Publication remains mandatory before model I/O.
+     *
      * The payload is the complete state, exactly as it would be checkpointed. A
      * failed publication keeps the reserved identity: the attempt still consumes
      * its ordinal, the archive directory is not reused, and a payload that was
@@ -306,8 +317,9 @@ public:
      * and left as evidence. Retention ignores such a candidate until the archive
      * is complete and recognized.
      */
-    virtual void begin_archive(
-        const ArchiveRef& archive, const model_io::AgentInputState& original) = 0;
+    virtual CommitReceipt begin_archive(
+        const ArchiveRef& archive, const model_io::AgentInputState& original,
+        std::optional<Revision> expected_revision = std::nullopt) = 0;
 
     /**
      * Publish a compact replacement and keep its archive immutable.
@@ -404,8 +416,8 @@ std::string utc_timestamp();
 
 namespace persistence {
 /** Create an experimental SQLite store. Construction performs no I/O.
- * Current snapshots only; archive operations fail until SQLite compact support
- * lands. Missing files are absent on load, never created by inspection.
+ * Current snapshots and immutable compact archives share the same database.
+ * Missing files are absent on load, never created by inspection.
  */
 std::unique_ptr<StateStore> make_sqlite_store(
     std::string session_id, std::filesystem::path state_directory);

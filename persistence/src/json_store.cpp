@@ -91,8 +91,12 @@ public:
         });
     }
 
-    void begin_archive(
-        const ArchiveRef& archive, const model_io::AgentInputState& original) override {
+    CommitReceipt begin_archive(
+        const ArchiveRef& archive, const model_io::AgentInputState& original,
+        std::optional<Revision> expected_revision) override {
+        if (expected_revision) {
+            throw std::invalid_argument("JSON archives do not support revision expectations");
+        }
         map_failures([&] {
             const auto directory = require_restorable(archive);
             fs::create_directories(archive_root());
@@ -108,6 +112,7 @@ public:
             // nothing mistakes it for restorable state.
             json_archive::publish(directory, session_, original);
         });
+        return {Backend::Json, CommitStatus::Committed, {}, std::nullopt};
     }
 
     CommitReceipt commit_compaction(

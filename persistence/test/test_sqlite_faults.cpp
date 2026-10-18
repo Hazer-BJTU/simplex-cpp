@@ -110,3 +110,64 @@ BOOST_AUTO_TEST_CASE(full_and_ioerr_never_publish_partial_state) {
     }
     std::filesystem::remove_all(root);
 }
+
+BOOST_AUTO_TEST_CASE(archive_transactions_preserve_complete_recovery_candidates_on_io_failure) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("simplex_sqlite_archive_faults_" + std::to_string(getpid()));
+    for (bool commit_replacement : {false, true}) {
+        for (const auto error : {SQLITE_FULL, SQLITE_IOERR_WRITE, SQLITE_IOERR_FSYNC}) {
+            std::filesystem::remove_all(root);
+            auto store = persistence::make_sqlite_store("test", root);
+            model_io::AgentInputState before;
+            before.meta.session_id = "test";
+            before.extras = nlohmann::json{{"before", std::string(100000, 'a')}};
+            store->checkpoint(before, persistence::Boundary::RunFinished);
+            auto ref = store->reserve_archive({"run"});
+            if (commit_replacement) store->begin_archive(ref, before);
+            auto after = before;
+            after.extras = nlohmann::json{{"after", std::string(200000, 'b')}};
+            sqlite3* reader = nullptr;
+            BOOST_REQUIRE(sqlite3_open((root / "state.sqlite3").c_str(), &reader) == SQLITE_OK);
+            BOOST_REQUIRE(sqlite3_exec(reader, "SELECT * FROM snapshots", nullptr, nullptr, nullptr) == SQLITE_OK);
+            {
+                Faults faults;
+                Faults::error = error;
+                Faults::sync = error == SQLITE_IOERR_FSYNC;
+                Faults::hits = 0;
+                bool uncertain = false;
+                try {
+                    if (commit_replacement) store->commit_compaction(ref, after);
+                    else store->begin_archive(ref, before);
+                    BOOST_FAIL("injected archive failure was not propagated");
+                } catch (const persistence::StoreError& failure) {
+                    uncertain = failure.status() == persistence::CommitStatus::Unknown;
+                }
+                BOOST_TEST(Faults::hits > 0);
+                Faults::error = SQLITE_OK;
+                if (uncertain) {
+                    BOOST_CHECK_THROW(store->finish_archive_attempt(ref, persistence::ArchiveOutcome::Failed), persistence::StoreError);
+                    BOOST_CHECK_THROW(store->prune_archives({ref, {}, {1}}), persistence::StoreError);
+                }
+            }
+            BOOST_REQUIRE(sqlite3_close(reader) == SQLITE_OK);
+            const auto restored = persistence::make_sqlite_store("test", root)->load_current();
+            BOOST_REQUIRE(restored);
+            const auto json = nlohmann::json(restored->state);
+            BOOST_CHECK(json == nlohmann::json(before) || (commit_replacement && json == nlohmann::json(after)));
+            // Check atomic metadata/graph publication and absence of orphan graphs.
+            BOOST_REQUIRE(sqlite3_open((root / "state.sqlite3").c_str(), &reader) == SQLITE_OK);
+            sqlite3_stmt* statement = nullptr;
+            BOOST_REQUIRE(sqlite3_prepare_v2(reader,
+                "SELECT (SELECT COUNT(*) FROM archives), "
+                "(SELECT COUNT(*) FROM snapshots WHERE kind='archive'), "
+                "(SELECT COUNT(*) FROM archives WHERE outcome='succeeded')", -1, &statement, nullptr) == SQLITE_OK);
+            BOOST_REQUIRE(sqlite3_step(statement) == SQLITE_ROW);
+            BOOST_TEST(sqlite3_column_int(statement, 0) == sqlite3_column_int(statement, 1));
+            BOOST_TEST(sqlite3_column_int(statement, 2) == (json == nlohmann::json(after) ? 1 : 0));
+            if (commit_replacement) BOOST_TEST(sqlite3_column_int(statement, 0) == 1);
+            sqlite3_finalize(statement);
+            sqlite3_close(reader);
+        }
+    }
+    std::filesystem::remove_all(root);
+}

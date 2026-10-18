@@ -188,7 +188,7 @@ worker:
 persistence:
   enabled: true
   # json is the default. sqlite is experimental (new directories only):
-  # checkpoints/restore work; compact and auto compact are not yet supported.
+  # checkpoints, restore, compact and auto compact are supported. No migration.
   backend: json
   # Direct session root, relative to this file. No session ID is appended.
   directory: ./data/session

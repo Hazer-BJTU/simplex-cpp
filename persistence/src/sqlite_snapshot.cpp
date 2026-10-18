@@ -910,23 +910,24 @@ SnapshotError::~SnapshotError() = default;
 
 std::int64_t encode_snapshot(
     sqlite::Database& database, std::string_view session_id,
-    const model_io::AgentInputState& state, SnapshotKind kind) {
+    const model_io::AgentInputState& state, SnapshotKind kind, bool own_transaction) {
     require_matching_session(session_id, state.meta);
     require_foreign_keys(database);
-    sqlite::Transaction transaction(database);
+    std::unique_ptr<sqlite::Transaction> transaction;
+    if (own_transaction) transaction = std::make_unique<sqlite::Transaction>(database);
     require_session(database, session_id);
     const auto snapshot_id =
         insert_snapshot_header(database, session_id, state, kind, std::nullopt);
     insert_graph(database, snapshot_id, state);
-    transaction.commit();
+    if (transaction) transaction->commit();
     return snapshot_id;
 }
 
 std::int64_t store_archive_snapshot(
     sqlite::Database& database, std::string_view session_id,
-    const model_io::AgentInputState& state) {
+    const model_io::AgentInputState& state, bool own_transaction) {
     return encode_snapshot(
-        database, session_id, state, SnapshotKind::Archive);
+        database, session_id, state, SnapshotKind::Archive, own_transaction);
 }
 
 std::int64_t replace_current(
