@@ -93,11 +93,10 @@ reported as `Unknown` and that an attempt without its marker is not recognized.
 
 ## SQLite schema v1
 
-The executable schema (`src/sqlite_schema.cpp`) validates database versions and
-identity. The normalized row codec (`src/sqlite_snapshot.cpp`) maps complete
-state, while `StateStore` provides checkpoints, revisions, transactional
-compaction attempts and archive retention. See the user-facing
-[backend guide](../docs/architecture/persistence-backends.md) for configuration.
+PR-C adds the executable schema (`src/sqlite_schema.cpp`), its version and
+migration guard, and the normalized row codec (`src/sqlite_snapshot.cpp`). PR-D adds the
+`StateStore`, checkpoint revisions and worker integration. PR-E adds transactional compaction attempts and archive retention. The owner-confirmed decision record is
+[`docs/architecture/sqlite-schema-v1.md`](../docs/architecture/sqlite-schema-v1.md).
 
 One database belongs to one session at `<state>/state.sqlite3` (D10). A snapshot
 is a complete graph: every child row carries `snapshot_id`, and composite

@@ -11,7 +11,7 @@
 /**
  * Executable SQLite schema v1 for one session's authoritative store.
  *
- * The entity mapping is documented in persistence/README.md. This module owns
+ * The decision record is docs/architecture/sqlite-schema-v1.md. This module owns
  * table creation, version checks and transactional migrations; the persistence::StateStore adapter uses this module to validate schema
  * and identity before checkpointing.
  *
