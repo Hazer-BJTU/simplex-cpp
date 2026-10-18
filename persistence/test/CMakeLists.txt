@@ -47,3 +47,9 @@ add_executable(test_persistence_sqlite_faults test_sqlite_faults.cpp)
 target_link_libraries(test_persistence_sqlite_faults PRIVATE
     persistence_lib sqlite_runtime Boost::unit_test_framework)
 add_test(NAME test_persistence_sqlite_faults COMMAND test_persistence_sqlite_faults)
+
+# Complete original-state archives, atomic T1/T2 boundaries and crash retention.
+add_executable(test_persistence_sqlite_archive test_sqlite_archive.cpp)
+target_include_directories(test_persistence_sqlite_archive PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_link_libraries(test_persistence_sqlite_archive PRIVATE persistence_lib sqlite_lib Boost::unit_test_framework)
+add_test(NAME test_persistence_sqlite_archive COMMAND test_persistence_sqlite_archive)

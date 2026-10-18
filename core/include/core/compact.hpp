@@ -29,8 +29,10 @@ struct CompactPlan {
 std::uint64_t compact_context_bytes(const model_io::AgentInputState& state);
 
 /** Derive the summary allowance from actual fixed overhead, including paths.
- * Throws an actionable preflight diagnostic if no summary can fit. The supplied
- * archive pathname need not exist; the caller reserves it only after preflight.
+ * Throws an actionable preflight diagnostic if no summary can fit.
+ * An empty archive_file selects database-only evidence wording (no retrieval
+ * promise). A nonempty archive pathname need not exist; the caller supplies a
+ * reserved locator without publishing an archive during preflight.
  */
 CompactPlan plan_compact(
     const model_io::AgentInputState& state,

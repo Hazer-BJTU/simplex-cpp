@@ -68,3 +68,15 @@ it('accounts for JSON escaping and explicitly omits oversized or malformed summa
     assert.equal(normalizeDisplay('compact_finished', { durable: false }).durable, false);
     assert.equal(normalizeDisplay('other_event', { summary: 'S'.repeat(8192) }).summary.length, 1024);
 });
+
+it('SQLite compact metadata survives projection without fabricating a file path', () => {
+    const source = result('complete summary');
+    delete source.memory_file;
+    source.archive = {session_id: 'session-1', archive_id: 'archive-1', storage_kind: 'sqlite', restorable: true};
+    const parsed = parseCompactResult(normalizeDisplay('compact_finished', source));
+    assert.equal(parsed.summary, source.summary);
+    assert.equal(parsed.memory_file, undefined);
+    assert.deepEqual(parsed.archive, source.archive);
+    assert.equal(parseCompactResult({...source, archive: {...source.archive, restorable: false}}), null);
+    assert.equal(parseCompactResult({...source, archive: {...source.archive, archive_id: ''}}), null);
+});

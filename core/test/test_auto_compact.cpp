@@ -3,6 +3,7 @@
 #include "core/application.hpp"
 #include "core/protocol.hpp"
 #include "load/persistence.hpp"
+#include "persistence/store.hpp"
 #include <boost/asio/use_future.hpp>
 #include <boost/beast.hpp>
 #include <thread>
@@ -90,7 +91,7 @@ struct Model : llm::LLMModel {
     }
 };
 
-void exercise(Mode mode, bool save_run) {
+void exercise(Mode mode, bool save_run, bool sqlite = false) {
     const auto root = std::filesystem::temp_directory_path() / ("simplex-auto-" + core::new_identity());
     struct Cleanup {
         std::filesystem::path path;
@@ -104,6 +105,7 @@ void exercise(Mode mode, bool save_run) {
     config.provider = "fixture";
     config.client = load::websocket_endpoint("ws://127.0.0.1:"
         + std::to_string(acceptor.local_endpoint().port()) + "/events");
+    config.persistence_backend = sqlite ? "sqlite" : "json";
     config.storage = root;
     config.state_directory = root / "state";
     config.memory = root / "memory";
@@ -117,13 +119,15 @@ void exercise(Mode mode, bool save_run) {
     config.save_step = config.save_shutdown = false;
     auto model = std::make_shared<Model>(io.get_executor(), mode);
     model->snapshot = config.state_directory / "state.json";
+    auto store = sqlite ? persistence::make_sqlite_store("test", config.state_directory)
+        : persistence::make_json_store("test", {config.state_directory, config.memory});
     if (mode == Mode::MemoryContinue) {
         State state;
         state.meta.session_id = "test";
         state.loop.emplace();
         state.system_prompt.add_section("memory.runtime", "Memory", "Goal: finish original task.",
             model_io::SectionStability::Volatile);
-        load::save_state(config.state_directory / "state.json", state);
+        store->checkpoint(state, persistence::Boundary::RunFinished);
     }
     core::Application app(io.get_executor(), config, "test", model);
     std::vector<Json> events;
@@ -232,7 +236,7 @@ void exercise(Mode mode, bool save_run) {
         BOOST_TEST(finishes[0]["data"]["status"] ==
             (mode == Mode::ResumeFailure ? "failed" : "cancelled"));
         BOOST_TEST(finishes[1]["data"]["status"] == "completed");
-        const auto restored = load::load_state(config.state_directory / "state.json");
+        const auto restored = store->load_current()->state;
         BOOST_REQUIRE_EQUAL(restored.turns.size(), 1u);
         const auto& turn = histories.back().at("turns").at(0);
         BOOST_TEST(turn.at("source").at("request_id") == "original");
@@ -289,7 +293,7 @@ void exercise(Mode mode, bool save_run) {
         BOOST_TEST(finished.at("failure").at("operation") == "auto_compact");
     }
     if (save_run || mode == Mode::Cancel) {
-        const auto state = load::load_state(config.state_directory / "state.json");
+        const auto state = store->load_current()->state;
         BOOST_CHECK(state.loop->phase == model_io::LoopPhase::Ready);
         BOOST_TEST(finished.at("durable") == true);
         if (mode == Mode::Success) {
@@ -325,4 +329,13 @@ BOOST_AUTO_TEST_CASE(cancelled_internal_turn_retains_each_execution_on_explicit_
 
 BOOST_AUTO_TEST_CASE(summary_storage_failure_stops_with_one_failure_terminal) {
     exercise(Mode::SummarySaveFailure, true);
+}
+
+BOOST_AUTO_TEST_CASE(sqlite_auto_compact_lifecycle) {
+    for (auto mode : {Mode::Success, Mode::Frequent, Mode::Budget, Mode::SummaryFailure,
+                     Mode::SummaryEmpty, Mode::SummaryTools, Mode::Cancel, Mode::CancelResume,
+                     Mode::MemoryContinue, Mode::ResumeFailure, Mode::ResumeCancel}) {
+        exercise(mode, true, true);
+    }
+    exercise(Mode::Success, false, true);
 }

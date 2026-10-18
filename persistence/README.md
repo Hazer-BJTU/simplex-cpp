@@ -95,8 +95,7 @@ reported as `Unknown` and that an attempt without its marker is not recognized.
 
 PR-C adds the executable schema (`src/sqlite_schema.cpp`), its version and
 migration guard, and the normalized row codec (`src/sqlite_snapshot.cpp`). PR-D adds the
-`StateStore`, checkpoint revisions and worker integration. Compaction attempts
-remain PR-E work. The owner-confirmed decision record is
+`StateStore`, checkpoint revisions and worker integration. PR-E adds transactional compaction attempts and archive retention. The owner-confirmed decision record is
 [`docs/architecture/sqlite-schema-v1.md`](../docs/architecture/sqlite-schema-v1.md).
 
 One database belongs to one session at `<state>/state.sqlite3` (D10). A snapshot
@@ -222,10 +221,8 @@ cross-snapshot rejection and corruption detection.
 Set `persistence.backend: sqlite` explicitly for a **new test session directory**.
 JSON remains the default. The database is `<state>/state.sqlite3`; `format: json`
 remains the compatibility setting for the dataclass exchange representation.
-This phase implements current-state checkpoints and restoration only. Manual
-compact is rejected before admission; nonzero `auto_compact_threshold` with
-SQLite is rejected at startup. Migration and Hub snapshot inspection arrive in
-later phases. Do not select SQLite over an existing JSON session expecting
+Manual compact and auto compact archive the complete original state in the same
+database. Migration is deferred; Hub snapshot inspection arrives in PR-G/H. Do not select SQLite over an existing JSON session expecting
 migration, or switch back to JSON expecting its old file to be current.
 
 Every checkpoint replaces the current normalized graph and advances its revision
@@ -247,5 +244,33 @@ projection. The loop's state remains frozen until the storage task completes;
 read-only history/status requests may still run on the application strand.
 Cancellation does not abandon a write: it joins the checkpoint and then follows
 the normal safe boundary. Restore and shutdown checkpoints use the same executor.
-No database transaction spans a model/tool wait. Existing JSON compact archive
-operations retain their synchronous behavior in this phase.
+No database transaction spans a model/tool wait. Compact archive preparation, settlement, commit and retention also run on the storage executor, for both backends.
+
+
+### SQLite compact archives
+
+T1 commits the complete original in-memory state as an immutable archive graph
+and a `prepared` attempt before calling the summarizer. It records mode, run/call
+identity and sequence. In the same commit it synchronizes current state to that
+original, even if ordinary saves were disabled, and returns the advanced revision
+for T2. Thus restart during summarization restores all original edits.
+No connection or transaction remains open while the model is suspended.
+
+T2 checks the T1 revision, replaces current state, increments revision/operation
+identity and sets the attempt to `succeeded` in one transaction. Only then may the
+worker replace live state and emit `compact_finished`. Failure/cancellation settles
+the attempt without changing its original graph. On reopening, read-only loading
+leaves evidence untouched; the first successful writer marks abandoned prepared
+attempts `interrupted`. No summarization or tool execution is replayed.
+
+Retention keeps the current attempt, supplied protected references, and prepared
+or interrupted recovery evidence. Other settled archives are retained newest
+first, with the existing default target of five and zero disabling deletion.
+Archive rows and their owned graphs are deleted atomically; current state and
+legacy filesystem artifacts are untouched. `removed_bytes` is zero for SQLite:
+freed pages are reusable, not a promise of physical file shrinkage. No automatic
+VACUUM, archive-query API, reference index or permanent JSON duplicate is added.
+
+Unknown outcomes latch all writes, including settlement and retention. T1's
+operation ID is stored on its archive snapshot; T2's ID is stored on current state.
+The stable archive ID correlates attempt evidence after an interrupted response.

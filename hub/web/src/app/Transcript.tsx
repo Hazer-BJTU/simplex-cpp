@@ -489,8 +489,8 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
                                 </p>
                             )}
                             <details className="text-xs text-ink-muted">
-                                <summary className="cursor-pointer">Archive location</summary>
-                                <p className="mt-1 break-all font-mono">{result.memory_file}</p>
+                                <summary className="cursor-pointer">Archive storage</summary>
+                                <p className="mt-1 break-all font-mono">{result.memory_file ?? `Session database · ${result.archive?.archive_id}`}</p>
                             </details>
                         </section>
                     ) : null;

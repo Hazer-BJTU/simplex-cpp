@@ -185,9 +185,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // Construction performs no I/O; a store exists even when persistence is
         // disabled so restore/admission checks stay in one place.
         if (config.persistence_backend == "sqlite") {
-            if (config.auto_compact_threshold != 0) {
-                throw std::invalid_argument("experimental SQLite does not support auto compact");
-            }
             state_store = persistence::make_sqlite_store(session_id, config.state_directory);
         } else if (config.persistence_backend == "json") {
             state_store = persistence::make_json_store(session_id, {
@@ -740,41 +737,88 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * Settle a failed or cancelled attempt, then apply retention.
      *
      * Export errors remain optional: report through bounded events and logging,
-     * even if the transport cannot admit the notification. No exception escapes,
-     * so an archive bookkeeping problem can never replace the primary diagnostic
-     * during unwinding. Retention already protects the settled attempt.
+     * even if the transport cannot admit the notification. The caller contains
+     * diagnostic failures so bookkeeping never replaces the primary outcome.
+     * Each storage operation is awaited; no cleanup outlives this attempt.
      */
-    void settle_failed_compact(
+    asio::awaitable<void> settle_failed_compact(
         const std::filesystem::path& root,
         const persistence::ArchiveRef& current,
         persistence::ArchiveOutcome outcome,
-        std::span<const persistence::ArchiveRef> replacement_references
-    ) noexcept {
+        const std::vector<persistence::ArchiveRef>& replacement_references
+    ) {
         try {
-            state_store->finish_archive_attempt(current, outcome);
+            co_await asio::co_spawn(storage_executor,
+                [&]() -> asio::awaitable<void> {
+                    state_store->finish_archive_attempt(current, outcome);
+                    co_return;
+                }, asio::use_awaitable);
         } catch (const std::exception& error) {
-            try {
-                logging::Logger::warning("compact archive settle failed: {}", error.what());
-            } catch (...) {
-                // Optional diagnostics must not replace the original failure.
-            }
-        } catch (...) {
-            // Preserve an original non-standard failure during unwinding too.
+            logging::Logger::warning("compact archive settle failed: {}", error.what());
         }
         try {
-            const auto cleaned = cleanup_archive(root, current, replacement_references);
-            logging::Logger::info("compact archive cleanup: removed {} archives ({} bytes)",
-                cleaned.removed_archives, cleaned.removed_bytes);
+            co_await asio::co_spawn(storage_executor,
+                [&]() -> asio::awaitable<void> {
+                    cleanup_archive(root, current, replacement_references);
+                    co_return;
+                }, asio::use_awaitable);
         } catch (const std::exception& error) {
-            try {
-                logging::Logger::warning("compact archive cleanup failed: {}", error.what());
-                emit("export_error", {{"operation", "archive_cleanup"}, {"message", error.what()}});
-            } catch (...) {
-                // Optional diagnostics must not replace the original failure.
-            }
-        } catch (...) {
-            // Preserve an original non-standard failure during unwinding too.
+            logging::Logger::warning("compact archive cleanup failed: {}", error.what());
+            emit("export_error", {{"operation", "archive_cleanup"}, {"message", error.what()}});
         }
+    }
+
+    /** Own an attempt across all coroutine exits. Await settlement outside catch
+     * blocks so failed/cancelled summaries do not leave background writes alive.
+     * Cleanup is best effort and cannot replace the primary result or exception.
+     */
+    asio::awaitable<loop::RunResult> compact(
+        CompactMode mode, const std::string& call_id = {}) {
+        if (run_stop.stop_requested()) {
+            loop::RunResult result;
+            result.status = loop::RunStatus::Cancelled;
+            co_return result;
+        }
+        const auto memory_directory = std::filesystem::absolute(config.memory).lexically_normal();
+        const auto archive = state_store->reserve_archive(
+            {run_id, mode == CompactMode::Automatic, call_id});
+        auto plan = plan_compact(state, memory_directory, archive.payload);
+        try {
+            const auto prepared = co_await asio::co_spawn(storage_executor,
+                [&]() -> asio::awaitable<persistence::CommitReceipt> {
+                    co_return state_store->begin_archive(archive, state, storage_revision);
+                }, asio::use_awaitable);
+            storage_revision = prepared.revision;
+        } catch (const persistence::StoreError& error) {
+            if (state_store->backend() == persistence::Backend::Sqlite
+                || error.status() == persistence::CommitStatus::Unknown) {
+                storage_failed = true;
+                if (!failure) failure = std::current_exception();
+                cancel();
+            }
+            throw;
+        }
+        loop::RunResult result;
+        std::exception_ptr primary;
+        bool committed = false;
+        std::vector<persistence::ArchiveRef> replacement_references;
+        try {
+            result = co_await compact_attempt(mode, call_id, archive, memory_directory,
+                std::move(plan), committed, replacement_references);
+        } catch (...) {
+            primary = std::current_exception();
+        }
+        if (!committed) {
+            const auto outcome = !primary && result.status == loop::RunStatus::Cancelled
+                ? persistence::ArchiveOutcome::Cancelled : persistence::ArchiveOutcome::Failed;
+            try {
+                co_await settle_failed_compact(memory_directory, archive, outcome, replacement_references);
+            } catch (...) {
+                // Includes logging/transport failures: retain the primary outcome.
+            }
+        }
+        if (primary) std::rethrow_exception(primary);
+        co_return result;
     }
 
     /**
@@ -784,7 +828,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * the model is suspended. A fresh local bus prohibits tool dispatch even
      * when a provider ignores the omitted tool definitions and prompt.
      *
-     * Archive directories are exclusively created and never reused. Successful
+     * Archive identities are exclusively reserved and never reused. Successful
      * and failed attempts remain in persistent sequence order for inspection.
      * Every settled archived attempt applies retention, protecting the current
      * evidence and references in retained state. Preflight creates no archive.
@@ -796,46 +840,18 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * have occurred. Cancellation during the synchronous commit does not roll
      * back an already published snapshot.
      */
-    asio::awaitable<loop::RunResult> compact(
-        CompactMode mode, const std::string& call_id = {}) {
+    asio::awaitable<loop::RunResult> compact_attempt(
+        CompactMode mode, const std::string& call_id,
+        const persistence::ArchiveRef& archive,
+        const std::filesystem::path& memory_directory,
+        CompactPlan plan, bool& committed,
+        std::vector<persistence::ArchiveRef>& replacement_references) {
         const auto stop = run_stop.get_token();
         if (stop.stop_requested()) {
-            loop::RunResult cancelled;
-            cancelled.status = loop::RunStatus::Cancelled;
-            co_return cancelled;
+            loop::RunResult result;
+            result.status = loop::RunStatus::Cancelled;
+            co_return result;
         }
-        const auto memory_directory = std::filesystem::absolute(
-            config.memory).lexically_normal();
-        // Reserve before preflight so a rejected attempt creates nothing while a
-        // failed attempt still consumes its ordinal and cannot reorder archives.
-        const auto archive = state_store->reserve_archive({run_id});
-        auto plan = plan_compact(state, memory_directory, archive.payload);
-        // Freeze the original state before summarization: the archive is the
-        // evidence that this attempt started, even if the model or the commit
-        // later fails. The payload locator is the only layout detail the worker
-        // needs, for the memory prompt and the compact result.
-        state_store->begin_archive(archive, state);
-        bool cleanup_attempted = false;
-        // Lives longer than the exit guard; keep archive records only, not
-        // another state copy. Filled before committing so even post-rename
-        // failures protect both recovery candidates.
-        std::vector<persistence::ArchiveRef> replacement_references;
-        // Run after the private draft and hook subscriptions are destroyed.
-        // Synchronous best-effort settlement cannot alter the primary outcome.
-        struct CleanupAttempt {
-            Impl& self;
-            const std::filesystem::path& root;
-            const persistence::ArchiveRef& current;
-            bool& attempted;
-            const std::vector<persistence::ArchiveRef>& replacement_references;
-            persistence::ArchiveOutcome outcome = persistence::ArchiveOutcome::Failed;
-            ~CleanupAttempt() {
-                if (attempted) return;
-                self.settle_failed_compact(root, current, outcome, replacement_references);
-            }
-        } cleanup{*this, memory_directory, archive,
-            cleanup_attempted, replacement_references};
-
         auto draft = state;
         draft.tools.clear();
         eventbus::EventBus compact_events;
@@ -872,16 +888,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 result.status = loop::RunStatus::Failed;
                 result.error = "compact returned an unexpected loop boundary";
             }
-            if (result.status == loop::RunStatus::Cancelled) {
-                cleanup.outcome = persistence::ArchiveOutcome::Cancelled;
-            }
             co_return result;
         }
         // A model may complete concurrently with cancellation. Until the
         // replacement commit begins, cancellation still preserves the old state.
         if (stop.stop_requested()) {
             result.status = loop::RunStatus::Cancelled;
-            cleanup.outcome = persistence::ArchiveOutcome::Cancelled;
             co_return result;
         }
         if (draft.turns.empty() || draft.turns.back().agent_loop_step.empty()) {
@@ -929,9 +941,13 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         const auto removed_turns = state.turns.size();
         // Allocate the success event before committing so construction failures
         // cannot be mistaken for an uncommitted operation.
-        Json completed = {{"summary", summary}, {"memory_file", archive.payload.string()},
+        Json completed = {{"summary", summary},
+            {"archive", {{"session_id", archive.session_id}, {"archive_id", archive.archive_id},
+                {"storage_kind", persistence::backend_name(archive.backend)},
+                {"restorable", archive.restorable()}}},
             {"removed_turns", removed_turns}, {"revision", history_revision + 1},
             {"durable", true}};
+        if (!archive.payload.empty()) completed["memory_file"] = archive.payload.string();
         if (mode == CompactMode::Automatic) {
             completed["origin"] = "automatic";
             completed["cycle"] = compact_attempts;
@@ -939,7 +955,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
         if (stop.stop_requested()) {
             result.status = loop::RunStatus::Cancelled;
-            cleanup.outcome = persistence::ArchiveOutcome::Cancelled;
             co_return result;
         }
         // A failed parent-directory sync leaves the replacement visible on
@@ -948,7 +963,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         replacement_references = archive_references(replacement, memory_directory);
         persistence::CommitReceipt receipt;
         try {
-            receipt = state_store->commit_compaction(archive, replacement);
+            receipt = co_await asio::co_spawn(storage_executor,
+                [&]() -> asio::awaitable<persistence::CommitReceipt> {
+                    co_return state_store->commit_compaction(archive, replacement, storage_revision);
+                }, asio::use_awaitable);
         } catch (...) {
             storage_failed = true;
             if (!failure) failure = std::current_exception();
@@ -957,6 +975,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
         static_assert(std::is_nothrow_move_assignable_v<model_io::AgentInputState>);
         state = std::move(replacement);
+        committed = true;
+        storage_revision = receipt.revision;
         ++history_revision;
         run_saved = true;
         // A durable commit settles its own attempt, so success is never a second
@@ -967,11 +987,13 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             {"backend", persistence::backend_name(receipt.backend)},
             {"revision", receipt.revision ? Json(*receipt.revision) : Json()},
             {"operation_id", receipt.operation_id}});
-        // Retention sees the committed replacement. The exit guard handles
+        // Retention sees the committed replacement. The outer coroutine handles
         // failed/cancelled attempts against the unchanged authoritative state.
-        cleanup_attempted = true;
         try {
-            const auto cleaned = cleanup_archive(memory_directory, archive);
+            const auto cleaned = co_await asio::co_spawn(storage_executor,
+                [&]() -> asio::awaitable<persistence::CleanupResult> {
+                    co_return cleanup_archive(memory_directory, archive);
+                }, asio::use_awaitable);
             completed["archive_cleanup"] = {{"removed_archives", cleaned.removed_archives},
                 {"removed_bytes", cleaned.removed_bytes}};
         } catch (const std::exception& error) {
@@ -1182,9 +1204,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     || state.loop->phase == model_io::LoopPhase::Blocked))
                     throw std::invalid_argument("session requires operator recovery inspection");
                 if (input->operation == InputOperation::Compact) {
-                    if (config.persistence_backend == "sqlite") {
-                        throw std::invalid_argument("experimental SQLite does not support compact");
-                    }
                     if (!config.persistence) {
                         throw std::invalid_argument("compact requires persistence.enabled");
                     }

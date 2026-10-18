@@ -67,7 +67,10 @@ BOOST_AUTO_TEST_CASE(revisions_reopen_and_stale_writes) {
     struct stat info{};
     BOOST_REQUIRE(::stat((scratch.root / "state.sqlite3").c_str(), &info) == 0);
     BOOST_TEST((info.st_mode & 0777) == 0600);
-    BOOST_CHECK_THROW(store->reserve_archive({"attempt"}), persistence::StoreError);
+    const auto archive = store->reserve_archive({"attempt"});
+    BOOST_TEST(archive.restorable());
+    BOOST_TEST(archive.payload.empty());
+    BOOST_TEST(store->load_current()->operation_id == second.operation_id);
 }
 
 BOOST_AUTO_TEST_CASE(busy_corruption_and_foreign_identity_never_fallback) {
