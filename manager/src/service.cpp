@@ -1,4 +1,5 @@
 #include "manager/service.hpp"
+#include "persistence/selection.hpp"
 
 #include <cerrno>
 #include <fstream>
@@ -491,12 +492,29 @@ Json execute(const Json& input) {
 
     const auto document = effective(p, record);
     const auto& storage = document.at("persistence");
-    // Backend dispatch lives here, never in Hub. SQLite is added with #187.
-    if (storage.value("backend", std::string("json")) != "json"
-        || storage.value("format", std::string("json")) != "json") {
-        throw Error("unsupported_backend", "this manager supports JSON state only");
-    }
     const auto state_directory = child_path(p.root, storage, "state");
+    ordinary_path(state_directory / "state.sqlite3");
+    ordinary_path(state_directory / "state.sqlite3-wal");
+    ordinary_path(state_directory / "state.sqlite3-shm");
+    ordinary_path(state_directory / "state.json");
+    const auto selection = storage.value("backend",
+        storage.contains("format") ? std::string("json") : std::string("auto"));
+    if ((storage.contains("backend") && selection != "json" && selection != "sqlite")
+        || storage.value("format", std::string("json")) != "json"
+        || (storage.contains("format") && selection == "sqlite")) {
+        throw Error("invalid_configuration", "conflicting or unsupported persistence format");
+    }
+    const auto backend = persistence::select_backend(state_directory, selection);
+    if (backend == persistence::Backend::Sqlite) {
+        auto current = persistence::inspect_sqlite_current(state_directory);
+        Json result = {{"backend", "sqlite"}, {"state", nullptr}, {"readable", nullptr}};
+        if (current) {
+            result["state"] = current->state;
+            result["revision"] = current->revision ? Json(*current->revision) : Json();
+            result["operation_id"] = current->operation_id;
+        }
+        return result;
+    }
     const auto state_path = state_directory / "state.json";
     ordinary_path(state_path);
     Json result = {{"backend", "json"}, {"state", nullptr}, {"readable", nullptr}};

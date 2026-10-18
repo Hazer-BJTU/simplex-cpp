@@ -105,7 +105,7 @@ export interface HubConfig {
         stopTimeoutMs: number;
         sigtermGraceMs: number;
         sigkillGraceMs: number;
-        persistence: { enabled: boolean; readable: boolean };
+        persistence: { enabled: boolean; readable: boolean; backend?: 'json' | 'sqlite' };
         memoryRetention: { maxArchives: number };
         environment: { workspace: string; platform: string; software: string[] };
     };
@@ -186,7 +186,7 @@ export function defaultConfig(): HubConfig {
             // SIGKILL (optionally to the process group).
             sigtermGraceMs: 5000,
             sigkillGraceMs: 2000,
-            persistence: { enabled: true, readable: false },
+            persistence: { enabled: true, readable: false, backend: 'sqlite' },
             memoryRetention: { maxArchives: 5 },
             environment: { workspace: '', platform: '', software: [] },
         },
@@ -534,6 +534,8 @@ export function validateConfig(config: HubConfig): HubConfig {
     check(worker.stopTimeoutMs > 0, 'worker.stopTimeoutMs must be positive');
     check(worker.sigtermGraceMs > 0 && worker.sigkillGraceMs > 0,
         'worker.sigtermGraceMs and worker.sigkillGraceMs must be positive');
+    check(worker.persistence?.backend === undefined || ['json', 'sqlite'].includes(worker.persistence.backend),
+        'worker.persistence.backend must be json or sqlite');
     check(typeof worker.persistence?.enabled === 'boolean',
         'worker.persistence.enabled must be a boolean');
     const maxArchives = worker.memoryRetention?.maxArchives;

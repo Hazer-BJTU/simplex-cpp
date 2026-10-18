@@ -3,7 +3,7 @@
 `persistence_lib` owns the worker's authoritative `AgentInputState` storage and
 its compact-archive evidence. The contract is `<persistence/store.hpp>`; the JSON
 adapter is `src/json_store.cpp`, and `src/json_archive.cpp` owns that adapter's
-archive layout, recognition and retention. The experimental SQLite adapter is `src/sqlite_store.cpp`, using the normalized
+archive layout, recognition and retention. The SQLite adapter is `src/sqlite_store.cpp`, using the normalized
 schema and row codec in `src/sqlite_schema.cpp` and `src/sqlite_snapshot.cpp`.
 
 The module exists so that no execution code knows a storage format. `core` asks
@@ -216,14 +216,18 @@ rejection and transactional migration rollback.
 non-deduplication of content, whole-graph replacement, archive immutability,
 cross-snapshot rejection and corruption detection.
 
-## Experimental SQLite checkpoints
+## SQLite checkpoints and backend selection
 
-Set `persistence.backend: sqlite` explicitly for a **new test session directory**.
-JSON remains the default. The database is `<state>/state.sqlite3`; `format: json`
-remains the compatibility setting for the dataclass exchange representation.
-Manual compact and auto compact archive the complete original state in the same
-database. Migration is deferred; Hub snapshot inspection arrives in PR-G/H. Do not select SQLite over an existing JSON session expecting
-migration, or switch back to JSON expecting its old file to be current.
+New empty sessions default to SQLite at `<state>/state.sqlite3`. Explicit
+`backend: json` retains the JSON adapter. Without a backend selection, an existing
+JSON-only directory stays JSON, SQLite-only stays SQLite, and a directory with
+both requires an explicit choice. Legacy `format: json` selects JSON and conflicts
+with explicit SQLite. Selecting the opposite backend over the sole existing store
+fails, including with `restore: never`. Migration remains deferred.
+
+Manual and automatic compact freeze complete originals in the same database.
+`simplex manage read_state` uses the same C++ mapper in a read-only transaction;
+Hub receives decoded JSON, never database bytes. No archive query is provided.
 
 Every checkpoint replaces the current normalized graph and advances its revision
 and random operation ID in one transaction. The caller can require an expected
@@ -282,3 +286,6 @@ storage failure, skips further cleanup/checkpoints/continuation and stops admiss
 Its terminal `error` has `durable: false`, the storage diagnostic, and the original
 compact outcome (failure, cancellation or a successfully committed replacement).
 It does not retry the mutation or clear the store's uncertainty latch.
+
+The opt-in [benchmark](benchmark/README.md) records same-host JSON/SQLite costs,
+reference budgets, and the limits of the current full-graph rewrite strategy.

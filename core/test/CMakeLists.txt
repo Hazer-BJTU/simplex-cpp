@@ -56,3 +56,5 @@ add_executable(test_core_sqlite_compact test_sqlite_compact.cpp)
 target_link_libraries(test_core_sqlite_compact PRIVATE core_lib persistence_lib Boost::unit_test_framework)
 add_test(NAME test_core_sqlite_compact COMMAND test_core_sqlite_compact)
 set_tests_properties(test_core_sqlite_compact PROPERTIES TIMEOUT 30)
+
+target_link_libraries(test_core_congestion PRIVATE persistence_lib)

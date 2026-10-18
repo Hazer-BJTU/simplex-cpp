@@ -29,18 +29,18 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync }
     from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { LineSplitter, RingBuffer } from '../util/ring.ts';
 import type { SplitLine } from '../util/ring.ts';
 import { logPreview } from '../util/log-preview.ts';
 import { BoundedWriter } from '../util/bounded-writer.ts';
-import { sessionDir, workerConfigPath } from './config-render.ts';
+import { renderSessionConfig, sessionDir, workerConfigPath } from './config-render.ts';
 import { prepareSessionConfig, applyConfigurationSpec } from './config-file.ts';
 import { normalizeSpec } from './spec.ts';
 import { ManagedLauncher } from './managed-launcher.ts';
 import { bindManagedSession, readManagedSession, prepareManagedSession, managedIdle,
     removeManagedSession, readManagedState, managedRecordPath,
-    managedStartUnconfirmed, markManagedDispatch, completeManagedDispatch } from './managed-sessions.ts';
+    managedStartUnconfirmed, markManagedDispatch, completeManagedDispatch, defaultLocalManagement } from './managed-sessions.ts';
 import type { ManagedSessionRecord } from './managed-sessions.ts';
 import type { NormalizedSpec } from './spec.ts';
 import type { Launcher, InvocationContext } from './launcher.ts';
@@ -437,7 +437,28 @@ export class WorkerSupervisor {
                 launchSpec = { ...(specSource as object), threads: launchConfig.worker.threads, env: saved.launch.env ?? {}, extraArgs: [] };
             }
             managed = readManagedSession(this.config, session.id);
+            if (!saved && !managed && !existsSync(configPath)
+                && launchConfig.launcher.kind === 'simplex-worker' && !launchConfig.launcher.pidFile) {
+                const initial = normalizeSpec(launchConfig, launchSpec);
+                if (initial.persistence.enabled && initial.persistence.backend === 'sqlite') {
+                    // Only a fresh native API session adopts the new default.
+                    // Existing source files and custom commands retain their
+                    // saved launcher/ownership semantics; never adopt old data.
+                    const source = renderSessionConfig({ config: launchConfig,
+                        sessionId: session.id, rawSpec: launchSpec, endpoints,
+                        mock: this.mockProvider?.() });
+                    managed = bindManagedSession(this.config, session.id,
+                        defaultLocalManagement(launchConfig, initial.env),
+                        JSON.stringify(source.document));
+                }
+            }
             if (saved?.launch.management || managed) {
+                if (!saved) {
+                    // Native API flags keep their original order when the
+                    // command router replaces direct worker execution.
+                    launchConfig = { ...launchConfig, worker: { ...launchConfig.worker,
+                        args: [...launchConfig.launcher.args, ...launchConfig.worker.args] } };
+                }
                 if (!managed) {
                     const policy = saved!.launch.management!;
                     managed = bindManagedSession(this.config, session.id,
@@ -445,8 +466,19 @@ export class WorkerSupervisor {
                         readFileSync(configPath, 'utf8'));
                 }
                 const document = await prepareManagedSession(this.config, session.id, managed, endpoints, session.lifecycleId);
-                const spec = normalizeSpec(launchConfig, { threads: launchConfig.worker.threads,
-                    env: {}, extraArgs: [] });
+                const native = launchSpec as Partial<NormalizedSpec>;
+                const spec = normalizeSpec(launchConfig, {
+                    threads: saved ? launchConfig.worker.threads : native.threads,
+                    env: {}, extraArgs: saved ? [] : native.extraArgs,
+                });
+                if (!saved) {
+                    // Clean-fork captures the same manager policy even when
+                    // the API request selected no configuration-library files.
+                    startupLaunch = { launcher: launchConfig.launcher, management: {
+                        ...managed.launcher, root: dirname(managed.reference.directory),
+                        timeoutMs: managed.timeoutMs,
+                    } };
+                }
                 applyConfigurationSpec(spec, document);
                 rendered = { spec, document };
                 configPath = `${managed.reference.directory}/config/config.yaml`;
@@ -492,8 +524,10 @@ export class WorkerSupervisor {
         try {
             const launch = resolvedStartupLaunch(launchConfig, startupLaunch, invocation.env);
             launch.worker!.threads = rendered.spec.threads;
-            // Preserve per-session appended flags in the immutable launch snapshot.
-            launch.launcher.args = [...launch.launcher.args, ...rendered.spec.extraArgs];
+            // Managed children use worker.args; legacy command builders use
+            // launcher.args. Capture appended flags where that launcher reads them.
+            if (managed) launch.worker!.args = [...launchConfig.worker.args, ...rendered.spec.extraArgs];
+            else launch.launcher.args = [...launch.launcher.args, ...rendered.spec.extraArgs];
             // Managed capture is authoritative on the target. Legacy clean-fork
             // must not mistake a Hub-side source copy for that captured state.
             if (!managed) captureStartup(this.config, session, readFileSync(configPath, 'utf8'), launch);
@@ -627,10 +661,14 @@ export class WorkerSupervisor {
     }
 
     /** Managed inspection has no Hub-side byte limit or target filesystem fallback. */
-    async managedSnapshot(session: Session): Promise<{ state: unknown; readable: string | null } | null> {
+    async managedSnapshot(session: Session): Promise<{ state: unknown; readable: string | null; backend: string } | null> {
         const record = readManagedSession(this.config, session.id);
         if (record) return readManagedState(record);
-        if (sessionLaunch(this.config, session.id)?.launch.management) {
+        const saved = sessionLaunch(this.config, session.id);
+        const freshNative = !saved && !existsSync(workerConfigPath(this.config, session.id))
+            && this.config.launcher.kind === 'simplex-worker' && !this.config.launcher.pidFile;
+        const policy = freshNative ? normalizeSpec(this.config, session.spec).persistence : null;
+        if (saved?.launch.management || (policy?.enabled && policy.backend === 'sqlite')) {
             throw new Error('managed allocation has not been prepared; start the worker first');
         }
         return null;

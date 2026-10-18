@@ -144,8 +144,8 @@ code; it does not undo the worker installation.
 Open a new Bash shell or run `source ~/.bashrc`, then restart the Hub so it
 inherits the updated PATH. Existing shells and already-running Hubs retain their
 environment. Other shells require manual PATH configuration. Without changing
-PATH, put the absolute `<installation>/bin/simplex` path in `launcher.command[0]`
-of your saved local launch configuration.
+PATH, put the absolute `<installation>/bin/simplex` path in `management.executable`
+of your saved local launch configuration (`launcher.command[0]` for a legacy command profile).
 
 Standard installation directories containing `:` are supported, but PATH cannot represent
 them because colons separate search entries. `--update-path` therefore reports

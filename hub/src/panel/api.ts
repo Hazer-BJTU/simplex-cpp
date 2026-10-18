@@ -1,3 +1,4 @@
+import { sessionStateBackend } from '../launch/config-file.ts';
 import type { SessionResponse, SessionListResponse, RemovedResponse, LogsResponse, SupervisorResult, SnapshotView } from '../../ui/protocol.ts';
 import type { RecoveryResponse } from '../../ui/rest.ts';
 import { diagnosticPreview, utf8Prefix } from '../protocol/display.ts';
@@ -544,6 +545,10 @@ export function createPanelApi({
         let directory: string;
         try {
             directory = sessionStateDirectory(config, session.id);
+            if (sessionStateBackend(config, session.id) === 'sqlite') {
+                return { session_id: session.id, backend: 'sqlite', state: null, readable: null, files: {},
+                    state_error: 'SQLite inspection requires a managed launcher; legacy local file inspection cannot decode this store' };
+            }
         } catch {
             return { session_id: session.id, state: null, readable: null, files: {},
                 state_error: 'cannot resolve the session state directory from config/config.yaml' };

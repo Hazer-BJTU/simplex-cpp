@@ -23,7 +23,8 @@ replacement/version decisions, failure recovery, and optional PATH persistence.
 Stop workers using the destination before replacing its installation. The Hub's
 saved `local` launcher calls `simplex` through its inherited PATH; updating
 `.bashrc` cannot change an already-running Hub. Restart from an updated shell,
-or replace `launcher.command[0]` with the absolute installed `bin/simplex` path.
+or set `management.executable` to the absolute installed `bin/simplex` path
+(`launcher.command[0]` for a legacy command profile).
 The installer does not rewrite saved launch configurations.
 
 ## Startup
@@ -76,12 +77,13 @@ file when creating a session, then start the worker and wait for connection.
 The Hub validates configuration structure; the worker validates plugin availability
 and uses the provider credentials at run time.
 
-The default `local` launch file invokes
-`simplex run --config {config} --session {session} --threads {threads}`.
-Arguments are separate array entries, not implicitly shell-expanded. Use an
-absolute executable path if `simplex` is not on the Hub's PATH. Set `launcher.cwd`
-to the process working directory; an empty value uses the session directory.
-Set the worker's workspace hint separately if the model should know that path.
+New `local` launch files bind `simplex run` and `simplex manage` to the same
+local installation. Set `management.executable` to an absolute `bin/simplex`
+path if it is not on the Hub's PATH, and `management.cwd` to the working directory.
+The default target root is `<dataDir>-workers`, separate from Hub records;
+manager-owned allocations provide SQLite Inspector reads. Set the worker's
+workspace hint separately if the model should know that path. Existing saved
+launch files retain their previous command and storage policy.
 
 Each session retains copies of the selected files. The
 [configuration library reference](../hub/configurations.md) describes managed

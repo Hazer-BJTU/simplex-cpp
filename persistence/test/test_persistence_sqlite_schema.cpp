@@ -383,3 +383,44 @@ BOOST_AUTO_TEST_CASE(failing_migration_leaves_schema_and_versions_unchanged) {
     BOOST_TEST(has_table(database, "delta"));
     BOOST_TEST(scalar(database, "SELECT count(*) FROM schema_migrations") == 1);
 }
+
+BOOST_AUTO_TEST_CASE(optional_access_indexes_are_writer_only_and_keep_v1_readable) {
+    Scratch scratch;
+    {
+        sqlite::Database database(scratch.database());
+        persistence::sqlite_schema::open_store(database, "session-1", "now");
+        database.execute("DROP INDEX messages_turn_owner; DROP INDEX messages_step_owner;");
+    }
+    {
+        sqlite::Database database(scratch.database(), sqlite::OpenMode::ReadOnly);
+        const auto identity = persistence::sqlite_schema::inspect_store(database, "session-1");
+        BOOST_TEST(identity.schema_version == 1);
+        BOOST_TEST(scalar(database,
+            "SELECT count(*) FROM sqlite_master WHERE name IN "
+            "('messages_turn_owner','messages_step_owner')") == 0);
+    }
+    {
+        sqlite::Database database(scratch.database());
+        const auto identity = persistence::sqlite_schema::open_store(database, "session-1", "later");
+        BOOST_TEST(identity.schema_version == 1);
+        BOOST_TEST(scalar(database, "SELECT count(*) FROM schema_migrations") == 1);
+        BOOST_TEST(scalar(database,
+            "SELECT count(*) FROM sqlite_master WHERE name IN "
+            "('messages_turn_owner','messages_step_owner')") == 2);
+
+        // Assert indexed searches rather than machine-dependent time limits.
+        // These are the lookups performed by FK cascades and snapshot decoding.
+        for (const auto* sql : {
+            "EXPLAIN QUERY PLAN SELECT rowid FROM messages WHERE snapshot_id = 1 AND turn_id = 2",
+            "EXPLAIN QUERY PLAN SELECT rowid FROM messages WHERE snapshot_id = 1 AND step_id = 2",
+            "EXPLAIN QUERY PLAN SELECT message_id FROM messages WHERE step_id = 1 "
+                "AND slot = 'model_response' AND slot <> 'user_input'",
+            "EXPLAIN QUERY PLAN SELECT message_id FROM messages WHERE step_id = 1 "
+                "AND slot = 'invoke_return' AND slot <> 'user_input' ORDER BY ordinal"
+        }) {
+            auto query = database.prepare(sql);
+            BOOST_REQUIRE(query.step() == sqlite::StepResult::Row);
+            BOOST_TEST(query.column_text(3).find("SEARCH messages") != std::string::npos);
+        }
+    }
+}

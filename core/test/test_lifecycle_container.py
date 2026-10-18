@@ -181,7 +181,9 @@ with tempfile.TemporaryDirectory() as directory:
         'driver_model': 'fixture',
         'client': {'endpoint': f'ws://127.0.0.1:{router.port}/events'},
         'security': {'confirmation': {'endpoint': f'ws://127.0.0.1:{router.port}/confirm'}},
-        'persistence': {'directory': str(root / 'sessions')},
+        # This fixture inspects JSON bytes to verify rejected ownership and
+        # persisted process IDs; keep its backend explicit after the default switch.
+        'persistence': {'backend': 'json', 'directory': str(root / 'sessions')},
     }
     path = root / 'config.yaml'
     path.write_text(json.dumps(config))

@@ -69,8 +69,8 @@ struct Configuration {
     /** Refreshed from startup configuration even for restored sessions. */
     RuntimeEnvironment environment;
     bool persistence = true;
-    /// Explicit authoritative backend: json (default) or experimental sqlite.
-    std::string persistence_backend = "json";
+    /// Explicit json/sqlite, or auto: preserve existing storage; empty selects SQLite.
+    std::string persistence_backend = "auto";
     /** Direct session root; the worker never appends a session ID. */
     std::filesystem::path storage;
     /** Resolved snapshot directory below storage (persistence.state). */
@@ -82,7 +82,7 @@ struct Configuration {
     /**
      * Accepted legacy `persistence.readable` setting.
      *
-     * Complete JSON state is the only automatic artifact since #187 PR-B:
+     * Complete state is persisted through the selected backend since #187 PR-B:
      * `readable.md` is no longer written and the worker reports one startup
      * diagnostic when this key is present. Parsing and validation remain so an
      * existing Hub-generated configuration keeps starting unchanged.

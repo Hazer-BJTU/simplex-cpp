@@ -1,7 +1,7 @@
 /** Compile with ECMAScript types only; every expected error must remain an error. */
 import type {
     RestOperations, AnswerQuery, AnswerPage, ConfigSaveRequest, RecoveryRequest,
-    ConfigPreviewResponse, SnapshotView, PanelMessage, HubMessage, ApiErrorBody, SessionDescription,
+    ConfigPreviewResponse, SnapshotView, PanelMessage, HubMessage, ApiErrorBody, SessionDescription, SessionSpec, CreateSessionRequest,
 } from '../../ui/index.ts';
 
 const source = { worker_id: 'worker', turn: 0, step: 0, commit_sequence: '1', fingerprint: 'opaque' };
@@ -45,3 +45,13 @@ const buffer: Buffer = null;
 // @ts-expect-error no DOM ambient types
 const socket: WebSocket = null;
 void [answer, save, recovery, preview, snapshot, legacy, subscribe, unknownError, refused, stopped];
+
+const jsonSession: CreateSessionRequest = { session: 'json', spec: { persistence: { backend: 'json' } } };
+const sqliteSession: SessionSpec = { persistence: { backend: 'sqlite' } };
+const sqliteCreate: PanelMessage = { type: 'create_session', session: 'sqlite', spec: sqliteSession };
+const jsonCreate: PanelMessage = { type: 'create_session', session: 'json', spec: { persistence: { backend: 'json' } } };
+// @ts-expect-error unsupported backend must be rejected by typed REST clients
+const invalidBackend: CreateSessionRequest = { session: 'bad', spec: { persistence: { backend: 'mysql' } } };
+// @ts-expect-error unsupported backend must be rejected by typed WebSocket clients
+const invalidPanelBackend: PanelMessage = { type: 'create_session', session: 'bad', spec: { persistence: { backend: 'mysql' } } };
+void [jsonSession, sqliteSession, sqliteCreate, jsonCreate];

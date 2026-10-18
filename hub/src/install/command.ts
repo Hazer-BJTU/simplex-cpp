@@ -203,7 +203,7 @@ export async function installWorker(argv: string[], dependencies: InstallDepende
         print(`PATH not available for this directory: ${(error as Error).message}`);
     }
     print(`Verify: ${bashQuote(join(destination, 'bin/simplex'))} run --help`);
-    print(`Without PATH changes, use ${join(destination, 'bin/simplex')} as launcher.command[0] in your saved local launch configuration.`);
+    print(`Without PATH changes, use ${join(destination, 'bin/simplex')} as management.executable in your saved local launch configuration (launcher.command[0] for a legacy command profile).`);
     return code;
 }
 

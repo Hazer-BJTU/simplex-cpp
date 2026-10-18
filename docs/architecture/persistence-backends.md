@@ -1,7 +1,7 @@
 # Persistence backend contract
 
-**Status:** accepted · #187 PR-A–D. JSON is the default; SQLite checkpoints are
-experimental and opt-in.
+**Status:** accepted · #187 PR-A–E and PR-G/H integration. SQLite is the default
+for new empty sessions; existing JSON sessions remain supported. PR-F is deferred.
 
 This page records the storage boundary introduced before a normalized SQLite
 backend exists. The planning issue is
@@ -37,7 +37,7 @@ retention policy, and defer new archive-reference handling.
    `commit_compaction`, `finish_archive_attempt`, `prune_archives`), not after
    files. `core` owns the store; dataclass, loop, tools and providers never see a
    backend type.
-2. **JSON remains the default backend.** It keeps the
+2. **Original PR-A decision (superseded by PR-G/H): JSON remains the default backend.** It keeps the
    authoritative `state.json` layout and the archive directory names, and since
    PR-B each attempt archives the complete state as
    `<memory>/<archive-id>/{state.json,manifest.json}`. The manifest is published
@@ -107,8 +107,9 @@ loads retrieve all three consistently and never create or migrate a database. Ne
 files use 0600 permissions. Existing invalid files fail rather than being adopted.
 Commit errors are conservatively uncertain; reopen and compare the operation ID
 before deciding what happened. No implicit retry or JSON fallback is allowed.
-SQLite compact and auto compact use complete database archives. JSON remains the
-default; selecting another backend does not migrate an existing session.
+SQLite compact and auto compact use complete database archives. Since PR-G/H,
+SQLite is the new-empty-session default; selecting another backend never migrates
+an existing session. Legacy JSON selection and detection remain supported.
 
 ## Consequences
 
@@ -125,7 +126,7 @@ default; selecting another backend does not migrate an existing session.
   into the JSON backend, because the manifest is storage metadata that `load`
   should not own; the `simplex_load_archives` library therefore no longer exists.
 - One shared library (`simplex_persistence`) stays in the release set.
-- Remaining work: PR-F migration/export/rollback is deferred. PR-G/H combines
+- PR-F migration/export/rollback remains deferred. PR-G/H combines
   Hub configuration and current-state inspection, the new-session default switch,
   and deployment validation. Existing JSON sessions remain supported without
   automatic migration.
@@ -149,3 +150,10 @@ boundaries, stale revision refusal, interruption evidence and retention targets
 0/1/5. SQLite VFS fault injection covers preparation and replacement failures.
 Worker tests exercise manual compact, live history during summarization, automatic
 continuation, cancellation and provider errors with SQLite as well as JSON.
+
+## PR-G/H integration
+
+The final integration makes SQLite the default for new empty sessions, preserves
+legacy JSON detection, and exposes current-state inspection through the manager.
+See [selection and backup](state-and-persistence.md#selection-inspection-and-backup).
+Offline migration/export (PR-F) remains deferred and is not an available command.

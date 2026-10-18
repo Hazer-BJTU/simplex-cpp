@@ -693,9 +693,12 @@ model_io::MessageItem decode_message(
 std::int64_t message_for_slot(
     sqlite::Database& database, const char* column, std::int64_t owner_id,
     const char* slot) {
+    // The step index is partial. State its predicate explicitly: SQLite does
+    // not infer slot <> 'user_input' from a different slot equality.
     const std::string sql =
         std::string("SELECT message_id FROM messages WHERE ") + column
-        + " = ?1 AND slot = ?2";
+        + " = ?1 AND slot = ?2"
+        + (std::string_view(slot) == "user_input" ? "" : " AND slot <> 'user_input'");
     auto query = database.prepare(sql);
     query.bind_int64(1, owner_id);
     query.bind_text(2, slot);
@@ -713,7 +716,8 @@ std::vector<model_io::MessageItem> decode_invoke_returns(
     sqlite::Database& database, std::int64_t step_id) {
     auto query = database.prepare(
         "SELECT message_id FROM messages "
-        "WHERE step_id = ?1 AND slot = 'invoke_return' ORDER BY ordinal");
+        "WHERE step_id = ?1 AND slot = 'invoke_return' "
+        "AND slot <> 'user_input' ORDER BY ordinal");
     query.bind_int64(1, step_id);
     std::vector<model_io::MessageItem> results;
     while (query.step() == sqlite::StepResult::Row) {

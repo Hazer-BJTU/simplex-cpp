@@ -25,7 +25,7 @@ it('clean-forks Docker workers and cleans a root-written child after its launche
             '--config', '{config}', '--session', '{session}', '--threads', '{threads}'];
         const ctx = await startTestHub({ launcher: { kind: 'command', command },
             mock: { enabled: true, slowMs: 5000 },
-            worker: { connectHost: '127.0.0.1', stopTimeoutMs: 3000, sigtermGraceMs: 1000, sigkillGraceMs: 3000 } });
+            worker: { persistence: { enabled: true, readable: false, backend: 'json' }, connectHost: '127.0.0.1', stopTimeoutMs: 3000, sigtermGraceMs: 1000, sigkillGraceMs: 3000 } });
         t.after(() => ctx.hub.stop());
         const parent = ctx.hub.registry.create('docker-subagent-parent', { provider: 'mock', model: 'mock-slow' });
         const started = await ctx.hub.supervisor.start(parent);

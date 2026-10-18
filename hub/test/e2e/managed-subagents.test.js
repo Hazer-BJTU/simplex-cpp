@@ -59,6 +59,7 @@ it('real target clean-fork isolates state and removes nested children without sh
         const description = (await inspect(childAllocation)).result;
         assert.equal(description.effective_configuration.persistence.directory, childAllocation.reference.directory);
         assert.equal(description.effective_configuration.persistence.restore, 'if_present');
+        assert.equal(description.effective_configuration.persistence.backend, 'sqlite');
         assert.equal(child.subagent.policy, 'ask');
         message(child);
         await until(() => child.activeRunId, { timeout: 5000 });
@@ -68,6 +69,9 @@ it('real target clean-fork isolates state and removes nested children without sh
             && !child.activeRunId, { timeout: 20000 });
         const snapshot = await ctx.hub.supervisor.managedSnapshot(child);
         assert.ok(snapshot.state, 'Inspector must read the actual persisted state over target stdio');
+        assert.equal(snapshot.backend, 'sqlite');
+        assert.equal(snapshot.state.meta.session_id, child.id);
+        assert.equal(snapshot.state.turns.length, 1, 'child must not inherit the parent history');
         assert.equal(existsSync(sessionDir(ctx.config, child.id) + '/state'), false);
         assert.equal((await ctx.hub.supervisor.stop(parent)).ok, true);
         for (const [session, allocation] of [[child, childAllocation], [grandchild, grandAllocation]]) {

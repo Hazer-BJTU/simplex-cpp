@@ -43,6 +43,9 @@ with tempfile.TemporaryDirectory(prefix='simplex manage cli ') as tmp:
     prepared = call('prepare')['result']
     assert prepared['configuration'] == request['configuration']
     assert call('inspect')['result'] == prepared
+    empty = call('read_state')['result']
+    assert empty['backend'] == 'sqlite' and empty['state'] is None
+    assert not (root / 'state/state.sqlite3').exists()
     (root / 'state').mkdir()
     # A complete real model_io snapshot uses optional defaults for unused fields.
     state = dict(meta={}, system_prompt={}, tools=[], turns=[],

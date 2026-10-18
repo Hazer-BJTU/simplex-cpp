@@ -187,23 +187,22 @@ worker:
 # Pre-dispatch/results checkpoints remain enabled independently of save flags.
 persistence:
   enabled: true
-  # json is the default. sqlite is experimental (new directories only):
-  # checkpoints, restore, compact and auto compact are supported. No migration.
-  backend: json
+  # New empty sessions use SQLite. Keep backend: json for existing JSON sessions.
+  # Omitting backend detects existing storage; this is not migration.
+  backend: sqlite
   # Direct session root, relative to this file. No session ID is appended.
   directory: ./data/session
   # Snapshot subdirectory, relative to directory.
   state: state
-  # Dataclass exchange format; backend selects the authoritative store.
-  format: json
   # Complete state is persisted. The legacy `readable`
   # Markdown export is accepted for compatibility but no longer written.
-  # Compact archives the complete original state here before summarizing.
+  # JSON compact archives live here; SQLite archives remain in state.sqlite3.
   # Archive subdirectory, relative to directory; old archives are never replaced.
   # state and memory must be nonempty relative paths without parent traversal.
   memory: memory
   # Applied after successful, failed and cancelled compact attempts.
-  # Current and state-referenced archives are protected, even above the target.
+  # Current attempts/recovery evidence stay protected, even above the target.
+  # JSON archives explicitly referenced by retained state are also protected.
   # Zero disables cleanup. Legacy Markdown archives, unknown files and symlinks
   # are never cleaned.
   memory_retention:

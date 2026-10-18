@@ -8,7 +8,7 @@ import { isMap, parseDocument } from 'yaml';
 import { ConfigError, defaultConfig, hubRoot, mergeConfig, parseConfigText, validateConfig } from '../config.ts';
 import { persistenceChild } from '../launch/config-file.ts';
 import type { HubConfig } from '../config.ts';
-import { managementPolicy, separateLocalRoot } from '../launch/managed-sessions.ts';
+import { managementPolicy, separateLocalRoot, defaultLocalRoot } from '../launch/managed-sessions.ts';
 import type { ManagementPolicy } from '../launch/managed-sessions.ts';
 
 import type { ConfigKind, ConfigFile } from '../../shared/configurations.ts';
@@ -241,7 +241,11 @@ export class ConfigurationStore {
                 env: {}, endpoints: {},
             }, null, 2) + '\n';
         }
-        if (kind === 'launch') return readFileSync(join(hubRoot, 'schemas', 'local.jsonc'), 'utf8');
+        if (kind === 'launch') {
+            return readFileSync(join(hubRoot, 'schemas', 'local.jsonc'), 'utf8')
+                .replace('"__HUB_CWD__"', JSON.stringify(homedir()))
+                .replace('"__WORKER_ROOT__"', JSON.stringify(defaultLocalRoot(this.config)));
+        }
         const doc = workerDocument(readFileSync(join(hubRoot, 'schemas', 'worker.yaml'), 'utf8'));
         if (source === 'deployment') {
             const rendered = renderSessionConfig({

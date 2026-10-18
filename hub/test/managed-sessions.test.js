@@ -602,3 +602,17 @@ for (const remote of [false, true]) {
             error instanceof ManagementError && error.kind === 'manager' && error.code === 'retired');
     });
 }
+
+
+test('managed SQLite snapshot metadata survives remote transport without local-file fallback', async t => {
+    const ctx = await setup(t, true);
+    await start(ctx);
+    writeFileSync(join(ctx.target, 'sqlite-state'), '');
+    const snapshot = await ctx.api('/api/sessions/demo/snapshot');
+    assert.equal(snapshot.status, 200);
+    assert.equal(snapshot.body.backend, 'sqlite');
+    assert.equal(snapshot.body.state.text.length, 10 * 1024 * 1024);
+    assert.deepEqual(snapshot.body.files, {});
+    writeFileSync(join(ctx.target, 'invalid-state'), '');
+    assert.equal((await ctx.api('/api/sessions/demo/snapshot')).status, 500);
+});

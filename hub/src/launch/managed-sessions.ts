@@ -17,6 +17,24 @@ export interface ManagementPolicy extends ManagedLauncherOptions {
     timeoutMs?: number;
 }
 
+/** Default target root is a sibling of Hub data, so independent Hub deployments
+ * do not share an allocation namespace and manager removal cannot touch Hub data. */
+export function defaultLocalRoot(config: Pick<HubConfig, 'dataDir'>): string {
+    return `${resolve(config.dataDir)}-workers`;
+}
+
+/** Native API launches use the router beside their configured worker binary.
+ * This deliberately does not infer management for arbitrary command launchers. */
+export function defaultLocalManagement(config: HubConfig, env: Record<string, string>): ManagementPolicy {
+    return managementPolicy({
+        target: { kind: 'local' },
+        executable: join(dirname(config.worker.bin), 'simplex'),
+        cwd: resolve(config.launcher.cwd || process.cwd()),
+        env,
+        root: defaultLocalRoot(config),
+    });
+}
+
 /** Immutable target/source binding, published locally before any target mutation. */
 export interface ManagedSessionRecord {
     version: 1;
@@ -252,13 +270,13 @@ export async function managedIdle(record: ManagedSessionRecord, timeoutMs = reco
 }
 
 /** Backend-neutral complete snapshot. Never open a target file or fall back to a local copy. */
-export async function readManagedState(record: ManagedSessionRecord): Promise<{ state: unknown; readable: string | null }> {
+export async function readManagedState(record: ManagedSessionRecord): Promise<{ state: unknown; readable: string | null; backend: string }> {
     const result = await call(record, { operation: 'read_state' });
     if (typeof result.backend !== 'string' || !(result.state === null || mapping(result.state))
         || !(result.readable === null || typeof result.readable === 'string')) {
         throw new Error('manager returned an invalid state projection');
     }
-    return { state: result.state, readable: result.readable };
+    return { state: result.state, readable: result.readable, backend: result.backend };
 }
 
 /** Persist cleanup intent first. Keep it on all failures, including lost success replies. */

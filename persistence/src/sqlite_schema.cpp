@@ -217,6 +217,24 @@ CREATE TABLE archives (
 ) STRICT;
 )sql";
 
+/**
+ * Optional access-path indexes, not a codec/schema migration. Foreign-key
+ * cascades do not include slot predicates, so the partial uniqueness indexes
+ * cannot serve them. Without these full owner indexes, replacing one snapshot
+ * repeatedly scans messages in every retained archive for each deleted parent.
+ * Only writable opens install them; older v1 files remain readable unchanged.
+ */
+void ensure_access_indexes(sqlite::Database& database) {
+    sqlite::Transaction transaction(database);
+    database.execute(
+        "CREATE INDEX IF NOT EXISTS messages_turn_owner "
+        "ON messages(snapshot_id, turn_id);");
+    database.execute(
+        "CREATE INDEX IF NOT EXISTS messages_step_owner "
+        "ON messages(snapshot_id, step_id);");
+    transaction.commit();
+}
+
 /** Ordered baseline; open_store() applies anything newer than the file's version. */
 constexpr Migration kMigrations[] = {{1, kSchemaV1}};
 
@@ -416,6 +434,7 @@ StoreIdentity open_store(
                 "database is not a Simplex session store; refusing to adopt it");
         }
         create_store(database, session_id, created_at);
+        ensure_access_indexes(database);
         return read_identity(database, session_id);
     }
     if (file_application_id != application_id) {
@@ -442,6 +461,7 @@ StoreIdentity open_store(
         check_decodable(identity);
     }
     require_layout(database);
+    ensure_access_indexes(database);
     return identity;
 }
 

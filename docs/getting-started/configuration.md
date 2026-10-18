@@ -16,7 +16,11 @@ The default data root is `~/.simplex/hub`, overridable with `--data-dir`.
 The Hub seeds `configs/launch/local.jsonc`, `configs/launch/docker.jsonc`, and
 `configs/worker/default.yaml` when absent. Edit these through **Configurations**
 or before startup with a text editor. A session selects one launch and one
-worker file and receives independent copies.
+worker file and receives independent copies. New `local` launch files use the
+same `management.executable` for `simplex run` and `simplex manage`; set it to
+an absolute installed `bin/simplex` path if necessary. Their target allocations
+live under `<dataDir>-workers`, independently of Hub records. Existing saved
+launch files are preserved.
 
 Replace `YOUR_*` values in the worker template. `providers` keys are arbitrary
 configuration names; `plugin` selects an installed implementation. `driver_model`
@@ -56,6 +60,7 @@ worker:
     workspace: /absolute/path/to/project
 persistence:
   enabled: true
+  backend: sqlite
   directory: '{{session.directory}}'
   state: state
   memory: memory
@@ -211,3 +216,16 @@ per request by default. A new request resets this budget. `max_auto_compactions`
 is separate from `persistence.memory_retention.max_archives`. The next explicit
 continue can resume from memory even when compaction left no turns; restart does
 not resume automatically. See the [complete lifecycle contract](../core/worker-protocol.md#automatic-context-compaction).
+
+## Persistence backend
+
+New empty sessions use SQLite (`state/state.sqlite3`), including compact archives.
+This requires a worker/manager build with SQLite support; older workers should
+continue using their saved JSON configuration.
+Existing JSON sessions remain supported: keep `backend: json` or the legacy
+`format: json` setting. Saved Hub configurations remain authoritative at restart.
+Omitting both settings detects an existing single backend; mixed stores require
+an explicit choice. Changing a backend setting is **not migration** and selecting
+the opposite backend over existing history is rejected. See
+[state and persistence](../architecture/state-and-persistence.md#selection-inspection-and-backup)
+for inspection, backup, and child-session behavior.

@@ -56,7 +56,7 @@
         // Grace periods for the escalating stop: SIGTERM first, then SIGKILL.
         "sigtermGraceMs": 5000,
         "sigkillGraceMs": 2000,
-        "persistence": { "enabled": true, "readable": false },
+        "persistence": { "backend": "sqlite", "enabled": true, "readable": false },
         // Copied to new worker configs as persistence.memory_retention.
         // Applied after successful, failed and cancelled compact attempts; the
         // current recovery archive is protected.

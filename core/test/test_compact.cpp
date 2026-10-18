@@ -220,6 +220,7 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     load::Configuration config;
+    config.persistence_backend = "json";
     config.directory = root;
     config.document = Json::object();
     config.provider = "fixture";

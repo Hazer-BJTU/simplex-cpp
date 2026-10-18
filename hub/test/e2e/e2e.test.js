@@ -51,8 +51,14 @@ function freePort() {
 
 /** Start a hub as a child process and wait until it answers. */
 async function startHubProcess({ port, dataDir, mock = true }) {
+    // This legacy local-path suite intentionally keeps JSON; managed SQLite has
+    // its own end-to-end manager/compact/restart coverage.
+    mkdirSync(dataDir, { recursive: true });
+    const configPath = join(dataDir, 'hub-test.json');
+    writeFileSync(configPath, JSON.stringify({ worker: { persistence: { backend: 'json' } } }));
     const args = [
         join(hubRoot, 'bin', 'simplex-hub.ts'),
+        '--config', configPath,
         '--listen', `127.0.0.1:${port}`,
         '--data-dir', dataDir,
         '--worker-bin', WORKER_BIN,

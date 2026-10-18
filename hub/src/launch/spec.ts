@@ -40,7 +40,9 @@ export interface NormalizedSpec {
     workspace: string;
     platform: string;
     software: string[];
-    persistence: { enabled: boolean; readable: boolean };
+    /** Saved backend policy, not a Hub-side database selection. Absence in an
+     * existing configuration preserves worker-side auto detection. */
+    persistence: { enabled: boolean; readable: boolean; backend?: 'json' | 'sqlite' };
     restore: RestorePolicy;
     env: Record<string, string>;
     extraArgs: string[];
@@ -104,6 +106,8 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
     const promptFile = checkPromptFile(
         raw.systemPromptFile ?? config.worker.systemPromptFile, 'spec.systemPromptFile');
     const persistence = isPlainObject(raw.persistence) ? raw.persistence : {};
+    const backend = persistence.backend ?? config.worker.persistence.backend ?? 'sqlite';
+    if (backend !== 'json' && backend !== 'sqlite') throw new ConfigError('spec.persistence.backend must be json or sqlite');
     return {
         provider,
         // Empty means "use the profile's model".
@@ -126,6 +130,7 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
             : config.worker.environment.platform,
         software: [...software] as string[],
         persistence: {
+            backend,
             enabled: typeof persistence.enabled === 'boolean'
                 ? persistence.enabled
                 : config.worker.persistence.enabled,

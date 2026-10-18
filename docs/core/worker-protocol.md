@@ -69,7 +69,7 @@ persistence:
   directory: ./data/session
   state: state
   memory: memory
-  format: json
+  backend: sqlite
   restore: if_present
   save:
     on_step_finished: true
@@ -1520,9 +1520,10 @@ locally after best-effort cleanup, not as a guaranteed final wire event.
 The final event-queue-to-transport admission attempt is bounded by 500 ms; it is
 not a peer-delivery deadline. The event connection may simply close.
 
-Persistence is local to the worker. JSON snapshots reside at
-`<persistence.directory>/<persistence.state>/state.json`; `readable.md` is no
-longer written. Compact evidence lives below `<persistence.memory>`. There is no
+Persistence is local to the worker. New empty sessions use
+`<persistence.directory>/<persistence.state>/state.sqlite3`, including original-state
+compact archives. JSON sessions retain `state.json` and archives below
+`<persistence.memory>`. `readable.md` is no longer written. There is no
 protocol operation to download, replace, edit, or reset a snapshot. A hub needing
 those capabilities must provide a separate managed integration, not send invented
 signal operations.
@@ -1534,8 +1535,8 @@ that root. A relative root resolves against the startup configuration file.
 The old directory layout is not automatically migrated.
 
 `persistence.readable` is deprecated. The value is still parsed, but the worker
-reports one startup diagnostic and writes no export; complete JSON state is the
-only automatic artifact. Removing the key from an operator configuration is
+reports one startup diagnostic and writes no export; complete state is persisted
+through the selected JSON or SQLite backend. Removing the key from an operator configuration is
 safe.
 
 A persistent worker takes an exclusive local `session.lock` in the root before restoration.
@@ -2107,13 +2108,19 @@ boundary, not a pending action. Old snapshots/configurations remain readable;
 older binaries may reject this new status. Dynamic loop-hook ABI is now 3 because
 `RunResult` gained boundary metadata; rebuild hook plugins against this contract.
 
-### Experimental persistence backend metadata
+### Persistence backend metadata
 
 The `persisted` event retains `format: "json"` for the dataclass exchange format
-and adds `backend` (`json` or experimental `sqlite`), `revision` (integer or null)
+and adds `backend` (`json` or `sqlite`), `revision` (integer or null)
 and `operation_id` (empty for JSON). For SQLite these identify the committed
 current snapshot; they are not archive-query identifiers or tool idempotency keys.
-SQLite is opt-in with `persistence.backend: sqlite`. Manual and automatic compact
+SQLite is the default for new empty sessions; explicit `persistence.backend: json`
+retains JSON. Existing single-backend storage is detected when selection is omitted.
+Manual and automatic compact
 archive the complete original state inside the session database. No migration or
 archive-content query interface is provided. Existing JSON sessions must retain
 their backend; selecting SQLite is not a conversion operation.
+
+
+Persistence backend selection and managed SQLite inspection follow
+[state and persistence](../architecture/state-and-persistence.md).

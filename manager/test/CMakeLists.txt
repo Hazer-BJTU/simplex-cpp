@@ -1,5 +1,5 @@
 add_executable(test_manager test_manager.cpp)
-target_link_libraries(test_manager PRIVATE manager_lib load_persistence Boost::unit_test_framework)
+target_link_libraries(test_manager PRIVATE manager_lib load_persistence persistence_lib Boost::unit_test_framework)
 add_test(NAME test_manager COMMAND test_manager)
 set_tests_properties(test_manager PROPERTIES TIMEOUT 30)
 add_test(NAME manager_cli COMMAND /bin/sh

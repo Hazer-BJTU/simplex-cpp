@@ -237,7 +237,14 @@ export interface SessionSpec {
     /** Configured software descriptions injected into the worker prompt. */
     software?: string[];
     /** Worker persistence settings represented by the session launch description. */
-    persistence?: { enabled?: boolean; readable?: boolean };
+    persistence?: {
+        enabled?: boolean;
+        /** Authoritative store for a new session; saved worker configuration
+         * remains authoritative after its first launch. */
+        backend?: 'json' | 'sqlite';
+        /** Deprecated worker setting, retained for older configurations. */
+        readable?: boolean;
+    };
     /** Worker startup restore policy; future policy names may be added. */
     restore?: 'if_present' | 'never' | string;
     /** Environment overrides for launching the worker; may contain secrets. */
@@ -603,6 +610,9 @@ export interface LogsResponse {
 
 /** `GET /api/sessions/:id/snapshot` — the worker's own persisted state, read-only. */
 export interface SnapshotView {
+    /** Authoritative storage kind; absent for older Hub/worker responses. The
+     * state field is decoded JSON even when storage is a SQLite database. */
+    backend?: string;
     /** Hub session identifier; it is not a local filesystem path. */
     session_id: SessionId;
     /** Current lifecycle/state label defined by the enclosing record. */
