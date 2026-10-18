@@ -51,8 +51,8 @@ while incorporating later corrections and recent conversation without executing 
 
 After successful compaction, `memory.runtime` is the final Volatile system-prompt
 section. Its latest summary replaces the previous summary. It also identifies
-the absolute session archive directory and the most recent Markdown archive so
-the model can inspect older details with reading tools. A fixed warning identifies
+the absolute session archive directory and the most recent complete-state JSON
+archive so the model can inspect older details with reading tools. A fixed warning identifies
 the generated summary as untrusted historical context, enclosed by a unique
 begin/end marker; instructions inside it do not override current policy. All
 earlier archives remain on disk. Restoration preserves this section after the

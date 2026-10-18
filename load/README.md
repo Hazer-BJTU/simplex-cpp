@@ -83,7 +83,7 @@ credentials. The remaining sections specify the complete startup contract;
 model, connection, and automatic storage settings are consumed by the core worker. The explicit persistence API below is usable independently of startup
 policy loading.
 
-## Session snapshots and readable exports
+## Session snapshots and deprecated readable exports
 
 Link `load_lib` and include
 [`load/persistence.hpp`](include/load/persistence.hpp). Both save modes take an
@@ -120,10 +120,12 @@ with its path; it never becomes a fresh empty session implicitly. Loading does
 not decide whether the loop may resume, execute tools, or replay pending results.
 That remains the host's recovery responsibility.
 
-`StateFormat::Readable` is a write-only Markdown export for people and model
-memory lookup. It contains session metadata, loop progress and pending tool
-results, system prompt sections, tool definitions, and chronological turns and
-agent steps. Message roles, reasoning, call IDs, tool results, token costs,
+`StateFormat::Readable` is a deprecated write-only Markdown export. The worker
+stopped writing `readable.md` in #187 PR-B and archives complete JSON state
+instead; this renderer remains an explicit compatibility API that no automatic
+save, compaction or recovery path uses. It contains session metadata, loop
+progress and pending tool results, system prompt sections, tool definitions, and
+chronological turns and agent steps. Message roles, reasoning, call IDs, tool results, token costs,
 retention preferences, commit sequences, and extras remain distinguishable.
 Repeated tool output stored both as message content and as its result record is
 shown once when identical. Binary content is summarized by encoded size;
@@ -148,7 +150,7 @@ not perform redaction or automatically index the document into a memory store.
 
 File publication delegates to [`fileio::atomic_write`](../utils/fileio/README.md),
 including descriptor ownership, temporary-file cleanup, and buffered output.
-`load` owns only snapshot serialization and readable rendering.
+`load` owns only snapshot serialization and the deprecated readable renderer.
 
 These are synchronous operations. The caller must serialize saving with state
 mutation and coordinate writers to the same destination. Snapshot writes create
@@ -445,9 +447,11 @@ may delay completion and shutdown until it returns. Late results remain denied.
 worker.max_exchanges defaults to 512 and event_capacity to 1024.
 worker.system_prompt_file selects a structured YAML prompt for new sessions,
 addressed from the installation directory rather than from this file.
-persistence.readable defaults to false and enables an additional Markdown
-export. JSON remains authoritative. See core for safety checkpoints, cancellation
-saving and failure policy; the explicit persistence APIs do not interpret YAML.
+persistence.readable defaults to false and is deprecated: the value is still
+accepted and validated, but the worker only reports one startup diagnostic and
+never writes the export. Complete JSON state remains authoritative. See core for
+safety checkpoints, cancellation saving and failure policy; the explicit
+persistence APIs do not interpret YAML.
 
 
 ## System prompt files
@@ -578,26 +582,30 @@ The file is validated at startup and must render nonempty instructions.
 resolved relative to the direct session root `persistence.directory`. Both must
 be nonempty relative paths without `..` components. This is lexical validation,
 not filesystem sandboxing. Core creates a new directory for each attempt at
-`<directory>/<memory>/<20-digit ordinal>-<UTC timestamp>-<run_id>/state.md`. Directory creation is
-exclusive; an existing archive is never reused or overwritten. Archives remain
-even when summarization is cancelled or fails. Empty directories can remain if
-the initial export fails. Readable exports include all conversation records but
-retain the existing JSON-preview clipping and binary omission rules; they are
-not restorable JSON snapshots.
+`<directory>/<memory>/<20-digit ordinal>-<UTC timestamp>-<run_id>/`. It holds the
+complete original `state.json` and a `manifest.json` publication marker written
+after it. Directory creation is exclusive; an existing archive is never reused or
+overwritten. Archives remain even when summarization is cancelled or fails, and a
+directory without a consistent manifest is incomplete evidence rather than a
+restorable archive. Markdown archives from earlier workers (`state.md`) are
+preserved but never restored or deleted.
 
-Compact requires `persistence.enabled: true`. Its original-state Markdown export
-and successful final JSON save are mandatory regardless of `readable` and
-`save.on_run_finished`. An optional session `readable.md` is also refreshed when
-`readable: true`. After each archived compact attempt, including failure and
-cancellation, the worker applies `persistence.memory_retention`. Current evidence
-and archives explicitly referenced by absolute paths in authoritative state are
-protected, even if they exceed `max_archives` (default 5). A required replacement
-write failure additionally protects the attempted replacement's references, since
-rename may have succeeded before directory synchronization failed. Other recognized
+Compact requires `persistence.enabled: true`. Archiving the complete original
+state and the successful final JSON save are mandatory regardless of the
+deprecated `readable` and `save.on_run_finished`. `persistence.readable` is still
+accepted so an existing configuration starts unchanged, but the worker reports
+one startup diagnostic and never writes `readable.md`. After each archived
+compact attempt, including failure and cancellation, the worker applies
+`persistence.memory_retention`. Current evidence and archives explicitly
+referenced by absolute paths in authoritative state are protected, even if they
+exceed `max_archives` (default 5). A required replacement write failure
+additionally protects the attempted replacement's references, since rename may
+have succeeded before directory synchronization failed. Other complete JSON
 archives are retained newest first up to that target. The count accepts integers
-from 0 through 2147483647; zero disables cleanup. Unfamiliar files are untouched,
-so this is not a disk quota. Cleanup never follows child symlinks or recursively
-removes directories. Cleanup failures are reported without undoing a committed
+from 0 through 2147483647; zero disables cleanup. Legacy Markdown archives,
+unfamiliar files, symlinks and incomplete directories are untouched, so this is
+not a disk quota. Cleanup never follows child symlinks or recursively removes
+directories. Cleanup failures are reported without undoing a committed
 summary or replacing the primary error/cancellation.
 The same worker policy applies to externally managed workers.
 The old session-ID-appending layout is not migrated or read automatically. See the

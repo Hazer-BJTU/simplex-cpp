@@ -9,7 +9,7 @@
 #include <nlohmann/json.hpp>
 #include "io/client.hpp"
 #include "dataclass/prompt_template.hpp"
-#include "load/archives.hpp"
+#include "load/retention.hpp"
 
 namespace load {
 
@@ -77,7 +77,15 @@ struct Configuration {
     bool save_step = true;
     bool save_run = true;
     bool save_shutdown = true;
-    bool readable = false;
+    /**
+     * Accepted legacy `persistence.readable` setting.
+     *
+     * Complete JSON state is the only automatic artifact since #187 PR-B:
+     * `readable.md` is no longer written and the worker reports one startup
+     * diagnostic when this key is present. Parsing and validation remain so an
+     * existing Hub-generated configuration keeps starting unchanged.
+     */
+    bool legacy_readable = false;
 };
 
 /** Parse and validate startup fields before loading native code or opening IO.

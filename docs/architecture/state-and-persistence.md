@@ -18,7 +18,7 @@ Hub: <dataDir>/sessions/<session-id>/
 
 Target: <management.root>/<allocation-id>/
   config/config.yaml      generated managed reference
-  state/state.json, state/readable.md
+  state/state.json
   memory/, session.lock
 ```
 
@@ -35,8 +35,7 @@ Legacy launch profiles and existing sessions retain this original layout:
   config/config.yaml      worker startup configuration
   config/launch.jsonc     launch configuration snapshot
   state/state.json        authoritative worker state
-  state/readable.md       optional human-readable export
-  memory/<archive>/state.md
+  memory/<archive>/       compact evidence: state.json, manifest.json
   events.jsonl            Hub-observed events
   logs/worker.log          locally captured process output
   plan.json               Hub-owned remote-tool plan
@@ -54,8 +53,9 @@ The worker reaches authoritative state only through `persistence::StateStore`
 single-writer and confined to the worker strand. `core` asks for a checkpoint, a
 reserved archive, a compaction commit or a retention pass; the storage format
 stays inside the backend. JSON is the only backend in this phase and keeps the
-layout below unchanged. The boundary, its ordering rules and the follow-up work
-are recorded in [the persistence backend contract](persistence-backends.md).
+layout above; since #187 PR-B each archive holds the complete pre-compaction
+state. The boundary, its ordering rules and the follow-up work are recorded in
+[the persistence backend contract](persistence-backends.md).
 
 Every store operation is synchronous. A checkpoint or compaction commit reports
 one of three outcomes: `NotCommitted` (the previous state is still
@@ -68,10 +68,14 @@ revision must refuse a stale write; the JSON backend exposes none and rejects an
 expectation instead of ignoring it.
 
 Compact archives are reserved during preflight, frozen before the summary
-exchange, and never rewritten afterwards. A committed replacement settles its own
+exchange, and never rewritten afterwards. Each archive is a directory containing
+the complete original `state.json` and a `manifest.json` publication marker that
+is written last; a directory without a complete, self-consistent manifest is
+incomplete evidence and never restorable. A committed replacement settles its own
 attempt, so success is never a separate step that could fail after the commit;
-failure, cancellation and interruption are recorded explicitly. Retention policy
-and deletion targets are unchanged.
+failure, cancellation and interruption are implicit in the frozen archive plus the
+unchanged authoritative snapshot. Retention policy and deletion targets are
+unchanged.
 
 ## Checkpoints and restoration
 
@@ -91,28 +95,35 @@ Restoration does not start another loop automatically or recreate old process
 handles. Runtime prompt sections for skills, environment, and signature are
 refreshed; stored conversation memory remains.
 
-## Human-readable exports and compaction
+## Markdown exports and compaction
 
-Readable Markdown is write-only. Long JSON previews are clipped and binary
-payloads are omitted to keep exports navigable. Use JSON for restoration.
+Readable Markdown is deprecated since #187 PR-B. The worker no longer writes
+`readable.md`, and the explicit `load::StateFormat::Readable` exporter is a
+compatibility API that does not participate in saves, compaction or recovery.
+Complete JSON state is the authoritative artifact; use it for inspection and
+restoration. `persistence.readable` is still accepted so existing configurations
+start unchanged, but it only produces one startup diagnostic.
 
 Compaction first preflights fixed overhead against a 64 KiB replacement byte
-budget, then archives the old state and runs an isolated summarization exchange.
-It validates the summary, then durably publishes the replacement before announcing
-success. The summary replaces prior injected memory and removes user turns.
-The memory prompt points to archive paths, which are meaningful on the worker's
-filesystem. Failed or cancelled compaction preserves the original conversation.
+budget, then archives the complete old state as JSON and runs an isolated
+summarization exchange. It validates the summary, then durably publishes the
+replacement before announcing success. The summary replaces prior injected memory
+and removes user turns. The memory prompt names the archive directory and the
+latest complete-state file, both of which are meaningful on the worker's
+filesystem. Failed or cancelled compaction preserves the original conversation
+and the frozen archive.
 
 After each archived attempt, including failure/cancellation,
-`memory_retention.max_archives` targets five recognized archives by default.
-Zero disables cleanup. The current attempt and archives explicitly referenced
-by absolute paths in retained state are protected, even above the target.
+`memory_retention.max_archives` targets five complete JSON archives by default.
+Zero disables cleanup. The current attempt and archives explicitly referenced by
+absolute paths in retained state are protected, even above the target.
 Required replacement write failures protect both old and replacement references:
 rename may succeed before a directory-sync error leaves crash durability uncertain.
-Other recognized archives are retained newest first; unknown files, symlinks,
-and incomplete directories are not removed. Cleanup errors preserve the primary
-outcome and are reported through optional diagnostics.
-This is a retention target, not a disk quota.
+Other complete JSON archives are retained newest first. Legacy `state.md`
+archives, unknown files, symlinks, extra files and incomplete directories are
+never candidates: legacy Markdown cannot be reconstructed, so it stays as
+evidence. Cleanup errors preserve the primary outcome and are reported through
+optional diagnostics. This is a retention target, not a disk quota.
 
 ## Hub history is a projection
 

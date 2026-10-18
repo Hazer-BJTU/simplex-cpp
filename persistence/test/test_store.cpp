@@ -102,9 +102,9 @@ ArchiveRef archive_once(
  * Backend-neutral contract checks, reusable by a database backend.
  *
  * Only behavior promised by <persistence/store.hpp> is asserted here: absent
- * versus damaged stores, exact round trips, immutable archives, explicit
- * settlement and archive ownership. File layout, naming and retention
- * recognition stay in the backend-specific tests below.
+ * versus damaged stores, exact round trips, immutable archives, archive
+ * ownership and the publication outcome contract. File layout, manifest
+ * validation and retention recognition live in test_store_archive.cpp.
  */
 void run_backend_contract(persistence::StateStore& store) {
     BOOST_TEST(store.session_id() == "session-1");
@@ -237,11 +237,13 @@ BOOST_AUTO_TEST_CASE(archive_naming_never_reuses_a_reserved_ordinal) {
         auto ordinal = std::to_string(index + 1);
         ordinal.insert(0, 20 - ordinal.size(), '0');
         BOOST_TEST(code(archive.backend) == code(Backend::Json));
-        BOOST_TEST(code(archive.kind) == code(persistence::ArchiveKind::LegacyReadable));
-        BOOST_TEST(!archive.restorable());
+        BOOST_TEST(code(archive.kind) == code(persistence::ArchiveKind::JsonState));
+        BOOST_TEST(archive.restorable());
         BOOST_TEST(archive.payload.parent_path().parent_path() == scratch.memory());
+        BOOST_TEST(archive.payload.filename().string() == "state.json");
         BOOST_TEST(archive.archive_id.starts_with(ordinal + "-"));
         BOOST_TEST(!read_file(archive.payload).empty());
+        BOOST_TEST(fs::exists(archive.payload.parent_path() / "manifest.json"));
     }
     // The next reservation is new: archives are never reused or overwritten.
     const auto next = store->reserve_archive({run_identity(4)});
@@ -268,7 +270,9 @@ BOOST_AUTO_TEST_CASE(archive_payload_is_frozen_while_the_replacement_commits) {
     auto store = persistence::make_json_store("session-1", {scratch.state(), scratch.memory()});
     const auto original = example_state();
     const auto archive = archive_once(*store, original, run_identity(1));
+    const auto manifest = archive.payload.parent_path() / "manifest.json";
     const auto frozen = read_file(archive.payload);
+    const auto frozen_manifest = read_file(manifest);
     BOOST_TEST(frozen.find("hello") != std::string::npos);
     BOOST_TEST(frozen.find("COMPACT") == std::string::npos);
 
@@ -276,60 +280,10 @@ BOOST_AUTO_TEST_CASE(archive_payload_is_frozen_while_the_replacement_commits) {
     replacement.turns.clear();
     store->commit_compaction(archive, replacement);
     BOOST_TEST(read_file(archive.payload) == frozen);
+    BOOST_TEST(read_file(manifest) == frozen_manifest);
     const auto restored = store->load_current();
     BOOST_REQUIRE(restored.has_value());
     BOOST_TEST(restored->state.turns.empty());
-}
-
-BOOST_AUTO_TEST_CASE(retention_protects_the_current_and_referenced_attempts) {
-    Scratch scratch;
-    auto store = persistence::make_json_store("session-1", {scratch.state(), scratch.memory()});
-    const auto original = example_state();
-    const auto referenced = archive_once(*store, original, run_identity(1));
-    const auto obsolete = archive_once(*store, original, run_identity(2));
-    const auto current = archive_once(*store, original, run_identity(3));
-    // Unknown entries are never retention candidates.
-    const auto notes = scratch.memory() / "notes.txt";
-    write_file(notes, "operator notes");
-    const auto unknown = scratch.memory() / "unknown-directory";
-    fs::create_directories(unknown);
-    write_file(unknown / "state.md", "not the recognized name pattern");
-
-    ArchivePruneRequest prune;
-    prune.current = current;
-    prune.referenced = {referenced};
-    prune.policy.max_archives = 2;
-    const auto cleaned = store->prune_archives(prune);
-    BOOST_TEST(cleaned.removed_archives == 1u);
-    BOOST_TEST(cleaned.removed_bytes > 0u);
-    BOOST_TEST(fs::exists(referenced.payload));
-    BOOST_TEST(!fs::exists(obsolete.payload.parent_path()));
-    BOOST_TEST(fs::exists(current.payload));
-    BOOST_TEST(fs::exists(notes));
-    BOOST_TEST(fs::exists(unknown / "state.md"));
-
-    // Zero disables cleanup entirely.
-    prune.policy.max_archives = 0;
-    BOOST_TEST(store->prune_archives(prune).removed_archives == 0u);
-    BOOST_TEST(fs::exists(current.payload));
-}
-
-BOOST_AUTO_TEST_CASE(references_map_only_to_archives_of_this_store) {
-    Scratch scratch;
-    auto store = persistence::make_json_store("session-1", {scratch.state(), scratch.memory()});
-    const auto original = example_state();
-    const auto archive = archive_once(*store, original, run_identity(1));
-
-    const auto mapped = store->archive_at(archive.payload.parent_path());
-    BOOST_REQUIRE(mapped.has_value());
-    BOOST_TEST(mapped->archive_id == archive.archive_id);
-    BOOST_TEST(mapped->payload == archive.payload);
-    BOOST_TEST(mapped->session_id == "session-1");
-
-    BOOST_TEST(!store->archive_at({}).has_value());
-    // Nested and foreign paths are not evidence this store owns.
-    BOOST_TEST(!store->archive_at(archive.payload.parent_path() / "nested").has_value());
-    BOOST_TEST(!store->archive_at(scratch.root / "elsewhere").has_value());
 }
 
 BOOST_AUTO_TEST_CASE(filesystem_failures_surface_as_store_errors) {
@@ -344,8 +298,9 @@ BOOST_AUTO_TEST_CASE(filesystem_failures_surface_as_store_errors) {
             return code(error.backend()) == code(Backend::Json)
                 && code(error.status()) == code(CommitStatus::NotCommitted);
         });
-    const auto archive = ArchiveRef{"session-1", "reserved", Backend::Json,
-        persistence::ArchiveKind::LegacyReadable, scratch.memory() / "reserved/state.md"};
+    const auto identity = "00000000000000000001-2026-10-17T000000Z-" + run_identity(1);
+    const auto archive = ArchiveRef{"session-1", identity, Backend::Json,
+        persistence::ArchiveKind::JsonState, scratch.memory() / identity / "state.json"};
     BOOST_CHECK_EXCEPTION(
         store->begin_archive(archive, example_state()), persistence::StoreError,
         [](const auto& error) {
@@ -359,7 +314,7 @@ BOOST_AUTO_TEST_CASE(archive_references_reject_a_mismatched_payload) {
     const auto original = example_state();
     const auto archive = archive_once(*store, original, run_identity(1));
     auto mismatched = archive;
-    mismatched.payload = archive.payload.parent_path() / "state.json";
+    mismatched.payload = archive.payload.parent_path() / "state.md";
     ArchivePruneRequest prune;
     prune.current = mismatched;
     BOOST_CHECK_THROW((void)store->prune_archives(prune), std::invalid_argument);

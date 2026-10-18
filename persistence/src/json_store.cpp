@@ -1,17 +1,15 @@
 #include "persistence/store.hpp"
 
+#include "fileio/atomic_write.hpp"
+#include "json_archive.hpp"
 #include "load/persistence.hpp"
 
-#include <algorithm>
-#include <charconv>
-#include <cstdint>
 #include <filesystem>
-#include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 namespace persistence {
 namespace {
@@ -21,11 +19,12 @@ namespace fs = std::filesystem;
 /**
  * Translate backend failures into the store contract.
  *
- * Codec and filesystem failures become StoreError so that callers can rely on
- * status() for recovery, including the published-but-unsynced case that the
- * codec reports through PersistenceError::published(). Programming errors such
- * as an invalid argument are deliberately not converted: they are caller bugs,
- * not storage outcomes, and must not be reported as a failed write.
+ * Codec, filesystem and publication failures become StoreError so that callers
+ * can rely on status() for recovery, including the published-but-unsynced case
+ * that both the codec and the manifest writer report through published().
+ * Programming errors such as an invalid argument are deliberately not converted:
+ * they are caller bugs, not storage outcomes, and must not be reported as a
+ * failed write.
  */
 template<typename Function>
 auto map_failures(Function&& function) -> decltype(function()) {
@@ -36,50 +35,21 @@ auto map_failures(Function&& function) -> decltype(function()) {
     } catch (const load::PersistenceError& error) {
         throw StoreError(error.what(), Backend::Json,
             error.published() ? CommitStatus::Unknown : CommitStatus::NotCommitted);
+    } catch (const fileio::AtomicWriteError& error) {
+        throw StoreError(error.what(), Backend::Json,
+            error.published() ? CommitStatus::Unknown : CommitStatus::NotCommitted);
     } catch (const fs::filesystem_error& error) {
         throw StoreError(error.what(), Backend::Json, CommitStatus::NotCommitted);
     }
 }
 
 /**
- * Plan a never-reused archive directory without creating it.
+ * Atomic JSON snapshots with complete JSON compact archives.
  *
- * The ordinal derives from existing entries so restarts and wall-clock changes
- * cannot reorder archives. A reserved attempt keeps its ordinal even when its
- * publication fails, and the session's ownership lock serializes cooperating
- * worker processes.
- */
-fs::path plan_archive_directory(const fs::path& root, const std::string& run) {
-    std::uint64_t latest = 0;
-    if (fs::exists(root)) {
-        for (const auto& entry : fs::directory_iterator(root)) {
-            const auto name = entry.path().filename().string();
-            if (name.size() < 21 || name[20] != '-') continue;
-            std::uint64_t ordinal = 0;
-            const auto parsed = std::from_chars(name.data(), name.data() + 20, ordinal);
-            if (parsed.ec == std::errc{} && parsed.ptr == name.data() + 20) {
-                latest = std::max(latest, ordinal);
-            }
-        }
-    }
-    if (latest == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("compact archive sequence exhausted");
-    }
-    auto ordinal = std::to_string(latest + 1);
-    ordinal.insert(0, 20 - ordinal.size(), '0');
-    auto time = utc_timestamp();
-    std::erase(time, ':');
-    return root / (ordinal + "-" + time + "-" + run);
-}
-
-/**
- * Atomic JSON snapshots with Markdown compact evidence.
- *
- * The adapter keeps the historical worker layout so that #187 PR-A changes no
- * observable behavior: saves publish `state/state.json` through
- * load::save_state, and compact attempts archive a readable `state.md` before the
- * summary exchange. Archiving the complete original state, and retiring the
- * Markdown export, belong to PR-B; this file is where that format change lands.
+ * The adapter publishes `state/state.json` through the JSON codec and freezes
+ * each compact attempt as `<memory>/<archive-id>/{state.json,manifest.json}`.
+ * The manifest is the attempt's publication marker and identity record; see
+ * json_archive.hpp for the layout and recognition rules.
  */
 class JsonStore final : public StateStore {
 public:
@@ -115,46 +85,47 @@ public:
 
     ArchiveRef reserve_archive(const CompactAttempt& attempt) override {
         return map_failures([&] {
-            const auto directory = plan_archive_directory(archive_root(), attempt.run_id);
+            const auto directory = json_archive::plan_directory(archive_root(), attempt.run_id);
             return ArchiveRef{session_, directory.filename().string(), Backend::Json,
-                ArchiveKind::LegacyReadable, archive_payload(directory)};
+                ArchiveKind::JsonState, directory / json_archive::state_file};
         });
     }
 
     void begin_archive(
         const ArchiveRef& archive, const model_io::AgentInputState& original) override {
         map_failures([&] {
-            const auto directory = require_archive(archive);
+            const auto directory = require_restorable(archive);
             fs::create_directories(archive_root());
             if (!fs::create_directory(directory)) {
                 throw StoreError(
                     "compact archive directory already exists", Backend::Json,
                     CommitStatus::NotCommitted);
             }
-            // A failed write keeps the reserved directory: the attempt consumed
-            // its ordinal, and a payload renamed before a directory-sync failure
-            // is still visible evidence. Retention does not recognize the
-            // directory until it contains its one expected payload.
-            load::save_state(
-                archive_payload(directory), original, load::StateFormat::Readable);
+            // A failed publication keeps the reserved directory: the attempt
+            // consumed its ordinal, and a payload renamed into place before a
+            // directory-sync failure is still visible evidence. Without its
+            // manifest the archive stays incomplete, so retention ignores it and
+            // nothing mistakes it for restorable state.
+            json_archive::publish(directory, session_, original);
         });
     }
 
     CommitReceipt commit_compaction(
         const ArchiveRef& archive, const model_io::AgentInputState& replacement,
         std::optional<Revision> expected_revision) override {
-        (void)require_archive(archive);
+        (void)require_restorable(archive);
         write_snapshot(replacement, expected_revision);
         return CommitReceipt{Backend::Json, CommitStatus::Committed, {}, std::nullopt};
     }
 
     void finish_archive_attempt(
         const ArchiveRef& archive, ArchiveOutcome outcome) override {
-        (void)require_archive(archive);
+        (void)require_restorable(archive);
         // The layout records a failed, cancelled or interrupted attempt
-        // implicitly: the directory exists exactly when the attempt began and its
-        // payload is never rewritten. Validate the vocabulary instead of writing
-        // a marker that nothing would read.
+        // implicitly: the archive is exactly the state frozen before
+        // summarization, and the authoritative snapshot still holds the original
+        // conversation. Writing an outcome marker would add a fallible write
+        // after a durable commit, so validation replaces bookkeeping.
         switch (outcome) {
             case ArchiveOutcome::Failed:
             case ArchiveOutcome::Cancelled:
@@ -166,27 +137,15 @@ public:
 
     CleanupResult prune_archives(const ArchivePruneRequest& request) override {
         return map_failures([&] {
-            const auto current = require_archive(request.current);
-            std::vector<fs::path> referenced;
-            referenced.reserve(request.referenced.size());
-            for (const auto& archive : request.referenced) {
-                referenced.push_back(require_archive(archive));
-            }
-            const auto cleaned = load::prune_memory_archives(
-                archive_root(), current, request.policy, referenced);
-            return CleanupResult{cleaned.removed_archives, cleaned.removed_bytes};
+            return json_archive::prune(archive_root(), session_, request.current,
+                request.referenced, request.policy);
         });
     }
 
     std::optional<ArchiveRef> archive_at(const fs::path& directory) const override {
-        return map_failures([&]() -> std::optional<ArchiveRef> {
-            if (directory.empty()) return std::nullopt;
-            const auto normalized = fs::absolute(directory).lexically_normal();
-            // Only direct children of this store's archive root can be protected
-            // archives; a nested or foreign path is not evidence this store owns.
-            if (normalized.parent_path() != archive_root()) return std::nullopt;
-            return ArchiveRef{session_, normalized.filename().string(), Backend::Json,
-                ArchiveKind::LegacyReadable, archive_payload(normalized)};
+        if (archive_root_.empty()) return std::nullopt;
+        return map_failures([&] {
+            return json_archive::reference_at(archive_root(), directory, session_);
         });
     }
 
@@ -197,38 +156,47 @@ private:
      * Resolve the archive root on demand.
      *
      * Resolution is deferred so that constructing a store never reads the
-     * working directory, and so a session without compact support keeps saving
-     * state even though archive operations have nowhere to write.
+     * working directory, and a session without compact support still saves
+     * state. A store without an archive root cannot archive, and says so instead
+     * of writing attempts below the working directory.
      */
     fs::path archive_root() const {
+        if (archive_root_.empty()) {
+            throw StoreError(
+                "compact archive root is not configured", Backend::Json,
+                CommitStatus::NotCommitted);
+        }
         return fs::absolute(archive_root_).lexically_normal();
     }
 
-    /** Archived payload inside one attempt directory; the layout stays here. */
-    static fs::path archive_payload(const fs::path& directory) {
-        return directory / "state.md";
-    }
-
     /**
-     * Validate a reference against this store and return its archive directory.
+     * Validate a reference this store may publish or settle.
      *
-     * Identifiers are backend-scoped, so a reference from another session or an
-     * archive outside this root is a caller error rather than a cleanup target.
-     * The payload name is derived from the directory, so a mismatched reference
-     * is rejected instead of silently addressing a different file.
+     * Identifiers are backend-scoped, so a reference from another session, a
+     * legacy Markdown artifact or an archive outside this root is a caller error
+     * rather than a cleanup target. The payload name and directory are derived
+     * from the reference, so a mismatched record is rejected instead of silently
+     * addressing a different file.
      */
-    fs::path require_archive(const ArchiveRef& archive) const {
+    fs::path require_restorable(const ArchiveRef& archive) const {
         if (archive.backend != Backend::Json || archive.session_id != session_) {
             throw std::invalid_argument("archive reference belongs to another store");
+        }
+        if (archive.kind != ArchiveKind::JsonState) {
+            throw std::invalid_argument("only a JSON state archive can be published");
         }
         if (archive.payload.empty()) {
             throw std::invalid_argument("JSON archive reference requires a payload path");
         }
         const auto payload = fs::absolute(archive.payload).lexically_normal();
         const auto directory = payload.parent_path();
-        if (directory.parent_path() != archive_root()
-            || payload.filename() != archive_payload(directory).filename()) {
+        if (payload.filename() != json_archive::state_file
+            || directory.parent_path() != archive_root()) {
             throw std::invalid_argument("archive reference is not a JSON compact archive");
+        }
+        if (archive.archive_id != directory.filename().string()
+            || !json_archive::is_archive_name(archive.archive_id)) {
+            throw std::invalid_argument("archive reference has an invalid identity");
         }
         return directory;
     }

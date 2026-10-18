@@ -7,7 +7,6 @@
 #include "logging/logger.hpp"
 #include "core/event_outbox.hpp"
 #include "load/plugins.hpp"
-#include "load/persistence.hpp"
 #include "persistence/store.hpp"
 #include "loop/loop.hpp"
 #include "loop/events.hpp"
@@ -361,12 +360,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      *
      * A checkpoint returns only after the store knows whether the state is
      * durable, so a later tool dispatch can never run behind a write that is
-     * still in flight. The readable export stays a separate, optional view:
-     * its failure is reported without invalidating the authoritative snapshot.
+     * still in flight. The checkpoint is the only automatic storage work: the
+     * write-only Markdown view is no longer produced by the worker, and the
+     * complete JSON snapshot is the artifact operators inspect.
      */
     void save(persistence::Boundary boundary) {
         if (!config.persistence || storage_failed) return;
-        const auto directory = config.state_directory;
         persistence::CommitReceipt receipt;
         try {
             if (state.meta.session_id != session_id)
@@ -382,17 +381,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             || boundary == persistence::Boundary::Cancelled) run_saved = true;
         emit("persisted", {{"boundary", persistence::boundary_name(boundary)},
             {"format", persistence::backend_name(receipt.backend)}});
-        if (config.readable) {
-            try {
-                load::save_state(directory / "readable.md", state, load::StateFormat::Readable);
-            } catch (const std::exception& error) {
-                emit("export_error", {{"message", error.what()}});
-            }
-        }
     }
 
     /** Initialize resources before admission; restored history is never replayed. */
     void initialize() {
+        if (config.legacy_readable) {
+            // One startup diagnostic; the value stays accepted so an existing
+            // Hub-generated configuration keeps starting unchanged.
+            logging::Logger::warning(
+                "persistence.readable is deprecated and ignored: the worker writes "
+                "complete JSON state only and no longer exports readable.md");
+        }
         construct_runtime();
         restore_state();
         install_confirmation();
@@ -949,14 +948,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         emit("persisted", {
             {"boundary", persistence::boundary_name(persistence::Boundary::Compaction)},
             {"format", persistence::backend_name(receipt.backend)}});
-        if (config.readable) {
-            try {
-                load::save_state(config.state_directory / "readable.md",
-                    state, load::StateFormat::Readable);
-            } catch (const std::exception& error) {
-                emit("export_error", {{"message", error.what()}});
-            }
-        }
         // Retention sees the committed replacement. The exit guard handles
         // failed/cancelled attempts against the unchanged authoritative state.
         cleanup_attempted = true;
