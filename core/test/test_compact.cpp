@@ -73,6 +73,22 @@ std::string read_file(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 
+/**
+ * Publish one complete archive as pre-existing evidence.
+ *
+ * Fixtures use the real backend so retention sees the same format the worker
+ * writes: a complete JSON state plus its manifest, never a legacy Markdown file.
+ */
+persistence::ArchiveRef archival_evidence(
+    persistence::StateStore& store, const std::string& run, const std::string& marker) {
+    State state;
+    state.meta.session_id = "test";
+    state.system_prompt.add_section("evidence", "", marker);
+    auto archive = store.reserve_archive({run});
+    store.begin_archive(archive, state);
+    return archive;
+}
+
 model_io::MessageItem text_message(std::string text, bool user = true) {
     model_io::MessageItem item;
     item.type = user ? model_io::MessageItemType::UserInput : model_io::MessageItemType::ModelResponse;
@@ -124,7 +140,7 @@ struct Model : llm::LLMModel {
         ++summaries;
         std::size_t archived = 0;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(archive_root)) {
-            if (entry.path().filename() == "state.md") {
+            if (entry.path().filename() == "state.json") {
                 ++archived;
                 if (entry.path().parent_path().filename() > current_archive.parent_path().filename()) {
                     current_archive = entry.path();
@@ -216,7 +232,9 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
     config.save_run = false;
     config.save_step = false;
     config.save_shutdown = false;
-    config.readable = true;
+    // Accepted compatibility setting: it must neither export readable.md nor
+    // change what compact archives.
+    config.legacy_readable = true;
     const auto snapshot = config.state_directory / "state.json";
     auto model = std::make_shared<Model>(io.get_executor(), mode);
     model->summary_bytes = summary_bytes;
@@ -227,19 +245,22 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
     std::filesystem::path referenced;
     if (repeated || mode == Scenario::PublishedSaveFailure) {
         config.memory_retention.max_archives = 1;
-        referenced = config.memory / "00000000000000000001-2026-09-27T000000Z-11111111-1111-4111-8111-111111111111";
-        std::filesystem::create_directories(referenced);
-        std::ofstream(referenced / "state.md") << "committed recovery evidence";
+        auto fixture = persistence::make_json_store("test",
+            {config.state_directory, config.memory});
+        referenced = archival_evidence(*fixture,
+            "11111111-1111-4111-8111-000000000001",
+            "committed recovery evidence").payload;
     }
     std::filesystem::path obsolete;
     if (mode == Scenario::PublishedSaveFailure) {
-        const auto summary_archive = config.memory / "00000000000000000002-2026-09-27T000000Z-22222222-2222-4222-8222-222222222222";
-        std::filesystem::create_directory(summary_archive);
-        model->summary_reference = summary_archive / "state.md";
-        std::ofstream(model->summary_reference) << "evidence referenced only by replacement";
-        obsolete = config.memory / "00000000000000000003-2026-09-27T000000Z-33333333-3333-4333-8333-333333333333";
-        std::filesystem::create_directory(obsolete);
-        std::ofstream(obsolete / "state.md") << "unreferenced obsolete attempt";
+        auto fixture = persistence::make_json_store("test",
+            {config.state_directory, config.memory});
+        model->summary_reference = archival_evidence(*fixture,
+            "11111111-1111-4111-8111-000000000002",
+            "evidence referenced only by replacement").payload;
+        obsolete = archival_evidence(*fixture,
+            "11111111-1111-4111-8111-000000000003",
+            "unreferenced obsolete attempt").payload;
     }
     if (mode == Scenario::CleanupFailure) {
         std::filesystem::create_directories(config.storage / "real-memory");
@@ -253,7 +274,7 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
             : mode == Scenario::AllowanceExceeded
                 ? "Original instructions " + std::string(40 * 1024, 'P')
                 : "Original instructions");
-    initial.system_prompt.add_section("memory.runtime", "Memory", !referenced.empty() ? "Old summary; archive: " + (referenced / "state.md").string() : "Old summary",
+    initial.system_prompt.add_section("memory.runtime", "Memory", !referenced.empty() ? "Old summary; archive: " + referenced.string() : "Old summary",
         model_io::SectionStability::Volatile);
     std::size_t history_bytes = 0;
     if (mode == Scenario::Success || mode == Scenario::SaveFailure || mode == Scenario::PublishedSaveFailure) {
@@ -349,6 +370,10 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
                 BOOST_CHECK(archive.is_absolute());
                 BOOST_CHECK(std::filesystem::exists(archive));
                 BOOST_CHECK(archive.parent_path().parent_path() == config.memory);
+                // The archive is the complete state frozen before summarization,
+                // not the replacement: it still holds the pre-compact turn.
+                const auto archived = load::load_state(archive);
+                BOOST_TEST(archived.turns.size() == 1u);
                 const auto exported = read_file(archive);
                 BOOST_TEST(exported.find("COMPACT INSTRUCTION") == std::string::npos);
                 if (successful == 1) {
@@ -434,7 +459,7 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
                             BOOST_TEST(event["data"]["error"] == "summary request failed");
                         }
                         if (repeated) {
-                            BOOST_CHECK(std::filesystem::exists(referenced / "state.md"));
+                            BOOST_CHECK(std::filesystem::exists(referenced));
                             BOOST_CHECK(std::filesystem::exists(model->current_archive));
                             if (!archives.empty()) BOOST_CHECK(!std::filesystem::exists(archives.back()));
                             archives.push_back(model->current_archive);
@@ -485,8 +510,9 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
         BOOST_CHECK(original_file.find(model->summary_reference.string()) == std::string::npos);
         BOOST_CHECK(read_file(snapshot) != original_file);
         BOOST_CHECK(std::filesystem::exists(model->summary_reference));
-        BOOST_TEST(read_file(model->summary_reference) == "evidence referenced only by replacement");
-        BOOST_CHECK(std::filesystem::exists(referenced / "state.md"));
+        BOOST_TEST(read_file(model->summary_reference).find(
+            "evidence referenced only by replacement") != std::string::npos);
+        BOOST_CHECK(std::filesystem::exists(referenced));
         BOOST_CHECK(std::filesystem::exists(model->current_archive));
         BOOST_CHECK(!std::filesystem::exists(obsolete));
         BOOST_TEST(std::distance(std::filesystem::directory_iterator(config.memory),
@@ -502,6 +528,9 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
         return;
     }
     worker.get();
+    // The deprecated readable export is accepted but never written: complete
+    // JSON state is the only automatic artifact.
+    BOOST_CHECK(!std::filesystem::exists(config.state_directory / "readable.md"));
     if (admission_failure) {
         BOOST_TEST(rejected == 1);
         BOOST_CHECK(model->contexts.empty());

@@ -21,14 +21,24 @@ enum class Failure {
     None,
     FileSync,
     DirectorySync,
+    /// Let the payload sync succeed, then fail the manifest's file sync.
+    ManifestFileSync,
 };
 
 Failure failure = Failure::None;
+/// Remaining file syncs while Failure::ManifestFileSync is armed.
+int file_syncs_left = 0;
 
 /** Restore normal IO even when a test assertion or operation throws. */
 struct InjectFailure {
-    explicit InjectFailure(Failure value) { failure = value; }
-    ~InjectFailure() { failure = Failure::None; }
+    explicit InjectFailure(Failure point) {
+        failure = point;
+        file_syncs_left = point == Failure::ManifestFileSync ? 2 : 0;
+    }
+    ~InjectFailure() {
+        failure = Failure::None;
+        file_syncs_left = 0;
+    }
 };
 
 struct Scratch {
@@ -75,8 +85,13 @@ extern "C" int fsync(int descriptor) {
     struct stat status {};
     if (::fstat(descriptor, &status) == 0) {
         const bool directory = S_ISDIR(status.st_mode);
-        if ((directory && failure == Failure::DirectorySync)
-            || (!directory && failure == Failure::FileSync)) {
+        if (!directory && failure == Failure::ManifestFileSync) {
+            if (--file_syncs_left == 0) {
+                errno = EIO;
+                return -1;
+            }
+        } else if ((directory && failure == Failure::DirectorySync)
+                   || (!directory && failure == Failure::FileSync)) {
             errno = EIO;
             return -1;
         }
@@ -142,8 +157,10 @@ BOOST_AUTO_TEST_CASE(begin_archive_reports_publication_and_keeps_its_ordinal) {
     BOOST_TEST(!fs::exists(first.payload));
     BOOST_TEST(fs::exists(first.payload.parent_path()));
 
-    // A rename that outlived a failed directory sync leaves visible evidence and
-    // must be reported as Unknown instead of a clean failure.
+    // A rename that outlived a failed directory sync leaves a visible payload and
+    // must be reported as Unknown instead of a clean failure. Without its
+    // manifest the attempt is incomplete: no user and no retention pass may
+    // mistake it for restorable state.
     const auto second = store->reserve_archive({"11111111-1111-4111-8111-000000000002"});
     BOOST_TEST(second.archive_id.starts_with("00000000000000000002-"));
     {
@@ -157,9 +174,28 @@ BOOST_AUTO_TEST_CASE(begin_archive_reports_publication_and_keeps_its_ordinal) {
     }
     BOOST_TEST(fs::exists(second.payload));
     BOOST_TEST(!read_file(second.payload).empty());
+    BOOST_TEST(!fs::exists(second.payload.parent_path() / "manifest.json"));
+    BOOST_TEST(!store->archive_at(second.payload).has_value());
 
+    // The manifest is the publication point: failing its own file sync publishes
+    // no marker, so the payload stays incomplete evidence as well.
     const auto third = store->reserve_archive({"11111111-1111-4111-8111-000000000003"});
     BOOST_TEST(third.archive_id.starts_with("00000000000000000003-"));
+    {
+        InjectFailure inject(Failure::ManifestFileSync);
+        BOOST_CHECK_EXCEPTION(
+            store->begin_archive(third, original),
+            persistence::StoreError,
+            [](const persistence::StoreError& error) {
+                return error.status() == persistence::CommitStatus::NotCommitted;
+            });
+    }
+    BOOST_TEST(fs::exists(third.payload));
+    BOOST_TEST(!fs::exists(third.payload.parent_path() / "manifest.json"));
+    BOOST_TEST(!store->archive_at(third.payload).has_value());
+
+    const auto fourth = store->reserve_archive({"11111111-1111-4111-8111-000000000004"});
+    BOOST_TEST(fourth.archive_id.starts_with("00000000000000000004-"));
 }
 
 BOOST_AUTO_TEST_CASE(commit_compaction_uses_the_same_publication_contract) {
@@ -169,7 +205,7 @@ BOOST_AUTO_TEST_CASE(commit_compaction_uses_the_same_publication_contract) {
     BOOST_REQUIRE(code(store->checkpoint(original,
         persistence::Boundary::BeforeTools).status)
         == code(persistence::CommitStatus::Committed));
-    const auto archive = store->reserve_archive({"run-1"});
+    const auto archive = store->reserve_archive({"11111111-1111-4111-8111-000000000010"});
     store->begin_archive(archive, original);
     const auto frozen = read_file(archive.payload);
 

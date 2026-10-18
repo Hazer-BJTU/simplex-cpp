@@ -129,7 +129,9 @@ def scenario(cancel):
                 state = json.loads(snapshot.read_text())
                 assert state["loop"]["status"] == ("cancelled" if cancel else "completed")
                 assert state["loop"]["phase"] == "ready"
-                assert (root / "sessions/integration/state/readable.md").exists()
+                # `readable` stays accepted for existing configurations but no
+                # longer produces an export: complete JSON state is authoritative.
+                assert not (root / "sessions/integration/state/readable.md").exists()
                 if not cancel:
                     assert len(requests) == 2
                     assert "output (" in transcript and "[stdout]" in transcript and "[stderr]" in transcript

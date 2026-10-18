@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "dataclass/model_io.hpp"
-#include "load/archives.hpp"
+#include "load/retention.hpp"
 
 /**
  * Authoritative session persistence, independent of its physical representation.
@@ -41,7 +41,7 @@ namespace persistence {
 
 /** Authoritative-store identity reported by receipts and archive records. */
 enum class Backend {
-    /// Atomic `state.json` replacement with per-attempt Markdown archives.
+    /// Atomic `state.json` replacement with per-attempt JSON state archives.
     Json,
 };
 
@@ -146,7 +146,12 @@ private:
 enum class ArchiveKind {
     /// Complete JSON state that can be decoded back into an AgentInputState.
     JsonState,
-    /// Write-only Markdown export retained as evidence; never restorable.
+    /**
+     * Write-only Markdown left by a worker that predates complete JSON archives.
+     * It cannot be decoded back into state, so it is never restorable and never a
+     * retention candidate: an archived Markdown file is preserved as evidence
+     * rather than deleted by a later retention pass.
+     */
     LegacyReadable,
 };
 
@@ -154,8 +159,8 @@ enum class ArchiveKind {
  * Identity of one archived compact attempt.
  *
  * Session and archive identifiers are backend-scoped values, never filesystem
- * paths. A backend that keeps archives in files also reports the payload path so
- * that prompts and the compact result can name the artifact without the worker
+ * paths. The JSON backend reports the complete state payload as `payload` so
+ * prompts and the compact result can name the artifact without the worker
  * knowing the layout. The record is storage evidence, not a queryable reference.
  */
 struct ArchiveRef {
@@ -163,6 +168,7 @@ struct ArchiveRef {
     /// Stable identity within the session; the JSON archive directory name.
     std::string archive_id;
     Backend backend = Backend::Json;
+    /// A default-constructed reference claims the least: a non-restorable artifact.
     ArchiveKind kind = ArchiveKind::LegacyReadable;
     /// Archived payload on disk; empty for identity-only backends.
     std::filesystem::path payload;
@@ -175,7 +181,11 @@ struct ArchiveRef {
 
 /** Inputs that identify one compact attempt before any state is written. */
 struct CompactAttempt {
-    /// Execution identity; part of the JSON archive name and never reused.
+    /**
+     * Execution identity; never reused. The JSON backend requires a UUID because
+     * the value forms the archive directory name, and rejects another identity
+     * instead of creating a directory that recognition could not verify.
+     */
     std::string run_id;
 };
 
@@ -198,12 +208,13 @@ enum class ArchiveOutcome {
 /** Storage reclaimed by one retention pass. */
 struct CleanupResult {
     std::size_t removed_archives = 0;
+    /// Total size of the removed state payloads, excluding manifests.
     std::uintmax_t removed_bytes = 0;
 };
 
 /** One settled attempt plus the archives retention must keep. */
 struct ArchivePruneRequest {
-    /// Attempt that just settled; always retained and counted.
+    /// Attempt that just settled; always retained, counted and required to exist.
     ArchiveRef current;
     /// Archives named by retained state or by a possibly published replacement.
     std::vector<ArchiveRef> referenced;
@@ -283,11 +294,12 @@ public:
      * original state for this attempt, not the last checkpoint, which may be
      * stale when ordinary saves are disabled.
      *
-     * A failed publication keeps the reserved identity: the attempt still
-     * consumes its ordinal, the archive directory is not reused, and a payload
-     * that was renamed into place before a directory-sync failure is reported as
-     * Unknown and left as evidence. Retention ignores such a candidate until it
-     * is a recognized archive.
+     * The payload is the complete state, exactly as it would be checkpointed. A
+     * failed publication keeps the reserved identity: the attempt still consumes
+     * its ordinal, the archive directory is not reused, and a payload that was
+     * renamed into place before a directory-sync failure is reported as Unknown
+     * and left as evidence. Retention ignores such a candidate until the archive
+     * is complete and recognized.
      */
     virtual void begin_archive(
         const ArchiveRef& archive, const model_io::AgentInputState& original) = 0;
@@ -310,11 +322,12 @@ public:
      * Success is never reported here: commit_compaction() settles its own
      * attempt, so a backend cannot turn a durable commit into a failure by
      * failing a later bookkeeping call. The JSON layout encodes failure,
-     * cancellation and interruption implicitly (the directory exists exactly
-     * when the attempt began, and its payload is never rewritten), so the adapter
-     * validates ownership and returns. A database backend stores the attempt
-     * state here for restart recovery. Callers on unwind paths must contain
-     * exceptions; the settled primary diagnostic wins.
+     * cancellation and interruption implicitly (the archive holds exactly the
+     * frozen original state and is never rewritten, while the authoritative
+     * snapshot still holds the original conversation), so the adapter validates
+     * ownership and returns. A database backend stores the attempt state here for
+     * restart recovery. Callers on unwind paths must contain exceptions; the
+     * settled primary diagnostic wins.
      */
     virtual void finish_archive_attempt(
         const ArchiveRef& archive, ArchiveOutcome outcome) = 0;
@@ -325,22 +338,26 @@ public:
      * Retention policy is unchanged by this abstraction: the current attempt and
      * the archives referenced by retained state are protected, other recognized
      * archives are kept newest first, and unknown files, symlinks and incomplete
-     * archives stay untouched. Cleanup errors are reported to the caller without
-     * changing an already committed outcome.
+     * archives stay untouched. Legacy Markdown artifacts are not candidates:
+     * nothing can reconstruct their content, so they are preserved rather than
+     * deleted. Cleanup errors are reported to the caller without changing an
+     * already committed outcome.
      */
     virtual CleanupResult prune_archives(const ArchivePruneRequest& request) = 0;
 
     /**
-     * Map a historical on-disk archive directory recorded in retained state.
+     * Map a historical on-disk archive path recorded in retained state.
      *
-     * Retained conversation state can name archive directories written by an
-     * earlier attempt. Retention uses this mapping only to keep those archives
-     * protected; nothing is read, created or returned to a client. A backend
-     * without filesystem archives returns nothing, because it has no path-based
-     * protection to preserve.
+     * Retained conversation state names the payload file of an earlier attempt,
+     * and historical states may instead name the archive directory. Both resolve
+     * to a recognized archive of this store. Retention uses this mapping only to
+     * keep those archives protected; nothing is read, created or returned to a
+     * client. A path this store does not own, including a nested or foreign one,
+     * resolves to nothing. A backend without filesystem archives returns nothing,
+     * because it has no path-based protection to preserve.
      */
     virtual std::optional<ArchiveRef> archive_at(
-        const std::filesystem::path& directory) const = 0;
+        const std::filesystem::path& path) const = 0;
 };
 
 /** Construction inputs for the JSON backend. */
@@ -361,10 +378,12 @@ struct JsonStoreOptions {
 /**
  * Create the JSON backend for one session.
  *
- * The store preserves the historical layout and behavior: `state.json` is
- * replaced atomically through the dataclass codec, compact evidence is written
- * as readable Markdown into a uniquely named directory, and retention recognizes
- * only that form. Construction performs no I/O.
+ * The store preserves the worker's file-based layout and behavior: `state.json`
+ * is replaced atomically through the dataclass codec, and each compact attempt is
+ * frozen as `<archive-root>/<archive-id>/state.json` plus a `manifest.json`
+ * publication marker. Retention recognizes complete archives of that shape and
+ * leaves legacy `state.md` artifacts, unknown files, symlinks and incomplete
+ * archives alone. Construction performs no I/O.
  */
 std::unique_ptr<StateStore> make_json_store(
     std::string session_id, JsonStoreOptions options);

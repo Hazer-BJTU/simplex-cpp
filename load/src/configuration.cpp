@@ -359,7 +359,9 @@ Configuration parse_configuration(
     result.save_step = flag(save, "on_step_finished", true);
     result.save_run = flag(save, "on_run_finished", true);
     result.save_shutdown = flag(save, "on_shutdown", true);
-    result.readable = flag(storage, "readable", false);
+    // Deprecated compatibility window: accepted and reported once at startup,
+    // never used for automatic exports. See load/configuration.hpp.
+    result.legacy_readable = flag(storage, "readable", false);
     return result;
 }
 

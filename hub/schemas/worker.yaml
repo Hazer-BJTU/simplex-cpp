@@ -193,15 +193,16 @@ persistence:
   state: state
   # AgentInputState uses its existing dataclass JSON serialization.
   format: json
-  # Optional write-only Markdown alongside the authoritative JSON snapshot.
-  readable: false
-  # Compact always archives the original state here, even when readable is false.
+  # Complete JSON state is the only automatic artifact. The legacy `readable`
+  # Markdown export is accepted for compatibility but no longer written.
+  # Compact archives the complete original state here before summarizing.
   # Archive subdirectory, relative to directory; old archives are never replaced.
   # state and memory must be nonempty relative paths without parent traversal.
   memory: memory
   # Applied after successful, failed and cancelled compact attempts.
   # Current and state-referenced archives are protected, even above the target.
-  # Zero disables cleanup. Unknown files and symlinks are never cleaned.
+  # Zero disables cleanup. Legacy Markdown archives, unknown files and symlinks
+  # are never cleaned.
   memory_retention:
     max_archives: 5
   # if_present: restore existing state, or start fresh when no file exists.

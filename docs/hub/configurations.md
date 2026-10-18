@@ -62,8 +62,8 @@ not moved automatically.
 │       │   ├── source.json
 │       │   ├── startup-worker.yaml
 │       │   └── startup-launch.jsonc
-│       ├── state/state.json     # canonical worker state; readable.md is optional
-│       ├── memory/<archive>/state.md
+│       ├── state/state.json     # canonical worker state
+│       ├── memory/<archive>/    # state.json + manifest.json per attempt
 │       ├── logs/worker.log
 │       ├── events.jsonl
 │       ├── session.lock
@@ -87,8 +87,9 @@ not moved automatically.
 
 This shows default paths, not files guaranteed to exist before first use.
 Library-selected sessions have `source.json`; supervised launches capture the
-`startup-*` files for clean-fork. State, readable copies, archives, logs and
-plans are written only when their corresponding features produce them.
+`startup-*` files for clean-fork. State, archives, logs and plans are written
+only when their corresponding features produce them. A legacy `readable.md` from
+an older worker may still be present; the worker no longer writes one.
 Worker state/memory subdirectories may be changed in its saved configuration.
 
 The CLI first reads an explicit `--config` file, or looks for

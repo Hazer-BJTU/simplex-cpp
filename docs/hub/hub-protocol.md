@@ -335,9 +335,10 @@ stopped to change their configuration.
 Old layouts are not migrated automatically.
 
 `snapshot` reads the worker's own files
-(`<persistence.directory>/<persistence.state>/state.json` and `readable.md`) without
-modifying them. The worker owns that state; there is no operation to replace,
-edit, or reset it. Files larger than 8 MiB are skipped rather than streamed.
+(`<persistence.directory>/<persistence.state>/state.json` and, when a historical
+export exists, `readable.md`) without modifying them. The worker owns that state;
+there is no operation to replace, edit, or reset it. Files larger than 8 MiB are
+skipped rather than streamed.
 
 ### Worker output and optional disk logs
 

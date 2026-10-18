@@ -1,6 +1,6 @@
 # Persistence backend contract
 
-**Status:** accepted · #187 PR-A · supersedes no earlier decision.
+**Status:** accepted · #187 PR-A, amended by PR-B · supersedes no earlier decision.
 
 This page records the storage boundary introduced before a normalized SQLite
 backend exists. The planning issue is
@@ -36,10 +36,13 @@ retention policy, and defer new archive-reference handling.
    `commit_compaction`, `finish_archive_attempt`, `prune_archives`), not after
    files. `core` owns the store; dataclass, loop, tools and providers never see a
    backend type.
-2. **The JSON adapter is the only backend in this phase** and preserves the
-   historical layout exactly: atomic `state.json`, readable `state.md` archives,
-   the same directory names, the same retention recognition and the same
-   diagnostics. Existing worker tests are the acceptance gate.
+2. **The JSON adapter is the only backend in this phase.** It keeps the
+   authoritative `state.json` layout and the archive directory names, and since
+   PR-B each attempt archives the complete state as
+   `<memory>/<archive-id>/{state.json,manifest.json}`. The manifest is published
+   atomically after the payload and is the attempt's identity and publication
+   marker, so a payload without a matching manifest is incomplete evidence rather
+   than a restorable archive. `readable.md` is no longer written.
 3. **Checkpoints are synchronous and ordered.** A call returns only after its
    durability outcome is known. A backend that must run storage work on another
    executor (a database writer) must still complete or fail the call before the
@@ -58,18 +61,23 @@ retention policy, and defer new archive-reference handling.
    to validate it.
 6. **Archive publication and settlement are ordered, and success is the commit.**
    Preflight reserves an identity without touching the filesystem, `begin_archive`
-   freezes the original state before summarization, and the commit publishes the
-   replacement. A committed replacement settles its own attempt;
+   freezes the complete original state before summarization, and the commit
+   publishes the replacement. A committed replacement settles its own attempt;
    `finish_archive_attempt` records only failure, cancellation or interruption, so
    a backend cannot report a durable commit as failed through a later bookkeeping
    step. A failed publication keeps its reserved directory and ordinal, and a
    payload renamed before a directory-sync failure stays as `Unknown` evidence. A
-   settled archive is never rewritten.
+   settled archive is never rewritten, and no success marker is written after the
+   commit.
 7. **Retention stays exactly as configured.** The current attempt and archives
    named by retained state are protected; other recognized archives are kept
    newest first; unknown files, symlinks and incomplete directories are untouched.
-   `archive_at` maps a historical on-disk path to a store record for that
-   protection only. It is not a query or reference-resolution interface.
+   Legacy `state.md` archives are recognized as non-restorable `legacy_readable`
+   evidence and are excluded from retention entirely: nothing can reconstruct
+   their content, so a later prune never deletes them. `archive_at` maps a
+   historical payload path (the form retained state records) or an archive
+   directory to a store record for that protection only. It is not a query or
+   reference-resolution interface.
 8. **No memory or archive query surface.** Listing, paging, reading and search
    remain future work with their own design; the schema discussion in #187 is a
    prerequisite for PR-C. `ArchiveKind` is the single source of truth for
@@ -86,28 +94,30 @@ above stays the acceptance criterion.
 
 ## Consequences
 
-- Behavior, output and wire fields are unchanged: the same files are written, the
-  `persisted` event keeps its `boundary` labels and reports `format` from the
-  backend, and the compact result still names the archived file through
-  `memory_file`.
+- Wire fields are unchanged: the `persisted` event keeps its `boundary` labels and
+  reports `format` from the backend, and the compact result still names a real,
+  restorable file through `memory_file` (now the archive's `state.json`). The
+  automatic `readable.md` export is gone; `persistence.readable` and the explicit
+  `load::StateFormat::Readable` export remain accepted and deprecated.
 - The required-save failure that stops the worker now surfaces as a store error
   with the same diagnostic text plus an explicit recovery outcome.
-- `load` keeps the JSON codec and the retention helper; `persistence` depends on
-  them until the archive format changes. Retention moves with the archive format
-  in PR-B if it stops being described by filesystem paths.
-- One more shared library (`simplex_persistence`) joins the release set, and
-  `simplex_load_archives` is split out so the retention helper does not pull the
-  plugin-loading stack into the store.
-- Remaining work is unchanged: PR-B retires the Markdown archive, PR-C needs the
-  owner-confirmed schema, and PR-D through PR-H add the database backend,
-  migration tools, Hub integration and the new default.
+- `load` keeps the JSON codec and the retention configuration type
+  (`load::MemoryRetention`). PR-B moved archive layout, recognition and retention
+  into the JSON backend, because the manifest is storage metadata that `load`
+  should not own; the `simplex_load_archives` library therefore no longer exists.
+- One shared library (`simplex_persistence`) stays in the release set.
+- Remaining work: PR-C needs the owner-confirmed schema, and PR-D through PR-H add
+  the database backend, migration tools, Hub integration and the new default.
 
 ## Validation
 
 `test_persistence_store` covers the backend-neutral contract plus JSON layout,
-archive naming, retention recognition and ownership rules.
-`test_persistence_store_publication` interposes `fsync` to prove that a
-published-but-unsynced replacement is reported as `Unknown` and still decodes.
-The existing compact, auto-compact, congestion and application tests keep passing
-unchanged apart from asserting the new error type; those tests drive real archives,
-retention, cancellation, and a directory-sync failure through the worker.
+archive naming and ownership rules. `test_persistence_store_archive` proves a
+complete-state round trip (large text, binary content, loop progress with pending
+results and open extras), manifest validation, legacy Markdown preservation and
+retention ordering. `test_persistence_store_publication` interposes `fsync` to
+prove that a published-but-unsynced payload or manifest is reported as `Unknown`,
+that an attempt without its marker is not recognized, and that the next attempt
+keeps its ordinal. The compact, auto-compact, congestion and application tests
+drive real archives, retention, cancellation and a directory-sync failure through
+the worker.

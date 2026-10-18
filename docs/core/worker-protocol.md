@@ -71,7 +71,6 @@ persistence:
   memory: memory
   format: json
   restore: if_present
-  readable: false
   save:
     on_step_finished: true
     on_run_finished: true
@@ -592,7 +591,8 @@ invalid offsets, compaction/state replacement and process restart produce
 `answer_error`, never a replacement answer. Refresh history to obtain new sources
 after restart. A snapshot restore preserves the answer but not the old worker
 identity. Source availability follows existing persistence/compaction/headless
-cleanup lifetimes; readable archives are not a lossless retrieval source.
+cleanup lifetimes. Compact archives are storage evidence, not an answer-paging
+source.
 
 Source fingerprints are SHA-256 over the ordered canonical answer parts, their
 encoding/modality and byte lengths. Copy the returned fingerprint unchanged;
@@ -651,14 +651,21 @@ at least one conversation turn, and a settled `ready` phase (or no loop progress
 Invalid requests receive `input_rejected`. A request accepted into the payload
 queue waits for earlier runs to settle, just like `message` and `continue`.
 
-After budget preflight and before model execution, the worker exports the original AgentInputState to a new
-readable Markdown archive under `<persistence.directory>/<persistence.memory>`
-(default memory subdirectory `memory`). Each exclusively created archive directory
-is `<20-digit ordinal>-<UTC timestamp>-<run_id>/`, containing `state.md`. Ordinals are derived from existing archives and increase across worker restarts
-and clock changes. Old directories and files are never reused. The current attempt retains its archive;
-export failure can leave an empty directory. Readable exports include all history,
-with the existing JSON-preview clipping and binary omission policy. They are not
-lossless restorable snapshots. Export failure prevents the model request.
+After budget preflight and before model execution, the worker archives the
+complete original AgentInputState under
+`<persistence.directory>/<persistence.memory>` (default memory subdirectory
+`memory`). Each exclusively created archive directory is
+`<20-digit ordinal>-<UTC timestamp>-<run_id>/` and contains `state.json` — the
+complete original state, byte-for-byte decodable through the session codec — and
+`manifest.json`. The manifest is written atomically after the payload and records
+the format version, the archive identity, the owning session, the backend and the
+payload size; recognition requires all of it to agree. Ordinals are derived from
+existing archives and increase across worker restarts and clock changes. Old
+directories and files are never reused. The current attempt retains its archive;
+archive failure prevents the model request and can leave a directory without its
+manifest, which is incomplete evidence rather than restorable state. Workers
+before this format wrote a single `state.md`; those directories remain
+`legacy_readable` evidence: never restorable, never deleted by retention.
 
 The worker appends its startup-loaded compact instruction to a private state copy
 and runs without tools or token/exchange caps. A successful tool-free response
@@ -698,7 +705,8 @@ are removed; other state fields are retained, apart from the updated timestamp,
 completed loop progress, built-in context statistics, and replacement
 `memory.runtime` prompt section. The response commit sequence continues monotonically. This last Volatile section
 contains the summary, the absolute session archive directory, and the latest
-archive file path, with instructions to read archives for historical details.
+complete-state JSON archive path, with instructions to read archived state for
+historical details. It promises no archive query operation.
 The summary sits between a unique begin/end marker and follows a fixed warning
 that it is untrusted historical context, not system policy or current user intent.
 It replaces older injected memory; archive retention is described below. Restoring
@@ -711,15 +719,15 @@ the synchronous commit does not undo it. Required JSON save failure stops furthe
 admission; a failure after file publication has uncertain durability and is never
 reported as success or user cancellation. The worker emits one terminal `error`
 with `durable: false` and stops, rather than a duplicate `run_finished`.
-Optional `readable.md` export failure emits `export_error`
-without undoing successful JSON publication.
+The deprecated `readable.md` export is never written: `persistence.readable` is
+accepted only for compatibility and produces one startup diagnostic.
 
 On success the worker emits `persisted` with boundary `compact`, then
 `compact_finished`, then `run_finished` with `status: completed` and `durable: true`.
 `compact_finished.data` contains:
 
 ```json
-{"summary":"Summary text", "memory_file":"/absolute/archive/state.md", "removed_turns":12, "revision":38, "durable":true}
+{"summary":"Summary text", "memory_file":"/absolute/memory/<archive-id>/state.json", "removed_turns":12, "revision":38, "durable":true}
 ```
 
 `summary` is the complete accepted text, limited to 32 KiB of original UTF-8
@@ -754,10 +762,13 @@ After every settled attempt that created an archive, the worker applies
 `persistence.memory_retention.max_archives` (default 5). Zero disables cleanup.
 The current attempt and archives explicitly referenced by absolute paths in the
 authoritative state's prompt, tools, extras or turns are always protected.
-References resolve to direct children of the configured archive root; relative
-paths and arbitrary prose are not resolved. Protected archives count toward the
-target and take precedence even if their count exceeds it. Other recognized
-archives are retained newest first up to that target.
+A recorded payload path — the form retained state stores, including a path whose
+extension was stripped by reference scanning — resolves to the recognized archive
+directory that contains it. Paths outside the configured archive root, nested
+deeper than one archive directory, and directories that are not complete
+recognized archives are not resolved. Protected archives count toward the target
+and take precedence even if their count exceeds it. Other complete JSON archives
+are retained newest first up to that target.
 
 Successful attempts use the committed replacement's references; failures and
 cancellations before a snapshot write use the unchanged state's references.
@@ -774,9 +785,13 @@ running. Protected references, unexpected contents and filesystem failures mean
 this remains a cleanup target, not a hard disk quota.
 
 Only ordinary directories matching the worker archive name and containing
-exactly one regular `state.md` are eligible. Symlinks, extra files and empty or
-unrecognized directories are left untouched. Deletion is never recursive. This
-assumes cooperating filesystem users, not hostile concurrent path replacement.
+exactly one regular `state.json` plus one regular `manifest.json` — with a
+manifest that matches the directory identity, this session and the payload size —
+are eligible. Legacy `state.md` directories are recognized as evidence but are
+never eligible: nothing can reconstruct their content. Symlinks, extra files,
+empty directories and incomplete or unrecognized archives are left untouched.
+Deletion is never recursive. This assumes cooperating filesystem users, not
+hostile concurrent path replacement.
 The status object reports the active policy. `compact_finished` additionally
 reports `archive_cleanup: {removed_archives, removed_bytes}` or
 `archive_cleanup_error: string`; a cleanup failure does not undo a saved summary.
@@ -890,7 +905,7 @@ may occur in nested dataclass records.
 | `tool_calls` | Array of call objects | Calls proposed for a batch, before dispatch and security evaluation. Not proof of execution or final authorization attributes. |
 | `tool_results` | Array of result objects | Complete returned batch was projected into conversation state. Results remain in call order, not completion order. |
 | `persisted` | `{ "boundary": string, "format": "json" }` | A required JSON snapshot write completed successfully at the named boundary. |
-| `export_error` | `{ "message": string }` | Optional Markdown export failed after successful JSON persistence. |
+| `export_error` | `{ "operation": string, "message": string }` | Optional archive-cleanup diagnostic after a failed or cancelled attempt. It never changes the run outcome; successful compaction reports cleanup inside `compact_finished`. |
 | `error` | `{ "message": string }`, sometimes also `"durable": false` | Control-validation or worker/storage diagnostic. Not a universal fatal-error notification. |
 | `run_finished` | [Run outcome object](#run-outcome-and-persistence-events), including exchange breakdown, automatic-compaction policy and optional omission counters | Invocation settled and its configured final persistence was handled. |
 
@@ -1354,8 +1369,8 @@ These are normal examples, not mandatory event counts. Early cancellation can
 produce an admitted input without `run_started` or `input_committed`. Hook,
 persistence, projection, or transport failure can interrupt the sequence.
 `model_response` alone is not a completion signal. A no-tool exchange does not
-emit `tool_results` or `step_finished` persistence. Optional Markdown failures
-can interleave `export_error` after `persisted`.
+emit `tool_results` or `step_finished` persistence. Optional archive-cleanup
+diagnostics can interleave `export_error` while a failed attempt settles.
 
 ## Delivery, backpressure, and reconnects
 
@@ -1490,16 +1505,22 @@ The final event-queue-to-transport admission attempt is bounded by 500 ms; it is
 not a peer-delivery deadline. The event connection may simply close.
 
 Persistence is local to the worker. JSON snapshots reside at
-`<persistence.directory>/<persistence.state>/state.json`; optional readable Markdown is
-`readable.md` in the same directory. There is no protocol operation to download,
-replace, edit, or reset a snapshot. A hub needing those capabilities must provide
-a separate managed integration, not send invented signal operations.
+`<persistence.directory>/<persistence.state>/state.json`; `readable.md` is no
+longer written. Compact evidence lives below `<persistence.memory>`. There is no
+protocol operation to download, replace, edit, or reset a snapshot. A hub needing
+those capabilities must provide a separate managed integration, not send invented
+signal operations.
 
 `persistence.directory` is the direct session root; no session ID is appended.
 `persistence.state` and `persistence.memory` default to `state` and `memory`.
 Both must be nonempty relative paths without parent traversal, resolved against
 that root. A relative root resolves against the startup configuration file.
 The old directory layout is not automatically migrated.
+
+`persistence.readable` is deprecated. The value is still parsed, but the worker
+reports one startup diagnostic and writes no export; complete JSON state is the
+only automatic artifact. Removing the key from an operator configuration is
+safe.
 
 A persistent worker takes an exclusive local `session.lock` in the root before restoration.
 Another worker using the same session directory fails startup. This protects
@@ -1930,11 +1951,11 @@ own snapshot. The panel queries a simplified history projection from a connected
 worker advertising `session-history`; those replies are forwarded live without
 being retained in the event transcript. The Hub also provides a snapshot
 inspection endpoint. Managed launch profiles invoke target-side `simplex manage`
-and return complete state/readable data without opening target files; legacy
-profiles read local `<persistence.directory>/<persistence.state>/state.json` and
-`readable.md`; there is no operation to replace, edit, or reset a snapshot,
-because the protocol defines none and inventing one would need a managed
-integration on the worker side.
+and return complete state data without opening target files; legacy profiles read
+local `<persistence.directory>/<persistence.state>/state.json` and, when a
+historical export exists, `readable.md`. There is no operation to replace, edit,
+or reset a snapshot, because the protocol defines none and inventing one would
+need a managed integration on the worker side.
 
 The hub's own event transcript (`<dataDir>/sessions/<session>/events.jsonl`) is an
 operator artifact. A hub restart starts an empty in-memory transcript instead of

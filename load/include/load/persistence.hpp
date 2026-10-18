@@ -9,13 +9,27 @@
 
 namespace load {
 
-/** JSON is a restorable snapshot; Readable is a lossy Markdown export. */
+/**
+ * Format of an explicit, caller-owned snapshot export.
+ *
+ * `Json` is the authoritative, restorable representation. `Readable` is a
+ * write-only Markdown view; it is deprecated since #187 PR-B. The worker no
+ * longer exports it automatically, it never participates in compaction or
+ * recovery, and the standalone renderer is a compatibility API that a later
+ * major version may remove.
+ */
 enum class StateFormat {
     Json,
+    /// Deprecated explicit export: lossy Markdown that cannot be loaded back.
     Readable,
 };
 
-/** Limits apply to each JSON preview, never to the conversation as a whole. */
+/**
+ * Preview limits for deprecated readable exports.
+ *
+ * @deprecated Kept only for callers that still render an explicit Markdown
+ * export; automatic worker persistence writes complete JSON instead.
+ */
 struct ReadableOptions {
     /// Maximum UTF-8 bytes retained from each JSON string or object key.
     std::size_t max_json_string_bytes = 1024;
@@ -43,7 +57,7 @@ private:
 };
 
 /**
- * Save a complete JSON snapshot or a human-readable Markdown view.
+ * Save a complete JSON snapshot or a file containing a deprecated Markdown view.
  *
  * @param file Explicit destination, resolved against the current directory if
  * relative. Parent directories are created when missing. No session filename
@@ -52,11 +66,16 @@ private:
  * serialize this synchronous operation with state mutation. Session identity,
  * timestamps, progress, and tool results are preserved without modification.
  * @param format Json uses existing dataclass serialization without clipping.
- * Readable walks the state in chronological order and cannot be loaded back.
+ * Readable walks the state in chronological order and cannot be loaded back; it
+ * is a deprecated explicit export that the worker no longer writes on its own.
  * @param options Positive preview limits for Readable; depth must be at most
  * 64 and block size at least 64 bytes. Ignored for Json. Ordinary text remains
  * complete; JSON objects/arrays encoded in text receive the same preview limits.
  * Binary content is summarized instead of embedding base64.
+ *
+ * Automatic persistence calls this with Json only: the authoritative store
+ * passes the complete state to its backend. No worker code path uses Readable
+ * for saves, compaction, archives or recovery.
  *
  * Publication delegates to fileio::atomic_write in utils/fileio. On the
  * supported POSIX runtime, writes use an exclusively created, mode-0600

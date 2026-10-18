@@ -46,9 +46,10 @@ See the [management environment policy](../hub/configurations.md#docker-manageme
 ## Data and model endpoints
 
 Conversation text and tool results can be sent to the configured provider.
-Readable archives and JSON snapshots may contain sensitive task data. Limit
-filesystem access and retention accordingly. External references are untrusted
-input; rendering a URL is not permission to fetch or execute it.
+JSON snapshots and compact archives contain the complete conversation state,
+including tool results, and legacy Markdown archives retain what they exported.
+Limit filesystem access and retention accordingly. External references are
+untrusted input; rendering a URL is not permission to fetch or execute it.
 
 ## Headless delegation
 
