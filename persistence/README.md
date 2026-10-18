@@ -3,7 +3,10 @@
 `persistence_lib` owns the worker's authoritative `AgentInputState` storage and
 its compact-archive evidence. The contract is `<persistence/store.hpp>`; the JSON
 adapter is `src/json_store.cpp`, and `src/json_archive.cpp` owns that adapter's
-archive layout, recognition and retention. It is the only in-tree backend.
+archive layout, recognition and retention. It is the only `StateStore`
+implementation in this phase; the normalized SQLite schema and row codec
+(`src/sqlite_schema.cpp`, `src/sqlite_snapshot.cpp`) land in PR-C without a
+`StateStore` yet.
 
 The module exists so that no execution code knows a storage format. `core` asks
 for a checkpoint, a reserved archive, a compaction commit, or a retention pass;
@@ -75,7 +78,8 @@ state. See `json_archive.cpp` for the layout and recognition rules.
 
 ```sh
 cmake --build build --target \
-    test_persistence_store test_persistence_store_archive test_persistence_store_publication
+    test_persistence_store test_persistence_store_archive test_persistence_store_publication \
+    test_persistence_sqlite_schema test_persistence_sqlite_snapshot
 ctest --test-dir build -R 'persistence' --output-on-failure
 ```
 
@@ -88,3 +92,129 @@ Markdown is preserved, and that retention keeps the current and referenced
 archives newest first. `test_persistence_store_publication` interposes `fsync` in
 the test executable to prove that a published-but-unsynced payload or manifest is
 reported as `Unknown` and that an attempt without its marker is not recognized.
+
+## SQLite schema v1
+
+PR-C adds the executable schema (`src/sqlite_schema.cpp`), its version and
+migration guard, and the normalized row codec (`src/sqlite_snapshot.cpp`). It is
+not yet a `StateStore`: checkpoints, revisions, compaction attempts and worker
+integration arrive in PR-D/PR-E. The owner-confirmed decision record is
+[`docs/architecture/sqlite-schema-v1.md`](../docs/architecture/sqlite-schema-v1.md).
+
+One database belongs to one session at `<state>/state.sqlite3` (D10). A snapshot
+is a complete graph: every child row carries `snapshot_id`, and composite
+foreign keys reject a cross-snapshot reference. `snapshots.kind = 'current'` is
+unique per session through the partial index `snapshots_one_current`; archives
+are `kind = 'archive'` and are only inserted, never updated.
+
+### Opening and versions
+
+- `open_store` enables `foreign_keys`, WAL and `synchronous=FULL`, creates schema
+  v1 on an empty file in one transaction, and records the baseline in
+  `schema_migrations`.
+- `inspect_store` is read-only: it never creates, migrates or repairs. A newer
+  schema, an unsupported codec, a foreign `application_id`, a missing
+  `store_meta`/`sessions` row or a session mismatch throws `SchemaError` with a
+  `Reason`.
+- `apply_migrations` runs every newer DDL and its `schema_migrations` row in one
+  transaction, so a failing migration leaves both the schema and the recorded
+  version unchanged.
+
+### Column mapping
+
+**Snapshot header — `snapshots`**
+
+| dataclass | column | encoding |
+| --- | --- | --- |
+| `meta.session_id` | `session_id` | must equal `sessions.session_id`; checked on write and read |
+| `meta.schema_version` | `meta_schema_version` | INTEGER in `0..UINT32_MAX` |
+| `meta.created_at` / `meta.updated_at` | `created_at` / `updated_at` | verbatim TEXT; an empty string stays `''` |
+| `meta.status` | `session_status` | stable JSON name |
+| `meta.error` | `meta_error_json` | SQL NULL = absent; `'null'` = engaged null; otherwise raw JSON |
+| `system_prompt.heading_level` | `heading_level` | INTEGER; any `int` (deliberately not range-checked) |
+| `extras` | `extras_json` | SQL NULL = absent; `'null'` = engaged null; `'[]'`, `'{}'` or other JSON verbatim |
+| — | `kind` | `current` or `archive` |
+| — | `revision`, `operation_id` | `0` / `''` in PR-C; PR-D owns them |
+
+**Prompt and tools**
+
+| dataclass | table.column | encoding |
+| --- | --- | --- |
+| `system_prompt.sections[i].name` | `prompt_sections.name`, `ordinal = i` | one row per section; `UNIQUE(snapshot_id, name)` |
+| `.title`, `.stability`, `.text` | `prompt_sections.title`, `.stability`, `.body` | verbatim; stability as its JSON name |
+| `tools[i].name`, `.description` | `tool_definitions.name`, `.description`, `ordinal = i` | verbatim |
+| `tools[i].argument_schema` | `tool_definitions.argument_schema_json` | verbatim JSON text |
+| `tools[i].remote_type` | `tool_definitions.remote_type` | SQL NULL = absent; `''` = engaged empty string |
+| `tools[i].extras` | `tool_definitions.extras_json` | NULL = absent; `'null'` = engaged null; else JSON |
+
+**Conversation**
+
+| dataclass | table / row | encoding |
+| --- | --- | --- |
+| `turns[i].retain_priority`, `.extras` | `turns`, `ordinal = i` | JSON name / nullable JSON |
+| `turns[i].user_input` | `messages(slot = 'user_input', turn_id)` | exactly one row per turn |
+| `.agent_loop_step[j].retain_priority` | `agent_steps`, `ordinal = j` | JSON name |
+| `.agent_loop_step[j].commit_sequence` | `agent_steps.commit_sequence_u64` | 20-digit decimal TEXT |
+| `.agent_loop_step[j].extras` | `agent_steps.extras_json` | nullable JSON |
+| `.agent_loop_step[j].model_response` | `messages(slot = 'model_response', step_id)` | exactly one row per step |
+| `.agent_loop_step[j].invoke_returns` | `agent_steps.invoke_returns_present` + `messages(slot = 'invoke_return', ordinal = k)` | flag `0` = absent, `1` = present even when empty |
+| `MessageItem.type`, `.role` | `messages.type`, `.role` | JSON name / verbatim; `type` is never derived from `slot` |
+| `.content[i]` | `message_contents(slot = 'body', ordinal = i)` | ordered; content is never deduplicated (D9) |
+| `.reasoning`, `.action_status` | `message_contents(slot = 'reasoning' / 'action_status', ordinal = 0)` | row present = field present; unique index enforces one |
+| `Content.type`, `.modality`, `.raw` | `message_contents.type`, `.modality`, `.raw` | JSON names / verbatim TEXT including embedded NUL |
+| `Content.extras` | `message_contents.extras_json` | nullable JSON |
+| `.invokes` | `messages.invokes_present` + `message_invokes(ordinal = i)` | flag `0` = absent, `1` = present even when empty; call ids are not unique |
+| `.cost` | `message_costs` row | row present = field present; an all-zero cost differs from absent |
+| `.invoke_return` | `message_invoke_returns` row | complete query + output, independent of `.invokes` |
+| `MessageItem.extras` | `messages.extras_json` | nullable JSON |
+
+**Invoke occurrences (D3)** — every occurrence is its own row; `wire_call_id`
+may be empty and may repeat:
+
+| C++ location | table | columns |
+| --- | --- | --- |
+| `MessageItem.invokes[i]` | `message_invokes` | `query_type`, `query_security`, `wire_call_id`, `name`, `arguments_json`, `extras_json` |
+| `MessageItem.invoke_return` | `message_invoke_returns` | `query_*`, `output_*`, `extras_json` |
+| `LoopProgress.pending_results[i]` | `pending_results` | `query_*`, `output_*`, `extras_json` |
+
+**Loop progress and counters**
+
+| dataclass | column | encoding |
+| --- | --- | --- |
+| `loop` | `loop_progress` row | row present = field present |
+| `loop.status`, `.phase`, `.error` | `loop_progress.status`, `.phase`, `.error` | JSON names / verbatim TEXT including `''` |
+| `loop.completed_exchanges` | `completed_exchanges_u64` | 20-digit decimal TEXT |
+| `loop.committed_response_sequence` | `committed_response_sequence_u64` | 20-digit decimal TEXT |
+| `loop.pending_results[i]` | `pending_results`, `ordinal = i` | complete batch; one row per result |
+| `TokenCost.prompt`, `.generated`, `.cache_hit` | `message_costs.*_u64` | 20-digit decimal TEXT — never a JSON number or `double` |
+
+`uint64` decoding requires exactly 20 digits and rejects non-digits or a value
+above `UINT64_MAX`. Internal counters (`revision`, `ordinal`, `sequence`) stay
+INTEGER with overflow checks.
+
+### Read and write operations
+
+- `replace_current` rewrites the current graph in one transaction: it deletes the
+  current snapshot header (children cascade), reinserts it under the same
+  `snapshot_id`, inserts every child row and updates `sessions.updated_at`.
+  Archive snapshots are never touched. The stable snapshot id is an internal
+  implementation detail; `revision` and `operation_id` remain placeholders until
+  PR-D.
+- `store_archive_snapshot` only inserts `kind = 'archive'`; the module exposes no
+  update path for an archive.
+- `load_current` and `decode_snapshot` rebuild in one read transaction and
+  validate cardinality (one user input per turn, one model response per step),
+  presence flags against child rows, snapshot ownership through foreign keys and
+  JSON syntax. A damaged graph raises `SnapshotError` with `CorruptSnapshot`; it
+  is never reported as an empty session.
+- `extras`, `external_status` and `events` stay opaque JSON inside
+  `snapshots.extras_json` (D7); they are not split into tables, and unknown keys
+  round-trip verbatim.
+
+Validation: `test_persistence_sqlite_schema` covers creation, repeated opens,
+read-only inspection, version refusal, foreign/incomplete/session-mismatch
+rejection and transactional migration rollback.
+`test_persistence_sqlite_snapshot` covers complete-state round trips,
+`UINT64_MAX`, absent/null/empty distinctions, repeated and empty call ids,
+non-deduplication of content, whole-graph replacement, archive immutability,
+cross-snapshot rejection and corruption detection.

@@ -54,7 +54,9 @@ single-writer and confined to the worker strand. `core` asks for a checkpoint, a
 reserved archive, a compaction commit or a retention pass; the storage format
 stays inside the backend. JSON is the only backend in this phase and keeps the
 layout above; since #187 PR-B each archive holds the complete pre-compaction
-state. The boundary, its ordering rules and the follow-up work are recorded in
+state. PR-C adds the owner-confirmed normalized SQLite schema v1 and its row
+codec behind no backend yet; see [SQLite schema v1](sqlite-schema-v1.md). The
+boundary, its ordering rules and the follow-up work are recorded in
 [the persistence backend contract](persistence-backends.md).
 
 Every store operation is synchronous. A checkpoint or compaction commit reports

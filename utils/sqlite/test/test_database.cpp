@@ -198,3 +198,36 @@ BOOST_AUTO_TEST_CASE(disk_reopen_and_busy_commit_recovery) {
     BOOST_TEST(check.column_text(0) == "ok");
     BOOST_CHECK_THROW(sqlite::Database missing((scratch.root / "absent" / "db").string()), sqlite::Error);
 }
+
+BOOST_AUTO_TEST_CASE(read_only_open_never_creates_or_writes) {
+    Scratch scratch;
+    {
+        sqlite::Database writer(scratch.database());
+        writer.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT)");
+        writer.execute("INSERT INTO items(value) VALUES('persisted')");
+    }
+    sqlite::Database reader(scratch.database(), sqlite::OpenMode::ReadOnly);
+    BOOST_TEST(count(reader) == 1);
+    BOOST_CHECK_THROW(
+        reader.execute("INSERT INTO items(value) VALUES('rejected')"), sqlite::Error);
+    // Opening a missing path read-only must fail instead of fabricating a file.
+    BOOST_CHECK_THROW(
+        sqlite::Database missing((scratch.root / "absent.sqlite").string(),
+            sqlite::OpenMode::ReadOnly),
+        sqlite::Error);
+    BOOST_TEST(!std::filesystem::exists(scratch.root / "absent.sqlite"));
+}
+
+BOOST_AUTO_TEST_CASE(last_insert_rowid_tracks_the_latest_insert) {
+    sqlite::Database database(":memory:");
+    BOOST_TEST(database.last_insert_rowid() == 0);
+    database.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT)");
+    auto insert = database.prepare("INSERT INTO items(value) VALUES(?1)");
+    insert.bind_text(1, "first");
+    BOOST_CHECK(insert.step() == sqlite::StepResult::Done);
+    const auto first = database.last_insert_rowid();
+    BOOST_TEST(first > 0);
+    auto second = database.prepare("INSERT INTO items(value) VALUES('second')");
+    BOOST_CHECK(second.step() == sqlite::StepResult::Done);
+    BOOST_TEST(database.last_insert_rowid() == first + 1);
+}
