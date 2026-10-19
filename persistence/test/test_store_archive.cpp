@@ -343,7 +343,7 @@ BOOST_AUTO_TEST_CASE(prune_rejects_a_current_archive_it_cannot_verify) {
     incomplete.archive_id = "00000000000000000002-2026-10-17T000000Z-" + run_identity(2);
     incomplete.payload = scratch.memory() / incomplete.archive_id / "state.json";
     prune.current = incomplete;
-    BOOST_CHECK_THROW((void)store->prune_archives(prune), std::runtime_error);
+    BOOST_CHECK_THROW((void)store->prune_archives(prune), persistence::StoreError);
 }
 
 BOOST_AUTO_TEST_CASE(disabled_retention_still_requires_the_current_archive) {

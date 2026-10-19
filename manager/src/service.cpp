@@ -332,6 +332,10 @@ Json execute(const Json& input) {
     if (mutation) {
         try {
             namespace_lease = std::make_unique<fileio::DirectoryTreeLock>(p.root.parent_path());
+        } catch (const std::invalid_argument& error) {
+            // fileio names the offending ancestor; keep that diagnostic on the
+            // wire instead of letting main()'s catch-all collapse it.
+            throw Error("storage_error", error.what());
         } catch (const std::system_error& error) {
             if (error.code().value() == EWOULDBLOCK || error.code().value() == EAGAIN) {
                 throw Error("busy", "allocation namespace is in use");
@@ -523,6 +527,9 @@ Json execute(const Json& input) {
     persistence::Backend backend;
     try {
         backend = persistence::select_backend(state_directory, selection);
+    } catch (const std::filesystem::filesystem_error& error) {
+        // An unreadable state directory is a storage failure, not bad YAML.
+        throw Error("storage_error", error.what());
     } catch (const std::runtime_error& error) {
         throw Error("invalid_configuration", error.what());
     }

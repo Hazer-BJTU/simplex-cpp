@@ -49,15 +49,32 @@ void require_row(sqlite::Statement& statement, const char* action) {
     }
 }
 
-/** Refuse a store file that other local users could read; creation already uses
- * 0600, but a copied or restored directory may be wider. */
+/** The store path itself must be an ordinary file; following a link could read
+ * or chmod another session's database. */
+void require_regular_store_file(const std::filesystem::path& path) {
+    struct stat link {};
+    if (::lstat(path.c_str(), &link) != 0) {
+        throw std::system_error(errno, std::generic_category(), "inspect SQLite store path");
+    }
+    if (S_ISLNK(link.st_mode)) {
+        throw std::runtime_error("SQLite store path must not be a symlink");
+    }
+    if (!S_ISREG(link.st_mode)) {
+        throw std::runtime_error("SQLite store path must be a regular file");
+    }
+}
+
+/** Refuse a widely readable store file and narrow it through the opened
+ * descriptor; creation already uses 0600, but a copied directory may be wider. */
 void require_private_file(const std::filesystem::path& path) {
+    require_regular_store_file(path);
+    Descriptor file(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
     struct stat info {};
-    if (::stat(path.c_str(), &info) != 0) {
+    if (::fstat(file.get(), &info) != 0) {
         throw std::system_error(errno, std::generic_category(), "inspect SQLite store permissions");
     }
     if ((info.st_mode & 077) == 0) return;
-    if (::chmod(path.c_str(), 0600) != 0) {
+    if (::fchmod(file.get(), 0600) != 0) {
         throw std::system_error(errno, std::generic_category(), "restrict SQLite store permissions");
     }
 }
@@ -77,6 +94,7 @@ public:
                 require_new_sqlite_directory();
                 return std::nullopt;
             }
+            require_regular_store_file(path_);
             sqlite::Database database(path_.string(), sqlite::OpenMode::ReadOnly);
             sqlite::Transaction transaction(database);
             sqlite_schema::inspect_store(database, session_);
@@ -268,7 +286,7 @@ public:
             // removed_bytes is zero: released database pages remain reusable,
             // and this operation does not promise to shrink the physical file.
             return current_metadata(database).first;
-        });
+        }, request.current.archive_id);
         return result;
     }
 
@@ -378,9 +396,13 @@ private:
             return {backend(), CommitStatus::Committed, operation, revision};
         } catch (const std::exception& error) {
             if (created && !committing) {
-                // The transaction never committed: do not leave an empty file
-                // that later loads reject as foreign or corrupt.
+                // The transaction never committed: do not leave an empty file or
+                // its WAL sidecars that later loads or the manager would treat as
+                // part of the store.
                 ::unlink(path_.c_str());
+                std::error_code ignored;
+                std::filesystem::remove(path_.string() + "-wal", ignored);
+                std::filesystem::remove(path_.string() + "-shm", ignored);
             }
             uncertain_ = committing;
             throw StoreError(std::string("SQLite ") + action + " " + operation

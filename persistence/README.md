@@ -103,7 +103,9 @@ transactional compaction attempts, while `src/json_store.cpp` keeps the JSON
 backend. The owner-confirmed decision record is
 [`docs/architecture/sqlite-schema-v1.md`](../docs/architecture/sqlite-schema-v1.md).
 
-One database belongs to one session at `<state>/state.sqlite3` (D10). A snapshot
+One database belongs to one session at `<state>/state.sqlite3` (D10). The store
+path must be a regular file: a symlinked `state.sqlite3` is refused, and the file
+mode is narrowed through the opened descriptor rather than the path. A snapshot
 is a complete graph: every child row carries `snapshot_id`, and composite
 foreign keys reject a cross-snapshot reference. `snapshots.kind = 'current'` is
 unique per session through the partial index `snapshots_one_current`; archives

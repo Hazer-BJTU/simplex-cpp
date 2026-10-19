@@ -172,6 +172,22 @@ BOOST_AUTO_TEST_CASE(foreign_database_is_rejected_before_wal) {
     BOOST_TEST(std::filesystem::file_size(path) == before);
 }
 
+BOOST_AUTO_TEST_CASE(symlinked_store_path_is_rejected) {
+    Scratch scratch;
+    const auto real = scratch.root / "real";
+    std::filesystem::create_directories(real);
+    auto store = persistence::make_sqlite_store("session-1", real);
+    store->checkpoint(state(), persistence::Boundary::RunFinished);
+
+    const auto linked = scratch.root / "linked";
+    std::filesystem::create_directories(linked);
+    std::filesystem::create_symlink(real / "state.sqlite3", linked / "state.sqlite3");
+    auto other = persistence::make_sqlite_store("session-1", linked);
+    BOOST_CHECK_THROW(other->checkpoint(state(), persistence::Boundary::RunFinished),
+        persistence::StoreError);
+    BOOST_CHECK_THROW(other->load_current(), persistence::StoreError);
+}
+
 BOOST_AUTO_TEST_CASE(released_reservation_cannot_start_an_archive) {
     Scratch scratch;
     auto store = persistence::make_sqlite_store("session-1", scratch.root);

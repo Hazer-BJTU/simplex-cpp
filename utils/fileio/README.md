@@ -100,5 +100,6 @@ silently locks a different tree.
 
 `fileio/session_lock.hpp` implements nonblocking advisory ownership of a stable
 lock file. Exclusive mode opens it read-write and creates it; shared mode opens
-it read-only, so inspection works on a read-only session directory, and creates
-it only when it does not exist yet. Errors name the requested mode.
+it read-only, so inspection works on a readable session directory whose lock
+file already exists, and creates it only when it does not exist yet. Errors name
+the requested mode.
