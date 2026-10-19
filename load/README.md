@@ -83,6 +83,14 @@ credentials. The remaining sections specify the complete startup contract;
 model, connection, and automatic storage settings are consumed by the core worker. The explicit persistence API below is usable independently of startup
 policy loading.
 
+Startup configuration may name a managed allocation instead of a plain YAML
+document. `read_configuration()` resolves that reference through the manager's
+shared allocation lease and fills paths below the allocation directory; the
+loader itself never creates, adopts or migrates an allocation.
+`persistence.backend` accepts `json` or `sqlite`; omit it to detect existing
+storage (an empty directory selects SQLite), and a directory holding both stores
+is refused.
+
 ## Session snapshots and deprecated readable exports
 
 Link `load_lib` and include

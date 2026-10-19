@@ -9,6 +9,12 @@ with separate target storage and manager-backed inspection/removal. Managed
 clean-fork derives children from lifecycle-correlated target startup snapshots,
 without copying state or archives.
 
+Clean-fork always materializes the `client`, `security.confirmation` and
+`hub_remote_call` sections with `ws://unconfigured.invalid/...` placeholders when
+the parent startup omitted them, so the Hub can refresh those endpoints
+independently of the parent. A worker started without that refresh cannot reach
+them; the placeholders are not a usable grant.
+
 See the [management protocol](../docs/reference/management.md) for requests,
 results, ownership rules, and examples.
 

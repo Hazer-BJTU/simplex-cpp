@@ -64,7 +64,7 @@ not moved automatically.
 │       │   ├── launch.jsonc
 │       │   ├── config.yaml
 │       │   ├── source.json
-│       │   ├── startup-worker.yaml
+│       │   ├── startup-worker.yaml   # legacy profiles; managed sessions write startup-launch.jsonc
 │       │   └── startup-launch.jsonc
 │       ├── state/state.json     # legacy JSON worker state
 │       ├── memory/<archive>/    # JSON archive; SQLite archives live in its DB

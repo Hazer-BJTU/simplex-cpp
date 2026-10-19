@@ -1,4 +1,4 @@
-# Persistence backend
+# SQLite schema v1
 
 See [Persistence backend](persistence-backends.md) for backend selection and usage.
 For implementation details, see the

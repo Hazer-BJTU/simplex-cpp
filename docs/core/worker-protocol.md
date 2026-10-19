@@ -909,7 +909,7 @@ may occur in nested dataclass records.
 | `status` | Status object | Snapshot produced by `status` or `cancel`. |
 | `options` | Options object | Available choices and current selections returned in response to the `options` signal. |
 | `history` | Display history page | Read-only response to a `history` payload; not a run event. |
-| `compact_finished` | `{ "summary": string, "memory_file"?: string, "archive"?: { "session_id": string, "archive_id": string, "storage_kind": "json" | "sqlite", "restorable": true }, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
+| `compact_finished` | `{ "summary": string, "memory_file"?: string, "archive"?: { "session_id": string, "archive_id": string, "storage_kind": "json" \| "sqlite", "restorable": true }, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
 | `answer` | Correlated answer page | Exact read-only content segment; no run admission. |
 | `answer_error` | `{ "request_id": any JSON value or null, "message": string }` | Answer source or cursor is unavailable. |
 | `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
@@ -920,9 +920,9 @@ may occur in nested dataclass records.
 | `model_response` | Answer-first Message projection | A complete response was committed in memory; displayed content may be a marked preview with an `answer_source`. It can contain tool calls and need not be the final answer. |
 | `tool_calls` | Array of call objects | Calls proposed for a batch, before dispatch and security evaluation. Not proof of execution or final authorization attributes. |
 | `tool_results` | Array of result objects | Complete returned batch was projected into conversation state. Results remain in call order, not completion order. |
-| `persisted` | `{ "boundary": string, "format": "json" }` | A required JSON snapshot write completed successfully at the named boundary. |
+| `persisted` | `{ "boundary": string, "backend": "json" or "sqlite", "revision": unsigned integer or null, "operation_id": string }` | A required state snapshot write completed successfully at the named boundary. `revision` is null when the backend does not expose one. |
 | `export_error` | `{ "operation": string, "message": string }` | Optional archive-cleanup diagnostic after a failed or cancelled attempt. It never changes the run outcome; successful compaction reports cleanup inside `compact_finished`. |
-| `error` | `{ "message": string }`, sometimes also `"durable": false` | Control-validation or worker/storage diagnostic. Not a universal fatal-error notification. |
+| `error` | `{ "message": string, "durable"?: false, "primary_outcome"?: object, "storage_error"?: string }` | Control-validation or worker/storage diagnostic. Not a universal fatal-error notification. A terminal storage-failure error always carries `primary_outcome` (`status`, `error`, `operation`); `storage_error` describes an uncertain archive mutation. |
 | `run_finished` | [Run outcome object](#run-outcome-and-persistence-events), including exchange breakdown, automatic-compaction policy and optional omission counters | Invocation settled and its configured final persistence was handled. |
 
 All of these are wrapped in the common event envelope. `model_response`,
@@ -1065,7 +1065,7 @@ all delivery or durability ambiguity.
 | `task_exchanges` | Unsigned integer | Committed responses from task runs, including automatic continuation. |
 | `compact_exchanges` | Unsigned integer | Committed manual or automatic summary responses. |
 | `auto_compact` | Object | `attempts`, `succeeded`, effective `limit` and token `threshold`, using the same fields as status. |
-| `durable` | Boolean | Whether a final/cancellation JSON snapshot was recorded, subject to the policy described below. |
+| `durable` | Boolean | Whether a final/cancellation state snapshot was recorded, subject to the policy described below. |
 | `failure` | Optional object | Present for `failed`; contains `stage`, `operation` (`task`, `compact`, `auto_compact`) and `can_continue`. |
 | `omitted_display_events` | Optional unsigned integer | Model/tool display events omitted since the previous admitted settlement. Canonical answers are unchanged. |
 | `omitted_query_events` | Optional unsigned integer | Query responses omitted since the previous admitted settlement. |
@@ -1100,7 +1100,7 @@ automatic summary responses, not network attempts, provider retries, tool calls,
 or lifetime exchanges. Individual tool
 failures may be ordinary tool results and need not produce a failed run.
 
-`durable: true` means a successful final/cancellation JSON snapshot was recorded
+`durable: true` means a successful final/cancellation state snapshot was recorded
 for this invocation. It does not certify remote event delivery or atomicity of
 external tool side effects with disk persistence. `false` also occurs normally
 when persistence or final saving is disabled; it does not always indicate an IO

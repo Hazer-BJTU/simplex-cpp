@@ -21,8 +21,8 @@ Boost is a system dependency (built locally, not vendored under
 in `boost.md` as well. OpenSSL is resolved by CMake's `FindOpenSSL` with no
 pinned version; its requirement lives in the top-level `CMakeLists.txt`.
 
-SQLite is compiled by `utils/sqlite` for the v1.0.x development cycle. Its
-ownership wrapper is tested independently; application persistence has not yet
-been integrated. The build-base, build-portable and build-musl Dockerfiles
+SQLite is compiled by `utils/sqlite` for the v1.0.x cycle. Its ownership wrapper
+is tested independently, and the persistence package uses it as the default
+backend for new sessions. The build-base, build-portable and build-musl Dockerfiles
 provision the pinned source. CI and worker release workflows pin the published
 build-base, build-portable and build-musl images by digest.

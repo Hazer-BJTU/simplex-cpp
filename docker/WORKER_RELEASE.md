@@ -7,7 +7,8 @@ Keep the directory together: executables locate plugins and libraries relative
 to their own paths.
 
 The adjacent manager is available through `bin/simplex manage --help` for
-target-local storage management. It does not change existing Hub launch behavior.
+target-local storage management. Managed local sessions and fresh native sessions
+use it; saved legacy Hub profiles keep their original local layout.
 
 Extract the archive, then run `bin/simplex run --help` from its root. Create a
 worker configuration from `bin/config.example.yaml`, replace the `YOUR_*`

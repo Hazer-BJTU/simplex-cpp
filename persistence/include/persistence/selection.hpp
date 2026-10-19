@@ -9,8 +9,8 @@ namespace persistence {
 /**
  * Select the authoritative backend without creating storage. An empty selection
  * means auto detection: JSON-only stays JSON, SQLite-only stays SQLite, and an
- * empty directory selects SQLite. Two stores require an explicit choice. An
- * explicit choice cannot silently abandon the sole existing opposite store.
+ * empty directory selects SQLite. A directory holding both stores is refused for
+ * every setting, because honoring one would abandon the other history.
  * Filesystem errors and incompatible choices propagate; there is no fallback.
  */
 Backend select_backend(const std::filesystem::path& directory,

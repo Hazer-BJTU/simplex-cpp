@@ -20,8 +20,9 @@ Dataclass, loop, tool and provider code stay independent of the backend.
   before the worker continues, so a checkpoint can never be fire-and-forget.
 - `checkpoint` and `commit_compaction` report `NotCommitted`, `Committed` or
   `Unknown`. `Unknown` (for JSON: the rename succeeded but the directory sync
-  failed) stops further writes and is verified after reopening, never retried
-  blindly. Codec and filesystem failures are translated into `StoreError`;
+  failed) stops further writes; the worker never retries it, and the next
+  startup's read-only load decides which candidate survived. Codec and
+  filesystem failures are translated into `StoreError`;
   programming errors such as a foreign reference stay standard exceptions.
 - `reserve_archive` plans an identity during preflight; `begin_archive` freezes
   the original state before summarization; `commit_compaction` publishes the
@@ -95,9 +96,11 @@ reported as `Unknown` and that an attempt without its marker is not recognized.
 
 ## SQLite schema v1
 
-PR-C adds the executable schema (`src/sqlite_schema.cpp`), its version and
-migration guard, and the normalized row codec (`src/sqlite_snapshot.cpp`). PR-D adds the
-`StateStore`, checkpoint revisions and worker integration. PR-E adds transactional compaction attempts and archive retention. The owner-confirmed decision record is
+`src/sqlite_schema.cpp` holds the executable schema, its version and migration
+guard; `src/sqlite_snapshot.cpp` is the normalized row codec;
+`src/sqlite_store.cpp` implements the `StateStore`, checkpoint revisions and
+transactional compaction attempts, while `src/json_store.cpp` keeps the JSON
+backend. The owner-confirmed decision record is
 [`docs/architecture/sqlite-schema-v1.md`](../docs/architecture/sqlite-schema-v1.md).
 
 One database belongs to one session at `<state>/state.sqlite3` (D10). A snapshot
@@ -133,7 +136,7 @@ are `kind = 'archive'` and are only inserted, never updated.
 | `system_prompt.heading_level` | `heading_level` | INTEGER; any `int` (deliberately not range-checked) |
 | `extras` | `extras_json` | SQL NULL = absent; `'null'` = engaged null; `'[]'`, `'{}'` or other JSON verbatim |
 | — | `kind` | `current` or `archive` |
-| — | `revision`, `operation_id` | `0` / `''` in PR-C; PR-D owns them |
+| — | `revision`, `operation_id` | current snapshot revision; archives keep the original and replacement revisions |
 
 **Prompt and tools**
 

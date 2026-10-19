@@ -268,7 +268,7 @@ public:
      * returns. A Committed receipt means the new state is durable at that
      * boundary. Any thrown StoreError is a required-write failure: the caller
      * stops writing and keeps recovery evidence, and an Unknown outcome is
-     * verified after reopening instead of being retried.
+     * never retried; the next startup's read-only load decides the survivor.
      *
      * A backend that reports revisions enforces expected_revision: a write
      * derived from a stale read fails instead of overwriting a newer state.
@@ -386,7 +386,7 @@ public:
      * because it has no path-based protection to preserve.
      */
     virtual std::optional<ArchiveRef> archive_at(
-        const std::filesystem::path& path) const = 0;
+        const std::filesystem::path& payload_or_directory) const = 0;
 };
 
 /** Construction inputs for the JSON backend. */

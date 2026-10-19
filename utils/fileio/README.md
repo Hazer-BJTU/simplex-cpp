@@ -84,3 +84,21 @@ failure, symlink replacement, and close-on-exec descriptors independently of app
 
 `test_persistence_publication` injects file and directory sync failures to verify
 publication flags, destination contents, and propagation through the load API.
+
+## Persistence paths, directory locks and session leases
+
+`fileio/child_path.hpp` resolves a nonempty relative persistence child below a
+root and rejects absolute paths, embedded NULs and parent traversal. Validation
+is lexical only; a caller that needs a filesystem boundary must check it
+separately.
+
+`fileio/directory_tree_lock.hpp` takes a shared `flock` on every existing
+ancestor and an exclusive one on the target directory. It requires a normalized
+absolute path and refuses a symlinked ancestor (reported as `ELOOP` or
+`ENOTDIR`) with an error naming the offending component, so a caller never
+silently locks a different tree.
+
+`fileio/session_lock.hpp` implements nonblocking advisory ownership of a stable
+lock file. Exclusive mode opens it read-write and creates it; shared mode opens
+it read-only, so inspection works on a read-only session directory, and creates
+it only when it does not exist yet. Errors name the requested mode.

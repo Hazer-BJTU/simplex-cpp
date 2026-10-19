@@ -52,10 +52,9 @@ while (query.step() == sqlite::StepResult::Row) {
   C++ exceptions. Destructors finalize/close resources without throwing; complete
   statements and explicitly commit when their success must be observed.
 
-This initial API has no statement reuse, BLOB binding, busy retry, cancellation,
-schema migrations or application persistence policy. SQLite's default journal,
-synchronization, foreign-key and busy settings apply; the owning application
-must select those policies when storage integration is implemented.
+This API has no statement reuse, BLOB binding, busy retry or cancellation.
+Schema migrations and persistence policy live in the persistence package, which
+selects the journal, synchronization and foreign-key settings for its store.
 
 ## Build and validation
 

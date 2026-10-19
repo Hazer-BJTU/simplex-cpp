@@ -40,5 +40,6 @@ command. The separately installed `simplex-hub` CLI is described in the
 [Hub deployment guide](../deployment/hub.md).
 
 See [Worker storage management](management.md) for the Base64 request/stdout
-contract and allocation ownership. Current Hub launchers still use their original
-layout; their management integration is a separate rollout.
+contract and allocation ownership. New local Hub templates and fresh native
+sessions use managed allocations; saved legacy profiles keep their original
+local layout until the operator recreates them.

@@ -308,7 +308,7 @@ event or REST description. A decision always applies to the original operation.
 | `POST /api/sessions/:id/force-kill` | — | `{ok, how, forced}`; skips the protocol and signals the process group |
 | `GET /api/sessions/:id/events?since=&limit=` | — | `{session, since, latest, events}` |
 | `GET /api/sessions/:id/logs?limit=` | — | `{session, lines, dropped, log_path}` |
-| `GET /api/sessions/:id/snapshot` | — | `{session_id, state, readable, files}` |
+| `GET /api/sessions/:id/snapshot` | — | `{session_id, backend?, state, state_error?, readable, files}` |
 
 Errors are `{"error": "<code>", "message": "<human readable>"}` with a 4xx
 status. `error` codes are stable; `message` is not.

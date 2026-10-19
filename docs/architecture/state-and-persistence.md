@@ -65,9 +65,10 @@ Every store operation is synchronous. A checkpoint or compaction commit reports
 one of three outcomes: `NotCommitted` (the previous state is still
 authoritative), `Committed`, or `Unknown` (publication may have happened with
 uncertain crash durability). The worker stops writing on a failure and keeps its
-recovery evidence instead of retrying blindly, and it verifies an `Unknown`
-outcome after reopening. Codec and filesystem failures surface as a store error;
-only a programming error stays outside that contract. A backend that exposes a
+recovery evidence instead of retrying blindly. Codec and filesystem failures
+surface as a store error; only a programming error stays outside that contract.
+The worker itself never retries an `Unknown` commit: it stops writing, and the
+next startup's read-only load decides which candidate survived. A backend that exposes a
 revision must refuse a stale write; the JSON backend exposes none and rejects an
 expectation instead of ignoring it.
 
