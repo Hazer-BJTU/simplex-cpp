@@ -2,8 +2,9 @@
 
 The worker can run on a different host because it initiates every WebSocket
 connection. A remote deployment still needs a registered Hub session, its bearer
-token, and endpoints reachable from the remote host. The Hub does not currently
-provide a built-in SSH deployment service.
+token, and endpoints reachable from the remote host. The Hub can launch a worker
+on a managed SSH target (see the managed SSH launch profile below); without one,
+provision the worker and its configuration as described here.
 
 ## 1. Provision a session on the Hub
 

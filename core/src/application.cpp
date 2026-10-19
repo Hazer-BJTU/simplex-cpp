@@ -196,14 +196,15 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     }
 
     asio::strand<asio::any_io_executor> strand;
-    // One storage worker serializes blocking database work. All calls are joined
-    // before run() returns; live state stays frozen while a checkpoint awaits.
-    asio::thread_pool storage_executor{1};
     std::optional<persistence::Revision> storage_revision;
     load::Configuration config;
     std::string session_id;
     /** Authoritative state, compact archives and retention for this session. */
     std::unique_ptr<persistence::StateStore> state_store;
+    // One storage worker serializes blocking database work. Declared after the
+    // state it touches so destruction joins every queued task before config and
+    // state_store disappear; all calls are joined before run() returns.
+    asio::thread_pool storage_executor{1};
     std::string worker_id = new_identity();
     std::shared_ptr<llm::LLMModel> driver_model;
     /** Optional model shared with the modality-assist toolset for isolated exchanges. */
@@ -389,7 +390,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     co_return state_store->checkpoint(state, boundary, storage_revision);
                 }, asio::use_awaitable);
             storage_revision = receipt.revision;
-        } catch (...) {
+        } catch (const persistence::StoreError&) {
+            // Only a store failure latches storage; a programming error (for
+            // example a hook mutating the session identity above) must stay
+            // distinguishable and must not stop persistence for the run.
             storage_failed = true;
             if (!failure) failure = std::current_exception();
             cancel();
@@ -398,7 +402,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         if (boundary == persistence::Boundary::RunFinished
             || boundary == persistence::Boundary::Cancelled) run_saved = true;
         emit("persisted", {{"boundary", persistence::boundary_name(boundary)},
-            {"format", "json"},
             {"backend", persistence::backend_name(receipt.backend)},
             {"revision", receipt.revision ? Json(*receipt.revision) : Json()},
             {"operation_id", receipt.operation_id}});
@@ -777,6 +780,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         persistence::ArchiveOutcome outcome,
         const std::vector<persistence::ArchiveRef>& replacement_references
     ) {
+        // A database attempt is settled and trimmed only when its commit state
+        // is known; an uncertain SQLite commit keeps rows as recovery evidence.
+        // JSON cleanup after an uncertain publish is safe because it protects
+        // the union of both candidate states below.
         if (storage_failed && state_store->backend() == persistence::Backend::Sqlite) co_return;
         try {
             co_await asio::co_spawn(storage_executor,
@@ -821,9 +828,30 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             co_return result;
         }
         const auto memory_directory = std::filesystem::absolute(config.memory).lexically_normal();
-        const auto archive = state_store->reserve_archive(
-            {run_id, mode == CompactMode::Automatic, call_id});
-        auto plan = plan_compact(state, memory_directory, archive.payload);
+        // Reservation touches the archive directory for the JSON backend, so it
+        // runs on the storage executor like every other store call.
+        const auto archive = co_await asio::co_spawn(storage_executor,
+            [&]() -> asio::awaitable<persistence::ArchiveRef> {
+                co_return state_store->reserve_archive(
+                    {run_id, mode == CompactMode::Automatic, call_id});
+            }, asio::use_awaitable);
+        CompactPlan plan;
+        std::exception_ptr preflight_failure;
+        try {
+            plan = plan_compact(state, memory_directory, archive.payload);
+        } catch (...) {
+            preflight_failure = std::current_exception();
+        }
+        if (preflight_failure) {
+            // Preflight rejected the attempt before T1: drop the in-memory
+            // reservation so a long-lived worker does not accumulate identities.
+            co_await asio::co_spawn(storage_executor,
+                [&]() -> asio::awaitable<void> {
+                    state_store->release_archive(archive);
+                    co_return;
+                }, asio::use_awaitable);
+            std::rethrow_exception(preflight_failure);
+        }
         try {
             const auto prepared = co_await asio::co_spawn(storage_executor,
                 [&]() -> asio::awaitable<persistence::CommitReceipt> {
@@ -1001,14 +1029,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // A failed parent-directory sync leaves the replacement visible on
         // disk while live state remains old. Protect the union on every failed
         // commit attempt, conservatively including failures before publication.
-        replacement_references = archive_references(replacement, memory_directory);
+        replacement_references = co_await asio::co_spawn(storage_executor,
+            [&]() -> asio::awaitable<std::vector<persistence::ArchiveRef>> {
+                co_return archive_references(replacement, memory_directory);
+            }, asio::use_awaitable);
         persistence::CommitReceipt receipt;
         try {
             receipt = co_await asio::co_spawn(storage_executor,
                 [&]() -> asio::awaitable<persistence::CommitReceipt> {
                     co_return state_store->commit_compaction(archive, replacement, storage_revision);
                 }, asio::use_awaitable);
-        } catch (...) {
+        } catch (const persistence::StoreError&) {
             storage_failed = true;
             if (!failure) failure = std::current_exception();
             cancel();
@@ -1024,7 +1055,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // fallible step. The archive itself stays immutable evidence.
         emit("persisted", {
             {"boundary", persistence::boundary_name(persistence::Boundary::Compaction)},
-            {"format", "json"},
             {"backend", persistence::backend_name(receipt.backend)},
             {"revision", receipt.revision ? Json(*receipt.revision) : Json()},
             {"operation_id", receipt.operation_id}});
@@ -1130,7 +1160,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                                 if (config.save_step) co_await save(persistence::Boundary::StepFinished);
                                 break;
                             case loop::Checkpoint::RunFinished:
-                                if (config.save_run) co_await save(persistence::Boundary::RunFinished);
+                                if (config.save_run) {
+                                    try {
+                                        co_await save(persistence::Boundary::RunFinished);
+                                    } catch (const persistence::StoreError&) {
+                                        // save() already latched storage_failed and
+                                        // requested cancellation. Keep the loop's own
+                                        // outcome: the terminal error below reports it
+                                        // as primary_outcome instead of rewriting it to
+                                        // Failed, and run_owned still rethrows failure.
+                                    }
+                                }
                                 break;
                         }
                     }}, run_stop.get_token());
@@ -1346,9 +1386,15 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             // including cancellation when ordinary run saves are disabled.
             if (input->operation != InputOperation::Compact && !storage_failed && !run_saved
                 && (config.save_run || result.status == loop::RunStatus::Cancelled)) {
-                co_await save(config.save_run
-                    ? persistence::Boundary::RunFinished
-                    : persistence::Boundary::Cancelled);
+                try {
+                    co_await save(config.save_run
+                        ? persistence::Boundary::RunFinished
+                        : persistence::Boundary::Cancelled);
+                } catch (const persistence::StoreError&) {
+                    // Latched by save(). This used to escape consume() and stop the
+                    // transport without any terminal diagnostic; the storage_failed
+                    // branch below now reports the outcome consistently.
+                }
             }
             active = false;
             {
@@ -1358,14 +1404,16 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             if (storage_failed) {
                 // Preserve the last known recovery file; never overwrite failure evidence.
                 stopping = true;
-                Json diagnostic = {{"message", "required snapshot failed; worker is stopping"},
-                    {"durable", false}};
-                if (optional_storage_failure) {
-                    diagnostic["message"] = "archive storage outcome is uncertain; worker is stopping";
-                    diagnostic["storage_error"] = *optional_storage_failure;
-                    diagnostic["primary_outcome"] = {{"status", run_status(result.status)},
-                        {"error", result.error}, {"operation", failure_operation}};
-                }
+                Json diagnostic = {
+                    {"message", optional_storage_failure
+                        ? "archive storage outcome is uncertain; worker is stopping"
+                        : "required snapshot failed; worker is stopping"},
+                    {"durable", false},
+                    {"primary_outcome", {
+                        {"status", run_status(result.status)},
+                        {"error", result.error},
+                        {"operation", failure_operation}}}};
+                if (optional_storage_failure) diagnostic["storage_error"] = *optional_storage_failure;
                 emit("error", std::move(diagnostic));
             } else {
                 Json finished = {{"status", run_status(result.status)},

@@ -209,12 +209,20 @@ CleanupResult prune(
     const fs::path& root, const std::string& session_id, const ArchiveRef& current,
     const std::vector<ArchiveRef>& referenced, const load::MemoryRetention& policy) {
     CleanupResult result;
-    if (policy.max_archives == 0) {
-        return result;
-    }
+    // Retention deletes files, so it refuses a symlinked root even though
+    // publication through one succeeds; the message names the requirement.
     if (!fs::is_directory(fs::symlink_status(root))) {
-        throw std::invalid_argument("memory cleanup requires an ordinary archive root");
+        throw StoreError("memory cleanup requires an ordinary archive root",
+            Backend::Json, CommitStatus::NotCommitted);
     }
+    const auto current_directory = archive_directory(root, current, session_id);
+    const auto recognized_current = recognize(current_directory, session_id);
+    if (!recognized_current || recognized_current->kind != ArchiveKind::JsonState) {
+        throw StoreError(
+            "current memory archive is missing or has unexpected contents",
+            Backend::Json, CommitStatus::NotCommitted);
+    }
+    if (policy.max_archives == 0) return result;
     struct Candidate {
         fs::path directory;
         std::uintmax_t bytes;
@@ -225,13 +233,7 @@ CleanupResult prune(
         if (!recognized || recognized->kind != ArchiveKind::JsonState) continue;
         candidates.push_back({entry.path(), fs::file_size(recognized->payload)});
     }
-    const auto current_directory = archive_directory(root, current, session_id);
-    const auto protected_entry = std::find_if(candidates.begin(), candidates.end(),
-        [&](const auto& archive) { return archive.directory == current_directory; });
-    if (protected_entry == candidates.end()) {
-        throw std::runtime_error(
-            "current memory archive is missing or has unexpected contents");
-    }
+    // The current archive was recognized above, so it is always a candidate.
     std::set<fs::path> protected_paths{current_directory};
     for (const auto& archive : referenced) {
         protected_paths.insert(archive_directory(root, archive, session_id));

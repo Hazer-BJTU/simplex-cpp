@@ -32,6 +32,7 @@ export default defineConfig({
                 ['Agent loop', '/architecture/agent-loop'],
                 ['State and persistence', '/architecture/state-and-persistence'],
                 ['Persistence backend', '/architecture/persistence-backends'],
+                ['SQLite schema v1', '/architecture/sqlite-schema-v1'],
                 ['Security', '/architecture/security'],
             ]),
             group('Build from source', [

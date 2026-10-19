@@ -62,7 +62,7 @@ uncertain publication; transport failure does not imply no change occurred.
 | `inspect` | None | Returns status, revision, config path, source/effective configuration and captured startup data when ready. Does not create missing allocations. |
 | `capture_startup` | `lifecycle_id`, `expected_revision` | Captures the effective configuration for that lifecycle. Refuses a changed capture under the same lifecycle ID. |
 | `clean_fork` | `source: {allocation_id, directory, lifecycle_id, revision}`; optional `refresh` | Creates the requested child allocation from a captured parent startup on the same target. Never copies runtime state or archives. |
-| `read_state` | None | Returns `{backend: "json" | "sqlite", state, readable}`; SQLite also includes current revision and operation ID when present. Missing state/readable exports are null; corruption is an error. Complete state, including compatible unknown JSON fields, is retained. |
+| `read_state` | None | Returns `{backend: "json" \| "sqlite", state, readable}`; SQLite also includes current revision and operation ID when present. Missing state/readable exports are null; corruption is an error. Complete state, including compatible unknown JSON fields, is retained. |
 | `remove` | None | Requires exclusive allocation ownership and no legacy worker lock. Deletes the target root and retires the allocation; repeat removal is safe. |
 
 `refresh` is an object with optional `client_endpoint`, `confirmation_endpoint`,
@@ -344,8 +344,9 @@ Old sessions and launch profiles continue using their existing layout. There is
 **no automatic migration or adoption**. Applying managed configuration to a legacy
 session with worker artifacts is refused; create a fresh session instead. Do not
 copy a generated managed `config.yaml` between directories or delete
-`allocation.json` to bypass lifecycle checks. Phase C completes managed subagent
-storage and the final deployment/migration audit.
+`allocation.json` to bypass lifecycle checks. Managed subagent storage and the
+deployment/migration audit below are part of the 1.0 release; later changes must
+preserve the allocation contract above.
 
 ## Managed clean-fork and family recovery
 

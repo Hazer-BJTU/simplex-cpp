@@ -69,7 +69,7 @@ struct Configuration {
     /** Refreshed from startup configuration even for restored sessions. */
     RuntimeEnvironment environment;
     bool persistence = true;
-    /// Explicit json/sqlite, or auto: preserve existing storage; empty selects SQLite.
+    /// Omitted selects automatically; an explicit value must be json or sqlite.
     std::string persistence_backend = "auto";
     /** Direct session root; the worker never appends a session ID. */
     std::filesystem::path storage;

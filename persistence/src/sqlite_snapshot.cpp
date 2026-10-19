@@ -693,6 +693,9 @@ model_io::MessageItem decode_message(
 std::int64_t message_for_slot(
     sqlite::Database& database, const char* column, std::int64_t owner_id,
     const char* slot) {
+    // `column` and `slot` are codec constants chosen by this translation unit,
+    // never user input, so the SQL text is assembled from them rather than
+    // binding an identifier. Keep it that way if this helper ever moves.
     // The step index is partial. State its predicate explicitly: SQLite does
     // not infer slot <> 'user_input' from a different slot equality.
     const std::string sql =

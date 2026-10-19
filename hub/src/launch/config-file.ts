@@ -205,7 +205,11 @@ export function sessionStateBackend(config: { dataDir: string }, sessionId: stri
     const json = existsSync(join(directory, 'state.json'));
     const sqlite = existsSync(join(directory, 'state.sqlite3'));
     const selected = explicit ?? (format === 'json' ? 'json' : undefined);
-    if ((selected === 'json' && sqlite && !json) || (selected === 'sqlite' && json && !sqlite)
-        || (!selected && json && sqlite)) throw new Error('ambiguous or incompatible persistence backend');
+    // Both stores present: any selection would abandon the other history, so
+    // inspection refuses the directory exactly like backend selection does.
+    if (json && sqlite) throw new Error('both JSON and SQLite stores exist; remove or migrate one before inspection');
+    if ((selected === 'json' && sqlite) || (selected === 'sqlite' && json)) {
+        throw new Error('selected persistence backend conflicts with existing history');
+    }
     return selected ?? (json ? 'json' : 'sqlite');
 }

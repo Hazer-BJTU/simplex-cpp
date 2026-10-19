@@ -58,7 +58,7 @@ export async function validateTree(directory: string, platform: WorkerPlatform):
         'share/certs/ca-certificates.crt', 'share/openssl/openssl.cnf',
     ] : [];
     for (const file of [
-        'bin/simplex', 'bin/simplex_worker', 'bin/config.example.yaml',
+        'bin/simplex', 'bin/simplex_worker', 'bin/simplex_manager', 'bin/config.example.yaml',
         'bin/prompts/coding_agent.yaml', 'bin/prompts/operations/compact.yaml',
         'bin/schemas/process/skill.yaml', 'bin/schemas/process/run_command.yaml',
         'bin/schemas/process/spawn_process.yaml', 'bin/schemas/process/read_process.yaml',
@@ -70,7 +70,7 @@ export async function validateTree(directory: string, platform: WorkerPlatform):
     }
     const platformExecutables = platform === 'linux-amd64-bundled'
         ? ['bin/simplex_worker.bin', 'lib/ld-musl-x86_64.so.1'] : [];
-    for (const executable of ['bin/simplex', 'bin/simplex_worker', ...platformExecutables]) {
+    for (const executable of ['bin/simplex', 'bin/simplex_worker', 'bin/simplex_manager', ...platformExecutables]) {
         const path = join(directory, executable);
         if (((await lstat(path)).mode & 0o111) === 0) throw new Error(`Not executable: ${executable}`);
         await access(path, constants.X_OK);

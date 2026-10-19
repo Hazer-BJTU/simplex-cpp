@@ -65,7 +65,8 @@ extern "C" int fsync(int descriptor) {
 
 namespace {
 enum class Scenario { Success, Cancel, ModelFailure, Empty, Tools, ArchiveFailure,
-                      SaveFailure, PublishedSaveFailure, Disabled, Blocked, Projection, NoTurns,
+                      SaveFailure, PublishedSaveFailure, FinalRunSaveFailure,
+                      Disabled, Blocked, Projection, NoTurns,
                       Oversized, Ineffective, BudgetExceeded, AllowanceExceeded, RepeatFailure, RepeatCancel, CleanupFailure };
 
 std::string read_file(const std::filesystem::path& path) {
@@ -195,6 +196,11 @@ struct Model : llm::LLMModel {
         if (scenario == Scenario::PublishedSaveFailure) {
             snapshot_sync_failure.arm(snapshot.parent_path());
         }
+        if (scenario == Scenario::FinalRunSaveFailure) {
+            // The run issues no earlier checkpoint in this fixture, so the
+            // terminal RunFinished barrier is the next directory sync.
+            snapshot_sync_failure.arm(snapshot.parent_path());
+        }
 #endif
         co_return response;
     }
@@ -230,7 +236,7 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
     config.state_directory = config.storage / "state";
     config.memory = config.storage / "memory";
     config.compact_prompt = "COMPACT INSTRUCTION";
-    config.save_run = false;
+    config.save_run = mode == Scenario::FinalRunSaveFailure;
     config.save_step = false;
     config.save_shutdown = false;
     // Accepted compatibility setting: it must neither export readable.md nor
@@ -346,6 +352,14 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
             } else if (name == "error" && (mode == Scenario::SaveFailure || mode == Scenario::PublishedSaveFailure)) {
                 ++storage_errors;
                 BOOST_TEST(event["data"]["durable"] == false);
+                BOOST_TEST(event["data"].contains("primary_outcome"));
+            } else if (name == "error" && mode == Scenario::FinalRunSaveFailure) {
+                ++storage_errors;
+                BOOST_TEST(event["data"]["durable"] == false);
+                BOOST_TEST(event["data"]["primary_outcome"]["status"] == "completed");
+                BOOST_TEST(event["data"]["primary_outcome"]["operation"] == "task");
+                BOOST_TEST(event["data"]["message"].get<std::string>().find(
+                    "required snapshot failed") != std::string::npos);
             } else if (name == "history") {
                 BOOST_TEST(event["data"]["total"] == 1);
                 BOOST_TEST(event["data"]["turns"][0]["user"][0]["raw"] == "Original user request");
@@ -491,6 +505,18 @@ void scenario(Scenario mode, std::size_t summary_bytes = 0) {
     io.run();
     second.join();
     server.get();
+    if (mode == Scenario::FinalRunSaveFailure) {
+        // The run completed; only the terminal durability barrier failed. The
+        // application still fails (run_owned rethrows), but the wire reports the
+        // completed outcome instead of rewriting it to failed.
+        BOOST_CHECK_THROW(worker.get(), persistence::StoreError);
+        BOOST_TEST(successful == 0);
+        // The fixture's initial compact attempt still reports its own (failed)
+        // run_finished; the message run itself reports only the storage error.
+        BOOST_TEST(finished == 1);
+        BOOST_TEST(storage_errors == 1);
+        return;
+    }
     if (mode == Scenario::PublishedSaveFailure) {
         // The store keeps the codec's diagnostic text but reports the recovery
         // outcome explicitly: rename succeeded, directory sync did not.
@@ -634,5 +660,9 @@ BOOST_AUTO_TEST_CASE(cleanup_failure_does_not_replace_provider_failure) { scenar
 #if defined(__linux__)
 BOOST_AUTO_TEST_CASE(published_snapshot_failure_protects_both_recovery_candidates) {
     scenario(Scenario::PublishedSaveFailure);
+}
+
+BOOST_AUTO_TEST_CASE(final_barrier_failure_keeps_the_completed_outcome) {
+    scenario(Scenario::FinalRunSaveFailure);
 }
 #endif

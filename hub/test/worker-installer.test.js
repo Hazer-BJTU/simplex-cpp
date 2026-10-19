@@ -48,6 +48,7 @@ async function fixture(t, { version = '0.2.0', broken = false, platform = 'linux
         await writeFile(join(tree, file), 'fixture');
     }
     await writeFile(join(tree, 'bin/simplex'), '#!/bin/bash\nexec "$(dirname "$0")/simplex_worker" "$@"\n', { mode: 0o755 });
+    await writeFile(join(tree, 'bin/simplex_manager'), '#!/bin/bash\nprintf "manager help\\n"\n', { mode: 0o755 });
     await writeFile(join(tree, 'bin/simplex_worker'), '#!/bin/bash\nprintf "worker help\\n"\n', { mode: broken ? 0o644 : 0o755 });
     if (platform === 'linux-amd64-bundled') {
         await mkdir(join(tree, 'share/certs'), { recursive: true });
@@ -747,7 +748,7 @@ test('broken bundled runtime validation leaves the current standard installation
     const bundle = await fixture(t, { platform: 'linux-amd64-bundled', broken: true });
     await assert.rejects(install({ ...bundle, home: standard.home, destination: standard.destination }), /Not executable/);
     assert.equal((await readInstalled(standard.destination)).platform, standard.selected.platform);
-    for (const file of ['bin/simplex_worker.bin', 'lib/ld-musl-x86_64.so.1', 'lib/libssl.so.3', 'lib/libcrypto.so.3',
+    for (const file of ['bin/simplex_manager', 'bin/simplex_worker.bin', 'lib/ld-musl-x86_64.so.1', 'lib/libssl.so.3', 'lib/libcrypto.so.3',
         'share/certs/ca-certificates.crt', 'share/openssl/openssl.cnf']) {
         const valid = await fixture(t, { platform: 'linux-amd64-bundled' });
         await rm(join(valid.tree, file));

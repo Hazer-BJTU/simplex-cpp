@@ -26,13 +26,27 @@ BOOST_FIXTURE_TEST_CASE(selection_matrix_preserves_existing_history, Scratch) {
     BOOST_CHECK_THROW(select_backend(root, "sqlite"), std::runtime_error);
     std::ofstream(root / "state.sqlite3") << "invalid database";
     BOOST_CHECK_THROW(select_backend(root), std::runtime_error);
-    BOOST_CHECK(select_backend(root, "sqlite") == Backend::Sqlite);
-    BOOST_CHECK(select_backend(root, "json") == Backend::Json);
+    // Both stores present: no explicit choice can pick one without abandoning
+    // the other history, so selection is refused for every setting.
+    BOOST_CHECK_THROW(select_backend(root, "sqlite"), std::runtime_error);
+    BOOST_CHECK_THROW(select_backend(root, "json"), std::runtime_error);
     std::filesystem::remove(root / "state.json");
     BOOST_CHECK(select_backend(root) == Backend::Sqlite);
     BOOST_CHECK_THROW(select_backend(root, "json"), std::runtime_error);
     BOOST_CHECK_THROW(persistence::inspect_sqlite_current(root), std::exception);
     BOOST_CHECK_THROW(select_backend(root, "unknown"), std::invalid_argument);
+}
+
+BOOST_FIXTURE_TEST_CASE(inspection_refuses_a_symlinked_store, Scratch) {
+    // Manager inspection applies the worker's rule: a link is not this session's
+    // database, even when its target happens to be readable.
+    std::filesystem::create_directories(root / "elsewhere");
+    std::ofstream(root / "elsewhere" / "state.sqlite3") << "not a store";
+    std::filesystem::create_directories(root / "session");
+    std::filesystem::create_symlink(root / "elsewhere" / "state.sqlite3",
+        root / "session" / "state.sqlite3");
+    BOOST_CHECK_THROW(persistence::inspect_sqlite_current(root / "session"),
+        std::runtime_error);
 }
 
 BOOST_FIXTURE_TEST_CASE(inspection_preserves_complete_current_state_and_revision, Scratch) {

@@ -590,7 +590,12 @@ describe('panel API', () => {
         writeFileSync(path, 'persistence:\n  state: ../../elsewhere\n');
         const invalid = await api('/api/sessions/custom-snapshot/snapshot');
         assert.equal(invalid.body.state, null);
-        assert.match(invalid.body.state_error, /cannot resolve/);
+        assert.match(invalid.body.state_error, /cannot inspect the session state: .*persistence\.state/);
+        writeFileSync(path, 'persistence:\n  state: checkpoints\n');
+        writeFileSync(join(root, 'checkpoints/state.sqlite3'), '');
+        const conflict = await api('/api/sessions/custom-snapshot/snapshot');
+        assert.equal(conflict.body.state, null);
+        assert.match(conflict.body.state_error, /both JSON and SQLite/);
     });
 
     it('handles heartbeat, unknown sessions, and unknown message types', async () => {

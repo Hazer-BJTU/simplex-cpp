@@ -20,8 +20,9 @@ Dataclass, loop, tool and provider code stay independent of the backend.
   before the worker continues, so a checkpoint can never be fire-and-forget.
 - `checkpoint` and `commit_compaction` report `NotCommitted`, `Committed` or
   `Unknown`. `Unknown` (for JSON: the rename succeeded but the directory sync
-  failed) stops further writes and is verified after reopening, never retried
-  blindly. Codec and filesystem failures are translated into `StoreError`;
+  failed) stops further writes; the worker never retries it, and the next
+  startup's read-only load decides which candidate survived. Codec and
+  filesystem failures are translated into `StoreError`;
   programming errors such as a foreign reference stay standard exceptions.
 - `reserve_archive` plans an identity during preflight; `begin_archive` freezes
   the original state before summarization; `commit_compaction` publishes the
@@ -32,7 +33,9 @@ Dataclass, loop, tool and provider code stay independent of the backend.
   and archives named by retained state are protected; unknown files, symlinks and
   incomplete directories are untouched, and legacy Markdown archives are never
   candidates at all. `archive_at` maps a historical on-disk payload path to a
-  store record for that protection only.
+  store record for that protection only. Publication accepts a symlinked archive
+  root, but retention requires an ordinary directory and refuses one: deletion
+  never follows a link.
 - There is no memory or archive query surface: nothing here lists, pages, reads
   or searches archives for a client. Retention policy is unchanged by this
   abstraction.
@@ -93,12 +96,16 @@ reported as `Unknown` and that an attempt without its marker is not recognized.
 
 ## SQLite schema v1
 
-PR-C adds the executable schema (`src/sqlite_schema.cpp`), its version and
-migration guard, and the normalized row codec (`src/sqlite_snapshot.cpp`). PR-D adds the
-`StateStore`, checkpoint revisions and worker integration. PR-E adds transactional compaction attempts and archive retention. The owner-confirmed decision record is
+`src/sqlite_schema.cpp` holds the executable schema, its version and migration
+guard; `src/sqlite_snapshot.cpp` is the normalized row codec;
+`src/sqlite_store.cpp` implements the `StateStore`, checkpoint revisions and
+transactional compaction attempts, while `src/json_store.cpp` keeps the JSON
+backend. The owner-confirmed decision record is
 [`docs/architecture/sqlite-schema-v1.md`](../docs/architecture/sqlite-schema-v1.md).
 
-One database belongs to one session at `<state>/state.sqlite3` (D10). A snapshot
+One database belongs to one session at `<state>/state.sqlite3` (D10). The store
+path must be a regular file: a symlinked `state.sqlite3` is refused, and the file
+mode is narrowed through the opened descriptor rather than the path. A snapshot
 is a complete graph: every child row carries `snapshot_id`, and composite
 foreign keys reject a cross-snapshot reference. `snapshots.kind = 'current'` is
 unique per session through the partial index `snapshots_one_current`; archives
@@ -131,7 +138,7 @@ are `kind = 'archive'` and are only inserted, never updated.
 | `system_prompt.heading_level` | `heading_level` | INTEGER; any `int` (deliberately not range-checked) |
 | `extras` | `extras_json` | SQL NULL = absent; `'null'` = engaged null; `'[]'`, `'{}'` or other JSON verbatim |
 | — | `kind` | `current` or `archive` |
-| — | `revision`, `operation_id` | `0` / `''` in PR-C; PR-D owns them |
+| — | `revision`, `operation_id` | current snapshot revision; archives keep the original and replacement revisions |
 
 **Prompt and tools**
 
@@ -220,10 +227,12 @@ cross-snapshot rejection and corruption detection.
 
 New empty sessions default to SQLite at `<state>/state.sqlite3`. Explicit
 `backend: json` retains the JSON adapter. Without a backend selection, an existing
-JSON-only directory stays JSON, SQLite-only stays SQLite, and a directory with
-both requires an explicit choice. Legacy `format: json` selects JSON and conflicts
-with explicit SQLite. Selecting the opposite backend over the sole existing store
-fails, including with `restore: never`. Migration remains deferred.
+JSON-only directory stays JSON and a SQLite-only directory stays SQLite. A
+directory holding both stores is refused for every setting, including an explicit
+backend: honoring one would abandon the other history, and no migration is
+provided, so remove or migrate one store first. Legacy `format: json` selects
+JSON and conflicts with explicit SQLite. Selecting the opposite backend over the
+sole existing store fails, including with `restore: never`.
 
 Manual and automatic compact freeze complete originals in the same database.
 `simplex manage read_state` uses the same C++ mapper in a read-only transaction;

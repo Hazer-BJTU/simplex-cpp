@@ -3,9 +3,13 @@
 #include "persistence/store.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <filesystem>
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <sys/stat.h>
+#include <system_error>
 #include <vector>
 
 namespace persistence::sqlite_schema {
@@ -406,7 +410,31 @@ void create_store(
     transaction.commit();
 }
 
+/** Connection policies for a store we own.
+ *
+ * Applied only after the file identity and layout are accepted. Switching a
+ * foreign database to WAL would create sidecar files and rewrite its header
+ * before it is rejected.
+ */
+void apply_connection_pragmas(sqlite::Database& database) {
+    database.execute("PRAGMA journal_mode = WAL");
+    database.execute("PRAGMA synchronous = FULL");
+}
+
 } // namespace
+
+void require_regular_store_file(const std::filesystem::path& path) {
+    struct stat link {};
+    if (::lstat(path.c_str(), &link) != 0) {
+        throw std::system_error(errno, std::generic_category(), "inspect SQLite store path");
+    }
+    if (S_ISLNK(link.st_mode)) {
+        throw std::runtime_error("SQLite store path must not be a symlink");
+    }
+    if (!S_ISREG(link.st_mode)) {
+        throw std::runtime_error("SQLite store path must be a regular file");
+    }
+}
 
 SchemaError::SchemaError(Reason reason, const std::string& message)
     : std::runtime_error(message), reason_(reason) {}
@@ -418,8 +446,6 @@ StoreIdentity open_store(
     std::string_view created_at) {
     // Required for cross-snapshot integrity; journal/synchronous follow #187 §6.
     database.execute("PRAGMA foreign_keys = ON");
-    database.execute("PRAGMA journal_mode = WAL");
-    database.execute("PRAGMA synchronous = FULL");
 
     const auto file_application_id = pragma_int(database, "PRAGMA application_id");
     if (!has_table(database, "store_meta")) {
@@ -434,6 +460,7 @@ StoreIdentity open_store(
                 "database is not a Simplex session store; refusing to adopt it");
         }
         create_store(database, session_id, created_at);
+        apply_connection_pragmas(database);
         ensure_access_indexes(database);
         return read_identity(database, session_id);
     }
@@ -461,6 +488,7 @@ StoreIdentity open_store(
         check_decodable(identity);
     }
     require_layout(database);
+    apply_connection_pragmas(database);
     ensure_access_indexes(database);
     return identity;
 }

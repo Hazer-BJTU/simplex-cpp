@@ -343,5 +343,23 @@ BOOST_AUTO_TEST_CASE(prune_rejects_a_current_archive_it_cannot_verify) {
     incomplete.archive_id = "00000000000000000002-2026-10-17T000000Z-" + run_identity(2);
     incomplete.payload = scratch.memory() / incomplete.archive_id / "state.json";
     prune.current = incomplete;
-    BOOST_CHECK_THROW((void)store->prune_archives(prune), std::runtime_error);
+    BOOST_CHECK_THROW((void)store->prune_archives(prune), persistence::StoreError);
+}
+
+BOOST_AUTO_TEST_CASE(disabled_retention_still_requires_the_current_archive) {
+    Scratch scratch;
+    auto store = persistence::make_json_store("session-1", {scratch.state(), scratch.memory()});
+    const auto current = archive_once(*store, rich_state(), run_identity(1));
+    ArchivePruneRequest prune;
+    prune.current = current;
+    prune.policy.max_archives = 0;
+    BOOST_TEST(store->prune_archives(prune).removed_archives == 0u);
+
+    // Retention zero must not report success for a store whose own attempt is
+    // missing: the caller would treat that as verified evidence.
+    auto missing = current;
+    missing.archive_id = "00000000000000000009-2026-10-17T000000Z-" + run_identity(9);
+    missing.payload = scratch.memory() / missing.archive_id / "state.json";
+    prune.current = missing;
+    BOOST_CHECK_THROW((void)store->prune_archives(prune), persistence::StoreError);
 }

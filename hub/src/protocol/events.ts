@@ -46,9 +46,9 @@ export const EVENT_TABLE = {
     model_response: { tone: 'assistant', note: 'committed model response display' },
     tool_calls: { tone: 'tool', note: 'calls proposed for a batch', array: true },
     tool_results: { tone: 'tool', note: 'returned batch display', array: true },
-    persisted: { tone: 'muted', note: 'JSON snapshot written' },
+    persisted: { tone: 'muted', note: 'state snapshot written' },
     compact_finished: { tone: 'summary', note: 'context summary durably published' },
-    export_error: { tone: 'warn', note: 'Markdown export failed' },
+    export_error: { tone: 'warn', note: 'optional archive cleanup failed' },
     error: { tone: 'error', note: 'control or storage diagnostic' },
     run_finished: { tone: 'summary', note: 'invocation settled', run: true },
 } as const satisfies Record<string, EventMeta>;

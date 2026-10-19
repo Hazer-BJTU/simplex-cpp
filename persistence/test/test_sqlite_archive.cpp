@@ -101,6 +101,35 @@ BOOST_AUTO_TEST_CASE(original_is_frozen_and_success_is_atomic) {
     BOOST_CHECK_THROW(store->commit_compaction(ref, previous), StoreError);
 }
 
+BOOST_AUTO_TEST_CASE(restarted_writer_can_commit_an_adopted_attempt) {
+    Scratch scratch;
+    ArchiveRef ref;
+    {
+        auto store = make_sqlite_store("test", scratch.root);
+        store->checkpoint(state("checkpoint"), Boundary::RunFinished);
+        ref = prepare(*store, state("original"));
+    }
+    auto resumed = make_sqlite_store("test", scratch.root);
+    const auto base = resumed->load_current()->revision;
+    const auto replacement = state("summary");
+    BOOST_CHECK_NO_THROW(resumed->commit_compaction(ref, replacement, base));
+    BOOST_TEST(Json(resumed->load_current()->state) == Json(replacement));
+    BOOST_TEST(scalar(scratch.root, "SELECT COUNT(*) FROM archives WHERE outcome='succeeded'") == 1);
+}
+
+BOOST_AUTO_TEST_CASE(restarted_writer_can_settle_an_adopted_attempt) {
+    Scratch scratch;
+    ArchiveRef ref;
+    {
+        auto store = make_sqlite_store("test", scratch.root);
+        store->checkpoint(state("checkpoint"), Boundary::RunFinished);
+        ref = prepare(*store, state("original"));
+    }
+    auto resumed = make_sqlite_store("test", scratch.root);
+    BOOST_CHECK_NO_THROW(resumed->finish_archive_attempt(ref, ArchiveOutcome::Cancelled));
+    BOOST_TEST(scalar(scratch.root, "SELECT COUNT(*) FROM archives WHERE outcome='cancelled'") == 1);
+}
+
 BOOST_AUTO_TEST_CASE(stale_or_foreign_attempt_does_not_overwrite_current) {
     Scratch scratch;
     auto store = make_sqlite_store("test", scratch.root);

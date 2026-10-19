@@ -85,6 +85,9 @@ export async function smokeCheck(directory: string, target: WorkerPlatform): Pro
         // Exercise the public router and, for bundled packages, the wrapper's
         // resource lookup. Keep the whole installed directory as published.
         await exec(join(directory, 'bin/simplex'), ['run', '--help'], options);
+        // Managed sessions call the adjacent manager; a pre-1.0 package that
+        // lacks it must fail here instead of at session start.
+        await exec(join(directory, 'bin/simplex_manager'), ['--help'], options);
     } catch (error) {
         const requirements = target === 'linux-amd64-standard'
             ? 'host OpenSSL 3/runtime libraries' : 'bundled loader/runtime libraries';

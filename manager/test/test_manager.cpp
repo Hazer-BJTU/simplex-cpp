@@ -117,9 +117,32 @@ BOOST_FIXTURE_TEST_CASE(snapshot_is_complete_and_corrupt_data_does_not_become_em
     BOOST_TEST(result["state"]["extras"]["large"].get<std::string>().size() == 10 * 1024 * 1024);
     BOOST_TEST(result["state"] == Json(state));
     std::ofstream(path) << "{\"broken\":";
-    BOOST_CHECK_THROW(call("read_state"), manager::Error);
+    BOOST_CHECK_EXCEPTION(call("read_state"), manager::Error,
+        [](const auto& error) { return code(error, "corrupt_storage"); });
     std::ofstream(path) << "{}";
-    BOOST_CHECK_THROW(call("read_state"), std::exception);
+    BOOST_CHECK_EXCEPTION(call("read_state"), manager::Error,
+        [](const auto& error) { return code(error, "corrupt_storage"); });
+}
+
+BOOST_FIXTURE_TEST_CASE(configuration_types_and_record_corruption_are_classified, Fixture) {
+    request["configuration"] = "persistence:\n  state: 42\n  memory: memory\n";
+    BOOST_CHECK_EXCEPTION(call("prepare"), manager::Error,
+        [](const auto& error) { return code(error, "invalid_configuration"); });
+
+    request["configuration"] = "persistence:\n  state: state\n  memory: memory\n";
+    call("prepare");
+    // A tampered allocation record is stored-state corruption, not a bad request.
+    const auto record = root.parent_path() / ".simplex-manager"
+        / (root.filename().string() + ".json");
+    Json document;
+    {
+        std::ifstream input(record);
+        document = Json::parse(input);
+    }
+    document["refresh"] = "not-an-object";
+    std::ofstream(record) << document.dump();
+    BOOST_CHECK_EXCEPTION(call("read_state"), manager::Error,
+        [](const auto& error) { return code(error, "corrupt_storage"); });
 }
 
 BOOST_FIXTURE_TEST_CASE(startup_capture_is_revision_checked_and_lifecycle_scoped, Fixture) {

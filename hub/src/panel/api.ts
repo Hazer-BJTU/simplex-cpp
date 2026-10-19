@@ -545,17 +545,27 @@ export function createPanelApi({
         let directory: string;
         try {
             directory = sessionStateDirectory(config, session.id);
-            if (sessionStateBackend(config, session.id) === 'sqlite') {
+            const backend = sessionStateBackend(config, session.id);
+            const hasJson = existsSync(join(directory, 'state.json'));
+            const hasSqlite = existsSync(join(directory, 'state.sqlite3'));
+            if (!hasJson && !hasSqlite) {
+                return { session_id: session.id, backend, state: null, readable: null, files: {},
+                    state_error: 'no state has been persisted for this session yet' };
+            }
+            if (backend === 'sqlite') {
                 return { session_id: session.id, backend: 'sqlite', state: null, readable: null, files: {},
                     state_error: 'SQLite inspection requires a managed launcher; legacy local file inspection cannot decode this store' };
             }
-        } catch {
+        } catch (error) {
+            // Keep the underlying diagnostic (backend conflict, invalid config)
+            // instead of collapsing every failure into a missing directory.
+            const detail = error instanceof Error ? error.message : String(error);
             return { session_id: session.id, state: null, readable: null, files: {},
-                state_error: 'cannot resolve the session state directory from config/config.yaml' };
+                state_error: `cannot inspect the session state: ${detail}` };
         }
         const statePath = join(directory, 'state.json');
         const readablePath = join(directory, 'readable.md');
-        const result: SnapshotView = { session_id: session.id, state: null, readable: null, files: {} };
+        const result: SnapshotView = { session_id: session.id, backend: 'json', state: null, readable: null, files: {} };
         if (existsSync(statePath) && statSync(statePath).size <= SNAPSHOT_MAX_BYTES) {
             result.files.state = statePath;
             try {

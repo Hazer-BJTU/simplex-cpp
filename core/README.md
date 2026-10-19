@@ -294,8 +294,9 @@ writes or model execution. Retained prompts, tools and exact memory wrapper/path
 bytes determine the summary allowance, capped at 32 KiB. The instruction states
 that allowance; generated output must still pass size and 10% reduction checks.
 This byte policy is independent of the provider's token-window setting.
-Injected memory identifies the absolute archive directory for later tool-based
-lookup. The compact instruction is loaded from
+Injected memory names the absolute archive directory and payload when the backend
+stores archives as files; with SQLite storage the prompt refers to the archived
+attempt without a filesystem path. The compact instruction is loaded from
 [prompts/operations/compact.yaml](prompts/operations/compact.yaml) at startup.
 
 ## Optional hub remote-call toolset

@@ -114,6 +114,7 @@ function describe(action: Pending['action'], options: { processGroup: boolean })
                 title: 'Delete this session?',
                 body: 'The entire session directory is deleted, including its configuration,'
                     + ' snapshots, memory archives, logs, and any tool-created files inside it.'
+                    + ' The managed allocation on its target is retired as well.'
                     + ' This cannot be undone.',
                 confirm: 'Delete',
                 danger: true,

@@ -13,14 +13,18 @@ Backend select_backend(
     }
     const bool json = std::filesystem::exists(directory / "state.json");
     const bool sqlite = std::filesystem::exists(directory / "state.sqlite3");
+    if (json && sqlite) {
+        // Two stores cannot be reconciled by a setting: honoring either choice
+        // would silently abandon the other history.
+        throw std::runtime_error(
+            "both JSON and SQLite stores exist; remove or migrate one before "
+            "selecting persistence.backend (migration is unavailable)");
+    }
     if (selection.empty() || selection == "auto") {
-        if (json && sqlite) {
-            throw std::runtime_error("both JSON and SQLite stores exist; select persistence.backend explicitly");
-        }
         return json ? Backend::Json : Backend::Sqlite;
     }
     const bool wants_json = selection == "json";
-    if ((wants_json && sqlite && !json) || (!wants_json && json && !sqlite)) {
+    if ((wants_json && sqlite) || (!wants_json && json)) {
         throw std::runtime_error(
             "backend selection conflicts with existing history; keep its backend "
             "or use an empty directory (migration is unavailable)");
@@ -33,6 +37,9 @@ std::optional<StoredState> inspect_sqlite_current(const std::filesystem::path& d
     if (!std::filesystem::exists(path)) {
         return std::nullopt;
     }
+    // Same rule as the worker's store: a link is not this session's database,
+    // even when its target happens to be readable.
+    sqlite_schema::require_regular_store_file(path);
     sqlite::Database database(path.string(), sqlite::OpenMode::ReadOnly);
     sqlite::Transaction transaction(database);
     auto owner = database.prepare("SELECT session_id FROM sessions");

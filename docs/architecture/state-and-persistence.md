@@ -57,16 +57,18 @@ single-writer with serialized operations. Current-state I/O runs on a dedicated
 storage executor and is awaited by the worker. `core` asks for a checkpoint, a
 reserved archive, a compaction commit or a retention pass; the storage format
 stays inside the backend. New empty sessions default to SQLite. Existing JSON-only
-storage remains JSON when backend selection is omitted. Explicit choices never
-silently migrate or abandon existing history. See [Persistence backend](persistence-backends.md).
+storage remains JSON when backend selection is omitted. A directory holding both
+stores is refused for every setting: selecting one would abandon the other
+history, and no migration is provided. See [Persistence backend](persistence-backends.md).
 
 Every store operation is synchronous. A checkpoint or compaction commit reports
 one of three outcomes: `NotCommitted` (the previous state is still
 authoritative), `Committed`, or `Unknown` (publication may have happened with
 uncertain crash durability). The worker stops writing on a failure and keeps its
-recovery evidence instead of retrying blindly, and it verifies an `Unknown`
-outcome after reopening. Codec and filesystem failures surface as a store error;
-only a programming error stays outside that contract. A backend that exposes a
+recovery evidence instead of retrying blindly. Codec and filesystem failures
+surface as a store error; only a programming error stays outside that contract.
+The worker itself never retries an `Unknown` commit: it stops writing, and the
+next startup's read-only load decides which candidate survived. A backend that exposes a
 revision must refuse a stale write; the JSON backend exposes none and rejects an
 expectation instead of ignoring it.
 
@@ -171,8 +173,9 @@ launch support, request deduplication, recovery and cleanup limits.
 New templates explicitly select SQLite. Saved Hub worker configurations are not
 rewritten on upgrade. Legacy `format: json` selects JSON; remove this alias only
 when deliberately creating a separate empty SQLite session. With neither setting,
-JSON-only and SQLite-only stores are detected, empty storage selects SQLite, and
-both stores require an explicit choice. `restore: never` still validates the
+JSON-only and SQLite-only stores are detected, empty storage selects SQLite, and a
+directory holding both is refused for every setting; remove or migrate one store
+first. `restore: never` still validates the
 selected store and its session identity before starting fresh. Persistence disabled
 creates no database. Clean-fork copies startup policy, never current state, WAL,
 or archives; each child owns an independent directory and store. An omitted
@@ -185,7 +188,10 @@ file or fall back to a local copy. JSON results remain complete on the managemen
 pipe. Inspector rendering is a preview, not a database download. No archive
 browsing, migration, or cross-backend export command is provided in this release.
 
-Use a local filesystem supported by SQLite WAL. For a consistent backup, stop the
-worker, ensure all manager readers have finished, then copy the whole session
-directory including any WAL/SHM files. Never copy only a live `state.sqlite3`.
-Keep JSON sessions on JSON until explicit migration tooling is available.
+Use a local filesystem supported by SQLite WAL. The store must stay an ordinary
+file inside the session directory: a symlinked `state.sqlite3` is refused by the
+worker and by manager inspection, so link or mount the directory rather than the
+database. For a consistent backup, stop the worker, ensure all manager readers
+have finished, then copy the whole session directory including any WAL/SHM files.
+Never copy only a live `state.sqlite3`. Keep JSON sessions on JSON until explicit
+migration tooling is available.

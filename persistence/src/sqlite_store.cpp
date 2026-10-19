@@ -7,10 +7,12 @@
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <limits>
+#include <string_view>
 #include <system_error>
 #include <unordered_map>
 #include <set>
@@ -32,6 +34,38 @@ private:
     int value_;
 };
 
+/** Mutations must finish without producing a row; a row means the statement was
+ * truncated or the wrong statement ran. */
+void step_done(sqlite::Statement& statement, const char* action) {
+    if (statement.step() != sqlite::StepResult::Done) {
+        throw std::runtime_error(std::string("SQLite ") + action + " did not complete");
+    }
+}
+
+/** Single-row queries must produce exactly one row before columns are read. */
+void require_row(sqlite::Statement& statement, const char* action) {
+    if (statement.step() != sqlite::StepResult::Row) {
+        throw std::runtime_error(std::string("SQLite ") + action + " returned no row");
+    }
+}
+
+/** Refuse a widely readable store file and narrow it through the opened
+ * descriptor; creation already uses 0600, but a copied directory may be wider.
+ * The path check repeats the caller's test so the O_NOFOLLOW open below is the
+ * last word on a link that appeared in between. */
+void require_private_file(const std::filesystem::path& path) {
+    sqlite_schema::require_regular_store_file(path);
+    Descriptor file(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    struct stat info {};
+    if (::fstat(file.get(), &info) != 0) {
+        throw std::system_error(errno, std::generic_category(), "inspect SQLite store permissions");
+    }
+    if ((info.st_mode & 077) == 0) return;
+    if (::fchmod(file.get(), 0600) != 0) {
+        throw std::system_error(errno, std::generic_category(), "restrict SQLite store permissions");
+    }
+}
+
 /** A fresh connection per operation avoids retaining a failed transaction. */
 class SqliteStore final : public StateStore {
 public:
@@ -47,6 +81,7 @@ public:
                 require_new_sqlite_directory();
                 return std::nullopt;
             }
+            sqlite_schema::require_regular_store_file(path_);
             sqlite::Database database(path_.string(), sqlite::OpenMode::ReadOnly);
             sqlite::Transaction transaction(database);
             sqlite_schema::inspect_store(database, session_);
@@ -105,9 +140,9 @@ public:
             metadata.bind_int64(1, static_cast<std::int64_t>(revision));
             metadata.bind_text(2, operation);
             metadata.bind_int64(3, snapshot);
-            metadata.step();
+            step_done(metadata, "archive snapshot metadata");
             auto sequence = database.prepare("SELECT COALESCE(MAX(sequence), 0) FROM archives");
-            sequence.step();
+            require_row(sequence, "archive sequence");
             const auto previous = sequence.column_int64(0);
             if (previous == std::numeric_limits<std::int64_t>::max()) {
                 throw std::overflow_error("SQLite archive sequence exhausted");
@@ -125,7 +160,7 @@ public:
             if (attempt.call_id.empty()) insert.bind_null(7);
             else insert.bind_text(7, attempt.call_id);
             insert.bind_text(8, utc_timestamp());
-            insert.step();
+            step_done(insert, "archive insert");
             return revision;
         });
     }
@@ -158,9 +193,9 @@ public:
                 "WHERE archive_id = ?2");
             settle.bind_int64(1, static_cast<std::int64_t>(revision));
             settle.bind_text(2, archive.archive_id);
-            settle.step();
+            step_done(settle, "compaction settlement");
             return revision;
-        });
+        }, archive.archive_id);
     }
 
     void finish_archive_attempt(const ArchiveRef& archive, ArchiveOutcome outcome) override {
@@ -179,9 +214,14 @@ public:
                 "UPDATE archives SET outcome = ?1 WHERE archive_id = ?2 AND outcome = 'prepared'");
             update.bind_text(1, label);
             update.bind_text(2, archive.archive_id);
-            update.step();
+            step_done(update, "archive settlement");
             return current_metadata(database).first;
-        });
+        }, archive.archive_id);
+    }
+
+    /** Failure-path cleanup for an attempt rejected before T1; must not throw. */
+    void release_archive(const ArchiveRef& archive) override {
+        reservations_.erase(archive.archive_id);
     }
 
     CleanupResult prune_archives(const ArchivePruneRequest& request) override {
@@ -224,16 +264,16 @@ public:
                 if (kept < request.policy.max_archives) { ++kept; continue; }
                 auto remove = database.prepare("DELETE FROM archives WHERE archive_id = ?1");
                 remove.bind_text(1, candidate.id);
-                remove.step();
+                step_done(remove, "archive delete");
                 auto graph = database.prepare("DELETE FROM snapshots WHERE snapshot_id = ?1");
                 graph.bind_int64(1, candidate.snapshot);
-                graph.step();
+                step_done(graph, "archive graph delete");
                 ++result.removed_archives;
             }
             // removed_bytes is zero: released database pages remain reusable,
             // and this operation does not promise to shrink the physical file.
             return current_metadata(database).first;
-        });
+        }, request.current.archive_id);
         return result;
     }
 
@@ -295,26 +335,30 @@ private:
         update.bind_int64(1, static_cast<std::int64_t>(previous + 1));
         update.bind_text(2, operation);
         update.bind_int64(3, snapshot);
-        update.step();
+        step_done(update, "current snapshot metadata");
         return previous + 1;
     }
 
     /** One short durable mutation. No connection or transaction survives a call.
      * A first writer reconciles abandoned prepared attempts in the same commit;
-     * load_current remains strictly read-only. Unknown commits latch every write,
-     * including optional settlement/retention, to preserve both recovery candidates.
+     * load_current remains strictly read-only. The archive explicitly targeted by
+     * this mutation is preserved: a restarted process may settle or commit an
+     * attempt it adopted, and reconciling that row first would make the call fail
+     * (commit) or silently match nothing (settlement). Unknown commits latch every
+     * write, including optional settlement/retention, to keep both recovery
+     * candidates.
      */
     template<class Mutation>
-    CommitReceipt write(const char* action, Mutation mutation) {
+    CommitReceipt write(const char* action, Mutation mutation, std::string_view target = {}) {
         if (uncertain_) {
             throw StoreError("reopen SQLite store after an uncertain commit", backend(), CommitStatus::Unknown);
         }
         const auto operation = boost::uuids::to_string(boost::uuids::random_generator()());
         bool committing = false;
+        bool created = false;
         try {
             std::filesystem::create_directories(path_.parent_path());
             if (!std::filesystem::exists(path_)) require_new_sqlite_directory();
-            bool created = false;
             const int descriptor = ::open(path_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
             if (descriptor >= 0) {
                 Descriptor file(descriptor);
@@ -322,13 +366,16 @@ private:
             } else if (errno != EEXIST) {
                 throw std::system_error(errno, std::generic_category(), "create SQLite store");
             }
+            // Refuse a pre-existing link before SQLite follows it: the create
+            // attempt above cannot produce one, and sqlite3_open_v2 would follow a
+            // link instead of failing — for a dangling link it creates the target.
+            sqlite_schema::require_regular_store_file(path_);
             sqlite::Database database(path_.string());
             if (!created) sqlite_schema::inspect_store(database, session_);
+            require_private_file(path_);
             sqlite_schema::open_store(database, session_, utc_timestamp());
             sqlite::Transaction transaction(database);
-            if (!reconciled_) {
-                database.execute("UPDATE archives SET outcome = 'interrupted' WHERE outcome = 'prepared'");
-            }
+            if (!reconciled_) reconcile(database, target);
             const auto revision = mutation(database, operation);
             committing = true;
             transaction.commit();
@@ -339,10 +386,40 @@ private:
             reconciled_ = true;
             return {backend(), CommitStatus::Committed, operation, revision};
         } catch (const std::exception& error) {
+            if (created && !committing) {
+                // The transaction never committed: do not leave an empty file or
+                // its WAL sidecars that later loads or the manager would treat as
+                // part of the store.
+                ::unlink(path_.c_str());
+                std::error_code ignored;
+                std::filesystem::remove(path_.string() + "-wal", ignored);
+                std::filesystem::remove(path_.string() + "-shm", ignored);
+            }
             uncertain_ = committing;
             throw StoreError(std::string("SQLite ") + action + " " + operation
                 + (committing ? " (unknown): " : " (not_committed): ") + error.what(),
                 backend(), committing ? CommitStatus::Unknown : CommitStatus::NotCommitted, operation);
+        }
+    }
+
+    /** Mark attempts a previous process left prepared as interrupted.
+     *
+     * `target` names the archive this mutation is about; it stays prepared so an
+     * explicit commit or settlement still matches its row. Every other prepared
+     * attempt belongs to a process that is gone and becomes recovery evidence.
+     */
+    void reconcile(sqlite::Database& database, std::string_view target) {
+        auto pending = database.prepare("SELECT archive_id FROM archives WHERE outcome = 'prepared'");
+        std::vector<std::string> abandoned;
+        while (pending.step() == sqlite::StepResult::Row) {
+            auto id = pending.column_text(0);
+            if (id != target) abandoned.push_back(std::move(id));
+        }
+        for (const auto& id : abandoned) {
+            auto update = database.prepare(
+                "UPDATE archives SET outcome = 'interrupted' WHERE archive_id = ?1 AND outcome = 'prepared'");
+            update.bind_text(1, id);
+            step_done(update, "archive reconciliation");
         }
     }
 

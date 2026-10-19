@@ -14,8 +14,9 @@ Browser / operator
         │ (worker initiates every connection)
         ▼
    core::Application
-        ├── load: YAML, plugins, prompts, JSON codec, retention helpers
+        ├── load: YAML, plugins, prompts, JSON codec
         ├── persistence: authoritative state, compact archives, retention
+        ├── manager: target-local allocation records, leases, managed configuration
         ├── io / intercom: routing, queues, reconnecting transport
         ├── loop: request → model → tools → model → settled outcome
         ├── llm: provider instance → endpoint / protocol adapter
@@ -28,8 +29,9 @@ Browser / operator
 | Layer | Owns | Does not own |
 | --- | --- | --- |
 | `core` | Startup, admission, run lifecycle, checkpoints, shutdown | Provider-specific wire parsing |
-| `load` | Config parsing, plugin discovery, JSON codec and retention helpers | A running agent loop |
+| `load` | Config parsing, plugin discovery and JSON codec | A running agent loop |
 | `persistence` | Authoritative state, compact archives and retention through a backend contract | Execution policy or a storage format outside a backend |
+| `manager` | Target-local allocation records, leases and managed configuration resolution | Model execution or Hub session policy |
 | `loop` | Exchange progression, commits, event boundaries, recovery phases | Hub sockets and startup YAML |
 | `model_io` dataclasses | Serializable conversation and loop progress | Live sockets, subscriptions, process handles |
 | `llm` | Configured provider instances and model exchange interfaces | Tool execution and disk saves |

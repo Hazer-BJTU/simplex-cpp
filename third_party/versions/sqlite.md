@@ -48,7 +48,8 @@ Local source files remain excluded from the Docker build context. CI and worker
 release workflows pin the published build-base, build-portable and build-musl
 images by digest. Older images require a separately supplied source directory
 for local verification.
-Application persistence does not yet use SQLite.
+Application persistence uses SQLite through the normalized store described in
+`persistence/README.md`; JSON remains available for existing sessions.
 
 The `test_sqlite` target checks runtime identity, copied text bindings,
 transaction completion/rollback, error handling, connection lifetime, disk

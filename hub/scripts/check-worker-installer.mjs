@@ -40,6 +40,9 @@ try {
         }
         writeFileSync(join(tree, 'bin/simplex'), '#!/bin/bash\nprintf "packed worker help\\n"\n', { mode: 0o755 });
         writeFileSync(join(tree, 'bin/simplex_worker'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
+        // Managed sessions execute the adjacent manager; validateTree() requires
+        // it and the bundled smoke check runs it with --help.
+        writeFileSync(join(tree, 'bin/simplex_manager'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
         if (platform === 'linux-amd64-bundled') {
             for (const folder of ['share/certs', 'share/openssl']) mkdirSync(join(tree, folder), { recursive: true });
             for (const file of ['share/certs/ca-certificates.crt', 'share/openssl/openssl.cnf',

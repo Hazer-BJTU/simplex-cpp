@@ -7,7 +7,8 @@ Keep the directory together: executables locate plugins and libraries relative
 to their own paths.
 
 The adjacent manager is available through `bin/simplex manage --help` for
-target-local storage management. It does not change existing Hub launch behavior.
+target-local storage management. Managed local sessions and fresh native sessions
+use it; saved legacy Hub profiles keep their original local layout.
 
 Extract the archive, then run `bin/simplex run --help` from its root. Create a
 worker configuration from `bin/config.example.yaml`, replace the `YOUR_*`
@@ -27,3 +28,14 @@ source tag and build workflow.
 
 The top-level `LICENSE` and `third_party_licenses/` contain the license notices
 maintained in this repository.
+
+## Verifying a published archive
+
+CI validates every published archive with
+`docker/check-worker-release.sh WORKER_ARCHIVE`. Pass `--layout-only` to check
+the extracted layout, executables and permissions without running any packaged
+binary; use it on hosts that cannot execute the worker, for example when the
+host OpenSSL or the bundled loader is unavailable. Without the flag the script
+also runs the packaged `bin/simplex run --help` and `bin/simplex manage --help`,
+checks shared-library resolution with `ldd -r`, and runs the manager CLI test
+when `python3` is available.

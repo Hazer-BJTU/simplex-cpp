@@ -29,6 +29,14 @@ DirectoryTreeLock::DirectoryTreeLock(const std::filesystem::path& directory) {
                     }
                     break;
                 }
+                if (error == ELOOP || error == ENOTDIR) {
+                    // O_NOFOLLOW reports a symlink ancestor as ELOOP, while
+                    // O_NOFOLLOW|O_DIRECTORY reports it as ENOTDIR. Name the
+                    // requirement instead of surfacing the raw errno.
+                    throw std::invalid_argument(
+                        "directory lock requires ancestors that are ordinary directories, "
+                        "not symlinks or files: " + current.string());
+                }
                 throw std::system_error(error, std::generic_category(), "open directory ancestor");
             }
             try {

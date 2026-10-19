@@ -685,6 +685,7 @@ export class WorkerSupervisor {
     async removeStorage(session: Session, removeLocal: () => void): Promise<void> {
         if (this.deletionBusy(session)) throw new Error('session is busy');
         this.pending.add(session.id);
+        const wasClosing = session.closing;
         session.closing = true;
         const task = (async () => {
             const record = readManagedSession(this.config, session.id);
@@ -698,6 +699,11 @@ export class WorkerSupervisor {
         })();
         this.pendingTasks.set(session.id, task);
         try { await task; }
+        catch (error) {
+            // A failed removal must leave the session startable/deletable again.
+            session.closing = wasClosing;
+            throw error;
+        }
         finally { this.pending.delete(session.id); this.pendingTasks.delete(session.id); }
     }
 

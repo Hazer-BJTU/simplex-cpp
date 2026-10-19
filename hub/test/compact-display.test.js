@@ -22,6 +22,12 @@ for (const bytes of [8192, 32768]) {
         const automatic = normalizeDisplay('compact_finished', { ...source, origin: 'automatic', cycle: 1 });
         assert.equal(parseCompactResult(automatic).summary, source.summary);
         assert.equal(parseCompactResult(automatic).origin, 'automatic');
+        const cleaned = parseCompactResult(normalizeDisplay('compact_finished',
+            { ...source, archive_cleanup: { removed_archives: 2, removed_bytes: 1024 } }));
+        assert.deepEqual(cleaned.archive_cleanup, { removed_archives: 2, removed_bytes: 1024 });
+        const malformed = parseCompactResult({ ...source,
+            archive_cleanup: { removed_archives: -1, removed_bytes: 0 } });
+        assert.equal(malformed.archive_cleanup, undefined);
         const diagnostics = normalizeDisplay('compact_finished', {
             ...source, archive_cleanup_error: 'E'.repeat(4096),
         });
