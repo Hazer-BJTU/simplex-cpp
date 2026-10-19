@@ -565,7 +565,7 @@ export function createPanelApi({
         }
         const statePath = join(directory, 'state.json');
         const readablePath = join(directory, 'readable.md');
-        const result: SnapshotView = { session_id: session.id, state: null, readable: null, files: {} };
+        const result: SnapshotView = { session_id: session.id, backend: 'json', state: null, readable: null, files: {} };
         if (existsSync(statePath) && statSync(statePath).size <= SNAPSHOT_MAX_BYTES) {
             result.files.state = statePath;
             try {

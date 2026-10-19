@@ -13,7 +13,11 @@ export interface CompactResult {
     readonly removed_turns: number;
     readonly revision: number;
     readonly durable: true;
-    /** Retention result reported with the committed replacement, when applied. */
+    /**
+     * Retention result reported with the committed replacement. Parsed and kept
+     * on the projection for clients even though the transcript currently renders
+     * only `archive_cleanup_error`.
+     */
     readonly archive_cleanup?: {
         readonly removed_archives: number;
         readonly removed_bytes: number;

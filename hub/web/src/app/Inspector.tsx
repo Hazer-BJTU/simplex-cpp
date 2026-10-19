@@ -369,8 +369,9 @@ export function Inspector() {
 function snapshotPreview(state: unknown): string {
     const text = JSON.stringify(state, null, 2);
     const limit = 64 * 1024;
-    // Clip at a code-point boundary: slicing UTF-16 units can split a surrogate
-    // pair and render a replacement character before the truncation marker.
-    const points = Array.from(text);
-    return points.length <= limit ? text : `${points.slice(0, limit).join('')}\n… (Inspector preview truncated)`;
+    if (text.length <= limit) return text;
+    // Only the boundary character matters: back off one unit if the cut would
+    // split a surrogate pair instead of materializing the whole text as code points.
+    const cut = /[\uD800-\uDBFF]/.test(text.charAt(limit - 1)) ? limit - 1 : limit;
+    return `${text.slice(0, cut)}\n… (Inspector preview truncated)`;
 }
