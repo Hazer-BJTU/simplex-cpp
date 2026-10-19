@@ -188,7 +188,10 @@ file or fall back to a local copy. JSON results remain complete on the managemen
 pipe. Inspector rendering is a preview, not a database download. No archive
 browsing, migration, or cross-backend export command is provided in this release.
 
-Use a local filesystem supported by SQLite WAL. For a consistent backup, stop the
-worker, ensure all manager readers have finished, then copy the whole session
-directory including any WAL/SHM files. Never copy only a live `state.sqlite3`.
-Keep JSON sessions on JSON until explicit migration tooling is available.
+Use a local filesystem supported by SQLite WAL. The store must stay an ordinary
+file inside the session directory: a symlinked `state.sqlite3` is refused by the
+worker and by manager inspection, so link or mount the directory rather than the
+database. For a consistent backup, stop the worker, ensure all manager readers
+have finished, then copy the whole session directory including any WAL/SHM files.
+Never copy only a live `state.sqlite3`. Keep JSON sessions on JSON until explicit
+migration tooling is available.

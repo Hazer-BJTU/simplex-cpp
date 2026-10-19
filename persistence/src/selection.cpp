@@ -37,6 +37,9 @@ std::optional<StoredState> inspect_sqlite_current(const std::filesystem::path& d
     if (!std::filesystem::exists(path)) {
         return std::nullopt;
     }
+    // Same rule as the worker's store: a link is not this session's database,
+    // even when its target happens to be readable.
+    sqlite_schema::require_regular_store_file(path);
     sqlite::Database database(path.string(), sqlite::OpenMode::ReadOnly);
     sqlite::Transaction transaction(database);
     auto owner = database.prepare("SELECT session_id FROM sessions");

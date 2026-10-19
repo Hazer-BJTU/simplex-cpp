@@ -37,6 +37,18 @@ BOOST_FIXTURE_TEST_CASE(selection_matrix_preserves_existing_history, Scratch) {
     BOOST_CHECK_THROW(select_backend(root, "unknown"), std::invalid_argument);
 }
 
+BOOST_FIXTURE_TEST_CASE(inspection_refuses_a_symlinked_store, Scratch) {
+    // Manager inspection applies the worker's rule: a link is not this session's
+    // database, even when its target happens to be readable.
+    std::filesystem::create_directories(root / "elsewhere");
+    std::ofstream(root / "elsewhere" / "state.sqlite3") << "not a store";
+    std::filesystem::create_directories(root / "session");
+    std::filesystem::create_symlink(root / "elsewhere" / "state.sqlite3",
+        root / "session" / "state.sqlite3");
+    BOOST_CHECK_THROW(persistence::inspect_sqlite_current(root / "session"),
+        std::runtime_error);
+}
+
 BOOST_FIXTURE_TEST_CASE(inspection_preserves_complete_current_state_and_revision, Scratch) {
     BOOST_TEST(!persistence::inspect_sqlite_current(root));
     BOOST_TEST(!std::filesystem::exists(root));

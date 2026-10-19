@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -64,6 +65,16 @@ struct StoreIdentity {
     std::int64_t schema_version = 0;
     std::int64_t codec_version = 0;
 };
+
+/**
+ * Require the store path itself to be an ordinary file.
+ *
+ * Called before SQLite opens the path: `sqlite3_open_v2` follows a symlink, so a
+ * link would read (and, for a dangling one, create) another file. The check is
+ * lexical on the path, not on the opened descriptor; `write()` repeats it and
+ * then opens the file with O_NOFOLLOW, which bounds the race between the two.
+ */
+void require_regular_store_file(const std::filesystem::path& path);
 
 /**
  * Open, create or upgrade the store for one session.

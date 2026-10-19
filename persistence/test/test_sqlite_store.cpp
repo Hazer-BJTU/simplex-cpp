@@ -188,6 +188,20 @@ BOOST_AUTO_TEST_CASE(symlinked_store_path_is_rejected) {
     BOOST_CHECK_THROW(other->load_current(), persistence::StoreError);
 }
 
+BOOST_AUTO_TEST_CASE(a_dangling_store_link_never_creates_its_target) {
+    Scratch scratch;
+    const auto directory = scratch.root / "session";
+    std::filesystem::create_directories(directory);
+    const auto target = scratch.root / "created-elsewhere";
+    std::filesystem::create_symlink(target, directory / "state.sqlite3");
+    // sqlite3_open_v2 follows the link and creates the target; the store must
+    // refuse the path before SQLite ever opens it.
+    auto store = persistence::make_sqlite_store("session-1", directory);
+    BOOST_CHECK_THROW(store->checkpoint(state(), persistence::Boundary::RunFinished),
+        persistence::StoreError);
+    BOOST_TEST(!std::filesystem::exists(target));
+}
+
 BOOST_AUTO_TEST_CASE(released_reservation_cannot_start_an_archive) {
     Scratch scratch;
     auto store = persistence::make_sqlite_store("session-1", scratch.root);

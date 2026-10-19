@@ -49,25 +49,12 @@ void require_row(sqlite::Statement& statement, const char* action) {
     }
 }
 
-/** The store path itself must be an ordinary file; following a link could read
- * or chmod another session's database. */
-void require_regular_store_file(const std::filesystem::path& path) {
-    struct stat link {};
-    if (::lstat(path.c_str(), &link) != 0) {
-        throw std::system_error(errno, std::generic_category(), "inspect SQLite store path");
-    }
-    if (S_ISLNK(link.st_mode)) {
-        throw std::runtime_error("SQLite store path must not be a symlink");
-    }
-    if (!S_ISREG(link.st_mode)) {
-        throw std::runtime_error("SQLite store path must be a regular file");
-    }
-}
-
 /** Refuse a widely readable store file and narrow it through the opened
- * descriptor; creation already uses 0600, but a copied directory may be wider. */
+ * descriptor; creation already uses 0600, but a copied directory may be wider.
+ * The path check repeats the caller's test so the O_NOFOLLOW open below is the
+ * last word on a link that appeared in between. */
 void require_private_file(const std::filesystem::path& path) {
-    require_regular_store_file(path);
+    sqlite_schema::require_regular_store_file(path);
     Descriptor file(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
     struct stat info {};
     if (::fstat(file.get(), &info) != 0) {
@@ -94,7 +81,7 @@ public:
                 require_new_sqlite_directory();
                 return std::nullopt;
             }
-            require_regular_store_file(path_);
+            sqlite_schema::require_regular_store_file(path_);
             sqlite::Database database(path_.string(), sqlite::OpenMode::ReadOnly);
             sqlite::Transaction transaction(database);
             sqlite_schema::inspect_store(database, session_);
@@ -379,6 +366,10 @@ private:
             } else if (errno != EEXIST) {
                 throw std::system_error(errno, std::generic_category(), "create SQLite store");
             }
+            // Refuse a pre-existing link before SQLite follows it: the create
+            // attempt above cannot produce one, and sqlite3_open_v2 would follow a
+            // link instead of failing — for a dangling link it creates the target.
+            sqlite_schema::require_regular_store_file(path_);
             sqlite::Database database(path_.string());
             if (!created) sqlite_schema::inspect_store(database, session_);
             require_private_file(path_);

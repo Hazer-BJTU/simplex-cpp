@@ -3,9 +3,13 @@
 #include "persistence/store.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <filesystem>
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <sys/stat.h>
+#include <system_error>
 #include <vector>
 
 namespace persistence::sqlite_schema {
@@ -418,6 +422,19 @@ void apply_connection_pragmas(sqlite::Database& database) {
 }
 
 } // namespace
+
+void require_regular_store_file(const std::filesystem::path& path) {
+    struct stat link {};
+    if (::lstat(path.c_str(), &link) != 0) {
+        throw std::system_error(errno, std::generic_category(), "inspect SQLite store path");
+    }
+    if (S_ISLNK(link.st_mode)) {
+        throw std::runtime_error("SQLite store path must not be a symlink");
+    }
+    if (!S_ISREG(link.st_mode)) {
+        throw std::runtime_error("SQLite store path must be a regular file");
+    }
+}
 
 SchemaError::SchemaError(Reason reason, const std::string& message)
     : std::runtime_error(message), reason_(reason) {}
