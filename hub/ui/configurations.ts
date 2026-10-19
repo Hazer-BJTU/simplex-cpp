@@ -30,7 +30,7 @@ export interface ConfigSelection {
 }
 
 /** Source selection affects template text only, never creates a session. */
-export type ConfigTemplateSource = 'default' | 'deployment' | 'docker' | 'managed';
+export type ConfigTemplateSource = 'default' | 'docker' | 'managed';
 /** Template selection query; omission selects the default template. */
 export interface ConfigTemplateQuery {
     /** Template source selection; omission requests the default template. */

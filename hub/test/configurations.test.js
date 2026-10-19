@@ -102,6 +102,9 @@ test('authenticated configuration API and session selection retain independent s
     try {
         assert.equal((await fetch(ctx.base + '/api/configurations')).status, 401);
         assert.deepEqual((await api('/api/configurations')).body, { launch: ['docker', 'local'], worker: ['default'] });
+        for (const kind of ['launch', 'worker']) {
+            assert.equal((await api(`/api/configurations/${kind}/template?source=deployment`)).status, 400);
+        }
         const file = (await api('/api/configurations/launch/local')).body;
         const preview = await api('/api/configurations/preview', 'POST', { launch: file.text });
         assert.equal(new URL(preview.body.endpoints.events).port, String(ctx.port));
@@ -204,6 +207,7 @@ test('selected launchers run independently and survive Hub restart without libra
             const launch = parseConfigText(store.template('launch'), 'template');
             // This scenario verifies legacy arbitrary command launchers.
             delete launch.management;
+            launch.launcher = { kind: 'command', args: [] };
             launch.launcher.command = [process.execPath, fileURLToPath(new URL('./fixtures/fake-worker.js', import.meta.url)),
                 '--config', '{config}', '--session', '{session}', '--threads', '{threads}'];
             launch.worker.threads = threads;
@@ -253,7 +257,7 @@ test('startup discovers configuration inside the selected persistent root', () =
     } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
 
-test('deployment templates copy existing launcher and mock choices; local defaults stay independent', () => {
+test('templates reject deployment copying and keep local defaults independent', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
     try {
         const config = defaultConfig();
@@ -264,14 +268,19 @@ test('deployment templates copy existing launcher and mock choices; local defaul
         config.worker.connectHost = '172.17.0.1';
         config.launcher = { ...config.launcher, kind: 'command', command: ['wrapper', '{config}'] };
         const store = new ConfigurationStore(config);
-        const launch = launchDocument(store.template('launch', 'deployment'), config);
-        assert.deepEqual(launch.launcher.command, ['wrapper', '{config}']);
-        assert.equal(launch.worker.threads, 6);
-        const worker = parseDocument(store.template('worker', 'deployment')).toJS();
-        assert.equal(worker.driver_model, 'mock');
-        assert.equal(worker.hub_remote_call, undefined);
-        assert.equal(worker.modality_assist_model, undefined);
-        store.validate('worker', store.template('worker', 'deployment'));
+        assert.throws(() => store.template('launch', 'deployment'), /Unknown template source/);
+        assert.throws(() => store.template('worker', 'deployment'), /Unknown template source/);
+        for (const source of ['default', 'managed']) {
+            const text = store.template('launch', source);
+            const raw = parseConfigText(text, 'template');
+            assert.equal(raw.launcher, undefined);
+            assert.equal(raw.worker.bin, undefined);
+            const launch = launchDocument(text, config);
+            assert.equal(launch.management.executable, 'simplex');
+            assert.equal(launch.worker.threads, 1);
+        }
+        const worker = parseDocument(store.template('worker')).toJS();
+        assert.notEqual(worker.driver_model, 'mock');
         const local = launchDocument('{"launcher":{"kind":"command","command":["simplex","run"]}}', config);
         assert.equal(local.worker.threads, 1);
         assert.equal(local.worker.connectHost, '');

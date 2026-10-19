@@ -140,9 +140,9 @@ docker run --rm --init -p 127.0.0.1:8800:8800 simplex-hub-test
 
 It carries the worker (Debug, built in the image), the hub, its dependencies,
 and the offline mock provider. In **Configurations**, create a launch file and
-a worker file using **Current Hub deployment** as the template source, save both,
-and select them for your session. This uses the image's binary and mock endpoint
-without a model key. Add
+a worker file from the default templates. Set `management.executable` to
+`/src/build/bin/simplex` in the local launch file and configure the worker provider
+explicitly. Save both and select them for your session. Add
 `-e DEEPSEEK_API_KEY=sk-...` to use a real provider as well — a session chooses
 its profile either way — and `-v simplex-hub-data:/data` to keep sessions after
 the container is gone. `docker run -it --rm simplex-hub-test bash` gives a shell
@@ -165,9 +165,10 @@ including tool calls, confirmations, and persistence — clickable offline:
 npm start -- --mock
 ```
 
-Create both configuration files from the **Current Hub deployment** template.
-With `--mock`, its worker file selects the `mock` provider; choose `mock-auto`
-as the model in that YAML if desired. Select those files for a session, start it,
+Create launch and worker configurations from the default templates. Configure
+the worker YAML explicitly with `driver_model: mock`, a `providers.mock` entry
+using `plugin: deepseek`, and a mock model such as `mock-auto`. The Hub
+refreshes the mock endpoint at launch when mock mode is enabled. Select those files for a session, start it,
 send any message, and approve the `run_command` confirmation the mock proposes.
 The mock scenarios are selected by model name:
 
@@ -198,10 +199,10 @@ node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --mock \
 # then: http://127.0.0.1:8800/?token=dev
 ```
 
-In the configuration editor, select **Current Hub deployment** and save one
-launch configuration and one worker configuration. Select both for your session.
-The legacy startup file below remains the source of these deployment templates;
-subsequent edits take place in the saved library files.
+In the configuration editor, create a Docker launch configuration and a default
+worker configuration. Adjust the image and executable for your installation,
+then fill in the worker provider settings. Select both for your session. The
+legacy Hub startup file is not copied into configuration-library templates.
 
 Three things make it work, and each is a way to get it wrong:
 
@@ -267,9 +268,9 @@ node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --no-mock \
     --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
 ```
 
-then create both saved configurations from **Current Hub deployment** and
-select them for the session. With `--no-mock`, the worker template selects
-the first configured provider, normally `deepseek`:
+then create a Docker launch configuration and a worker configuration. Fill in
+the worker provider settings explicitly and select both saved files for the
+session. Templates do not inherit the Hub startup file's provider settings:
 
 ```sh
 curl -s -X POST http://127.0.0.1:8800/api/sessions \
