@@ -175,7 +175,10 @@ void require_ready(const Json& record) {
 fs::path child_path(const fs::path& root, const Json& storage, const char* name) {
     fs::path result;
     try {
-        result = fileio::child_path(root, storage.value(name, std::string(name)));
+        const auto value = storage.value(name, std::string(name));
+        result = fileio::child_path(root, value);
+    } catch (const Json::exception&) {
+        throw Error("invalid_configuration", "state and memory must be nonempty relative path strings");
     } catch (const std::invalid_argument&) {
         throw Error("invalid_configuration", "state and memory must be relative paths without parent traversal");
     }
@@ -210,8 +213,12 @@ void refresh_fields(Json& document, const Json& refresh) {
 
 Json effective(const Paths& p, const Json& record) {
     Json document;
+    const auto configuration = record.find("configuration");
+    if (configuration == record.end() || !configuration->is_string()) {
+        throw Error("corrupt_storage", "allocation record has no configuration document");
+    }
     try {
-        document = yamlconfig::parse(record.at("configuration").get<std::string>());
+        document = yamlconfig::parse(configuration->get<std::string>());
     } catch (const yamlconfig::YamlConfigError&) {
         throw Error("invalid_configuration", "configuration must be one valid YAML document");
     }
@@ -230,7 +237,11 @@ Json effective(const Paths& p, const Json& record) {
     storage["directory"] = p.root.string();
     child_path(p.root, storage, "state");
     child_path(p.root, storage, "memory");
-    refresh_fields(document, record.at("refresh"));
+    const auto refresh = record.find("refresh");
+    if (refresh != record.end() && !refresh->is_object()) {
+        throw Error("corrupt_storage", "allocation record has an invalid refresh section");
+    }
+    refresh_fields(document, refresh == record.end() ? Json::object() : *refresh);
     return document;
 }
 
@@ -497,16 +508,32 @@ Json execute(const Json& input) {
     ordinary_path(state_directory / "state.sqlite3-wal");
     ordinary_path(state_directory / "state.sqlite3-shm");
     ordinary_path(state_directory / "state.json");
-    const auto selection = storage.value("backend",
-        storage.contains("format") ? std::string("json") : std::string("auto"));
-    if ((storage.contains("backend") && selection != "json" && selection != "sqlite")
-        || storage.value("format", std::string("json")) != "json"
-        || (storage.contains("format") && selection == "sqlite")) {
-        throw Error("invalid_configuration", "conflicting or unsupported persistence format");
+    std::string selection;
+    try {
+        selection = storage.value("backend",
+            storage.contains("format") ? std::string("json") : std::string("auto"));
+        if ((storage.contains("backend") && selection != "json" && selection != "sqlite")
+            || storage.value("format", std::string("json")) != "json"
+            || (storage.contains("format") && selection == "sqlite")) {
+            throw Error("invalid_configuration", "conflicting or unsupported persistence format");
+        }
+    } catch (const Json::exception&) {
+        throw Error("invalid_configuration", "persistence backend and format must be strings");
     }
-    const auto backend = persistence::select_backend(state_directory, selection);
+    persistence::Backend backend;
+    try {
+        backend = persistence::select_backend(state_directory, selection);
+    } catch (const std::runtime_error& error) {
+        throw Error("invalid_configuration", error.what());
+    }
     if (backend == persistence::Backend::Sqlite) {
-        auto current = persistence::inspect_sqlite_current(state_directory);
+        std::optional<persistence::StoredState> current;
+        try {
+            current = persistence::inspect_sqlite_current(state_directory);
+        } catch (const std::exception& error) {
+            throw Error("corrupt_storage",
+                std::string("SQLite state cannot be read: ") + error.what());
+        }
         Json result = {{"backend", "sqlite"}, {"state", nullptr}, {"readable", nullptr}};
         if (current) {
             result["state"] = current->state;
@@ -522,7 +549,12 @@ Json execute(const Json& input) {
         // Validate using the existing codec, but return the original JSON so
         // unknown compatible fields also survive inspection without clipping.
         auto state = read_json(state_path);
-        (void)load::decode_state(state);
+        try {
+            (void)load::decode_state(state);
+        } catch (const std::exception& error) {
+            throw Error("corrupt_storage",
+                std::string("stored state cannot be decoded: ") + error.what());
+        }
         result["state"] = std::move(state);
     }
     const auto readable_path = state_directory / "readable.md";

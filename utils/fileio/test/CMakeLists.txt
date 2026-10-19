@@ -7,3 +7,8 @@ target_link_libraries(test_base64 PRIVATE fileio_lib Boost::unit_test_framework 
 target_compile_definitions(test_base64 PRIVATE
     TEST_BASE64_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 add_test(NAME test_base64 COMMAND test_base64)
+
+# Lexical path validation, ancestor symlink refusal and shared session leases.
+add_executable(test_fileio_paths test_fileio_paths.cpp)
+target_link_libraries(test_fileio_paths PRIVATE fileio_lib Boost::unit_test_framework)
+add_test(NAME test_fileio_paths COMMAND test_fileio_paths)
