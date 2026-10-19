@@ -32,8 +32,9 @@ Dataclass, loop, tool and provider code stay independent of the backend.
   and archives named by retained state are protected; unknown files, symlinks and
   incomplete directories are untouched, and legacy Markdown archives are never
   candidates at all. `archive_at` maps a historical on-disk payload path to a
-  store record for that protection only. The configured archive root may itself be
-  a symlink to a directory: publication and retention both follow it.
+  store record for that protection only. Publication accepts a symlinked archive
+  root, but retention requires an ordinary directory and refuses one: deletion
+  never follows a link.
 - There is no memory or archive query surface: nothing here lists, pages, reads
   or searches archives for a client. Retention policy is unchanged by this
   abstraction.

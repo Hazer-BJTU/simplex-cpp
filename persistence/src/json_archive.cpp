@@ -209,10 +209,10 @@ CleanupResult prune(
     const fs::path& root, const std::string& session_id, const ArchiveRef& current,
     const std::vector<ArchiveRef>& referenced, const load::MemoryRetention& policy) {
     CleanupResult result;
-    // A symlinked root resolves to its target: the store already publishes
-    // archives through it, so cleanup uses the same view of the directory.
-    if (!fs::is_directory(root)) {
-        throw StoreError("memory cleanup requires an archive root directory",
+    // Retention deletes files, so it refuses a symlinked root even though
+    // publication through one succeeds; the message names the requirement.
+    if (!fs::is_directory(fs::symlink_status(root))) {
+        throw StoreError("memory cleanup requires an ordinary archive root",
             Backend::Json, CommitStatus::NotCommitted);
     }
     const auto current_directory = archive_directory(root, current, session_id);
