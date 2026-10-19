@@ -1162,7 +1162,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                                 if (config.save_step) co_await save(persistence::Boundary::StepFinished);
                                 break;
                             case loop::Checkpoint::RunFinished:
-                                if (config.save_run) co_await save(persistence::Boundary::RunFinished);
+                                if (config.save_run) {
+                                    try {
+                                        co_await save(persistence::Boundary::RunFinished);
+                                    } catch (const persistence::StoreError&) {
+                                        // save() already latched storage_failed and
+                                        // requested cancellation. Keep the loop's own
+                                        // outcome: the terminal error below reports it
+                                        // as primary_outcome instead of rewriting it to
+                                        // Failed, and run_owned still rethrows failure.
+                                    }
+                                }
                                 break;
                         }
                     }}, run_stop.get_token());
@@ -1378,9 +1388,15 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             // including cancellation when ordinary run saves are disabled.
             if (input->operation != InputOperation::Compact && !storage_failed && !run_saved
                 && (config.save_run || result.status == loop::RunStatus::Cancelled)) {
-                co_await save(config.save_run
-                    ? persistence::Boundary::RunFinished
-                    : persistence::Boundary::Cancelled);
+                try {
+                    co_await save(config.save_run
+                        ? persistence::Boundary::RunFinished
+                        : persistence::Boundary::Cancelled);
+                } catch (const persistence::StoreError&) {
+                    // Latched by save(). This used to escape consume() and stop the
+                    // transport without any terminal diagnostic; the storage_failed
+                    // branch below now reports the outcome consistently.
+                }
             }
             active = false;
             {
@@ -1390,14 +1406,16 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             if (storage_failed) {
                 // Preserve the last known recovery file; never overwrite failure evidence.
                 stopping = true;
-                Json diagnostic = {{"message", "required snapshot failed; worker is stopping"},
-                    {"durable", false}};
-                if (optional_storage_failure) {
-                    diagnostic["message"] = "archive storage outcome is uncertain; worker is stopping";
-                    diagnostic["storage_error"] = *optional_storage_failure;
-                    diagnostic["primary_outcome"] = {{"status", run_status(result.status)},
-                        {"error", result.error}, {"operation", failure_operation}};
-                }
+                Json diagnostic = {
+                    {"message", optional_storage_failure
+                        ? "archive storage outcome is uncertain; worker is stopping"
+                        : "required snapshot failed; worker is stopping"},
+                    {"durable", false},
+                    {"primary_outcome", {
+                        {"status", run_status(result.status)},
+                        {"error", result.error},
+                        {"operation", failure_operation}}}};
+                if (optional_storage_failure) diagnostic["storage_error"] = *optional_storage_failure;
                 emit("error", std::move(diagnostic));
             } else {
                 Json finished = {{"status", run_status(result.status)},
