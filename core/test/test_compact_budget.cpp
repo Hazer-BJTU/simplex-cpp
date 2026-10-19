@@ -6,53 +6,54 @@
 namespace fs = std::filesystem;
 using Json = nlohmann::json;
 
-BOOST_AUTO_TEST_CASE(measures_fixed_overhead_without_old_memory_or_turns) {
+BOOST_AUTO_TEST_CASE(preview_accounts_for_fixed_overhead_and_one_shared_slack) {
     model_io::AgentInputState state;
     state.system_prompt.add_section("base", "Instructions", std::string(40 * 1024, 'P'));
     state.system_prompt.add_section("memory.runtime", "Memory", std::string(80 * 1024, 'M'));
     state.tools.push_back({});
-    model_io::UserLoopStep turn;
-    turn.user_input.content.push_back({});
-    turn.user_input.content.back().raw = std::string(100 * 1024, 'H');
-    state.turns.push_back(std::move(turn));
-    const auto directory = fs::path("/tmp") / std::string(150, 'D');
-    const auto plan = core::plan_compact(state, directory, directory / "archive/state.json");
-    BOOST_CHECK(plan.summary_bytes < core::compact_summary_max_bytes);
-    BOOST_TEST(plan.fixed_bytes + plan.summary_bytes == core::compact_context_max_bytes);
+    const auto file = fs::path("/tmp") / std::string(150, 'D') / "memory.md";
+    const auto plan = core::plan_compact(state, file);
+    BOOST_TEST(plan.fixed_bytes + plan.summary_bytes == core::compact_context_max_bytes + core::compact_context_slack_bytes);
     BOOST_TEST(plan.fixed_bytes == plan.prompt.render().markdown.size() + Json(state.tools).dump().size());
     BOOST_CHECK(plan.prompt.render().markdown.find(std::string(100, 'M')) == std::string::npos);
-    BOOST_CHECK(plan.prompt.render().markdown.find(directory.string()) != std::string::npos);
-    const auto short_plan = core::plan_compact(state, "/m", "/m/a/state.json");
-    BOOST_CHECK(short_plan.summary_bytes > plan.summary_bytes);
-    BOOST_CHECK_THROW(core::compact_prompt(plan, std::string(plan.summary_bytes + 1, 'S')), std::runtime_error);
-    std::string summary = "目标🌍\"\\";
-    summary.append(plan.summary_bytes - summary.size(), 'S');
+    const auto preview = core::compact_prompt(plan, std::string(2 * plan.summary_bytes, 'S'));
+    BOOST_TEST(preview.truncated);
+    BOOST_CHECK(preview.summary.size() <= plan.summary_bytes);
+    BOOST_CHECK(preview.summary.find(file.string()) != std::string::npos);
+    BOOST_CHECK(preview.summary.find("Summary truncated") != std::string::npos);
     model_io::AgentInputState replacement;
     replacement.tools = state.tools;
-    replacement.system_prompt = core::compact_prompt(plan, summary);
-    BOOST_CHECK(core::compact_context_bytes(replacement) <= core::compact_context_max_bytes);
-    BOOST_CHECK(replacement.system_prompt.render().markdown.find(summary) != std::string::npos);
+    replacement.system_prompt = preview.prompt;
+    BOOST_CHECK(core::compact_context_bytes(replacement) <= plan.hard_target);
 }
 
-BOOST_AUTO_TEST_CASE(byte_allowance_is_independent_of_provider_token_window) {
+BOOST_AUTO_TEST_CASE(preview_preserves_utf8_and_prefers_nearby_newline) {
     model_io::AgentInputState state;
-    state.system_prompt.add_section("base", "", "Ordinary instructions");
-    std::size_t allowance = 0;
-    for (const auto tokens : {1024, 32768, 1000000}) {
-        state.extras = Json{{"external_status", {{"context_statistic", {{"context_window_tokens", tokens}}}}}};
-        const auto plan = core::plan_compact(state, "/memory", "/memory/archive/state.json");
-        BOOST_TEST(plan.summary_bytes == core::compact_summary_max_bytes);
-        if (allowance) BOOST_TEST(plan.summary_bytes == allowance);
-        allowance = plan.summary_bytes;
-    }
-    state.system_prompt.add_section("huge", "", std::string(core::compact_context_max_bytes, 'P'));
-    BOOST_CHECK_EXCEPTION(core::plan_compact(state, "/memory", "/memory/archive/state.json"),
-        std::runtime_error, [](const auto& error) {
-            const std::string text = error.what();
-            return text.find("fixed_bytes=") != std::string::npos
-                && text.find("budget_bytes=65536") != std::string::npos
-                && text.find("shorten") != std::string::npos;
-        });
+    const auto plan = core::plan_compact(state, "/memory.md");
+    std::string text(plan.body_bytes - 2, 'a');
+    text += "🌍trailing";
+    auto preview = core::compact_prompt(plan, text);
+    BOOST_TEST(preview.injected_bytes == plan.body_bytes - 2);
+    BOOST_CHECK_NO_THROW(Json(preview.summary).dump());
+    text = std::string(plan.body_bytes - 20, 'a') + "\n" + std::string(100, 'b');
+    preview = core::compact_prompt(plan, text);
+    BOOST_TEST(preview.injected_bytes == plan.body_bytes - 19);
+    BOOST_CHECK(preview.summary.size() <= core::compact_summary_max_bytes);
+}
+
+BOOST_AUTO_TEST_CASE(small_context_uses_relaxed_reduction_target_and_long_path_fails_preflight) {
+    model_io::AgentInputState state;
+    state.system_prompt.add_section("base", "", "Instructions");
+    const auto before = core::compact_context_bytes(state);
+    const auto plan = core::plan_compact(state, "/memory.md");
+    BOOST_TEST(plan.hard_target == before - (before / 10 + (before % 10 != 0)) + core::compact_context_slack_bytes);
+    const auto short_summary = core::compact_prompt(plan, "Keep the user's goal.");
+    BOOST_TEST(!short_summary.truncated);
+    BOOST_CHECK(short_summary.summary.find("Keep the user's goal.") != std::string::npos);
+    BOOST_CHECK_THROW(core::plan_compact(state, fs::path("/") / std::string(10000, 'p')), std::runtime_error);
+    state.system_prompt.add_section("huge", "", std::string(70 * 1024, 'P'));
+    BOOST_CHECK_EXCEPTION(core::plan_compact(state, "/memory.md"), std::runtime_error,
+        [](const auto& error) { return std::string(error.what()).find("fixed_bytes=") != std::string::npos; });
 }
 
 BOOST_AUTO_TEST_CASE(protects_explicit_absolute_references_in_retained_state) {

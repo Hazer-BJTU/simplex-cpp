@@ -11,39 +11,44 @@ namespace core {
 /** Replacement-context budget in UTF-8 bytes, independent of provider tokens. */
 inline constexpr std::uint64_t compact_context_max_bytes = 64 * 1024;
 
-/** Fixed retained prompt and exact memory wrapper planned before any disk write.
- * History is never copied into this plan. The raw summary allowance is bounded
- * by both the remaining replacement budget and the 32 KiB summary ceiling.
- */
+/** Shared tolerance above the nominal context/reduction target. */
+inline constexpr std::uint64_t compact_context_slack_bytes = 4 * 1024;
+/** Stable full-summary file under persistence.directory, for either backend. */
+inline constexpr const char* compact_memory_filename = "memory.md";
+
+/** Preflight measures retained prompt/tools, derives one permissive target, and
+ * reserves pointer/marker bytes before admitting any model-text prefix. */
 struct CompactPlan {
     model_io::PromptTemplate prompt;
     std::string memory_prefix;
     std::string memory_suffix;
+    std::string summary_pointer;
     std::uint64_t fixed_bytes = 0;
+    std::uint64_t hard_target = 0;
     std::size_t summary_bytes = 0;
+    std::size_t body_bytes = 0;
 };
 
-/** Deterministic byte measure; not a tokenizer or provider capacity estimate.
- * Adds rendered prompt, JSON tool declarations and one serialized turn at a time.
- */
+/** Rendered prompt plus JSON tools and turns; not a provider token estimate. */
 std::uint64_t compact_context_bytes(const model_io::AgentInputState& state);
 
-/** Derive the summary allowance from actual fixed overhead, including paths.
- * Throws an actionable preflight diagnostic if no summary can fit.
- * An empty archive_file selects database-only evidence wording (no retrieval
- * promise). A nonempty archive pathname need not exist; the caller supplies a
- * reserved locator without publishing an archive during preflight.
- */
-CompactPlan plan_compact(
-    const model_io::AgentInputState& state,
-    const std::filesystem::path& memory_directory,
-    const std::filesystem::path& archive_file);
+/** Plan a bounded summary referencing the absolute stable summary file.
+ * Rejects fixed overhead that leaves no useful body space. History is measured
+ * but never copied; old memory is excluded from retained overhead. */
+CompactPlan plan_compact(const model_io::AgentInputState& state,
+    const std::filesystem::path& memory_file);
 
-/** Validate original UTF-8 summary bytes, then fill the planned memory section.
- * Does not truncate the summary. Callers also validate the completed replacement
- * and the existing 10% reduction rule before publishing a snapshot.
- */
-model_io::PromptTemplate compact_prompt(CompactPlan plan, const std::string& summary);
+/** One bounded string shared by prompt injection and all compact deliveries. */
+struct CompactPreview {
+    model_io::PromptTemplate prompt;
+    std::string summary;
+    bool truncated = false;
+    std::size_t injected_bytes = 0;
+};
+
+/** Prefer a nearby line boundary, otherwise cut at a UTF-8 code-point boundary.
+ * Full model output is borrowed; only the bounded preview is copied. */
+CompactPreview compact_prompt(CompactPlan plan, const std::string& summary);
 
 /** Find absolute archive-directory references in retained state string values.
  * Covers host memory and explicit references in prompts, tools, extras and turns.

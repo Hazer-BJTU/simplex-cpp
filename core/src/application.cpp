@@ -3,6 +3,7 @@
 #include <boost/asio/thread_pool.hpp>
 #include "versioning/version.hpp"
 #include "fileio/session_lock.hpp"
+#include "fileio/atomic_write.hpp"
 #include "core/confirmation.hpp"
 #include "core/protocol.hpp"
 #include "core/compact.hpp"
@@ -838,7 +839,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         CompactPlan plan;
         std::exception_ptr preflight_failure;
         try {
-            plan = plan_compact(state, memory_directory, archive.payload);
+            plan = plan_compact(state, config.storage / compact_memory_filename);
         } catch (...) {
             preflight_failure = std::current_exception();
         }
@@ -871,12 +872,19 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         std::exception_ptr primary;
         bool committed = false;
         std::vector<persistence::ArchiveRef> replacement_references;
+        std::unique_ptr<fileio::StagedWrite> staged_memory;
         try {
             result = co_await compact_attempt(mode, call_id, archive, memory_directory,
-                std::move(plan), committed, replacement_references);
+                std::move(plan), committed, replacement_references, staged_memory);
         } catch (...) {
             primary = std::current_exception();
         }
+        // Join temporary cleanup on the storage executor on every normal exit,
+        // including cancellation and uncertain state commits. Never detach I/O.
+        co_await asio::co_spawn(storage_executor, [&]() -> asio::awaitable<void> {
+            staged_memory.reset();
+            co_return;
+        }, asio::use_awaitable);
         if (!committed) {
             const auto outcome = !primary && result.status == loop::RunStatus::Cancelled
                 ? persistence::ArchiveOutcome::Cancelled : persistence::ArchiveOutcome::Failed;
@@ -914,7 +922,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         const persistence::ArchiveRef& archive,
         const std::filesystem::path& memory_directory,
         CompactPlan plan, bool& committed,
-        std::vector<persistence::ArchiveRef>& replacement_references) {
+        std::vector<persistence::ArchiveRef>& replacement_references,
+        std::unique_ptr<fileio::StagedWrite>& staged_memory) {
         const auto stop = run_stop.get_token();
         if (stop.stop_requested()) {
             loop::RunResult result;
@@ -939,13 +948,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         model_io::Content content;
         content.raw = mode == CompactMode::Manual
             ? config.compact_prompt : config.auto_compact_prompt;
-        content.raw += "\n\nOutput size constraint: the complete summary must be at most "
-            + std::to_string(plan.summary_bytes)
-            + " UTF-8 bytes (not tokens or JSON-escaped bytes). Keep the essential "
-              "goals, state and retrieval information within that allowance. "
-              "The replacement context budget is "
-            + std::to_string(compact_context_max_bytes) + " bytes; fixed overhead is "
-            + std::to_string(plan.fixed_bytes) + " bytes.";
+        content.raw += "\n\nSummary preview: approximately the first "
+            + std::to_string(plan.body_bytes)
+            + " UTF-8 bytes (not tokens or JSON-escaped bytes) are injected into the next run. "
+              "The complete summary is preserved in memory.md even when the preview is truncated. "
+              "Front-load the user's goals, preferences and rules, current task status, important "
+              "files/processes, findings or how to recover them, and concrete next steps.";
         instruction.content.push_back(std::move(content));
         auto result = co_await loop::run(
             *driver_model, no_tools, compact_events, strand, draft, true,
@@ -991,18 +999,14 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             loop::intrinsic::ContextStatisticHook::kName,
             model_io::external_status(draft, loop::intrinsic::ContextStatisticHook::kName).value());
         replacement.loop = std::move(draft.loop);
-        replacement.system_prompt = compact_prompt(std::move(plan), summary);
-        const auto before_bytes = compact_context_bytes(state);
+        const auto hard_target = plan.hard_target;
+        auto preview = compact_prompt(std::move(plan), summary);
+        replacement.system_prompt = std::move(preview.prompt);
         const auto after_bytes = compact_context_bytes(replacement);
-        if (after_bytes > compact_context_max_bytes) {
+        if (after_bytes > hard_target) {
             throw std::runtime_error("compact replacement exceeds byte budget: replacement_bytes="
                 + std::to_string(after_bytes) + ", budget_bytes="
-                + std::to_string(compact_context_max_bytes));
-        }
-        const auto minimum_savings = before_bytes / 10 + (before_bytes % 10 != 0);
-        if (after_bytes >= before_bytes ||
-            before_bytes - after_bytes < minimum_savings) {
-            throw std::runtime_error("compact did not reduce context by at least 10%");
+                + std::to_string(hard_target));
         }
         // Refresh prompt-size estimates after memory injection; the reconciled
         // checkpoint prevents this second update from counting the cost twice.
@@ -1010,7 +1014,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         const auto removed_turns = state.turns.size();
         // Allocate the success event before committing so construction failures
         // cannot be mistaken for an uncommitted operation.
-        Json completed = {{"summary", summary},
+        Json completed = {{"summary", std::move(preview.summary)},
             {"archive", {{"session_id", archive.session_id}, {"archive_id", archive.archive_id},
                 {"storage_kind", persistence::backend_name(archive.backend)},
                 {"restorable", archive.restorable()}}},
@@ -1033,6 +1037,22 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             [&]() -> asio::awaitable<std::vector<persistence::ArchiveRef>> {
                 co_return archive_references(replacement, memory_directory);
             }, asio::use_awaitable);
+        // Stage the complete model output before the authoritative commit. A
+        // failed attempt never publishes its file; the outer coroutine owns
+        // cleanup so even exception/cancellation paths await filesystem work.
+        const auto memory_file = config.storage / compact_memory_filename;
+        co_await asio::co_spawn(storage_executor, [&]() -> asio::awaitable<void> {
+            if (std::filesystem::is_symlink(std::filesystem::symlink_status(memory_file))) {
+                throw std::runtime_error("compact memory file must not be a symlink");
+            }
+            staged_memory = std::make_unique<fileio::StagedWrite>(memory_file,
+                [&](std::ostream& output) { output << summary; });
+            co_return;
+        }, asio::use_awaitable);
+        if (stop.stop_requested()) {
+            result.status = loop::RunStatus::Cancelled;
+            co_return result;
+        }
         persistence::CommitReceipt receipt;
         try {
             receipt = co_await asio::co_spawn(storage_executor,
@@ -1051,6 +1071,24 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         storage_revision = receipt.revision;
         ++history_revision;
         run_saved = true;
+        // State and memory.md are separate publications. Do not cancel between
+        // them or roll back a committed state if file publication fails. A crash
+        // here may leave the previous file; the bounded preview remains usable.
+        try {
+            co_await asio::co_spawn(storage_executor, [&]() -> asio::awaitable<void> {
+                if (std::filesystem::is_symlink(std::filesystem::symlink_status(memory_file))) {
+                    throw std::runtime_error("compact memory file must not be a symlink");
+                }
+                staged_memory->publish();
+                staged_memory.reset();
+                co_return;
+            }, asio::use_awaitable);
+        } catch (...) {
+            // Keep peer-visible compact protocol unchanged and diagnostics bounded.
+            try {
+                logging::Logger::warning("compact committed, but memory.md publication failed; full summary may be stale or unavailable");
+            } catch (...) { /* Diagnostics cannot change the committed result. */ }
+        }
         // A durable commit settles its own attempt, so success is never a second
         // fallible step. The archive itself stays immutable evidence.
         emit("persisted", {

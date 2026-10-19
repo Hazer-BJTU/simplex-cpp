@@ -289,14 +289,22 @@ Unfamiliar files are untouched. Cleanup errors preserve the original outcome:
 reported beside a saved summary on success, or logged/emitted as optional
 `export_error` with operation `archive_cleanup` on failure/cancellation.
 
-Compaction preflights its 64 KiB replacement-context byte budget before disk
-writes or model execution. Retained prompts, tools and exact memory wrapper/path
-bytes determine the summary allowance, capped at 32 KiB. The instruction states
-that allowance; generated output must still pass size and 10% reduction checks.
-This byte policy is independent of the provider's token-window setting.
-Injected memory names the absolute archive directory and payload when the backend
-stores archives as files; with SQLite storage the prompt refers to the archived
-attempt without a filesystem path. The compact instruction is loaded from
+Compaction targets a 64 KiB replacement and a 10% reduction, allowing one shared
+4 KiB tolerance. Fixed prompt/tool/wrapper overhead is measured before the model
+request; impossible budgets fail preflight. A summary preview, including its
+file pointer and truncation marker, is capped at 32 KiB. Oversized model text is
+cut at a UTF-8 boundary, preferably a nearby newline. The same preview is injected
+and delivered to the Hub, subagent receipts and panel.
+
+Every committed compact writes the complete model summary to
+`<persistence.directory>/memory.md`, mode 0600, replacing the previous file.
+Both backends inject that absolute path; archives remain recovery evidence and
+are no longer advertised by the generated wrapper. The full file is staged before
+the state commit and published immediately afterwards. Failed attempts leave the
+previous file untouched. A crash or file-publication error after state commit can
+leave an older or missing file; the committed preview remains usable and runtime
+publication errors are logged. No cross-file transaction or rollback is promised.
+The compact instruction is loaded from
 [prompts/operations/compact.yaml](prompts/operations/compact.yaml) at startup.
 
 ## Optional hub remote-call toolset

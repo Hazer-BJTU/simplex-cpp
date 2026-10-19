@@ -151,3 +151,22 @@ BOOST_AUTO_TEST_CASE(temporary_descriptor_is_close_on_exec_during_callback) {
         output << "complete";
     });
 }
+
+BOOST_FIXTURE_TEST_CASE(staged_write_defers_publication_and_cleans_abandoned_files, Scratch) {
+    const auto file = root / "memory.md";
+    fileio::atomic_write(file, [](auto& output) { output << "previous"; });
+    {
+        fileio::StagedWrite abandoned(file, [](auto& output) { output << "uncommitted"; });
+        BOOST_TEST(read("memory.md") == "previous");
+    }
+    no_temporary_files();
+    {
+        fileio::StagedWrite committed(file, [](auto& output) { output << std::string(128 * 1024, 'S'); });
+        BOOST_TEST(read("memory.md") == "previous");
+        committed.publish();
+        BOOST_CHECK_THROW(committed.publish(), std::logic_error);
+    }
+    BOOST_TEST(read("memory.md") == std::string(128 * 1024, 'S'));
+    BOOST_TEST(static_cast<unsigned>(fs::status(file).permissions() & fs::perms::all) == 0600u);
+    no_temporary_files();
+}

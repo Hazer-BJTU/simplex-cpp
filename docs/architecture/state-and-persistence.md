@@ -20,6 +20,7 @@ Hub: <dataDir>/sessions/<session-id>/
 Target: <management.root>/<allocation-id>/
   config/config.yaml      generated managed reference
   state/state.sqlite3     normalized current state and compact archives
+  memory.md               full text of the latest committed compaction summary
   memory/, session.lock
 ```
 
@@ -120,13 +121,20 @@ The selected backend stores the complete authoritative state; use the manager
 for inspection and the worker for restoration. `persistence.readable` is still accepted so existing configurations
 start unchanged, but it only produces one startup diagnostic.
 
-Compaction first preflights fixed overhead against a 64 KiB replacement byte
-budget, then archives the complete old state in the selected backend and runs an isolated
-summarization exchange. It validates the summary, then durably publishes the
-replacement before announcing success. The summary replaces prior injected memory
-and removes user turns. For JSON, the memory prompt names the archive directory and complete-state file.
-SQLite archive identifiers describe database records, not filesystem paths. Failed or cancelled compaction preserves the original conversation
-and the frozen archive.
+Compaction preflights retained overhead against a nominal 64 KiB replacement
+and 10% reduction target, with one shared 4 KiB tolerance. It archives the complete
+old state and runs an isolated summarization exchange. A UTF-8-safe preview of
+at most 32 KiB, including its file pointer and truncation marker, replaces prior
+memory and removes user turns. Injection, transmission and panel use this same
+preview. The complete summary is saved without a size cap in the stable
+`<persistence.directory>/memory.md`, for JSON and SQLite alike.
+
+The file is staged before state commit and atomically published afterwards.
+Failed/cancelled attempts retain the previous file. A crash or publication failure
+between those operations can leave the committed preview pointing at stale or
+missing full text; runtime failures are logged without undoing committed state.
+The generated wrapper points to `memory.md`, not archives, so it no longer adds
+archive retention references. Existing explicit references remain protected.
 
 After each archived attempt, including failure/cancellation,
 `memory_retention.max_archives` targets five complete archives by default.

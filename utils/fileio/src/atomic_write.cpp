@@ -107,46 +107,62 @@ AtomicWriteError::AtomicWriteError(
 
 AtomicWriteError::~AtomicWriteError() = default;
 
-/** Publish only a completely rendered and flushed file on the same filesystem. */
-void atomic_write(const fs::path& file, const std::function<void(std::ostream&)>& write) {
-    if (!write) {
-        throw std::invalid_argument("atomic_write requires a writer callback");
-    }
-    const auto destination = fs::absolute(file);
-    const auto parent = destination.parent_path();
-    fs::create_directories(parent);
-    Descriptor directory(::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-    if (directory.get() < 0) {
-        system_failure("open file directory");
+struct StagedWrite::Impl {
+    fs::path destination;
+    std::string temporary;
+    Descriptor directory{-1};
+    bool published = false;
+
+    explicit Impl(const fs::path& file)
+        : destination(fs::absolute(file)), directory(open_directory(destination.parent_path())) {}
+
+    static int open_directory(const fs::path& parent) {
+        fs::create_directories(parent);
+        const int fd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (fd < 0) system_failure("open file directory");
+        return fd;
     }
 
-    auto name = (parent / ".simplex-write-XXXXXX").string();
+    ~Impl() {
+        if (!published && !temporary.empty()) ::unlink(temporary.c_str());
+    }
+};
+
+StagedWrite::StagedWrite(const fs::path& file, const std::function<void(std::ostream&)>& write) {
+    if (!write) throw std::invalid_argument("atomic_write requires a writer callback");
+    impl_ = std::make_unique<Impl>(file);
+    auto name = (impl_->destination.parent_path() / ".simplex-write-XXXXXX").string();
     std::vector<char> pattern(name.begin(), name.end());
     pattern.push_back('\0');
     Descriptor descriptor(::mkostemp(pattern.data(), O_CLOEXEC));
-    if (descriptor.get() < 0) {
-        system_failure("create temporary file");
-    }
+    if (descriptor.get() < 0) system_failure("create temporary file");
     TemporaryPath temporary{pattern.data()};
+    impl_->temporary = pattern.data();
+    temporary.published = true; // Impl now owns cleanup, including constructor failure.
     FileBuffer buffer(descriptor.get());
     std::ostream output(&buffer);
     output.exceptions(std::ios::badbit | std::ios::failbit);
     write(output);
     output.flush();
-    // A callback may change the exception mask; a failed stream still must
-    // never publish an incomplete destination.
-    if (!output) {
-        throw std::ios_base::failure("cannot write temporary file");
-    }
-    if (::fsync(descriptor.get()) != 0) {
-        system_failure("sync file");
-    }
+    if (!output) throw std::ios_base::failure("cannot write temporary file");
+    if (::fsync(descriptor.get()) != 0) system_failure("sync file");
     descriptor.close();
-    fs::rename(temporary.path, destination);
-    temporary.published = true;
-    if (::fsync(directory.get()) != 0) {
+}
+
+StagedWrite::~StagedWrite() = default;
+
+void StagedWrite::publish() {
+    if (impl_->published) throw std::logic_error("staged file is already published");
+    fs::rename(impl_->temporary, impl_->destination);
+    impl_->published = true;
+    if (::fsync(impl_->directory.get()) != 0) {
         system_failure("file replaced, but directory sync failed", true);
     }
+}
+
+void atomic_write(const fs::path& file, const std::function<void(std::ostream&)>& write) {
+    StagedWrite staged(file, write);
+    staged.publish();
 }
 
 } // namespace fileio

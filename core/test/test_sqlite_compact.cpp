@@ -6,6 +6,8 @@
 #include "core/protocol.hpp"
 #include "persistence/store.hpp"
 #include <thread>
+#include <fstream>
+#include "core/compact.hpp"
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -28,14 +30,15 @@ struct SummaryModel : llm::LLMModel {
         response.role = "assistant";
         response.type = model_io::MessageItemType::ModelResponse;
         model_io::Content content;
-        content.raw = "Goal: finish the user task. Completed: inspection. Next: verify the result.";
+        content.raw = "Goal: finish the user task. Completed: inspection. Next: verify the result."
+            + std::string(64 * 1024, 'S');
         response.content.push_back(content);
         response.cost = model_io::TokenCost{100, 10, 0};
         co_return response;
     }
 };
 
-BOOST_AUTO_TEST_CASE(manual_sqlite_compact_keeps_history_live_and_commits_without_file_path) {
+BOOST_AUTO_TEST_CASE(manual_sqlite_compact_keeps_history_live_and_preserves_full_summary) {
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
     const auto root = std::filesystem::temp_directory_path() / ("simplex-sqlite-compact-" + core::new_identity());
@@ -106,7 +109,14 @@ BOOST_AUTO_TEST_CASE(manual_sqlite_compact_keeps_history_live_and_commits_withou
                 const auto saved = store->load_current();
                 BOOST_TEST(saved->state.turns.empty());
                 const auto prompt = saved->state.system_prompt.render().markdown;
-                BOOST_TEST(prompt.find("Database archive retrieval is not available") != std::string::npos);
+                const auto preview = event["data"]["summary"].get<std::string>();
+                BOOST_CHECK(preview.size() <= core::compact_summary_max_bytes);
+                BOOST_CHECK(preview.find("Summary truncated") != std::string::npos);
+                BOOST_CHECK(prompt.find(preview) != std::string::npos);
+                BOOST_CHECK(preview.find((root / "memory.md").string()) != std::string::npos);
+                std::ifstream file(root / "memory.md");
+                const std::string full{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+                BOOST_TEST(full == "Goal: finish the user task. Completed: inspection. Next: verify the result." + std::string(64 * 1024, 'S'));
                 BOOST_TEST(prompt.find("use reading tools in") == std::string::npos);
                 BOOST_CHECK(!std::filesystem::exists(config.memory));
             }
