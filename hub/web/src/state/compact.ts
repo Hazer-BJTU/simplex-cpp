@@ -13,6 +13,11 @@ export interface CompactResult {
     readonly removed_turns: number;
     readonly revision: number;
     readonly durable: true;
+    /** Retention result reported with the committed replacement, when applied. */
+    readonly archive_cleanup?: {
+        readonly removed_archives: number;
+        readonly removed_bytes: number;
+    };
     readonly archive_cleanup_error?: string;
 }
 
@@ -32,6 +37,16 @@ export function parseCompactResult(value: unknown): CompactResult | null {
             storage_kind: archive.storage_kind, restorable: true }
         : undefined;
     const file = typeof data.memory_file === 'string' && data.memory_file ? data.memory_file : undefined;
+    const cleanupCandidate = data.archive_cleanup;
+    const cleanup = cleanupCandidate && typeof cleanupCandidate === 'object' && !Array.isArray(cleanupCandidate)
+        ? cleanupCandidate as Record<string, unknown> : null;
+    const validCleanup: CompactResult['archive_cleanup'] = cleanup
+        && typeof cleanup.removed_archives === 'number' && Number.isSafeInteger(cleanup.removed_archives)
+        && cleanup.removed_archives >= 0
+        && typeof cleanup.removed_bytes === 'number' && Number.isSafeInteger(cleanup.removed_bytes)
+        && cleanup.removed_bytes >= 0
+        ? { removed_archives: cleanup.removed_archives, removed_bytes: cleanup.removed_bytes }
+        : undefined;
     if (typeof data.summary !== 'string' || !data.summary.trim()
         || (!file && !validArchive)
         || typeof data.removed_turns !== 'number' || !Number.isSafeInteger(data.removed_turns)
@@ -46,6 +61,7 @@ export function parseCompactResult(value: unknown): CompactResult | null {
         removed_turns: data.removed_turns,
         revision: data.revision,
         durable: true,
+        ...(validCleanup ? { archive_cleanup: validCleanup } : {}),
         ...(typeof data.archive_cleanup_error === 'string'
             ? { archive_cleanup_error: data.archive_cleanup_error } : {}),
     };

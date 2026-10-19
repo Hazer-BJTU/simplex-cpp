@@ -369,5 +369,8 @@ export function Inspector() {
 function snapshotPreview(state: unknown): string {
     const text = JSON.stringify(state, null, 2);
     const limit = 64 * 1024;
-    return text.length <= limit ? text : `${text.slice(0, limit)}\n… (Inspector preview truncated)`;
+    // Clip at a code-point boundary: slicing UTF-16 units can split a surrogate
+    // pair and render a replacement character before the truncation marker.
+    const points = Array.from(text);
+    return points.length <= limit ? text : `${points.slice(0, limit).join('')}\n… (Inspector preview truncated)`;
 }

@@ -301,7 +301,7 @@ event or REST description. A decision always applies to the original operation.
 | `GET /api/sessions` | — | `{sessions: [session...]}` |
 | `POST /api/sessions` | `{session, spec?}` | `201 {session}`; `400 invalid_session`; `409 session_exists` |
 | `GET /api/sessions/:id` | — | `{session}`; `404 unknown_session` |
-| `DELETE /api/sessions/:id` | — | `{removed}`; removes the complete session directory, including config, state, memory, logs and tool-created files within it; `409 session_busy` while a worker runs or is connected |
+| `DELETE /api/sessions/:id` | — | `{removed}`; removes the complete session directory, including config, state, memory, logs and tool-created files within it; `409 session_busy` while the session is pending removal, connected, or running without a managed allocation. A running managed worker is fenced on its target allocation (manager lease or legacy session lock); the local transport is stopped only after the target removal succeeds |
 | `POST /api/sessions/:id/start` | `{spec?}` | `{ok, pid?, config}`; `409` with `{ok:false, error}` |
 | `POST /api/sessions/:id/stop` | — | `{ok, how, forced}` — `how` is `shutdown-signal`, `sigterm`, `sigkill`, `sigkill-process-group`, `already-exited`, or `not-started` |
 | `POST /api/sessions/:id/restart` | `{spec?}` | start result plus `stop` |
