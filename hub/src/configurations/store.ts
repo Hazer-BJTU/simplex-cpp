@@ -13,7 +13,6 @@ import type { ManagementPolicy } from '../launch/managed-sessions.ts';
 
 import type { ConfigKind, ConfigFile } from '../../shared/configurations.ts';
 export type { ConfigKind, ConfigFile } from '../../shared/configurations.ts';
-import { renderSessionConfig } from '../launch/config-render.ts';
 export interface LaunchDocument {
     /** Optional explicit target management; legacy launch commands are ignored when enabled. */
     management?: ManagementPolicy;
@@ -113,6 +112,11 @@ export function launchDocument(text: string, config: HubConfig): LaunchDocument 
     const allowed = ['bin', 'args', 'threads', 'connectHost', 'stopTimeoutMs', 'sigtermGraceMs', 'sigkillGraceMs'] as const;
     for (const key of Object.keys(value.worker ?? {})) {
         if (!(allowed as readonly string[]).includes(key)) throw configError(`Unknown launch worker field: ${key}`);
+    }
+    // Managed profiles use one router for both run and manage. Supply only an
+    // internal compatibility launcher; it is never used to dispatch managed work.
+    if (value.management !== undefined && value.launcher === undefined) {
+        value.launcher = { ...defaultConfig().launcher, kind: 'command', command: ['simplex', 'run'] };
     }
     if (!value.launcher || typeof value.launcher !== 'object' || Array.isArray(value.launcher)) throw configError('launcher is required');
     if (!['command', 'simplex-worker'].includes(value.launcher.kind)) throw configError('launcher.kind is required');
@@ -216,9 +220,10 @@ export class ConfigurationStore {
         rmSync(this.path(kind, id));
     }
 
-    /** Templates are source files, optionally seeded from the current deployment.
-     * No session token is stored here; the live addresses are bound at startup. */
-    template(kind: ConfigKind, source: 'default' | 'deployment' | 'docker' | 'managed' = 'default'): string {
+    /** Installation templates never copy the current deployment's launcher or model
+     * settings. Live addresses and session tokens are bound only at startup. */
+    template(kind: ConfigKind, source: 'default' | 'docker' | 'managed' = 'default'): string {
+        if (!['default', 'docker', 'managed'].includes(source)) throw configError('Unknown template source');
         if (source === 'managed') {
             if (kind !== 'launch') throw configError('Managed is a launch template');
             return readFileSync(join(hubRoot, 'schemas', 'managed.jsonc'), 'utf8')
@@ -229,33 +234,12 @@ export class ConfigurationStore {
             if (kind !== 'launch') throw configError('Docker is a launch template');
             return readFileSync(join(hubRoot, 'schemas', 'docker.jsonc'), 'utf8');
         }
-        if (source === 'deployment' && kind === 'launch') {
-            const worker = this.config.worker;
-            return '// Copied from the current Hub deployment. Edit before saving.\n' + JSON.stringify({
-                launcher: this.config.launcher,
-                worker: {
-                    bin: worker.bin, args: worker.args, threads: worker.threads,
-                    connectHost: worker.connectHost, stopTimeoutMs: worker.stopTimeoutMs,
-                    sigtermGraceMs: worker.sigtermGraceMs, sigkillGraceMs: worker.sigkillGraceMs,
-                },
-                env: {}, endpoints: {},
-            }, null, 2) + '\n';
-        }
         if (kind === 'launch') {
             return readFileSync(join(hubRoot, 'schemas', 'local.jsonc'), 'utf8')
                 .replace('"__HUB_CWD__"', JSON.stringify(homedir()))
                 .replace('"__WORKER_ROOT__"', JSON.stringify(defaultLocalRoot(this.config)));
         }
         const doc = workerDocument(readFileSync(join(hubRoot, 'schemas', 'worker.yaml'), 'utf8'));
-        if (source === 'deployment') {
-            const rendered = renderSessionConfig({
-                config: this.config,
-                sessionId: 'TEMPLATE',
-                rawSpec: this.config.mock.enabled ? { provider: this.config.mock.profile } : {},
-                endpoints: { events: '{{hub.events_endpoint}}', confirm: '{{hub.confirm_endpoint}}', tools: '{{hub.tools_endpoint}}' },
-            }).document;
-            for (const [key, value] of Object.entries(rendered)) doc.set(key, doc.createNode(value));
-        }
         doc.setIn(['client', 'endpoint'], '{{hub.events_endpoint}}');
         doc.setIn(['security', 'confirmation', 'endpoint'], '{{hub.confirm_endpoint}}');
         doc.setIn(['persistence', 'directory'], '{{session.directory}}');

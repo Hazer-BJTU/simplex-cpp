@@ -1,7 +1,7 @@
 {
-    // Explicitly opts this new session into target-local simplex manage.
-    // These legacy fields are retained for launch-document compatibility only.
-    "launcher": { "kind": "command", "command": ["simplex", "run"] },
+    // One target-side simplex installation handles both run and manage.
+    // Set executable to "simplex" on the target PATH, or its absolute path.
+    // No separate worker.bin or launcher command is needed.
     "management": {
         "target": { "kind": "local" },
         // This installation must support both `simplex run` and `simplex manage`.

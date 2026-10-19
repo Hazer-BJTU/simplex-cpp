@@ -215,7 +215,6 @@ A minimal launch profile is:
 
 ```json
 {
-  "launcher": { "kind": "command", "command": ["simplex", "run"] },
   "management": {
     "target": { "kind": "local" },
     "executable": "/opt/simplex/bin/simplex",
@@ -229,7 +228,9 @@ A minimal launch profile is:
 }
 ```
 
-When `management` is present, its executable/target replaces the legacy
+The single `management.executable` selects both `simplex run` and `simplex manage`.
+A managed profile may omit `launcher` and `worker.bin`. For existing profiles,
+when `management` is present, its executable/target replaces the legacy
 `launcher.command`, `launcher.args`, `launcher.cwd`, and `worker.bin` invocation.
 `worker.threads`, `worker.args`, connection-host settings, endpoint overrides and
 stop-policy settings remain applicable. `pidFile` is not supported. The top-level

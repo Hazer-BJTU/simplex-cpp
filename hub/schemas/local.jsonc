@@ -1,21 +1,7 @@
 {
-    // Runs on the Hub host through the target-side manager. Set management.executable
-    // to an absolute simplex router when it is not on PATH. Both run and manage
-    // use that same installation. Existing saved launch files are never rewritten.
-    // The launcher command is retained for compatibility; management takes precedence.
-    "launcher": {
-        "kind": "command",
-        "command": [
-            "simplex", "run",
-            "--config", "{config}",
-            "--session", "{session}",
-            "--threads", "{threads}"
-        ],
-        "args": [],
-        // Legacy launcher field. management.cwd controls managed local starts.
-        "cwd": "",
-        "pidFile": ""
-    },
+    // One target-side simplex installation handles both run and manage.
+    // Set executable to "simplex" on the target PATH, or its absolute path.
+    // No separate worker.bin or launcher command is needed.
     "management": {
         "target": { "kind": "local" },
         "executable": "simplex",

@@ -18,14 +18,13 @@ file extensions are automatic. Editing the name and saving creates a copy.
 library file; sessions retain their snapshots. **Reload** discards local edits
 with confirmation and reads the latest saved revision.
 
-The **Current Hub deployment** template source captures settings from the
-Hub's startup configuration. This provides a transition for existing Docker,
-custom-command and mock-provider deployments: create and save both a launch
-file and a worker file from that source, then select them when creating a
-session. With `--mock`, the deployment worker template selects the mock provider;
-its live model endpoint is refreshed at worker launch. Default templates remain
-local-launch and provider-neutral examples regardless of mock mode. Auxiliary
-model and remote-call settings remain commented out until explicitly enabled.
+Templates are installation examples, not copies of the running Hub configuration.
+Fill in provider settings and target-specific paths explicitly. Local and Managed
+worker templates use a single `management.executable`: `simplex` on the target
+PATH, or an absolute path to that router. The same installation runs both worker
+and management commands; no separate `worker.bin` or `launcher.command` is needed.
+Existing saved launch profiles remain supported and are never rewritten.
+Auxiliary model and remote-call settings remain commented out until enabled.
 
 Validation checks syntax, selected model references, managed endpoint fields
 and persistence child paths. Unknown worker fields and provider options remain
@@ -304,7 +303,7 @@ Requests carrying source text are bounded to 1 MiB of JSON request body.
 | Method and route | Body / result |
 | --- | --- |
 | `GET /api/configurations` | `{launch: string[], worker: string[]}` |
-| `GET /api/configurations/:kind/template?source=default` | `{text}`; source is `default`, `deployment`, `docker` or `managed` (last two are launch only) |
+| `GET /api/configurations/:kind/template?source=default` | `{text}`; source is `default`, `docker` or `managed` (last two are launch only) |
 | `GET /api/configurations/:kind/:id` | `{kind, id, text, revision}` |
 | `PUT /api/configurations/:kind/:id` | `{text, revision}`; `revision: null` creates, current revision updates |
 | `POST /api/configurations/:kind/validate` | `{text}` → `{valid: true}` |

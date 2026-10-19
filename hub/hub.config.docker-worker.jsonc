@@ -6,7 +6,8 @@
 //       --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
 //
 // then open http://127.0.0.1:8800/?token=dev, create launch and worker files
-// from "Current Hub deployment", and select both for a session. The hub is
+// from the Docker/default templates, edit their settings explicitly, and select
+// both for a session. The hub is
 // an ordinary host process; each worker is a
 // `docker run` that connects back over the bridge. See README.md,
 // "Workers in a container", for what each line below is doing.
