@@ -402,7 +402,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         if (boundary == persistence::Boundary::RunFinished
             || boundary == persistence::Boundary::Cancelled) run_saved = true;
         emit("persisted", {{"boundary", persistence::boundary_name(boundary)},
-            {"format", "json"},
             {"backend", persistence::backend_name(receipt.backend)},
             {"revision", receipt.revision ? Json(*receipt.revision) : Json()},
             {"operation_id", receipt.operation_id}});
@@ -1056,7 +1055,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // fallible step. The archive itself stays immutable evidence.
         emit("persisted", {
             {"boundary", persistence::boundary_name(persistence::Boundary::Compaction)},
-            {"format", "json"},
             {"backend", persistence::backend_name(receipt.backend)},
             {"revision", receipt.revision ? Json(*receipt.revision) : Json()},
             {"operation_id", receipt.operation_id}});
