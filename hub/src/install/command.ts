@@ -19,6 +19,8 @@ export const INSTALL_USAGE = `Usage: simplex-hub install-worker --platform <tag>
 
 Download and install a worker on this host without starting the Hub.
 
+Worker archives must ship bin/simplex_manager; pre-1.0 archives are rejected.
+
 Options:
   --platform <tag>        required package platform (see supported tags below)
   --source <source>       release source (default: github; only github is supported)

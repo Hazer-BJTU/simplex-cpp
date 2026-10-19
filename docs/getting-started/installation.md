@@ -25,8 +25,10 @@ simplex-hub install-worker --platform linux-amd64-standard --update-path
 
 The standalone installation command downloads the latest stable worker from the
 official GitHub Releases, verifies `SHA256SUMS`, checks the extracted tree and
-runtime libraries, and runs a bounded `simplex run --help` startup check. It
-does not start the Hub, load Hub configuration, or require model credentials.
+runtime libraries, and runs bounded `simplex run --help` and
+`simplex_manager --help` startup checks. Worker archives must ship
+`bin/simplex_manager`; pre-1.0 archives without it are rejected at install time.
+It does not start the Hub, load Hub configuration, or require model credentials.
 GitHub is the default and currently the only supported source. `--platform` is
 required and has no default:
 
