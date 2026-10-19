@@ -171,7 +171,7 @@ async function archiveFixture(root) {
             .map(tool => `bin/schemas/process/${tool}.yaml`), 'bin/plugins/llm/libllm_fixture.so', 'lib/runtime.so', 'LICENSE', 'README.md']) {
         await writeFile(join(tree, file), 'fixture');
     }
-    for (const file of ['simplex', 'simplex_worker']) {
+    for (const file of ['simplex', 'simplex_worker', 'simplex_manager']) {
         await writeFile(join(tree, 'bin', file), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
     }
     const archive = join(root, 'worker.tar.gz');
