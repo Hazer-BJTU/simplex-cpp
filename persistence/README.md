@@ -32,7 +32,8 @@ Dataclass, loop, tool and provider code stay independent of the backend.
   and archives named by retained state are protected; unknown files, symlinks and
   incomplete directories are untouched, and legacy Markdown archives are never
   candidates at all. `archive_at` maps a historical on-disk payload path to a
-  store record for that protection only.
+  store record for that protection only. The configured archive root may itself be
+  a symlink to a directory: publication and retention both follow it.
 - There is no memory or archive query surface: nothing here lists, pages, reads
   or searches archives for a client. Retention policy is unchanged by this
   abstraction.
@@ -220,10 +221,12 @@ cross-snapshot rejection and corruption detection.
 
 New empty sessions default to SQLite at `<state>/state.sqlite3`. Explicit
 `backend: json` retains the JSON adapter. Without a backend selection, an existing
-JSON-only directory stays JSON, SQLite-only stays SQLite, and a directory with
-both requires an explicit choice. Legacy `format: json` selects JSON and conflicts
-with explicit SQLite. Selecting the opposite backend over the sole existing store
-fails, including with `restore: never`. Migration remains deferred.
+JSON-only directory stays JSON and a SQLite-only directory stays SQLite. A
+directory holding both stores is refused for every setting, including an explicit
+backend: honoring one would abandon the other history, and no migration is
+provided, so remove or migrate one store first. Legacy `format: json` selects
+JSON and conflicts with explicit SQLite. Selecting the opposite backend over the
+sole existing store fails, including with `restore: never`.
 
 Manual and automatic compact freeze complete originals in the same database.
 `simplex manage read_state` uses the same C++ mapper in a read-only transaction;

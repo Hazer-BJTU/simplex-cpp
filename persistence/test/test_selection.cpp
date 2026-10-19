@@ -26,8 +26,10 @@ BOOST_FIXTURE_TEST_CASE(selection_matrix_preserves_existing_history, Scratch) {
     BOOST_CHECK_THROW(select_backend(root, "sqlite"), std::runtime_error);
     std::ofstream(root / "state.sqlite3") << "invalid database";
     BOOST_CHECK_THROW(select_backend(root), std::runtime_error);
-    BOOST_CHECK(select_backend(root, "sqlite") == Backend::Sqlite);
-    BOOST_CHECK(select_backend(root, "json") == Backend::Json);
+    // Both stores present: no explicit choice can pick one without abandoning
+    // the other history, so selection is refused for every setting.
+    BOOST_CHECK_THROW(select_backend(root, "sqlite"), std::runtime_error);
+    BOOST_CHECK_THROW(select_backend(root, "json"), std::runtime_error);
     std::filesystem::remove(root / "state.json");
     BOOST_CHECK(select_backend(root) == Backend::Sqlite);
     BOOST_CHECK_THROW(select_backend(root, "json"), std::runtime_error);

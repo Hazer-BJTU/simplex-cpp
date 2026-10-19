@@ -31,7 +31,9 @@ Use `backend: json` to select JSON for a new session. Paths are relative to
 its archives in the database, while JSON uses the configured memory directory.
 
 If `backend` is omitted, existing JSON-only or SQLite-only storage is detected;
-an empty directory selects SQLite. If both exist, an explicit choice is required.
+an empty directory selects SQLite. A directory holding both stores is refused for
+every setting, including an explicit backend: choosing one would abandon the other
+history, and no migration is provided, so remove or migrate one store first.
 Changing the setting does not migrate data, and selecting the opposite backend
 over a sole existing store is rejected. Saved Hub configurations are preserved.
 

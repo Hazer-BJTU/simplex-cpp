@@ -57,8 +57,9 @@ single-writer with serialized operations. Current-state I/O runs on a dedicated
 storage executor and is awaited by the worker. `core` asks for a checkpoint, a
 reserved archive, a compaction commit or a retention pass; the storage format
 stays inside the backend. New empty sessions default to SQLite. Existing JSON-only
-storage remains JSON when backend selection is omitted. Explicit choices never
-silently migrate or abandon existing history. See [Persistence backend](persistence-backends.md).
+storage remains JSON when backend selection is omitted. A directory holding both
+stores is refused for every setting: selecting one would abandon the other
+history, and no migration is provided. See [Persistence backend](persistence-backends.md).
 
 Every store operation is synchronous. A checkpoint or compaction commit reports
 one of three outcomes: `NotCommitted` (the previous state is still
@@ -171,8 +172,9 @@ launch support, request deduplication, recovery and cleanup limits.
 New templates explicitly select SQLite. Saved Hub worker configurations are not
 rewritten on upgrade. Legacy `format: json` selects JSON; remove this alias only
 when deliberately creating a separate empty SQLite session. With neither setting,
-JSON-only and SQLite-only stores are detected, empty storage selects SQLite, and
-both stores require an explicit choice. `restore: never` still validates the
+JSON-only and SQLite-only stores are detected, empty storage selects SQLite, and a
+directory holding both is refused for every setting; remove or migrate one store
+first. `restore: never` still validates the
 selected store and its session identity before starting fresh. Persistence disabled
 creates no database. Clean-fork copies startup policy, never current state, WAL,
 or archives; each child owns an independent directory and store. An omitted
