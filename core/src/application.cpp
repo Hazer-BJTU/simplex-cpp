@@ -823,7 +823,15 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         const auto memory_directory = std::filesystem::absolute(config.memory).lexically_normal();
         const auto archive = state_store->reserve_archive(
             {run_id, mode == CompactMode::Automatic, call_id});
-        auto plan = plan_compact(state, memory_directory, archive.payload);
+        CompactPlan plan;
+        try {
+            plan = plan_compact(state, memory_directory, archive.payload);
+        } catch (...) {
+            // Preflight rejected the attempt before T1: drop the in-memory
+            // reservation so a long-lived worker does not accumulate identities.
+            state_store->release_archive(archive);
+            throw;
+        }
         try {
             const auto prepared = co_await asio::co_spawn(storage_executor,
                 [&]() -> asio::awaitable<persistence::CommitReceipt> {

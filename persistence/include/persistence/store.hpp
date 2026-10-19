@@ -350,6 +350,18 @@ public:
         const ArchiveRef& archive, ArchiveOutcome outcome) = 0;
 
     /**
+     * Forget a reservation that never reached begin_archive().
+     *
+     * Preflight can reject an attempt after reserve_archive() succeeded. The
+     * attempt then owns no archive and no settlement applies, but a backend that
+     * keeps reservations in memory (SQLite) must drop the entry instead of
+     * growing for the process lifetime. Releasing an unknown, empty or foreign
+     * reference is a no-op: the hook exists for failure paths that must not
+     * throw. Backends without reservations ignore it.
+     */
+    virtual void release_archive(const ArchiveRef&) {}
+
+    /**
      * Apply the configured retention target after a settled attempt.
      *
      * Retention policy is unchanged by this abstraction: the current attempt and

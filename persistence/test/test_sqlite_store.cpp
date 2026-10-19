@@ -142,3 +142,41 @@ BOOST_AUTO_TEST_CASE(selecting_sqlite_does_not_silently_replace_json_history) {
     BOOST_CHECK_THROW(store->checkpoint(state(), persistence::Boundary::RunFinished), persistence::StoreError);
     BOOST_TEST(!std::filesystem::exists(scratch.root / "state.sqlite3"));
 }
+
+BOOST_AUTO_TEST_CASE(existing_store_file_permissions_are_narrowed) {
+    Scratch scratch;
+    auto store = persistence::make_sqlite_store("session-1", scratch.root);
+    store->checkpoint(state(), persistence::Boundary::RunFinished);
+    const auto path = scratch.root / "state.sqlite3";
+    BOOST_REQUIRE(::chmod(path.c_str(), 0644) == 0);
+    store->checkpoint(state(), persistence::Boundary::RunFinished);
+    struct stat info{};
+    BOOST_REQUIRE(::stat(path.c_str(), &info) == 0);
+    BOOST_TEST((info.st_mode & 0777) == 0600);
+}
+
+BOOST_AUTO_TEST_CASE(foreign_database_is_rejected_before_wal) {
+    Scratch scratch;
+    const auto directory = scratch.root / "foreign";
+    std::filesystem::create_directories(directory);
+    const auto path = directory / "state.sqlite3";
+    {
+        sqlite::Database database(path.string());
+        database.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY)");
+    }
+    const auto before = std::filesystem::file_size(path);
+    auto store = persistence::make_sqlite_store("session-1", directory);
+    BOOST_CHECK_THROW(store->checkpoint(state(), persistence::Boundary::RunFinished), persistence::StoreError);
+    BOOST_TEST(!std::filesystem::exists(directory / "state.sqlite3-wal"));
+    BOOST_TEST(!std::filesystem::exists(directory / "state.sqlite3-shm"));
+    BOOST_TEST(std::filesystem::file_size(path) == before);
+}
+
+BOOST_AUTO_TEST_CASE(released_reservation_cannot_start_an_archive) {
+    Scratch scratch;
+    auto store = persistence::make_sqlite_store("session-1", scratch.root);
+    store->checkpoint(state(), persistence::Boundary::RunFinished);
+    const auto archive = store->reserve_archive({"rejected"});
+    store->release_archive(archive);
+    BOOST_CHECK_THROW(store->begin_archive(archive, state()), std::invalid_argument);
+}
