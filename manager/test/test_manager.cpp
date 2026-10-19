@@ -5,6 +5,7 @@
 #include <fstream>
 #include <unistd.h>
 #include "manager/service.hpp"
+#include "fileio/directory_tree_lock.hpp"
 #include "persistence/store.hpp"
 #include "load/persistence.hpp"
 
@@ -338,4 +339,23 @@ BOOST_FIXTURE_TEST_CASE(sqlite_clean_fork_inherits_policy_but_never_parent_datab
     manager::execute(fork);
     BOOST_TEST(!fs::exists(child_root));
     BOOST_TEST(call("read_state")["state"] == Json(original));
+}
+
+BOOST_FIXTURE_TEST_CASE(namespace_busy_refusal_does_not_publish_an_allocation, Fixture) {
+    {
+        fileio::DirectoryTreeLock fence(temporary);
+        BOOST_CHECK_EXCEPTION(call("prepare"), manager::Error,
+            [](const auto& error) { return code(error, "busy"); });
+        BOOST_TEST(!fs::exists(root));
+    }
+    BOOST_TEST(call("prepare")["status"] == "ready");
+    const auto before = call("inspect");
+    {
+        fileio::DirectoryTreeLock fence(temporary);
+        request["refresh"] = {{"client_endpoint", "ws://should-not-publish/"}};
+        request["expected_revision"] = 1;
+        BOOST_CHECK_EXCEPTION(call("prepare"), manager::Error,
+            [](const auto& error) { return code(error, "busy"); });
+    }
+    BOOST_TEST(call("inspect") == before);
 }

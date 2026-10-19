@@ -1,3 +1,4 @@
+import { ManagementError } from './management.ts';
 /**
  * @file worker process supervision.
  *
@@ -85,6 +86,8 @@ export interface StartResult {
     pid?: number | undefined;
     error?: string | undefined;
     config?: unknown;
+    /** Sanitized manager failure suitable for subagent status. */
+    cause?: string;
 }
 
 /** The write side of a worker log. The adopted path substitutes a no-op. */
@@ -465,7 +468,8 @@ export class WorkerSupervisor {
                         { ...policy, env: { ...policy.env, ...saved!.launch.env } },
                         readFileSync(configPath, 'utf8'));
                 }
-                const document = await prepareManagedSession(this.config, session.id, managed, endpoints, session.lifecycleId);
+                const document = await prepareManagedSession(this.config, session.id, managed, endpoints, session.lifecycleId,
+                    () => session.closing);
                 const native = launchSpec as Partial<NormalizedSpec>;
                 const spec = normalizeSpec(launchConfig, {
                     threads: saved ? launchConfig.worker.threads : native.threads,
@@ -493,8 +497,10 @@ export class WorkerSupervisor {
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            return { ok: false, error: `cannot prepare session configuration: ${message}`, config: specSource };
+            return { ok: false, error: `cannot prepare session configuration: ${message}`,
+                ...(error instanceof ManagementError ? { cause: error.message } : {}), config: specSource };
         }
+        if (session.closing) return { ok: false, error: 'worker start cancelled' };
         session.spec = { ...session.spec, ...rendered.spec,
             // Profile credentials stay in launch.jsonc, not public session metadata.
             ...(launcher !== this.launcher ? { env: {} } : {}),

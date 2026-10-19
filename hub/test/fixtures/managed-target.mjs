@@ -1,5 +1,5 @@
 /** Test-only target emulator: it never opens the requested allocation paths. */
-import { existsSync, readFileSync, writeFileSync, appendFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'yaml';
 
@@ -56,7 +56,15 @@ if (args[0] === 'run') {
     const describe = () => ({ ...record, config_path: `${record.directory}/config/config.yaml`,
         ...(record.status === 'ready' ? { effective_configuration: effective() } : {}) });
     const save = () => writeFileSync(path, JSON.stringify(record));
+    let namespaceHeld = false;
+    const namespaceLock = join(root, 'namespace.lock');
     try {
+        if (existsSync(join(root, 'namespace-fence')) && !['inspect', 'read_state'].includes(request.operation)) {
+            try { mkdirSync(namespaceLock); namespaceHeld = true; }
+            catch { failure('busy', 'allocation namespace is in use'); }
+            await new Promise(resolve => setTimeout(resolve, 30));
+            record = existsSync(path) ? load(path) : null;
+        }
         if (existsSync(join(root, `delay-${request.operation}`))) await new Promise(resolve => setTimeout(resolve, 150));
         if (existsSync(join(root, 'offline'))) process.exit(255);
         if (request.operation === 'clean_fork' && existsSync(join(root, 'busy-clean_fork'))) failure('busy');
@@ -114,5 +122,7 @@ if (args[0] === 'run') {
         process.stdout.write(JSON.stringify({ version: 1, request_id: request.request_id, ok: false,
             error: { code: error.code ?? 'fixture_error', message: error.message ?? 'fixture failure' } }));
         process.exitCode = 1;
+    } finally {
+        if (namespaceHeld) rmdirSync(namespaceLock);
     }
 }
