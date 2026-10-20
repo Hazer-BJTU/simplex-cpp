@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, openSync, closeSync, fsyncSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join, resolve, sep, isAbsolute } from 'node:path';
+import { mutationNamespace, serializeMutation, retryManagerBusy } from './managed-mutations.ts';
 import { ManagedLauncher } from './managed-launcher.ts';
 import type { ManagedLauncherOptions } from './managed-launcher.ts';
 import { ManagementError, validateAllocation } from './management.ts';
@@ -181,6 +182,15 @@ async function call(record: ManagedSessionRecord, operation: ManagementOperation
     return (await new ManagedLauncher(record.launcher).manage(record.reference, randomUUID(), operation, AbortSignal.timeout(timeoutMs))).result;
 }
 
+/** Serialize a complete prepare/remove sequence, including queue time in a short
+ * overall budget. Each remote call observes that same deadline. */
+function mutate<T>(record: ManagedSessionRecord, task: (invoke: (operation: ManagementOperation) => Promise<Record<string, unknown>>) => Promise<T>,
+    timeoutMs = record.timeoutMs): Promise<T> {
+    return serializeMutation(mutationNamespace(record.launcher, record.reference.directory), Math.min(timeoutMs, 5000),
+        signal => task(operation => retryManagerBusy(async () =>
+            (await new ManagedLauncher(record.launcher).manage(record.reference, randomUUID(), operation, signal)).result, signal)));
+}
+
 /** Validate operation-specific identity; correlated envelopes alone cannot authorize paths. */
 function description(record: ManagedSessionRecord, value: Record<string, unknown>, status: string): void {
     if (value.allocation_id !== record.reference.allocationId || value.directory !== record.reference.directory
@@ -192,40 +202,47 @@ function description(record: ManagedSessionRecord, value: Record<string, unknown
 
 /** Inspect before refreshing, then capture exactly the configuration revision to launch. */
 export async function prepareManagedSession(config: HubConfig, id: string, record: ManagedSessionRecord,
-    endpoints: WorkerEndpoints, lifecycleId: string): Promise<Record<string, unknown>> {
-    if (record.removing) throw new Error('managed session removal is pending; retry deletion');
-    if (managedStartUnconfirmed(record)) throw new Error('previous managed start is unconfirmed; cannot dispatch another worker');
-    if (record.forkSource) {
-        const forked = await call(record, { operation: 'clean_fork', source: record.forkSource });
-        description(record, forked, 'ready');
-        if (typeof forked.configuration !== 'string') throw new Error('manager omitted fork configuration');
-        record.configuration = forked.configuration;
+    endpoints: WorkerEndpoints, lifecycleId: string, cancelled: () => boolean = () => false): Promise<Record<string, unknown>> {
+    return mutate(record, async send => {
+        const invoke = (operation: ManagementOperation) => {
+            if (cancelled()) throw new ManagementError('transport', 'cancelled');
+            return send(operation);
+        };
+        if (cancelled()) throw new ManagementError('transport', 'cancelled');
+        if (record.removing) throw new Error('managed session removal is pending; retry deletion');
+        if (managedStartUnconfirmed(record)) throw new Error('previous managed start is unconfirmed; cannot dispatch another worker');
+        if (record.forkSource) {
+            const forked = await invoke({ operation: 'clean_fork', source: record.forkSource });
+            description(record, forked, 'ready');
+            if (typeof forked.configuration !== 'string') throw new Error('manager omitted fork configuration');
+            record.configuration = forked.configuration;
+            publish(config, id, record);
+        }
+        let revision: number | undefined;
+        try {
+            const current = await invoke({ operation: 'inspect' });
+            description(record, current, current.status === 'preparing' ? 'preparing' : 'ready');
+            revision = current.revision as number;
+        } catch (error) {
+            if (!(error instanceof ManagementError) || error.kind !== 'manager' || error.code !== 'not_found') throw error;
+        }
+        const prepared = await invoke({ operation: 'prepare', configuration: record.configuration,
+            refresh: { client_endpoint: endpoints.events, confirmation_endpoint: endpoints.confirm, tools_endpoint: endpoints.tools },
+            ...(revision === undefined ? {} : { expected_revision: revision }),
+        });
+        description(record, prepared, 'ready');
+        if (!mapping(prepared.effective_configuration)) throw new Error('manager omitted effective configuration');
+        const lifecycle = { id: lifecycleId, revision: prepared.revision as number, dispatch: 'prepared' as const };
+        // Store the lifecycle before capture: a lost capture reply can be reconciled.
+        record.lifecycle = lifecycle;
         publish(config, id, record);
-    }
-    let revision: number | undefined;
-    try {
-        const current = await call(record, { operation: 'inspect' });
-        description(record, current, current.status === 'preparing' ? 'preparing' : 'ready');
-        revision = current.revision as number;
-    } catch (error) {
-        if (!(error instanceof ManagementError) || error.kind !== 'manager' || error.code !== 'not_found') throw error;
-    }
-    const prepared = await call(record, { operation: 'prepare', configuration: record.configuration,
-        refresh: { client_endpoint: endpoints.events, confirmation_endpoint: endpoints.confirm, tools_endpoint: endpoints.tools },
-        ...(revision === undefined ? {} : { expected_revision: revision }),
-    });
-    description(record, prepared, 'ready');
-    if (!mapping(prepared.effective_configuration)) throw new Error('manager omitted effective configuration');
-    const lifecycle = { id: lifecycleId, revision: prepared.revision as number, dispatch: 'prepared' as const };
-    // Store the lifecycle before capture: a lost capture reply can be reconciled.
-    record.lifecycle = lifecycle;
-    publish(config, id, record);
-    const captured = await call(record, { operation: 'capture_startup', lifecycle_id: lifecycle.id,
-        expected_revision: lifecycle.revision });
-    description(record, captured, 'ready');
-    if (captured.revision !== lifecycle.revision || !mapping(captured.startup)
-        || captured.startup.lifecycle_id !== lifecycle.id) throw new Error('manager startup capture does not match this lifecycle');
-    return prepared.effective_configuration;
+        const captured = await invoke({ operation: 'capture_startup', lifecycle_id: lifecycle.id,
+            expected_revision: lifecycle.revision });
+        description(record, captured, 'ready');
+        if (captured.revision !== lifecycle.revision || !mapping(captured.startup)
+            || captured.startup.lifecycle_id !== lifecycle.id) throw new Error('manager startup capture does not match this lifecycle');
+        return prepared.effective_configuration;
+    }, Math.min(record.timeoutMs, config.subagents.startupTimeoutMs));
 }
 
 /** Missing dispatch state in an older record is conservative: it may already have launched. */
@@ -262,8 +279,8 @@ export function completeManagedDispatch(config: HubConfig, id: string, record: M
 export async function managedIdle(record: ManagedSessionRecord, timeoutMs = record.timeoutMs): Promise<boolean> {
     if (!record.lifecycle) return false;
     try {
-        const result = await call(record, { operation: 'capture_startup', lifecycle_id: record.lifecycle.id,
-            expected_revision: record.lifecycle.revision }, timeoutMs);
+        const result = await mutate(record, invoke => invoke({ operation: 'capture_startup', lifecycle_id: record.lifecycle!.id,
+            expected_revision: record.lifecycle!.revision }), timeoutMs);
         description(record, result, 'ready');
         return true;
     } catch { return false; }
@@ -283,15 +300,17 @@ export async function readManagedState(record: ManagedSessionRecord): Promise<{ 
 export async function removeManagedSession(config: HubConfig, id: string, record: ManagedSessionRecord): Promise<void> {
     record.removing = true;
     publish(config, id, record);
-    // Finish an uncertain initial preparation before removal. We cannot treat
-    // not_found as successful deletion: prepare may have been delayed remotely.
-    try {
-        await call(record, record.forkSource
-            ? { operation: 'clean_fork', source: record.forkSource }
-            : { operation: 'prepare', configuration: record.configuration });
-    } catch (error) {
-        if (!(error instanceof ManagementError) || error.kind !== 'manager' || error.code !== 'retired') throw error;
-    }
-    const result = await call(record, { operation: 'remove' });
-    description(record, result, 'removed');
+    return mutate(record, async invoke => {
+        // Finish an uncertain initial preparation before removal. We cannot treat
+        // not_found as successful deletion: prepare may have been delayed remotely.
+        try {
+            await invoke( record.forkSource
+                ? { operation: 'clean_fork', source: record.forkSource }
+                : { operation: 'prepare', configuration: record.configuration });
+        } catch (error) {
+            if (!(error instanceof ManagementError) || error.kind !== 'manager' || error.code !== 'retired') throw error;
+        }
+        const result = await invoke({ operation: 'remove' });
+        description(record, result, 'removed');
+    });
 }

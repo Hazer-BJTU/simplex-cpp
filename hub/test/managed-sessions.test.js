@@ -563,6 +563,7 @@ for (const remote of [false, true]) {
         const child = await managedFork(ctx, ctx.session, 'unpublished-child');
         await until(() => child.subagent.lifecycle === 'cleanup-pending'
             && !ctx.hub.subagents.stops.has(child.id));
+        assert.match(ctx.hub.subagents.children.get(child.id).error, /worker management failed \(busy\)/);
         const childAllocation = readManagedSession(ctx.config, child.id);
         const childPath = join(ctx.target, `${childAllocation.reference.allocationId}.json`);
         assert.equal(existsSync(childPath), false);
@@ -616,3 +617,24 @@ test('managed SQLite snapshot metadata survives remote transport without local-f
     writeFileSync(join(ctx.target, 'invalid-state'), '');
     assert.equal((await ctx.api('/api/sessions/demo/snapshot')).status, 500);
 });
+
+for (const count of [2, 4]) {
+    test(`${count} concurrent managed forks and stops share one namespace fence`, async t => {
+        const ctx = await setup(t);
+        writeFileSync(join(ctx.target, 'protocol-worker'), '');
+        writeFileSync(join(ctx.target, 'namespace-fence'), '');
+        await start(ctx);
+        await until(() => ctx.session.connected && ctx.session.identity);
+        ctx.session.connection.sendSignal({ type: 'signal', data: { operation: 'test_active' } });
+        await until(() => ctx.session.activeRunId);
+        const children = await Promise.all(Array.from({ length: count }, (_, i) => managedFork(ctx, ctx.session, `parallel-${i}`)));
+        await until(() => children.every(child => child.subagent.lifecycle === 'ready'));
+        const allocations = children.map(child => readManagedSession(ctx.config, child.id));
+        const results = await Promise.all(children.map(child => ctx.hub.supervisor.stop(child)));
+        assert.ok(results.every(result => result.ok), JSON.stringify(results));
+        await until(() => children.every(child => !existsSync(sessionDir(ctx.config, child.id))));
+        for (const allocation of allocations) {
+            assert.equal(JSON.parse(readFileSync(join(ctx.target, `${allocation.reference.allocationId}.json`))).status, 'removed');
+        }
+    });
+}

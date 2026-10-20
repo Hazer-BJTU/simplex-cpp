@@ -347,7 +347,7 @@ export class SubagentService {
         this.publish(record);
         this.armStartupDeadline(record);
         const result = await this.options.supervisor.start(record.session);
-        if (!result.ok) this.fail(record, 'worker could not start');
+        if (!result.ok) this.fail(record, result.cause ?? 'worker could not start');
         else this.publish(record);
     }
 
@@ -599,6 +599,9 @@ export class SubagentService {
     private fail(record: ChildRecord, reason: string): void {
         if (record.removed) return;
         record.error = reason;
+        // A startup deadline can fire while manager preparation is queued.
+        // Freeze admission now; the supervisor checks again before spawning.
+        record.session.closing = true;
         record.session.subagent!.health = 'degraded';
         void this.options.supervisor.stop(record.session).catch(() => {});
     }

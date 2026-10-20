@@ -450,3 +450,19 @@ separate machines use the deployment profile's advertised endpoint origins and
 an accessible provider address; do not expose test listeners to untrusted peers.
 The test does not create or retire containers/SSH servers; keep the environment
 available through cleanup and remove your test infrastructure afterward.
+
+### Concurrent manager operations
+
+The Hub queues complete preparation and removal sequences per target namespace;
+ordinary sessions and headless children share the same queue. Queueing and all
+calls in a sequence share a deadline of at most five seconds (or the shorter
+configured management/startup timeout). Expired queued work is never dispatched.
+Read-only snapshot requests do not enter this queue.
+
+Only a manager-reported `busy` refusal with `published: false` is retried, at
+most four calls with short jittered waits. A live worker lease may also produce
+`busy`; exhaustion still reports that refusal. Transport/protocol failures,
+uncertain outcomes, published failures and other manager codes are not retried.
+The target retains its nonblocking locking contract. Equivalent remote targets
+expressed through different transport bindings can still contend; the bounded
+retry handles that case without claiming to identify every remote alias.

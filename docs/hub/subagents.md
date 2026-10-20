@@ -482,3 +482,12 @@ incarnation requires fresh history sources; compaction and headless cleanup can
 expire them. Read a result before stopping its child. Older workers without
 `answer-pages`, missing sources and expired pages return explicit unavailability;
 a displayed prefix must not be treated as a complete task result.
+
+Concurrent managed child preparation and cleanup share the Hub's target-namespace
+queue, including ordinary-session operations on the same namespace. Queue time
+counts toward the bounded management deadline and the child startup deadline.
+A stopped or expired child cannot launch after its queued preparation completes.
+Only unpublished manager `busy` refusals receive bounded retries; ambiguous
+transport outcomes retain their existing reconciliation behavior. Failed starts
+expose a sanitized management error category/code through child status, without
+including peer diagnostics, credentials or launch arguments.
