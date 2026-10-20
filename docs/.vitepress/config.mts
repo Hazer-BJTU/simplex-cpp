@@ -13,8 +13,15 @@ export default defineConfig({
     title: 'Simplex',
     description: 'Understand every detail of an agent harness. Native C++ workers, extensible tools, and a WebSocket Hub.',
     base: '/simplex-cpp/',
-    // Historical notes remain in Git; they are not current English user guides.
-    srcExclude: ['**/README.md', 'hub/panel-redesign-plan.md', 'node_modules/**'],
+    // Repository indexes, internal references, and historical notes stay in Git
+    // without becoming public pages or local-search entries.
+    srcExclude: [
+        '**/README.md',
+        'architecture/sqlite-schema-v1.md',
+        'maintaining/documentation.md',
+        'hub/panel-redesign-plan.md',
+        'node_modules/**',
+    ],
     lastUpdated: true,
     themeConfig: {
         nav: [
@@ -32,7 +39,6 @@ export default defineConfig({
                 ['Agent loop', '/architecture/agent-loop'],
                 ['State and persistence', '/architecture/state-and-persistence'],
                 ['Persistence backend', '/architecture/persistence-backends'],
-                ['SQLite schema v1', '/architecture/sqlite-schema-v1'],
                 ['Security', '/architecture/security'],
             ]),
             group('Build from source', [
@@ -71,7 +77,6 @@ export default defineConfig({
                 ['Worker management', '/reference/management'],
                 ['Configuration library', '/hub/configurations'],
                 ['Hub npm package', '/hub/npm-release'],
-                ['Maintaining the docs', '/maintaining/documentation'],
             ]),
         ],
         search: { provider: 'local' },

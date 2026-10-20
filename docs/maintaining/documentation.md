@@ -25,8 +25,9 @@ outside it. VitePress is pinned to the stable 1.6 line; its Vite dependency is o
 to the patched 6.4.3 release. Keep the override and lockfile together, and verify
 build, development server, preview, and search when updating them.
 
-The `README.md` indexes and historical panel redesign notes are
-excluded from the site. Keep historical files out of public navigation/search.
+The `README.md` indexes, SQLite schema reference, this maintenance guide, and
+historical panel redesign notes are excluded from the site. Keep internal and
+historical files out of public navigation/search.
 
 The homepage title uses the same `assets/simplex-logo-v4.svg` as the repository
 README. The custom theme imports this source directly, so logo changes are
