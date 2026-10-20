@@ -119,6 +119,68 @@ ArchiveInfo archive_info(sqlite::Statement& row) {
     return result;
 }
 
+/** Locate the first highlighted source span using SQLite's actual tokenizer
+ * matches, including Unicode case folding. Both markers are checked against
+ * this bounded chunk before use, so archived text cannot impersonate a marker.
+ * Only accepted hits incur this extra lookup, in the same read transaction.
+ * highlight() may merge overlapping matches; keeping the beginning of that
+ * merged span still preserves its first complete match whenever it fits.
+ */
+std::pair<std::size_t, std::size_t> first_fts_match(
+    sqlite::Database& database, std::int64_t chunk_id, std::string_view phrase,
+    std::string_view body, sqlite::ExecutionBudget& budget) {
+    std::string opening;
+    std::string closing;
+    for (std::size_t candidate = 0;; ++candidate) {
+        budget.check();
+        const auto prefix = "<simplex-match-" + std::to_string(candidate);
+        opening = prefix + "-open>";
+        closing = prefix + "-close>";
+        if (body.find(opening) == std::string_view::npos
+            && body.find(closing) == std::string_view::npos) {
+            break;
+        }
+    }
+    auto match = database.prepare(
+        "SELECT highlight(archive_chunks_fts, 0, ?2, ?3) FROM archive_chunks_fts "
+        "WHERE rowid = ?1 AND archive_chunks_fts MATCH ?4");
+    match.bind_int64(1, chunk_id);
+    match.bind_text(2, opening);
+    match.bind_text(3, closing);
+    match.bind_text(4, phrase);
+    if (match.step() != sqlite::StepResult::Row) {
+        throw std::runtime_error("archive match disappeared within its read transaction");
+    }
+    budget.check();
+    const auto highlighted = match.column_text(0);
+    const auto begin = highlighted.find(opening);
+    if (begin == std::string::npos) {
+        throw std::runtime_error("archive highlight has no matching span");
+    }
+    const auto marked_begin = begin + opening.size();
+    const auto marked_end = highlighted.find(closing, marked_begin);
+    if (marked_end == std::string::npos || begin > body.size()
+        || marked_end - marked_begin > body.size() - begin) {
+        throw std::runtime_error("archive highlight has an invalid matching span");
+    }
+    return {begin, begin + marked_end - marked_begin};
+}
+
+/** Select context in source bytes, preserving the entire matched span whenever
+ * it fits. Long/merged spans start at their first match and are explicitly
+ * clipped by the caller's truncation flag. No ellipses consume the byte budget.
+ * Both edges lie on UTF-8 boundaries in the normalized, valid-UTF-8 chunk.
+ */
+std::string match_preview(std::string_view body, std::size_t begin,
+                          std::size_t end, std::size_t byte_limit) {
+    const auto match_bytes = end - begin;
+    const auto context = match_bytes < byte_limit ? (byte_limit - match_bytes) / 2 : 0;
+    auto start = begin > context ? begin - context : 0;
+    while (start < begin && continuation(body[start])) ++start;
+    const auto finish = boundary_before(body, std::min(body.size(), start + byte_limit));
+    return std::string(body.substr(start, finish - start));
+}
+
 /** Own no connections between calls. A failed/cancelled query cannot poison a
  * writer or leave a read transaction blocking WAL checkpointing. */
 class SqliteArchiveReader final : public ArchiveReader {
@@ -171,17 +233,20 @@ public:
         }
         phrase += '"';
         return query(options, [&](sqlite::Database& db, sqlite::ExecutionBudget& budget) {
-            const std::string sql =
+            std::string sql =
                 "SELECT a.archive_id, a.sequence, a.created_at, a.outcome, a.mode, "
-                "c.source_id, c.kind, c.turn_index, c.step_index, c.start_byte, c.end_byte, c.body, c.source_bytes, "
-                + std::string(fts ? "snippet(archive_chunks_fts, 0, '', '', '...', ?5) " : "c.body ")
-                + "FROM archive_chunks c JOIN archives a ON a.archive_id = c.archive_id "
-                + (fts ? "JOIN archive_chunks_fts ON archive_chunks_fts.rowid = c.chunk_id " : "")
-                + "WHERE a.session_id = ?1 AND (?2 IS NULL OR a.archive_id = ?2) "
-                "AND (?3 IS NULL OR c.kind = ?3) AND "
-                + (fts ? "archive_chunks_fts MATCH ?4 " : "instr(c.body, ?4) > 0 ")
-                + "ORDER BY " + (fts ? "archive_chunks_fts.rank, " : "")
-                + "a.sequence DESC, c.turn_index, c.step_index, c.source_id, c.start_byte";
+                "c.source_id, c.kind, c.turn_index, c.step_index, c.start_byte, c.end_byte, "
+                "c.body, c.source_bytes, c.chunk_id "
+                "FROM archive_chunks c JOIN archives a ON a.archive_id = c.archive_id ";
+            if (fts) {
+                sql += "JOIN archive_chunks_fts ON archive_chunks_fts.rowid = c.chunk_id ";
+            }
+            sql += "WHERE a.session_id = ?1 AND (?2 IS NULL OR a.archive_id = ?2) "
+                "AND (?3 IS NULL OR c.kind = ?3) AND ";
+            sql += fts ? "archive_chunks_fts MATCH ?4 " : "instr(c.body, ?4) > 0 ";
+            sql += "ORDER BY ";
+            if (fts) sql += "archive_chunks_fts.rank, ";
+            sql += "a.sequence DESC, c.turn_index, c.step_index, c.source_id, c.start_byte";
             auto rows = db.prepare(sql);
             rows.bind_text(1, session_);
             if (request.archive_id) rows.bind_text(2, *request.archive_id);
@@ -189,12 +254,6 @@ public:
             if (request.kind) rows.bind_text(3, kind_name(*request.kind));
             else rows.bind_null(3);
             rows.bind_text(4, fts ? phrase : request.text);
-            if (fts) {
-                // A trigram spans three scalars; reserve two extra scalars and
-                // both ellipses before applying the final UTF-8 byte bound.
-                const auto tokens = std::min<std::size_t>(64, (request.snippet_bytes - 14) / 4);
-                rows.bind_int64(5, static_cast<std::int64_t>(tokens));
-            }
             ArchiveSearchResult result;
             std::set<std::pair<ArchiveTextKind, std::string>> seen;
             while (rows.step() == sqlite::StepResult::Row) {
@@ -220,19 +279,10 @@ public:
                     break;
                 }
                 seen.emplace(hit.kind, body);
-                hit.snippet = rows.column_text(13);
-                if (!fts) {
-                    auto start = body.find(request.text);
-                    const auto context = (request.snippet_bytes - request.text.size()) / 2;
-                    start = start > context ? start - context : 0;
-                    while (start < body.size() && continuation(body[start])) ++start;
-                    hit.snippet = body.substr(start);
-                }
-                if (hit.snippet.size() > request.snippet_bytes) {
-                    auto end = request.snippet_bytes;
-                    while (end > 0 && continuation(hit.snippet[end])) --end;
-                    hit.snippet.resize(end);
-                }
+                const auto span = fts
+                    ? first_fts_match(db, rows.column_int64(13), phrase, body, budget)
+                    : std::pair{body.find(request.text), body.find(request.text) + request.text.size()};
+                hit.snippet = match_preview(body, span.first, span.second, request.snippet_bytes);
                 hit.truncated = hit.start_byte != 0
                     || hit.end_byte < static_cast<std::uint64_t>(rows.column_int64(12))
                     || hit.snippet != body;

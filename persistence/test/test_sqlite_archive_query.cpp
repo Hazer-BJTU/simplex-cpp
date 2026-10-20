@@ -226,8 +226,7 @@ BOOST_FIXTURE_TEST_CASE(deadline_and_live_cancellation_are_explicit_and_recovera
 }
 
 BOOST_FIXTURE_TEST_CASE(maximum_utf8_query_crosses_chunk_boundary_without_losing_overlap, Fixture) {
-    // 256 bytes, ending inside the overlap that would be shortened if its start
-    // were rounded forwards instead of backwards to a scalar boundary.
+    // A maximum-length multibyte query straddles the first chunk boundary.
     std::string needle;
     for (int i = 0; i < 85; ++i) needle += "中";
     needle += "z";
@@ -264,4 +263,105 @@ BOOST_FIXTURE_TEST_CASE(small_previews_keep_the_matching_text_visible, Fixture) 
         BOOST_TEST(result.hits[0].snippet.size() <= 32u);
         BOOST_TEST(result.hits[0].snippet.find(query) != std::string::npos);
     }
+}
+
+BOOST_FIXTURE_TEST_CASE(case_folded_source_span_survives_chunk_boundaries, Fixture) {
+    std::string kelvin;
+    for (int i = 0; i < 256; ++i) kelvin += "K";
+    const std::string query(256, 'k');
+    auto reader = make_sqlite_archive_reader("test", root);
+    for (const auto prefix_bytes : {100u, 3700u}) {
+        const auto text = std::string(prefix_bytes, 'x') + kelvin + "suffix";
+        const auto ref = archive(state(text));
+        // Compare the public chunked reader with an unchunked trigram control.
+        sqlite::Database control(":memory:");
+        control.execute("CREATE VIRTUAL TABLE full_text USING fts5(body, tokenize='trigram')");
+        auto insert = control.prepare("INSERT INTO full_text(body) VALUES(?1)");
+        insert.bind_text(1, text);
+        BOOST_REQUIRE(insert.step() == sqlite::StepResult::Done);
+        auto match = control.prepare("SELECT count(*) FROM full_text WHERE full_text MATCH ?1");
+        match.bind_text(1, query);
+        BOOST_REQUIRE(match.step() == sqlite::StepResult::Row);
+        BOOST_TEST(match.column_int64(0) == 1);
+        const auto result = reader->search({.text = query, .archive_id = ref.archive_id,
+                                            .snippet_bytes = 1024});
+        BOOST_REQUIRE_EQUAL(result.hits.size(), 1u);
+        BOOST_TEST(result.hits[0].snippet.find(kelvin) != std::string::npos);
+        BOOST_TEST(result.hits[0].snippet.size() <= 1024u);
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(previews_preserve_complete_ascii_and_unicode_matches_when_they_fit, Fixture) {
+    struct Example {
+        std::string query;
+        std::string source_match;
+        std::size_t preview_bytes;
+    };
+    std::string chinese;
+    std::string kelvin;
+    for (int i = 0; i < 80; ++i) chinese += "中";
+    for (int i = 0; i < 90; ++i) kelvin += "K";
+    const std::vector<Example> cases = {
+        {"qqqqqqqz", "qqqqqqqz", 32},
+        {std::string(89, 'q') + "z", std::string(89, 'q') + "z", 512},
+        {chinese, chinese, 256},
+        {std::string(90, 'k'), kelvin, 512},
+        {"kkkkkkkz", "KKKKKKKz", 32},
+        {"kkkkkkkkkkz", "KKKKKKKKKKz", 32},
+        // A match can consume the entire allowance; no ellipsis may displace it.
+        {std::string(31, 'q') + "z", std::string(31, 'q') + "z", 32},
+    };
+    auto reader = make_sqlite_archive_reader("test", root);
+    for (const auto& example : cases) {
+        BOOST_TEST_CONTEXT("query bytes=" << example.query.size() << ", budget=" << example.preview_bytes) {
+            const auto ref = archive(state(std::string(100, 'x') + example.source_match + std::string(100, 'y')));
+            const auto result = reader->search({.text = example.query, .archive_id = ref.archive_id,
+                                               .snippet_bytes = example.preview_bytes});
+            BOOST_REQUIRE_EQUAL(result.hits.size(), 1u);
+            const auto& hit = result.hits[0];
+            BOOST_TEST(hit.snippet.find(example.source_match) != std::string::npos);
+            BOOST_TEST(hit.snippet.size() <= example.preview_bytes);
+            BOOST_TEST(hit.truncated == (example.source_match.size() + 200 > example.preview_bytes));
+            BOOST_CHECK_NO_THROW(nlohmann::json(hit.snippet).dump());
+        }
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(oversized_and_merged_matches_are_clipped_on_utf8_boundaries, Fixture) {
+    std::string kelvin;
+    for (int i = 0; i < 90; ++i) kelvin += "K";
+    auto reader = make_sqlite_archive_reader("test", root);
+    const auto large = archive(state(std::string(100, 'x') + kelvin + "suffix"));
+    auto result = reader->search({.text = std::string(90, 'k'), .archive_id = large.archive_id,
+                                 .snippet_bytes = 32});
+    BOOST_REQUIRE_EQUAL(result.hits.size(), 1u);
+    BOOST_TEST(result.hits[0].snippet == kelvin.substr(0, 30));
+    BOOST_TEST(result.hits[0].truncated);
+    BOOST_CHECK_NO_THROW(nlohmann::json(result.hits[0].snippet).dump());
+
+    std::string repeated;
+    for (int i = 0; i < 100; ++i) repeated += "abcd";
+    const auto merged = archive(state(repeated));
+    result = reader->search({.text = "abcdabcd", .archive_id = merged.archive_id, .snippet_bytes = 32});
+    BOOST_REQUIRE_EQUAL(result.hits.size(), 1u);
+    BOOST_TEST(result.hits[0].snippet.find("abcdabcd") != std::string::npos);
+    BOOST_TEST(result.hits[0].snippet.size() <= 32u);
+    BOOST_TEST(result.hits[0].truncated);
+}
+
+BOOST_FIXTURE_TEST_CASE(highlight_markers_cannot_be_spoofed_by_archived_text, Fixture) {
+    const std::string text = "<simplex-match-0-open> fake <simplex-match-0-close> "
+        "<simplex-match-1-close> markerneedle <simplex-match-2-open>";
+    archive(state(text));
+    auto reader = make_sqlite_archive_reader("test", root);
+    for (const auto* query : {"markerneedle", "<simplex-match-0-open>", "<simplex-match-1-close>"}) {
+        const auto result = reader->search({.text = query, .snippet_bytes = 4096});
+        BOOST_REQUIRE_EQUAL(result.hits.size(), 1u);
+        BOOST_TEST(result.hits[0].snippet == text);
+        BOOST_TEST(!result.hits[0].truncated);
+    }
+    const auto small = reader->search({.text = "markerneedle", .snippet_bytes = 32});
+    BOOST_REQUIRE_EQUAL(small.hits.size(), 1u);
+    BOOST_TEST(small.hits[0].snippet.find("markerneedle") != std::string::npos);
+    BOOST_TEST(small.hits[0].snippet.size() <= 32u);
 }

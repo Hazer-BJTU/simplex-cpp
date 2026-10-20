@@ -8,7 +8,9 @@ namespace persistence::sqlite_archive_index {
 namespace {
 
 constexpr std::size_t chunk_bytes = 4096;
-constexpr std::size_t overlap_bytes = 256;
+// A query has at most 256 scalars, but case-equivalent source scalars may
+// occupy four bytes each (for example ASCII k matches the Kelvin sign).
+constexpr std::size_t overlap_bytes = 256 * 4;
 
 /** Return the length of a valid UTF-8 scalar, or zero for an invalid byte. */
 std::size_t scalar_size(std::string_view text, std::size_t offset) {

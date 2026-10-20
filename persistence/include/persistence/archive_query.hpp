@@ -70,7 +70,8 @@ struct ArchivePage {
  * UTF-8, contain no NUL, and occupy 1..256 bytes with a non-whitespace character.
  * Three or more Unicode scalars use case-insensitive FTS5 trigram matching.
  * One/two scalars use an exact, case-sensitive scan under the same budget.
- * The 256-byte ceiling also bounds cross-chunk matching within the overlap.
+ * At most 256 query scalars can match up to 1024 source bytes after case
+ * folding; chunk overlap covers that conservative bound.
  */
 struct ArchiveSearchRequest {
     std::string text;
@@ -92,7 +93,10 @@ struct ArchiveHit {
     std::optional<std::int64_t> step;
     std::uint64_t start_byte = 0;
     std::uint64_t end_byte = 0;
+    /// Source-text preview; contains the complete first match when it fits the
+    /// byte budget, including case-equivalent spellings with different lengths.
     std::string snippet;
+    /// Some source text was omitted; this also covers an oversized matched span.
     bool truncated = false;
 };
 
