@@ -1,6 +1,7 @@
 #include "persistence/store.hpp"
 
 #include "sqlite_schema.hpp"
+#include "sqlite_archive_index.hpp"
 #include "sqlite_snapshot.hpp"
 #include "sqlite/database.hpp"
 
@@ -161,6 +162,7 @@ public:
             else insert.bind_text(7, attempt.call_id);
             insert.bind_text(8, utc_timestamp());
             step_done(insert, "archive insert");
+            sqlite_archive_index::index_archive(database, archive.archive_id);
             return revision;
         });
     }

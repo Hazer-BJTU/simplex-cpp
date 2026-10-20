@@ -1,7 +1,9 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -32,6 +34,7 @@ private:
 
 class Statement;
 class Transaction;
+class ExecutionBudget;
 
 /** How a connection may use its database file. */
 enum class OpenMode {
@@ -91,7 +94,42 @@ public:
 
 private:
     friend class Transaction;
+    friend class ExecutionBudget;
     std::shared_ptr<detail::Connection> _connection;
+};
+
+/**
+ * Bound SQLite VM work on one serially used connection.
+ *
+ * Installs progress and busy handlers until destruction. Cancellation is observed
+ * through the supplied stop token; no SQLite operation runs in a stop callback.
+ * A budget covers prepares, steps and cooperative lock retries, not filesystem
+ * stalls. Call check() between statements and application-side work as well. An
+ * exceeded deadline or
+ * cancellation interrupts SQLite with Error; the caller can inspect cancelled()
+ * and expired() to distinguish those from other database failures.
+ *
+ * Only one guard may own a connection's handlers. It retains the connection and
+ * must outlive all statements being executed under its budget. Destruction clears
+ * both handlers; this wrapper exposes no independently installed busy handler.
+ */
+class ExecutionBudget {
+public:
+    ExecutionBudget(Database& database, std::chrono::milliseconds timeout,
+                    std::stop_token stop = {});
+    ~ExecutionBudget();
+    ExecutionBudget(const ExecutionBudget&) = delete;
+    ExecutionBudget& operator=(const ExecutionBudget&) = delete;
+
+    bool cancelled() const noexcept;
+    bool expired() const noexcept;
+    /** Throw Error(SQLITE_INTERRUPT) if cancellation or the deadline was reached. */
+    void check() const;
+
+private:
+    std::shared_ptr<detail::Connection> _connection;
+    std::chrono::steady_clock::time_point _deadline;
+    std::stop_token _stop;
 };
 
 enum class StepResult { Row, Done };

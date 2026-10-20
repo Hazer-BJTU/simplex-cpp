@@ -44,3 +44,18 @@ any SQLite WAL/SHM files. Use a local filesystem compatible with SQLite WAL.
 
 See [State and persistence](state-and-persistence.md) for recovery and lifecycle
 behavior, and [Configuration](../getting-started/configuration.md) for setup.
+
+## Archived-text search
+
+SQLite stores also maintain an FTS5 trigram index of retained archive text:
+conversation bodies, tool calls, and textual tool results. Reasoning and binary
+content are excluded from the index; complete snapshots remain unchanged.
+Retention removes an archive's index entries with the archive, so the default
+five-archive retention target also limits searchable history.
+
+The C++ persistence library provides read-only archive listing, literal-text
+search, and paged source reading. This is currently a library API; no Agent tool
+or Hub search interface is exposed. JSON archives are not indexed. Existing
+SQLite schema-v1 stores remain readable and are upgraded with an index backfill
+on their next normal writer operation. After upgrade, older workers that only
+support schema v1 cannot open the store.

@@ -39,7 +39,7 @@ target_include_directories(sqlite_runtime SYSTEM PUBLIC "${SIMPLEX_SQLITE_SOURCE
 # Keep mutex support even when a worker's connections are used serially.
 # Loading SQLite extensions is separate from Simplex plugins and is not needed.
 target_compile_definitions(sqlite_runtime PRIVATE
-    SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION=1)
+    SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION=1 SQLITE_ENABLE_FTS5=1)
 target_link_libraries(sqlite_runtime PRIVATE Threads::Threads)
 if(UNIX)
     target_link_libraries(sqlite_runtime PRIVATE m)

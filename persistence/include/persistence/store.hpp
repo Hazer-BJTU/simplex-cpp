@@ -30,8 +30,8 @@
  * effect recoverable, not an implementation detail.
  *
  * This interface is storage-only. It has no memory or archive query surface:
- * archives are reserved, published, settled and pruned as evidence, never listed,
- * paged, searched or resolved for a client.
+ * archives are reserved, published, settled and pruned as evidence. The separate
+ * <persistence/archive_query.hpp> interface provides SQLite archive reads.
  *
  * Codec and filesystem failures are reported as StoreError, so a caller can rely
  * on status() for recovery. Programming errors stay distinguishable: a foreign

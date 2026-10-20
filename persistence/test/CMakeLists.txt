@@ -59,3 +59,15 @@ add_test(NAME test_persistence_sqlite_archive COMMAND test_persistence_sqlite_ar
 add_executable(test_persistence_selection test_selection.cpp)
 target_link_libraries(test_persistence_selection PRIVATE persistence_lib Boost::unit_test_framework)
 add_test(NAME test_persistence_selection COMMAND test_persistence_selection)
+
+# Trigram archive projection, migration/backfill and transactional retention.
+add_executable(test_persistence_sqlite_archive_index test_sqlite_archive_index.cpp)
+target_include_directories(test_persistence_sqlite_archive_index PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_link_libraries(test_persistence_sqlite_archive_index PRIVATE persistence_lib sqlite_lib Boost::unit_test_framework)
+add_test(NAME test_persistence_sqlite_archive_index COMMAND test_persistence_sqlite_archive_index)
+
+add_executable(test_persistence_sqlite_archive_query test_sqlite_archive_query.cpp)
+target_include_directories(test_persistence_sqlite_archive_query PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_link_libraries(test_persistence_sqlite_archive_query PRIVATE persistence_lib sqlite_lib Boost::unit_test_framework)
+add_test(NAME test_persistence_sqlite_archive_query COMMAND test_persistence_sqlite_archive_query)
+set_tests_properties(test_persistence_sqlite_archive_index test_persistence_sqlite_archive_query PROPERTIES TIMEOUT 60)
