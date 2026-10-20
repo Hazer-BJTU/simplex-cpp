@@ -36,9 +36,9 @@ Dataclass, loop, tool and provider code stay independent of the backend.
   store record for that protection only. Publication accepts a symlinked archive
   root, but retention requires an ordinary directory and refuses one: deletion
   never follows a link.
-- There is no memory or archive query surface: nothing here lists, pages, reads
-  or searches archives for a client. Retention policy is unchanged by this
-  abstraction.
+- The write contract has no query surface. The separate
+  `<persistence/archive_query.hpp>` interface lists, searches and reads retained
+  SQLite archives without changing retention policy.
 
 ## JSON adapter
 
@@ -114,9 +114,9 @@ are `kind = 'archive'` and are only inserted, never updated.
 ### Opening and versions
 
 - `open_store` enables `foreign_keys`, WAL and `synchronous=FULL`, creates schema
-  v1 on an empty file in one transaction, and records the baseline in
+  v2 on an empty file in one transaction, and records the baseline in
   `schema_migrations`.
-- `inspect_store` is read-only: it never creates, migrates or repairs. A newer
+- `inspect_store` is read-only: it never creates, migrates or repairs. Schema v1 remains readable without migration. A newer
   schema, an unsupported codec, a foreign `application_id`, a missing
   `store_meta`/`sessions` row or a session mismatch throws `SchemaError` with a
   `Reason`.
@@ -236,7 +236,7 @@ sole existing store fails, including with `restore: never`.
 
 Manual and automatic compact freeze complete originals in the same database.
 `simplex manage read_state` uses the same C++ mapper in a read-only transaction;
-Hub receives decoded JSON, never database bytes. No archive query is provided.
+Hub receives decoded JSON, never database bytes. Archive queries use the separate read-only `ArchiveReader` API.
 
 Every checkpoint replaces the current normalized graph and advances its revision
 and random operation ID in one transaction. The caller can require an expected
@@ -285,7 +285,8 @@ disabling deletion. Repeated crashes do not permanently expand the protected set
 Archive rows and their owned graphs are deleted atomically; current state and
 legacy filesystem artifacts are untouched. `removed_bytes` is zero for SQLite:
 freed pages are reusable, not a promise of physical file shrinkage. No automatic
-VACUUM, archive-query API, reference index or permanent JSON duplicate is added.
+VACUUM, reference index or permanent JSON duplicate is added. The read-only
+archive API below observes the same retained evidence.
 
 Unknown outcomes latch all writes, including settlement and retention. T1's
 operation ID is stored on its archive snapshot; T2's ID is stored on current state.
@@ -308,7 +309,7 @@ textual tool results, and pending tool evidence. Reasoning, action status, opaqu
 extras, system prompts, tool declarations, and binary/external-reference content
 are excluded. The authoritative snapshot is unchanged and remains complete.
 
-Chunks cover all selected text in at most 4096 UTF-8 bytes with approximately
+Chunks cover all selected text in at most 4096 UTF-8 bytes with at least
 256 bytes of overlap. Splits prefer nearby newlines. Search-only normalization
 replaces NUL and invalid UTF-8 bytes with one-byte spaces, preserving byte
 positions; original text is never modified. Each chunk records the archive,
@@ -329,3 +330,66 @@ next normal writer operation atomically upgrades the schema and backfills all
 retained archives, processing one source at a time. Upgrade failure leaves the
 v1 schema and authoritative state intact. Older workers that only understand v1
 cannot open the upgraded store. Reads never upgrade or repair storage.
+
+## Archive query API
+
+`<persistence/archive_query.hpp>` exposes a session-scoped `ArchiveReader`:
+
+```cpp
+auto reader = persistence::make_sqlite_archive_reader(session_id, state_directory);
+auto archives = reader->list(20); // newest first; last sequence is the next cursor
+persistence::ArchiveSearchRequest request;
+request.text = "configuration path";
+auto matches = reader->search(request);
+if (!matches.hits.empty()) {
+    const auto& hit = matches.hits.front();
+    auto excerpt = reader->read(hit.archive.archive_id, hit.source_id, hit.start_byte);
+    // Continue at excerpt.end_byte while excerpt.has_more is true.
+}
+```
+
+These calls are synchronous and belong on a storage executor. Construction does
+no I/O. Each call uses a separate read-only connection/transaction and validates
+the expected session. Concurrent calls are allowed; a query never shares the
+writer's connection, creates a missing database, upgrades v1, or repairs indexes.
+A v1 store reports `IndexUnavailable` until its owner's next normal write upgrades
+it. A missing or corrupted store is an error, not an empty result. JSON has no
+archive-query implementation or implicit SQLite fallback.
+
+Search text is a **literal substring**, not a Boolean/FTS expression or semantic
+query. It must be valid UTF-8 without NUL, contain a non-whitespace character,
+and fit in 256 bytes. Three or more Unicode scalars use FTS5 trigram matching
+(case-insensitive); shorter queries use an exact case-sensitive scan. Quoted
+operators and punctuation remain literal. The query bound fits in the chunk
+overlap. Search supports archive and text-kind filters, 1..100 hits (default 10),
+and 32..4096 preview bytes (default 512). Results use BM25 order, then newest
+archive and source position. Exact repeated chunks of the same kind and
+within-source overlapping hits are collapsed; this is not semantic deduplication
+of entire conversations. Different overlapping chunks in different archives can
+still produce distinct hits. `has_more` means another distinct hit was found;
+there is no expensive total count or cross-request relevance cursor.
+
+Hits include archive identity/outcome/time, source identity, optional zero-based
+turn/step positions, the source's half-open byte range, and a bounded UTF-8
+snippet with an explicit truncation flag. Pending evidence has no claimed turn
+or step. `ToolCall` sources project the name, a newline, and serialized arguments;
+other sources project their original text. Reading accepts 4..65536 bytes
+(default 16384), preserves NUL and invalid bytes, and does not split valid UTF-8
+scalars. An offset inside a valid scalar is rejected; resume with the returned
+`end_byte`. Paging can retrieve the entire source without a total-content cap.
+
+A source id is meaningful only with its archive id. Retention can run between
+search and read: a removed archive returns `NotFound` and cannot alias a later
+SQLite row. Each call sees one consistent snapshot, but calls do not pin archive
+lifetimes. The existing `memory_retention.max_archives` target (default 5) still
+bounds the searchable history; no permanent memory copy is created.
+
+Every operation has a cooperative 1..30000 ms budget (default 1000 ms) and an
+optional `std::stop_token`. SQLite VM work and application loops observe it.
+Transient SQLite lock contention shares the same deadline.
+Cancellation/timeouts return explicit errors, never partial results or a fake
+empty match set. Filesystem stalls are not hard realtime bounded. Query failure
+does not latch an authoritative storage failure or prevent later checkpoints.
+
+This API currently has no Agent tool, Hub protocol, manager command, or prompt
+integration. It establishes the storage/query layer for those future consumers.

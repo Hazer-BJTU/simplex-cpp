@@ -55,7 +55,7 @@ const char* schema_sql() {
 -- A source identifier is scoped by its random, never-reused archive identity.
 -- Row ids alone are not public identities: SQLite can reuse them after pruning.
 CREATE VIEW archive_text_sources AS
-WITH owners AS (
+WITH owners AS NOT MATERIALIZED (
   SELECT a.archive_id, m.message_id, m.slot,
          COALESCE(t.ordinal, st.ordinal) AS turn_index,
          s.ordinal AS step_index
@@ -166,7 +166,7 @@ void index_archive(sqlite::Database& database, std::string_view archive_id) {
             }
             if (end == text.size()) break;
             start = end - overlap_bytes;
-            while (continuation(text[start])) ++start;
+            while (continuation(text[start])) --start;
         }
     }
 }

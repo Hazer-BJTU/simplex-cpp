@@ -3,6 +3,7 @@
 
 #include "sqlite/database.hpp"
 #include <sqlite3.h>
+#include <thread>
 
 #include <boost/filesystem.hpp>
 #include <filesystem>
@@ -231,4 +232,61 @@ BOOST_AUTO_TEST_CASE(last_insert_rowid_tracks_the_latest_insert) {
     auto second = database.prepare("INSERT INTO items(value) VALUES('second')");
     BOOST_CHECK(second.step() == sqlite::StepResult::Done);
     BOOST_TEST(database.last_insert_rowid() == first + 1);
+}
+
+BOOST_AUTO_TEST_CASE(execution_budget_interrupts_vm_and_releases_handler) {
+    sqlite::Database database(":memory:");
+    const auto expensive = [&] {
+        auto query = database.prepare(
+            "WITH RECURSIVE numbers(n) AS (VALUES(0) UNION ALL "
+            "SELECT n+1 FROM numbers WHERE n<1000000000) SELECT sum(n) FROM numbers");
+        query.step();
+    };
+    {
+        sqlite::ExecutionBudget budget(database, std::chrono::milliseconds(1));
+        BOOST_CHECK_THROW(expensive(), sqlite::Error);
+        BOOST_TEST(budget.expired());
+        BOOST_CHECK_THROW(sqlite::ExecutionBudget nested(database, std::chrono::seconds(1)), std::logic_error);
+    }
+    // An interrupted statement and destroyed guard leave the connection usable.
+    database.execute("CREATE TABLE usable(value INTEGER)");
+    std::stop_source stop;
+    {
+        sqlite::ExecutionBudget budget(database, std::chrono::seconds(10), stop.get_token());
+        std::jthread cancel([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            stop.request_stop();
+        });
+        BOOST_CHECK_THROW(expensive(), sqlite::Error);
+        BOOST_TEST(budget.cancelled());
+    }
+    database.execute("INSERT INTO usable VALUES(1)");
+    BOOST_CHECK_THROW(sqlite::ExecutionBudget cancelled(database, std::chrono::seconds(1), stop.get_token()), sqlite::Error);
+    // A throwing constructor must not claim handler ownership.
+    BOOST_CHECK_NO_THROW(sqlite::ExecutionBudget fresh(database, std::chrono::seconds(1)));
+}
+
+BOOST_AUTO_TEST_CASE(execution_budget_bounds_lock_waits_and_observes_cancellation) {
+    Scratch scratch;
+    sqlite::Database writer(scratch.database());
+    writer.execute("CREATE TABLE items(value INTEGER); INSERT INTO items VALUES(1);");
+    sqlite::Database reader(scratch.database(), sqlite::OpenMode::ReadOnly);
+    writer.execute("BEGIN EXCLUSIVE");
+    {
+        sqlite::ExecutionBudget budget(reader, std::chrono::milliseconds(5));
+        BOOST_CHECK_THROW(count(reader), sqlite::Error);
+        BOOST_TEST(budget.expired());
+    }
+    std::stop_source stop;
+    {
+        sqlite::ExecutionBudget budget(reader, std::chrono::seconds(10), stop.get_token());
+        std::jthread cancel([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            stop.request_stop();
+        });
+        BOOST_CHECK_THROW(count(reader), sqlite::Error);
+        BOOST_TEST(budget.cancelled());
+    }
+    writer.execute("ROLLBACK");
+    BOOST_TEST(count(reader) == 1);
 }

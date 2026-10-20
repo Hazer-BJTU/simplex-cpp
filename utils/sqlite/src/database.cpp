@@ -14,6 +14,7 @@ struct Connection {
     sqlite3* handle = nullptr;
     bool usable = true;
     bool transaction_owned = false;
+    bool budget_owned = false;
 
     ~Connection() {
         if (handle != nullptr) {
@@ -108,6 +109,55 @@ int Error::code() const noexcept {
 
 int Error::extended_code() const noexcept {
     return _extended_code;
+}
+
+ExecutionBudget::ExecutionBudget(
+    Database& database, std::chrono::milliseconds timeout, std::stop_token stop)
+    : _connection(database._connection),
+      _deadline(std::chrono::steady_clock::now()),
+      _stop(stop) {
+    if (timeout <= std::chrono::milliseconds::zero()
+        || timeout > std::chrono::hours(24)) {
+        throw std::invalid_argument("SQLite execution budget must be within (0, 24h]");
+    }
+    _deadline += timeout;
+    _connection->check();
+    if (_connection->budget_owned) {
+        throw std::logic_error("SQLite connection already has an execution budget");
+    }
+    check();
+    sqlite3_progress_handler(_connection->handle, 1000, [](void* context) noexcept {
+        const auto& budget = *static_cast<ExecutionBudget*>(context);
+        return budget.cancelled() || budget.expired() ? 1 : 0;
+    }, this);
+    // Opening/closing another WAL connection may briefly require a lock even
+    // for a read-only query. Keep retries inside the same deadline instead of
+    // treating that transient contention as corrupt or unavailable storage.
+    sqlite3_busy_handler(_connection->handle, [](void* context, int) noexcept {
+        const auto& budget = *static_cast<ExecutionBudget*>(context);
+        if (budget.cancelled() || budget.expired()) return 0;
+        sqlite3_sleep(1);
+        return budget.cancelled() || budget.expired() ? 0 : 1;
+    }, this);
+    _connection->budget_owned = true;
+}
+
+ExecutionBudget::~ExecutionBudget() {
+    sqlite3_progress_handler(_connection->handle, 0, nullptr, nullptr);
+    sqlite3_busy_handler(_connection->handle, nullptr, nullptr);
+    _connection->budget_owned = false;
+}
+
+bool ExecutionBudget::cancelled() const noexcept {
+    return _stop.stop_requested();
+}
+
+bool ExecutionBudget::expired() const noexcept {
+    return std::chrono::steady_clock::now() >= _deadline;
+}
+
+void ExecutionBudget::check() const {
+    if (cancelled() || expired()) throw Error("execution budget", SQLITE_INTERRUPT);
 }
 
 Database::Database(std::string_view path, OpenMode mode)

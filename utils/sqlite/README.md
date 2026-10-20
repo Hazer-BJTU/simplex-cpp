@@ -88,3 +88,10 @@ workaround.
 The bundled runtime also enables FTS5 (`SQLITE_ENABLE_FTS5=1`), including the
 built-in trigram tokenizer. FTS is compiled in; dynamic SQLite extension loading
 remains disabled.
+
+`ExecutionBudget` installs a scoped SQLite progress handler with a deadline and
+optional `std::stop_token`. It interrupts VM execution without calling SQLite
+from another thread. Only one budget may own a connection at a time; call
+`check()` between statements or application-side work. A busy handler retries transient locks under the same budget; operating-system
+I/O stalls are not hard realtime bounded. Destruction removes both handlers,
+and query owners should discard an interrupted transaction/connection.
