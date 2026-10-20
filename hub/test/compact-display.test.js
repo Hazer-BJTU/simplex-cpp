@@ -86,3 +86,14 @@ it('SQLite compact metadata survives projection without fabricating a file path'
     assert.equal(parseCompactResult({...source, archive: {...source.archive, restorable: false}}), null);
     assert.equal(parseCompactResult({...source, archive: {...source.archive, archive_id: ''}}), null);
 });
+
+it('keeps the same memory.md preview through Hub normalization and panel parsing', () => {
+    const summary = 'Complete summary: /session/memory.md\n\nGoal: finish the task.\n'
+        + '[Summary truncated; retained 22 UTF-8 bytes of the body. Complete text is in memory.md above.]';
+    for (const backend of ['json', 'sqlite']) {
+        const source = { summary, durable: true, revision: 2, removed_turns: 1,
+            archive: { session_id: 'session-1', archive_id: 'archive-1', storage_kind: backend, restorable: true } };
+        assert.deepEqual(normalizeDisplay('compact_finished', source), source);
+        assert.equal(parseCompactResult(normalizeDisplay('compact_finished', source)).summary, summary);
+    }
+});

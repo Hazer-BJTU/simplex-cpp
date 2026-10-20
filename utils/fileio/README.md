@@ -103,3 +103,14 @@ lock file. Exclusive mode opens it read-write and creates it; shared mode opens
 it read-only, so inspection works on a readable session directory whose lock
 file already exists, and creates it only when it does not exist yet. Errors name
 the requested mode.
+
+### Deferred atomic publication
+
+`fileio::StagedWrite` renders and synchronizes a private same-directory file in
+its constructor, then `publish()` performs the atomic rename and directory sync.
+Destruction removes an unpublished temporary file. This lets a caller stage a
+secondary artifact before an authoritative commit without exposing it on failure.
+The two publications are not one transaction; callers must handle a postcommit
+publication failure explicitly. `atomic_write()` uses the same implementation
+for immediate publication. As with other filesystem operations, coroutine users
+should construct, publish and destroy staged writes on their storage executor.

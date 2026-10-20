@@ -217,6 +217,14 @@ is separate from `persistence.memory_retention.max_archives`. The next explicit
 continue can resume from memory even when compaction left no turns; restart does
 not resume automatically. See the [complete lifecycle contract](../core/worker-protocol.md#automatic-context-compaction).
 
+Automatic compaction uses the same bounded summary preview as manual compaction.
+The full summary is replaced in `<persistence.directory>/memory.md`; oversized
+output is truncated for injection and display rather than causing failure.
+Replacement budgeting allows 4 KiB above the nominal context/reduction target;
+transmitted summaries still fit 32 KiB including their pointer and marker.
+An actual compact failure ends the request immediately; the attempt limit is
+not a failed-summary retry loop.
+
 ## Persistence backend
 
 New empty sessions use SQLite (`state/state.sqlite3`), including compact archives.

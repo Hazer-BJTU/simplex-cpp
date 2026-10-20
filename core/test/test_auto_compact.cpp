@@ -91,6 +91,7 @@ struct Model : llm::LLMModel {
     bool waiting = false;
     bool probe_queued = false;
     CleanupFault cleanup_fault = CleanupFault::None;
+    bool oversized_summary = false;
     std::optional<persistence::Revision> prepared_revision;
     std::vector<State> contexts;
     std::filesystem::path snapshot;
@@ -126,6 +127,7 @@ struct Model : llm::LLMModel {
             }
             content.raw = mode == Mode::SummaryEmpty ? " \n"
                 : "Goal: finish original task. State: verified work. Retrieve: /workspace/results. Next: verify.";
+            if (oversized_summary) content.raw += std::string(64 * 1024, 'S');
             if (mode == Mode::SummaryTools) {
                 model_io::InvokeQuery forbidden;
                 forbidden.id = "forbidden";
@@ -173,7 +175,7 @@ struct Model : llm::LLMModel {
 };
 
 void exercise(Mode mode, bool save_run, bool sqlite = false,
-              CleanupFault cleanup_fault = CleanupFault::None) {
+              CleanupFault cleanup_fault = CleanupFault::None, bool oversized_summary = false) {
     const auto root = std::filesystem::temp_directory_path() / ("simplex-auto-" + core::new_identity());
     struct Cleanup {
         std::filesystem::path path;
@@ -207,6 +209,7 @@ void exercise(Mode mode, bool save_run, bool sqlite = false,
     config.save_step = config.save_shutdown = false;
     auto model = std::make_shared<Model>(io.get_executor(), mode);
     model->cleanup_fault = cleanup_fault;
+    model->oversized_summary = oversized_summary;
     model->snapshot = config.state_directory / "state.json";
     auto store = sqlite ? persistence::make_sqlite_store("test", config.state_directory)
         : persistence::make_json_store("test", {config.state_directory, config.memory});
@@ -425,7 +428,15 @@ void exercise(Mode mode, bool save_run, bool sqlite = false,
         }
         if (name == "tool_results"
             && event.at("data").at(0).at("invoke_return").at("query").at("name") == "auto_compact") ++results;
-        if (name == "compact_finished") BOOST_TEST(event.at("data").at("origin") == "automatic");
+        if (name == "compact_finished") {
+            BOOST_TEST(event.at("data").at("origin") == "automatic");
+            if (oversized_summary) {
+                const auto summary = event.at("data").at("summary").get<std::string>();
+                BOOST_CHECK(summary.size() <= 32768u);
+                BOOST_CHECK(summary.find("Summary truncated") != std::string::npos);
+                BOOST_CHECK(std::filesystem::file_size(config.storage / "memory.md") > 65536u);
+            }
+        }
         if (name != "ready" && name != "history") BOOST_TEST(event.at("run_id") == run);
     }
     BOOST_TEST(starts == 1);
@@ -505,3 +516,8 @@ BOOST_AUTO_TEST_CASE(uncertain_optional_archive_mutation_emits_terminal_and_stop
     exercise(Mode::Success, true, true, CleanupFault::Retention);
 }
 #endif
+
+BOOST_AUTO_TEST_CASE(oversized_automatic_summary_continues_with_bounded_preview) {
+    exercise(Mode::Success, true, false, CleanupFault::None, true);
+    exercise(Mode::Success, true, true, CleanupFault::None, true);
+}

@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <functional>
 #include <iosfwd>
+#include <memory>
 #include <string>
 #include <system_error>
 
@@ -25,6 +26,33 @@ public:
 
 private:
     bool published_;
+};
+
+/** A fully written, synchronized private file awaiting atomic publication.
+ * Construction performs the writer callback and file fsync but leaves the
+ * destination untouched. publish() renames once and fsyncs the parent; an
+ * unpublished object's destruction removes its private temporary file.
+ *
+ * The ownership and symlink semantics match atomic_write(): the destination
+ * entry is replaced, never followed. Callers requiring symlink refusal must
+ * validate their destination. Keep construction, publication and destruction
+ * on the storage executor when used by asynchronous application code.
+ */
+class StagedWrite {
+public:
+    StagedWrite(const std::filesystem::path& file,
+        const std::function<void(std::ostream&)>& write);
+    ~StagedWrite();
+    StagedWrite(const StagedWrite&) = delete;
+    StagedWrite& operator=(const StagedWrite&) = delete;
+
+    /** Publish exactly once. After rename, a directory-sync error reports
+     * AtomicWriteError::published() and a second publication is prohibited. */
+    void publish();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 /**

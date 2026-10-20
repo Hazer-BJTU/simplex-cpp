@@ -1,4 +1,4 @@
-/** Complete compact text through the real C++ worker, Hub, replay and panel store. */
+/** Bounded compact preview and full local summary through the real C++ worker, Hub, replay and panel store. */
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -10,8 +10,8 @@ import { sessionDir } from '../../src/launch/config-render.ts';
 import { createPanelStore } from '../../web/src/state/store.ts';
 import { buildRounds } from '../../web/src/app/rounds.ts';
 
-for (const bytes of [8192, 32768]) {
-    it(`preserves a ${bytes}-byte committed compact summary through live and replay delivery`,
+for (const bytes of [8192, 32768, 65536]) {
+    it(`preserves a ${bytes}-byte summary locally and its preview through live/replay delivery`,
         { skip: e2eSkip, timeout: 60000 }, async t => {
             const ctx = await startE2eHub();
             // This test covers complete display/replay, not a shipped persona's
@@ -73,21 +73,28 @@ for (const bytes of [8192, 32768]) {
             assert.equal(finished.envelope.data.status, 'completed', JSON.stringify(finished));
             const live = panel.messages.find(message => message.type === 'event'
                 && message.envelope.event === 'compact_finished');
-            assert.equal(live.envelope.data.summary, summary);
+            const preview = live.envelope.data.summary;
+            assert.equal(typeof preview, 'string');
+            assert.ok(Buffer.byteLength(preview) <= 32768);
+            const memory = join(sessionDir(ctx.config, session.id), 'memory.md');
+            assert.ok(preview.includes(memory));
+            assert.equal(readFileSync(memory, 'utf8'), summary);
+            if (bytes >= 32768) assert.ok(preview.includes('Summary truncated'));
+            else assert.ok(preview.includes(summary));
             assert.equal(live.envelope.data.display_truncated, undefined);
             const saved = JSON.parse(readFileSync(join(sessionDir(ctx.config, session.id), 'state/state.json'), 'utf8'));
             assert.deepEqual(saved.turns, []);
-            assert.ok(JSON.stringify(saved).includes(JSON.stringify(summary).slice(1, -1)));
+            assert.ok(JSON.stringify(saved).includes(JSON.stringify(preview).slice(1, -1)));
             // A new panel gets the same normalized summary from bounded replay.
             const replay = await connectWorker(`${ctx.wsBase}/panel/ws`);
             t.after(() => replay.close());
             replay.send({ v: 1, type: 'subscribe', session: session.id });
             const subscribed = await replay.waitFor(message => message.type === 'subscribed');
-            assert.equal(subscribed.transcript.find(event => event.event === 'compact_finished').data.summary, summary);
+            assert.equal(subscribed.transcript.find(event => event.event === 'compact_finished').data.summary, preview);
             const store = createPanelStore();
             store.getState().applySubscribed(subscribed);
             const view = store.getState().views.get(session.id);
             const round = buildRounds(view.items, view.confirmations, view.requests).find(round => round.compactResult);
-            assert.equal(round.compactResult.summary, summary);
+            assert.equal(round.compactResult.summary, preview);
         });
 }

@@ -680,42 +680,47 @@ retains that accounting and refreshes the estimate for the new system prompt.
 `run_started` marks host admission, before budget preflight and archive export; it is
 not proof that an archive was written or a model request began.
 
-Compaction uses an explicit **64 KiB replacement-context byte budget**, independent
-of the provider's configured token window. Before creating an archive or calling
-the model, the worker measures the retained rendered prompt, JSON-encoded tool
-declarations, and the exact new memory wrapper, including directory/file paths
-and boundary markers. If this fixed overhead exhausts the budget, it fails with
-measured `fixed_bytes`, `budget_bytes`, and guidance to shorten prompts, tool
-schemas or archive paths. This preflight creates no archive and makes no model
-request.
+Compaction uses a nominal **64 KiB replacement-context target** and **10% reduction
+target**, with one shared **4 KiB tolerance**. The final bound is
+`min(64 KiB, before_bytes - ceil(before_bytes / 10)) + 4 KiB`. The worker measures
+rendered prompt, JSON tools and turns; this byte policy is independent of provider
+tokens. Fixed prompt/tool/wrapper overhead that leaves no useful summary space
+fails preflight with measured values and guidance to shorten prompts or paths.
 
-Otherwise the instruction states a raw UTF-8 summary allowance of
-`min(32 KiB, 64 KiB - fixed_bytes)`. A generated summary can still violate it;
-empty text and over-allowance text are rejected without truncation. After
-construction, the actual replacement must fit 64 KiB and reduce measured context
-by at least 10%. The size measure adds rendered prompt and JSON-encoded tools and
-turns; summary allowance counts original text bytes, not JSON escaping or tokens.
-Multibyte text and archive-path overhead count. This is a deterministic compact
-policy, not a tokenizer or exact model capacity check; token-window settings do
-not scale it. All validation precedes the mandatory JSON save. Rejection leaves
-the original state authoritative and emits no `compact_finished`.
+The model is instructed to front-load goals, user preferences/rules, task state,
+important findings or retrieval instructions, and next steps. A bounded preview
+includes the absolute `memory.md` pointer and, when needed, a truncation marker.
+Its entire string is at most 32 KiB and also fits the remaining replacement
+allowance. Truncation prefers a nearby line boundary and never splits a UTF-8
+code point. Empty summaries still fail; oversized summaries are truncated rather
+than rejected. The original strict 10% reduction gate is replaced by the shared
+4 KiB tolerance. Existing automatic-compaction frequency/attempt guards remain.
+
+The complete model summary is staged privately before committing state and then
+atomically published to `<persistence.directory>/memory.md` with mode 0600. It has
+no size cap and is replaced on every committed compact, for either backend.
+Failed/cancelled attempts leave the previous file untouched. State and file are
+separate publications: a crash or rename/fsync failure after state commit may
+leave `memory.md` stale, missing, or not crash-durable. That failure is logged
+without undoing the committed preview. The following normal run may read the
+file; tools remain prohibited within the compact exchange itself.
 
 Only a successful, non-cancelled summary replaces the live state. All user turns
 are removed; other state fields are retained, apart from the updated timestamp,
 completed loop progress, built-in context statistics, and replacement
 `memory.runtime` prompt section. The response commit sequence continues monotonically. This last Volatile section
-contains the summary, the absolute session archive directory, and the latest
-complete-state JSON archive path, with instructions to read archived state for
-historical details. It promises no archive query operation.
+contains the bounded summary and the absolute `memory.md` path. The generated
+wrapper no longer advertises archive paths. Existing explicit archive references
+still receive retention protection; newly generated wrappers add no such pins.
 The summary sits between a unique begin/end marker and follows a fixed warning
 that it is untrusted historical context, not system policy or current user intent.
 It replaces older injected memory; archive retention is described below. Restoring
 a worker preserves memory after the refreshed runtime signature.
 
-The new JSON snapshot is mandatory even when `save.on_run_finished` is false.
+The new state snapshot is mandatory even when `save.on_run_finished` is false.
 It is atomically saved before the in-memory replacement and success notification.
 Cancellation before that commit preserves the original state. Cancellation during
-the synchronous commit does not undo it. Required JSON save failure stops further
+the synchronous commit does not undo it. Required state save failure stops further
 admission; a failure after file publication has uncertain durability and is never
 reported as success or user cancellation. The worker emits one terminal `error`
 with `durable: false` and stops, rather than a duplicate `run_finished`.
@@ -746,8 +751,9 @@ nonempty `memory_file` or valid structured archive metadata. These fields do not
 provide archive browsing or retrieval. For SQLite, `archive_cleanup.removed_bytes`
 is zero because deleted pages remain reusable within the database file.
 
-`summary` is the complete accepted text, limited to 32 KiB of original UTF-8
-bytes. Worker display projection and Hub normalization preserve it verbatim,
+`summary` is the bounded preview used for injection, including the `memory.md`
+pointer and any truncation marker, limited to 32 KiB of original UTF-8 bytes.
+The full model output is stored only in `memory.md`. Worker display projection and Hub normalization preserve it verbatim,
 including Unicode and characters escaped by JSON. Other metadata, such as
 `archive_cleanup_error`, still uses bounded diagnostic previews; its
 `display_truncated` flag does not indicate summary truncation. The complete

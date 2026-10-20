@@ -715,9 +715,10 @@ but never silently rewrites the canonical worker answer.
 Accepted worker display data is normalized before caching: answers receive an
 aggregate 512 KiB encoded budget, reasoning a 4 KiB UTF-8 prefix; extras/unknown
 metadata are bounded first. `compact_finished.summary` preserves the complete
-accepted text up to 32 KiB of original UTF-8 bytes, for both manual and automatic
-compaction. The panel replay and subagent compact receipts retain the same text;
-unrelated compact metadata still uses diagnostic previews. An oversized summary
+bounded preview text up to 32 KiB of original UTF-8 bytes, for both manual and automatic
+compaction. The preview includes the worker's `memory.md` pointer and any truncation marker;
+the same text reaches the panel and subagent compact receipts. Full model output
+remains in the worker-side file. Other compact metadata still uses diagnostic previews. An oversized summary
 from another worker becomes an explicit omission object, never a silent prefix.
 A normalized data envelope fits 768 KiB. Many fields,
 JSON escapes and Unicode count toward the full frame. Transcript rings count

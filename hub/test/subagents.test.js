@@ -132,7 +132,8 @@ for (const bytes of [8192, 32768]) {
         const record = ctx.hub.subagents.children.get(child.id);
         await until(() => !child.activeRunId && !record.conversation.value.stale
             && record.conversation.value.turns[0]?.steps.length === 1);
-        const summary = compactSummary(bytes);
+        const marker = '\n[Summary truncated; complete text: /session/memory.md]';
+        const summary = compactSummary(bytes - Buffer.byteLength(marker)) + marker;
         child.connection.sendSignal({ type: 'signal', data: { operation: 'test_compact_summary', summary } });
         const sent = await send(ctx, child, 'compact');
         assert.equal(sent.result.state, 'sent');

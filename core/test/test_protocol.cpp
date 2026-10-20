@@ -657,3 +657,10 @@ BOOST_AUTO_TEST_CASE(answer_queries_reject_invalid_offsets_and_expired_commits) 
     state.turns.clear();
     BOOST_CHECK_THROW(core::answer_page(state, query, "worker"), std::invalid_argument);
 }
+
+BOOST_AUTO_TEST_CASE(compact_preview_marker_survives_worker_projection) {
+    const std::string summary = "Complete summary: /session/memory.md\n\nGoal: finish.\n"
+        "[Summary truncated; retained 13 UTF-8 bytes of the body. Complete text is in memory.md above.]";
+    const auto projected = core::display_compact(Json{{"summary", summary}, {"durable", true}});
+    BOOST_TEST(projected.at("summary") == summary);
+}
