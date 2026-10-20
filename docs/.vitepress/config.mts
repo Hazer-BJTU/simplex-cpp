@@ -40,6 +40,7 @@ export default defineConfig({
                 ['State and persistence', '/architecture/state-and-persistence'],
                 ['Persistence backend', '/architecture/persistence-backends'],
                 ['Security', '/architecture/security'],
+                ['Project history', '/architecture/history'],
             ]),
             group('Build from source', [
                 ['Local environment', '/building/local'],
