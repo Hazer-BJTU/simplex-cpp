@@ -27,6 +27,9 @@ public:
      * A configured modality_assist_model is constructed independently and owned
      * for the application lifetime, and enables the intrinsic modality_assist
      * toolset. Auxiliary exchanges use temporary states outside AgentInputState.
+     * Enabled persistence with an effectively selected SQLite backend also adds
+     * memory_search/memory_fetch; auto selection is resolved before registration.
+     * Queries share the storage executor and are joined as normal tool calls.
      */
     Application(boost::asio::any_io_executor executor, load::Configuration configuration,
                 std::string session_id, std::shared_ptr<llm::LLMModel> model = {});

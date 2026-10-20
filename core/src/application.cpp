@@ -17,6 +17,7 @@
 #include "loop/intrinsic/context_statistic/hook.hpp"
 #include "tools/intrinsic/process/toolset.hpp"
 #include "tools/intrinsic/reading/toolset.hpp"
+#include "tools/intrinsic/archive_memory/toolset.hpp"
 #include "tools/intrinsic/editing/toolset.hpp"
 #include "tools/intrinsic/modality_assist/toolset.hpp"
 #include "tools/intrinsic/hub_remote_call/toolset.hpp"
@@ -417,8 +418,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 "persistence.readable is deprecated and ignored: the worker writes "
                 "complete state only and no longer exports readable.md");
         }
-        construct_runtime();
+        // Auto selection needs disk inspection before deciding which intrinsic
+        // capabilities to expose. Restore first; rebuild prompts only after the
+        // complete registry exists, so stale host skills are replaced together.
         co_await restore_state();
+        construct_runtime();
+        refresh_runtime_prompt();
         install_confirmation();
         install_observers();
     }
@@ -444,6 +449,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         registry.add(std::make_shared<tools::intrinsic::ProcessToolSet>(
             store, &eventbus::default_async_bus()));
         registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>());
+        if (config.persistence && state_store->backend() == persistence::Backend::Sqlite) {
+            registry.add(std::make_shared<tools::intrinsic::ArchiveMemoryToolSet>(
+                persistence::make_sqlite_archive_reader(session_id, config.state_directory),
+                storage_executor.get_executor()));
+        }
         registry.add(std::make_shared<tools::intrinsic::EditingToolSet>());
         if (modality_assist_model) {
             registry.add(std::make_shared<tools::intrinsic::ModalityAssistToolSet>(
@@ -467,11 +477,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     }
 
     /**
-     * Restore history unchanged, reconciling only host-owned capabilities.
+     * Select the backend and restore history before constructing capabilities.
      *
      * A store that exists but cannot be decoded fails startup; it is never
-     * treated as an empty session. `restore: never` bypasses the store instead
-     * of deleting it, so a later save replaces the current state in place.
+     * treated as an empty session. `restore: never` still validates the store
+     * but does not adopt its state; a later save replaces it in place.
      */
     asio::awaitable<void> restore_state() {
         std::optional<model_io::AgentInputState> stored;
@@ -509,6 +519,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             state.meta.updated_at = state.meta.created_at;
             state.system_prompt = std::move(config.system_prompt);
         }
+    }
+
+    /** Refresh model-facing tools and host sections after backend selection and
+     * runtime construction. Historical conversation and compact memory survive. */
+    void refresh_runtime_prompt() {
         state.tools = registry.get_tools();
         // Skills, environment.runtime, signature.runtime, and memory.runtime are host-owned.
         // replace old host sections and place skills and runtime hints before

@@ -396,5 +396,8 @@ Cancellation/timeouts return explicit errors, never partial results or a fake
 empty match set. Filesystem stalls are not hard realtime bounded. Query failure
 does not latch an authoritative storage failure or prevent later checkpoints.
 
-This API currently has no Agent tool, Hub protocol, manager command, or prompt
-integration. It establishes the storage/query layer for those future consumers.
+The worker's [archive memory intrinsic toolset](../tools/intrinsic/toolsets/archive_memory/README.md)
+uses this API for model-facing `memory_search` / `memory_fetch` when SQLite
+persistence is selected. It runs queries on the storage executor and bounds tool
+display independently of stored source size. No Hub search protocol or manager
+query command is provided.
