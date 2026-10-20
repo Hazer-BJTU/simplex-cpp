@@ -281,7 +281,12 @@ describe('end to end with the real worker', { skip }, () => {
                     && message.envelope.event === 'compact_finished'
                     && message.envelope.request_id === compactId, { timeout: 60000 });
                 const result = compact.envelope.data;
-                assert.equal(result.summary, 'mock response');
+                const summaryFile = join(sessionDir(ctx.config, session.id), 'memory.md');
+                // Even a short summary carries the retrieval pointer on the wire;
+                // the stable file contains only the complete model output.
+                assert.equal(result.summary, `Complete summary: ${summaryFile}\n`
+                    + 'Use reading tools for details omitted below.\n\nmock response');
+                assert.equal(readFileSync(summaryFile, 'utf8'), 'mock response');
                 assert.equal(result.durable, true);
                 assert.equal(result.removed_turns, 1);
                 if (index === 2) {
@@ -299,6 +304,8 @@ describe('end to end with the real worker', { skip }, () => {
                 const snapshot = JSON.parse(readFileSync(join(sessionDir(ctx.config, session.id),
                     'state/state.json'), 'utf8'));
                 assert.deepEqual(snapshot.turns, []);
+                const memory = snapshot.system_prompt.sections.find(section => section.name === 'memory.runtime');
+                assert.ok(memory?.text.includes(result.summary), 'injected memory must retain the delivered preview');
                 panel.send({ v: 1, type: 'history', session: session.id, request_id: `history-${index}` });
                 const history = await panel.waitFor((message) => message.type === 'event'
                     && message.envelope.event === 'history'
