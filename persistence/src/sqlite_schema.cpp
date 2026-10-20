@@ -1,4 +1,5 @@
 #include "sqlite_schema.hpp"
+#include "sqlite_archive_index.hpp"
 
 #include "persistence/store.hpp"
 
@@ -240,7 +241,10 @@ void ensure_access_indexes(sqlite::Database& database) {
 }
 
 /** Ordered baseline; open_store() applies anything newer than the file's version. */
-constexpr Migration kMigrations[] = {{1, kSchemaV1}};
+const Migration kMigrations[] = {
+    {1, kSchemaV1},
+    {2, sqlite_archive_index::schema_sql(), sqlite_archive_index::backfill},
+};
 
 /** Read one integer PRAGMA that returns a single row. */
 std::int64_t pragma_int(sqlite::Database& database, std::string_view sql) {
@@ -371,12 +375,13 @@ void check_decodable(const StoreIdentity& identity) {
     }
 }
 
-/** Create schema v1, its metadata and the owning session in one transaction. */
+/** Create the latest schema, its metadata and the owning session in one transaction. */
 void create_store(
     sqlite::Database& database, std::string_view session_id,
     std::string_view created_at) {
     sqlite::Transaction transaction(database);
     database.execute(kSchemaV1);
+    database.execute(sqlite_archive_index::schema_sql());
     database.execute(
         "PRAGMA application_id = " + std::to_string(application_id));
 
@@ -473,6 +478,7 @@ StoreIdentity open_store(
 
     auto identity = read_identity(database, session_id);
     check_decodable(identity);
+    require_layout(database);
     if (identity.schema_version < schema_version) {
         apply_migrations(
             database, identity.schema_version,
@@ -488,6 +494,7 @@ StoreIdentity open_store(
         check_decodable(identity);
     }
     require_layout(database);
+    if (identity.schema_version >= 2) sqlite_archive_index::inspect(database);
     apply_connection_pragmas(database);
     ensure_access_indexes(database);
     return identity;
@@ -515,7 +522,7 @@ StoreIdentity inspect_store(
             "session store schema " + std::to_string(identity.schema_version)
                 + " is newer than the supported " + std::to_string(schema_version));
     }
-    if (identity.schema_version < schema_version) {
+    if (identity.schema_version < 1) {
         throw SchemaError(
             Reason::UpgradeRequired,
             "session store schema " + std::to_string(identity.schema_version)
@@ -528,6 +535,7 @@ StoreIdentity inspect_store(
                 + " is not supported by this build");
     }
     require_layout(database);
+    if (identity.schema_version >= 2) sqlite_archive_index::inspect(database);
     return identity;
 }
 
@@ -545,6 +553,7 @@ void apply_migrations(
             throw std::logic_error("schema migrations must be ordered by version");
         }
         database.execute(migration.sql);
+        if (migration.backfill) migration.backfill(database);
         auto record = database.prepare(
             "INSERT INTO schema_migrations(version, applied_at) VALUES(?1, ?2)");
         record.bind_int64(1, migration.version);

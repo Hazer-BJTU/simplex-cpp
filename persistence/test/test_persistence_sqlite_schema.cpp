@@ -98,7 +98,7 @@ BOOST_AUTO_TEST_CASE(empty_database_becomes_a_complete_store) {
     BOOST_TEST(scalar(database, "SELECT count(*) FROM store_meta") == 1);
     BOOST_TEST(scalar(database, "SELECT count(*) FROM sessions") == 1);
     BOOST_TEST(scalar(database, "SELECT count(*) FROM schema_migrations") == 1);
-    BOOST_TEST(scalar(database, "SELECT version FROM schema_migrations") == 1);
+    BOOST_TEST(scalar(database, "SELECT version FROM schema_migrations") == persistence::sqlite_schema::schema_version);
     BOOST_TEST(
         text(database, "SELECT created_at FROM sessions") == "2026-10-18T00:00:00Z");
     BOOST_TEST(
@@ -144,7 +144,7 @@ BOOST_AUTO_TEST_CASE(read_only_inspection_never_creates_or_writes) {
         const auto identity = persistence::sqlite_schema::inspect_store(
             reader, "session-1");
         BOOST_TEST(identity.session_id == "session-1");
-        BOOST_TEST(identity.schema_version == 1);
+        BOOST_TEST(identity.schema_version == persistence::sqlite_schema::schema_version);
         BOOST_TEST(text(reader, "SELECT value FROM sentinel") == "unchanged");
         BOOST_CHECK_THROW(
             reader.execute("CREATE TABLE forbidden(value TEXT)"), sqlite::Error);
@@ -174,7 +174,7 @@ BOOST_AUTO_TEST_CASE(future_schema_and_upgrade_requirement_are_refused) {
         sqlite::Database database(path);
         persistence::sqlite_schema::open_store(
             database, "session-1", "2026-10-18T00:00:00Z");
-        database.execute("UPDATE store_meta SET store_schema_version = 2");
+        database.execute("UPDATE store_meta SET store_schema_version = 3");
     }
 
     {
@@ -186,7 +186,7 @@ BOOST_AUTO_TEST_CASE(future_schema_and_upgrade_requirement_are_refused) {
             },
             Reason::NewerSchema);
         BOOST_TEST(
-            scalar(database, "SELECT store_schema_version FROM store_meta") == 2);
+            scalar(database, "SELECT store_schema_version FROM store_meta") == 3);
         BOOST_TEST(scalar(database, "SELECT count(*) FROM schema_migrations") == 1);
     }
     {
@@ -394,7 +394,7 @@ BOOST_AUTO_TEST_CASE(optional_access_indexes_are_writer_only_and_keep_v1_readabl
     {
         sqlite::Database database(scratch.database(), sqlite::OpenMode::ReadOnly);
         const auto identity = persistence::sqlite_schema::inspect_store(database, "session-1");
-        BOOST_TEST(identity.schema_version == 1);
+        BOOST_TEST(identity.schema_version == persistence::sqlite_schema::schema_version);
         BOOST_TEST(scalar(database,
             "SELECT count(*) FROM sqlite_master WHERE name IN "
             "('messages_turn_owner','messages_step_owner')") == 0);
@@ -402,7 +402,7 @@ BOOST_AUTO_TEST_CASE(optional_access_indexes_are_writer_only_and_keep_v1_readabl
     {
         sqlite::Database database(scratch.database());
         const auto identity = persistence::sqlite_schema::open_store(database, "session-1", "later");
-        BOOST_TEST(identity.schema_version == 1);
+        BOOST_TEST(identity.schema_version == persistence::sqlite_schema::schema_version);
         BOOST_TEST(scalar(database, "SELECT count(*) FROM schema_migrations") == 1);
         BOOST_TEST(scalar(database,
             "SELECT count(*) FROM sqlite_master WHERE name IN "

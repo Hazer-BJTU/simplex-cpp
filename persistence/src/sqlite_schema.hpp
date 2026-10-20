@@ -10,7 +10,7 @@
 #include "sqlite/database.hpp"
 
 /**
- * Executable SQLite schema v1 for one session's authoritative store.
+ * Executable SQLite schema v2 (with read-only v1 compatibility) for one session's authoritative store.
  *
  * The decision record is docs/architecture/sqlite-schema-v1.md. This module owns
  * table creation, version checks and transactional migrations; the persistence::StateStore adapter uses this module to validate schema
@@ -25,7 +25,7 @@
 namespace persistence::sqlite_schema {
 
 /** Table/index layout version understood by this build. */
-inline constexpr std::int64_t schema_version = 1;
+inline constexpr std::int64_t schema_version = 2;
 /** Row/codec encoding version understood by this build. */
 inline constexpr std::int64_t codec_version = 1;
 /** PRAGMA application_id for a Simplex session store ("SPLX"). */
@@ -79,7 +79,7 @@ void require_regular_store_file(const std::filesystem::path& path);
 /**
  * Open, create or upgrade the store for one session.
  *
- * Requires a read/write connection. A new database file gets schema v1,
+ * Requires a read/write connection. A new database file gets schema v2,
  * store metadata and its session row in one transaction. An existing store is
  * checked for the expected application id, a supported schema/codec version and
  * a matching session before anything is written. A newer schema is refused
@@ -94,9 +94,9 @@ StoreIdentity open_store(
  * Verify an existing store without writing anything.
  *
  * Intended for a read-only connection: it never creates, migrates or repairs.
- * A missing file fails at open; a foreign database, a newer schema, a schema
- * that would need an upgrade, or a different session is an explicit
- * SchemaError. `store_meta` must exist and be readable.
+ * A missing file fails at open; a foreign database, a newer schema, an
+ * unsupported historical schema, or a different session is an explicit
+ * SchemaError. Schema v1 remains readable without creating archive indexes. `store_meta` must exist and be readable.
  */
 StoreIdentity inspect_store(
     sqlite::Database& database, std::string_view session_id);
@@ -105,6 +105,8 @@ StoreIdentity inspect_store(
 struct Migration {
     std::int64_t version;
     const char* sql;
+    /** Optional data backfill, inside the same transaction as DDL/versioning. */
+    void (*backfill)(sqlite::Database&) = nullptr;
 };
 
 /**

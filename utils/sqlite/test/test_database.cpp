@@ -43,6 +43,7 @@ BOOST_AUTO_TEST_CASE(pinned_runtime_and_options) {
     BOOST_TEST(std::string(sqlite3_libversion()) == "3.54.0");
     BOOST_TEST(std::string(sqlite3_sourceid()) == SQLITE_SOURCE_ID);
     BOOST_TEST(sqlite3_threadsafe() == 1);
+    BOOST_TEST(sqlite3_compileoption_used("ENABLE_FTS5") == 1);
     BOOST_TEST(sqlite3_compileoption_used("OMIT_LOAD_EXTENSION") == 1);
     static_assert(!std::is_copy_constructible_v<sqlite::Database>);
     static_assert(!std::is_move_constructible_v<sqlite::Statement>);

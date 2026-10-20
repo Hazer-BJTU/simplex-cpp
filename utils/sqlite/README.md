@@ -84,3 +84,7 @@ The updated `Dockerfile.build-base`, `Dockerfile.build-portable` and
 build-base, build-portable and build-musl images are pinned by digest in CI
 and worker release workflows. Source files must not be committed as a
 workaround.
+
+The bundled runtime also enables FTS5 (`SQLITE_ENABLE_FTS5=1`), including the
+built-in trigram tokenizer. FTS is compiled in; dynamic SQLite extension loading
+remains disabled.

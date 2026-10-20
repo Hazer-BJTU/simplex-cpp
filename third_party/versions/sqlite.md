@@ -55,3 +55,7 @@ The `test_sqlite` target checks runtime identity, copied text bindings,
 transaction completion/rollback, error handling, connection lifetime, disk
 reopening and write contention. These focused tests are not a full
 cross-platform or durability qualification.
+
+FTS5 is compiled into the shared runtime with `SQLITE_ENABLE_FTS5=1`; archive
+search uses its built-in trigram tokenizer. Runtime extension loading remains
+disabled. No additional SQLite source download or tokenizer dependency is needed.

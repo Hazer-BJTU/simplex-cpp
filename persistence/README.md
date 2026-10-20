@@ -298,3 +298,34 @@ It does not retry the mutation or clear the store's uncertainty latch.
 
 The opt-in [benchmark](benchmark/README.md) records same-host JSON/SQLite costs,
 reference budgets, and the limits of the current full-graph rewrite strategy.
+
+## SQLite archive index (schema v2)
+
+SQLite v2 adds `archive_text_sources`, `archive_chunks`, and the external-content
+`archive_chunks_fts` FTS5 table using the built-in trigram tokenizer. The source
+view selects user/model message bodies, tool names and serialized arguments,
+textual tool results, and pending tool evidence. Reasoning, action status, opaque
+extras, system prompts, tool declarations, and binary/external-reference content
+are excluded. The authoritative snapshot is unchanged and remains complete.
+
+Chunks cover all selected text in at most 4096 UTF-8 bytes with approximately
+256 bytes of overlap. Splits prefer nearby newlines. Search-only normalization
+replaces NUL and invalid UTF-8 bytes with one-byte spaces, preserving byte
+positions; original text is never modified. Each chunk records the archive,
+source identity, conversation position, kind, source byte length and half-open
+byte range. Empty sources need no chunks. There is no total-source truncation.
+
+`begin_archive()` publishes chunks and FTS entries in the same transaction as the
+original snapshot and attempt record. Insert/delete/update triggers synchronize
+FTS with chunks. Retention cascades from archives to chunks and deletes indexed
+text in that same transaction. Index errors roll back archive preparation;
+ordinary current-state checkpoints do not index the current conversation.
+All attempt outcomes remain searchable evidence, including prepared, failed,
+cancelled and interrupted attempts. An attempt outcome is not a tool outcome.
+
+New stores use schema v2 with the unchanged v1 state codec. Existing v1 stores
+remain readable by worker restoration and read-only manager inspection. Their
+next normal writer operation atomically upgrades the schema and backfills all
+retained archives, processing one source at a time. Upgrade failure leaves the
+v1 schema and authoritative state intact. Older workers that only understand v1
+cannot open the upgraded store. Reads never upgrade or repair storage.
