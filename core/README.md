@@ -18,6 +18,14 @@ The auxiliary model is not part of `AgentInputState`, and the current
 `options.model` protocol continues to configure only the driver. See the
 [model-role configuration](../load/README.md#providers-and-model-roles).
 
+With persistence enabled, an effectively selected SQLite backend also enables
+[`archive_memory`](../tools/intrinsic/toolsets/archive_memory/README.md):
+`memory_search` finds archived text and `memory_fetch` retrieves bounded source
+pages. Backend selection and restoration precede registry construction and prompt
+refresh, so `auto` follows the actual store. JSON and disabled persistence omit
+both tools and their skill. Queries run on the shared storage executor; the
+current unarchived conversation is not searched.
+
 ## Start
 
 Build the `simplex` target (`cmake --build build --target simplex`), or build and

@@ -1,0 +1,29 @@
+name: memory_search
+description: >-
+  Find literal text in retained archives of this session, not the current live
+  conversation. Returns bounded previews and archive_id/source_id/offset locators
+  for memory_fetch. Prefer phrases of at least three Unicode characters; those
+  searches are case-insensitive. One/two-character queries are case-sensitive.
+  This is not semantic search or FTS expression syntax. has_more means refine
+  the query; no search cursor is provided. Archives can expire after search.
+type: read_only
+security: trusted
+config:
+  timeout_ms: 1000
+  snippet_bytes: 512
+  max_output_bytes: 32768
+argument_schema:
+  type: object
+  additionalProperties: false
+  required: [query]
+  properties:
+    query:
+      type: string
+      minLength: 1
+      description: Nonblank literal UTF-8 text, at most 256 bytes; no NUL.
+    limit:
+      type: integer
+      minimum: 1
+      maximum: 20
+      default: 5
+      description: Maximum number of hits; host output budget can return fewer.

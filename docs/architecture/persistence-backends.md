@@ -53,9 +53,19 @@ content are excluded from the index; complete snapshots remain unchanged.
 Retention removes an archive's index entries with the archive, so the default
 five-archive retention target also limits searchable history.
 
-The C++ persistence library provides read-only archive listing, literal-text
-search, and paged source reading. This is currently a library API; no Agent tool
-or Hub search interface is exposed. JSON archives are not indexed. Existing
-SQLite schema-v1 stores remain readable and are upgraded with an index backfill
+When persistence is enabled and the selected backend is SQLite, the worker
+also loads `memory_search` and `memory_fetch`. The model can search for literal
+text, then fetch a hit using its `archive_id` and `source_id`. Long sources use
+byte pagination (`next_offset` / `has_more`); results have bounded previews and
+invalid UTF-8 is replaced only for display. Prefer search phrases of at least
+three characters; shorter queries are case-sensitive. Retention may remove a
+source between search and fetch. Current unarchived turns are not searched.
+
+The tools require no extra worker setting, including with automatic backend
+selection. JSON and disabled persistence omit both tools and their skill.
+Host-side query timeout and display budgets live in the installed
+`bin/schemas/archive_memory/` declarations; see
+[tool configuration](../plugins/configuration.md). No Hub search interface is
+added. Existing SQLite schema-v1 stores remain readable and are upgraded with an index backfill
 on their next normal writer operation. After upgrade, older workers that only
 support schema v1 cannot open the store.

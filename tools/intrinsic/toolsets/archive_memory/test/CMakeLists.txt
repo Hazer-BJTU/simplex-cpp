@@ -1,0 +1,6 @@
+add_executable(test_archive_memory_tools test_tools.cpp)
+target_link_libraries(test_archive_memory_tools PRIVATE
+    tools_intrinsic_archive_memory sqlite_lib Boost::unit_test_framework)
+add_test(NAME test_archive_memory_tools COMMAND test_archive_memory_tools)
+set_tests_properties(test_archive_memory_tools PROPERTIES TIMEOUT 30)
+target_include_directories(test_archive_memory_tools PRIVATE "${PROJECT_SOURCE_DIR}/persistence/test")

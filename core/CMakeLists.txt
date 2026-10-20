@@ -26,7 +26,7 @@ target_link_libraries(core_lib PUBLIC core_protocol load_lib loop_lib intercom_e
 # The worker uses the persistence contract, never a concrete storage format.
 target_link_libraries(core_lib PRIVATE persistence_lib)
 target_link_libraries(core_lib PRIVATE simplex_versioning fileio_lib tools_intrinsic_process tools_intrinsic_reading tools_intrinsic_editing async_eventbus_iface loop_intrinsic_context_statistic)
-target_link_libraries(core_lib PRIVATE tools_intrinsic_modality_assist tools_intrinsic_hub_remote_call)
+target_link_libraries(core_lib PRIVATE tools_intrinsic_archive_memory tools_intrinsic_modality_assist tools_intrinsic_hub_remote_call)
 set_target_properties(core_lib PROPERTIES OUTPUT_NAME simplex_core)
 add_executable(simplex_worker src/main.cpp)
 target_link_libraries(simplex_worker PRIVATE

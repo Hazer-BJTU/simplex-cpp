@@ -125,7 +125,12 @@ by `core`. Their public enablement is not controlled by extension lists.
 The optional modality assistant toolset is constructed only when
 `modality_assist_model` is selected. The optional Hub remote toolset is constructed
 only when `hub_remote_call` is configured. These receive application dependencies
-during runtime construction.
+during runtime construction. With persistence enabled and the selected backend
+SQLite, `archive_memory` also provides `memory_search` and `memory_fetch`.
+Automatic backend selection follows the existing store, so JSON sessions omit
+these tools. Their host-only query/display settings are in
+`bin/schemas/archive_memory/memory_search.yaml` and `memory_fetch.yaml`; see the
+[archive memory guide](https://github.com/Hazer-BJTU/simplex-cpp/tree/main/tools/intrinsic/toolsets/archive_memory).
 
 Model selection is separate:
 

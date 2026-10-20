@@ -95,6 +95,7 @@ endif()
 # target_link_libraries names a target that already exists.
 add_subdirectory(toolsets/process)
 add_subdirectory(toolsets/reading)
+add_subdirectory(toolsets/archive_memory)
 add_subdirectory(toolsets/editing)
 add_subdirectory(toolsets/modality_assist)
 add_subdirectory(toolsets/hub_remote_call)

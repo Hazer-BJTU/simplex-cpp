@@ -183,6 +183,11 @@ declarations, its skill, and whatever state they share.
   of one unique text span in an existing file. Its before/after previews use
   aligned line numbers and change markers. The worker registers it by default.
 
+- **[toolsets/archive_memory/](toolsets/archive_memory/)** — session-scoped
+  `memory_search` / `memory_fetch`, loaded by the worker only with enabled SQLite
+  persistence. Uses an injected archive reader and storage executor; JSON stores
+  and disabled persistence do not expose these tools.
+
 - **[toolsets/reading/](toolsets/reading/)** — file reading, currently `read_text`
   with line and byte selection. Future multimodal readers belong here; editing
   remains separate. The worker registers this set and injects its skill by default.
