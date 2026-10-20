@@ -1,9 +1,11 @@
 #define BOOST_TEST_MODULE SqliteStateStore
 #include <boost/test/unit_test.hpp>
 #include "persistence/store.hpp"
+#include "persistence/selection.hpp"
 #include "sqlite/database.hpp"
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -209,4 +211,68 @@ BOOST_AUTO_TEST_CASE(released_reservation_cannot_start_an_archive) {
     const auto archive = store->reserve_archive({"rejected"});
     store->release_archive(archive);
     BOOST_CHECK_THROW(store->begin_archive(archive, state()), std::invalid_argument);
+}
+
+/** Hold a real WAL exclusive lock so startup reads cannot race past the test.
+ * The operation must wait, then succeed after the lock owner's connection closes.
+ * Keeping the wait outside SQL avoids depending on a particular recovery timing. */
+BOOST_AUTO_TEST_CASE(transient_store_locks_allow_checkpoint_restore_and_manager_inspection) {
+    Scratch scratch;
+    auto store = persistence::make_sqlite_store("session-1", scratch.root);
+    auto value = state();
+    value.extras.reset();
+    store->checkpoint(value, persistence::Boundary::RunFinished);
+    const auto path = (scratch.root / "state.sqlite3").string();
+
+    const auto while_locked = [&](auto operation) {
+        auto lock = std::make_unique<sqlite::Database>(path);
+        lock->execute("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE");
+        std::promise<void> started;
+        auto entered = started.get_future();
+        auto task = std::async(std::launch::async, [&] {
+            started.set_value();
+            operation();
+        });
+        entered.get();
+        const auto status = task.wait_for(std::chrono::milliseconds(100));
+        // Exclusive locking persists after ROLLBACK until connection close.
+        lock->execute("ROLLBACK");
+        lock.reset();
+        BOOST_CHECK(status == std::future_status::timeout);
+        BOOST_CHECK_NO_THROW(task.get());
+    };
+    while_locked([&] { store->checkpoint(value, persistence::Boundary::RunFinished); });
+    while_locked([&] {
+        if (!store->load_current()) throw std::runtime_error("missing current state");
+    });
+    while_locked([&] {
+        if (!persistence::inspect_sqlite_current(scratch.root)) {
+            throw std::runtime_error("missing manager snapshot");
+        }
+    });
+    BOOST_TEST(*store->load_current()->revision == 2u);
+}
+
+BOOST_AUTO_TEST_CASE(persistent_store_lock_remains_an_error_without_replaying_a_write) {
+    Scratch scratch;
+    auto store = persistence::make_sqlite_store("session-1", scratch.root);
+    auto value = state();
+    value.extras.reset();
+    const auto before = store->checkpoint(value, persistence::Boundary::RunFinished);
+    {
+        sqlite::Database lock((scratch.root / "state.sqlite3").string());
+        lock.execute("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE");
+        const auto start = std::chrono::steady_clock::now();
+        BOOST_CHECK_EXCEPTION(store->checkpoint(value, persistence::Boundary::RunFinished),
+            persistence::StoreError, [](const auto& error) {
+                return error.status() == persistence::CommitStatus::NotCommitted;
+            });
+        BOOST_TEST(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count() < 5000);
+        lock.execute("ROLLBACK");
+    }
+    const auto after = store->load_current();
+    BOOST_TEST(after->operation_id == before.operation_id);
+    BOOST_CHECK(after->revision == before.revision);
+    BOOST_CHECK_NO_THROW(store->checkpoint(value, persistence::Boundary::RunFinished, before.revision));
 }

@@ -84,6 +84,7 @@ public:
             }
             sqlite_schema::require_regular_store_file(path_);
             sqlite::Database database(path_.string(), sqlite::OpenMode::ReadOnly);
+            sqlite_schema::configure_store_lock_wait(database);
             sqlite::Transaction transaction(database);
             sqlite_schema::inspect_store(database, session_);
             auto state = sqlite_snapshot::load_current(database, session_, false);
@@ -373,6 +374,7 @@ private:
             // link instead of failing — for a dangling link it creates the target.
             sqlite_schema::require_regular_store_file(path_);
             sqlite::Database database(path_.string());
+            sqlite_schema::configure_store_lock_wait(database);
             if (!created) sqlite_schema::inspect_store(database, session_);
             require_private_file(path_);
             sqlite_schema::open_store(database, session_, utc_timestamp());
