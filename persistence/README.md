@@ -331,6 +331,19 @@ retained archives, processing one source at a time. Upgrade failure leaves the
 v1 schema and authoritative state intact. Older workers that only understand v1
 cannot open the upgraded store. Reads never upgrade or repair storage.
 
+## Store lock contention
+
+Fresh checkpoint, restoration and manager-inspection connections install a
+1000 ms SQLite busy timeout before reading schema or session metadata. This
+allows short WAL recovery/connection-cleanup locks to clear rather than failing
+an otherwise compatible reader or the authoritative writer immediately.
+The timeout applies to each SQLite lock-wait episode, not to the total operation
+or filesystem stalls; it does not impose a deadline on large snapshots or
+migrations. Persistent contention still fails with the existing storage error
+and commit-outcome contract. Mutations and uncertain commits are never replayed.
+Archive query connections retain their separate cancellation/deadline-aware
+`ExecutionBudget` handler; the store policy never replaces that handler.
+
 ## Archive query API
 
 `<persistence/archive_query.hpp>` exposes a session-scoped `ArchiveReader`:

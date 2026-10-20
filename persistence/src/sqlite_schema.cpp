@@ -441,6 +441,13 @@ void require_regular_store_file(const std::filesystem::path& path) {
     }
 }
 
+void configure_store_lock_wait(sqlite::Database& database) {
+    // Connection-local only: no database writes, transaction retries or progress
+    // deadline. In particular, a large checkpoint/migration is not interrupted
+    // simply because its execution takes longer than a short lock wait.
+    database.execute("PRAGMA busy_timeout = 1000");
+}
+
 SchemaError::SchemaError(Reason reason, const std::string& message)
     : std::runtime_error(message), reason_(reason) {}
 

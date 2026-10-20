@@ -76,6 +76,14 @@ struct StoreIdentity {
  */
 void require_regular_store_file(const std::filesystem::path& path);
 
+/** Install a bounded lock wait on a fresh store/manager connection, before any
+ * schema or snapshot reads. WAL recovery and last-connection cleanup can briefly
+ * exclude even otherwise compatible readers/writers. This is a one-second SQLite
+ * busy timeout per lock episode, not a whole-operation execution deadline.
+ * Never call on an archive-query connection: its ExecutionBudget already owns
+ * the busy handler and provides cancellation/deadline-aware waiting. */
+void configure_store_lock_wait(sqlite::Database& database);
+
 /**
  * Open, create or upgrade the store for one session.
  *

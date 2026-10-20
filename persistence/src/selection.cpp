@@ -41,6 +41,7 @@ std::optional<StoredState> inspect_sqlite_current(const std::filesystem::path& d
     // even when its target happens to be readable.
     sqlite_schema::require_regular_store_file(path);
     sqlite::Database database(path.string(), sqlite::OpenMode::ReadOnly);
+    sqlite_schema::configure_store_lock_wait(database);
     sqlite::Transaction transaction(database);
     auto owner = database.prepare("SELECT session_id FROM sessions");
     if (owner.step() != sqlite::StepResult::Row) {
