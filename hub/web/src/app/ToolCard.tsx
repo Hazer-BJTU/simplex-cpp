@@ -21,7 +21,7 @@
  */
 import { memo, useState } from 'react';
 import { Glyph, type GlyphName } from '../ui/icons.tsx';
-import { MarkdownBlock } from './Markdown.tsx';
+import { CopyButton, MarkdownBlock } from './Markdown.tsx';
 import { formatDuration, prettyJson } from './content.ts';
 import type { ToolCall, CallStatus } from './rounds.ts';
 import type { OutputBlock, OutputDocument } from './toolOutput.ts';
@@ -31,19 +31,45 @@ const COLLAPSED_CHARS = 1200;
 const SUMMARY_CHARS = 160;
 
 /** A bounded, single-line hint; full values remain available in the details. */
+function oneLine(value: string, limit = SUMMARY_CHARS): string {
+    const firstLine = value.split(/\r?\n/, 1)[0] ?? '';
+    return firstLine.length > limit || firstLine.length < value.length
+        ? `${firstLine.slice(0, limit)}…`
+        : firstLine;
+}
+
+/** A bounded description of the arguments for the folded header. */
 function callSummary(args: unknown): string {
     if (typeof args !== 'object' || args === null || Array.isArray(args)) return '';
     const record = args as Record<string, unknown>;
     const key = ['command', 'path', 'file_path', 'url', 'query']
         .find((candidate) => typeof record[candidate] === 'string');
-    if (key) {
-        const value = String(record[key]);
-        const firstLine = value.split(/\r?\n/, 1)[0] ?? '';
-        return firstLine.length > SUMMARY_CHARS || firstLine.length < value.length
-            ? `${firstLine.slice(0, SUMMARY_CHARS)}…`
-            : firstLine;
-    }
+    if (key) return oneLine(String(record[key]));
     return Object.keys(record).join(', ');
+}
+
+/** A tool error stage in words. The raw stage stays visible in the details. */
+function errorStageLabel(stage: string): string {
+    switch (stage) {
+        case 'dispatch':
+            return 'The tool was not dispatched';
+        case 'invoke':
+            return 'The tool could not run';
+        case 'result_validation':
+            return 'The tool returned an invalid result';
+        case 'auto_compact':
+        case 'compact':
+            return 'Context compaction failed';
+        default:
+            return 'The tool failed';
+    }
+}
+
+/** The one line that stays visible while the card is folded. */
+function failureSummary(call: ToolCall): string {
+    const error = call.result?.error;
+    if (!error) return '';
+    return oneLine(error.message.trim()) || errorStageLabel(error.stage);
 }
 
 /**
@@ -62,7 +88,7 @@ const STATUS: Record<CallStatus, { label: string; tone: string; icon: GlyphName 
     },
     running: { label: 'running', tone: 'bg-info-soft text-info ring-info-line', icon: 'spinner' },
     ok: { label: 'ok', tone: 'text-ink-muted', icon: 'ok' },
-    failed: { label: 'failed', tone: 'bg-danger-soft text-danger ring-danger-line', icon: 'error' },
+    failed: { label: 'failed', tone: 'text-danger', icon: 'error' },
     cancelled: { label: 'cancelled', tone: 'bg-subtle text-ink-muted ring-line', icon: 'cancel' },
     skipped: { label: 'not run', tone: 'bg-subtle text-ink-muted ring-line', icon: 'cancel' },
     unknown: {
@@ -152,6 +178,30 @@ function Fields({ fields }: { fields: OutputDocument['fields'] }) {
     );
 }
 
+/** The full error, deliberately kept out of the folded summary. */
+function FailureDetail({ error }: {
+    error: { readonly stage: string; readonly message: string };
+}) {
+    const label = errorStageLabel(error.stage);
+    return (
+        <div data-testid="tool-failure-detail" className="rounded bg-sunken px-2 py-1">
+            <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs font-medium text-danger">{label}</p>
+                <span className="font-mono text-xs text-ink-faint">{error.stage}</span>
+                <span className="flex-1" />
+                <CopyButton
+                    text={() => [label, error.stage, error.message].filter(Boolean).join('\n')}
+                    label="copy error"
+                />
+            </div>
+            {error.message && (
+                <p className="mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]
+                    text-xs text-danger">{error.message}</p>
+            )}
+        </div>
+    );
+}
+
 /** A result, however it turned out to be shaped. */
 function Result({ call }: { call: ToolCall }) {
     const [raw, setRaw] = useState(false);
@@ -166,7 +216,7 @@ function Result({ call }: { call: ToolCall }) {
                 </p>
             )}
 
-            {result.text === '' && (
+            {result.text === '' && call.status !== 'failed' && (
                 <p className="px-2 text-xs italic text-ink-faint">(no output content)</p>
             )}
 
@@ -233,6 +283,9 @@ export const ToolCard = memo(function ToolCard({ call }: { call: ToolCall }) {
     const status = STATUS[call.status];
     const hasArgs = call.args !== undefined && call.args !== null;
     const summary = callSummary(call.args);
+    const failure = call.result?.error ?? null;
+    const failureText = failureSummary(call);
+    const hasStatusLine = call.status !== 'ok' && call.status !== 'running';
 
     return (
         <article
@@ -243,17 +296,39 @@ export const ToolCard = memo(function ToolCard({ call }: { call: ToolCall }) {
         >
             <details data-testid="tool-details" onToggle={event => setDetailsOpen(event.currentTarget.open)} className="tool-disclosure min-w-0 text-xs">
                 <summary onClick={event => setDetailsOpen(!(event.currentTarget.parentElement as HTMLDetailsElement).open)}
-                    className="flex min-w-0 cursor-pointer select-none items-center gap-2 text-ink-muted hover:text-ink">
-                    <span data-testid="tool-status" title={status.label} className={status.tone}>
-                        <Glyph name={status.icon} size="sm" />
-                        <span className="sr-only">{status.label}</span>
+                    className="block min-w-0 cursor-pointer select-none text-xs text-ink-muted hover:text-ink">
+                    <span className="flex min-w-0 items-center gap-2">
+                        <span data-testid="tool-status" title={status.label} className={status.tone}>
+                            <Glyph name={status.icon} size="sm" />
+                            {!hasStatusLine && <span className="sr-only">{status.label}</span>}
+                        </span>
+                        <span className="max-w-[50%] truncate font-mono font-medium text-ink" title={call.name}>
+                            {call.name}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-mono" title={summary}>{summary}</span>
+                        <span className="tool-disclosure-arrow" aria-hidden="true">▸</span>
+                        <span className="sr-only">Call and result details</span>
                     </span>
-                    <span className="max-w-[50%] truncate font-mono font-medium text-ink" title={call.name}>
-                        {call.name}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate font-mono" title={summary}>{summary}</span>
-                    <span className="tool-disclosure-arrow" aria-hidden="true">▸</span>
-                    <span className="sr-only">Call and result details</span>
+
+                    {/* A failure is part of the folded header, not a line after
+                        the output. It stays quiet: a red label and one line of
+                        cause, with the full diagnostic in the details. */}
+                    {call.status === 'failed' && (
+                        <span data-testid="tool-failure" title={failure?.message || status.label}
+                            className="mt-1 block truncate text-xs text-danger">
+                            <span className="font-medium">failed</span>
+                            {failureText && <span> — {failureText}</span>}
+                        </span>
+                    )}
+                    {call.status === 'pending' && (
+                        <span className="mt-1 block text-xs text-warn">
+                            waiting for approval — review the approval above
+                        </span>
+                    )}
+                    {call.status !== 'ok' && call.status !== 'running'
+                        && call.status !== 'failed' && call.status !== 'pending' && (
+                        <span className="mt-1 block text-xs text-ink-muted">{status.label}</span>
+                    )}
                 </summary>
                 {detailsOpen && <div className="mt-2 min-w-0 space-y-2 border-t border-line pt-2">
                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-ink-faint">
@@ -261,14 +336,15 @@ export const ToolCard = memo(function ToolCard({ call }: { call: ToolCall }) {
                         {call.scheduling && <span>scheduling: {call.scheduling}</span>}
                         {call.id && <span className="font-mono">id: {call.id}</span>}
                     </div>
+                    {call.status === 'failed' && failure && <FailureDetail error={failure} />}
                     {split ? (
                         <div>
                             <MarkdownBlock code={split.command} language="bash" />
                             {split.rest !== null && <CallArguments value={split.rest} />}
                         </div>
                     ) : hasArgs && (
-                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded
-                            bg-sunken px-2 py-1 font-mono text-ink">
+                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words
+                            [overflow-wrap:anywhere] rounded bg-sunken px-2 py-1 font-mono text-ink">
                             {prettyJson(call.args)}
                         </pre>
                     )}
@@ -284,25 +360,13 @@ export const ToolCard = memo(function ToolCard({ call }: { call: ToolCall }) {
                         {showArgs ? 'hide raw call' : 'raw call'}
                     </button>
                     {showArgs && (
-                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded
-                            bg-sunken px-2 py-1 font-mono text-ink">
+                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words
+                            [overflow-wrap:anywhere] rounded bg-sunken px-2 py-1 font-mono text-ink">
                             {prettyJson(call.args ?? {})}
                         </pre>
                     )}
                 </div>}
             </details>
-            {call.status !== 'ok' && call.status !== 'running' && (
-                <p className={`mt-1 text-xs ${call.status === 'failed' ? 'text-danger' : call.status === 'pending' ? 'text-warn' : 'text-ink-muted'}`}>
-                    {status.label}
-                    {call.status === 'pending' && ' — review the approval above'}
-                </p>
-            )}
-            {call.status === 'failed' && call.result?.error && (
-                <p className="mt-1 break-words text-xs text-danger">
-                    {call.result.error.stage}
-                    {call.result.error.message ? ` — ${call.result.error.message}` : ''}
-                </p>
-            )}
         </article>
     );
 });

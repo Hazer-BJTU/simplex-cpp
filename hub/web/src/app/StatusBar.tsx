@@ -11,60 +11,38 @@ import type { ReactNode } from 'react';
 import { usePanel } from '../state/usePanel.ts';
 import { IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
+import { Status, type StatusTone } from '../ui/Status.tsx';
 import { ThemeToggle } from '../ui/ThemeToggle.tsx';
 import { Tooltip } from '../ui/overlays.tsx';
 import { useClient } from './ClientContext.tsx';
 
-/**
- * One status pill.
- *
- * The tone is carried by an icon and by the words as well as by the colour: an
- * operator who cannot tell amber from green still reads "reconnecting", and the
- * icon is the same one the rest of the panel uses for that meaning.
- */
-function Pill({ tone, icon, children }: {
-    tone: 'ok' | 'warn' | 'bad' | 'idle';
-    icon: 'online' | 'offline' | 'warning' | 'info';
-    children: ReactNode;
-}) {
-    const tones = {
-        ok: 'bg-ok-soft text-ok ring-ok-line',
-        warn: 'bg-warn-soft text-warn ring-warn-line',
-        bad: 'bg-danger-soft text-danger ring-danger-line',
-        idle: 'bg-subtle text-ink-muted ring-line',
-    } as const;
-    return (
-        <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5
-            text-xs font-medium ring-1 ring-inset ${tones[tone]}`}>
-            <Glyph name={icon} size="sm" />
-            {children}
-        </span>
-    );
-}
-
 /** What the socket state means, in words rather than a colour. */
 function describeConnection(state: string, attempt: number, nextDelayMs: number | null): {
-    tone: 'ok' | 'warn' | 'bad' | 'idle';
-    icon: 'online' | 'offline' | 'warning' | 'info';
+    tone: StatusTone;
     label: string;
+    pulse: boolean;
 } {
     switch (state) {
         case 'open':
-            return { tone: 'ok', icon: 'online', label: 'connected' };
+            return { tone: 'ok', label: 'connected', pulse: false };
         case 'connecting':
-            return { tone: 'idle', icon: 'info', label: 'connecting…' };
+            return { tone: 'idle', label: 'connecting…', pulse: true };
         case 'reconnecting':
             return {
                 tone: 'warn',
-                icon: 'warning',
                 label: `reconnecting (attempt ${attempt}${nextDelayMs ? `, in ${Math.round(nextDelayMs / 1000)}s` : ''})`,
+                pulse: true,
             };
         case 'rejected':
-            return { tone: 'bad', icon: 'offline', label: 'the hub refused this connection' };
+            return {
+                tone: 'bad',
+                label: 'the hub refused this connection',
+                pulse: false,
+            };
         case 'closed':
-            return { tone: 'bad', icon: 'offline', label: 'disconnected' };
+            return { tone: 'bad', label: 'disconnected', pulse: false };
         default:
-            return { tone: 'idle', icon: 'offline', label: 'not connected' };
+            return { tone: 'idle', label: 'not connected', pulse: false };
     }
 }
 
@@ -98,8 +76,8 @@ export function StatusBar({ onOpenSessions }: {
                         <Glyph name="sessions" />
                     </IconButton>
                 </Tooltip>
-                <h1 className="hidden text-sm font-semibold text-ink sm:inline">simplex hub</h1>
-                <Pill tone={described.tone} icon={described.icon}>{described.label}</Pill>
+                <h1 className="hidden text-sm font-semibold text-ink sm:inline">Simplex</h1>
+                <Status tone={described.tone} pulse={described.pulse}>{described.label}</Status>
                 <span className="flex-1" />
                 {connection.ignoredFrames > 0 && (
                     <span className="hidden text-xs text-ink-muted sm:inline">

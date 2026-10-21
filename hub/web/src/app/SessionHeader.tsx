@@ -6,6 +6,7 @@ import type { SessionDescription } from '../../../ui/index.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { Badge, Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
+import { Status } from '../ui/Status.tsx';
 import {
     Dialog,
     DialogButton,
@@ -130,7 +131,6 @@ export function SessionHeader() {
     const hub = usePanel((state) => state.hub);
     const inspectorOpen = usePanel((state) => state.inspectorOpen);
     const setInspectorOpen = usePanel((state) => state.setInspectorOpen);
-    const model = usePanel((state) => (state.selected ? state.model(state.selected) : ''));
     const [pending, setPending] = useState<Pending | null>(null);
 
     if (!selected || !session) return null;
@@ -176,14 +176,14 @@ export function SessionHeader() {
                 {(!session.connected || (session.process && session.process.state !== 'running')) && (
                     <Badge tone={state.tone}>{state.label}</Badge>
                 )}
-                {!session.connected && <span className="text-xs text-warn">Worker disconnected</span>}
-                {session.connected && <Badge tone="info">worker attached</Badge>}
+                <Status tone={session.connected ? 'info' : 'warn'}>
+                    {session.connected ? 'worker attached' : 'worker disconnected'}
+                </Status>
                 {pendingApprovals > 0 && (
                     <Badge tone="warn" title="tool calls waiting for a decision">
                         {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'}
                     </Badge>
                 )}
-                {model && <span className="text-xs text-ink-muted">{model}</span>}
 
                 <span className="flex-1" />
 

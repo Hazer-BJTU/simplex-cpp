@@ -196,6 +196,75 @@ test('shows a model failure beside its run with guarded retry guidance', async (
     expect(assistantBeforeFailure).toBe(true);
 });
 
+test('Continue run sends the protocol continuation from the failure panel', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'run_started', {});
+    await emit(page, 'run_finished', {
+        status: 'failed', error: 'HTTP 503', exchanges: 0,
+        failure: { stage: 'model_request', can_continue: true },
+    });
+
+    const notice = page.getByTestId('run-failure');
+    await notice.getByRole('button', { name: 'Continue run' }).click();
+    await expect.poll(async () => {
+        const response = await page.request.get(`${STUB}/__stub/received`);
+        const body = await response.json() as {
+            received: Array<{ type?: string; operation?: string }>;
+        };
+        return body.received.some((message) => message.type === 'input'
+            && message.operation === 'continue');
+    }).toBe(true);
+});
+
+test('a terminal worker error settles the run instead of leaving it spinning', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.getByLabel('message').fill('Save the result.');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await emit(page, 'run_started', {});
+    await emit(page, 'error', {
+        message: 'required state save failed',
+        durable: false,
+        primary_outcome: {
+            status: 'failed', error: 'ENOSPC: no space left on device', operation: 'task',
+        },
+        storage_error: 'archive mutation is uncertain',
+    });
+
+    const notice = page.getByTestId('run-failure');
+    await expect(notice).toContainText('Worker stopped after a storage failure');
+    await expect(notice).toContainText('Refresh conversation');
+    await expect(notice).not.toContainText('Continue run');
+    await expect(page.getByTestId('run-activity')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Cancel run' })).toHaveCount(0);
+    await expect(page.getByTestId('transcript-problem')).toHaveCount(0);
+    await notice.getByText('Error details').click();
+    await expect(notice.locator('pre')).toContainText('ENOSPC: no space left on device');
+    await expect(notice.locator('pre')).toContainText('storage error: archive mutation is uncertain');
+});
+
+test('folds a worker diagnostic into the failure it explains', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('session-row').click();
+    await page.getByLabel('message').fill('Try the request again.');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await emit(page, 'run_started', {});
+    await emit(page, 'error', { message: 'provider returned HTTP 503: upstream overloaded' });
+    await emit(page, 'run_finished', {
+        status: 'failed', error: 'HTTP 503 after retries',
+        failure: { stage: 'model_request', can_continue: true },
+    });
+
+    const notice = page.getByTestId('run-failure');
+    await expect(notice).toHaveCount(1);
+    await expect(page.getByTestId('transcript-problem')).toHaveCount(0);
+    await expect(notice).toContainText('Continue run');
+    await notice.getByText('Error details').click();
+    await expect(notice.locator('pre')).toContainText('provider returned HTTP 503');
+    await expect(notice.locator('pre')).toContainText('HTTP 503 after retries');
+});
+
 test('replays a continuation without a retained request record', async ({ page }) => {
     await open(page);
     await emit(page, 'input_admitted', { operation: 'continue' },
@@ -985,6 +1054,7 @@ test('a folded turn still shows what went wrong in it', async ({ page }) => {
     await expect(page.getByTestId('transcript-problem')).toContainText(
         'the storage layer refused the write',
     );
+    await expect(page.getByTestId('round-failure-label').first()).toContainText('failed');
 });
 
 test('latest token usage stays by the composer without per-turn costs', async ({ page }) => {

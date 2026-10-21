@@ -229,6 +229,46 @@ describe('rounds', () => {
         });
     });
 
+    it('settles the run on a terminal worker error instead of leaving it open', () => {
+        const run = buildRounds([
+            event('e1', 'run_started', {}),
+            event('e2', 'error', {
+                message: 'required state save failed',
+                durable: false,
+                primary_outcome: {
+                    status: 'failed', error: 'ENOSPC: no space left on device', operation: 'task',
+                },
+                storage_error: 'archive mutation is uncertain',
+            }),
+        ], noPrompts).at(-1);
+
+        assert.equal(run.status, 'failed');
+        assert.equal(run.open, false);
+        assert.equal(run.problems.length, 0);
+        assert.deepEqual(run.failure, {
+            stage: 'other', canContinue: false, terminal: true,
+            error: 'ENOSPC: no space left on device\nrequired state save failed\n'
+                + 'storage error: archive mutation is uncertain',
+        });
+    });
+
+    it('folds a worker diagnostic into the structured failure it explains', () => {
+        const run = buildRounds([
+            event('e1', 'run_started', {}),
+            event('e2', 'error', { message: 'provider returned HTTP 503' }),
+            event('e3', 'run_finished', {
+                status: 'failed', error: 'HTTP 503 after retries',
+                failure: { stage: 'model_request', can_continue: true },
+            }),
+        ], noPrompts).at(-1);
+
+        assert.equal(run.problems.length, 0);
+        assert.deepEqual(run.failure, {
+            stage: 'model_request', canContinue: true, error: 'HTTP 503 after retries',
+            diagnostics: ['provider returned HTTP 503'],
+        });
+    });
+
     it('renders a locally sent continuation without a user input', () => {
         const items = [
             { kind: 'outbox', id: 'out-1', requestId: 'req-cont', parts: [],
