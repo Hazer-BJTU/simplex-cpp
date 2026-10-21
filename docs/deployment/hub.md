@@ -173,3 +173,57 @@ attempts require checking listener reachability, routes, tokens, and TLS.
 
 The [Hub panel protocol](../hub/hub-protocol.md) documents operator authentication
 and session creation for non-browser clients.
+
+## Predefined skills in messages
+
+The panel's **Skills** button inserts a literal `@{skill:ID}` reference at the
+message caret. You can also type the prefix for keyboard completion, move or
+delete a reference as ordinary text, and insert several references. Enter or Tab
+accepts a completion; Escape dismisses it. Command mode disables the picker.
+
+Skills live on the **Hub host**, under `<dataDir>/skills/` (by default
+`~/.simplex/hub/skills/`), independently of worker directories. Put a UTF-8 YAML
+file there, using a filename such as `code-review.yaml`:
+
+```yaml
+name: code-review
+title: Code review
+description: Review changes for correctness and maintainability.
+keywords: [review, correctness, testing]
+text: |
+  Review the changes against the user's requirements.
+  Prioritize correctness, regressions, and missing validation.
+  Explain actionable findings with their location and impact.
+```
+
+`name`, `title`, `description`, and `text` are required nonempty strings;
+`keywords` is an optional list of search terms. Metadata fields are single-line;
+only `text` is inserted into the message. IDs are filename stems containing
+ASCII letters, digits, `_`, or `-`, at most 128 characters. `template` is reserved
+for the template endpoint. Files must be regular files, at most 64 KiB. Aliases,
+unknown fields, and symbolic links are rejected. The library accepts up to 256
+files. Invalid files are reported individually, without preventing Hub startup.
+The packaged `code-review` example is created on first access if absent; existing
+files are never overwritten. Copy it to a new filename to create another skill.
+
+For example, `Please follow @{skill:code-review} for this change.` expands the
+reference **at that position**. Whitespace around it remains unchanged. Use
+`\@{skill:code-review}` to send the marker literally. Skill bodies are never
+expanded recursively. A message accepts at most 16 references, with a 256 KiB
+UTF-8 limit on the expanded text; ordinary messages without references retain
+the existing transport limits.
+
+The panel loads a content snapshot when it resolves a reference. **Preview
+message** shows the exact expanded text. Reopening or refreshing the library
+checks revisions; **Refresh skill text** explicitly replaces the selected
+snapshots. Editing a file never silently changes an already-loaded instruction.
+Missing, invalid, unfinished, or still-loading references block message sending.
+
+Send transmits ordinary user text using the existing worker protocol. Skills do
+not change confirmation policy, gain system-prompt priority, or install plugins.
+They become part of the conversation and are persisted and compacted normally.
+Continue and Compact commands do not expand or send the message draft. Successful
+message submission clears the draft and its references; an explicit rejection
+restores the original markers and snapshots. A late rejection offers recovery
+without replacing a newer draft. This recovery state is browser-local; reloading
+the page shows the actual expanded conversation, not editable skill references.

@@ -1,3 +1,6 @@
+import { useSkills } from './useSkills.ts';
+import { skillCompletion } from './skillInput.ts';
+import type { FailedInput } from '../state/store.ts';
 /**
  * @file the message and command composer.
  *
@@ -61,6 +64,12 @@ const PRIMARY_ACTION_CLASS = 'h-9 w-32 shrink-0 justify-center whitespace-nowrap
 const DEFAULT_INPUT_HEIGHT = 96;
 
 export function Composer() {
+    const selected = usePanel(state => state.selected);
+    return <SessionComposer key={selected ?? ''} />;
+}
+
+/** Remounting on session change isolates asynchronous draft/skill work. */
+function SessionComposer() {
     const client = useClient();
     const selected = usePanel((state) => state.selected);
     const session = useSession(selected);
@@ -80,14 +89,22 @@ export function Composer() {
     const [commandQuery, setCommandQuery] = useState('');
     const [activeCommand, setActiveCommand] = useState(0);
     const [references, setReferences] = useState<readonly Reference[]>([]);
-    const [refOpen, setRefOpen] = useState(false);
+    const skill = useSkills(draft, selected, client.rest);
+    const [skillQuery, setSkillQuery] = useState('');
+    const [caret, setCaret] = useState(0);
+    const [completionHidden, setCompletionHidden] = useState(false);
+    const [activeSkill, setActiveSkill] = useState(0);
+    const [deferredFailure, setDeferredFailure] = useState<FailedInput | null>(null);
+    const completion = entryMode === 'message' && !completionHidden ? skillCompletion(draft, caret) : null;
+    const suggestions = skill.catalog.skills.filter(item => item.id.startsWith(completion?.query ?? ''));
+    const suggested = suggestions[Math.min(activeSkill, Math.max(0, suggestions.length - 1))];
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [modelOpen, setModelOpen] = useState(false);
 
     // A mode change closes settings rather than leaving a disabled trigger's
     // popover interactive above the shared toolbar.
     useEffect(() => {
-        setRefOpen(false);
+        skill.setLibraryOpen(false);
         setConfirmOpen(false);
         setModelOpen(false);
     }, [entryMode, selected]);
@@ -142,7 +159,7 @@ export function Composer() {
         setCommandQuery('');
         setEntryMode('message');
         setReferences([]);
-        setRefOpen(false);
+        skill.setLibraryOpen(false);
         resetGeometry();
     }, [selected, resetGeometry]);
 
@@ -158,8 +175,15 @@ export function Composer() {
             clearFailedInput();
             return;
         }
-        setDraft(failed.parts.filter((part) => part.type === 'text')
-            .map((part) => part.raw).join('\n\n'));
+        const original = failed.recovery?.draft ?? failed.parts.filter(part => part.type === 'text')
+            .map(part => part.raw).join('\n\n');
+        if (draft && draft !== original) {
+            setDeferredFailure(failed);
+            clearFailedInput();
+            return;
+        }
+        setDraft(original);
+        if (failed.recovery) skill.restore(failed.recovery.skills);
         setReferences(failed.parts.filter((part) => part.type === 'external_ref')
             .map((part) => ({
                 kind: 'external_ref', raw: part.raw, modality: part.modality ?? 'text',
@@ -211,14 +235,27 @@ export function Composer() {
         box.current?.focus();
     }
 
+    function insertSkill(id: string): void {
+        const input = box.current;
+        const start = completion?.start ?? input?.selectionStart ?? draft.length;
+        const end = input?.selectionEnd ?? start;
+        const marker = `@{skill:${id}}`;
+        setDraft(draft.slice(0, start) + marker + draft.slice(end));
+        skill.setLibraryOpen(false);
+        setCompletionHidden(true);
+        const nextCaret = start + marker.length;
+        requestAnimationFrame(() => {
+            input?.focus();
+            input?.setSelectionRange(nextCaret, nextCaret);
+            setCaret(nextCaret);
+        });
+    }
+
     function parts(): ContentPart[] {
         const list: ContentPart[] = [];
-        if (draft.trim().length > 0) list.push({ type: 'text', raw: draft, modality: 'text' });
+        if (draft.trim().length > 0) list.push({ type: 'text', raw: skill.expanded, modality: 'text' });
         for (const reference of references) {
-            // The attach entry is disabled, so the panel cannot classify a
-            // reference yet. When it is enabled it has to ask for the category
-            // — `text` here is the same choice the draft makes, not a guess
-            // about the URL.
+            // Preserve references restored from older rejected payloads.
             list.push({
                 type: 'external_ref', raw: reference.raw, modality: reference.modality,
             });
@@ -227,7 +264,7 @@ export function Composer() {
     }
 
     function send(operation: 'message' | 'continue' | 'compact' = 'message'): void {
-        if (!connected || runActive || (operation === 'message' && !canSend)) return;
+        if (!connected || runActive || (operation === 'message' && (!canSend || skill.error))) return;
         // The mode travels with the payload. The worker freezes the policy per
         // run, so sending it every time is what makes a change take effect on
         // the next run rather than the next restart — and what keeps one
@@ -241,6 +278,8 @@ export function Composer() {
             operation === 'message' ? parts() : [],
             operation,
             options,
+            operation === 'message' && (draft.includes('@{skill:'))
+                ? { draft, skills: skill.skills } : undefined,
         );
         // Clear only when the frame actually left; otherwise the store has
         // already handed the text back and clearing here would lose it.
@@ -309,18 +348,19 @@ export function Composer() {
                     value={entryMode === 'message' ? draft : commandQuery}
                     rows={3}
                     aria-label={entryMode === 'message' ? 'message' : 'command input'}
-                    aria-autocomplete={entryMode === 'command' ? 'list' : undefined}
-                    aria-controls={entryMode === 'command' ? 'composer-command-list' : undefined}
+                    aria-autocomplete={entryMode === 'command' || completion ? 'list' : undefined}
+                    aria-controls={entryMode === 'command' ? 'composer-command-list' : completion ? 'composer-skill-list' : undefined}
                     aria-activedescendant={entryMode === 'command' && commands[highlighted]
                         ? `composer-command-${commands[highlighted].id}`
-                        : undefined}
+                        : completion && suggested ? `skill-option-${suggested.id}` : undefined}
+                    onSelect={event => setCaret(event.currentTarget.selectionStart)}
                     onChange={(event) => {
                         const input = event.currentTarget;
                         input.style.height = 'auto';
                         inputHeight.current = Math.max(entryMode === 'command' ? inputHeight.current : DEFAULT_INPUT_HEIGHT,
                             Math.min(240, input.scrollHeight));
                         input.style.height = `${inputHeight.current}px`;
-                        if (entryMode === 'message') setDraft(event.target.value);
+                        if (entryMode === 'message') { setDraft(event.target.value); setCaret(input.selectionStart); setCompletionHidden(false); setActiveSkill(0); }
                         else { setCommandQuery(event.target.value); setActiveCommand(0); }
                     }}
                     onKeyDown={(event) => {
@@ -345,6 +385,24 @@ export function Composer() {
                             }
                             return;
                         }
+                        if (completion) {
+                            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                                event.preventDefault();
+                                setActiveSkill(value => Math.max(0, Math.min(suggestions.length - 1,
+                                    value + (event.key === 'ArrowDown' ? 1 : -1))));
+                                return;
+                            }
+                            if ((event.key === 'Enter' || event.key === 'Tab') && suggested) {
+                                event.preventDefault();
+                                insertSkill(suggested.id);
+                                return;
+                            }
+                            if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setCompletionHidden(true);
+                                return;
+                            }
+                        }
                         if (event.key === 'Enter' && !event.shiftKey) {
                             event.preventDefault();
                             send();
@@ -362,6 +420,42 @@ export function Composer() {
                         px-3 pb-1 pt-2
                         text-sm leading-5 text-ink placeholder:text-ink-faint focus:outline-none"
                 />
+
+                {completion && (
+                    <div id="composer-skill-list" role="listbox" aria-label="matching skills"
+                        className="absolute bottom-full left-0 z-20 mb-1 max-h-60 w-full overflow-y-auto rounded-lg border border-line bg-raised p-1 shadow-lg">
+                        {suggestions.map(item => <button key={item.id} type="button" role="option"
+                            id={`skill-option-${item.id}`} aria-selected={item.id === suggested?.id}
+                            onMouseDown={event => event.preventDefault()} onClick={() => insertSkill(item.id)}
+                            className={`block w-full rounded p-2 text-left text-xs ${item.id === suggested?.id ? 'bg-subtle' : ''}`}>
+                            {item.title} — {item.id}
+                        </button>)}
+                        {!suggestions.length && <p className="p-2 text-xs">No matching skills.</p>}
+                    </div>
+                )}
+                {draft.includes('@{skill:') && (
+                    <div className="px-3 pb-1 text-xs text-ink-muted">
+                        {skill.error ? <p role="status" className="text-warn">{skill.error}</p>
+                            : <span>{skill.ids.length} skill(s) ready · inserted when sending</span>}
+                        {skill.ids.some(id => skill.catalog.skills.some(item => item.id === id
+                            && skill.skills[id] && item.revision !== skill.skills[id]?.revision))
+                            && <p className="text-warn">Skill file changed. The selected snapshot is retained until refreshed.</p>}
+                        <button type="button" className="ml-2 underline" disabled={entryMode === 'command'} onClick={skill.refreshSnapshots}>Refresh skill text</button>
+                        {!skill.error && <details><summary className="cursor-pointer">Preview message</summary>
+                            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-2">{skill.expanded}</pre>
+                        </details>}
+                    </div>
+                )}
+                {deferredFailure && <div role="status" className="px-3 text-xs text-warn">
+                    A previous message was rejected. Your current draft has been kept.
+                    <button type="button" className="ml-2 underline" onClick={() => {
+                        setDraft(deferredFailure.recovery?.draft ?? deferredFailure.parts.filter(p => p.type === 'text').map(p => p.raw).join('\n\n'));
+                        skill.restore(deferredFailure.recovery?.skills ?? {});
+                        setReferences(deferredFailure.parts.filter(p => p.type === 'external_ref').map(p => ({ kind: 'external_ref', raw: p.raw, modality: p.modality ?? 'text' })));
+                        setDeferredFailure(null);
+                    }}>Restore rejected draft</button>
+                    <button type="button" className="ml-2 underline" onClick={() => setDeferredFailure(null)}>Dismiss</button>
+                </div>}
 
                 {entryMode === 'command' && (
                     <div id="composer-command-list" role="listbox"
@@ -401,62 +495,38 @@ export function Composer() {
                 )}
 
                 <div className="flex items-center gap-1 px-2 pb-2 sm:gap-2">
-                    <Popover open={refOpen} onOpenChange={setRefOpen}>
+                    <Popover open={skill.libraryOpen} onOpenChange={skill.setLibraryOpen}>
                         <PopoverTrigger asChild>
-                            <Button
-                                aria-label="Attach a reference"
-                                variant="ghost"
-                                size="md"
-                                // Attachment entry is reserved until the feature is ready.
-                                disabled
+                            <Button aria-label="Choose a skill" variant="ghost" size="md"
+                                disabled={entryMode === 'command'}
                                 className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
-                                icon={<Glyph name="attach" />}
-                            >
-                                <span className="hidden min-[380px]:inline">Attach</span>
+                                icon={<Glyph name="attach" />}>
+                                <span className="hidden min-[380px]:inline">Skills</span>
                             </Button>
                         </PopoverTrigger>
                         <PopoverContent align="start" width="w-80">
-                            <form
-                                onSubmit={(event) => {
-                                    event.preventDefault();
-                                    const field = event.currentTarget.elements.namedItem('reference');
-                                    if (!(field instanceof HTMLInputElement)) return;
-                                    const value = field.value.trim();
-                                    if (!value) return;
-                                    // A reference is sent as data, not fetched by the panel.
-                                    // Text is what this form can declare: it takes a URL and
-                                    // nothing that says what the URL points at.
-                                    setReferences((current) => (
-                                        current.some((item) => item.raw === value)
-                                            ? current
-                                            : [...current, {
-                                                kind: 'external_ref', raw: value, modality: 'text',
-                                            }]
-                                    ));
-                                    field.value = '';
-                                    setRefOpen(false);
-                                }}
-                            >
-                                <label className="block text-xs font-medium text-ink-muted"
-                                    htmlFor="composer-reference">
-                                    external reference
-                                </label>
-                                <input
-                                    id="composer-reference"
-                                    name="reference"
-                                    autoFocus
-                                    placeholder="https://…"
-                                    className="mt-1 w-full rounded border border-line-strong px-2 py-1
-                                        font-mono text-xs focus:border-line-strong focus:outline-none"
-                                />
-                                <p className="mt-1 text-xs text-ink-muted">
-                                    Sent to the worker as an <code>external_ref</code> part. The panel
-                                    never fetches it.
-                                </p>
-                                <div className="mt-2 flex justify-end">
-                                    <Button type="submit" variant="primary">Attach</Button>
-                                </div>
-                            </form>
+                            <label className="text-xs text-ink-muted">Search skills
+                                <input aria-label="Search skills" value={skillQuery}
+                                    onChange={event => setSkillQuery(event.target.value)}
+                                    className="mt-1 w-full rounded border border-line bg-surface p-2 text-sm focus:outline-none" />
+                            </label>
+                            <p className="my-2 text-xs text-ink-muted">Insert at the cursor. Edit or delete the marker in your message.</p>
+                            <div className="max-h-60 overflow-y-auto">
+                                {skill.catalog.skills.filter(item =>
+                                    `${item.id} ${item.title} ${item.description} ${item.keywords.join(' ')}`
+                                        .toLowerCase().includes(skillQuery.toLowerCase())).map(item => (
+                                    <button type="button" key={item.id} onClick={() => insertSkill(item.id)}
+                                        className="block w-full rounded p-2 text-left hover:bg-subtle focus-visible:outline-none focus-visible:bg-subtle">
+                                        <span className="block text-sm font-medium">{item.title}</span>
+                                        <span className="block text-xs text-ink-muted">{item.description}</span>
+                                        <span className="font-mono text-xs text-ink-faint">{`@{skill:${item.id}}`}</span>
+                                    </button>
+                                ))}
+                                {skill.catalog.skills.length === 0 && <p className="text-xs">No skills available.</p>}
+                                {skill.catalog.errors.map(item => <p key={item.id} className="text-xs text-warn">{item.id}: {item.message}</p>)}
+                            </div>
+                            {skill.libraryError && <p role="alert" className="text-xs text-danger">{skill.libraryError}</p>}
+                            <Button type="button" variant="ghost" size="sm" onClick={skill.reload}>Refresh library</Button>
                         </PopoverContent>
                     </Popover>
 
@@ -575,7 +645,7 @@ export function Composer() {
                                 size="md"
                                 disabled={entryMode === 'command'
                                     ? !selectedCommand || selectedUnavailable !== null
-                                    : !connected || !canSend}
+                                    : !connected || !canSend || Boolean(skill.error)}
                                 className={PRIMARY_ACTION_CLASS}
                                 icon={<Glyph name="send" />}
                             >

@@ -100,7 +100,7 @@ test('mode switching keeps the same toolbar and disables message settings', asyn
     const confirm = page.getByRole('button', { name: /^confirmation mode:/ });
     const model = page.getByRole('button', { name: 'Model options' });
     const send = page.getByRole('button', { name: 'Send', exact: true });
-    const controls = [page.getByLabel('Attach a reference'), confirm, model, send];
+    const controls = [page.getByLabel('Choose a skill'), confirm, model, send];
     const before = await Promise.all(controls.map((control) => control.boundingBox()));
     const messageColor = await page.getByTestId('composer-mode').evaluate(
         (node) => getComputedStyle(node).backgroundColor);

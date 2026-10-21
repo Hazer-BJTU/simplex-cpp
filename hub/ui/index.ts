@@ -90,3 +90,5 @@ export type {
     RestOperations,
     RestResponse
 } from './rest.ts';
+
+export type { SkillSummary, SkillDocument, SkillList, SkillTemplate } from './skills.ts';

@@ -1,3 +1,4 @@
+import type { SkillRecovery } from '../app/skillInput.ts';
 /**
  * @file the panel's client: it owns the transport and feeds the store.
  *
@@ -76,6 +77,7 @@ export interface PanelClient {
         parts: readonly ContentPart[],
         operation?: string,
         options?: PayloadOptions,
+        recovery?: SkillRecovery,
     ): boolean;
     /** Ask the hub for a session's captured worker output. */
     refreshLogs(sessionId: SessionId, limit?: number): boolean;
@@ -730,7 +732,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             socket.send({ type: 'list_sessions' });
         },
 
-        sendInput(sessionId, parts, operation = 'message', options) {
+        sendInput(sessionId, parts, operation = 'message', options, recovery) {
             // A session can exist before its worker starts. Do not create an
             // outbox entry or send an input frame until a worker is attached.
             const session = store.getState().sessions.get(sessionId);
@@ -738,7 +740,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             if (operation === 'compact' && (!store.getState().hasCapability('context-compact')
                 || !session.worker_capabilities?.includes('context-compact'))) return false;
             const requestId = newRequestId();
-            store.getState().beginInput(sessionId, requestId, parts, operation);
+            store.getState().beginInput(sessionId, requestId, parts, operation, recovery);
             const sent = socket.send({
                 type: 'input',
                 session: sessionId,
