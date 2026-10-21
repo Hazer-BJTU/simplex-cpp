@@ -106,6 +106,8 @@ export interface Problem {
     readonly label: string;
     readonly text: string;
     readonly tone: 'warn' | 'error';
+    /** Which event produced it; used to fold diagnostics into a run failure. */
+    readonly source: 'input_rejected' | 'error' | 'export_error' | 'unknown';
 }
 
 /** Settled run failure, with optional classification from newer workers. */
@@ -114,6 +116,10 @@ export interface RunFailure {
     readonly operation?: 'compact' | 'auto_compact';
     readonly canContinue: boolean;
     readonly error: string;
+    /** The worker stopped instead of emitting run_finished. */
+    readonly terminal?: boolean;
+    /** Nonterminal diagnostics that belong to the same failed run. */
+    readonly diagnostics?: readonly string[];
 }
 
 /**
@@ -323,6 +329,27 @@ function statusOf(
     }
     if (finished) return 'unknown';
     return 'running';
+}
+
+/**
+ * Fold nonterminal diagnostics into the failure that settled the same run.
+ *
+ * A run can emit an `error` event and then a structured `run_finished` failure;
+ * rendering both as separate red boxes repeats the same incident. The raw
+ * diagnostic is not discarded: it moves into the failure's details. Without a
+ * structured failure object (older workers), the diagnostic stays visible on
+ * its own, because there is nothing authoritative to merge it into.
+ */
+function absorbDiagnostics(run: Draft, failure: RunFailure, structured: boolean): RunFailure {
+    if (!structured) return failure;
+    const absorbed = run.problems.filter((problem) => problem.source === 'error');
+    if (absorbed.length === 0) return failure;
+    const keys = new Set(absorbed.map((problem) => problem.key));
+    run.problems = run.problems.filter((problem) => !keys.has(problem.key));
+    run.timeline = run.timeline.filter((entry) => (
+        entry.kind !== 'problem' || !keys.has(entry.key)
+    ));
+    return { ...failure, diagnostics: absorbed.map((problem) => problem.text) };
 }
 
 /**
@@ -829,14 +856,16 @@ export function buildRounds(
             run.pendingCallBatch = null;
             run.status = str(summary.status) || 'finished';
             if (run.status === 'failed') {
-                const failure = obj(summary.failure) ?? {};
-                run.failure = {
+                const classification = obj(summary.failure);
+                const failure = classification ?? {};
+                const resolved: RunFailure = {
                     stage: failure.stage === 'model_request' ? 'model_request' : 'other',
                     ...(failure.operation === 'compact' || failure.operation === 'auto_compact'
                         ? { operation: failure.operation } : {}),
                     canContinue: failure.can_continue === true,
                     error: str(summary.error),
                 };
+                run.failure = absorbDiagnostics(run, resolved, classification !== null);
             }
             run.exchanges = typeof summary.exchanges === 'number' ? summary.exchanges : null;
             track(run, item);
@@ -977,13 +1006,47 @@ export function buildRounds(
             }
             track(run, item);
             const data = obj(envelope.data) ?? {};
+            const primary = obj(data.primary_outcome);
+
+            // The worker's terminal storage failure deliberately replaces
+            // run_finished. Treat it as the end of the run, not as another
+            // diagnostic that leaves the activity indicator spinning.
+            if (name === 'error' && (data.durable === false || primary !== null)) {
+                const operation = primary?.operation === 'compact'
+                    || primary?.operation === 'auto_compact' ? primary.operation : undefined;
+                const detail = [
+                    str(primary?.error),
+                    str(data.message),
+                    str(data.storage_error) ? `storage error: ${str(data.storage_error)}` : '',
+                ].filter((part, index, all) => part.length > 0 && all.indexOf(part) === index);
+                run.status = str(primary?.status) || 'failed';
+                run.pendingCallBatch = null;
+                run.failure = {
+                    stage: 'other',
+                    canContinue: false,
+                    error: detail.join('\n'),
+                    terminal: true,
+                    ...(operation ? { operation } : {}),
+                };
+                run.open = false;
+                run.calls = run.calls.map((call) => (call.result
+                    ? call
+                    : { ...call, status: statusOf(null, call.prompt, true) }));
+                run.protocol.push(item);
+                run.timeline.push({ kind: 'protocol', key: item.id });
+                groups.finished(run);
+                continue;
+            }
+
             run.problems.push({
                 key: item.id,
                 label: name === 'input_rejected'
                     ? queueFull ? 'Input queue full' : 'input rejected'
-                    : name === 'error' ? 'worker diagnostic' : 'markdown export failed',
+                    : name === 'error' ? 'worker diagnostic' : 'archive cleanup diagnostic',
                 text: str(data.message) || 'the worker reported a problem',
-                tone: name === 'error' ? 'error' : 'warn',
+                tone: 'warn',
+                source: name === 'input_rejected' ? 'input_rejected'
+                    : name === 'error' ? 'error' : 'export_error',
             });
             run.timeline.push({ kind: 'problem', key: item.id });
             continue;
@@ -998,6 +1061,7 @@ export function buildRounds(
             label: name || '(unnamed event)',
             text: 'this panel has no renderer for that event yet',
             tone: 'warn',
+            source: 'unknown',
         });
         run.timeline.push({ kind: 'problem', key: item.id });
     }

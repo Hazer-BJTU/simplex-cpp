@@ -305,6 +305,16 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
         runActive = true;
     } else if (RUN_END_EVENTS.has(name)) {
         runActive = false;
+    } else if (name === 'error') {
+        // The worker's terminal storage failure replaces run_finished. If the
+        // panel keeps `runActive` true, the transcript shows an error, a
+        // spinner, and a Cancel button for a run that has already stopped.
+        const data = (envelope.data ?? {}) as Record<string, unknown>;
+        const primary = data.primary_outcome;
+        if (data.durable === false
+            || (typeof primary === 'object' && primary !== null && !Array.isArray(primary))) {
+            runActive = false;
+        }
     } else if (name === 'status' || name === 'ready') {
         const data = (envelope.data ?? {}) as Record<string, unknown>;
         if (typeof data.active === 'boolean') runActive = data.active;

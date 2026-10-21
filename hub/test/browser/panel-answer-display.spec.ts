@@ -111,8 +111,14 @@ test('complex tool previews keep proposal, confirmation and result cards correla
     await expect(page.getByTestId('tool-card')).toHaveCount(2);
     await expect(first).toHaveAttribute('data-status', 'failed');
     await expect(later).toHaveAttribute('data-status', 'ok');
+    // The failure is visible while the card is folded, but stays a quiet line.
+    await expect(first.getByTestId('tool-failure')).toContainText('failed');
+    await expect(first.getByTestId('tool-failure')).toContainText('distinct failure');
+    await expect(first.getByTestId('tool-failure-detail')).toHaveCount(0);
     await first.locator('summary').first().click();
-    await expect(first).toContainText('distinct failure');
+    await expect(first.getByTestId('tool-failure-detail')).toContainText('The tool could not run');
+    await expect(first.getByTestId('tool-failure-detail')).toContainText('invoke');
+    await expect(first.getByTestId('tool-failure-detail')).toContainText('distinct failure');
     await expect(first).toContainText('output-0');
     await later.locator('summary').first().click();
     await expect(later).toContainText('output-1');

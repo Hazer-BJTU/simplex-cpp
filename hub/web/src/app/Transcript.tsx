@@ -39,13 +39,16 @@ import { createRoundProjection } from './roundProjection.ts';
 import { reconcileHistory } from './history-rounds.ts';
 import { parseCompactResult } from '../state/compact.ts';
 import { EmptyState, LoadingLines } from '../ui/States.tsx';
+import { Button } from '../ui/Button.tsx';
 import { Glyph, type GlyphName } from '../ui/icons.tsx';
 import { Tooltip } from '../ui/overlays.tsx';
 import { Reasoning } from './Reasoning.tsx';
 import { AnswerAccess } from './AnswerPages.tsx';
 import { Markdown } from './Markdown.tsx';
 import { ToolCard } from './ToolCard.tsx';
+import { ErrorNotice } from './ErrorNotice.tsx';
 import { contentText, formatDuration } from './content.ts';
+import { useClient } from './ClientContext.tsx';
 import {
     type AssistantBlock,
     type Problem,
@@ -67,6 +70,14 @@ const RUN_OUTCOMES = new Map<string, { icon: GlyphName; label: string }>([
     ['exchange_limit', { icon: 'info', label: 'Exchange limit reached' }],
     ['failed', { icon: 'error', label: 'Failed' }],
 ]);
+
+/** The short label a folded turn can show without changing its weight. */
+function failureLabel(failure: RunFailure): string {
+    if (failure.terminal) return 'worker stopped';
+    if (failure.operation === 'auto_compact') return 'auto compact stopped';
+    if (failure.operation === 'compact') return 'compact failed';
+    return 'failed';
+}
 
 const EMPTY_HISTORY: readonly HistoryTurn[] = [];
 const EMPTY_ITEMS: readonly TranscriptItem[] = [];
@@ -137,52 +148,96 @@ function NoteLine({ item }: { item: NoteItem }) {
     );
 }
 
-/** A problem the worker reported. */
+/** A nonterminal worker or panel diagnostic, deliberately quieter than a failure. */
 function ProblemLine({ problem }: { problem: Problem }) {
-    const tone = problem.tone === 'error'
-        ? 'border-danger-line bg-danger-soft text-danger'
-        : 'border-warn-line bg-warn-soft text-warn';
+    const emphasized = problem.source === 'input_rejected';
     return (
-        <div data-testid="transcript-problem" className={`rounded border-l-2 px-2 py-1 ${tone}`}>
+        <div data-testid="transcript-problem" data-source={problem.source}
+            className={`rounded border-l-2 border-warn-line px-2 py-1 text-warn
+                ${emphasized ? 'bg-warn-soft' : 'bg-sunken'}`}>
             <p className="text-xs font-medium">{problem.label}</p>
-            <p className="text-xs">{problem.text}</p>
+            <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-xs">
+                {problem.text}
+            </p>
         </div>
     );
 }
 
 /** Visible run failure; raw provider diagnostics stay available on demand. */
-function RunFailureNotice({ failure, actionable, compacting }: {
+function RunFailureNotice({ failure, actionable, compacting, sessionId, latest }: {
     failure: RunFailure;
     actionable: boolean;
     compacting: boolean;
+    sessionId: string;
+    /** Only the latest failure is an alert and offers a recovery action. */
+    latest: boolean;
 }) {
+    const client = useClient();
     const model = failure.stage === 'model_request';
     const automatic = failure.operation === 'auto_compact';
+    const compaction = compacting || failure.operation === 'compact';
+    let title = 'Run failed';
     let guidance = 'Inspect the error and worker state before trying again.';
-    if (automatic) {
-        guidance = 'Automatic context compaction stopped. Inspect the error and configured limits before continuing the task.';
-    } else if (compacting) {
-        guidance = 'Context compaction did not finish. Inspect the error and refresh the worker state before trying Compact context again.';
-    } else if (model && actionable) {
-        guidance = 'The worker kept the conversation state. Use Continue run in Command mode to try again.';
-    } else if (failure.canContinue) {
+    if (failure.terminal) {
+        title = 'Worker stopped after a storage failure';
+        guidance = 'The worker stopped instead of finishing this run. The last state may not be'
+            + ' saved; refresh the conversation and inspect the worker log before retrying.';
+    } else if (automatic) {
+        title = 'Automatic context compaction stopped';
+        guidance = 'Automatic context compaction stopped. Inspect the error and configured limits'
+            + ' before continuing the task.';
+    } else if (compaction) {
+        title = 'Context compaction failed';
+        guidance = 'Context compaction did not finish. Inspect the error and refresh the worker'
+            + ' state before trying Compact context again.';
+    } else if (model) {
+        title = 'Model request failed';
+        if (actionable) {
+            guidance = 'The worker kept the conversation state. Continue this run to retry.';
+        }
+    }
+    if (!failure.terminal && !automatic && !compaction && !actionable && failure.canContinue) {
         guidance = 'The worker reported that this run could be continued when it settled.';
         if (!model) guidance += ' Inspect the error details.';
     }
-    return (
-        <div data-testid="run-failure" role="alert"
-            className="rounded-lg border border-danger-line bg-danger-soft px-3 py-2 text-sm
-                text-danger">
-            <p className="font-medium">{automatic ? 'Automatic context compaction stopped' : compacting ? 'Context compaction failed' : model ? 'Model request failed' : 'Run failed'}</p>
-            <p className="mt-1">{guidance}</p>
-            {failure.error && (
-                <details className="mt-2">
-                    <summary className="cursor-pointer text-xs">Error details</summary>
-                    <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all
-                        rounded border border-danger-line p-2 text-xs">{failure.error}</pre>
-                </details>
+
+    const meta = [
+        failure.terminal ? 'worker stopped' : model ? 'model request' : 'run',
+        failure.operation?.replace('_', ' ') ?? '',
+        failure.canContinue ? 'can continue' : '',
+    ].filter(Boolean).join(' · ');
+    const details = [
+        failure.error,
+        ...(failure.diagnostics ?? []).map((text) => `worker diagnostic: ${text}`),
+    ].filter((text) => text.trim().length > 0).join('\n\n');
+    const actions = actionable || latest ? (
+        <>
+            {actionable && (
+                <Button variant="secondary" size="sm"
+                    onClick={() => { client.sendInput(sessionId, [], 'continue'); }}>
+                    Continue run
+                </Button>
             )}
-        </div>
+            {latest && (
+                <Button variant="secondary" size="sm"
+                    onClick={() => { client.refreshConversation(sessionId); }}>
+                    Refresh conversation
+                </Button>
+            )}
+        </>
+    ) : undefined;
+
+    return (
+        <ErrorNotice
+            tone="danger"
+            title={title}
+            message={guidance}
+            meta={meta}
+            details={details}
+            actions={actions}
+            role={latest ? 'alert' : undefined}
+            testId="run-failure"
+        />
     );
 }
 
@@ -410,6 +465,12 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
             {preview && (
                 <span className="truncate text-xs text-ink-muted">“{preview}”</span>
             )}
+            {round.failure && (
+                <span data-testid="round-failure-label"
+                    className="shrink-0 text-xs font-medium text-danger">
+                    {failureLabel(round.failure)}
+                </span>
+            )}
             <span className="flex-1" />
             <span className={`max-w-[45%] text-right text-xs ${round.failure ? 'text-danger' : 'text-ink-faint'}`}>
                 {parts.join(' · ')}
@@ -419,10 +480,13 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
 }
 
 /** Everything in a round, in the order it happened. */
-const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFailure }: {
+const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFailure,
+    sessionId, latestRun }: {
     round: Round;
     historicalInput: HistoryTurn | null;
     actionableFailure: boolean;
+    sessionId: string;
+    latestRun: boolean;
 }) {
     profileCount('roundBody');
     const calls = useMemo(() => {
@@ -527,7 +591,7 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
 
             {round.failure && (
                 <RunFailureNotice failure={round.failure} actionable={actionableFailure}
-                    compacting={round.compacting} />
+                    compacting={round.compacting} sessionId={sessionId} latest={latestRun} />
             )}
         </div>
     );
@@ -590,6 +654,7 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
     // local outbox was created before another panel's earlier input arrived.
     // History mapping, retry guidance, and folding all use this same order.
     const runs = useMemo(() => rounds.filter((round) => round.kind === 'run'), [rounds]);
+    const latestRunKey = runs.at(-1)?.key ?? null;
 
     // Failure metadata describes the past. A retry hint is current only while
     // that failed run is the latest run of the same connected worker.
@@ -764,7 +829,9 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
                         <TranscriptRound key={round.key} round={round}
                             historicalInput={historyForRun.get(round.key) ?? null}
                             expanded={isOpen(round)} onToggle={toggle}
-                            actionableFailure={round.key === actionableFailureKey} />
+                            actionableFailure={round.key === actionableFailureKey}
+                            sessionId={selected}
+                            latestRun={round.key === latestRunKey} />
                     ))}
 
                     {view?.runActive && session?.connected && (
@@ -794,11 +861,13 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
 
 /** Stable round identity keeps unchanged summaries and disclosure trees asleep. */
 const TranscriptRound = memo(function TranscriptRound({ round, historicalInput, expanded,
-    actionableFailure, onToggle }: {
+    actionableFailure, sessionId, latestRun, onToggle }: {
     round: Round;
     historicalInput: HistoryTurn | null;
     expanded: boolean;
     actionableFailure: boolean;
+    sessionId: string;
+    latestRun: boolean;
     onToggle: (key: string, expanded: boolean) => void;
 }) {
     profileCount('roundView');
@@ -820,7 +889,9 @@ const TranscriptRound = memo(function TranscriptRound({ round, historicalInput, 
                 <div className={round.kind === 'run' ? 'mt-2' : ''}>
                     <RoundBody round={round}
                         historicalInput={historicalInput}
-                        actionableFailure={actionableFailure} />
+                        actionableFailure={actionableFailure}
+                        sessionId={sessionId}
+                        latestRun={latestRun} />
                 </div>
             )}
             {round.kind === 'run' && !expanded && (
