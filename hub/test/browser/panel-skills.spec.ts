@@ -37,7 +37,7 @@ test('picker inserts at the caret and sends an in-place expanded snapshot', asyn
     await expect(input).toHaveValue('');
 });
 
-test('typed references complete, delete, escape and remain disabled in command mode', async ({ page }) => {
+test('typed references complete, delete and escape', async ({ page }) => {
     await library(page);
     await open(page, '?session=demo');
     const input = page.getByLabel('message', { exact: true });
@@ -46,9 +46,6 @@ test('typed references complete, delete, escape and remain disabled in command m
     await input.press('ArrowDown');
     await input.press('Enter');
     await expect(input).toHaveValue('Task @{skill:review}');
-    await input.press('Alt+Enter');
-    await expect(page.getByRole('button', { name: 'Choose a skill' })).toBeDisabled();
-    await page.getByLabel('command input').press('Alt+Enter');
     await expect(input).toHaveValue('Task @{skill:review}');
     await input.fill('Task @{skill:missing}');
     await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();

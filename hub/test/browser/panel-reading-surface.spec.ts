@@ -60,9 +60,7 @@ for (const theme of ['light', 'dark'] as const) {
             await expect(page.getByTestId('run-failure')).toContainText('Model request failed');
             await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('failure.png') });
             await testInfo.attach('failure', { path: testInfo.outputPath('failure.png'), contentType: 'image/png' });
-            await page.getByLabel('message', { exact: true }).press('Alt+Enter');
-            await page.getByLabel('command input').fill('continue');
-            await page.getByLabel('command input').press('Enter');
+            await page.getByTestId('run-failure').getByRole('button', { name: 'Continue run' }).click();
             await emit(page, 'run_started', {});
             await emit(page, 'model_response', modelResponse('The analysis resumed from the saved state.'));
             await emit(page, 'run_finished', { status: 'completed' });
@@ -103,7 +101,7 @@ for (const theme of ['light', 'dark'] as const) {
 
 // These assertions are separate from review captures: visual acceptance does
 // not replace interaction guarantees, and an image is not a regression test.
-test('reading edges align, mode switches preserve selection, and updates do not move controls', async ({ page }) => {
+test('reading edges align, modified Enter preserves the draft, and updates do not move controls', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 960 });
     await open(page, '?session=demo');
     const input = page.getByLabel('message', { exact: true });
@@ -116,13 +114,7 @@ test('reading edges align, mode switches preserve selection, and updates do not 
     expect(reading.width).toBe(832);
     await input.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(2, 7));
     await input.press('Alt+Enter');
-    const command = page.getByLabel('command input');
-    await expect(command).toBeFocused();
-    expect(await surface.boundingBox()).toEqual(before);
-    await command.fill('ref');
-    expect(await surface.boundingBox()).toEqual(before);
-    await command.press('Alt+Enter');
-    expect(await input.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])).toEqual([2, 7]);
+    await expect(page.getByLabel('command input')).toHaveCount(0);
     expect(await surface.boundingBox()).toEqual(before);
     await input.dispatchEvent('keydown', { key: 'Enter', altKey: true, isComposing: true, bubbles: true });
     await expect(input).toBeVisible();
@@ -159,18 +151,13 @@ test('expired and externally settled approvals cannot retain actionable buttons'
     await expect(page.getByTestId('approval-banner')).toHaveCount(0);
 });
 
-test('narrow and short viewports bound the composer, suggestions, and long output', async ({ page }) => {
+test('narrow and short viewports bound the composer and long output', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 480 });
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await open(page, '?session=demo');
     await emit(page, 'model_response', modelResponse('```text\n' + 'long_column_'.repeat(200) + '\n```'));
     const input = page.getByLabel('message', { exact: true });
     await input.fill('Long draft\n'.repeat(80));
-    await input.press('Alt+Enter');
-    const suggestions = page.getByRole('listbox', { name: 'matching commands' });
-    const bounds = (await suggestions.boundingBox())!;
-    expect(bounds.y).toBeGreaterThanOrEqual(0);
-    expect(bounds.x + bounds.width).toBeLessThanOrEqual(360);
     const send = (await page.getByRole('button', { name: 'Send', exact: true }).boundingBox())!;
     expect(send.y + send.height).toBeLessThanOrEqual(480);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(360);
@@ -234,7 +221,7 @@ for (const [status, label, icon] of [
     });
 }
 
-test('switching sessions resets empty geometry and both mode selections', async ({ page }) => {
+test('switching sessions resets empty geometry and the input selection', async ({ page }) => {
     await open(page);
     await setSessions(page, ['first', 'second']);
     await page.reload();
@@ -243,18 +230,11 @@ test('switching sessions resets empty geometry and both mode selections', async 
     await message.fill('A long draft.\n'.repeat(40));
     await expect(message).toHaveCSS('height', '240px');
     await message.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(8, 16));
-    await message.press('Alt+Enter');
-    const command = page.getByLabel('command input');
-    await command.fill('refresh');
-    await command.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(2, 5));
     await page.getByTestId('session-row').filter({ hasText: 'second' }).click();
     await expect(message).toHaveValue('');
     await expect(message).toHaveCSS('height', '96px');
     expect(await message.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])).toEqual([0, 0]);
-    await message.press('Alt+Enter');
-    await expect(command).toHaveValue('');
-    await expect(command).toHaveCSS('height', '96px');
-    expect(await command.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])).toEqual([0, 0]);
+
 });
 
 test('successful message submission recovers reading space and rejection restores the full draft', async ({ page }) => {

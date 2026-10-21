@@ -438,30 +438,22 @@ process records from `hub.json`, adopts a worker whose pid *and* `/proc` start
 time still match, and marks anything else as unattached. Nothing is signalled on
 a pid alone.
 
-The panel composer has **Message** and **Command** modes. Use `Alt + Enter` to
-switch modes. Message mode sends text and attached
-references only while a worker is connected. During an active run, its Send
-button becomes **Cancel run**; an unsent draft stays in the composer for later.
-Command mode accepts command names without a `/` prefix: type a name prefix,
-use `Tab` to complete it, and press `Enter` to run it. Executing a command
-leaves the composer in Command mode. Switching modes keeps an
-unsent message draft. **Refresh conversation** recovers the hub's retained event
-transcript
-and asks a connected worker for its simplified conversation history. If the
-worker is offline, the hub transcript can still refresh; worker history will
-be requested after reconnection. The command does not send a user message.
-**Continue run** is always listed in Command mode. It is available when a worker
-is connected and no run is active; it asks the worker to continue from its
-current internal state without sending a new message, and keeps the draft.
-The worker requires an existing conversation turn and reports an error if there
-is none. The panel shows the continued run without a user-message bubble.
-**Compact context** archives the conversation and replaces the worker's context
-with a durably saved summary. It is enabled only when the connected worker and
-hub advertise support and no run is active. The worker requires persistence and
-a settled conversation. The panel displays the summary separately, refreshes
-worker history, and preserves any unsent draft. Send a new message after success;
-there is no turn to continue. Cancellation and failure preserve the old history.
-The command shows the worker's actual archive-retention policy when reported.
+The panel composer always sends messages; it has no command mode or Alt+Enter
+switch. During an active run, **Send** becomes **Cancel run** and preserves the
+draft. To continue a task, send a message such as “Continue”.
+
+The inward-arrow icon beside the token meter is labelled **Compact** on hover.
+It archives the conversation and replaces the worker's context with a saved
+summary, without submitting or clearing the draft or skill snapshots. It is
+enabled when the connected worker and Hub support compaction and no run is
+active or awaiting compaction admission. The worker validates persistence and
+conversation state. A spinner indicates pending or active compaction; the
+conversation displays its result or error. Cancellation uses **Cancel run**.
+The action's accessible description includes the reported archive-retention policy.
+
+History synchronizes automatically. **Refresh conversation** remains available
+in the global Ctrl/Cmd+K palette for manual recovery, including HTTP transcript
+recovery when the worker is offline. It does not send a user message.
 When a run fails, its transcript shows a visible failure notice with **Error details**
 available on demand. A model-request failure suggests **Continue run**
 only while it remains the latest run of the same connected worker and the
@@ -825,12 +817,6 @@ An explicit `input_rejected` with `code: "invalid_options"` refreshes the option
 and restores the provider's effective selections; ordinary input failures do
 not refresh them. The header no longer exposes Status or Options buttons.
 
-
-Message and Command modes share the same input layout and Send button.
-Command mode keeps Confirm and Model visible but disabled; existing selections
-still accompany commands that start a run. Alt+Enter changes the mode badge,
-placeholder, and command suggestions without moving the toolbar. The mode badge
-uses distinct colors and a short animation, disabled by reduced-motion settings.
 
 A small usage line above the composer shows only the latest model response's
 prompt tokens, generated tokens, and cache-hit percentage (`cache_hit / prompt`,

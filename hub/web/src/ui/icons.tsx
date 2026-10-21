@@ -26,6 +26,7 @@ import {
     CircleX,
     Command,
     Copy,
+    Minimize2,
     Check,
     Ellipsis,
     FileText,
@@ -88,6 +89,7 @@ export const GLYPHS = {
 
     // composer
     send: Send,
+    compact: Minimize2,
     attach: Paperclip,
 
     // approvals

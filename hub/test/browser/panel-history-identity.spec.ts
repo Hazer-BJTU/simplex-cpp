@@ -28,9 +28,9 @@ async function replayA(page: Page) {
 }
 
 async function refresh(page: Page) {
-    await page.getByLabel('message').press('Alt+Enter');
-    await page.getByLabel('command input').fill('Refresh');
-    await page.getByLabel('command input').press('Enter');
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.getByLabel('filter commands').fill('Refresh conversation');
+    await page.getByLabel('filter commands').press('Enter');
 }
 
 async function queries(page: Page): Promise<{ request_id: string; start: number }[]> {

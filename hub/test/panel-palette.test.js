@@ -11,10 +11,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { buildCommands, filterCommands, matches } from '../web/src/app/palette.ts';
 import {
-    matchingComposerCommands,
-    unavailableReason,
     compactRetentionDetail,
-} from '../web/src/app/composerCommands.ts';
+} from '../web/src/app/compactAction.ts';
 
 /** One session description, as the store holds it. */
 function session(id, process = null) {
@@ -133,43 +131,13 @@ describe('command filtering', () => {
     });
 });
 
-describe('composer command prefixes', () => {
-    it('offers compact only when connected, idle, and supported', () => {
-        const [command] = matchingComposerCommands('comp');
-        assert.equal(command.id, 'compact-context');
-        assert.match(unavailableReason(command, false, false, true), /Connect/);
-        assert.match(unavailableReason(command, true, true, true), /current run/);
-        assert.match(unavailableReason(command, true, false, false), /does not support/);
-        assert.equal(unavailableReason(command, true, false, true), null);
+describe('compaction archive guidance', () => {
+    it('describes the worker policy without assuming a default', () => {
         assert.match(compactRetentionDetail({ max_archives: 5 }), /5 archives/);
         assert.match(compactRetentionDetail({ max_archives: 0 }), /disabled/);
         assert.match(compactRetentionDetail(undefined), /not reported/);
         for (const max_archives of [-1, 1.5, '5']) {
             assert.match(compactRetentionDetail({ max_archives }), /not reported/);
         }
-    });
-    it('offers one conversation refresh command by name prefix only', () => {
-        assert.deepEqual(matchingComposerCommands('ref').map((command) => command.name),
-            ['Refresh conversation']);
-        assert.deepEqual(matchingComposerCommands('REFRESH').map((command) => command.id),
-            ['refresh-conversation']);
-        assert.deepEqual(matchingComposerCommands('conversation'), []);
-    });
-
-    it('always lists Continue run but explains when it cannot execute', () => {
-        const command = matchingComposerCommands('CONT')[0];
-        assert.deepEqual(matchingComposerCommands('cont').map((entry) => entry.id),
-            ['continue-run']);
-        assert.equal(unavailableReason(command, false, false), 'Connect a worker first.');
-        assert.equal(unavailableReason(command, true, true),
-            'Wait for the current run to finish or cancel it.');
-        assert.equal(unavailableReason(command, true, false), null);
-    });
-
-    it('offers the same refresh action through the existing palette', () => {
-        const command = buildCommands(input())
-            .find((entry) => entry.id === 'conversation:refresh');
-        assert.deepEqual(command.action,
-            { kind: 'refresh-conversation', session: 'demo' });
     });
 });

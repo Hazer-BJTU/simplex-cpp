@@ -386,9 +386,9 @@ test('a history refresh keeps detailed tool cards beside the final reply', async
     };
     await expect.poll(historyQueries).toBe(1);
     await expect(page.getByTestId('tool-card')).toHaveCount(1);
-    await page.keyboard.press('Alt+Enter');
-    await page.getByLabel('command input').fill('Refresh');
-    await page.getByLabel('command input').press('Enter');
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.getByLabel('filter commands').fill('Refresh conversation');
+    await page.getByLabel('filter commands').press('Enter');
     await expect(page.getByTestId('restored-user-message'))
         .toContainText('Please run the tool.');
     await expect(page.getByTestId('history-turn')).toHaveCount(0);
@@ -466,9 +466,9 @@ test('orders another panel’s earlier run before a local outbox through history
             omitted_steps: 0,
         })),
     } });
-    await page.getByLabel('message').press('Alt+Enter');
-    await page.getByLabel('command input').fill('Refresh');
-    await page.getByLabel('command input').press('Enter');
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.getByLabel('filter commands').fill('Refresh conversation');
+    await page.getByLabel('filter commands').press('Enter');
     await expect.poll(historyQueries).toBe(2);
     await expect(runs.nth(0).getByTestId('restored-user-message')).toContainText('Remote input A');
     await expect(runs.nth(0)).not.toContainText('Local input B');
@@ -791,7 +791,7 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
 
     const messageHeight = (await composer.boundingBox())!.height;
     await message.press('Alt+Enter');
-    await expect(page.getByLabel('command input')).toBeFocused();
+    await expect(page.getByLabel('message')).toBeFocused();
     expect((await composer.boundingBox())!.height).toBe(messageHeight);
     const run = page.getByRole('button', { name: 'Send', exact: true });
     const runBounds = await run.boundingBox();
@@ -808,7 +808,7 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
         height: controls[2]!.height,
     });
     await expect(page.getByText('Alt + Enter switches modes')).toHaveCount(0);
-    await page.getByLabel('command input').press('Alt+Enter');
+    await page.getByLabel('message').press('Alt+Enter');
     await expect(page.getByLabel('message')).toBeFocused();
     expect((await composer.boundingBox())!.height).toBe(messageHeight);
 
@@ -817,7 +817,7 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
     const activeHeight = (await composer.boundingBox())!.height;
     await page.getByLabel('message').press('Alt+Enter');
     expect((await composer.boundingBox())!.height).toBe(activeHeight);
-    await page.getByLabel('command input').press('Alt+Enter');
+    await page.getByLabel('message').press('Alt+Enter');
     expect((await composer.boundingBox())!.height).toBe(activeHeight);
 });
 
@@ -1104,13 +1104,16 @@ test('the token scale uses eight bands and remains full above 1M', async ({ page
     const bounds = await meter.boundingBox();
     expect(bounds!.x).toBeGreaterThanOrEqual(0);
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
-    const badge = await page.getByTestId('composer-mode').boundingBox();
+    const compact = (await page.getByRole('button', { name: 'Compact', exact: true }).boundingBox())!;
+    expect(compact.x).toBeGreaterThanOrEqual(bounds!.x + bounds!.width);
+    expect(compact.x + compact.width).toBeLessThanOrEqual(320);
+    const badge = await page.getByText('Message', { exact: true }).boundingBox();
     expect(bounds!.x).toBeGreaterThan(badge!.x + badge!.width);
     expect(bounds!.y).toBeGreaterThanOrEqual(badge!.y);
     expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(badge!.y + badge!.height);
     await page.getByLabel('message', { exact: true }).press('Alt+Enter');
     expect(await meter.boundingBox()).toEqual(bounds);
-    await page.getByLabel('command input').press('Alt+Enter');
+    await page.getByLabel('message').press('Alt+Enter');
     await emit(page, 'model_response', cost(1024 * 1024));
     await expect(usage).toContainText('8/8 · 1M');
     await expect.poll(fills).toEqual(Array(8).fill('100%'));
