@@ -23,7 +23,7 @@ struct Harness {
     std::unique_ptr<process_io::ProcessIoEnvironment> environment;
     std::unique_ptr<subprocess::Child> child;
 
-    explicit Harness(std::size_t cap = 4 * 1024 * 1024)
+    explicit Harness(std::size_t cap = 64 * 1024)
         : environment(std::make_unique<process_io::AnonymousPipeIo>(strand, cap))
     {
     }

@@ -67,9 +67,8 @@ A terminal stream is not duplicated into stdout and stderr.
 Capture retains raw bytes, including NUL, partial UTF-8 and ANSI sequences.
 It does not decode text. One budget applies to all retained bytes in an
 environment: stdout plus stderr for pipes, or terminal output alone. Zero is
-unlimited; the default is 4 MiB **total**, not 4 MiB per stream. This intentionally
-changes the earlier per-stream policy. Labels, escaping and allocator/task
-metadata are not counted; this is not a bound on total process memory.
+unlimited; the default is 64 KiB **total**, shared across streams. Labels, escaping
+and allocator/task metadata are not counted; this is not a bound on total process memory.
 
 The first read to consume remaining capacity keeps those bytes. The split
 between stdout and stderr depends on read scheduling; no fixed shares or exact

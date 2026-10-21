@@ -53,8 +53,11 @@ text: |
     Default reads and polls share and advance per-stream cursors; concurrent
     reads may split output. Poll with `include_output: false` for status only.
     `full: true` and launch-result output do not advance cursors, so later delta
-    reads may repeat launch output. Stdout/stderr share a capture budget; reads
-    do not replenish it. Truncated bytes cannot be recovered.
+    reads may repeat launch output. Default capture is 64 KiB per process, shared
+    by stdout/stderr (or used by terminal output); reads do not replenish it.
+    Truncated bytes cannot be recovered. Redirect potentially large output to
+    a file, then search or read selected portions. `head` limits lines, not bytes;
+    one line can be huge. Do not rerun side-effecting commands just to recover output.
   - `send_process` queues `input`; include a newline for line-oriented programs
     and set `end_input: true` when EOF is needed. Queuing does not prove the
     child read the bytes. Use `signal: "term"` for graceful stopping, then

@@ -2747,3 +2747,61 @@ BOOST_AUTO_TEST_CASE(run_command_readonly_mode_and_invalid_config_are_fail_close
         BOOST_TEST(f.set->dispatch(call_for("spawn_process")) != nullptr);
     }
 }
+
+// A single unbroken line can exceed the budget even when a command uses head.
+// Exercise actual children so success also proves that discarded bytes drain.
+BOOST_AUTO_TEST_CASE(default_capture_bounds_initial_launcher_output)
+{
+    const std::string command = "awk 'BEGIN { for (i = 0; i < 131072; ++i) printf \"x\" }'";
+    for (const auto name : {tool_names::kRun, tool_names::kSpawn}) {
+        for (const bool tty : {false, true}) {
+#ifndef __linux__
+            if (tty) {
+                continue;
+            }
+#endif
+            Fixture f;
+            nlohmann::json args = {
+                {"expected_runtime_milliseconds", 5000}, {"tty", tty}};
+            if (name == tool_names::kRun) {
+                args["command"] = command;
+            } else {
+                args["executable"] = "sh";
+                args["arguments"] = {"-c", command};
+            }
+            const auto result = f.result_of(f.call(call_for(std::string(name), args)));
+            BOOST_TEST(result.field("exit_code") == "0");
+            BOOST_TEST(result.field("output_complete") == "true");
+            BOOST_TEST(result.field("output_truncated") == "true");
+            BOOST_TEST(result.field("released") == "true");
+            BOOST_TEST(result.block("output") == std::string(64 * 1024, 'x'));
+            BOOST_TEST(result.field("output_hint").find("file") != std::string::npos);
+            BOOST_TEST(result.field("output_hint").find("side effects") != std::string::npos);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(default_capture_bounds_later_read_and_poll_output)
+{
+    for (const bool poll : {false, true}) {
+        Fixture f;
+        const auto id = spawn_through_tool(f, "sh", {"-c",
+            "awk 'BEGIN { for (i = 0; i < 131072; ++i) printf \"x\" }'"});
+        // Wait without consuming output, then exercise each output-return path.
+        f.call(call_for(std::string(tool_names::kPoll), {
+            {"session_ids", {id}}, {"include_output", false},
+            {"wait_timeout_milliseconds", 5000}}));
+        const auto record = poll
+            ? f.call(call_for(std::string(tool_names::kPoll), {{"session_ids", {id}}}))
+            : f.call(call_for(std::string(tool_names::kRead), {{"session_id", id}}));
+        const auto result = f.result_of(record);
+        BOOST_TEST(result.field("output_complete") == "true");
+        BOOST_TEST(result.field("output_truncated") == "true");
+        BOOST_TEST(result.block("output") == std::string(64 * 1024, 'x'));
+        BOOST_TEST(result.field("output_hint").find("file") != std::string::npos);
+        const auto again = f.result_of(f.call(call_for(
+            std::string(tool_names::kRead), {{"session_id", id}})));
+        BOOST_TEST(again.block("output").empty());
+        BOOST_TEST(again.field("output_truncated") == "true");
+    }
+}

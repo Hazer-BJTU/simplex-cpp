@@ -90,7 +90,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
     BOOST_TEST(j.at("initial_wait_timeout_milliseconds") ==
                nlohmann::json(0));
     BOOST_TEST(j.at("detach_on_timeout") == nlohmann::json(true));
-    BOOST_TEST(j.at("max_output_bytes") == nlohmann::json(4 * 1024 * 1024));
+    BOOST_TEST(j.at("max_output_bytes") == nlohmann::json(64 * 1024));
     BOOST_TEST(j.at("inherit_environment") == nlohmann::json(true));
     // pid and started_at are required: their sentinels (0 / the epoch
     // point) go on the wire, they are not omitted keys.
@@ -104,7 +104,7 @@ BOOST_AUTO_TEST_CASE(launch_spec_defaults_write_required_fields)
     const process::LaunchSpec back = j.get<process::LaunchSpec>();
     BOOST_TEST(back.initial_wait_timeout_milliseconds == std::uint64_t{0});
     BOOST_TEST(back.detach_on_timeout == true);
-    BOOST_TEST(back.max_output_bytes == std::uint64_t{4 * 1024 * 1024});
+    BOOST_TEST(back.max_output_bytes == std::uint64_t{64 * 1024});
     BOOST_TEST(back.inherit_environment == true);
     BOOST_TEST(back.pid == process::ProcessId{0});
     BOOST_CHECK(back.started_at ==
