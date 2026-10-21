@@ -64,7 +64,7 @@ describe('http front door', () => {
         const response = await fetch(`${base}/`);
         assert.equal(response.status, 200);
         assert.match(response.headers.get('content-type'), /text\/html/);
-        assert.match(await response.text(), /simplex hub/);
+        assert.match(await response.text(), /Simplex/);
     });
 
     it('answers unknown API routes with a JSON error', async () => {

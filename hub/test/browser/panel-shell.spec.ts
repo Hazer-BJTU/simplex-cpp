@@ -28,7 +28,8 @@ async function answers(page: Page): Promise<number> {
 test('the shell renders and lists the hub\'s sessions', async ({ page }) => {
     await open(page);
 
-    await expect(page.getByRole('heading', { name: 'simplex hub' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Simplex' })).toBeVisible();
+    await expect(page).toHaveTitle('Simplex');
     await expect(page.getByTestId('session-row')).toHaveCount(1);
     await expect(page.getByText('No session selected')).toBeVisible();
 });
