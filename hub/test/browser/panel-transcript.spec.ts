@@ -727,7 +727,7 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
     await page.goto('/?session=demo');
     const message = page.getByLabel('message');
     const composer = page.locator('main > form');
-    const attach = page.getByRole('button', { name: 'Attach a reference' });
+    const attach = page.getByRole('button', { name: 'Choose a skill' });
     const confirmation = page.getByRole('button', { name: /confirmation mode:/ });
     const send = page.getByRole('button', { name: 'Send' });
     const initial = await message.boundingBox();
@@ -759,7 +759,7 @@ test('keeps the compact composer controls aligned and inside a narrow viewport',
     for (const content of contents) {
         expect(content.iconY).toBe(contents[0]!.iconY);
         expect(content.iconHeight).toBe(contents[0]!.iconHeight);
-        // Attach becomes an accessible icon-only control on the narrowest
+        // Skills becomes an accessible icon-only control on the narrowest
         // screens; the remaining visible labels still share a baseline.
         if (content.labelHeight > 0) {
             const visible = contents.find((entry) => entry.labelHeight > 0)!;

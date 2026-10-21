@@ -1,3 +1,5 @@
+import { SkillStore } from '../skills/store.ts';
+import { skillRoutes } from '../skills/routes.ts';
 import { sessionStateBackend } from '../launch/config-file.ts';
 import type { SessionResponse, SessionListResponse, RemovedResponse, LogsResponse, SupervisorResult, SnapshotView } from '../../ui/protocol.ts';
 import type { RecoveryResponse } from '../../ui/rest.ts';
@@ -697,6 +699,7 @@ export function createPanelApi({
 
     const routes: Record<string, RouteHandler> = {
         ...configurationRoutes(configurations, supervisor),
+        ...skillRoutes(new SkillStore(config.dataDir)),
         'POST /api/sessions/:id/configurations': async ({ req, res, params }) => {
             const session = requireSession(res, params.id as string);
             if (!session) return;

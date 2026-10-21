@@ -1,3 +1,4 @@
+import type { SkillList, SkillDocument, SkillTemplate } from './skills.ts';
 /** Panel REST wire contracts. Transport, validation and URL building belong to consumers. */
 import type {
     ApiErrorBody, HubMetadata, SessionSpec, SessionResponse, SessionListResponse,
@@ -127,6 +128,12 @@ export interface RestOperations {
     /** Read public metadata without operator authentication. */
     'GET /api/meta': RestOperation<never, never, never, { 200: HubMetadata }>;
     /** List saved configuration names without exposing source text. */
+    /** List validated skill metadata and per-file errors, without instruction bodies. */
+    'GET /api/skills': RestOperation<never, never, never, { 200: SkillList }>;
+    /** Read the bundled authoring template; does not create a skill. */
+    'GET /api/skills/template': RestOperation<never, never, never, { 200: SkillTemplate }>;
+    /** Read one bounded UTF-8 instruction snapshot by filename stem. */
+    'GET /api/skills/:id': RestOperation<{ id: string }, never, never, { 200: SkillDocument }>;
     'GET /api/configurations': RestOperation<never, never, never, { 200: ConfigList }>;
     /** Read a template; omission of source selects default. */
     'GET /api/configurations/:kind/template': RestOperation<{ kind: ConfigKind }, ConfigTemplateQuery, never, { 200: ConfigTemplateResponse }>;
@@ -180,6 +187,9 @@ export interface RestOperations {
 
 /** Static inventory; this is not a router or URL builder. */
 export const REST_ROUTES = [
+    'GET /api/skills',
+    'GET /api/skills/template',
+    'GET /api/skills/:id',
     'GET /api/meta',
     'GET /api/configurations',
     'GET /api/configurations/:kind/template',

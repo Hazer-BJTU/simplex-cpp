@@ -1,3 +1,4 @@
+import type { SkillRecovery } from '../app/skillInput.ts';
 /**
  * @file one session's client-side view: the transcript and what is derived
  * from it.
@@ -122,6 +123,8 @@ export interface OutboxItem {
     readonly id: string;
     readonly requestId: string;
     readonly parts: readonly ContentPart[];
+    /** Original draft/snapshots for explicit rejection; never sent on the wire. */
+    readonly recovery?: SkillRecovery;
     readonly operation: string;
     readonly state: 'pending' | 'admitted' | 'rejected';
     readonly admittedSequence?: number;

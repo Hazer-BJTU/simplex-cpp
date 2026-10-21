@@ -1,3 +1,4 @@
+import type { SkillRecovery } from '../app/skillInput.ts';
 import { displayBytes } from './view.ts';
 import { indexViewChanges, viewProjection } from './viewProjection.ts';
 import type { SessionPlan } from '../../../ui/index.ts';
@@ -121,6 +122,7 @@ export interface Notice {
 export interface FailedInput {
     readonly sessionId: SessionId;
     readonly parts: readonly ContentPart[];
+    readonly recovery?: SkillRecovery;
     readonly operation: string;
     readonly reason: string;
     /** Monotonic, so a composer can tell two identical failures apart. */
@@ -340,6 +342,7 @@ export interface PanelActions {
         requestId: string,
         parts: readonly ContentPart[],
         operation: string,
+        recovery?: SkillRecovery,
     ): void;
     /** The hub refused it: drop the pending message and hand the text back. */
     failInput(sessionId: SessionId, requestId: string, reason: string): void;
@@ -483,7 +486,8 @@ function admitInput(view: ViewState, requestId: string, envelope: WorkerEnvelope
         if (item.kind !== 'outbox' || item.requestId !== requestId) return item;
         if (item.state === 'admitted') return item;
         changed = true;
-        return { ...item, state: 'admitted',
+        const { recovery: _recovery, ...settled } = item;
+        return { ...settled, state: 'admitted',
             admittedSequence: typeof envelope.sequence === 'number'
                 ? envelope.sequence : undefined,
             admittedWorker: envelope.worker_id } as OutboxItem;
@@ -978,6 +982,18 @@ export function createPanelStore() {
                 })));
                 return;
             }
+            if (envelope.event === 'input_rejected'
+                && envelope.worker_id === get().sessions.get(sessionId)?.identity.worker_id) {
+                const data = envelope.data as { request_id?: string; message?: string } | null;
+                const pending = get().view(sessionId).items.find((item): item is OutboxItem =>
+                    item.kind === 'outbox' && item.state === 'pending'
+                    && item.requestId === data?.request_id);
+                if (pending?.recovery) {
+                    set({ failedInput: { sessionId, parts: pending.parts, operation: pending.operation,
+                        recovery: pending.recovery, reason: data?.message ?? 'Input rejected',
+                        at: (get().failedInput?.at ?? 0) + 1 } });
+                }
+            }
             set(withView(get(), sessionId, (view) => {
                 const advanced = seq !== null ? { ...view, lastSeq: seq } : view;
                 return foldEnvelope(advanced, envelope);
@@ -1309,7 +1325,7 @@ export function createPanelStore() {
         },
 
         // ------------------------------------------------------------ input --
-        beginInput(sessionId, requestId, parts, operation) {
+        beginInput(sessionId, requestId, parts, operation, recovery) {
             const item: OutboxItem = {
                 kind: 'outbox',
                 id: nextItemId('out'),
@@ -1317,6 +1333,7 @@ export function createPanelStore() {
                 parts,
                 operation,
                 state: 'pending',
+                ...(recovery ? { recovery } : {}),
             };
             set(withView(get(), sessionId, (view) => append(view, item)));
         },
@@ -1333,6 +1350,7 @@ export function createPanelStore() {
                 failedInput: {
                     sessionId,
                     parts: pending.parts,
+                    ...(pending.recovery ? { recovery: pending.recovery } : {}),
                     operation: pending.operation,
                     reason,
                     at: (get().failedInput?.at ?? 0) + 1,

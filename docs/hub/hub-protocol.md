@@ -803,3 +803,25 @@ than cropped into another identity.
 
 Persistence backend selection and managed SQLite inspection follow
 [state and persistence](../architecture/state-and-persistence.md).
+
+## Predefined skill library
+
+These read-only HTTP routes share panel authentication. They do not change the
+worker protocol or the panel `input` WebSocket message. Client implementations
+expand selected instruction text into ordinary message content before sending.
+The SDK exports `SkillSummary`, `SkillDocument`, `SkillList`, and `SkillTemplate`.
+
+| Route | Successful response |
+| --- | --- |
+| `GET /api/skills` | `{ skills: SkillSummary[], errors: [{ id, message }] }` |
+| `GET /api/skills/template` | `{ text: string }` containing authoring YAML |
+| `GET /api/skills/:id` | `{ id, name, title, description, keywords, revision, text }` |
+
+Summaries contain the document fields except `text`. `revision` is an opaque
+content hash; clients retain the selected snapshot until an explicit refresh.
+IDs are filename stems, never paths. `template` is reserved. Missing files return
+404; invalid IDs or documents return 400. A malformed individual file is listed
+under `errors`; exceeding the 256-file library limit fails the list request.
+The limit is 64 KiB per source file. See [skill authoring and message
+semantics](../deployment/hub.md#predefined-skills-in-messages) for fields,
+reference syntax, and expansion limits.

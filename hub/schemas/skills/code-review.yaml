@@ -1,0 +1,11 @@
+# Save as <Hub dataDir>/skills/<id>.yaml; reference it as @{skill:<id>}.
+# Metadata is used by the picker. Only text is expanded into the user message.
+name: code-review
+title: Code review
+description: Review changes for correctness, regressions, and missing validation.
+keywords: [review, correctness, testing]
+text: |
+  Review the changes against the user's requirements.
+  Prioritize correctness, regressions, and missing validation.
+  Explain each actionable finding with its location and impact.
+  Distinguish verified findings from questions that need more evidence.

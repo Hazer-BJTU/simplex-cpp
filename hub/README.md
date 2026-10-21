@@ -917,3 +917,13 @@ Managed `simplex manage read_state` returns complete decoded state from either
 backend; Hub never reads SQL. Inspector bounds only its rendered preview.
 Migration/export and archive browsing are not available. Legacy local profiles
 can inspect JSON; use a managed launcher for SQLite inspection.
+
+### Message skills
+
+Store predefined instruction YAML in `<dataDir>/skills/`. The panel's **Skills**
+picker replaces the former attachment control and inserts `@{skill:ID}` at the
+caret. References support keyboard completion, preview, direct editing, and
+explicit snapshot refresh. Send expands them in place into ordinary user text;
+worker changes are unnecessary. The packaged example/template lives in
+`schemas/skills/code-review.yaml`. See the [deployment guide](../docs/deployment/hub.md#predefined-skills-in-messages)
+for the format, limits, and recovery semantics.

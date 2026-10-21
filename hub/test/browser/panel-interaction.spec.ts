@@ -263,11 +263,11 @@ test('the confirmation mode belongs to one session (D15)', async ({ page }) => {
     expect(inputs.at(-1).options).toEqual({ confirmation: { mode: 'ask' } });
 });
 
-test('the composer disables Attach and clears the message on Escape', async ({ page }) => {
+test('the composer offers Skills and clears the message on Escape', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
 
-    await expect(page.getByLabel('Attach a reference')).toBeDisabled();
+    await expect(page.getByLabel('Choose a skill')).toBeEnabled();
 
     await page.getByLabel('message').fill('look at this');
     await page.getByRole('button', { name: 'Send' }).click();
