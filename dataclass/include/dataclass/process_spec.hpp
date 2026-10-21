@@ -103,11 +103,11 @@ struct LaunchSpec {
     // kill_on_timeout switch.
     bool detach_on_timeout = true;
     // One raw retained-byte budget per process: stdout + stderr together,
-    // or the terminal stream alone. Default 4 MiB; 0 disables the cap.
+    // or the terminal stream alone. Default 64 KiB; 0 disables the cap.
     // Readers keep draining after exhaustion and flag only streams that lose
     // bytes. Read scheduling determines the split; no fixed shares are promised.
     // This does not bound allocator, task, metadata or presentation overhead.
-    std::uint64_t max_output_bytes = 4 * 1024 * 1024;
+    std::uint64_t max_output_bytes = 64 * 1024;
     // Additional environment entries for the child, merged INTO the
     // inherited environment by key when inherit_environment is true, or
     // the whole environment when it is false. Each entry is one

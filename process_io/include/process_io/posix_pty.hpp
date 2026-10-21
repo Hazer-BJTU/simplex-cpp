@@ -21,7 +21,7 @@ class PosixPtyIo final : public ProcessIoEnvironment {
 public:
     /// Allocate the terminal immediately; Linux/devpts allocation errors propagate.
     /// The limit counts raw bytes in the single merged terminal capture.
-    explicit PosixPtyIo(Executor executor, std::size_t max_output_bytes = 4 * 1024 * 1024);
+    explicit PosixPtyIo(Executor executor, std::size_t max_output_bytes = 64 * 1024);
     /// Defensive cancellation only; cancel_and_join() remains the lifetime fence.
     ~PosixPtyIo() override;
     PosixPtyIo(const PosixPtyIo&) = delete;

@@ -23,7 +23,7 @@ using namespace process_io;
 namespace {
 /// Reuse the common cleanup fence with a terminal backend and explicit PTY child.
 struct PtyHarness : Harness {
-    explicit PtyHarness(std::size_t cap = 4 * 1024 * 1024)
+    explicit PtyHarness(std::size_t cap = 64 * 1024)
     {
         environment = std::make_unique<PosixPtyIo>(strand, cap);
     }

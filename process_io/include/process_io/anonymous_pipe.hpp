@@ -17,7 +17,7 @@ namespace process_io {
 class AnonymousPipeIo final : public ProcessIoEnvironment {
 public:
     /// Reuse the supplied strand; the retention limit covers both output pipes.
-    explicit AnonymousPipeIo(Executor executor, std::size_t max_output_bytes = 4 * 1024 * 1024);
+    explicit AnonymousPipeIo(Executor executor, std::size_t max_output_bytes = 64 * 1024);
     /// Request strand-side cancellation only. Await cancel_and_join() beforehand
     /// when the caller needs proof that all pumps and completion handlers ended.
     ~AnonymousPipeIo() override;

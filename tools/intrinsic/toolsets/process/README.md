@@ -197,11 +197,15 @@ observe without advancing cursors. `output_bytes_read` is the sum of consumed
 raw-byte cursors, not rendered text length. Lower-level callers retain access to
 stream identities and raw bytes, including a distinct optional terminal stream.
 
-Each process has one retained-byte budget (4 MiB by default; zero is unlimited),
+Each process has one retained-byte budget (64 KiB by default; zero is unlimited),
 shared across pipe streams or used by the one terminal stream. Exhaustion stops
 retention, not drainage. Reads do not replenish capacity. Forced stop/read
 failure also marks potentially incomplete capture. A full read cannot recover
-truncated bytes.
+truncated bytes. Truncated tool results include a metadata hint to redirect
+potentially large output to a file and read selected portions, without blindly
+rerunning commands with side effects. A line-count limit such as `head` does not
+bound long lines. This is a per-process raw capture budget, not a cumulative
+model-context budget; multi-process polls and tool batches can return more.
 
 At the model-text boundary, valid UTF-8 and control bytes are preserved. Invalid
 bytes become U+FFFD, one replacement per invalid byte. A valid incomplete UTF-8

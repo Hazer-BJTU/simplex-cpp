@@ -79,7 +79,7 @@ tool argument. Rebuild C++ hosts and plugins together after these
 public layout/type changes; see [the ABI contract](../abi-context.md).
 
 Process output capture uses one raw-byte budget per process: stdout and stderr
-share `LaunchSpec::max_output_bytes` (default 4 MiB; zero means unlimited).
+share `LaunchSpec::max_output_bytes` (default 64 KiB; zero means unlimited).
 Retained prefixes depend on read scheduling, with no fixed split between streams.
 Readers continue draining after exhaustion and mark each stream that loses bytes.
 Full/delta reads do not replenish capacity. This replaces the earlier independent

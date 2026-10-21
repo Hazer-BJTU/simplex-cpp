@@ -38,6 +38,14 @@ void write_output(ToolResult& result, const OutputRead& read)
         truncated = read.standard_output.truncated || read.standard_error.truncated;
     }
     result.field("output_truncated", truncated);
+    if (truncated) {
+        // Capture can also be incomplete after an I/O failure or forced stop;
+        // do not claim that every truncation was caused by the byte limit.
+        result.field("output_hint",
+            "Output capture is incomplete or truncated. Redirect potentially large output "
+            "to a file and read selected portions. Do not rerun commands with side effects "
+            "merely to recover output.");
+    }
     result.block("output", text, truncated);
 }
 
