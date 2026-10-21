@@ -76,6 +76,27 @@ test('file changes require an explicit snapshot refresh', async ({ page }) => {
     await expect(page.locator('form pre')).toHaveText('Updated instructions. task');
 });
 
+for (const suffix of [' @{skill:', ' @{skill:invalid id}']) {
+    test(`editing another reference preserves loaded snapshots: ${suffix}`, async ({ page }) => {
+        const files = await library(page);
+        await open(page, '?session=demo');
+        const input = page.getByLabel('message', { exact: true });
+        const send = page.getByRole('button', { name: 'Send', exact: true });
+        await input.fill('@{skill:review} task');
+        await expect(send).toBeEnabled();
+        files.change();
+        await input.fill(`@{skill:review} task${suffix}`);
+        await expect(send).toBeDisabled();
+        await input.fill('@{skill:review} task');
+        await expect(send).toBeEnabled();
+        await page.getByText('Preview message', { exact: true }).click();
+        await expect(page.locator('form pre')).toHaveText('Review carefully. task');
+        await send.click();
+        await expect.poll(async () => (await inputs(page)).at(-1)?.content?.[0]?.raw)
+            .toBe('Review carefully. task');
+    });
+}
+
 for (const refusal of ['refuseInput', 'rejectInput']) {
     test(`${refusal} restores markers without expanding twice`, async ({ page }) => {
         await library(page);

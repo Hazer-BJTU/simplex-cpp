@@ -9,6 +9,19 @@ export interface SkillRecovery {
 }
 const MAX_EXPANDED_BYTES = 256 * 1024;
 
+/**
+ * Discover complete references independently of whole-draft validation.
+ * Invalid or unfinished neighboring markers must not detach loaded snapshots.
+ * Escaped references are literal text and do not retain a snapshot.
+ */
+export function referencedSkillIds(draft: string): string[] {
+    return [...new Set(
+        [...draft.matchAll(/\\?@\{skill:([A-Za-z0-9_-]{1,128})\}/g)]
+            .filter(match => !match[0].startsWith('\\'))
+            .map(match => match[1]!),
+    )];
+}
+
 /** Reject unfinished/invalid references rather than silently sending their spelling. */
 export function skillMarkers(draft: string): SkillMarker[] {
     const markers: SkillMarker[] = [];

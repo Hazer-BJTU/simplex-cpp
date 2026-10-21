@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { SkillDocument, SkillList } from '../../../ui/index.ts';
 import type { RestClient } from '../lib/rest.ts';
-import { expandSkills, skillMarkers } from './skillInput.ts';
+import { expandSkills, referencedSkillIds, skillMarkers } from './skillInput.ts';
 
 export function useSkills(draft: string, session: string | null, rest: RestClient) {
     const [skills, setSkills] = useState<Record<string, SkillDocument>>({});
@@ -11,9 +11,9 @@ export function useSkills(draft: string, session: string | null, rest: RestClien
     const [libraryError, setLibraryError] = useState('');
     const [refresh, setRefresh] = useState(0);
     const [libraryOpen, setLibraryOpen] = useState(false);
-    let ids: string[] = [];
+    const ids = referencedSkillIds(draft);
     let error = '';
-    try { ids = [...new Set(skillMarkers(draft).filter(m => !m.escaped).map(m => m.id))]; }
+    try { skillMarkers(draft); }
     catch (e) { error = (e as Error).message; }
     const key = JSON.stringify(ids);
 

@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm, symlink, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SkillStore, parseSkill } from '../src/skills/store.ts';
-import { expandSkills, skillMarkers, skillCompletion } from '../web/src/app/skillInput.ts';
+import { expandSkills, skillMarkers, skillCompletion, referencedSkillIds } from '../web/src/app/skillInput.ts';
 import { createPanelStore } from '../web/src/state/store.ts';
 
 const source = 'name: review\ntitle: Review\ndescription: Review changes.\ntext: |\n  First instruction.\n  Second instruction.\n';
@@ -102,4 +102,16 @@ test('concurrent first reads share initialization; explicit limits and template 
     await assert.rejects(store.read('template'), /Invalid skill ID/);
     await Promise.all(Array.from({ length: 256 }, (_, i) => writeFile(join(store.directory, `file-${i}.yaml`), source)));
     await assert.rejects(store.list(), /256 files/);
+});
+
+test('reference discovery retains complete markers through invalid draft edits', () => {
+    for (const invalid of ['@{skill:', '@{skill:bad id}']) {
+        assert.deepEqual(referencedSkillIds(`@{skill:review} ${invalid}`), ['review']);
+        assert.deepEqual(referencedSkillIds(`${invalid} @{skill:review}`), ['review']);
+    }
+    assert.deepEqual(referencedSkillIds('@{skill:review} @{skill:review}'), ['review']);
+    assert.deepEqual(referencedSkillIds('\\@{skill:review}'), []);
+    assert.deepEqual(referencedSkillIds('removed'), []);
+    assert.deepEqual(referencedSkillIds('@{skill:review} '.repeat(17)), ['review']);
+    assert.throws(() => skillMarkers('@{skill:review} '.repeat(17)), /at most 16/);
 });
