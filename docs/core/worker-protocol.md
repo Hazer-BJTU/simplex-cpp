@@ -775,8 +775,8 @@ also apply archive retention against the unchanged authoritative state.
 After success, history contains zero turns. An explicit `continue` can resume from
 settled memory using the private continuation prompt. A new message uses the new
 system-prompt memory normally. Restoration itself never starts a model request.
-The hub exposes this operation as **Compact context** in the composer's Command
-mode. Both hub and current worker advertise `context-compact`. The panel retires
+The hub exposes this operation through the **Compact** icon beside the
+composer's token meter. Both hub and current worker advertise `context-compact`. The panel retires
 outstanding history queries, refreshes the new revision, and renders the summary
 as a compact result. Retained hub events remain available as an execution record.
 

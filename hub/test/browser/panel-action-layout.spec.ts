@@ -21,23 +21,20 @@ async function expectContainedLabel(button: Locator): Promise<void> {
 }
 
 for (const width of [360, 768, 1440]) {
-    for (const mode of ['message', 'command']) {
-        test(`cancel labels fit in ${mode} mode at ${width}px`, async ({ page }) => {
-            await page.setViewportSize({ width, height: 900 });
-            await open(page, '?session=demo');
-            if (mode === 'command') await page.getByLabel('message', { exact: true }).press('Alt+Enter');
-            const send = await page.getByRole('button', { name: 'Send', exact: true }).boundingBox();
-            await emit(page, 'run_started', {});
-            const cancel = page.getByRole('button', { name: 'Cancel run', exact: true });
-            await expectContainedLabel(cancel);
-            expect(await cancel.boundingBox()).toEqual(send);
-            await cancel.click();
-            const pending = page.getByRole('button', { name: 'Cancelling…', exact: true });
-            await expect(pending).toBeDisabled();
-            await expectContainedLabel(pending);
-            expect(await pending.boundingBox()).toEqual(send);
-        });
-    }
+    test(`cancel labels fit in the composer at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        await open(page, '?session=demo');
+        const send = await page.getByRole('button', { name: 'Send', exact: true }).boundingBox();
+        await emit(page, 'run_started', {});
+        const cancel = page.getByRole('button', { name: 'Cancel run', exact: true });
+        await expectContainedLabel(cancel);
+        expect(await cancel.boundingBox()).toEqual(send);
+        await cancel.click();
+        const pending = page.getByRole('button', { name: 'Cancelling…', exact: true });
+        await expect(pending).toBeDisabled();
+        await expectContainedLabel(pending);
+        expect(await pending.boundingBox()).toEqual(send);
+    });
 
     test(`deferred approval rows keep long content and actions inside ${width}px`, async ({ page }, testInfo) => {
         await page.setViewportSize({ width, height: 900 });

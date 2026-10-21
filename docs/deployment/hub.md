@@ -98,10 +98,21 @@ counters are not rendered in the conversation; **Inspector** retains connection,
 worker, process, replay and snapshot diagnostics. The small input-area usage
 indicator always describes the last response that reported token usage.
 
-**Alt+Enter** switches the same input between Message and Command, preserving
-the message draft and selection. Suggestions appear above the input. **Confirm**
-and **Model** configure the next request, including Continue and Compact; they
-do not change an active run. Attach remains disabled.
+The input always sends a message; there is no command mode or Alt+Enter toggle.
+**Skills** inserts reusable instructions. **Confirm** and **Model** configure
+only the next request, including compaction, without changing an active run.
+To continue a task, send a message such as “Continue”.
+
+The inward-arrow icon beside the token meter has the tooltip **Compact**. It
+archives the conversation and saves a summary as the worker's new context,
+without submitting or clearing your draft or skill references. It requires a
+connected, idle worker and Hub with compaction support; the worker validates
+that it has a settled conversation to compact. The icon spins while waiting
+for admission or compacting, and repeated submission is disabled. The result
+or error appears in the conversation; use **Cancel run** to cancel execution.
+History synchronizes automatically. Failure notices offer recovery actions;
+**Refresh conversation** also remains in the global Ctrl/Cmd+K palette for
+manual recovery, separate from message input.
 
 During a request, **Send** becomes **Cancel run** in the same position. One click
 shows **Cancelling…** until the worker responds or its connection changes. Tools
@@ -179,7 +190,7 @@ and session creation for non-browser clients.
 The panel's **Skills** button inserts a literal `@{skill:ID}` reference at the
 message caret. You can also type the prefix for keyboard completion, move or
 delete a reference as ordinary text, and insert several references. Enter or Tab
-accepts a completion; Escape dismisses it. Command mode disables the picker.
+accepts a completion; Escape dismisses it.
 
 Skills live on the **Hub host**, under `<dataDir>/skills/` (by default
 `~/.simplex/hub/skills/`), independently of worker directories. Put a UTF-8 YAML
@@ -222,7 +233,7 @@ Missing, invalid, unfinished, or still-loading references block message sending.
 Send transmits ordinary user text using the existing worker protocol. Skills do
 not change confirmation policy, gain system-prompt priority, or install plugins.
 They become part of the conversation and are persisted and compacted normally.
-Continue and Compact commands do not expand or send the message draft. Successful
+The Compact action does not expand or send the message draft. Successful
 message submission clears the draft and its references; an explicit rejection
 restores the original markers and snapshots. A late rejection offers recovery
 without replacing a newer draft. This recovery state is browser-local; reloading

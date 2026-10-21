@@ -8,15 +8,14 @@ test('Compact context is gated, carries no message, and preserves a refused draf
     await open(page);
     await page.getByTestId('session-row').click();
     await page.getByLabel('message').fill('Keep this draft');
-    await page.getByLabel('message').press('Alt+Enter');
-    await page.getByLabel('command input').fill('comp');
-    const command = page.getByRole('option', { name: /Compact context/ });
+    const command = page.getByRole('button', { name: 'Compact', exact: true });
     await expect(command).toBeDisabled();
     await emit(page, 'status', { active: false, capabilities: ['context-compact'],
         memory_retention: { max_archives: 5 } });
     await expect(command).toBeEnabled();
-    await expect(command).toContainText('5 archives');
-    await page.getByLabel('command input').press('Enter');
+    await expect(command).toHaveAttribute('title', 'Compact');
+    await expect(command).toHaveAccessibleDescription(/5 archives/);
+    await page.getByRole('button', { name: 'Compact', exact: true }).click();
     await expect(page.getByTestId('round-summary').last()).toContainText('context compaction');
     await expect(page.getByTestId('outbox-item')).toHaveCount(0);
     await expect(page.getByTestId('admitted-placeholder')).toHaveCount(0);
@@ -26,16 +25,13 @@ test('Compact context is gated, carries no message, and preserves a refused draf
     await expect(page.getByTestId('compact-result')).toContainText('archive cleanup failed');
     await expect(page.getByTestId('compact-result').locator('strong')).toHaveText('saved summary');
     await page.request.post(`${STUB}/__stub/settings`, { data: { rejectInput: true } });
-    await page.getByLabel('command input').fill('comp');
-    await page.getByLabel('command input').press('Enter');
+    await page.getByRole('button', { name: 'Compact', exact: true }).click();
     await expect(page.getByTestId('transcript-problem')).toContainText('no turns to compact');
     await expect(page.getByText('Context compaction was rejected.', { exact: false })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Cancel run', exact: true })).toHaveCount(0);
     await page.request.post(`${STUB}/__stub/settings`, { data: { refuseInput: true } });
-    await page.getByLabel('command input').fill('comp');
-    await page.getByLabel('command input').press('Enter');
+    await page.getByRole('button', { name: 'Compact', exact: true }).click();
     await expect(page.getByText('the stub refused the input')).toBeVisible();
-    await page.getByLabel('command input').press('Alt+Enter');
     await expect(page.getByRole('textbox', { name: 'message', exact: true })).toHaveValue('Keep this draft');
     const response = await page.request.get(`${STUB}/__stub/received`);
     const inputs = (await response.json()).received.filter((message: { type: string }) => message.type === 'input');
@@ -54,9 +50,7 @@ test('a rejected compact retains its identity after transcript replay', async ({
     await page.getByTestId('session-row').click();
     await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
     await page.request.post(`${STUB}/__stub/settings`, { data: { rejectInput: true } });
-    await page.getByLabel('message').press('Alt+Enter');
-    await page.getByLabel('command input').fill('compact');
-    await page.getByLabel('command input').press('Enter');
+    await page.getByRole('button', { name: 'Compact', exact: true }).click();
     await expect(page.getByText('Context compaction was rejected.', { exact: false })).toBeVisible();
     // The real hub retains the request record in its session description.
     // The stub deliberately does not, so provide the same replay input here.
@@ -123,7 +117,6 @@ test('failed or cancelled compact preserves history and uses compact-specific gu
     await expect(page.getByTestId('run-failure')).toContainText('Context compaction failed');
     await expect(page.getByTestId('run-failure')).not.toContainText('Continue run');
     await emit(page, 'input_admitted', { operation: 'compact' }, { request_id: 'retry-compact' });
-    await page.getByLabel('message').press('Alt+Enter');
     await page.getByRole('button', { name: 'Cancel run', exact: true }).click();
     const received = await page.request.get(`${STUB}/__stub/received`);
     expect((await received.json()).received.some((message: { type: string; operation?: string }) =>
@@ -131,4 +124,56 @@ test('failed or cancelled compact preserves history and uses compact-specific gu
     await emit(page, 'run_finished', { status: 'cancelled' }, { request_id: 'retry-compact' });
     await expect(page.getByText('Context compaction cancelled.', { exact: false })).toBeVisible();
     await expect(page.getByTestId('history-turn')).toContainText('Original conversation');
+});
+
+test('compact is an icon action, keeps skill drafts, and guards pending admission', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
+    const input = page.getByLabel('message', { exact: true });
+    const draft = 'Continue with @{skill:unfinished';
+    await input.fill(draft);
+    await input.press('Alt+Enter');
+    await expect(input).toHaveValue(draft);
+    await expect(page.getByLabel('command input')).toHaveCount(0);
+    const compact = page.getByRole('button', { name: 'Compact', exact: true });
+    await expect(compact).toHaveText('');
+    await expect(compact).toHaveAttribute('title', 'Compact');
+    await compact.focus();
+    await page.request.post(`${STUB}/__stub/settings`, { data: { holdInput: true } });
+    await compact.press('Enter');
+    const busy = page.getByRole('button', { name: 'Compacting…', exact: true });
+    await expect(busy).toBeDisabled();
+    await expect(busy).toHaveAttribute('aria-busy', 'true');
+    await busy.evaluate((button: HTMLButtonElement) => button.click());
+    await input.press('Enter');
+    const response = await page.request.get(`${STUB}/__stub/received`);
+    const inputs = (await response.json()).received.filter((m: { type: string }) => m.type === 'input');
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].operation).toBe('compact');
+    expect(inputs[0]).not.toHaveProperty('content');
+    await emit(page, 'input_admitted', { operation: 'compact' }, { request_id: inputs[0].request_id });
+    await expect(busy).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Cancel run', exact: true })).toBeEnabled();
+    await emit(page, 'run_finished', { status: 'completed' }, { request_id: inputs[0].request_id });
+    await expect(compact).toBeEnabled();
+    await expect(input).toHaveValue(draft);
+});
+
+test('a lost worker channel releases the compact admission indicator', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
+    await page.request.post(`${STUB}/__stub/settings`, { data: { holdInput: true } });
+    await page.getByRole('button', { name: 'Compact', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Compacting…' })).toBeDisabled();
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+    await expect(page.getByRole('button', { name: 'Compact', exact: true })).toBeDisabled();
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
+    await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
+    await expect(page.getByRole('button', { name: 'Compact', exact: true })).toBeEnabled();
+    // A second request must settle independently of the abandoned outbox entry.
+    await page.request.post(`${STUB}/__stub/settings`, { data: { holdInput: false } });
+    await page.getByRole('button', { name: 'Compact', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Cancel run', exact: true })).toBeEnabled();
+    await emit(page, 'run_finished', { status: 'completed' });
+    await expect(page.getByRole('button', { name: 'Compact', exact: true })).toBeEnabled();
 });

@@ -1,42 +1,21 @@
+/** Message composer with session-scoped settings, skill snapshots and context compaction.
+ * Compaction never submits or clears the message draft. A pending compaction
+ * disables submission until acknowledged, rejected, or disconnected.
+ */
 import { useSkills } from './useSkills.ts';
 import { skillCompletion } from './skillInput.ts';
 import type { FailedInput } from '../state/store.ts';
-/**
- * @file the message and command composer.
- *
- * The old one put every control on a single row — Send, Continue, a URL field,
- * "Add ref", a confirmation-mode `<select>`, and a hint — and let `flex-wrap`
- * sort it out. Worse, the confirmation mode was one DOM control shared by every
- * session and never reset, so choosing `approve` in one session silently applied
- * it to all of them (defect D15): `approve` means "approve every call that would
- * have asked", so the leak quietly disabled approvals session-wide.
- *
- * Here the mode belongs to a session, lives in a compact settings popover, and is shown
- * on the fixed-width trigger whenever it is not the default — because a setting that
- * turns approvals off should not be discoverable only by opening the thing that
- * sets it.
- *
- * The other two carried-over behaviours: the draft survives a refused send
- * (defect D19, fixed in the store), and Enter sends while Shift+Enter breaks the
- * line. Command mode is explicit and keeps a separate query, so a command can
- * never be mistaken for a worker message or erase an unfinished draft.
- */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ContentPart, PayloadOptions } from '../../../ui/index.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
-import { Button } from '../ui/Button.tsx';
+import { Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/overlays.tsx';
 import type { ConfirmMode } from '../state/store.ts';
 import { useClient } from './ClientContext.tsx';
 import { currentModelOptions, modelOptionFields } from './modelOptions.ts';
 import { TokenUsageIndicator, TokenUsageMeter } from './TokenUsageIndicator.tsx';
-import {
-    matchingComposerCommands,
-    compactRetentionDetail,
-    unavailableReason,
-    type ComposerCommand,
-} from './composerCommands.ts';
+import { compactRetentionDetail } from './compactAction.ts';
 
 /** One removable part the operator attached. */
 interface Reference {
@@ -59,7 +38,7 @@ const MODES: Record<ConfirmMode, { detail: string }> = {
     },
 };
 
-/** The primary action occupies the same slot in both composer modes. */
+/** The primary action occupies the same slot while sending and cancelling. */
 const PRIMARY_ACTION_CLASS = 'h-9 w-32 shrink-0 justify-center whitespace-nowrap leading-5 max-sm:w-28 max-sm:px-1! max-sm:text-xs!';
 const DEFAULT_INPUT_HEIGHT = 96;
 
@@ -85,9 +64,13 @@ function SessionComposer() {
     const setModelOption = usePanel((state) => state.setModelOption);
 
     const [draft, setDraft] = useState('');
-    const [entryMode, setEntryMode] = useState<'message' | 'command'>('message');
-    const [commandQuery, setCommandQuery] = useState('');
-    const [activeCommand, setActiveCommand] = useState(0);
+    const readView = usePanel(state => state.view);
+    const [compactRequestId, setCompactRequestId] = useState<string | null>(null);
+    useEffect(() => {
+        // A lost channel cannot guarantee an acknowledgement. Do not retain a
+        // local admission spinner across reconnection or worker replacement.
+        setCompactRequestId(null);
+    }, [connectionState, session?.connected, session?.identity.worker_id]);
     const [references, setReferences] = useState<readonly Reference[]>([]);
     const skill = useSkills(draft, selected, client.rest);
     const [skillQuery, setSkillQuery] = useState('');
@@ -95,69 +78,28 @@ function SessionComposer() {
     const [completionHidden, setCompletionHidden] = useState(false);
     const [activeSkill, setActiveSkill] = useState(0);
     const [deferredFailure, setDeferredFailure] = useState<FailedInput | null>(null);
-    const completion = entryMode === 'message' && !completionHidden ? skillCompletion(draft, caret) : null;
+    const completion = !completionHidden ? skillCompletion(draft, caret) : null;
     const suggestions = skill.catalog.skills.filter(item => item.id.startsWith(completion?.query ?? ''));
     const suggested = suggestions[Math.min(activeSkill, Math.max(0, suggestions.length - 1))];
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [modelOpen, setModelOpen] = useState(false);
 
-    // A mode change closes settings rather than leaving a disabled trigger's
-    // popover interactive above the shared toolbar.
-    useEffect(() => {
-        skill.setLibraryOpen(false);
-        setConfirmOpen(false);
-        setModelOpen(false);
-    }, [entryMode, selected]);
     const box = useRef<HTMLTextAreaElement>(null);
 
-    // A mode change retains the measured height and each mode's selection.
     // Editing grows the surface up to its scrolling limit. A new session or
     // successful message submission resets the now-empty surface.
     const inputHeight = useRef(DEFAULT_INPUT_HEIGHT);
-    const selection = useRef({ message: [0, 0], command: [0, 0] });
     const resetGeometry = useCallback(() => {
         inputHeight.current = DEFAULT_INPUT_HEIGHT;
-        selection.current = { message: [0, 0], command: [0, 0] };
         if (box.current) {
             box.current.style.height = `${DEFAULT_INPUT_HEIGHT}px`;
             box.current.setSelectionRange(0, 0);
         }
     }, []);
-    useLayoutEffect(() => {
-        const input = box.current;
-        if (!input) return;
-        input.style.height = `${inputHeight.current}px`;
-        const [start, end] = selection.current[entryMode];
-        input.setSelectionRange(start ?? 0, end ?? 0);
-    }, [entryMode]);
-
-    // Capture Alt+Enter before the textarea's Enter-to-send handler. Dialogs
-    // own their own input and do not change the composer mode.
-    useEffect(() => {
-        function onKeyDown(event: KeyboardEvent): void {
-            if (event.isComposing || event.defaultPrevented || event.repeat
-                || !event.altKey || event.ctrlKey || event.metaKey
-                || event.shiftKey || event.key !== 'Enter') return;
-            if (event.target instanceof Element
-                && event.target.closest('[role="dialog"]')) return;
-            event.preventDefault();
-            event.stopPropagation();
-            if (box.current) {
-                selection.current[entryMode] = [box.current.selectionStart, box.current.selectionEnd];
-            }
-            setEntryMode(entryMode === 'message' ? 'command' : 'message');
-            box.current?.focus();
-        }
-        document.addEventListener('keydown', onKeyDown, true);
-        return () => document.removeEventListener('keydown', onKeyDown, true);
-    }, [entryMode]);
-
     // Switching sessions must not carry one session's draft, or its references,
     // into another.
     useLayoutEffect(() => {
         setDraft('');
-        setCommandQuery('');
-        setEntryMode('message');
         setReferences([]);
         skill.setLibraryOpen(false);
         resetGeometry();
@@ -214,26 +156,13 @@ function SessionComposer() {
             ? latestReady : undefined)?.data as
         Record<string, unknown> | undefined;
     const canSend = draft.trim().length > 0 || references.length > 0;
-    const commands = matchingComposerCommands(commandQuery);
-    const highlighted = Math.min(activeCommand, Math.max(0, commands.length - 1));
-    const selectedCommand = commands[highlighted];
-    const selectedUnavailable = selectedCommand
-        ? unavailableReason(selectedCommand, connected, runActive, compactSupported)
-        : null;
-
-    function runCommand(command: ComposerCommand): void {
-        if (unavailableReason(command, connected, runActive, compactSupported)) return;
-        if (command.id === 'refresh-conversation') {
-            client.refreshConversation(sessionId);
-        } else if (command.id === 'continue-run') {
-            send('continue');
-        } else if (command.id === 'compact-context') {
-            send('compact');
-        }
-        setCommandQuery('');
-        setActiveCommand(0);
-        box.current?.focus();
-    }
+    const compactPending = Boolean(compactRequestId && view?.items.some(item =>
+        item.kind === 'outbox' && item.state === 'pending' && item.requestId === compactRequestId));
+    const compactActive = runActive
+        && (view?.latestEvents.input_admitted?.data as { operation?: string } | undefined)?.operation === 'compact';
+    const compactBusy = compactPending || compactActive;
+    const compactUnavailable = connectionState !== 'open' || !connected || runActive
+        || compactPending || !compactSupported;
 
     function insertSkill(id: string): void {
         const input = box.current;
@@ -263,8 +192,9 @@ function SessionComposer() {
         return list;
     }
 
-    function send(operation: 'message' | 'continue' | 'compact' = 'message'): void {
-        if (!connected || runActive || (operation === 'message' && (!canSend || skill.error))) return;
+    function send(operation: 'message' | 'compact' = 'message'): void {
+        if (connectionState !== 'open' || !connected || runActive || compactPending
+            || (operation === 'compact' && !compactSupported) || (operation === 'message' && (!canSend || skill.error))) return;
         // The mode travels with the payload. The worker freezes the policy per
         // run, so sending it every time is what makes a change take effect on
         // the next run rather than the next restart — and what keeps one
@@ -281,13 +211,19 @@ function SessionComposer() {
             operation === 'message' && (draft.includes('@{skill:'))
                 ? { draft, skills: skill.skills } : undefined,
         );
+        if (sent && operation === 'compact') {
+            // sendInput publishes its outbox entry synchronously. Track only
+            // this request: older unacknowledged entries may survive reconnect.
+            const pending = readView(sessionId).items.findLast(item =>
+                item.kind === 'outbox' && item.operation === 'compact');
+            setCompactRequestId(pending?.kind === 'outbox' ? pending.requestId : null);
+        }
         // Clear only when the frame actually left; otherwise the store has
         // already handed the text back and clearing here would lose it.
         if (sent && operation === 'message') {
             setDraft('');
             setReferences([]);
-            // An empty, submitted draft gives its reading space back. Mode
-            // changes and ongoing execution updates retain the current size.
+            // An empty, submitted draft gives its reading space back.
             resetGeometry();
         }
     }
@@ -297,26 +233,29 @@ function SessionComposer() {
             className="composer-shell" data-testid="composer"
             onSubmit={(event) => {
                 event.preventDefault();
-                if (entryMode === 'command') {
-                    const command = commands[highlighted];
-                    if (command) runCommand(command);
-                } else {
-                    send();
-                }
+                send();
             }}
         >
             <div className="h-5">{tokenUsage && <TokenUsageIndicator usage={tokenUsage} />}</div>
             <div className="reading-width composer-surface" data-testid="composer-surface">
                 <div className="flex items-center px-2 pt-2 pb-1">
-                    <span key={entryMode} data-testid="composer-mode"
-                        className={`animate-enter w-28 shrink-0 whitespace-nowrap rounded px-1 py-1 text-center text-xs font-medium capitalize
-                            ${entryMode === 'message' ? 'bg-info-soft text-info' : 'bg-warn-soft text-warn'}`}>
-                        {entryMode} mode
+                    <span className="w-28 shrink-0 px-1 py-1 text-center text-xs font-medium text-ink-muted">
+                        Message
                     </span>
-                    <div className="ml-2">
+                    <div className="ml-2 flex items-center gap-1">
                         {tokenUsage && <TokenUsageMeter usage={tokenUsage} />}
+                        <IconButton label={compactBusy ? 'Compacting…' : 'Compact'}
+                            disabled={compactUnavailable} aria-busy={compactBusy}
+                            aria-describedby="compact-description"
+                            onClick={() => send('compact')}>
+                            <Glyph name={compactBusy ? 'spinner' : 'compact'} />
+                        </IconButton>
+                        <span id="compact-description" className="sr-only">
+                            Summarize the conversation and save its context as memory. Your draft is kept.
+                            {compactRetentionDetail(workerStatus?.memory_retention)}
+                            {!compactSupported && ' This hub or worker does not support context compaction.'}
+                        </span>
                     </div>
-                    <span className="ml-auto hidden text-xs text-ink-faint sm:inline">Alt + Enter to switch</span>
                 </div>
                 {references.length > 0 && (
                     <ul className="flex flex-wrap gap-1.5 px-4 pt-3">
@@ -330,7 +269,6 @@ function SessionComposer() {
                                 <button
                                     type="button"
                                     aria-label={`remove reference ${reference.raw}`}
-                                    disabled={entryMode === 'command'}
                                     className="rounded-full p-0.5 hover:bg-line"
                                     onClick={() => setReferences((current) => (
                                         current.filter((item) => item.raw !== reference.raw)
@@ -345,44 +283,29 @@ function SessionComposer() {
 
                 <textarea
                     ref={box}
-                    value={entryMode === 'message' ? draft : commandQuery}
+                    value={draft}
                     rows={3}
-                    aria-label={entryMode === 'message' ? 'message' : 'command input'}
-                    aria-autocomplete={entryMode === 'command' || completion ? 'list' : undefined}
-                    aria-controls={entryMode === 'command' ? 'composer-command-list' : completion ? 'composer-skill-list' : undefined}
-                    aria-activedescendant={entryMode === 'command' && commands[highlighted]
-                        ? `composer-command-${commands[highlighted].id}`
-                        : completion && suggested ? `skill-option-${suggested.id}` : undefined}
+                    aria-label="message"
+                    aria-autocomplete={completion ? 'list' : undefined}
+                    aria-controls={completion ? 'composer-skill-list' : undefined}
+                    aria-activedescendant={completion && suggested ? `skill-option-${suggested.id}` : undefined}
                     onSelect={event => setCaret(event.currentTarget.selectionStart)}
                     onChange={(event) => {
                         const input = event.currentTarget;
                         input.style.height = 'auto';
-                        inputHeight.current = Math.max(entryMode === 'command' ? inputHeight.current : DEFAULT_INPUT_HEIGHT,
+                        inputHeight.current = Math.max(DEFAULT_INPUT_HEIGHT,
                             Math.min(240, input.scrollHeight));
                         input.style.height = `${inputHeight.current}px`;
-                        if (entryMode === 'message') { setDraft(event.target.value); setCaret(input.selectionStart); setCompletionHidden(false); setActiveSkill(0); }
-                        else { setCommandQuery(event.target.value); setActiveCommand(0); }
+                        setDraft(event.target.value);
+                        setCaret(input.selectionStart);
+                        setCompletionHidden(false);
+                        setActiveSkill(0);
                     }}
                     onKeyDown={(event) => {
                         if (event.nativeEvent.isComposing) return;
-                        if (entryMode === 'command') {
-                            if (event.key === 'ArrowDown' && commands.length > 0) {
-                                event.preventDefault();
-                                setActiveCommand((current) => Math.min(current + 1, commands.length - 1));
-                            } else if (event.key === 'ArrowUp' && commands.length > 0) {
-                                event.preventDefault();
-                                setActiveCommand((current) => Math.max(current - 1, 0));
-                            } else if (event.key === 'Tab' && commands[highlighted]) {
-                                event.preventDefault();
-                                setCommandQuery(commands[highlighted].name);
-                            } else if (event.key === 'Enter') {
-                                event.preventDefault();
-                                const command = commands[highlighted];
-                                if (command) runCommand(command);
-                            } else if (event.key === 'Escape') {
-                                event.preventDefault();
-                                setCommandQuery('');
-                            }
+                        // Modified Enter is not a mode switch or a send shortcut.
+                        if (event.key === 'Enter' && (event.altKey || event.ctrlKey || event.metaKey)) {
+                            event.preventDefault();
                             return;
                         }
                         if (completion) {
@@ -413,9 +336,7 @@ function SessionComposer() {
                             setDraft('');
                         }
                     }}
-                    placeholder={entryMode === 'command'
-                        ? 'Type a command name…'
-                        : connected ? 'Message the worker…' : 'No worker is attached to this session'}
+                    placeholder={connected ? 'Message the worker…' : 'No worker is attached to this session'}
                     className="composer-input block h-24 min-h-24 max-h-60 w-full resize-none overflow-y-auto bg-transparent
                         px-3 pb-1 pt-2
                         text-sm leading-5 text-ink placeholder:text-ink-faint focus:outline-none"
@@ -440,7 +361,7 @@ function SessionComposer() {
                         {skill.ids.some(id => skill.catalog.skills.some(item => item.id === id
                             && skill.skills[id] && item.revision !== skill.skills[id]?.revision))
                             && <p className="text-warn">Skill file changed. The selected snapshot is retained until refreshed.</p>}
-                        <button type="button" className="ml-2 underline" disabled={entryMode === 'command'} onClick={skill.refreshSnapshots}>Refresh skill text</button>
+                        <button type="button" className="ml-2 underline" onClick={skill.refreshSnapshots}>Refresh skill text</button>
                         {!skill.error && <details><summary className="cursor-pointer">Preview message</summary>
                             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] p-2">{skill.expanded}</pre>
                         </details>}
@@ -457,48 +378,10 @@ function SessionComposer() {
                     <button type="button" className="ml-2 underline" onClick={() => setDeferredFailure(null)}>Dismiss</button>
                 </div>}
 
-                {entryMode === 'command' && (
-                    <div id="composer-command-list" role="listbox"
-                        className="absolute bottom-full left-0 z-20 mb-1 max-h-[min(16rem,35dvh)] w-full
-                            overflow-y-auto rounded-lg border border-line-strong bg-raised
-                            p-1 shadow-lg"
-                        aria-label="matching commands">
-                        {commands.length === 0 && (
-                            <p className="px-2 py-2 text-xs text-ink-muted">
-                                No command starts with “{commandQuery}”.
-                            </p>
-                        )}
-                        {commands.map((command, index) => {
-                            const reason = unavailableReason(command, connected, runActive, compactSupported);
-                            return (
-                                <button key={command.id} id={`composer-command-${command.id}`}
-                                    type="button" role="option"
-                                    aria-selected={index === highlighted}
-                                    disabled={reason !== null}
-                                    onMouseEnter={() => setActiveCommand(index)}
-                                    onClick={() => runCommand(command)}
-                                    className={`block w-full rounded px-2 py-2 text-left text-xs
-                                        disabled:cursor-not-allowed
-                                        ${index === highlighted ? 'bg-subtle' : 'hover:bg-subtle'}`}>
-                                    <span className="block font-medium text-ink">{command.name}</span>
-                                    <span className="block text-ink-muted">{command.detail}</span>
-                                    {command.id === 'compact-context' && (
-                                        <span className="block text-ink-faint">
-                                            {compactRetentionDetail(workerStatus?.memory_retention)}
-                                        </span>
-                                    )}
-                                    {reason && <span className="block text-warn">{reason}</span>}
-                                </button>
-                            );
-                        })}
-                    </div>
-                )}
-
                 <div className="flex items-center gap-1 px-2 pb-2 sm:gap-2">
                     <Popover open={skill.libraryOpen} onOpenChange={skill.setLibraryOpen}>
                         <PopoverTrigger asChild>
                             <Button aria-label="Choose a skill" variant="ghost" size="md"
-                                disabled={entryMode === 'command'}
                                 className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
                                 icon={<Glyph name="attach" />}>
                                 <span className="hidden min-[380px]:inline">Skills</span>
@@ -534,7 +417,6 @@ function SessionComposer() {
                         <PopoverTrigger asChild>
                             <Button
                                 aria-label={`confirmation mode: ${mode}`}
-                                disabled={entryMode === 'command'}
                                 variant="ghost"
                                 size="md"
                                 className="h-9 w-[72px] justify-center max-sm:px-1! max-sm:text-xs! leading-5 sm:w-24"
@@ -584,7 +466,7 @@ function SessionComposer() {
                     <Popover open={modelOpen} onOpenChange={setModelOpen}>
                         <PopoverTrigger asChild>
                             <Button aria-label="Model options" variant="ghost" size="md"
-                                disabled={entryMode === 'command' || !connected || modelFields.length === 0}
+                                disabled={!connected || modelFields.length === 0}
                                 className="h-9 justify-center max-sm:px-1! max-sm:text-xs! leading-5"
                                 icon={<span className="hidden sm:inline-flex"><Glyph name="options" /></span>}>
                                 <span>Model</span>
@@ -619,7 +501,7 @@ function SessionComposer() {
                                 })}
                             </div>
                             <p className="mt-3 text-xs text-ink-muted">
-                                These choices apply to the next run, including Continue run and Compact context.
+                                These choices apply to the next run, including context compaction.
                             </p>
                         </PopoverContent>
                     </Popover>
@@ -643,9 +525,7 @@ function SessionComposer() {
                                 type="submit"
                                 variant="primary"
                                 size="md"
-                                disabled={entryMode === 'command'
-                                    ? !selectedCommand || selectedUnavailable !== null
-                                    : !connected || !canSend || Boolean(skill.error)}
+                                disabled={connectionState !== 'open' || !connected || compactPending || !canSend || Boolean(skill.error)}
                                 className={PRIMARY_ACTION_CLASS}
                                 icon={<Glyph name="send" />}
                             >
