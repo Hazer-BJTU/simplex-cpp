@@ -49,12 +49,13 @@ for (const required of [
     'package/dist/package.json',
     'package/dist/bin/simplex-hub.js',
     'package/dist/src/config.js',
-    ...['index', 'protocol', 'answers', 'configurations', 'rest'].flatMap(name =>
+    ...['index', 'protocol', 'answers', 'configurations', 'rest', 'skills'].flatMap(name =>
         ['js', 'd.ts'].map(extension => `package/dist/ui/${name}.${extension}`)),
     ...['command', 'source', 'platform', 'network', 'archive', 'transaction', 'version', 'files', 'host', 'bashrc']
         .map(name => `package/dist/src/install/${name}.js`),
     'package/dist/schemas/local.jsonc',
     'package/dist/schemas/worker.yaml',
+    'package/dist/schemas/skills/code-review.yaml',
     'package/dist/web/dist/index.html',
 ]) {
     if (!members.includes(required)) throw new Error(`Missing npm package file: ${required}`);

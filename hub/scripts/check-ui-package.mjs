@@ -42,7 +42,7 @@ for (const mode of ['installed', 'bare']) {
     assert.equal(manifest.bin['simplex-hub'], './dist/bin/simplex-hub.js');
     // Do not mark CLI/server startup as globally side-effect free.
     assert.notEqual(manifest.sideEffects, false);
-    for (const name of ['index', 'protocol', 'answers', 'configurations', 'rest']) {
+    for (const name of ['index', 'protocol', 'answers', 'configurations', 'rest', 'skills']) {
         for (const extension of ['js', 'd.ts']) {
             assert.ok(readFileSync(join(pkg, 'dist/ui', `${name}.${extension}`)).length > 0);
         }
@@ -50,7 +50,7 @@ for (const mode of ['installed', 'bare']) {
     assert.match(readFileSync(join(pkg, 'dist/ui/answers.d.ts'), 'utf8'), /UTF-8 bytes/);
     assert.match(readFileSync(join(pkg, 'dist/ui/rest.d.ts'), 'utf8'), /Operator cleanup action/);
     const graph = checkUiBoundary(join(pkg, 'dist/ui'));
-    assert.equal(graph.size, 10);
+    assert.equal(graph.size, 12);
     cpSync(join(fixtures, 'import-smoke.mjs'), join(consumer, 'import-smoke.mjs'));
     execute(['import-smoke.mjs'], consumer);
     cpSync(join(fixtures, 'consumer.ts'), join(consumer, 'consumer.ts'));
