@@ -35,6 +35,15 @@ test('picker inserts at the caret and sends an in-place expanded snapshot', asyn
     await expect.poll(async () => (await inputs(page)).at(-1)?.content?.[0]?.raw)
         .toBe('Before Review carefully. after');
     await expect(input).toHaveValue('');
+    const sent = page.getByTestId('outbox-item').last();
+    await expect(sent).toHaveAttribute('data-state', 'admitted');
+    // The transcript keeps the operator's draft; the expanded wire text is one
+    // click away rather than in the reading path.
+    const shown = sent.getByTestId('outbox-text');
+    await expect(shown).toHaveText('Before @{skill:review} after');
+    await expect(shown).not.toContainText('Review carefully.');
+    await sent.getByText('show the text sent to the worker').click();
+    await expect(sent.getByTestId('sent-text')).toHaveText('Before Review carefully. after');
 });
 
 test('typed references complete, delete and escape', async ({ page }) => {
@@ -54,6 +63,8 @@ test('typed references complete, delete and escape', async ({ page }) => {
     await input.fill('Literal \\@{skill:missing}');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await expect.poll(async () => (await inputs(page)).at(-1)?.content?.[0]?.raw).toBe('Literal @{skill:missing}');
+    // An escaped reference is not expanded, so there is no second form to show.
+    await expect(page.getByTestId('sent-text-disclosure')).toHaveCount(0);
     await input.fill('Plain request');
     await expect(page.getByText('Preview message', { exact: true })).toHaveCount(0);
 });

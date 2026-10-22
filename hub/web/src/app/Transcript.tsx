@@ -244,7 +244,16 @@ function RunFailureNotice({ failure, actionable, compacting, sessionId, latest }
 /** What the operator sent. */
 function UserMessage({ item }: { item: OutboxItem }) {
     const [open, setOpen] = useState(false);
-    const text = item.parts.map((part: ContentPart) => part.raw).join('\n\n');
+    const sentText = item.parts.map((part: ContentPart) => part.raw).join('\n\n');
+    // `parts` is the wire form, where skill references are expanded. When the
+    // operator used a skill, `display` keeps their own draft readable instead;
+    // external references remain visible in both forms.
+    const references = item.parts
+        .filter((part) => part.type === 'external_ref')
+        .map((part) => part.raw);
+    const text = item.display === undefined
+        ? sentText
+        : [item.display, ...references].join('\n\n');
     const long = text.length > LONG_MESSAGE_CHARS;
     const shown = long && !open ? `${text.slice(0, LONG_MESSAGE_CHARS)}…` : text;
     return (
@@ -253,7 +262,8 @@ function UserMessage({ item }: { item: OutboxItem }) {
             data-state={item.state}
             className="ml-auto w-fit max-w-full sm:max-w-[80%] rounded-lg bg-subtle px-4 py-3 text-ink"
         >
-            <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">{shown}</p>
+            <p data-testid="outbox-text"
+                className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">{shown}</p>
             {long && (
                 <button
                     type="button"
@@ -262,6 +272,17 @@ function UserMessage({ item }: { item: OutboxItem }) {
                 >
                     {open ? 'show less' : `show all ${text.length} characters`}
                 </button>
+            )}
+            {item.display !== undefined && (
+                <details className="mt-2 text-xs" data-testid="sent-text-disclosure">
+                    <summary className="cursor-pointer text-ink-faint hover:text-ink-muted">
+                        show the text sent to the worker
+                    </summary>
+                    <pre data-testid="sent-text"
+                        className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words
+                            [overflow-wrap:anywhere] rounded border border-line bg-surface p-2 text-xs
+                            text-ink-muted">{sentText}</pre>
+                </details>
             )}
             {item.state !== 'admitted' && (
                 <p className="mt-1 text-xs text-ink-faint">

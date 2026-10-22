@@ -123,6 +123,14 @@ export interface OutboxItem {
     readonly id: string;
     readonly requestId: string;
     readonly parts: readonly ContentPart[];
+    /**
+     * The message as the operator wrote it, with skill references unexpanded.
+     *
+     * `parts` is the wire form; showing it would replace the operator's own
+     * sentence with the skill's full text. Kept after admission, because the
+     * worker's `input_admitted` never echoes the text.
+     */
+    readonly display?: string;
     /** Original draft/snapshots for explicit rejection; never sent on the wire. */
     readonly recovery?: SkillRecovery;
     readonly operation: string;

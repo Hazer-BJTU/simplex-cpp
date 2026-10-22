@@ -78,6 +78,7 @@ export interface PanelClient {
         operation?: string,
         options?: PayloadOptions,
         recovery?: SkillRecovery,
+        display?: string,
     ): boolean;
     /** Ask the hub for a session's captured worker output. */
     refreshLogs(sessionId: SessionId, limit?: number): boolean;
@@ -732,7 +733,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             socket.send({ type: 'list_sessions' });
         },
 
-        sendInput(sessionId, parts, operation = 'message', options, recovery) {
+        sendInput(sessionId, parts, operation = 'message', options, recovery, display) {
             // A session can exist before its worker starts. Do not create an
             // outbox entry or send an input frame until a worker is attached.
             const session = store.getState().sessions.get(sessionId);
@@ -740,7 +741,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             if (operation === 'compact' && (!store.getState().hasCapability('context-compact')
                 || !session.worker_capabilities?.includes('context-compact'))) return false;
             const requestId = newRequestId();
-            store.getState().beginInput(sessionId, requestId, parts, operation, recovery);
+            store.getState().beginInput(sessionId, requestId, parts, operation, recovery, display);
             const sent = socket.send({
                 type: 'input',
                 session: sessionId,

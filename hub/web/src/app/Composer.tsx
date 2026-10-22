@@ -210,6 +210,9 @@ function SessionComposer() {
             options,
             operation === 'message' && (draft.includes('@{skill:'))
                 ? { draft, skills: skill.skills } : undefined,
+            // The wire payload expands skill text; the transcript keeps the
+            // draft so the operator's own sentence stays readable.
+            operation === 'message' && skill.ids.length > 0 ? draft : undefined,
         );
         if (sent && operation === 'compact') {
             // sendInput publishes its outbox entry synchronously. Track only
