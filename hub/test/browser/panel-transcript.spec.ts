@@ -1105,12 +1105,16 @@ test('the token scale uses eight bands and remains full above 1M', async ({ page
     expect(bounds!.x).toBeGreaterThanOrEqual(0);
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
     const compact = (await page.getByRole('button', { name: 'Compact', exact: true }).boundingBox())!;
-    expect(compact.x).toBeGreaterThanOrEqual(bounds!.x + bounds!.width);
     expect(compact.x + compact.width).toBeLessThanOrEqual(320);
-    const badge = await page.getByText('Message', { exact: true }).boundingBox();
-    expect(bounds!.x).toBeGreaterThan(badge!.x + badge!.width);
-    expect(bounds!.y).toBeGreaterThanOrEqual(badge!.y);
-    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(badge!.y + badge!.height);
+    // The meter is flush with the composer's left border; the old "Message"
+    // label that indented it is gone, and the action follows the band.
+    const surface = (await page.getByTestId('composer-surface').boundingBox())!;
+    const band = (await usage.boundingBox())!;
+    expect(bounds!.x).toBeGreaterThanOrEqual(surface.x);
+    expect(bounds!.x).toBeLessThanOrEqual(surface.x + 1.5);
+    expect(await page.getByText('Message', { exact: true }).count()).toBe(0);
+    expect(compact.x).toBeGreaterThanOrEqual(band.x + band.width);
+    expect(compact.x - (band.x + band.width)).toBeLessThanOrEqual(12);
     await page.getByLabel('message', { exact: true }).press('Alt+Enter');
     expect(await meter.boundingBox()).toEqual(bounds);
     await page.getByLabel('message').press('Alt+Enter');
