@@ -107,10 +107,15 @@ it. Missing, unreadable or invalid images leave the normal panel usable.
 Restart Hub after changing the settings or image. Hub retains one immutable
 image snapshot until restart. The authenticated panel fetches it through a fixed
 endpoint; no local pathname or credential appears in image URLs or metadata.
-The image covers the viewport without scrolling, tiling or animation. Reading
-columns, inputs, approvals and dialogs keep opaque surfaces for readability;
-background visibility depends on the available space around them. Image opacity
-never changes text or control opacity.
+The image covers the viewport without scrolling, tiling or animation. The
+conversation column and the composer let it through; the status bar, session
+list, inspector, approval strip, dialogs and menus keep solid surfaces for
+hierarchy and focus. Message bubbles and tool cards keep a 60 percent tint so
+their grouping survives the image. Image opacity never changes text or control
+opacity. Text in the transparent areas sits directly on the image, so secondary
+metadata can fall below WCAG AA over high-contrast regions; lower the opacity if
+that matters. Body text stays above AA at the default opacities and up to about
+0.35 in the dark theme.
 
 ## Configure and start a session
 
