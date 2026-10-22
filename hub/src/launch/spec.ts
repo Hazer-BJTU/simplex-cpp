@@ -42,7 +42,7 @@ export interface NormalizedSpec {
     software: string[];
     /** Saved backend policy, not a Hub-side database selection. Absence in an
      * existing configuration preserves worker-side auto detection. */
-    persistence: { enabled: boolean; readable: boolean; backend?: 'json' | 'sqlite' };
+    persistence: { enabled: boolean; backend?: 'json' | 'sqlite' };
     restore: RestorePolicy;
     env: Record<string, string>;
     extraArgs: string[];
@@ -134,9 +134,6 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
             enabled: typeof persistence.enabled === 'boolean'
                 ? persistence.enabled
                 : config.worker.persistence.enabled,
-            readable: typeof persistence.readable === 'boolean'
-                ? persistence.readable
-                : config.worker.persistence.readable,
         },
         restore: restore as RestorePolicy,
         env: isPlainObject(raw.env) ? { ...raw.env } as Record<string, string> : {},

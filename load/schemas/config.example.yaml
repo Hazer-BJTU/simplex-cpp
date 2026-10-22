@@ -139,8 +139,8 @@ client:
 # Optional one-shot remote tool service. Omission leaves it unconfigured.
 # Append the operation route to the endpoint pathname, preserving its query.
 # When configured, core loads a HubRemoteCallToolSet with these settings.
-# Registers the plan tool and skill; construction opens no connection.
-# The hub supports plan/read and plan/replace; other routes are not implemented.
+# Registers plan and subagent tools with their skills; construction opens no connection.
+# The Hub implements plan/read, plan/replace and subagent clean-fork/send/receive routes.
 # hub_remote_call:
 #   endpoint: "{{hub.tools_endpoint}}"
 #   timeout_ms: 120000
@@ -194,8 +194,6 @@ persistence:
   directory: ./data/session
   # Snapshot subdirectory, relative to directory.
   state: state
-  # Complete state is persisted. The legacy `readable`
-  # Markdown export is accepted for compatibility but no longer written.
   # JSON compact archives live here; SQLite archives remain in state.sqlite3.
   # Archive subdirectory, relative to directory; old archives are never replaced.
   # state and memory must be nonempty relative paths without parent traversal.

@@ -175,7 +175,6 @@ export function applyConfigurationSpec(spec: NormalizedSpec, result: any): void 
         // JSON; do not replace their choice with current Hub defaults.
         backend: result.persistence?.backend ?? (result.persistence?.format === 'json' ? 'json' : undefined),
         enabled: result.persistence?.enabled ?? true,
-        readable: result.persistence?.readable ?? false,
     };
     spec.restore = result.persistence?.restore ?? 'if_present';
 }

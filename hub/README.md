@@ -287,6 +287,17 @@ the reader strips `//` and `/* */` before parsing, and the file stays valid JSON
 without them. Relative paths resolve against the configuration file's
 directory; command-line paths resolve against the working directory.
 
+The first-run file contains listener/authentication settings and nondefault
+startup overrides. Worker/provider defaults, legacy launcher settings and mock
+settings are omitted unless explicitly changed. Existing user files are not
+rewritten. Configure panel sessions through their launch and worker files.
+
+The table below remains the full runtime reference, including the compatibility
+API-launch path. A separate [legacy/test example](hub.config.legacy.example.jsonc)
+shows those settings; the [normal example](hub.config.example.jsonc) is minimal.
+`worker.persistence.readable` and `launcher.dockerManagementEnv` are accepted
+from old files but ignored and omitted from newly generated state/configuration.
+
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `toolRequests.host`, `toolRequests.port` | inherits `listen.host`, `8801` | independent worker tool-request listener |
@@ -305,9 +316,9 @@ directory; command-line paths resolve against the working directory.
 | `worker.payloadCapacity`, `worker.signalCapacity`, `worker.writeCapacity` | `256` each | independent request, signal and outbound queue capacities |
 | `worker.initialBackoffMs`, `worker.maxBackoffMs`, `worker.idleTimeoutSeconds` | `250`, `10000`, `0` | reconnect backoff and optional idle timeout; zero disables idle expiry |
 | `worker.stopTimeoutMs`, `worker.sigtermGraceMs`, `worker.sigkillGraceMs` | `15000`, `5000`, `2000` | the stop escalation ladder |
-| `worker.persistence` | `{enabled: true, readable: false, backend: "sqlite"}` | worker snapshot policy |
-| `worker.memoryRetention` | `{maxArchives: 5}` | compact archive cleanup defaults for new worker configs; zero disables cleanup |
-| `worker.environment` | `{workspace: "", platform: "", software: []}` | descriptive environment context injected into new worker state |
+| `worker.persistence.enabled`, `worker.persistence.backend` | `true`, `"sqlite"` | initial worker snapshot policy for API launches without library selectors |
+| `worker.memoryRetention.maxArchives` | `5` | compact archive cleanup defaults for new worker configs; zero disables cleanup |
+| `worker.environment.workspace`, `worker.environment.platform`, `worker.environment.software` | `""`, `""`, `[]` | descriptive environment context injected into new worker state |
 | `providerProfiles` | `deepseek`, `mock` | copied into the generated worker configuration; a session picks one by name |
 | `launcher.kind` | `simplex-worker` | `simplex-worker` or `command` |
 | `launcher.command`, `launcher.args` | `[]` | template and extra arguments for the `command` launcher |
@@ -329,14 +340,15 @@ directory; command-line paths resolve against the working directory.
 
 ## Managing workers
 
-On the first start, the hub writes the session configuration to
-`<dataDir>/sessions/<session>/config/config.yaml`. Later starts and restarts reuse
-this file, including hand-written YAML and comments. Hub default changes and
-configuration fields in a later launch spec do not overwrite it. Edit the saved
-file while the worker is stopped to change model, prompt, persistence or other
-worker settings. Launch-only `threads`, `env` and `extraArgs` still come from the
-session spec.
+Library-selected sessions retain source copies below
+`<dataDir>/sessions/<session>/config/`. Managed launches bind an immutable
+allocation and publish the effective configuration through `simplex manage` on
+the target. Create a new session to change a bound allocation's source or target;
+editing the reusable library does not change existing allocations. Legacy command
+launches reuse their Hub-local `config/config.yaml`, including operator comments.
 
+The following defaults apply to API launches without library selectors; panel
+sessions take model roles from their selected worker YAML.
 New DeepSeek sessions default to a separate `providers.modality_assist` entry,
 copied from `providerProfiles.deepseek`, and set
 `modality_assist_model: modality_assist`. A session-level `model` override

@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ConfigError, hubRoot, loadConfig } from '../src/config.ts';
+import { ConfigError, hubRoot, loadConfig, startupConfigDocument } from '../src/config.ts';
 import type { DeepPartial, HubConfig } from '../src/config.ts';
 import { createHub } from '../src/hub.ts';
 import type { Hub } from '../src/hub.ts';
@@ -152,7 +152,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<
         mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
         const persistentConfig = resolve(config.dataDir, 'hub.config.jsonc');
         if (!existsSync(persistentConfig)) {
-            writeFileSync(persistentConfig, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+            writeFileSync(persistentConfig, `${JSON.stringify(startupConfigDocument(config), null, 2)}\n`, { flag: 'wx', mode: 0o600 });
         }
     }
     log.info(file ? `configuration: ${file}` : 'configuration: built-in defaults');

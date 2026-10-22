@@ -6,6 +6,7 @@ import { normalizeSpec } from '../src/launch/spec.ts';
 import { renderWorkerConfig } from '../src/launch/config-render.ts';
 
 const example = parseConfigText(readFileSync(new URL('../hub.config.example.jsonc', import.meta.url), 'utf8'), 'Hub example');
+const legacy = parseConfigText(readFileSync(new URL('../hub.config.legacy.example.jsonc', import.meta.url), 'utf8'), 'Legacy example');
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 
 /** Provider profile contents are plugin-owned maps, not fixed Hub config keys. */
@@ -24,22 +25,24 @@ function missingKeys(defaults, sample, markdown) {
     return keyPaths(defaults).filter(key => !documented.has(key));
 }
 
-test('every fixed Hub default key is discoverable in the startup example or README table', () => {
-    assert.deepEqual(missingKeys(defaultConfig(), example, readme), []);
+test('every fixed Hub default key is discoverable in the legacy reference or README table', () => {
+    assert.deepEqual(missingKeys(defaultConfig(), legacy, readme), []);
     assert.doesNotThrow(() => validateConfig(mergeConfig(defaultConfig(), example)));
+    assert.doesNotThrow(() => validateConfig(mergeConfig(defaultConfig(), legacy)));
+    for (const key of ['worker', 'launcher', 'providerProfiles', 'mock']) assert.equal(Object.hasOwn(example, key), false);
 });
 
 test('config documentation coverage detects new nested leaves rather than accepting a broad parent row', () => {
     const changed = defaultConfig();
     changed.worker.persistence.futurePolicy = true;
     changed.limits.futureBytes = 100;
-    assert.deepEqual(missingKeys(changed, example, readme), ['worker.persistence.futurePolicy', 'limits.futureBytes']);
+    assert.deepEqual(missingKeys(changed, legacy, readme), ['worker.persistence.futurePolicy', 'limits.futureBytes']);
 });
 
-test('auto-compact defaults are present in all Hub configuration references', () => {
+test('auto-compact defaults remain documented in the optional API-launch references', () => {
     const defaults = defaultConfig();
     for (const key of ['autoCompactThreshold', 'maxAutoCompactions']) {
-        assert.equal(example.worker[key], defaults.worker[key]);
+        assert.equal(legacy.worker[key], defaults.worker[key]);
         assert.ok(readme.includes(`\`worker.${key}\``));
         for (const file of ['configurations.md', 'hub-protocol.md']) {
             const text = readFileSync(new URL(`../../docs/hub/${file}`, import.meta.url), 'utf8');

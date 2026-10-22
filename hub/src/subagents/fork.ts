@@ -5,7 +5,7 @@ import { parseDocument, isMap } from 'yaml';
 import type { HubConfig } from '../config.ts';
 import type { Session } from '../state/registry.ts';
 import type { LaunchDocument } from '../configurations/store.ts';
-import { writeConfigFile, launchDocument } from '../configurations/store.ts';
+import { serializeLaunchDocument, writeConfigFile, launchDocument } from '../configurations/store.ts';
 import { sessionDir } from '../launch/config-render.ts';
 import { privateDirectory } from './storage.ts';
 import { readManagedSession, bindManagedSession } from '../launch/managed-sessions.ts';
@@ -45,7 +45,7 @@ export function captureStartup(config: HubConfig, session: Session, workerText: 
     if (doc.errors.length || !isMap(doc.contents)) throw new Error('invalid startup worker mapping');
     workerPaths(doc, directory);
     writeConfigFile(join(directory, 'startup-worker.yaml'), doc.toString());
-    writeConfigFile(join(directory, 'startup-launch.jsonc'), JSON.stringify(launch));
+    writeConfigFile(join(directory, 'startup-launch.jsonc'), serializeLaunchDocument(launch));
 }
 
 /** Initially support native workers and foreground Docker launch templates only. */
@@ -84,7 +84,7 @@ export function cleanFork(config: HubConfig, parent: Session, child: Session): v
         }
         const directory = join(sessionDir(config, child.id), 'config');
         privateDirectory(directory, true);
-        writeConfigFile(join(directory, 'launch.jsonc'), JSON.stringify(launch));
+        writeConfigFile(join(directory, 'launch.jsonc'), serializeLaunchDocument(launch));
         // Reserve locally before the receipt. No remote mutation happens until
         // supervised startup after the durable child/receipt commit.
         bindManagedSession(config, child.id, { ...managed.launcher,
@@ -119,7 +119,7 @@ export function cleanFork(config: HubConfig, parent: Session, child: Session): v
     if (!doc.has('hub_remote_call')) doc.set('hub_remote_call', doc.createNode({}));
     doc.setIn(['security', 'confirmation', 'endpoint'], '{{hub.confirm_endpoint}}');
     doc.setIn(['hub_remote_call', 'endpoint'], '{{hub.tools_endpoint}}');
-    writeConfigFile(join(root, 'config', 'launch.jsonc'), JSON.stringify(launch));
+    writeConfigFile(join(root, 'config', 'launch.jsonc'), serializeLaunchDocument(launch));
     writeConfigFile(join(root, 'config', 'config.yaml'), doc.toString());
 }
 

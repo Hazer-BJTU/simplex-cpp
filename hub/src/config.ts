@@ -104,7 +104,7 @@ export interface HubConfig {
         stopTimeoutMs: number;
         sigtermGraceMs: number;
         sigkillGraceMs: number;
-        persistence: { enabled: boolean; readable: boolean; backend?: 'json' | 'sqlite' };
+        persistence: { enabled: boolean; backend?: 'json' | 'sqlite' };
         memoryRetention: { maxArchives: number };
         environment: { workspace: string; platform: string; software: string[] };
     };
@@ -183,7 +183,7 @@ export function defaultConfig(): HubConfig {
             // SIGKILL (optionally to the process group).
             sigtermGraceMs: 5000,
             sigkillGraceMs: 2000,
-            persistence: { enabled: true, readable: false, backend: 'sqlite' },
+            persistence: { enabled: true, backend: 'sqlite' },
             memoryRetention: { maxArchives: 5 },
             environment: { workspace: '', platform: '', software: [] },
         },
@@ -455,10 +455,15 @@ export function validateConfig(config: HubConfig): HubConfig {
     // The legacy `command` + `docker run` launcher is gone; Docker targets are
     // managed launch profiles now. Hub configurations written by an older
     // release still carry this default, so ignore it instead of refusing to
-    // start after an upgrade. Launch documents keep the ignored field.
+    // start after an upgrade. Normalized launch documents also discard it.
     if (isPlainObject(config.launcher) && Object.hasOwn(config.launcher, 'dockerManagementEnv')) {
         delete (config.launcher as HubConfig['launcher'] & { dockerManagementEnv?: unknown })
             .dockerManagementEnv;
+    }
+    // Legacy Markdown export is no longer a worker policy. Accept old files,
+    // but keep it out of the effective configuration and future serialization.
+    if (isPlainObject(config.worker?.persistence)) {
+        delete (config.worker.persistence as Record<string, unknown>).readable;
     }
     const unknown = unknownConfigKeys(config, defaultConfig());
     check(unknown.length === 0,
@@ -661,7 +666,11 @@ export function loadConfig({
         ? parseConfigText(readFileSync(selected, 'utf8'), selected)
         : {};
 
-    const merged = mergeConfig(mergeConfig(defaultConfig(), fromFile), overrides);
+    // Installation defaults belong to the installation, even when omitted from
+    // a user file. Only explicitly supplied paths are relative to that file.
+    const defaults = defaultConfig();
+    resolvePaths(defaults, hubRoot);
+    const merged = mergeConfig(mergeConfig(defaults, fromFile), overrides);
     resolvePaths(merged, baseDir);
     // Override paths arrive from the command line: resolve them against cwd,
     // which is what a user typing `--data-dir ./x` expects.
@@ -669,4 +678,37 @@ export function loadConfig({
     if (overrides.worker?.bin) merged.worker.bin = resolveAgainst(cwd, overrides.worker.bin);
     validateConfig(merged);
     return { config: merged, file: selected, baseDir, overrideDir: cwd };
+}
+
+/**
+ * Project a resolved configuration into the first-run, user-editable document.
+ * Keep connection/authentication controls visible. Other sections contain only
+ * nondefault settings, including explicit CLI choices for legacy launchers or
+ * mock mode; omission must not silently discard such choices on restart.
+ * This is not a serializer for session ownership or immutable launch snapshots.
+ */
+export function startupConfigDocument(config: HubConfig): DeepPartial<HubConfig> {
+    const current = validateConfig(structuredClone(config));
+    const defaults = defaultConfig();
+    resolvePaths(defaults, hubRoot);
+
+    const differences = (value: unknown, baseline: unknown): unknown => {
+        if (isPlainObject(value) && isPlainObject(baseline)) {
+            const result: Record<string, unknown> = {};
+            for (const [key, item] of Object.entries(value)) {
+                const changed = differences(item, baseline[key]);
+                if (changed !== undefined) result[key] = changed;
+            }
+            return Object.keys(result).length ? result : undefined;
+        }
+        return JSON.stringify(value) === JSON.stringify(baseline) ? undefined : value;
+    };
+    const changed = differences(current, defaults) as DeepPartial<HubConfig> | undefined;
+    return {
+        ...changed,
+        listen: current.listen,
+        dataDir: current.dataDir,
+        panel: current.panel,
+        toolRequests: current.toolRequests,
+    };
 }
