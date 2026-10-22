@@ -124,6 +124,29 @@ test('tool cards follow toolCardOpacity in each theme', async ({ page }) => {
     expect(await backgroundAlpha(page, '[data-testid="tool-card"]')).toBeCloseTo(0.8, 2);
 });
 
+test('markdown bodies are transparent while headers and labels follow toolCardOpacity', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await setup(page, { toolCardOpacity: { light: 0.25, dark: 0.8 } });
+    await page.getByTestId('session-row').click();
+    await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
+    await emit(page, 'model_response', modelResponse([
+        '| Name | Value |', '| --- | --- |', '| alpha | 1 |', '',
+        'Inline `code` and a [link](https://example.com).', '',
+        '```js', 'const answer = 42;', '```',
+    ].join('\n')));
+    await expect(page.locator('.md table').first()).toBeVisible();
+    await expect(page.locator('.md pre').first()).toBeVisible();
+    // Headers and label-like chips share the tool card tint.
+    expect(await backgroundAlpha(page, '.md table th')).toBeCloseTo(0.25, 2);
+    expect(await backgroundAlpha(page, '.md :not(pre) > code')).toBeCloseTo(0.25, 2);
+    expect(await backgroundAlpha(page, '.md .bg-sunken')).toBeCloseTo(0.25, 2);
+    // The code body itself shows the image.
+    expect(await backgroundAlpha(page, '.md pre')).toBe(0);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    expect(await backgroundAlpha(page, '.md table th')).toBeCloseTo(0.8, 2);
+});
+
 test('a theme without a visible image keeps the solid conversation surfaces', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' });
     await setup(page, { opacity: { light: 0, dark: 0.3 } });

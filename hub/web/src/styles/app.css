@@ -676,23 +676,41 @@ html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .composer-footer {
     background: transparent;
 }
+html:is([data-theme="light"][data-panel-background~="light"]) {
+    --panel-card-tint: var(--panel-tool-card-light-opacity, 60%);
+}
+html:is([data-theme="dark"][data-panel-background~="dark"]) {
+    --panel-card-tint: var(--panel-tool-card-dark-opacity, 60%);
+}
 html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .conversation-space .bg-subtle {
     background-color: color-mix(in srgb, var(--subtle) 60%, transparent);
 }
-html:is([data-theme="light"][data-panel-background~="light"]) [data-testid="tool-card"] {
-    background-color: color-mix(in srgb, var(--surface)
-        var(--panel-tool-card-light-opacity, 60%), transparent);
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] {
+    background-color: color-mix(in srgb, var(--surface) var(--panel-card-tint), transparent);
 }
-html:is([data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] {
-    background-color: color-mix(in srgb, var(--surface)
-        var(--panel-tool-card-dark-opacity, 60%), transparent);
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] .bg-sunken {
+    background-color: color-mix(in srgb, var(--sunken) var(--panel-card-tint), transparent);
 }
-html:is([data-theme="light"][data-panel-background~="light"]) [data-testid="tool-card"] .bg-sunken {
-    background-color: color-mix(in srgb, var(--sunken)
-        var(--panel-tool-card-light-opacity, 60%), transparent);
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] .bg-subtle {
+    background-color: color-mix(in srgb, var(--subtle) var(--panel-card-tint), transparent);
 }
-html:is([data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] .bg-sunken {
-    background-color: color-mix(in srgb, var(--sunken)
-        var(--panel-tool-card-dark-opacity, 60%), transparent);
+/* Markdown keeps its structure but not its body fill: code bodies show the image
+ * directly, while headers and label-like chips share the tool card tint. */
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .md .bg-sunken,
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .md th {
+    background-color: color-mix(in srgb, var(--sunken) var(--panel-card-tint), transparent);
+}
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .md :not(pre) > code {
+    background-color: color-mix(in srgb, var(--subtle) var(--panel-card-tint), transparent);
+}
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .md pre {
+    background-color: transparent;
 }
