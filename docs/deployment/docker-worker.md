@@ -37,7 +37,6 @@ CMD ["sleep", "infinity"]
 
 ```sh
 docker build -t simplex-worker:latest .
-docker run --rm simplex-worker:latest simplex --version
 ```
 
 Add tools such as Git, Python or compilers only if your tasks need them. The
@@ -159,18 +158,25 @@ Before the first target mutation, the Hub runs read-only checks in this order:
 | --- | --- | --- |
 | Container state | `docker inspect` state and network mode | `container-missing`, `container-not-running`, `inspect-failed` |
 | Installation | `docker exec CONTAINER EXE --version` | `executable-missing` (126/127), `executable-failed` |
-| Hub endpoint | effective advertised address versus the container network | `endpoint-loopback`, `endpoint-network-none`, `endpoint-host-mapping` |
+| Hub endpoint | effective advertised address versus the container network | `endpoint-loopback`, `endpoint-network-none`, `endpoint-host-mapping`, `inspect-failed` (unparsable advertised endpoint) |
+| Docker CLI | spawn failure or deadline | `docker-unavailable`, `inspect-timeout`, `executable-timeout` |
 
 The endpoint check does not open a connection. It rejects a loopback advertised
-address when the container uses a private network namespace, and a
-`host.docker.internal` name without a host mapping. Use `--add-host` or a bridge
-address, or set `worker.connectHost` / the channel `endpoint` override.
+address when the container uses a private network namespace (host networking is
+accepted; a container sharing another container's network namespace is accepted
+as an operator assertion), and a `host.docker.internal` name without a host
+mapping. Use `--add-host` or a bridge address, or set `worker.connectHost` / the
+channel `endpoint` override.
 
 A failed check refuses the start. A new session stays **unbound**, so its launch
 and worker configuration can still be edited before retrying. Disable a single check only
 when the deployment makes it meaningless; for example
 `"preflight": {"executable": false}` for an image that installs `simplex` on a
 mount created after the container starts. `"enabled": false` skips all checks.
+These overrides belong to a new session: a session that already bound an
+allocation keeps its launch policy. Existence is always checked;
+`container: false` skips only the running assertion. A stopped container still
+refuses an installation probe.
 
 Every Docker CLI call uses `preflight.timeoutMs`. The public error names the
 container and, for a CLI failure, one sanitized diagnostic line; it never includes
@@ -225,7 +231,9 @@ worker instance do not identify live sessions after restart.
 ## Security
 
 Run the container with limited mounts, credentials and network access, and prefer
-an unprivileged user. An allocation root is owned by that user inside the
-container. Never mount the Docker socket into the worker container: a worker tool
-that reaches it can control the host. The Hub's Docker credentials belong to the
+an unprivileged user. The seeded `management.root`
+(`/var/lib/simplex/allocations`) is not writable by a non-root user on a stock
+image: create it and set ownership in the image, or mount a volume there.
+Never mount the Docker socket into the worker container: a worker tool that
+reaches it can control the host. The Hub's Docker credentials belong to the
 operator's environment (`management.env`), not to worker tools.

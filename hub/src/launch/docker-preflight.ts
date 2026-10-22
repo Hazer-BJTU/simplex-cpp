@@ -208,6 +208,9 @@ function checkEndpoint(
             + ` it cannot reach the advertised ${channel} endpoint`);
     }
     const host = bareHost(url.hostname);
+    // A container sharing another container's network namespace may also have
+    // host loopback, but that namespace is not described here. Accept it as an
+    // explicit operator assertion rather than a network this check can verify.
     if (loopback(host) && state.networkMode !== 'host' && !state.networkMode.startsWith('container:')) {
         throw new DockerPreflightError('endpoint-loopback',
             `the advertised ${channel} endpoint uses ${host}:${portOf(url)}, but container`
@@ -250,7 +253,10 @@ export async function preflightDockerTarget({
             `cannot inspect container "${container}" (${failure(inspect)})`);
     }
     const state = parseContainerState(inspect.stdout);
-    if (policy.container && !state.running) {
+    // `container: false` opts out of the running assertion, not out of the
+    // process compatibility it implies: an installation probe cannot run in a
+    // stopped container, so report that state instead of a misleading CLI error.
+    if (!state.running && (policy.container || policy.executable)) {
         throw new DockerPreflightError('container-not-running',
             `container "${container}" is not running (status: ${state.status})`);
     }

@@ -25,7 +25,7 @@ export interface DockerPreflightPolicy {
     enabled: boolean;
     /** Deadline for one Docker CLI call, including a stalled daemon. */
     timeoutMs: number;
-    /** Require an existing container that is currently running. */
+    /** Require the container to be running; existence is always checked. */
     container: boolean;
     /** Require `management.executable --version` to succeed inside it. */
     executable: boolean;
@@ -144,9 +144,9 @@ function validArgument(value: string): boolean {
 }
 
 /**
- * Low-level launcher adapter. Docker creation/retirement and SSH worker exit
- * verification remain supervisor responsibilities; transport process exit alone
- * is never proof of remote worker death. No management call creates a container.
+ * Low-level launcher adapter. Hub never creates, starts, stops or removes a
+ * container; SSH worker exit verification remains a supervisor concern, and
+ * transport process exit alone is never proof of remote worker death.
  */
 export class ManagedLauncher {
     private readonly options: ManagedLauncherOptions;

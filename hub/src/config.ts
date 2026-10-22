@@ -455,7 +455,7 @@ export function validateConfig(config: HubConfig): HubConfig {
     // The legacy `command` + `docker run` launcher is gone; Docker targets are
     // managed launch profiles now. Hub configurations written by an older
     // release still carry this default, so ignore it instead of refusing to
-    // start after an upgrade. Launch documents are normalized the same way.
+    // start after an upgrade. Launch documents keep the ignored field.
     if (isPlainObject(config.launcher) && Object.hasOwn(config.launcher, 'dockerManagementEnv')) {
         delete (config.launcher as HubConfig['launcher'] & { dockerManagementEnv?: unknown })
             .dockerManagementEnv;

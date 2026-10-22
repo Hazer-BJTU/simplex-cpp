@@ -173,9 +173,9 @@ container.
 A Docker target runs read-only startup checks before the first target mutation:
 the container must exist and be running, `docker exec CONTAINER EXE --version`
 must succeed, and the advertised channel address must be usable from the
-container's network namespace. A loopback address is accepted only when the
-container shares the host network; a `host.docker.internal` name requires a host
-mapping. `management.target.preflight` adjusts the checks, their deadline and the
+container's network namespace. A loopback address is accepted when the container
+shares the host network, or a network namespace the operator has verified; a
+`host.docker.internal` name requires a host mapping. `management.target.preflight` adjusts the checks, their deadline and the
 inspected channels. A failed check refuses the start; a new session stays unbound, so
 no allocation record is written and both configuration files remain editable.
 

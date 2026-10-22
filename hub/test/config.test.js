@@ -119,6 +119,13 @@ describe('validateConfig', () => {
         assert.doesNotThrow(() => validateConfig(config));
     });
 
+    it('ignores the removed Docker management environment key from an older hub configuration', () => {
+        const config = defaultConfig();
+        config.launcher.dockerManagementEnv = ['CUSTOM_MANAGER_TOKEN'];
+        assert.doesNotThrow(() => validateConfig(config));
+        assert.equal(Object.hasOwn(config.launcher, 'dockerManagementEnv'), false);
+    });
+
     it('keeps the identity hold shorter than the confirmation deadline', () => {
         const config = defaultConfig();
         config.limits.confirmIdentityHoldMs = config.worker.confirmationTimeoutMs;

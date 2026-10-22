@@ -41,9 +41,8 @@ The **Docker (running container)** template targets a container the operator
 already runs; the **Managed worker** template additionally supports explicit
 local roots and SSH. Both use `management`; see
 [managed sessions](../reference/management.md#opt-in-managed-sessions) for the
-policy and lifecycle contract. A launch profile saved by an older release keeps
-its command template until you create a new profile from the new template. The
-Hub never rewrites existing library files or session snapshots.
+policy and lifecycle contract. Existing library files and session snapshots are
+never rewritten.
 
 ## Directory and startup configuration
 
@@ -200,8 +199,12 @@ Before the first target mutation the Hub checks the container state, runs
 endpoint can be used from the container's network namespace. A failed check
 refuses the start; a new session stays unbound, so both configuration files can
 still be edited before retrying. `"preflight": {"enabled": false}` skips every check; each check
-has its own boolean switch. `management.target.preflight.endpoint.channels`
-selects the advertised channels to inspect (`events`, `confirm`, `tools`).
+has its own boolean switch. Existence is always checked: `container: false`
+skips only the running assertion, and a stopped container still refuses an
+installation probe. These overrides apply to a new session before it binds an
+allocation; a bound session keeps its launch policy.
+`management.target.preflight.endpoint.channels` selects the advertised channels
+to inspect (`events`, `confirm`, `tools`).
 
 A launch profile saved by an older release is not converted automatically.
 Create a new launch configuration from this template instead; existing library

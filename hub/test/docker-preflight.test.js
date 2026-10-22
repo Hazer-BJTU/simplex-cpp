@@ -189,6 +189,19 @@ it('honors the per-check switches and the overall disable switch', async t => {
     assert.deepEqual(disabled.calls(), []);
 });
 
+it('always requires existence and reports a stopped container when the probe is enabled', async t => {
+    const stopped = dockerFixture(t, { status: 'exited', running: false });
+    await assert.rejects(check(stopped, { preflight: { container: false, endpoint: { enabled: false } } }), error => {
+        assert.equal(codeOf(error), 'container-not-running');
+        return true;
+    });
+    const missing = dockerFixture(t, { inspect: 'missing' });
+    await assert.rejects(check(missing, { preflight: { container: false, endpoint: { enabled: false } } }), error => {
+        assert.equal(codeOf(error), 'container-missing');
+        return true;
+    });
+});
+
 it('reports an unresponsive Docker CLI or an unusable command', async t => {
     const hanging = dockerFixture(t, { inspect: 'hang' });
     await assert.rejects(check(hanging, { preflight: { timeoutMs: 100 } }), error => {
@@ -202,6 +215,11 @@ it('reports an unresponsive Docker CLI or an unusable command', async t => {
         executable: 'simplex', cwd: unavailable.root, env: {}, endpoints,
     }), error => {
         assert.equal(codeOf(error), 'docker-unavailable');
+        return true;
+    });
+    const hangingExec = dockerFixture(t, { exec: 'hang' });
+    await assert.rejects(check(hangingExec, { preflight: { timeoutMs: 100 } }), error => {
+        assert.equal(codeOf(error), 'executable-timeout');
         return true;
     });
 });
@@ -275,11 +293,17 @@ it('dispatches a managed worker only after the preflight passes', async t => {
     const result = await ctx.hub.supervisor.start(session);
     assert.equal(result.ok, true, result.error);
     const end = Date.now() + 4000;
+    const dispatched = join(managedRoot, 'dispatched.pid');
     while (!existsSync(join(managedRoot, 'last-run.json'))) {
+        // Capture the pid as soon as it appears: a later assertion may throw,
+        // and the teardown hook must still be able to end this fixture worker.
+        if (!dispatchedPid && existsSync(dispatched)) {
+            dispatchedPid = Number(readFileSync(dispatched, 'utf8'));
+        }
         assert.ok(Date.now() < end, 'the fixture worker never received its run command');
         await new Promise(resolve => setTimeout(resolve, 10));
     }
-    dispatchedPid = Number(readFileSync(join(managedRoot, 'dispatched.pid'), 'utf8'));
+    if (!dispatchedPid && existsSync(dispatched)) dispatchedPid = Number(readFileSync(dispatched, 'utf8'));
     const calls = fixture.calls();
     assert.deepEqual(calls[0], ['inspect', '--format',
         '{{.State.Status}}\t{{.State.Running}}\t{{.HostConfig.NetworkMode}}\t{{json .HostConfig.ExtraHosts}}',
