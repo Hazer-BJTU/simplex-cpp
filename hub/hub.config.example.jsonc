@@ -13,7 +13,8 @@
         //     "image": "./assets/background.jpg",
         //     "size": "cover",
         //     "position": "center",
-        //     "opacity": { "light": 0.12, "dark": 0.08 }
+        //     "opacity": { "light": 0.12, "dark": 0.08 },
+        //     "toolCardOpacity": 0.6
         // }
     },
 

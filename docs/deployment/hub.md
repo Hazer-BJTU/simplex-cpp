@@ -98,6 +98,9 @@ Generated configurations do not add disabled background settings.
 - `opacity`: values from 0 to 1, either one number for both themes or a
   `{ "light", "dark" }` pair. Defaults are 0.12 and 0.08. Zero hides the
   image in that theme. System theme changes follow the resolved light/dark theme.
+- `toolCardOpacity`: values from 0 to 1, either one number for both themes or a
+  `{ "light", "dark" }` pair. Defaults to 0.6. Zero makes tool cards fully
+  transparent; one restores the opaque theme surface.
 
 Only static PNG and JPEG are supported, up to 8 MiB and 33,554,432 pixels.
 Animated images, SVG, GIF and WebP are not supported. Hub validates container
@@ -110,8 +113,8 @@ endpoint; no local pathname or credential appears in image URLs or metadata.
 The image covers the viewport without scrolling, tiling or animation. The
 conversation column and the composer let it through; the status bar, session
 list, inspector, approval strip, dialogs and menus keep solid surfaces for
-hierarchy and focus. Message bubbles and tool cards keep a 60 percent tint so
-their grouping survives the image. Image opacity never changes text or control
+hierarchy and focus. Message bubbles keep a 60 percent tint; tool cards use
+`toolCardOpacity` (0.6 by default). Image opacity never changes text or control
 opacity. Text in the transparent areas sits directly on the image, so secondary
 metadata can fall below WCAG AA over high-contrast regions; lower the opacity if
 that matters. Body text stays above AA at the default opacities and up to about

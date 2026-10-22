@@ -5,10 +5,10 @@ export const Reasoning = memo(function Reasoning({ text, truncated = false, byte
     text: string; truncated?: boolean; bytes?: number;
 }) {
     const [open, setOpen] = useState(false);
-    return <details className="min-w-0 rounded border border-line bg-sunken px-2 py-1"
+    return <details data-testid="reasoning" className="min-w-0 text-xs text-ink-muted"
         onToggle={event => setOpen(event.currentTarget.open)}>
-        <summary className="cursor-pointer select-none text-xs text-ink-muted">reasoning</summary>
-        {open && <div className="mt-1 text-sm text-ink-muted">
+        <summary className="cursor-pointer select-none text-xs text-ink-faint hover:text-ink-muted">reasoning</summary>
+        {open && <div className="mt-1 space-y-1">
             <p data-testid="reasoning-text" className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{text}</p>
             {truncated && <p className="text-xs text-ink-faint">Reasoning preview{bytes === undefined ? '' : ` of ${bytes} UTF-8 bytes`}; remaining text omitted.</p>}
         </div>}

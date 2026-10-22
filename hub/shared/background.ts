@@ -8,6 +8,8 @@ export interface BackgroundOptions {
     position: string;
     /** Image opacity in each resolved theme. */
     opacity: { light: number; dark: number };
+    /** Tool card surface opacity in each theme; zero lets the image through. */
+    toolCardOpacity: { light: number; dark: number };
 }
 
 const positions = ['center', 'top', 'bottom', 'left', 'right',
@@ -17,12 +19,25 @@ function mapping(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Shared numeric-or-per-theme opacity grammar; both fields use the same range. */
+function opacityPair(value: unknown, field: string, fallback: { light: number; dark: number }):
+    { light: number; dark: number } {
+    const raw = value ?? fallback;
+    const pair = typeof raw === 'number' ? { light: raw, dark: raw } : raw;
+    if (!mapping(pair) || Object.keys(pair).some(key => !['light', 'dark'].includes(key))
+        || !['light', 'dark'].every(key => typeof pair[key] === 'number'
+            && Number.isFinite(pair[key]) && (pair[key] as number) >= 0 && (pair[key] as number) <= 1)) {
+        throw new Error(`panel.background: ${field} must be a number in [0, 1] or { light, dark } in that range`);
+    }
+    return { light: pair.light as number, dark: pair.dark as number };
+}
+
 /** Reject arbitrary CSS and normalize optional fields, including numeric opacity shorthand. */
 export function normalizeBackground(value: unknown): BackgroundOptions {
     const fail = (message: string): never => { throw new Error(`panel.background: ${message}`); };
     if (!mapping(value)) return fail('must be an object');
     for (const key of Object.keys(value)) {
-        if (!['image', 'size', 'position', 'opacity'].includes(key)) fail(`unknown field ${key}`);
+        if (!['image', 'size', 'position', 'opacity', 'toolCardOpacity'].includes(key)) fail(`unknown field ${key}`);
     }
     const image = value.image ?? '';
     if (typeof image !== 'string' || image.includes('\0') || /^[a-z]+:\/\//i.test(image)
@@ -39,12 +54,11 @@ export function normalizeBackground(value: unknown): BackgroundOptions {
     }
     const position = value.position ?? 'center';
     if (typeof position !== 'string' || !positions.includes(position)) return fail('invalid position');
-    const opacity = value.opacity ?? { light: 0.12, dark: 0.08 };
-    const pair = typeof opacity === 'number' ? { light: opacity, dark: opacity } : opacity;
-    if (!mapping(pair) || Object.keys(pair).some(key => !['light', 'dark'].includes(key))
-        || !['light', 'dark'].every(key => typeof pair[key] === 'number'
-            && Number.isFinite(pair[key]) && (pair[key] as number) >= 0 && (pair[key] as number) <= 1)) {
-        return fail('opacity must be a number in [0, 1] or { light, dark } in that range');
-    }
-    return { image, size, position, opacity: { light: pair.light as number, dark: pair.dark as number } };
+    return {
+        image,
+        size,
+        position,
+        opacity: opacityPair(value.opacity, 'opacity', { light: 0.12, dark: 0.08 }),
+        toolCardOpacity: opacityPair(value.toolCardOpacity, 'toolCardOpacity', { light: 0.6, dark: 0.6 }),
+    };
 }

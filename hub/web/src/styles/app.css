@@ -680,11 +680,19 @@ html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .conversation-space .bg-subtle {
     background-color: color-mix(in srgb, var(--subtle) 60%, transparent);
 }
-html:is([data-theme="light"][data-panel-background~="light"],
-        [data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] {
-    background-color: color-mix(in srgb, var(--surface) 60%, transparent);
+html:is([data-theme="light"][data-panel-background~="light"]) [data-testid="tool-card"] {
+    background-color: color-mix(in srgb, var(--surface)
+        var(--panel-tool-card-light-opacity, 60%), transparent);
 }
-html:is([data-theme="light"][data-panel-background~="light"],
-        [data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] .bg-sunken {
-    background-color: color-mix(in srgb, var(--sunken) 60%, transparent);
+html:is([data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] {
+    background-color: color-mix(in srgb, var(--surface)
+        var(--panel-tool-card-dark-opacity, 60%), transparent);
+}
+html:is([data-theme="light"][data-panel-background~="light"]) [data-testid="tool-card"] .bg-sunken {
+    background-color: color-mix(in srgb, var(--sunken)
+        var(--panel-tool-card-light-opacity, 60%), transparent);
+}
+html:is([data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] .bg-sunken {
+    background-color: color-mix(in srgb, var(--sunken)
+        var(--panel-tool-card-dark-opacity, 60%), transparent);
 }

@@ -28,6 +28,25 @@ test('reasoning is lazy literal text in live and replayed answers, without Markd
     await expect(page.getByTestId('reasoning-text')).toHaveText(literal);
 });
 
+test('reasoning is quiet text rather than a card', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'run_started', {});
+    await emit(page, 'model_response', modelResponse('Final answer', {
+        reasoning: { type: 'text', modality: 'text', raw: 'thinking about it' },
+    }));
+    const reasoning = page.getByTestId('reasoning');
+    await expect(reasoning).toBeVisible();
+    // No border, no fill and no padding: the image (or the page surface) shows
+    // through, and a tool card remains the only card-shaped element.
+    await expect(reasoning).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(reasoning).toHaveCSS('border-top-width', '0px');
+    await expect(reasoning).toHaveCSS('padding-left', '0px');
+    await reasoning.locator('summary').filter({ hasText: 'reasoning' }).click();
+    const text = page.getByTestId('reasoning-text');
+    await expect(text).toHaveText('thinking about it');
+    await expect(text).toHaveCSS('font-size', '12px');
+});
+
 test('restored history uses the same literal renderer and explicit reasoning marker', async ({ page }) => {
     await open(page, '?session=demo');
     await page.request.post(`${STUB}/__stub/settings`, { data: { historyEnabled: true, historyTurns: [{

@@ -5,7 +5,8 @@ import { STUB, call, emit, modelResponse, toolResult } from './harness.ts';
 
 const bytes = backgroundPng([240, 60, 40]);
 const descriptor = { url: '/api/panel/background/image', revision: createHash('sha256').update(bytes).digest('hex'),
-    size: 'cover', position: 'center', opacity: { light: 0.12, dark: 0.08 } };
+    size: 'cover', position: 'center', opacity: { light: 0.12, dark: 0.08 },
+    toolCardOpacity: { light: 0.6, dark: 0.6 } };
 
 async function setup(page: Page, options: Partial<typeof descriptor> = {}, status = 200) {
     await page.request.post(`${STUB}/__stub/reset`);
@@ -106,6 +107,21 @@ test('the conversation and composer show the image while the frame stays solid',
         call: { name: 'run_command', arguments: { command: 'echo hi' } } } });
     await expect(page.getByTestId('approval-banner')).toBeVisible();
     expect(await backgroundAlpha(page, '.approval-list')).toBe(1);
+});
+
+test('tool cards follow toolCardOpacity in each theme', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await setup(page, { toolCardOpacity: { light: 0.25, dark: 0.8 } });
+    await page.getByTestId('session-row').click();
+    await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
+    await emit(page, 'run_started', {});
+    await emit(page, 'tool_calls', [call('call-1', 'run_command', { command: 'echo hi' })]);
+    await emit(page, 'tool_results', [toolResult('call-1', 'run_command', 'hi\n')]);
+    await expect(page.getByTestId('tool-card')).toBeVisible();
+    expect(await backgroundAlpha(page, '[data-testid="tool-card"]')).toBeCloseTo(0.25, 2);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    expect(await backgroundAlpha(page, '[data-testid="tool-card"]')).toBeCloseTo(0.8, 2);
 });
 
 test('a theme without a visible image keeps the solid conversation surfaces', async ({ page }) => {
