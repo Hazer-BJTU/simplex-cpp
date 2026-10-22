@@ -100,11 +100,15 @@ Worker state/memory subdirectories may be changed in its saved configuration.
 
 The CLI first reads an explicit `--config` file, or looks for
 `hub.config.jsonc` (then `hub.config.json`) inside the selected root. When no
-startup file exists, it uses defaults plus CLI overrides and writes the resolved
-configuration there on first CLI startup. Subsequent CLI overrides do not
+startup file exists, it uses defaults plus CLI overrides and writes a compact
+configuration there on first CLI startup. The file contains listener and panel
+authentication settings plus nondefault startup overrides. Default worker/model,
+legacy launcher and offline-mock sections are omitted; explicit CLI choices are
+preserved for restart. Subsequent CLI overrides do not
 rewrite an existing file. Explicit external `--config` files remain supported.
 Relative paths in an explicit startup file resolve against that file's directory;
-CLI path overrides resolve against the invocation directory.
+CLI path overrides resolve against the invocation directory. Omitted built-in
+executable paths remain relative to the Hub installation.
 
 Hub listener, authentication and resource-limit settings remain startup settings
 in `hub.config.jsonc`; changing them requires restarting the Hub. The browser
@@ -118,8 +122,15 @@ are never replaced by startup. Worker templates are bundled from
 `load/schemas/config.example.yaml`, with a regression check preventing drift.
 
 The commented [Hub startup example](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/hub/hub.config.example.jsonc)
-covers the validated key paths; its coverage is checked against `defaultConfig()`.
-Provider profile contents are owned by each model plugin and remain open-ended.
+shows service settings only. The [legacy/test reference](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/hub/hub.config.legacy.example.jsonc)
+and Hub README document the remaining supported runtime settings. They are not
+required in a normal panel deployment. Provider profile contents remain plugin-owned.
+Retired `worker.persistence.readable` and `launcher.dockerManagementEnv` settings
+remain accepted from old files but are not generated. Old Docker library files
+are preserved: create a new file from **Docker (running container)** to adopt
+the current managed template; upgrading the Hub does not convert old commands.
+Managed startup/fork snapshots contain `management` and effective worker launch
+settings without the internal compatibility `launcher` or `worker.bin` fields.
 In particular, API-created sessions without library selectors use these defaults:
 
 | Startup key | Default | Effect on new generated worker configurations |
@@ -144,7 +155,12 @@ See [`schemas/local.jsonc`](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/
 
 | Field | Meaning |
 | --- | --- |
-| `launcher.kind` | `command` for an argument-array template; `simplex-worker` for direct binary invocation |
+| `management.target` | Execution target: local, SSH, or an existing Docker container |
+| `management.executable` | Target-side `simplex` router for both run and manage |
+| `management.root` | Target-side allocation root, separate from Hub data |
+| `management.cwd`, `management.env` | Hub-side working directory and environment for the transport |
+| `management.timeoutMs` | Management request deadline |
+| `launcher.kind` | Legacy profiles only: `command` for an argument-array template; `simplex-worker` for direct binary invocation |
 | `launcher.command` | Executable and separate arguments for `command`; no implicit shell |
 | `launcher.args` | Additional arguments |
 | `launcher.cwd` | Command working directory; empty uses the session directory; relative paths resolve against the session's `config/` directory |
@@ -158,7 +174,7 @@ See [`schemas/local.jsonc`](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/
 | `env` | String environment overrides; other variables are inherited from the Hub |
 | `endpoints` | Optional `events`, `confirm`, `tools` WebSocket origins, including proxy prefixes |
 
-Command placeholders retain the existing launcher contract: `{session}`,
+For legacy command profiles, placeholders retain the existing launcher contract: `{session}`,
 `{config}`, `{data_dir}`, `{session_dir}`, `{endpoint}`, `{confirm_endpoint}`,
 `{tools_endpoint}`, `{token}`, `{threads}`, `{worker_bin}`, `{uid}`, `{gid}`.
 Only the command and argument arrays expand these placeholders. Environment

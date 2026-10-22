@@ -118,6 +118,9 @@ export function launchDocument(text: string, config: HubConfig): LaunchDocument 
     if (value.management !== undefined && value.launcher === undefined) {
         value.launcher = { ...defaultConfig().launcher, kind: 'command', command: ['simplex', 'run'] };
     }
+    if (value.launcher && typeof value.launcher === 'object') {
+        delete (value.launcher as unknown as Record<string, unknown>).dockerManagementEnv;
+    }
     if (!value.launcher || typeof value.launcher !== 'object' || Array.isArray(value.launcher)) throw configError('launcher is required');
     if (!['command', 'simplex-worker'].includes(value.launcher.kind)) throw configError('launcher.kind is required');
     if (value.launcher.kind === 'simplex-worker' && !value.worker?.bin) throw configError('worker.bin is required for simplex-worker');
@@ -161,6 +164,24 @@ export function launchDocument(text: string, config: HubConfig): LaunchDocument 
         if (value.launcher.pidFile) throw configError('managed launch does not support pidFile');
     }
     return value;
+}
+
+/**
+ * Serialize a validated startup snapshot for restart and clean-fork. Managed
+ * targets use only management.executable: do not publish the synthetic legacy
+ * launcher or worker.bin that launchDocument supplies internally. All effective
+ * managed policy, worker arguments, environment and endpoints stay captured.
+ * Editable library source text is preserved separately, not rewritten here.
+ */
+export function serializeLaunchDocument(launch: LaunchDocument): string {
+    const document = structuredClone(launch) as Partial<LaunchDocument>;
+    if (document.management) {
+        delete document.launcher;
+        if (document.worker) delete document.worker.bin;
+    } else if (document.launcher) {
+        delete (document.launcher as unknown as Record<string, unknown>).dockerManagementEnv;
+    }
+    return JSON.stringify(document);
 }
 
 /** One process owns this store. Synchronous revision checks and publication

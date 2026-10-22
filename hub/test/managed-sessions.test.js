@@ -436,6 +436,14 @@ for (const remote of [false, true]) {
         const child = await managedFork(ctx, ctx.session, 'create-once');
         assert.equal((await managedFork(ctx, ctx.session, 'create-once')).id, child.id);
         await until(() => child.subagent.lifecycle === 'ready');
+        // Both the parent's startup capture and the child's fork input are
+        // compact on disk, while actual managed dispatch still succeeds.
+        for (const [id, name] of [[ctx.session.id, 'startup-launch.jsonc'], [child.id, 'launch.jsonc']]) {
+            const launch = JSON.parse(readFileSync(join(sessionDir(ctx.config, id), 'config', name), 'utf8'));
+            assert.ok(launch.management);
+            assert.equal(Object.hasOwn(launch, 'launcher'), false);
+            assert.equal(Object.hasOwn(launch.worker, 'bin'), false);
+        }
         const childRecord = readManagedSession(ctx.config, child.id);
         assert.notEqual(childRecord.reference.allocationId, allocation.reference.allocationId);
         assert.equal(childRecord.forkSource.allocation_id, allocation.reference.allocationId);

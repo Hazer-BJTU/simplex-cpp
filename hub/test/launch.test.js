@@ -72,7 +72,7 @@ describe('normalizeSpec', () => {
         assert.equal(spec.provider, 'mock');
         assert.equal(spec.model, 'fake-model');
         assert.equal(spec.threads, 4);
-        assert.equal(spec.persistence.readable, true);
+        assert.equal(Object.hasOwn(spec.persistence, 'readable'), false);
         assert.equal(spec.restore, 'never');
         assert.equal(spec.workspace, '/srv/work');
         assert.deepEqual(spec.software, ['python 3.12']);

@@ -19,7 +19,7 @@ import { ManagementError } from './management.ts';
  * supervisor therefore refuses to start a session whose recorded process is
  * still alive, and a restart always waits for the exit before spawning.
  */
-import { writeConfigFile } from '../configurations/store.ts';
+import { serializeLaunchDocument, writeConfigFile } from '../configurations/store.ts';
 import { randomUUID } from 'node:crypto';
 import { captureStartup, resolvedStartupLaunch } from '../subagents/fork.ts';
 import { sessionLaunch, launchEndpoints } from '../configurations/session.ts';
@@ -559,7 +559,7 @@ export class WorkerSupervisor {
                 // Transport/CLI policy is Hub-owned; only worker configuration is
                 // captured by the target manager. Both snapshots precede spawn.
                 mkdirSync(join(directory, 'config'), { recursive: true, mode: 0o700 });
-                writeConfigFile(join(directory, 'config', 'startup-launch.jsonc'), JSON.stringify(launch));
+                writeConfigFile(join(directory, 'config', 'startup-launch.jsonc'), serializeLaunchDocument(launch));
             }
         } catch {
             return { ok: false, error: 'cannot capture authoritative startup snapshot' };

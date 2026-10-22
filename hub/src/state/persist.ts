@@ -8,9 +8,9 @@
  * its own hub; process records include `/proc` start time so a reused pid can
  * never be mistaken for the original worker.
  *
- * Conversation history is deliberately absent: that is the worker's snapshot
- * (`<persistence.directory>/<persistence.state>/state.json`), and duplicating it here
- * would create a second source of truth.
+ * Conversation history is deliberately absent: it belongs to the worker's
+ * managed JSON/SQLite store, and duplicating it here would create a second
+ * source of truth.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -40,7 +40,7 @@ export interface StoredProcess {
 export interface StoredSession {
     id: string;
     token: string;
-    /** Written verbatim: a spec the hub has not normalized yet is still stored. */
+    /** Retains raw spec fields except retired compatibility-only settings. */
     spec: object;
     created_at: string;
     lifecycle_id?: string;
@@ -154,10 +154,18 @@ export class HubState {
 
     /** Serialize one owned session, including headless metadata stored separately. */
     sessionDocument(session: PersistableSession): StoredSession {
+        // Old, stopped sessions may never pass through normalizeSpec again.
+        // Omit only the retired flag; preserve selectors and unknown metadata.
+        const spec = { ...session.spec } as Record<string, unknown>;
+        if (spec.persistence && typeof spec.persistence === 'object' && !Array.isArray(spec.persistence)) {
+            const persistence = { ...spec.persistence } as Record<string, unknown>;
+            delete persistence.readable;
+            spec.persistence = persistence;
+        }
         return {
             id: session.id,
             token: session.token,
-            spec: session.spec ?? {},
+            spec,
             created_at: session.createdAt,
             lifecycle_id: session.lifecycleId ?? '',
             process: session.process && session.process.pid

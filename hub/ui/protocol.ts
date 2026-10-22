@@ -242,7 +242,7 @@ export interface SessionSpec {
         /** Authoritative store for a new session; saved worker configuration
          * remains authoritative after its first launch. */
         backend?: 'json' | 'sqlite';
-        /** Deprecated worker setting, retained for older configurations. */
+        /** @deprecated Accepted from older clients but ignored; omitted from new session metadata. */
         readable?: boolean;
     };
     /** Worker startup restore policy; future policy names may be added. */
