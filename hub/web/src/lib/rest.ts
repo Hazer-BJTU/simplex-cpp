@@ -72,6 +72,8 @@ export interface RestOptions {
 
 /** The hub's JSON API. */
 export interface RestClient {
+    /** Fetch the fixed authenticated image endpoint; never accepts an arbitrary asset URL. */
+    background(signal: AbortSignal): Promise<Blob>;
     /** Send one authenticated HTTP request. The caller must validate untrusted response data. */
     request<T>(method: string, path: string, options?: {
         body?: unknown;
@@ -182,6 +184,35 @@ export function createRest(options: RestOptions = {}): RestClient {
 
     return {
         request,
+        async background(signal) {
+            const headers: Record<string, string> = { Accept: 'image/png, image/jpeg' };
+            const presented = token();
+            if (presented) headers.Authorization = `Bearer ${presented}`;
+            const url = new URL(`${base}/api/panel/background/image`, globalThis.location?.href ?? 'http://127.0.0.1/');
+            const response = await doFetch(url.toString(), { headers, signal, redirect: 'error' });
+            if (response.status === 401) options.onUnauthorized?.();
+            if (!response.ok) throw new ApiError('Background image unavailable', { status: response.status });
+            const type = response.headers.get('content-type');
+            if (type !== 'image/png' && type !== 'image/jpeg') throw new ApiError('Unsupported background image');
+            // Bound the browser allocation too, including chunked responses.
+            const reader = response.body?.getReader();
+            if (!reader) throw new ApiError('Missing background image body');
+            const chunks: Uint8Array<ArrayBuffer>[] = [];
+            let size = 0;
+            try {
+                while (true) {
+                    const next = await reader.read();
+                    if (next.done) break;
+                    size += next.value.byteLength;
+                    if (size > 8 * 1024 * 1024) throw new ApiError('Background image is too large');
+                    chunks.push(new Uint8Array(next.value));
+                }
+            } finally {
+                await reader.cancel().catch(() => {});
+                reader.releaseLock();
+            }
+            return new Blob(chunks, { type });
+        },
         meta: () => request<HubMetadata>('GET', '/api/meta'),
         sessions: () => request<SessionListResponse>('GET', '/api/sessions'),
         createSession: (session, spec) => request<SessionResponse>('POST', '/api/sessions', {

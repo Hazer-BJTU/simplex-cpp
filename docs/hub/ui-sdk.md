@@ -215,3 +215,23 @@ against a real Hub and controlled fixture worker: multi-page replay, retention
 gaps, authentication, an actual same-origin proxy, restart/epoch change, and
 unsupported capabilities. The bundled panel retains its own richer recovery
 logic; its imports and behavior remain separately tested.
+
+
+## Optional panel decoration
+
+`HubMetadata.background` is an optional `PanelBackground` descriptor containing
+`url`, a SHA-256 `revision`, `size`, `position`, and light/dark `opacity`.
+It never contains a local file path. Clients may ignore it.
+
+`GET /api/panel/background/image` returns PNG/JPEG bytes, not JSON;
+`HEAD` returns the same headers without a body. Both use normal panel
+authentication (send the bearer credential in the header, never the URL).
+Responses use `Cache-Control: private, no-cache`, `Vary: Authorization`,
+`X-Content-Type-Options: nosniff`, and a quoted revision ETag. Authorized
+conditional requests can return 304; an unconfigured/unavailable image returns
+404. The endpoint has no file-selection parameter.
+
+The bundled panel fetches and decodes a bounded blob, revokes its object URL on
+replacement/disconnection, and treats image errors as decoration failures.
+Its CSP permits `blob:` for images only. Theme changes do not download the image
+again. Restart Hub to publish a new snapshot or appearance settings.

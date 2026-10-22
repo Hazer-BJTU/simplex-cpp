@@ -6,6 +6,7 @@
  * Each role registers itself here, so this file is the map of what the hub currently implements — and the only
  * place that knows the whole object graph.
  */
+import { loadBackground, serveBackground, type BackgroundAsset } from './panel/background.ts';
 import { SubagentService } from './subagents/service.ts';
 import { canonicalDataRoot } from './subagents/storage.ts';
 import { randomUUID } from 'node:crypto';
@@ -160,9 +161,12 @@ export function createHub({
      */
     const transcriptEpoch = randomUUID();
 
+    let background: BackgroundAsset | null = null;
+
     /** Metadata shared by `/api/meta` and the panel's `welcome` message. */
     function meta(): HubMetadata {
         return {
+            ...(background ? { background: structuredClone(background.metadata) } : {}),
             name: 'simplex-hub',
             version,
             protocol: PANEL_PROTOCOL,
@@ -303,6 +307,18 @@ export function createHub({
         });
     }
 
+    for (const method of ['GET', 'HEAD']) {
+        http.route(method, '/api/panel/background/image', ({ req, res, url }) => {
+            if (!authorizePanel(config, req, url).ok) {
+                res.setHeader('Cache-Control', 'no-store');
+                res.writeHead(401);
+                res.end();
+                return;
+            }
+            serveBackground(background, req, res);
+        });
+    }
+
     http.route('GET', '/api/meta', ({ res }) => sendJson(res, 200, meta()));
 
     return {
@@ -322,6 +338,7 @@ export function createHub({
         /** Bind the listener and restore sessions recorded by a previous run. */
         start: async (): Promise<BoundAddress> => {
             try {
+                background = await loadBackground(config.panel.background, log);
                 const address = await http.listen();
                 toolBound = await toolHttp.listen();
                 bound = { host: address.host, port: address.port };

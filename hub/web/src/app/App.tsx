@@ -18,6 +18,7 @@
  * kept the columns at every width, which on a 380px screen left the thing being
  * read squeezed between them.
  */
+import { PanelBackground } from './PanelBackground.tsx';
 import { useEffect, useState } from 'react';
 import { HeadlessPanel } from './HeadlessPanel.tsx';
 import { usePanel } from '../state/usePanel.ts';
@@ -51,29 +52,32 @@ export function App() {
 
     return (
         <TooltipProvider>
-            <div className="flex h-full flex-col bg-app text-ink">
-                <a
-                    href="#conversation"
-                    className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2
-                        focus:z-50 focus:rounded focus:bg-raised focus:px-3 focus:py-1
-                        focus:text-xs focus:shadow-lg"
-                >
-                    skip to the conversation
-                </a>
-                <StatusBar onOpenSessions={() => setSessionsOpen(true)} />
-                <div className="flex min-h-0 flex-1">
-                    <SessionList open={sessionsOpen} onClose={() => setSessionsOpen(false)} />
-                    <main
-                        id="conversation"
-                        className="flex min-w-0 flex-1 flex-col bg-surface focus:outline-none"
+            <div className="panel-root">
+                <PanelBackground />
+                <div className="panel-shell flex h-full flex-col bg-app text-ink">
+                    <a
+                        href="#conversation"
+                        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2
+                            focus:z-50 focus:rounded focus:bg-raised focus:px-3 focus:py-1
+                            focus:text-xs focus:shadow-lg"
                     >
-                        {!headless && <SessionHeader />}
-                        <Approvals />
-                        {headless && session ? <HeadlessPanel session={session} /> : <><ConversationPanels /><Composer /></>}
-                    </main>
-                    {!headless && <Inspector />}
+                        skip to the conversation
+                    </a>
+                    <StatusBar onOpenSessions={() => setSessionsOpen(true)} />
+                    <div className="flex min-h-0 flex-1">
+                        <SessionList open={sessionsOpen} onClose={() => setSessionsOpen(false)} />
+                        <main
+                            id="conversation"
+                            className="panel-page-surface flex min-w-0 flex-1 flex-col bg-surface focus:outline-none"
+                        >
+                            {!headless && <SessionHeader />}
+                            <Approvals />
+                            {headless && session ? <HeadlessPanel session={session} /> : <><ConversationPanels /><Composer /></>}
+                        </main>
+                        {!headless && <Inspector />}
+                    </div>
+                    <CommandPalette />
                 </div>
-                <CommandPalette />
             </div>
         </TooltipProvider>
     );

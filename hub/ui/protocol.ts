@@ -501,8 +501,24 @@ export interface WorkerEnvelope {
  */
 export type TranscriptEpoch = string;
 
-/** Metadata about the hub, from `/api/meta` and inside `welcome`. */
+/** Public decoration descriptor; never contains a local path or access token. */
+export interface PanelBackground {
+    /** Fixed same-origin authenticated image route. */
+    url: '/api/panel/background/image';
+    /** Content hash for this Hub's immutable startup asset. */
+    revision: string;
+    /** Validated CSS size and named position. */
+    size: string;
+    /** Named alignment within the full viewport. */
+    position: string;
+    /** Per-theme image opacity in [0, 1]. */
+    opacity: { light: number; dark: number };
+}
+
+/** Public Hub metadata shared by REST discovery and the panel welcome frame. */
 export interface HubMetadata {
+    /** Optional global static decoration; absent when disabled or unavailable. */
+    background?: PanelBackground;
     /** Protocol, application or tool name as identified by the enclosing record. */
     name: string;
     /** Protocol or application version as identified by the enclosing record. */

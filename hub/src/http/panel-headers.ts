@@ -52,7 +52,7 @@ export function contentSecurityPolicy(scriptHashes: readonly string[]): string {
         "default-src 'self'",
         ['script-src', "'self'", ...scriptHashes].join(' '),
         "style-src 'self' 'unsafe-inline'",
-        "img-src 'self' data:",
+        "img-src 'self' data: blob:",
         "font-src 'self'",
         // The panel socket is the same origin, which `'self'` covers for `ws:`
         // as well as `http:`.
