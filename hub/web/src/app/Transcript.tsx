@@ -241,19 +241,26 @@ function RunFailureNotice({ failure, actionable, compacting, sessionId, latest }
     );
 }
 
+/** The text a user message shows: the draft with unexpanded references, or the wire parts. */
+function messageText(item: OutboxItem, separator = '\n\n'): string {
+    if (item.display === undefined) {
+        return item.parts.map((part: ContentPart) => part.raw).join(separator);
+    }
+    const references = item.parts
+        .filter((part) => part.type === 'external_ref')
+        .map((part) => part.raw);
+    return [item.display, ...references].join(separator);
+}
+
 /** What the operator sent. */
 function UserMessage({ item }: { item: OutboxItem }) {
     const [open, setOpen] = useState(false);
+    const [sentOpen, setSentOpen] = useState(false);
     const sentText = item.parts.map((part: ContentPart) => part.raw).join('\n\n');
     // `parts` is the wire form, where skill references are expanded. When the
     // operator used a skill, `display` keeps their own draft readable instead;
     // external references remain visible in both forms.
-    const references = item.parts
-        .filter((part) => part.type === 'external_ref')
-        .map((part) => part.raw);
-    const text = item.display === undefined
-        ? sentText
-        : [item.display, ...references].join('\n\n');
+    const text = messageText(item);
     const long = text.length > LONG_MESSAGE_CHARS;
     const shown = long && !open ? `${text.slice(0, LONG_MESSAGE_CHARS)}…` : text;
     return (
@@ -274,14 +281,20 @@ function UserMessage({ item }: { item: OutboxItem }) {
                 </button>
             )}
             {item.display !== undefined && (
-                <details className="mt-2 text-xs" data-testid="sent-text-disclosure">
+                <details className="mt-2 text-xs" data-testid="sent-text-disclosure"
+                    onToggle={(event) => setSentOpen(event.currentTarget.open)}>
                     <summary className="cursor-pointer text-ink-faint hover:text-ink-muted">
                         show the text sent to the worker
                     </summary>
-                    <pre data-testid="sent-text"
-                        className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words
-                            [overflow-wrap:anywhere] rounded border border-line bg-surface p-2 text-xs
-                            text-ink-muted">{sentText}</pre>
+                    {/* Mount the full payload only while the disclosure is open:
+                        a max-size expansion would otherwise keep ~256 KiB of
+                        text in the DOM for every skill message. */}
+                    {sentOpen && (
+                        <pre data-testid="sent-text"
+                            className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words
+                                [overflow-wrap:anywhere] rounded border border-line bg-surface p-2 text-xs
+                                text-ink-muted">{sentText}</pre>
+                    )}
                 </details>
             )}
             {item.state !== 'admitted' && (
@@ -463,7 +476,7 @@ function RoundSummary({ round, historicalInput, expanded, onToggle }: {
     if (round.wallMs !== null) parts.push(formatDuration(round.wallMs));
 
     const preview = round.compacting ? 'context compaction' : round.continued ? 'continued from worker state' : round.input
-        ? round.input.parts.map((part: ContentPart) => part.raw).join(' ').slice(0, 80)
+        ? messageText(round.input, ' ').slice(0, 80)
         : historicalInput && !round.continued
             ? historicalInput.user.map(contentText).filter(Boolean).join(' ').slice(0, 80)
             : round.admitted ? '(input replayed without its text)' : '';

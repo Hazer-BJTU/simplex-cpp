@@ -1112,6 +1112,8 @@ test('the token scale uses eight bands and remains full above 1M', async ({ page
     const band = (await usage.boundingBox())!;
     expect(bounds!.x).toBeGreaterThanOrEqual(surface.x);
     expect(bounds!.x).toBeLessThanOrEqual(surface.x + 1.5);
+    expect(bounds!.y).toBeGreaterThanOrEqual(surface.y);
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(surface.y + 40);
     expect(await page.getByText('Message', { exact: true }).count()).toBe(0);
     expect(compact.x).toBeGreaterThanOrEqual(band.x + band.width);
     expect(compact.x - (band.x + band.width)).toBeLessThanOrEqual(12);

@@ -14,6 +14,7 @@ test('the compact action appears and disappears with the context meter', async (
     await expect(meter).toHaveCount(0);
     await expect(compact).toHaveCount(0);
     await expect(placeholder).toBeVisible();
+    expect((await placeholder.boundingBox())!.height).toBeGreaterThan(0);
     const before = (await page.getByTestId('composer-surface').boundingBox())!;
     // A capability on its own is not enough: the row stays empty until there
     // is a usage figure to put in it.
@@ -35,6 +36,14 @@ test('the compact action appears and disappears with the context meter', async (
     // The action sits immediately after the meter, not at the end of the row.
     expect(action.x).toBeGreaterThanOrEqual(band.x + band.width);
     expect(action.x - (band.x + band.width)).toBeLessThanOrEqual(12);
+    // Losing the worker identity hides the meter and the action together and
+    // leaves the placeholder, without resizing the composer.
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+    await expect(compact).toHaveCount(0);
+    await expect(placeholder).toBeVisible();
+    const disconnected = (await page.getByTestId('composer-surface').boundingBox())!;
+    expect(disconnected.y).toBe(before.y);
+    expect(disconnected.height).toBe(before.height);
 });
 
 test('Compact context is gated, carries no message, and preserves a refused draft', async ({ page }) => {
