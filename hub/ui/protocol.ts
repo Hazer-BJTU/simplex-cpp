@@ -513,6 +513,8 @@ export interface PanelBackground {
     position: string;
     /** Per-theme image opacity in [0, 1]. */
     opacity: { light: number; dark: number };
+    /** Per-theme tool card surface opacity in [0, 1]; 0 lets the image through. */
+    toolCardOpacity?: { light: number; dark: number };
 }
 
 /** Public Hub metadata shared by REST discovery and the panel welcome frame. */

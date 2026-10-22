@@ -220,7 +220,8 @@ logic; its imports and behavior remain separately tested.
 ## Optional panel decoration
 
 `HubMetadata.background` is an optional `PanelBackground` descriptor containing
-`url`, a SHA-256 `revision`, `size`, `position`, and light/dark `opacity`.
+`url`, a SHA-256 `revision`, `size`, `position`, light/dark `opacity`, and the
+optional light/dark `toolCardOpacity` (absent from older Hubs; 0.6 when omitted).
 It never contains a local file path. Clients may ignore it.
 
 `GET /api/panel/background/image` returns PNG/JPEG bytes, not JSON;

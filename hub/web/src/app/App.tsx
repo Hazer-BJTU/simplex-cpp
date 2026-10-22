@@ -35,9 +35,10 @@ import { TooltipProvider } from '../ui/overlays.tsx';
 export function App() {
     const session = usePanel(state => state.selected ? state.sessions.get(state.selected) : undefined);
     const headless = session?.kind === 'headless';
-    // The session list is a drawer below `md`. On a wide screen this state is
-    // simply irrelevant: the sidebar is visible either way.
+    // The session list is a drawer below `md` and a collapsible column above it.
+    // The two states stay separate: the drawer starts closed, the column open.
     const [sessionsOpen, setSessionsOpen] = useState(false);
+    const [sessionsCollapsed, setSessionsCollapsed] = useState(false);
 
     // Escape closes the drawer. Radix does this for its own overlays; this one
     // is plain markup, so it needs the listener to behave like the rest.
@@ -63,9 +64,12 @@ export function App() {
                     >
                         skip to the conversation
                     </a>
-                    <StatusBar onOpenSessions={() => setSessionsOpen(true)} />
+                    <StatusBar onOpenSessions={() => setSessionsOpen(true)}
+                        sessionsCollapsed={sessionsCollapsed}
+                        onToggleSessions={() => setSessionsCollapsed((value) => !value)} />
                     <div className="flex min-h-0 flex-1">
-                        <SessionList open={sessionsOpen} onClose={() => setSessionsOpen(false)} />
+                        <SessionList open={sessionsOpen} onClose={() => setSessionsOpen(false)}
+                            collapsed={sessionsCollapsed} />
                         <main
                             id="conversation"
                             className="panel-page-surface flex min-w-0 flex-1 flex-col bg-surface focus:outline-none"

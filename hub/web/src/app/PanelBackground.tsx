@@ -25,7 +25,8 @@ export function PanelBackground() {
         try {
             const metadata = JSON.parse(key);
             if (metadata.url !== '/api/panel/background/image' || !/^[a-f0-9]{64}$/.test(metadata.revision)) return;
-            options = normalizeBackground({ image: '', size: metadata.size, position: metadata.position, opacity: metadata.opacity });
+            options = normalizeBackground({ image: '', size: metadata.size, position: metadata.position,
+                opacity: metadata.opacity, toolCardOpacity: metadata.toolCardOpacity });
         } catch { return; }
         if (!options.opacity.light && !options.opacity.dark) return;
         const controller = new AbortController();
@@ -42,6 +43,8 @@ export function PanelBackground() {
             if (disposed) return;
             root.style.setProperty('--panel-image-light-opacity', String(settings.opacity.light));
             root.style.setProperty('--panel-image-dark-opacity', String(settings.opacity.dark));
+            root.style.setProperty('--panel-tool-card-light-opacity', `${settings.toolCardOpacity.light * 100}%`);
+            root.style.setProperty('--panel-tool-card-dark-opacity', `${settings.toolCardOpacity.dark * 100}%`);
             root.dataset.panelBackground = [settings.opacity.light > 0 ? 'light' : '',
                 settings.opacity.dark > 0 ? 'dark' : ''].filter(Boolean).join(' ');
             setImage({ key, epoch, url: objectUrl, size: settings.size, position: settings.position });
@@ -56,6 +59,8 @@ export function PanelBackground() {
             delete root.dataset.panelBackground;
             root.style.removeProperty('--panel-image-light-opacity');
             root.style.removeProperty('--panel-image-dark-opacity');
+            root.style.removeProperty('--panel-tool-card-light-opacity');
+            root.style.removeProperty('--panel-tool-card-dark-opacity');
         };
     }, [client, key, epoch, connected, unauthorized]);
 

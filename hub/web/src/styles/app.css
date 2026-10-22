@@ -642,8 +642,11 @@ select option:checked {
     .approval-row > :last-child { align-self: flex-end; }
 }
 
-/* Static, viewport-wide decoration. The image alone is translucent; controls,
- * menus, approvals and composer surfaces retain their existing opaque colors. */
+/* Static, viewport-wide decoration. The image is page-level: the conversation
+ * column and the composer let it through, while the frame (status bar, session
+ * list, inspector), approval strip, dialogs and menus keep solid surfaces for
+ * hierarchy and focus. Bubbles and tool cards keep a 60% tint so their grouping
+ * survives the image. */
 .panel-root { position: relative; isolation: isolate; height: 100%; }
 .panel-shell { position: relative; z-index: 1; }
 .panel-background {
@@ -659,13 +662,55 @@ html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .panel-shell { background: transparent; }
 html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .panel-page-surface {
-    background: color-mix(in srgb, var(--surface) 80%, transparent);
+    background: transparent;
 }
 @media print { .panel-background { display: none; } }
 
-/* Keep the reading column's contrast independent of arbitrary image colors.
- * The global image remains visible in the surrounding conversation canvas. */
 html:is([data-theme="light"][data-panel-background~="light"],
-        [data-theme="dark"][data-panel-background~="dark"]) .reading-width {
-    background-color: var(--surface);
+        [data-theme="dark"][data-panel-background~="dark"]) .reading-width,
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .composer-shell,
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .composer-surface,
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .composer-footer {
+    background: transparent;
+}
+html:is([data-theme="light"][data-panel-background~="light"]) {
+    --panel-card-tint: var(--panel-tool-card-light-opacity, 60%);
+}
+html:is([data-theme="dark"][data-panel-background~="dark"]) {
+    --panel-card-tint: var(--panel-tool-card-dark-opacity, 60%);
+}
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .conversation-space .bg-subtle {
+    background-color: color-mix(in srgb, var(--subtle) 60%, transparent);
+}
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] {
+    background-color: color-mix(in srgb, var(--surface) var(--panel-card-tint), transparent);
+}
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] .bg-sunken {
+    background-color: color-mix(in srgb, var(--sunken) var(--panel-card-tint), transparent);
+}
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) [data-testid="tool-card"] .bg-subtle {
+    background-color: color-mix(in srgb, var(--subtle) var(--panel-card-tint), transparent);
+}
+/* Markdown keeps its structure but not its body fill: code bodies show the image
+ * directly, while headers and label-like chips share the tool card tint. */
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .md .bg-sunken,
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .md th {
+    background-color: color-mix(in srgb, var(--sunken) var(--panel-card-tint), transparent);
+}
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .md :not(pre) > code {
+    background-color: color-mix(in srgb, var(--subtle) var(--panel-card-tint), transparent);
+}
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .md pre {
+    background-color: transparent;
 }

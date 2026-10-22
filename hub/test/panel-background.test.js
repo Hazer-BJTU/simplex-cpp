@@ -25,9 +25,17 @@ test('background configuration validates union values, CSS grammar and disabled 
         { image: 'data:image/png;base64,x' }, { image: '${SECRET}' }, { size: 'url(x)' }, { size: '0px' },
         { size: '1px; color:red' }, { size: 'calc(1px)' }, { position: '2px' }, { opacity: -1 },
         { opacity: 1.1 }, { opacity: NaN }, { opacity: Infinity }, { opacity: { light: 1 } },
-        { opacity: { light: 0, dark: 1, ignored: true } }]) {
+        { opacity: { light: 0, dark: 1, ignored: true } },
+        { toolCardOpacity: -0.1 }, { toolCardOpacity: 1.1 }, { toolCardOpacity: NaN },
+        { toolCardOpacity: '0.5' }, { toolCardOpacity: { light: 1 } },
+        { toolCardOpacity: { light: 0, dark: 1, ignored: true } }]) {
         assert.throws(() => normalizeBackground(raw), /panel.background/);
     }
+    assert.deepEqual(normalizeBackground({}).toolCardOpacity, { light: 0.6, dark: 0.6 });
+    assert.deepEqual(normalizeBackground({ toolCardOpacity: 0.25 }).toolCardOpacity,
+        { light: 0.25, dark: 0.25 });
+    assert.deepEqual(normalizeBackground({ toolCardOpacity: { light: 0.2, dark: 0.8 } }).toolCardOpacity,
+        { light: 0.2, dark: 0.8 });
     const config = loadConfig({ overrides: { dataDir: root, panel: { background: { image: '', opacity: 0.5 } } } }).config;
     assert.equal(startupConfigDocument(config).panel.background, undefined);
     assert.equal(config.panel.background, undefined);
@@ -37,10 +45,12 @@ test('background configuration validates union values, CSS grammar and disabled 
 
 test('relative image paths and numeric opacity survive compact first-run output and reload', t => {
     const root = temp(t), file = join(root, 'hub.config.jsonc');
-    writeFileSync(file, JSON.stringify({ panel: { background: { image: './wall.png', opacity: 0.3, size: '80% auto', position: 'bottom right' } } }));
+    writeFileSync(file, JSON.stringify({ panel: { background: { image: './wall.png', opacity: 0.3,
+        size: '80% auto', position: 'bottom right', toolCardOpacity: 0.25 } } }));
     const config = loadConfig({ file }).config;
     assert.equal(config.panel.background.image, join(root, 'wall.png'));
     assert.deepEqual(config.panel.background.opacity, { light: 0.3, dark: 0.3 });
+    assert.deepEqual(config.panel.background.toolCardOpacity, { light: 0.25, dark: 0.25 });
     writeFileSync(file, JSON.stringify(startupConfigDocument(config)));
     assert.deepEqual(loadConfig({ file }).config, config);
 });
@@ -72,10 +82,11 @@ test('file errors disable decoration without exposing paths or failing startup',
 test('asset endpoint enforces auth, immutable bytes, private caching, HEAD and safe metadata', async t => {
     const root = temp(t), image = join(root, 'wall.png'), bytes = backgroundPng();
     writeFileSync(image, bytes);
-    const ctx = await startTestHub({ dataDir: join(root, 'hub'), panel: { token: 'private-token', background: { image } } });
+    const ctx = await startTestHub({ dataDir: join(root, 'hub'), panel: { token: 'private-token', background: { image, toolCardOpacity: 0.4 } } });
     t.after(() => ctx.hub.stop());
     const meta = await (await fetch(`${ctx.base}/api/meta`)).json();
     assert.equal(meta.background.url, '/api/panel/background/image');
+    assert.deepEqual(meta.background.toolCardOpacity, { light: 0.4, dark: 0.4 });
     assert.equal(JSON.stringify(meta).includes(root), false);
     assert.equal(JSON.stringify(meta).includes('private-token'), false);
     const url = `${ctx.base}${meta.background.url}`;
