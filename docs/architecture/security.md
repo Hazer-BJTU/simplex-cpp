@@ -20,9 +20,10 @@ is an operator decision, not an OS isolation boundary. Cancellation cannot undo
 already completed operations.
 
 Use a dedicated unprivileged account or a container with limited mounts,
-credentials, and network access. The supplied Hub Docker launch template runs
-as container root for convenience; review it before using it for sensitive work.
-Never mount the Docker socket or unrelated host data into an untrusted worker.
+credentials, and network access. For a managed Docker target the operator owns
+the container and its user, mounts and network policy; the Hub only runs
+`docker exec` inside it. Never mount the Docker socket or unrelated host data into
+an untrusted worker.
 
 ## Hub authority
 
@@ -36,12 +37,14 @@ token. Use TLS termination and controlled network access for remote deployment.
 Worker routes use per-session bearer tokens, separate from the panel token.
 Tokens in URLs and configuration files must be protected from logs and sharing.
 
-Docker lifecycle snapshots retain only the documented management environment and
-explicit `launcher.dockerManagementEnv` pass-throughs. They do not duplicate the
-Hub's entire inherited environment, but necessary proxy/header credentials and
-operator-selected secrets can still be present in private mode-0600 storage.
-Explicit launch configuration secrets and older backups remain sensitive.
-See the [management environment policy](../hub/configurations.md#docker-management-environment).
+A Docker management target stores its Hub-side Docker CLI environment in the
+launch configuration (`management.env`) and in private session snapshots. Proxy,
+registry or context credentials placed there remain sensitive even though the
+files are mode 0600. The Hub does not copy its own environment into the
+container, does not inspect container environment variables, and never reads the
+container's filesystem. Worker credentials belong to the container's environment,
+which the operator controls. See
+[Docker worker deployment](../deployment/docker-worker.md#security).
 
 ## Data and model endpoints
 

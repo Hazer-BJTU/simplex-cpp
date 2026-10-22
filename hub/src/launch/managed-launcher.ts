@@ -10,6 +10,98 @@ import type {
     ManagementRequest,
 } from './management.ts';
 
+/** Hub endpoint channels a Docker preflight can inspect. */
+export const DOCKER_PREFLIGHT_CHANNELS = ['events', 'confirm', 'tools'] as const;
+
+/** One advertised Hub channel. */
+export type DockerPreflightChannel = (typeof DOCKER_PREFLIGHT_CHANNELS)[number];
+
+/**
+ * Checks performed against an operator-retained container before the first
+ * target mutation. They never create, start, stop or remove a container.
+ */
+export interface DockerPreflightPolicy {
+    /** False skips every check below; the target is then used as configured. */
+    enabled: boolean;
+    /** Deadline for one Docker CLI call, including a stalled daemon. */
+    timeoutMs: number;
+    /** Require an existing container that is currently running. */
+    container: boolean;
+    /** Require `management.executable --version` to succeed inside it. */
+    executable: boolean;
+    /** Inspect whether the advertised Hub endpoints are usable from its network. */
+    endpoint: { enabled: boolean; channels: DockerPreflightChannel[] };
+}
+
+/** Defaults: every check on, one advertised channel, a five-second deadline. */
+export const DEFAULT_DOCKER_PREFLIGHT: DockerPreflightPolicy = {
+    enabled: true,
+    timeoutMs: 5000,
+    container: true,
+    executable: true,
+    endpoint: { enabled: true, channels: ['events'] },
+};
+
+function preflightObject(value: unknown): Record<string, unknown> {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new TypeError('docker preflight must be a mapping');
+    }
+    return value as Record<string, unknown>;
+}
+
+function preflightBoolean(value: unknown, name: string, fallback: boolean): boolean {
+    if (value === undefined) return fallback;
+    if (typeof value !== 'boolean') throw new TypeError(`docker preflight.${name} must be a boolean`);
+    return value;
+}
+
+function preflightKeys(value: Record<string, unknown>, allowed: readonly string[], name: string): void {
+    for (const key of Object.keys(value)) {
+        if (!allowed.includes(key)) throw new TypeError(`unknown docker preflight field: ${name}${key}`);
+    }
+}
+
+/**
+ * Validate one operator policy and fill omitted fields with the defaults.
+ * Known fields are normalized so a restarted Hub reads the same checks.
+ */
+export function normalizeDockerPreflight(value: unknown): DockerPreflightPolicy {
+    if (value === undefined) return structuredClone(DEFAULT_DOCKER_PREFLIGHT);
+    const policy = preflightObject(value);
+    preflightKeys(policy, ['enabled', 'timeoutMs', 'container', 'executable', 'endpoint'], '');
+    const timeoutMs = policy.timeoutMs ?? DEFAULT_DOCKER_PREFLIGHT.timeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || (timeoutMs as number) < 1 || (timeoutMs as number) > 2147483647) {
+        throw new TypeError('docker preflight.timeoutMs must be an integer between 1 and 2147483647');
+    }
+    let endpoint = structuredClone(DEFAULT_DOCKER_PREFLIGHT.endpoint);
+    if (policy.endpoint !== undefined) {
+        const source = preflightObject(policy.endpoint);
+        preflightKeys(source, ['enabled', 'channels'], 'endpoint.');
+        endpoint = {
+            enabled: preflightBoolean(source.enabled, 'endpoint.enabled', true),
+            channels: structuredClone(endpoint.channels),
+        };
+        if (source.channels !== undefined) {
+            if (!Array.isArray(source.channels) || source.channels.length === 0
+                || source.channels.some(channel => !(DOCKER_PREFLIGHT_CHANNELS as readonly unknown[]).includes(channel))) {
+                throw new TypeError(`docker preflight.endpoint.channels must list ${DOCKER_PREFLIGHT_CHANNELS.join(', ')}`);
+            }
+            const channels = source.channels as DockerPreflightChannel[];
+            if (new Set(channels).size !== channels.length) {
+                throw new TypeError('docker preflight.endpoint.channels must not repeat a channel');
+            }
+            endpoint.channels = [...channels];
+        }
+    }
+    return {
+        enabled: preflightBoolean(policy.enabled, 'enabled', true),
+        timeoutMs: timeoutMs as number,
+        container: preflightBoolean(policy.container, 'container', true),
+        executable: preflightBoolean(policy.executable, 'executable', true),
+        endpoint,
+    };
+}
+
 /** Operator-controlled execution target. Remote paths are never resolved on the Hub. */
 export type ManagementTarget =
     | { kind: 'local' }
@@ -27,6 +119,8 @@ export type ManagementTarget =
         args: string[];
         /** Existing running container, retained through worker shutdown and removal. */
         container: string;
+        /** Startup checks; omitted means the defaults above. */
+        preflight?: DockerPreflightPolicy;
     };
 
 /** Serializable operator policy; keep credentials out of public session metadata. */
@@ -68,6 +162,9 @@ export class ManagedLauncher {
                 throw new TypeError('invalid management transport');
             }
         }
+        // Reject an unusable startup policy here, before a session can bind an
+        // allocation that it later refuses to launch.
+        if (target.kind === 'docker' && target.preflight !== undefined) normalizeDockerPreflight(target.preflight);
         // Retain a private copy so later config/UI changes cannot switch targets
         // halfway through a prepare/capture/run/remove lifecycle.
         this.options = structuredClone(options);

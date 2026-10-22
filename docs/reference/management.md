@@ -162,14 +162,22 @@ The adapter supports these invocation shapes:
 | --- | --- | --- |
 | Local | `simplex manage --request BASE64` | Installed `simplex` supports management. |
 | SSH | `ssh [connection options] -T -- HOST 'simplex' 'manage' '--request' 'BASE64'` | Target uses a POSIX command shell; worker ownership must be verified independently of SSH exit. |
-| Docker | `docker [context options] exec CONTAINER simplex manage --request BASE64` | Container already exists and remains running through worker shutdown and allocation removal. |
+| Docker | `docker [context options] exec CONTAINER simplex manage --request BASE64` | Container already exists, is running, provides the configured installation and remains available through worker shutdown and allocation removal. |
 
 SSH quotes every remote argument, including executable paths containing spaces or
 apostrophes. Docker uses argument arrays with neither a shell nor a PTY. There is
-no inference from legacy arbitrary command templates, implicit container creation,
-or shared-directory fallback. The existing foreground `docker run --rm` launch
-pattern cannot provide post-exit management access; integration must introduce an
-explicit container lifetime before switching that path.
+no inference from arbitrary command templates, implicit container creation, or
+shared-directory fallback. Hub never creates, starts, stops or removes a
+container.
+
+A Docker target runs read-only startup checks before the first target mutation:
+the container must exist and be running, `docker exec CONTAINER EXE --version`
+must succeed, and the advertised channel address must be usable from the
+container's network namespace. A loopback address is accepted only when the
+container shares the host network; a `host.docker.internal` name requires a host
+mapping. `management.target.preflight` adjusts the checks, their deadline and the
+inspected channels. A failed check refuses the start; a new session stays unbound, so
+no allocation record is written and both configuration files remain editable.
 
 The transport's `cwd` and environment describe the Hub-side process. Allocation
 paths and the `simplex` executable describe the target. For example, Hub records
@@ -257,16 +265,25 @@ remote installation/storage:
 For Docker use an **existing retained container**:
 
 ```json
-{ "kind": "docker", "command": "docker", "args": ["--context", "my-target"], "container": "simplex-target" }
+{
+  "kind": "docker",
+  "command": "docker",
+  "args": ["--context", "my-target"],
+  "container": "simplex-target",
+  "preflight": { "container": true, "executable": true,
+                 "endpoint": { "enabled": true, "channels": ["events"] } }
+}
 ```
 
 The operator creates and keeps that container running independently of the
 worker process (for example, an image with `simplex` installed and an idle init
 process). Hub runs both commands using `docker exec`, with no bind mount needed.
 The container must remain available after worker exit until deletion succeeds.
-Hub does not create, stop or remove this container. Its lifecycle must not use a
-foreground worker as PID 1 with automatic container removal. Configure advertised
-Hub endpoints reachable from the target as with other remote launch profiles.
+Hub does not create, stop or remove this container; its lifecycle must not make
+the worker PID 1 with automatic container removal. Configure advertised Hub
+endpoints reachable from the target as with other remote launch profiles.
+[Deploy a Docker worker](../deployment/docker-worker.md) covers image
+preparation, network modes, the allocation root and troubleshooting.
 
 Remote stop sends the normal shutdown signal. A successful idle lease probe is
 only a present-time observation: an SSH/Docker command may already be dispatched

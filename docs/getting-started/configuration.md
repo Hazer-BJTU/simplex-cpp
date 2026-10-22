@@ -19,7 +19,10 @@ or before startup with a text editor. A session selects one launch and one
 worker file and receives independent copies. New `local` launch files use the
 same `management.executable` for `simplex run` and `simplex manage`; set it to
 an absolute installed `bin/simplex` path if necessary. Their target allocations
-live under `<dataDir>-workers`, independently of Hub records. Existing saved
+live under `<dataDir>-workers`, independently of Hub records. The seeded
+`docker` launch file is a managed target for a container the operator already
+runs (`management.target.kind: "docker"`); it never creates a container. See
+[Docker worker deployment](../deployment/docker-worker.md). Existing saved
 launch files are preserved.
 
 Replace `YOUR_*` values in the worker template. `providers` keys are arbitrary

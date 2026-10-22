@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, openSync, closeSync, fsyncSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join, resolve, sep, isAbsolute } from 'node:path';
 import { mutationNamespace, serializeMutation, retryManagerBusy } from './managed-mutations.ts';
-import { ManagedLauncher } from './managed-launcher.ts';
+import { ManagedLauncher, normalizeDockerPreflight } from './managed-launcher.ts';
 import type { ManagedLauncherOptions } from './managed-launcher.ts';
 import { ManagementError, validateAllocation } from './management.ts';
 import type { AllocationReference, ManagementOperation, ForkSource } from './management.ts';
@@ -69,7 +69,15 @@ export function managementPolicy(value: unknown): ManagementPolicy {
         || typeof target[target.kind === 'ssh' ? 'host' : 'container'] !== 'string')) {
         throw new Error('invalid management transport fields');
     }
+    if (target.preflight !== undefined && target.kind !== 'docker') {
+        throw new Error('management.target.preflight is only valid for a docker target');
+    }
     const policy = structuredClone(value) as unknown as ManagementPolicy;
+    if (policy.target.kind === 'docker') {
+        // Fill omitted checks now: the durable record must mean the same thing
+        // after a Hub restart or an edit to the source library file.
+        policy.target.preflight = normalizeDockerPreflight(policy.target.preflight);
+    }
     validateAllocation({ allocationId: 'validation', directory: policy.root });
     if (!isAbsolute(policy.cwd)) throw new Error('management.cwd must be an absolute Hub-local directory');
     if (policy.timeoutMs !== undefined && (!Number.isSafeInteger(policy.timeoutMs)

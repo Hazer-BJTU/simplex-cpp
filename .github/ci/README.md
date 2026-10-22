@@ -115,8 +115,10 @@ cannot load. Selected CI fails rather than passing a skipped suite. Local tests
 retain convenient skipping when the worker/default prompt is unavailable.
 
 `test/e2e/docker-worker.test.js` remains independently opt-in with
-`SIMPLEX_DOCKER_WORKER_TEST=1`; it requires a separately built Docker image and a
-non-root host Hub. It is not made mandatory by the ordinary CI strict flag.
+`SIMPLEX_DOCKER_WORKER_TEST=1`; it requires an already-running container that
+provides this revision's `simplex` installation and a non-root host Hub. The
+test header lists `SIMPLEX_DOCKER_MANAGED_CONTAINER` and its optional variables.
+It is not made mandatory by the ordinary CI strict flag.
 
 ## Stable required check
 

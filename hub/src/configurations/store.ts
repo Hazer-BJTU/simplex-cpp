@@ -152,8 +152,12 @@ export function launchDocument(text: string, config: HubConfig): LaunchDocument 
         }
     }
     if (value.management !== undefined) {
-        value.management = managementPolicy(value.management);
-        separateLocalRoot(config, value.management);
+        try {
+            value.management = managementPolicy(value.management);
+            separateLocalRoot(config, value.management);
+        } catch (error) {
+            throw configError(error instanceof Error ? error.message : 'Invalid management policy');
+        }
         if (value.launcher.pidFile) throw configError('managed launch does not support pidFile');
     }
     return value;
@@ -232,7 +236,8 @@ export class ConfigurationStore {
         }
         if (source === 'docker') {
             if (kind !== 'launch') throw configError('Docker is a launch template');
-            return readFileSync(join(hubRoot, 'schemas', 'docker.jsonc'), 'utf8');
+            return readFileSync(join(hubRoot, 'schemas', 'docker.jsonc'), 'utf8')
+                .replace('"__HUB_CWD__"', JSON.stringify(homedir()));
         }
         if (kind === 'launch') {
             return readFileSync(join(hubRoot, 'schemas', 'local.jsonc'), 'utf8')

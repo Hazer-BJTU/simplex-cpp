@@ -67,7 +67,10 @@ async function setup(t, remote = false) {
             const child=spawn(args[2],args.slice(3),{stdio:'inherit'});
             child.on('exit',code=>{process.exitCode=code??1;});
         `, { mode: 0o700 });
-        transport = { kind: 'docker', command, args: [], container: 'retained' };
+        transport = { kind: 'docker', command, args: [], container: 'retained',
+            // These tests exercise the manager transport; the Docker startup
+            // preflight has its own coverage in docker-preflight.test.js.
+            preflight: { enabled: false } };
     }
     const store = new ConfigurationStore(context.config);
     const launch = { launcher: { kind: 'command', command: ['ignored-legacy-command'] },

@@ -15,7 +15,6 @@ import type { ToolContext } from '../worker/tool-context.ts';
 import { ToolFailure } from '../worker/tool-context.ts';
 import { newRequestId, buildPayload } from '../protocol/messages.ts';
 import { childDirectories, ownedPath, readPrivate, writePrivate, removeChildDirectory } from './storage.ts';
-import { dockerName, dockerRunning } from './docker.ts';
 import { cleanFork } from './fork.ts';
 import { ConversationProjection } from './conversation.ts';
 import { ProjectionFlush } from './projection-flush.ts';
@@ -646,9 +645,7 @@ export class SubagentService {
         if (action === 'confirm-terminated') {
             const process = session.process as ProcessRecord | null;
             const liveProcess = process && processIdentity(process.pid, process.pidStartTime) === 'same';
-            const liveContainer = process && dockerName(process)
-                && await dockerRunning(process.dockerManagement) === true;
-            if (!valid() || liveProcess || liveContainer || (session.connection as WorkerConnection | null)?.isOpen) {
+            if (!valid() || liveProcess || (session.connection as WorkerConnection | null)?.isOpen) {
                 throw new Error('a live worker or concurrent lifecycle prevents termination confirmation');
             }
         }
@@ -799,7 +796,6 @@ export class SubagentService {
                         process.outputSplitters.length = 0;
                         process.child = null;
                         process.error = null;
-                        process.dockerManagement = null;
                     }
                     session.spec = {};
                     session.requests.clear();
@@ -990,8 +986,6 @@ export class SubagentService {
                 }
                 if (cyclic || !parent || parent.lifecycleId !== record.parent.lifecycle_id
                     || !this.options.supervisor.isRunning(parent) || !this.options.supervisor.isRunning(record.session)
-                    || (record.session.process && dockerName(record.session.process as ProcessRecord)
-                        && !(record.session.process as ProcessRecord).dockerManagement)
                     || record.session.closing || record.session.subagent!.lifecycle === 'cleanup-pending') {
                     record.session.subagent!.lifecycle = 'cleanup-pending';
                     record.session.closing = true;
