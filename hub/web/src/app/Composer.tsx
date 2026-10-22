@@ -241,12 +241,14 @@ function SessionComposer() {
         >
             <div className="h-5">{tokenUsage && <TokenUsageIndicator usage={tokenUsage} />}</div>
             <div className="reading-width composer-surface" data-testid="composer-surface">
-                {/* The row is always present. Without a reported usage a
-                    placeholder reserves its height, so the first response fills
-                    the meter instead of growing the composer; the action
-                    belongs to the meter and is hidden until there is one. */}
-                <div className="flex h-10 items-center pt-2 pb-1 pr-2">
-                    {tokenUsage ? (
+                {/* The row is always present so the first response fills the
+                    meter instead of growing the composer, but it draws nothing
+                    until a usage figure exists: an animated placeholder above
+                    the composer read as a broken meter. The action belongs to
+                    the meter and is hidden until there is one. */}
+                <div className="flex h-10 items-center pl-3 pt-2 pb-1 pr-2"
+                    data-testid="context-meter-row">
+                    {tokenUsage && (
                         <>
                             <TokenUsageMeter usage={tokenUsage} />
                             <IconButton className="ml-2"
@@ -262,16 +264,6 @@ function SessionComposer() {
                                 {!compactSupported && ' This hub or worker does not support context compaction.'}
                             </span>
                         </>
-                    ) : (
-                        <div data-testid="context-meter-placeholder"
-                            className="flex items-center gap-1">
-                            <span aria-hidden className="flex h-1.5 w-20 gap-0.5 sm:w-32">
-                                {Array.from({ length: 8 }, (_, index) => (
-                                    <span key={index} className="skeleton min-w-0 flex-1 rounded-sm" />
-                                ))}
-                            </span>
-                            <span aria-hidden className="skeleton block h-2.5 w-14 rounded-sm" />
-                        </div>
                     )}
                 </div>
                 {references.length > 0 && (

@@ -8,39 +8,52 @@ test('the compact action appears and disappears with the context meter', async (
     await open(page, '?session=demo');
     const meter = page.getByLabel('Token usage band');
     const compact = page.getByRole('button', { name: 'Compact', exact: true });
-    const placeholder = page.getByTestId('context-meter-placeholder');
+    const row = page.getByTestId('context-meter-row');
+    const input = page.getByLabel('message', { exact: true });
     // No response has reported usage yet, so there is no band to draw and no
-    // action that belongs to it; a placeholder still reserves the row's height.
+    // action that belongs to it. The row keeps its height — the first figure
+    // must not grow the composer — but draws nothing: an animated placeholder
+    // above the composer read as a broken meter.
     await expect(meter).toHaveCount(0);
     await expect(compact).toHaveCount(0);
-    await expect(placeholder).toBeVisible();
-    expect((await placeholder.boundingBox())!.height).toBeGreaterThan(0);
+    await expect(row.locator('.skeleton')).toHaveCount(0);
+    expect((await row.boundingBox())!.height).toBeGreaterThan(0);
     const before = (await page.getByTestId('composer-surface').boundingBox())!;
+    const inputBefore = (await input.boundingBox())!;
     // A capability on its own is not enough: the row stays empty until there
     // is a usage figure to put in it.
     await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
     await expect(compact).toHaveCount(0);
-    await expect(placeholder).toBeVisible();
+    await expect(row.locator('.skeleton')).toHaveCount(0);
     await reportUsage(page);
-    await expect(placeholder).toHaveCount(0);
     await expect(meter).toBeVisible();
     await expect(compact).toBeVisible();
     const surface = (await page.getByTestId('composer-surface').boundingBox())!;
-    // Filling the row must not move or resize the composer.
+    // Filling the row must not move or resize the composer or the input: the
+    // empty row reserves exactly the height the meter and the action need.
     expect(surface.y).toBe(before.y);
     expect(surface.height).toBe(before.height);
+    const inputAfter = (await input.boundingBox())!;
+    expect(inputAfter.y).toBe(inputBefore.y);
+    expect(inputAfter.height).toBe(inputBefore.height);
     const band = (await meter.boundingBox())!;
-    // Flush with the border: the old label indented it by a whole column.
-    expect(Math.abs(band.x - (surface.x + 1))).toBeLessThanOrEqual(0.5);
+    // The meter starts at the message's text inset, not at the surface border:
+    // flush, it read as part of the frame rather than of the composer.
+    const textInset = await input.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.x + Number.parseFloat(getComputedStyle(node).paddingLeft);
+    });
+    expect(Math.abs(band.x - textInset)).toBeLessThanOrEqual(0.5);
     const action = (await compact.boundingBox())!;
     // The action sits immediately after the meter, not at the end of the row.
     expect(action.x).toBeGreaterThanOrEqual(band.x + band.width);
     expect(action.x - (band.x + band.width)).toBeLessThanOrEqual(12);
     // Losing the worker identity hides the meter and the action together and
-    // leaves the placeholder, without resizing the composer.
+    // returns the row to its silent, same-height state.
     await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
     await expect(compact).toHaveCount(0);
-    await expect(placeholder).toBeVisible();
+    await expect(meter).toHaveCount(0);
+    await expect(row.locator('.skeleton')).toHaveCount(0);
     const disconnected = (await page.getByTestId('composer-surface').boundingBox())!;
     expect(disconnected.y).toBe(before.y);
     expect(disconnected.height).toBe(before.height);

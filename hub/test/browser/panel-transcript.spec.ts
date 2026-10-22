@@ -1106,12 +1106,15 @@ test('the token scale uses eight bands and remains full above 1M', async ({ page
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
     const compact = (await page.getByRole('button', { name: 'Compact', exact: true }).boundingBox())!;
     expect(compact.x + compact.width).toBeLessThanOrEqual(320);
-    // The meter is flush with the composer's left border; the old "Message"
-    // label that indented it is gone, and the action follows the band.
+    // The meter starts at the message's text inset, and the action follows the
+    // band rather than the end of the row.
     const surface = (await page.getByTestId('composer-surface').boundingBox())!;
     const band = (await usage.boundingBox())!;
-    expect(bounds!.x).toBeGreaterThanOrEqual(surface.x);
-    expect(bounds!.x).toBeLessThanOrEqual(surface.x + 1.5);
+    const textInset = await page.getByLabel('message', { exact: true }).evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.x + Number.parseFloat(getComputedStyle(node).paddingLeft);
+    });
+    expect(Math.abs(bounds!.x - textInset)).toBeLessThanOrEqual(0.5);
     expect(bounds!.y).toBeGreaterThanOrEqual(surface.y);
     expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(surface.y + 40);
     expect(await page.getByText('Message', { exact: true }).count()).toBe(0);
