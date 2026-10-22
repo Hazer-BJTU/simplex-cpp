@@ -10,7 +10,8 @@ import type { ConfigList } from './Configurations.tsx';
  *
  * Below `md` this column becomes a drawer. It is one element with responsive
  * classes rather than two renderings of the list, because a second copy is a
- * second place for the rows to drift apart.
+ * second place for the rows to drift apart. Above `md` the column can be
+ * collapsed from the status bar; the drawer's own state stays separate.
  */
 import { useEffect, useState, type FormEvent } from 'react';
 import type { SessionDescription } from '../../../ui/index.ts';
@@ -104,10 +105,12 @@ function SessionRow({ session, selected, onSelect }: {
     );
 }
 
-export function SessionList({ open, onClose }: {
+export function SessionList({ open, onClose, collapsed }: {
     /** Below `md`, whether the drawer is showing. Ignored on a wide screen. */
     open: boolean;
     onClose: () => void;
+    /** Above `md`, whether the column is hidden. Ignored below `md`. */
+    collapsed: boolean;
 }) {
     const client = useClient();
     const sessions = usePanel((state) => state.sessions);
@@ -170,12 +173,14 @@ export function SessionList({ open, onClose }: {
                 />
             )}
             <aside
+                id="session-list"
                 aria-label="sessions"
                 data-testid="session-list"
                 data-open={open ? 'true' : 'false'}
+                data-collapsed={collapsed ? 'true' : 'false'}
                 className={`${open ? 'flex' : 'hidden'} fixed inset-y-0 left-0 z-40 w-72
                     animate-drawer flex-col border-r border-line bg-sunken md:static md:z-auto
-                    md:flex md:w-64 md:animate-none`}
+                    ${collapsed ? 'md:hidden' : 'md:flex'} md:w-64 md:animate-none`}
             >
                 <div className="flex items-center gap-1 px-2 py-2">
                     <h2 className="px-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
@@ -244,10 +249,6 @@ export function SessionList({ open, onClose }: {
                         ))}
                     </ul>
                 )}
-
-                <p className="border-t border-line px-3 py-2 text-xs text-ink-faint">
-                    The hub has no delivery acknowledgement: <em>sent</em> is not <em>executed</em>.
-                </p>
             </aside>
             <Configurations open={configuring} onClose={() => setConfiguring(false)} />
             <Dialog open={creating} onOpenChange={(value) => {

@@ -186,6 +186,34 @@ test.describe('the keyboard', () => {
     });
 });
 
+test.describe('the session column', () => {
+    test('can be hidden and shown from the status bar', async ({ page }) => {
+        await open(page);
+        const list = page.getByTestId('session-list');
+        const toggle = page.getByTestId('sessions-desktop-toggle');
+        await expect(list).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        await expect(toggle).toHaveAccessibleName('Hide the session list');
+        // The delivery warning belongs to the protocol, not the sidebar.
+        await expect(page.getByText('The hub has no delivery acknowledgement')).toHaveCount(0);
+        const before = (await page.locator('main').boundingBox())!;
+
+        await toggle.click();
+        await expect(list).toBeHidden();
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        await expect(toggle).toHaveAccessibleName('Show the session list');
+        await expect(toggle).toBeFocused();
+        const after = (await page.locator('main').boundingBox())!;
+        // The conversation takes the width the column gave up.
+        expect(after.x).toBeLessThan(before.x - 100);
+
+        await toggle.click();
+        await expect(list).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        await expect(page.getByTestId('session-row').first()).toBeVisible();
+    });
+});
+
 test.describe('a narrow screen', () => {
     test.use({ viewport: { width: 390, height: 780 } });
 
@@ -194,6 +222,7 @@ test.describe('a narrow screen', () => {
 
         // The sidebar is not a column here.
         await expect(page.getByTestId('session-list')).toBeHidden();
+        await expect(page.getByTestId('sessions-desktop-toggle')).toBeHidden();
         const overflow = await page.evaluate(() => (
             document.documentElement.scrollWidth - document.documentElement.clientWidth
         ));

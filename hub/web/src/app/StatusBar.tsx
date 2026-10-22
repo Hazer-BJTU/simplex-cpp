@@ -46,9 +46,13 @@ function describeConnection(state: string, attempt: number, nextDelayMs: number 
     }
 }
 
-export function StatusBar({ onOpenSessions }: {
+export function StatusBar({ onOpenSessions, sessionsCollapsed, onToggleSessions }: {
     /** Opens the session drawer, which below `md` is the only way to it. */
     onOpenSessions: () => void;
+    /** Whether the session column above `md` is collapsed. */
+    sessionsCollapsed: boolean;
+    /** Shows or hides that column; the drawer button owns the narrow layout. */
+    onToggleSessions: () => void;
 }) {
     const client = useClient();
     const connection = usePanel((state) => state.connection);
@@ -66,6 +70,19 @@ export function StatusBar({ onOpenSessions }: {
     return (
         <header className="border-b border-line bg-surface">
             <div className="flex items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
+                <span className="hidden md:inline-flex">
+                    <Tooltip label={sessionsCollapsed ? 'Show the session list' : 'Hide the session list'}>
+                        <IconButton
+                            label={sessionsCollapsed ? 'Show the session list' : 'Hide the session list'}
+                            data-testid="sessions-desktop-toggle"
+                            aria-expanded={!sessionsCollapsed}
+                            aria-controls="session-list"
+                            onClick={onToggleSessions}
+                        >
+                            <Glyph name="sessions" />
+                        </IconButton>
+                    </Tooltip>
+                </span>
                 <Tooltip label="Sessions">
                     <IconButton
                         label="Open the session list"
