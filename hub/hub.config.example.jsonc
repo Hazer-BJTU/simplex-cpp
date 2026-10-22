@@ -6,7 +6,16 @@
     // Omit dataDir to use ~/.simplex/hub.
 
     // A non-loopback listener requires a nonempty authentication token.
-    "panel": { "token": "" },
+    "panel": {
+        "token": ""
+        // Optional static PNG/JPEG, relative to this config file. Restart to apply.
+        // , "background": {
+        //     "image": "./assets/background.jpg",
+        //     "size": "cover",
+        //     "position": "center",
+        //     "opacity": { "light": 0.12, "dark": 0.08 }
+        // }
+    },
 
     // Independent plan/subagent tool listener; an empty host inherits listen.host.
     "toolRequests": { "host": "", "port": 8801, "timeoutMs": 120000, "maxConnections": 128 }

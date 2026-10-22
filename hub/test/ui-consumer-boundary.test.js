@@ -8,6 +8,7 @@ import { parse } from '@babel/parser';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const helpers = new Map([
+    ['background.ts', new Set(['normalizeBackground'])],
     ['guards.ts', new Set(['checkHubEnvelope'])],
     ['answers.ts', new Set(['answerSource', 'answerPage'])],
     ['tool-batches.ts', new Set(['omittedToolItems', 'toolOmissionCount'])],

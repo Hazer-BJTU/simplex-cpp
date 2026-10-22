@@ -125,6 +125,10 @@ export interface RestOperation<Params, Query, Body, Responses> {
 
 /** Complete named REST contract table. Keys are method/path pairs; common errors remain open-ended. */
 export interface RestOperations {
+    /** Authenticated static image bytes (PNG/JPEG); 304 has no body. */
+    'GET /api/panel/background/image': RestOperation<never, never, never, { 200: Uint8Array; 304: undefined; 404: undefined }>;
+    /** Same headers as GET; every response body is empty. */
+    'HEAD /api/panel/background/image': RestOperation<never, never, never, { 200: undefined; 304: undefined; 404: undefined }>;
     /** Read public metadata without operator authentication. */
     'GET /api/meta': RestOperation<never, never, never, { 200: HubMetadata }>;
     /** List saved configuration names without exposing source text. */
@@ -187,6 +191,8 @@ export interface RestOperations {
 
 /** Static inventory; this is not a router or URL builder. */
 export const REST_ROUTES = [
+    'GET /api/panel/background/image',
+    'HEAD /api/panel/background/image',
     'GET /api/skills',
     'GET /api/skills/template',
     'GET /api/skills/:id',

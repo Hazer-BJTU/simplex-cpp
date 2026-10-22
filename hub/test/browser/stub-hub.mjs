@@ -114,6 +114,7 @@ function transcriptOf(id) {
 
 function meta() {
     return {
+        ...(settings.background ? { background: settings.background } : {}),
         name: 'stub-hub',
         version: '0.0.0',
         protocol: { name: 'simplex-hub-panel', version: PANEL_VERSION },

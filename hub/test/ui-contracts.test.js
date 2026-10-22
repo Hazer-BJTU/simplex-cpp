@@ -27,7 +27,7 @@ test('every live panel REST route has exactly one contract, and no invented rout
     t.after(async () => { await ctx.hub.stop(); rmSync(ctx.config.dataDir, { recursive: true, force: true }); });
     const found = ctx.hub.http.router.list().filter(route => route.pattern.startsWith('/api/'))
         .map(route => `${route.method} ${route.pattern}`);
-    assert.equal(found.length, 29);
+    assert.equal(found.length, 31);
     assert.equal(new Set(found).size, found.length);
     assert.deepEqual([...ui.REST_ROUTES].sort(), found.sort());
     const contract = parse(readFileSync(join(root, 'ui/rest.ts'), 'utf8'), { sourceType: 'module', plugins: ['typescript'] });

@@ -30,6 +30,7 @@ export type {
     WorkerEnvelope,
     TranscriptEpoch,
     HubMetadata,
+    PanelBackground,
     SessionListResponse,
     SessionResponse,
     RemovedResponse,

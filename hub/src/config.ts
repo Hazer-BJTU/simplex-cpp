@@ -11,6 +11,7 @@
  * The worker configuration the hub *generates* is a different document: see
  * src/launch/config-render.ts.
  */
+import { normalizeBackground, type BackgroundOptions } from '../shared/background.ts';
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { SCENARIOS } from './mock/provider.ts';
@@ -65,7 +66,7 @@ export interface HubConfig {
         conversationBytes: number;
     };
     /** Empty token disables panel authentication on a loopback listener. */
-    panel: { token: string };
+    panel: { token: string; background?: Omit<BackgroundOptions, 'opacity'> & { opacity: number | BackgroundOptions['opacity'] } };
     worker: {
         bin: string;
         args: string[];
@@ -296,6 +297,7 @@ function unknownConfigKeys(
     const expectedKeys = shape as Record<string, unknown>;
     for (const [key, item] of Object.entries(value)) {
         const path = prefix ? `${prefix}.${key}` : key;
+        if (path === "panel.background") continue; // Validated explicitly: optional and union-valued.
         const expected = expectedKeys[key];
         if (expected === undefined) {
             found.push(path);
@@ -400,6 +402,10 @@ export function resolveAgainst(base: string, value: string): string {
 
 /** Apply path resolution to a merged configuration. */
 function resolvePaths(config: HubConfig, baseDir: string): HubConfig {
+    normalizePanelBackground(config);
+    if (config.panel?.background?.image) {
+        config.panel.background.image = resolveAgainst(baseDir, config.panel.background.image);
+    }
     config.dataDir = resolveAgainst(baseDir, config.dataDir);
     config.worker.bin = resolveAgainst(baseDir, config.worker.bin);
     if (config.worker.environment.workspace) {
@@ -443,9 +449,22 @@ export function checkPromptFile(value: unknown, field: string): string {
     return path;
 }
 
+/** Normalize optional decoration without adding disabled/default scaffolding. */
+function normalizePanelBackground(config: HubConfig): void {
+    if (!isPlainObject(config.panel) || config.panel.background === undefined) return;
+    try {
+        const background = normalizeBackground(config.panel.background);
+        if (background.image) config.panel.background = background;
+        else delete config.panel.background;
+    } catch (error) {
+        throw new ConfigError((error as Error).message);
+    }
+}
+
 /** Validate a merged configuration; throws ConfigError with a specific reason. */
 export function validateConfig(config: HubConfig): HubConfig {
     check(isPlainObject(config), 'configuration must be an object');
+    normalizePanelBackground(config);
     // Named before the generic unknown-key check, which would report the same
     // field without saying what replaced it.
     if (isPlainObject(config.worker) && Object.hasOwn(config.worker, 'promptsDir')) {

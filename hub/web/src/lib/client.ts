@@ -837,6 +837,8 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         },
 
         async setToken(value) {
+            // Clear private decoration immediately, before asynchronous auth or reconnect.
+            store.getState().setHub(null);
             tokens.set(value);
             store.getState().setAuthRequired(false);
             try {

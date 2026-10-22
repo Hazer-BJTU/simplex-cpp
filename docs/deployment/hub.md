@@ -69,6 +69,49 @@ Port 8801 serves one-shot remote tool requests. The worker initiates outbound
 connections to the Hub. Firewall both listeners appropriately. The Hub has no
 native TLS listener; use a TLS reverse proxy for untrusted networks.
 
+## Optional panel background
+
+Add `background` inside `panel` in your `hub.config.jsonc`:
+
+```json
+{
+  "panel": {
+    "background": {
+      "image": "./assets/background.jpg",
+      "size": "cover",
+      "position": "center",
+      "opacity": { "light": 0.12, "dark": 0.08 }
+    }
+  }
+}
+```
+
+Keep your existing panel token. The image is a **Hub-local file**, resolved relative
+to the configuration file; URLs and environment-variable substitution are not
+supported. Omit `background` or leave `image` empty to retain the default appearance.
+Generated configurations do not add disabled background settings.
+
+- `size`: `cover` (default), `contain`, `auto`, or one/two positive `px`/`%`
+  dimensions, such as `960px auto` or `80% auto`.
+- `position`: `center` (default), `top`, `bottom`, `left`, `right`,
+  `top left`, `top right`, `bottom left`, or `bottom right`.
+- `opacity`: values from 0 to 1, either one number for both themes or a
+  `{ "light", "dark" }` pair. Defaults are 0.12 and 0.08. Zero hides the
+  image in that theme. System theme changes follow the resolved light/dark theme.
+
+Only static PNG and JPEG are supported, up to 8 MiB and 33,554,432 pixels.
+Animated images, SVG, GIF and WebP are not supported. Hub validates container
+structure; the browser must also successfully decode the image before displaying
+it. Missing, unreadable or invalid images leave the normal panel usable.
+
+Restart Hub after changing the settings or image. Hub retains one immutable
+image snapshot until restart. The authenticated panel fetches it through a fixed
+endpoint; no local pathname or credential appears in image URLs or metadata.
+The image covers the viewport without scrolling, tiling or animation. Reading
+columns, inputs, approvals and dialogs keep opaque surfaces for readability;
+background visibility depends on the available space around them. Image opacity
+never changes text or control opacity.
+
 ## Configure and start a session
 
 Follow the [worker configuration guide](../getting-started/configuration.md)

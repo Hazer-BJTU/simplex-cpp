@@ -31,7 +31,7 @@ assert.deepEqual(Object.keys(sdk).sort(), [
 ].sort());
 assert.equal(sdk.PANEL_VERSION, 1);
 assert.equal(sdk.PANEL_SOCKET_PATH, '/panel/ws');
-assert.equal(sdk.REST_ROUTES.length, 29);
+assert.equal(sdk.REST_ROUTES.length, 31);
 assert.equal(process.cwd(), cwd);
 assert.deepEqual({ ...process.env }, environment);
 assert.deepEqual(new Map(process.eventNames().map(name => [name, process.listeners(name)])), events);
