@@ -1,47 +1,50 @@
 {
-    // Requires a locally available image with /bin/sh and `simplex` on PATH.
-    // Build/tag your installed worker image as simplex-worker:latest, or replace
-    // that image name below. Docker may pull the named image if it is not present locally.
-    // The Hub must listen on an address reachable from Docker (e.g. 0.0.0.0)
-    // and have a panel token. Keep the tool-request listener reachable as well.
-    "launcher": {
-        "kind": "command",
-        "command": [
-            "docker", "run", "--rm", "--init",
-            "--name", "simplex-worker-{session}",
-            "--add-host", "host.docker.internal:host-gateway",
-            // Root with the Hub's primary group; the umask below permits the
-            // Hub to remove worker-created directories when deleting a session.
-            "--user", "0:{gid}",
-            "-e", "MODEL_API_KEY",
-            // Bind the current session only, at the same absolute path.
-            // State and memory survive container removal. The nested mount
-            // protects every Hub-owned snapshot, including launch.jsonc.
-            "-v", "{session_dir}:{session_dir}",
-            "-v", "{session_dir}/config:{session_dir}/config:ro",
-            "--entrypoint", "/bin/sh",
-            "simplex-worker:latest",
-            "-c", "umask 0002; mkdir -p /root/workspace && cd /root/workspace && exec \"$@\"",
-            "sh",
-            // Installed entry point. For the in-tree simplex-hub-test image,
-            // replace "simplex" below with "/src/build/bin/simplex".
-            "simplex", "run",
-            "--config", "{config}",
-            "--session", "{session}",
-            "--threads", "{threads}"
-        ],
-        "args": [],
-        "cwd": "",
-        "pidFile": "",
-        // Extra environment NAMES needed by Docker inspect/kill after restart.
-        // Built-in connection/TLS/SSH/proxy variables are preserved automatically.
-        // Values of listed names are copied into private management snapshots.
-        // Worker model credentials forwarded with -e do not belong here.
-        "dockerManagementEnv": []
+    // Worker inside an already running container.
+    //
+    // The Hub never builds, starts, stops or removes a container. Create one
+    // yourself, keep it running, and install the same `simplex` command inside
+    // it. The Hub only runs `simplex manage` and `simplex run` there through
+    // `docker exec`; see docs/deployment/docker-worker.md.
+    "management": {
+        "target": {
+            "kind": "docker",
+            // Docker CLI and global options (for example a --context). Never an
+            // image, a `run` command or a container lifetime flag.
+            "command": "docker",
+            "args": [],
+            // Stable name of the operator-retained container. It must remain
+            // running through worker shutdown and allocation removal.
+            "container": "simplex-worker",
+            // Read-only startup checks; omitted fields use the values shown.
+            "preflight": {
+                "enabled": true,
+                // Deadline for one Docker CLI call.
+                "timeoutMs": 5000,
+                // Require a running container (it must exist either way)...
+                "container": true,
+                // ...with this installation usable inside it...
+                "executable": true,
+                // ...whose network can reach the advertised Hub channel.
+                "endpoint": { "enabled": true, "channels": ["events"] }
+            }
+        },
+        // Installed inside the container: PATH lookup or an absolute path.
+        "executable": "simplex",
+        // Hub-local working directory and environment for the Docker CLI.
+        "cwd": "__HUB_CWD__",
+        "env": {},
+        // Container-local allocation root. It must be writable by the
+        // container user, is durable only while the container lives, and
+        // should be mounted if the container may be recreated.
+        "root": "/var/lib/simplex/allocations",
+        "timeoutMs": 30000
     },
     "worker": {
         "threads": 1,
-        "connectHost": "host.docker.internal",
+        // Address reachable from the container. The default bridge gateway is
+        // 172.17.0.1; with --add-host=host.docker.internal:host-gateway use
+        // host.docker.internal instead.
+        "connectHost": "172.17.0.1",
         "stopTimeoutMs": 15000,
         "sigtermGraceMs": 5000,
         "sigkillGraceMs": 2000

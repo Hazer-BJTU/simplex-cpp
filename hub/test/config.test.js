@@ -119,15 +119,11 @@ describe('validateConfig', () => {
         assert.doesNotThrow(() => validateConfig(config));
     });
 
-    it('validates individual Docker management pass-through names without echoing values', () => {
+    it('ignores the removed Docker management environment key from an older hub configuration', () => {
         const config = defaultConfig();
-        assert.deepEqual(config.launcher.dockerManagementEnv, []);
-        config.launcher.dockerManagementEnv = ['CUSTOM_MANAGER_TOKEN', 'XDG_RUNTIME_DIR'];
+        config.launcher.dockerManagementEnv = ['CUSTOM_MANAGER_TOKEN'];
         assert.doesNotThrow(() => validateConfig(config));
-        for (const invalid of [null, {}, 'CUSTOM_MANAGER_TOKEN', ['DOCKER_*'], [''], ['A=B'], ['A\0B'], ['A', 'A'], [1]]) {
-            config.launcher.dockerManagementEnv = invalid;
-            assert.throws(() => validateConfig(config), /launcher\.dockerManagementEnv/);
-        }
+        assert.equal(Object.hasOwn(config.launcher, 'dockerManagementEnv'), false);
     });
 
     it('keeps the identity hold shorter than the confirmation deadline', () => {

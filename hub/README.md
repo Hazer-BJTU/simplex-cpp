@@ -182,120 +182,88 @@ The mock scenarios are selected by model name:
 
 ## Workers in a container
 
-The hub can run on the host and put every worker in a container, with the worker
-connecting back over the Docker bridge. Nothing about the protocol changes: the
-worker dials the hub, so the only thing that has to be right is *which address it
-is told to dial*.
+The hub can run on the host and put every worker inside a container you already
+manage. The hub never builds an image or creates, starts, stops and removes a
+container: it only runs the installed `simplex` command there with `docker exec`.
+Nothing about the protocol changes. The worker dials the hub, so the only thing
+that has to be right is *which address it is told to dial* — and whether the
+container can reach it.
 
-`hub.config.docker-worker.jsonc` is a working example. The short version:
+Prepare a container with this revision's `simplex` installed and keep it
+running, then create a **Docker (running container)** launch configuration in the
+editor. Set `management.target.container`, the container path of
+`management.executable`, and a container-local `management.root`. The complete
+walkthrough — image, retention, network and allocation root — is in
+[Docker worker deployment](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/deployment/docker-worker.md).
 
-```sh
-# From the repository root:
-docker build -f docker/Dockerfile.hub-test -t simplex-hub-test .
-cd hub
-npm run build
-node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --mock \
-    --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
-# then: http://127.0.0.1:8800/?token=dev
+```jsonc
+{
+  "management": {
+    "target": { "kind": "docker", "command": "docker", "args": [], "container": "simplex-worker" },
+    "executable": "/opt/simplex/bin/simplex",
+    "cwd": "/home/operator",
+    "env": {},
+    "root": "/var/lib/simplex/allocations"
+  },
+  "worker": { "threads": 1, "connectHost": "172.17.0.1" }
+}
 ```
 
-In the configuration editor, create a Docker launch configuration and a default
-worker configuration. Adjust the image and executable for your installation,
-then fill in the worker provider settings. Select both for your session. The
-legacy Hub startup file is not copied into configuration-library templates.
+Before the first target mutation the hub checks, in order, that the container is
+running, that `simplex --version` works inside it, and that the advertised event
+endpoint is not an address the container cannot use. A failed check refuses the
+start; a new session stays unbound, so its configuration can still be edited.
+`management.target.preflight` adjusts the checks, their deadline and the
+inspected channels.
 
-Three things make it work, and each is a way to get it wrong:
+`worker.connectHost` (or per-channel `endpoints`) must name an address reachable
+from the container: the Docker bridge gateway (`172.17.0.1` on the default
+bridge) or `host.docker.internal` when the container was started with
+`--add-host=host.docker.internal:host-gateway`. Loopback inside the container is
+the container itself. The hub must listen on an address that is reachable from
+the container's network.
 
-1. **`worker.connectHost`.** The hub writes its own address into every worker's
-   configuration. With `--listen 0.0.0.0` that address would be `0.0.0.0` —
-   which a worker reads as "myself" — so the hub substitutes loopback for a
-   wildcard bind, and loopback is exactly what a container cannot use. Setting
-   `connectHost` to the bridge address (`172.17.0.1`) is what replaces it. The
-   mock provider is advertised at the same address, because the worker is what
-   connects to it.
-2. **`launcher.kind: "command"`.** The hub's extension point for "start a worker
-   some other way". The template is expanded per session, so `docker run` gets
-   the generated config path, the session id and the data directory without the
-   hub knowing anything about Docker.
-3. **The mounts.** The generated `config.yaml`, the session's snapshot and the
-   captured log are all named by *absolute host paths*. Only the current
-   session directory is mounted read-write at the same path, and its entire
-   `config/` directory is mounted again read-only. This keeps tools from
-   rewriting `launch.jsonc`, `source.json`, or `config.yaml`. The prompt is not mounted at all:
-   the worker reads it from its own installation directory inside the image, and
-   the generated `worker.system_prompt_file` is a relative path that names the
-   same file on both sides.
+The allocation (`management.root/<id>`) lives inside the container. State and
+memory therefore survive worker stop and start but not container replacement;
+mount that root when the container may be recreated. The hub-owned session
+directory holds its bookkeeping, logs and launch snapshot only.
 
-The test launcher uses `--user 0:{gid}`: workers and their tools run as root inside
-the container. Each container has its own `/root/workspace`, created by the
-image and selected as both the working directory and the model's workspace
-hint. No host workspace is mounted. Stopping and removing the container discards
-workspace files; session state remains in the mounted session directory.
-The worker starts with umask `0002`, so directories it creates under the
-mounted session path are group-writable by the hub process. Worker files have
-root ownership and the hub's primary GID; the host hub can still remove the
-session tree. A tool that deliberately changes permissions inside the mounted
-session path can defeat this cooperative policy.
-After building the image, run `SIMPLEX_DOCKER_WORKER_TEST=1 node --test
-test/e2e/docker-worker.test.js` from `hub/` to verify a real compact, stop,
-and session deletion as the current non-root host user.
-
-To see that the isolation is real rather than assumed, the example config asks
-the mock for `hostname; id -u; cat /etc/hostname`. The tool card then shows the
-container's hostname, UID 0 and its own PID namespace — from
-a session whose hub is an ordinary process on the host:
-
-```
-command   hostname; id -u; cat /etc/hostname
-pid       10
-stdout    66485abf0d8d          ← the container
-          0
-          66485abf0d8d
-```
-
-`--rm` means stopping the session removes the container, which is why the
-`docker ps` output is empty the moment the run finishes. For Docker Desktop,
-use `host.docker.internal` as `connectHost` and add
-`--add-host=host.docker.internal:host-gateway` to the command template.
+Stopping a session sends the worker's shutdown signal and waits for the
+foreground `docker exec` to end; the container keeps running. Deleting a session
+retires its allocation. Keep the container until every session that targets it is
+deleted.
 
 ### With a real model instead of the mock
 
-The same configuration, without `--mock`, talks to `api.deepseek.com`:
+The same launch configuration, without `--mock`, talks to `api.deepseek.com`.
+Start the hub normally and create the Docker launch profile plus a worker
+configuration that selects a real provider:
 
 ```sh
-export DEEPSEEK_API_KEY=sk-...        # the key stays in your shell
-node bin/simplex-hub.ts -c hub.config.docker-worker.jsonc --no-mock \
-    --listen 0.0.0.0:8800 --panel-token dev --data-dir /tmp/docker-hub
+node bin/simplex-hub.ts --no-mock --listen 0.0.0.0:8800 --panel-token dev \
+    --data-dir /tmp/docker-hub
 ```
 
-then create a Docker launch configuration and a worker configuration. Fill in
-the worker provider settings explicitly and select both saved files for the
-session. Templates do not inherit the Hub startup file's provider settings:
+Provide the model credential to the **container's** environment, for example
+when creating it:
 
 ```sh
-curl -s -X POST http://127.0.0.1:8800/api/sessions \
-  -H 'Authorization: Bearer dev' -H 'content-type: application/json' \
-  -d '{"session":"real","spec":{"provider":"deepseek","model":"deepseek-flash"}}'
+docker run -d --name simplex-worker --network host -e DEEPSEEK_API_KEY \
+    simplex-worker:latest
 ```
 
-The key is forwarded with `-e DEEPSEEK_API_KEY` (no `=value`, so Docker reads it
-from the environment of the process that runs `docker`), and the worker expands
-`${DEEPSEEK_API_KEY}` from *its own* environment — which is the container's.
-When it is missing, that is what you get, and it is worth recognising:
+The worker expands `${DEEPSEEK_API_KEY}` from its own environment, which is the
+container's; `docker exec` does not forward the hub's environment. When the key
+is missing, the worker reports:
 
 ```
 Worker: required credential variable is unset or empty
 ```
 
-This startup inheritance is separate from the minimized environment persisted
-for later Docker inspection/shutdown. Special management helpers can use explicit
-`launcher.dockerManagementEnv` names; see the [management environment policy](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/hub/configurations.md#docker-management-environment).
-
 To check the forwarding on its own, before blaming the API:
 
 ```sh
-docker run --rm -e DEEPSEEK_API_KEY --entrypoint sh simplex-hub-test:latest \
-    -c 'test -n "$DEEPSEEK_API_KEY" && echo "the container can see the key"'
+docker exec simplex-worker sh -c 'test -n "$DEEPSEEK_API_KEY" && echo "the container can see the key"'
 ```
 
 Two things to know before reading the result:
@@ -344,7 +312,6 @@ directory; command-line paths resolve against the working directory.
 | `launcher.kind` | `simplex-worker` | `simplex-worker` or `command` |
 | `launcher.command`, `launcher.args` | `[]` | template and extra arguments for the `command` launcher |
 | `launcher.cwd`, `launcher.pidFile` | `""` | working directory, and the pid file for a launcher that daemonizes |
-| `launcher.dockerManagementEnv` | `[]` | additional environment names retained for Docker management; values are persisted privately |
 | `mock.enabled`, `mock.listen`, `mock.profile`, `mock.scenario` | `false`, `127.0.0.1:0`, `mock`, `auto` | offline provider |
 | `mock.slowMs`, `mock.toolCommand` | `1500`, `""` | slow-scenario delay and optional proposed command override |
 | `subagents` | `maxLive: 16`, `maxChildren: 4`, `maxDepth: 3`, `startupTimeoutMs: 30000`, `maxReceipts: 200`, `receiptTtlMs: 3600000`, `conversationBytes: 1 MiB` | family quotas, startup deadline and operation/conversation retention bounds |
@@ -849,7 +816,7 @@ The hub binds a second WebSocket listener at `toolRequests.host:toolRequests.por
 ephemeral port, useful for embedded instances and tests. A nonzero tool port must
 differ from the main port. This listener serves no panel, REST API, event stream,
 or confirmation route. Deployments must make it reachable from workers; the
-Docker worker example uses the same `worker.connectHost` for both ports.
+A managed Docker launch profile uses the same `worker.connectHost` for both ports.
 
 New worker configurations include the optional `hub_remote_call` mapping by
 default. Set `worker.hubRemoteCall: false` to disable it for new sessions. It contains the actual tool port,

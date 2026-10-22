@@ -12,10 +12,11 @@ For operator setup, see [Hub deployment](../deployment/hub.md). The separate
 
 ## Managed sessions
 
-The configuration editor's **Managed worker** template opts new sessions into
-`simplex manage` for local, SSH or retained-container Docker storage operations.
-Hub bookkeeping and target worker data are separate, and inspection uses the
-manager's complete JSON response. Existing profiles are not migrated implicitly.
+The configuration editor's **Docker (running container)** and **Managed worker**
+templates opt new sessions into `simplex manage` for a retained container, an SSH
+target or a local allocation. Hub bookkeeping and target worker data are
+separate, and inspection uses the manager's complete JSON response. Existing
+profiles are not migrated implicitly.
 See [management configuration and lifecycle policy](../reference/management.md#opt-in-managed-sessions).
 Managed children use target-side clean-fork and removal with independent flat
 allocations; their Hub-local bookkeeping remains under `dataDir/subagents/`.

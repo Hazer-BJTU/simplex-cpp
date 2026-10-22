@@ -15,7 +15,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import type { DockerManagement } from '../subagents/docker.ts';
 import type { Logger } from '../log.ts';
 
 /** Bumped when the stored shape changes incompatibly. */
@@ -26,7 +25,6 @@ const SAVE_DEBOUNCE_MS = 200;
 
 /** A process as it is written to `hub.json`. Snake case is the on-disk format. */
 export interface StoredProcess {
-    docker_management?: DockerManagement;
     pid: number;
     pid_start_time: string | null;
     started_at: string;
@@ -70,7 +68,6 @@ export interface LoadedState {
 
 /** The slice of a session this module persists. */
 export interface PersistableProcess {
-    dockerManagement?: DockerManagement | null;
     pid: number | null;
     pidStartTime: string | null;
     startedAt: string;
@@ -165,7 +162,6 @@ export class HubState {
             lifecycle_id: session.lifecycleId ?? '',
             process: session.process && session.process.pid
                 ? {
-                    ...(session.process.dockerManagement ? { docker_management: session.process.dockerManagement } : {}),
                     pid: session.process.pid,
                     pid_start_time: session.process.pidStartTime,
                     started_at: session.process.startedAt,

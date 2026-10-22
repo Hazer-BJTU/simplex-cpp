@@ -1,0 +1,283 @@
+/**
+ * Docker target preflight.
+ *
+ * A docker management target never creates, starts, stops or removes a
+ * container: the operator retains one and Hub runs `docker exec`. These checks
+ * run before the first target mutation so a typo (stopped container, missing
+ * installation, unreachable Hub address) fails as an actionable start error
+ * instead of an allocation that can never launch.
+ *
+ * The checks are read-only and use only the Docker CLI. Public messages name
+ * the container and, for CLI failures, a short sanitized detail line. They never
+ * include argv, environment values or an endpoint URL with its session token.
+ */
+import { spawn } from 'node:child_process';
+import { normalizeDockerPreflight } from './managed-launcher.ts';
+import type { DockerPreflightChannel, DockerPreflightPolicy, ManagementTarget } from './managed-launcher.ts';
+import type { WorkerEndpoints } from './invocation.ts';
+
+/** One Docker management target. */
+export type DockerTarget = Extract<ManagementTarget, { kind: 'docker' }>;
+
+/** Stable preflight failure identity. */
+export type DockerPreflightCode =
+    | 'docker-unavailable'
+    | 'inspect-timeout'
+    | 'inspect-failed'
+    | 'container-missing'
+    | 'container-not-running'
+    | 'executable-timeout'
+    | 'executable-missing'
+    | 'executable-failed'
+    | 'endpoint-network-none'
+    | 'endpoint-loopback'
+    | 'endpoint-host-mapping';
+
+/** A start refusal caused by an unusable Docker target. */
+export class DockerPreflightError extends Error {
+    readonly code: DockerPreflightCode;
+
+    constructor(code: DockerPreflightCode, message: string) {
+        super(message);
+        this.name = 'DockerPreflightError';
+        this.code = code;
+    }
+}
+
+/** Everything one preflight needs; only Hub-local values describe this process. */
+export interface DockerPreflightOptions {
+    target: DockerTarget;
+    /** Target installation used for both `run` and `manage`. */
+    executable: string;
+    /** Hub-side working directory and environment for the Docker CLI. */
+    cwd: string;
+    env: Record<string, string>;
+    /** Effective advertised endpoints, after connectHost/origin overrides. */
+    endpoints: WorkerEndpoints;
+}
+
+interface DockerCommandResult {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+    timedOut: boolean;
+}
+
+/** Keep diagnostics bounded; a Docker daemon can produce arbitrary output. */
+const DIAGNOSTIC_BYTES = 8192;
+
+/** One line of CLI diagnostics, without control characters or newlines. */
+function detailLine(text: string): string {
+    const line = text.split('\n').map(part => part.trim()).find(Boolean) ?? '';
+    return line.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200);
+}
+
+function failure(result: DockerCommandResult): string {
+    if (result.signal) return `terminated by ${result.signal}`;
+    const detail = detailLine(result.stderr);
+    return detail ? `exit ${result.code ?? 'unknown'}: ${detail}` : `exit ${result.code ?? 'unknown'}`;
+}
+
+/** Run one Docker CLI command without a shell, bounded and with a deadline. */
+function dockerCommand(
+    target: DockerTarget,
+    args: string[],
+    { cwd, env, timeoutMs }: { cwd: string; env: Record<string, string>; timeoutMs: number },
+): Promise<DockerCommandResult> {
+    return new Promise((resolve, reject) => {
+        let child;
+        try {
+            child = spawn(target.command, [...target.args, ...args], {
+                cwd,
+                env: { ...process.env, ...env },
+                stdio: ['ignore', 'pipe', 'pipe'],
+                shell: false,
+            });
+        } catch {
+            reject(new DockerPreflightError('docker-unavailable', 'cannot run the configured Docker command'));
+            return;
+        }
+        const stdout: Buffer[] = [];
+        const stderr: Buffer[] = [];
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        let timedOut = false;
+        let settled = false;
+        const timer = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGKILL');
+        }, timeoutMs);
+        timer.unref?.();
+        child.stdout?.on('data', (chunk: Buffer) => {
+            if (stdoutBytes >= DIAGNOSTIC_BYTES) return;
+            const slice = chunk.subarray(0, DIAGNOSTIC_BYTES - stdoutBytes);
+            stdout.push(slice);
+            stdoutBytes += slice.length;
+        });
+        child.stderr?.on('data', (chunk: Buffer) => {
+            if (stderrBytes >= DIAGNOSTIC_BYTES) return;
+            const slice = chunk.subarray(0, DIAGNOSTIC_BYTES - stderrBytes);
+            stderr.push(slice);
+            stderrBytes += slice.length;
+        });
+        child.once('error', () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(new DockerPreflightError('docker-unavailable', 'cannot run the configured Docker command'));
+        });
+        child.once('close', (code, signal) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve({
+                code,
+                signal,
+                stdout: Buffer.concat(stdout).toString('utf8'),
+                stderr: Buffer.concat(stderr).toString('utf8'),
+                timedOut,
+            });
+        });
+    });
+}
+
+interface ContainerState {
+    status: string;
+    running: boolean;
+    networkMode: string;
+    extraHosts: string[];
+}
+
+/** Parse the compact description produced by `docker inspect --format`. */
+function parseContainerState(stdout: string): ContainerState {
+    const [line] = stdout.split('\n');
+    const fields = (line ?? '').split('\t');
+    const status = fields[0]?.trim() ?? '';
+    const networkMode = fields[2]?.trim() ?? '';
+    if (!status || !networkMode) {
+        throw new DockerPreflightError('inspect-failed', 'Docker returned an unexpected container description');
+    }
+    let extraHosts: string[] = [];
+    if (fields[3]) {
+        try {
+            const parsed: unknown = JSON.parse(fields[3]);
+            if (Array.isArray(parsed)) extraHosts = parsed.filter((entry): entry is string => typeof entry === 'string');
+        } catch {
+            // Optional field: an unparsable list only disables the host-mapping
+            // check, never the container/executable checks.
+        }
+    }
+    return { status, running: fields[1]?.trim() === 'true', networkMode, extraHosts };
+}
+
+function bareHost(hostname: string): string {
+    return hostname.replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
+}
+
+function loopback(host: string): boolean {
+    return host === 'localhost' || host === '::1' || host === '0.0.0.0'
+        || host === '::' || /^127\./.test(host);
+}
+
+function portOf(url: URL): string {
+    return url.port || (url.protocol === 'wss:' ? '443' : '80');
+}
+
+/**
+ * Inspect whether one advertised channel is usable from the container network.
+ * This is a configuration check, not a live connection attempt: it rejects the
+ * two mistakes that always fail in practice — a loopback address seen from a
+ * private network namespace, and an unmapped `host.docker.internal` name.
+ */
+function checkEndpoint(
+    channel: DockerPreflightChannel,
+    raw: string,
+    state: ContainerState,
+    container: string,
+): void {
+    let url: URL;
+    try {
+        url = new URL(raw);
+    } catch {
+        throw new DockerPreflightError('inspect-failed', `the advertised ${channel} endpoint is not a URL`);
+    }
+    if (state.networkMode === 'none') {
+        throw new DockerPreflightError('endpoint-network-none',
+            `container "${container}" has no network (network mode "none");`
+            + ` it cannot reach the advertised ${channel} endpoint`);
+    }
+    const host = bareHost(url.hostname);
+    // A container sharing another container's network namespace may also have
+    // host loopback, but that namespace is not described here. Accept it as an
+    // explicit operator assertion rather than a network this check can verify.
+    if (loopback(host) && state.networkMode !== 'host' && !state.networkMode.startsWith('container:')) {
+        throw new DockerPreflightError('endpoint-loopback',
+            `the advertised ${channel} endpoint uses ${host}:${portOf(url)}, but container`
+            + ` "${container}" uses network mode "${state.networkMode}"; set worker.connectHost or`
+            + ` the ${channel} endpoint to an address reachable from the container`);
+    }
+    if (host === 'host.docker.internal'
+        && !state.extraHosts.some(entry => entry.split(':')[0]?.toLowerCase() === host)) {
+        throw new DockerPreflightError('endpoint-host-mapping',
+            `container "${container}" has no host mapping for host.docker.internal; start it with`
+            + ' --add-host=host.docker.internal:host-gateway or use a reachable bridge address');
+    }
+}
+
+function policyOf(target: DockerTarget): DockerPreflightPolicy {
+    return normalizeDockerPreflight(target.preflight);
+}
+
+/** Run one check sequence; resolves only when the target is usable. */
+export async function preflightDockerTarget({
+    target, executable, cwd, env, endpoints,
+}: DockerPreflightOptions): Promise<void> {
+    const policy = policyOf(target);
+    if (!policy.enabled) return;
+    const container = target.container;
+    const inspect = await dockerCommand(target,
+        ['inspect', '--format',
+            '{{.State.Status}}\t{{.State.Running}}\t{{.HostConfig.NetworkMode}}\t{{json .HostConfig.ExtraHosts}}',
+            container],
+        { cwd, env, timeoutMs: policy.timeoutMs });
+    if (inspect.timedOut) {
+        throw new DockerPreflightError('inspect-timeout',
+            `Docker did not answer within ${policy.timeoutMs} ms while inspecting container "${container}"`);
+    }
+    if (inspect.code !== 0) {
+        if (/no such (?:object|container)/i.test(inspect.stderr)) {
+            throw new DockerPreflightError('container-missing', `container "${container}" does not exist`);
+        }
+        throw new DockerPreflightError('inspect-failed',
+            `cannot inspect container "${container}" (${failure(inspect)})`);
+    }
+    const state = parseContainerState(inspect.stdout);
+    // `container: false` opts out of the running assertion, not out of the
+    // process compatibility it implies: an installation probe cannot run in a
+    // stopped container, so report that state instead of a misleading CLI error.
+    if (!state.running && (policy.container || policy.executable)) {
+        throw new DockerPreflightError('container-not-running',
+            `container "${container}" is not running (status: ${state.status})`);
+    }
+    if (policy.executable) {
+        const probe = await dockerCommand(target, ['exec', container, executable, '--version'],
+            { cwd, env, timeoutMs: policy.timeoutMs });
+        if (probe.timedOut) {
+            throw new DockerPreflightError('executable-timeout',
+                `"${executable} --version" did not answer inside container "${container}"`
+                + ` within ${policy.timeoutMs} ms`);
+        }
+        if (probe.code === 126 || probe.code === 127) {
+            throw new DockerPreflightError('executable-missing',
+                `"${executable}" is not executable inside container "${container}" (${failure(probe)})`);
+        }
+        if (probe.code !== 0) {
+            throw new DockerPreflightError('executable-failed',
+                `"${executable} --version" failed inside container "${container}" (${failure(probe)})`);
+        }
+    }
+    if (policy.endpoint.enabled) {
+        for (const channel of policy.endpoint.channels) checkEndpoint(channel, endpoints[channel], state, container);
+    }
+}

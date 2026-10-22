@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { defaultConfig, parseConfigText } from '../src/config.ts';
 import { ConfigurationStore, launchDocument } from '../src/configurations/store.ts';
 
@@ -35,25 +35,33 @@ import { snapshotConfigs, sessionLaunch, launchEndpoints } from '../src/configur
 import { prepareSessionConfig } from '../src/launch/config-file.ts';
 import { parseDocument } from 'yaml';
 
-test('Docker management pass-through declarations are captured in independent launch snapshots', () => {
+test('Docker template targets an existing managed container and snapshots it independently', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
     try {
         const config = { ...defaultConfig(), dataDir };
         const store = new ConfigurationStore(config);
         const initial = store.read('launch', 'docker');
+        assert.ok(!initial.text.includes('"launcher"'), 'the Docker template must not carry a legacy launcher');
+        const launch = launchDocument(initial.text, config);
+        assert.equal(launch.management.target.kind, 'docker');
+        assert.equal(launch.management.target.command, 'docker');
+        assert.deepEqual(launch.management.target.args, []);
+        assert.equal(launch.management.target.container, 'simplex-worker');
+        assert.deepEqual(launch.management.target.preflight, {
+            enabled: true, timeoutMs: 5000, container: true, executable: true,
+            endpoint: { enabled: true, channels: ['events'] },
+        });
+        assert.equal(launch.management.executable, 'simplex');
+        assert.equal(launch.management.root, '/var/lib/simplex/allocations');
+        assert.equal(launch.launcher.kind, 'command', 'an internal compatibility router supplies the launcher');
         const document = parseConfigText(initial.text, 'docker.jsonc');
-        document.launcher.dockerManagementEnv = ['CUSTOM_MANAGER_TOKEN'];
+        document.management.target.container = 'first-container';
         const edited = store.save('launch', 'docker', JSON.stringify(document), initial.revision);
         snapshotConfigs(store, 'docker-selected', { launchConfig: 'docker', workerConfig: 'default' });
-        document.launcher.dockerManagementEnv = [];
+        document.management.target.container = 'second-container';
         store.save('launch', 'docker', JSON.stringify(document), edited.revision);
-        assert.deepEqual(sessionLaunch(config, 'docker-selected').config.launcher.dockerManagementEnv,
-            ['CUSTOM_MANAGER_TOKEN']);
-        delete document.launcher.dockerManagementEnv;
-        config.launcher.dockerManagementEnv = ['CURRENT_HUB_VALUE'];
-        assert.deepEqual(launchDocument(JSON.stringify(document), config).launcher.dockerManagementEnv, []);
-        document.launcher.dockerManagementEnv = ['SECRET_*'];
-        assert.throws(() => launchDocument(JSON.stringify(document), config), /dockerManagementEnv/);
+        assert.equal(sessionLaunch(config, 'docker-selected').launch.management.target.container,
+            'first-container');
     } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
 
@@ -291,37 +299,29 @@ test('templates reject deployment copying and keep local defaults independent', 
 
 import { buildCommandInvocation } from '../src/launch/command.ts';
 
-test('Docker template binds only session data and invokes an installed worker', () => {
+test('Docker template resolves a Hub-local cwd and rejects an unusable preflight policy', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'simplex-config-'));
     try {
         const config = { ...defaultConfig(), dataDir };
         const store = new ConfigurationStore(config);
-        const file = store.read('launch', 'docker');
-        const launch = launchDocument(file.text, config);
-        assert.equal(launch.worker.connectHost, 'host.docker.internal');
-        if (typeof process.getgid !== 'function') return;
-        const root = join(dataDir, 'sessions', 'docker-example');
-        const configPath = join(root, 'config', 'config.yaml');
-        const invocation = buildCommandInvocation({
-            config: { ...config, launcher: launch.launcher },
-            sessionId: 'docker-example', configPath, sessionDir: root,
-            spec: { threads: 2, env: {}, extraArgs: [] },
-            endpoints: { events: 'ws://host/events', confirm: 'ws://host/confirm', tools: 'ws://host/tools' },
-            token: 'test-token',
-        });
-        assert.equal(invocation.command, 'docker');
-        assert.ok(invocation.args.includes(`${root}:${root}`));
-        assert.ok(invocation.args.includes(`${root}/config:${root}/config:ro`));
-        assert.equal(invocation.args.includes(`${configPath}:${configPath}:ro`), false);
-        assert.match(readFileSync(new URL('../hub.config.docker-worker.jsonc', import.meta.url), 'utf8'),
-            /\{session_dir\}\/config:\{session_dir\}\/config:ro/);
-        assert.ok(invocation.args.includes('host.docker.internal:host-gateway'));
-        assert.ok(invocation.args.includes('simplex-worker:latest'));
-        assert.ok(invocation.args.some(arg => arg.includes('exec "$@"')));
-        const shell = invocation.args.indexOf('-c');
-        assert.deepEqual(invocation.args.slice(shell + 2, shell + 5), ['sh', 'simplex', 'run']);
-        assert.deepEqual(invocation.args.slice(-6), ['--config', configPath, '--session', 'docker-example', '--threads', '2']);
+        const text = store.read('launch', 'docker').text;
+        assert.ok(!text.includes('__HUB_CWD__'));
+        const launch = launchDocument(text, config);
+        assert.ok(isAbsolute(launch.management.cwd));
         assert.throws(() => store.template('worker', 'docker'), /launch template/);
+        const management = (target, root = '/target/root') => JSON.stringify({
+            management: { target, executable: 'simplex', cwd: dataDir, env: {}, root },
+        });
+        assert.throws(() => launchDocument(management({
+            kind: 'docker', command: 'docker', args: [], container: 'container',
+            preflight: { endpoint: { channels: ['events', 'unknown'] } },
+        }), config), /preflight\.endpoint\.channels/);
+        assert.throws(() => launchDocument(management({ kind: 'local', preflight: {} }),
+            config), /preflight is only valid/);
+        assert.throws(() => launchDocument(management({
+            kind: 'docker', command: 'docker', args: [], container: 'container',
+            preflight: { timeoutMs: 0 },
+        }), config), /preflight\.timeoutMs/);
     } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
 

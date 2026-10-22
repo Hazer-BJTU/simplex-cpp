@@ -103,10 +103,7 @@
         "cwd": "",
         // Only for a launcher that daemonizes: absolute path of the pid file
         // the supervisor should signal instead of the spawned process.
-        "pidFile": "",
-        // Extra environment names needed for Docker inspection and shutdown.
-        // Their effective startup values are persisted privately; no wildcards.
-        "dockerManagementEnv": []
+        "pidFile": ""
     },
 
     // Offline model provider for demos and end-to-end tests: no API key needed.

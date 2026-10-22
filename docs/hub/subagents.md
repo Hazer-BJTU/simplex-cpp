@@ -146,17 +146,16 @@ exist on the Hub host. See [managed family lifecycle](../reference/management.md
 for preparation, uncertain dispatch, recovery and cleanup. No shared Hub bind
 mount is required; the operator must retain the target/container until cleanup.
 
-Supported legacy launches are native `simplex-worker` executables and
-foreground Docker templates with `--rm`, `--init`, a `{session}`-based `--name`,
-`{session_dir}:{session_dir}` bind and child config/session placeholders.
-Daemonizing/PID-file launches, detached Docker and arbitrary wrapper commands are
-rejected as `unsupported_launch`. Extra native flags may not override config or
-session identity. Externally attached workers without a supervised startup
-snapshot cannot be forked.
+Supported launches are managed profiles (local, SSH and retained-container
+Docker) and supervised native `simplex-worker` executables. Daemonizing/PID-file
+launches and arbitrary wrapper commands are rejected as `unsupported_launch`.
+Extra native flags may not override config or session identity. Externally
+attached workers without a supervised startup snapshot cannot be forked.
 
 This isolates identity and conversational persistence. Shared host workspace
-mounts/resources stay shared. A fresh Docker-local `/root/workspace` is fresh
-because a new container is created. Clean-fork provides no filesystem sandbox.
+mounts/resources stay shared, and a managed Docker child shares its parent's
+retained-container filesystem: choose a distinct workspace path if children must
+not share one. Clean-fork provides no filesystem sandbox.
 
 ## Remote routes
 
@@ -347,24 +346,19 @@ down the Hub freezes all descendant admission synchronously and attempts every
 cleanup. Sibling failures do not skip later siblings. A mere WebSocket disconnect
 does not stop children. A worker incarnation change invalidates its old family.
 
-Deletion waits for confirmed actual process/container termination and owned output
+Deletion waits for confirmed actual process termination and owned output
 pipes/log writer closure. Managed families additionally require target-side
-removal before deleting local bookkeeping. For legacy Docker profiles, a Docker CLI exit alone is insufficient; the Hub inspects
-and signals the named container using the resolved startup Docker executable,
-working directory, and a minimized management environment, including `DOCKER_HOST`,
-`DOCKER_CONTEXT` and `DOCKER_CONFIG`. The [allow-list and explicit pass-throughs](./configurations.md#docker-management-environment)
-preserve connection, TLS, SSH and proxy requirements without capturing unrelated
-Hub/model secrets. The Docker launch still inherits the full startup environment.
-This private management snapshot is persisted
-with the process and restored after a Hub restart; public process descriptions
-omit it. Because the environment may contain credentials, headless metadata and
-ordinary `hub.json` are written with mode 0600. Missing/invalid recovered context
-never falls back to the current Hub environment: termination remains unconfirmed
-and storage stays cleanup-pending for operator intervention. Confirmed container
-exit puts even an already-exited/failed Docker CLI record into a terminal state;
-Hub shutdown checks those managed containers too. Successful shutdown deletes **all** child persistence, including
-conversation. Parents must receive desired output first. Only small terminal
-status/outcome records remain in memory for one receipt TTL, capped at 128.
+removal before deleting local bookkeeping. A managed Docker child uses the same
+`docker exec` transport and target policy as its parent; the Hub never inspects or
+signals the container. A `docker exec` CLI exit is only transport evidence, so a
+remote managed start remains unconfirmed until the manager reports that lifecycle
+idle and the dispatch journal records completion. If that evidence is lost,
+deletion stays blocked and the child remains cleanup-pending for operator
+intervention. Hub shutdown verifies the same journal for remote managed sessions
+instead of assuming that a lost transport ended the worker. Successful shutdown
+deletes **all** child persistence, including conversation. Parents must receive
+desired output first. Only small terminal status/outcome records remain in memory
+for one receipt TTL, capped at 128.
 
 On restart the Hub restores processes and validates the parent graph/lifecycle
 before adopting a family. Previously ready children keep their lifecycle while
@@ -373,7 +367,7 @@ Stale parents, cycles and stopping intent trigger
 cleanup rather than resurrection. A crash between spawn and process publication
 can leave uncertain startup evidence: preserve it as cleanup-pending instead of
 deleting potentially live data. Missing records, unreadable process identity and
-failed Docker inspections never prove termination. A stored Linux PID/start-time
+failed transport probes never prove termination. A stored Linux PID/start-time
 incarnation that is confirmed absent or replaced can converge automatically;
 observing the recorded process/container stop also resolves an uncertain flag.
 Invalid ownership metadata is quarantined for

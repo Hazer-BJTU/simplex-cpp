@@ -37,10 +37,12 @@ New **local** launch templates use `simplex manage` automatically. Their
 `<dataDir>-workers/<allocation-id>`, outside Hub-owned data. Existing library and
 session snapshots are never rewritten to enable management.
 
-The **Managed worker** template additionally supports explicit local roots, SSH
-and an existing retained Docker container. See [managed sessions](../reference/management.md#opt-in-managed-sessions)
-for its fields and lifecycle contract. Existing legacy and Docker command profiles
-keep the legacy layout described below.
+The **Docker (running container)** template targets a container the operator
+already runs; the **Managed worker** template additionally supports explicit
+local roots and SSH. Both use `management`; see
+[managed sessions](../reference/management.md#opt-in-managed-sessions) for the
+policy and lifecycle contract. Existing library files and session snapshots are
+never rewritten.
 
 ## Directory and startup configuration
 
@@ -147,7 +149,7 @@ See [`schemas/local.jsonc`](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/
 | `launcher.args` | Additional arguments |
 | `launcher.cwd` | Command working directory; empty uses the session directory; relative paths resolve against the session's `config/` directory |
 | `launcher.pidFile` | Absolute PID-file path for a daemonizing launcher, if applicable |
-| `launcher.dockerManagementEnv` | Additional environment **names** required by Docker inspection/signaling; defaults to `[]`; their startup values are persisted privately |
+| `management` | Managed allocation policy: target, installation and allocation root; replaces the launcher for supported targets (see below and [managed sessions](../reference/management.md#opt-in-managed-sessions)) |
 | `worker.bin` / `worker.args` | Direct worker executable and flags for `simplex-worker`; explicit relative binary paths resolve against the session's `config/` directory |
 | `worker.threads` | Execution thread count; positive integer |
 | `worker.connectHost` | Host reachable from the worker; empty derives from Hub listeners |
@@ -162,69 +164,51 @@ Command placeholders retain the existing launcher contract: `{session}`,
 Only the command and argument arrays expand these placeholders. Environment
 values are literal strings. Use the inherited environment for model secrets.
 
-For containers, `localhost` refers to the container. Set `worker.connectHost`
-to a host reachable from the container, such as a configured Docker host gateway.
-The Hub must listen on an address reachable from that network. No browser-side
-heuristic can determine that address reliably.
+For a managed container target, `localhost` refers to the container. Set
+`worker.connectHost` (or a channel `endpoints` override) to an address reachable
+from that network, such as the Docker bridge gateway or a mapped
+`host.docker.internal`. The startup check rejects a loopback address the container
+cannot use unless it shares the host network. The Hub must listen on an address
+reachable from that network; no browser-side heuristic can determine it
+reliably.
 
 See [advertised endpoints and reverse proxies](../deployment/hub.md#advertised-endpoints-and-reverse-proxies)
 for origin/prefix examples and listener routing.
 
-## Docker launch template
+## Docker management template
 
-The seeded `docker` configuration uses `simplex-worker:latest`, a local Docker
-daemon, and the installed `simplex run` entry point. Its complete image, network,
-mount, credential, and ownership setup is documented in
-[Docker worker deployment](../deployment/docker-worker.md).
+The seeded `docker` configuration starts workers inside a container that the
+operator already runs. It contains a `management.target` with
+`"kind": "docker"`, the container name and a `preflight` block. The Hub never
+builds an image or creates, starts, stops or removes a container; it only runs
+`simplex manage` and `simplex run` there with `docker exec`. See
+[Docker worker deployment](../deployment/docker-worker.md) for the image,
+retention, network and troubleshooting details.
 
-The in-tree `simplex-hub-test:latest` image uses the build-tree launcher
-`/src/build/bin/simplex`; when selecting that image, replace the separate
-`simplex` command argument with that path and keep `run` as the next argument.
-The template does not build an image or install a worker automatically.
-
-### Docker management environment
-
-Docker startup inherits the Hub environment plus launch `env` overrides, so
-`docker run -e MODEL_API_KEY ...` still forwards that credential. Later inspection
-and shutdown use the captured absolute Docker executable, working directory and a
-smaller environment. Only these built-in names and explicit pass-throughs are
-saved in `hub.json` and headless `metadata.json`:
-
-| Purpose | Preserved names |
+| Field | Meaning |
 | --- | --- |
-| Docker daemon, context, configuration and TLS | `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS`, `DOCKER_TLS_VERIFY`, `DOCKER_API_VERSION`, `DOCKER_CUSTOM_HEADERS` |
-| Executable/home lookup and SSH agent | `PATH`, `HOME`, `USER`, `LOGNAME`, `SSH_AUTH_SOCK` |
-| Proxy and system trust roots | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `http_proxy`, `https_proxy`, `no_proxy`, `SSL_CERT_FILE`, `SSL_CERT_DIR` |
-| Windows host lookup | `SYSTEMROOT`, `SystemRoot`, `WINDIR`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PATHEXT` |
+| `management.target.container` | Existing running container; it must outlive every session that uses it |
+| `management.target.command`, `args` | Docker CLI and global options such as `--context`; never an image or a `run` command |
+| `management.target.preflight` | Read-only startup checks: `enabled`, `timeoutMs`, `container`, `executable`, `endpoint` |
+| `management.executable` | PATH name or absolute path **inside the container**; must support `run` and `manage` |
+| `management.root` | Container-local allocation root; state is durable only while the container lives |
+| `management.cwd`, `env` | Hub-local Docker CLI directory and environment |
 
-The connection variables follow the [Docker CLI environment contract](https://docs.docker.com/reference/cli/docker/#environment-variables).
-No wildcard such as `DOCKER_*` is retained. A special CLI/helper deployment can
-declare extra names in its launch configuration:
+Before the first target mutation the Hub checks the container state, runs
+`executable --version` inside it, and inspects whether the advertised event
+endpoint can be used from the container's network namespace. A failed check
+refuses the start; a new session stays unbound, so both configuration files can
+still be edited before retrying. `"preflight": {"enabled": false}` skips every check; each check
+has its own boolean switch. Existence is always checked: `container: false`
+skips only the running assertion, and a stopped container still refuses an
+installation probe. These overrides apply to a new session before it binds an
+allocation; a bound session keeps its launch policy.
+`management.target.preflight.endpoint.channels` selects the advertised channels
+to inspect (`events`, `confirm`, `tools`).
 
-```json
-{
-  "launcher": {
-    "dockerManagementEnv": ["CUSTOM_MANAGER_TOKEN", "XDG_RUNTIME_DIR"]
-  }
-}
-```
-
-This fragment supplements the other launcher fields. Names must be unique and
-match `[A-Za-z_][A-Za-z0-9_]*`; values come from the effective startup environment,
-without interpolation. A listed name absent at startup stays absent after restart.
-Do not list model credentials forwarded only to the container. The declaration
-is retained in session/startup snapshots, including clean-forks, independently of
-later library or Hub defaults.
-
-Recovery filters legacy full-environment snapshots to the built-in names; new
-snapshots also retain their saved pass-through declarations. Recovery never fills
-missing values from the current Hub environment. Legacy deployments requiring
-extra helper variables should configure the list and relaunch to capture it.
-Missing or invalid context remains unverified; it does not authorize deletion.
-Necessary proxy/header credentials and explicitly selected secrets can still be
-stored in these mode-0600 files. Old disk copies are not securely erased; protect
-the data directory and backups. Explicit credentials already placed in launch
-`env` remain part of that operator-authored configuration.
+A launch profile saved by an older release is not converted automatically.
+Create a new launch configuration from this template instead; existing library
+files and session snapshots are never rewritten.
 
 ## Worker templates and managed fields
 

@@ -15,7 +15,6 @@ import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { SCENARIOS } from './mock/provider.ts';
 import type { Scenario } from './mock/provider.ts';
-import { validDockerManagementEnv } from './subagents/docker.ts';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MIN_LOG_RING_BYTES } from './util/log-preview.ts';
@@ -116,8 +115,6 @@ export interface HubConfig {
         args: string[];
         cwd: string;
         pidFile: string;
-        /** Extra environment names needed by Docker inspect/kill; values are persisted. */
-        dockerManagementEnv: string[];
     };
     mock: {
         enabled: boolean;
@@ -226,7 +223,6 @@ export function defaultConfig(): HubConfig {
             // Set when the launcher daemonizes: the supervisor then signals the
             // pid in this file instead of the process it spawned.
             pidFile: '',
-            dockerManagementEnv: [],
         },
         mock: {
             enabled: false,
@@ -456,6 +452,14 @@ export function validateConfig(config: HubConfig): HubConfig {
         throw new ConfigError('worker.promptsDir is no longer supported: '
             + 'worker.systemPromptFile is relative to the worker\'s installation directory');
     }
+    // The legacy `command` + `docker run` launcher is gone; Docker targets are
+    // managed launch profiles now. Hub configurations written by an older
+    // release still carry this default, so ignore it instead of refusing to
+    // start after an upgrade. Launch documents keep the ignored field.
+    if (isPlainObject(config.launcher) && Object.hasOwn(config.launcher, 'dockerManagementEnv')) {
+        delete (config.launcher as HubConfig['launcher'] & { dockerManagementEnv?: unknown })
+            .dockerManagementEnv;
+    }
     const unknown = unknownConfigKeys(config, defaultConfig());
     check(unknown.length === 0,
         `unknown configuration ${unknown.length === 1 ? 'key' : 'keys'}: ${unknown.join(', ')}`);
@@ -562,8 +566,6 @@ export function validateConfig(config: HubConfig): HubConfig {
     check(typeof config.launcher.pidFile === 'string', 'launcher.pidFile must be a string');
     check(config.launcher.pidFile === '' || config.launcher.pidFile.startsWith('/'),
         'launcher.pidFile must be an absolute path');
-    check(validDockerManagementEnv(config.launcher.dockerManagementEnv),
-        'launcher.dockerManagementEnv must contain unique environment variable names, without wildcards');
 
     check(typeof config.mock?.enabled === 'boolean', 'mock.enabled must be a boolean');
     check((SCENARIOS as readonly string[]).includes(config.mock?.scenario),
