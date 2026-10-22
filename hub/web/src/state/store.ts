@@ -343,6 +343,7 @@ export interface PanelActions {
         parts: readonly ContentPart[],
         operation: string,
         recovery?: SkillRecovery,
+        display?: string,
     ): void;
     /** The hub refused it: drop the pending message and hand the text back. */
     failInput(sessionId: SessionId, requestId: string, reason: string): void;
@@ -1325,7 +1326,7 @@ export function createPanelStore() {
         },
 
         // ------------------------------------------------------------ input --
-        beginInput(sessionId, requestId, parts, operation, recovery) {
+        beginInput(sessionId, requestId, parts, operation, recovery, display) {
             const item: OutboxItem = {
                 kind: 'outbox',
                 id: nextItemId('out'),
@@ -1333,6 +1334,7 @@ export function createPanelStore() {
                 parts,
                 operation,
                 state: 'pending',
+                ...(display === undefined ? {} : { display }),
                 ...(recovery ? { recovery } : {}),
             };
             set(withView(get(), sessionId, (view) => append(view, item)));

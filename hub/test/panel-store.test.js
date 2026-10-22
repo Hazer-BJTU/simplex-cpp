@@ -484,6 +484,31 @@ describe('panel store: a refused input is handed back (D19)', () => {
         assert.equal(item.parts[0].raw, 'hello');
     });
 
+    it('keeps the operator draft on screen after admission', () => {
+        const store = createPanelStore();
+        store.getState().applyWelcome(welcome('epoch-1', [session()]));
+        const display = 'Before @{skill:review} after';
+        store.getState().beginInput('demo', 'req-9',
+            [{ type: 'text', raw: 'Before Review carefully. after' }], 'message',
+            { draft: display, skills: {} }, display);
+
+        store.getState().applyEvent({
+            type: 'event',
+            session: 'demo',
+            hub_seq: 1,
+            envelope: envelope(1, 'input_admitted', { request_id: 'req-9' }),
+        });
+
+        const item = store.getState().items('demo').find((entry) => entry.kind === 'outbox');
+        assert.equal(item.state, 'admitted');
+        // Admission drops the rejection snapshot but keeps the display form:
+        // the worker's `input_admitted` never echoes the text, so losing it here
+        // would leave the expanded wire payload as the only record.
+        assert.equal(item.recovery, undefined);
+        assert.equal(item.display, display);
+        assert.equal(item.parts[0].raw, 'Before Review carefully. after');
+    });
+
     it('settles only the overflowing input and preserves the active run on live and replay paths', () => {
         for (const replay of [false, true]) {
             const store = createPanelStore();

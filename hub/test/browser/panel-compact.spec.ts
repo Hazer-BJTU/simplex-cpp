@@ -1,14 +1,61 @@
 import { expect, test } from '@playwright/test';
-import { STUB, emit, open, runningSession, withSession } from './harness.ts';
+import { STUB, emit, open, reportUsage, runningSession, withSession } from './harness.ts';
 
 const result = { summary: 'A **saved summary**', memory_file: '/worker/memory/archive/state.md',
     removed_turns: 1, revision: 2, durable: true };
+
+test('the compact action appears and disappears with the context meter', async ({ page }) => {
+    await open(page, '?session=demo');
+    const meter = page.getByLabel('Token usage band');
+    const compact = page.getByRole('button', { name: 'Compact', exact: true });
+    const placeholder = page.getByTestId('context-meter-placeholder');
+    // No response has reported usage yet, so there is no band to draw and no
+    // action that belongs to it; a placeholder still reserves the row's height.
+    await expect(meter).toHaveCount(0);
+    await expect(compact).toHaveCount(0);
+    await expect(placeholder).toBeVisible();
+    expect((await placeholder.boundingBox())!.height).toBeGreaterThan(0);
+    const before = (await page.getByTestId('composer-surface').boundingBox())!;
+    // A capability on its own is not enough: the row stays empty until there
+    // is a usage figure to put in it.
+    await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
+    await expect(compact).toHaveCount(0);
+    await expect(placeholder).toBeVisible();
+    await reportUsage(page);
+    await expect(placeholder).toHaveCount(0);
+    await expect(meter).toBeVisible();
+    await expect(compact).toBeVisible();
+    const surface = (await page.getByTestId('composer-surface').boundingBox())!;
+    // Filling the row must not move or resize the composer.
+    expect(surface.y).toBe(before.y);
+    expect(surface.height).toBe(before.height);
+    const band = (await meter.boundingBox())!;
+    // Flush with the border: the old label indented it by a whole column.
+    expect(Math.abs(band.x - (surface.x + 1))).toBeLessThanOrEqual(0.5);
+    const action = (await compact.boundingBox())!;
+    // The action sits immediately after the meter, not at the end of the row.
+    expect(action.x).toBeGreaterThanOrEqual(band.x + band.width);
+    expect(action.x - (band.x + band.width)).toBeLessThanOrEqual(12);
+    // Losing the worker identity hides the meter and the action together and
+    // leaves the placeholder, without resizing the composer.
+    await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+    await expect(compact).toHaveCount(0);
+    await expect(placeholder).toBeVisible();
+    const disconnected = (await page.getByTestId('composer-surface').boundingBox())!;
+    expect(disconnected.y).toBe(before.y);
+    expect(disconnected.height).toBe(before.height);
+});
 
 test('Compact context is gated, carries no message, and preserves a refused draft', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
     await page.getByLabel('message').fill('Keep this draft');
     const command = page.getByRole('button', { name: 'Compact', exact: true });
+    // The action is not offered until a response reports usage; once it is, a
+    // worker that has not declared the capability still leaves it disabled.
+    await expect(command).toHaveCount(0);
+    await reportUsage(page);
+    await expect(command).toBeVisible();
     await expect(command).toBeDisabled();
     await emit(page, 'status', { active: false, capabilities: ['context-compact'],
         memory_retention: { max_archives: 5 } });
@@ -48,6 +95,7 @@ test('Compact context is gated, carries no message, and preserves a refused draf
 test('a rejected compact retains its identity after transcript replay', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
+    await reportUsage(page);
     await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
     await page.request.post(`${STUB}/__stub/settings`, { data: { rejectInput: true } });
     await page.getByRole('button', { name: 'Compact', exact: true }).click();
@@ -65,8 +113,11 @@ test('a rejected compact retains its identity after transcript replay', async ({
     });
     await page.reload();
     await expect(page.getByText('Context compaction was rejected.', { exact: false })).toBeVisible();
-    // A refused input has no execution and therefore no numbered run summary.
-    await expect(page.getByTestId('round-summary')).toHaveCount(0);
+    // The usage report is the only numbered execution; a refused input has no
+    // execution and therefore adds no run summary of its own.
+    const summaries = page.getByTestId('round-summary');
+    await expect(summaries).toHaveCount(1);
+    await expect(summaries).not.toContainText('context compaction');
     // New worker events carry the operation themselves, so this remains
     // identifiable after the hub's shorter request-record window expires.
     await withSession(page, runningSession('demo'));
@@ -128,6 +179,7 @@ test('failed or cancelled compact preserves history and uses compact-specific gu
 
 test('compact is an icon action, keeps skill drafts, and guards pending admission', async ({ page }) => {
     await open(page, '?session=demo');
+    await reportUsage(page);
     await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
     const input = page.getByLabel('message', { exact: true });
     const draft = 'Continue with @{skill:unfinished';
@@ -161,12 +213,15 @@ test('compact is an icon action, keeps skill drafts, and guards pending admissio
 
 test('a lost worker channel releases the compact admission indicator', async ({ page }) => {
     await open(page, '?session=demo');
+    await reportUsage(page);
     await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
     await page.request.post(`${STUB}/__stub/settings`, { data: { holdInput: true } });
     await page.getByRole('button', { name: 'Compact', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Compacting…' })).toBeDisabled();
     await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
-    await expect(page.getByRole('button', { name: 'Compact', exact: true })).toBeDisabled();
+    // The row belongs to the current worker's usage, so it disappears together
+    // with the meter when that identity goes away; there is no orphan action.
+    await expect(page.getByRole('button', { name: 'Compact', exact: true })).toHaveCount(0);
     await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
     await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
     await expect(page.getByRole('button', { name: 'Compact', exact: true })).toBeEnabled();

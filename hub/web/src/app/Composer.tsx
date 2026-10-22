@@ -210,6 +210,9 @@ function SessionComposer() {
             options,
             operation === 'message' && (draft.includes('@{skill:'))
                 ? { draft, skills: skill.skills } : undefined,
+            // The wire payload expands skill text; the transcript keeps the
+            // draft so the operator's own sentence stays readable.
+            operation === 'message' && skill.ids.length > 0 ? draft : undefined,
         );
         if (sent && operation === 'compact') {
             // sendInput publishes its outbox entry synchronously. Track only
@@ -238,24 +241,38 @@ function SessionComposer() {
         >
             <div className="h-5">{tokenUsage && <TokenUsageIndicator usage={tokenUsage} />}</div>
             <div className="reading-width composer-surface" data-testid="composer-surface">
-                <div className="flex items-center px-2 pt-2 pb-1">
-                    <span className="w-28 shrink-0 px-1 py-1 text-center text-xs font-medium text-ink-muted">
-                        Message
-                    </span>
-                    <div className="ml-2 flex items-center gap-1">
-                        {tokenUsage && <TokenUsageMeter usage={tokenUsage} />}
-                        <IconButton label={compactBusy ? 'Compacting…' : 'Compact'}
-                            disabled={compactUnavailable} aria-busy={compactBusy}
-                            aria-describedby="compact-description"
-                            onClick={() => send('compact')}>
-                            <Glyph name={compactBusy ? 'spinner' : 'compact'} />
-                        </IconButton>
-                        <span id="compact-description" className="sr-only">
-                            Summarize the conversation and save its context as memory. Your draft is kept.
-                            {compactRetentionDetail(workerStatus?.memory_retention)}
-                            {!compactSupported && ' This hub or worker does not support context compaction.'}
-                        </span>
-                    </div>
+                {/* The row is always present. Without a reported usage a
+                    placeholder reserves its height, so the first response fills
+                    the meter instead of growing the composer; the action
+                    belongs to the meter and is hidden until there is one. */}
+                <div className="flex h-10 items-center pt-2 pb-1 pr-2">
+                    {tokenUsage ? (
+                        <>
+                            <TokenUsageMeter usage={tokenUsage} />
+                            <IconButton className="ml-2"
+                                label={compactBusy ? 'Compacting…' : 'Compact'}
+                                disabled={compactUnavailable} aria-busy={compactBusy}
+                                aria-describedby="compact-description"
+                                onClick={() => send('compact')}>
+                                <Glyph name={compactBusy ? 'spinner' : 'compact'} />
+                            </IconButton>
+                            <span id="compact-description" className="sr-only">
+                                Summarize the conversation and save its context as memory. Your draft is kept.
+                                {compactRetentionDetail(workerStatus?.memory_retention)}
+                                {!compactSupported && ' This hub or worker does not support context compaction.'}
+                            </span>
+                        </>
+                    ) : (
+                        <div data-testid="context-meter-placeholder"
+                            className="flex items-center gap-1">
+                            <span aria-hidden className="flex h-1.5 w-20 gap-0.5 sm:w-32">
+                                {Array.from({ length: 8 }, (_, index) => (
+                                    <span key={index} className="skeleton min-w-0 flex-1 rounded-sm" />
+                                ))}
+                            </span>
+                            <span aria-hidden className="skeleton block h-2.5 w-14 rounded-sm" />
+                        </div>
+                    )}
                 </div>
                 {references.length > 0 && (
                     <ul className="flex flex-wrap gap-1.5 px-4 pt-3">

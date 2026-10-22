@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { STUB, emit, open, runningSession, withSession } from './harness.ts';
+import { STUB, emit, open, reportUsage, runningSession, withSession } from './harness.ts';
 
 const advertised = {
     model: {
@@ -95,6 +95,7 @@ test('an unanswered options request is retried when only the worker reconnects',
 
 test('compact uses the selected model and confirmation settings without sending the draft', async ({ page }) => {
     await open(page, '?session=demo');
+    await reportUsage(page);
     await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
     await emit(page, 'options', advertised);
     await page.getByRole('button', { name: 'Model options' }).click();

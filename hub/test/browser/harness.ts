@@ -68,6 +68,19 @@ export function modelResponse(text: string, extra: Record<string, unknown> = {})
     };
 }
 
+/**
+ * Publish one response with a cost, which is what reveals the context meter.
+ *
+ * The meter and the compact action share one row and one visibility rule: a
+ * test that needs to press Compact has to report usage first, exactly as a real
+ * worker does before its first answer.
+ */
+export async function reportUsage(page: Page): Promise<void> {
+    await emit(page, 'model_response', modelResponse('Usage report', {
+        cost: { prompt: 128 * 1024, generated: 120, cache_hit: 64 * 1024 },
+    }));
+}
+
 /** One call object, as `tool_calls` and `model_response.invokes` carry it. */
 export function call(id: string, name: string, args: unknown, extra: Record<string, unknown> = {}) {
     return { id, name, arguments: args, security: 'default_deny', type: 'read_only', ...extra };

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { open, STUB, setSessions } from './harness.ts';
+import { emit, open, STUB, setSessions } from './harness.ts';
 
 const document = { id: 'review', name: 'review', title: 'Review changes',
     description: 'Inspect correctness.', keywords: ['code'], revision: 'one', text: 'Review carefully.' };
@@ -35,6 +35,37 @@ test('picker inserts at the caret and sends an in-place expanded snapshot', asyn
     await expect.poll(async () => (await inputs(page)).at(-1)?.content?.[0]?.raw)
         .toBe('Before Review carefully. after');
     await expect(input).toHaveValue('');
+    const sent = page.getByTestId('outbox-item').last();
+    await expect(sent).toHaveAttribute('data-state', 'admitted');
+    // The transcript keeps the operator's draft; the expanded wire text is one
+    // click away rather than in the reading path.
+    const shown = sent.getByTestId('outbox-text');
+    await expect(shown).toHaveText('Before @{skill:review} after');
+    await expect(shown).not.toContainText('Review carefully.');
+    // The full payload is mounted only while the disclosure is open.
+    await expect(sent.getByTestId('sent-text')).toHaveCount(0);
+    await sent.getByText('show the text sent to the worker').click();
+    await expect(sent.getByTestId('sent-text')).toHaveText('Before Review carefully. after');
+});
+
+test('a folded skill turn previews the draft, not the expanded body', async ({ page }) => {
+    await library(page);
+    await open(page, '?session=demo');
+    const input = page.getByLabel('message', { exact: true });
+    await input.fill('@{skill:review} check this change');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    const sent = page.getByTestId('outbox-item').last();
+    await expect(sent).toHaveAttribute('data-state', 'admitted');
+    // OPEN_ROUNDS = 3: three later runs fold the skill turn, leaving only its
+    // one-line summary in the transcript.
+    for (let index = 1; index <= 3; index++) {
+        const extra = { request_id: `fold-${index}`, run_id: `fold-run-${index}` };
+        await emit(page, 'input_admitted', { operation: 'message' }, extra);
+        await emit(page, 'run_finished', { status: 'completed' }, extra);
+    }
+    const summary = page.getByTestId('round-summary').first();
+    await expect(summary).toContainText('@{skill:review}');
+    await expect(summary).not.toContainText('Review carefully.');
 });
 
 test('typed references complete, delete and escape', async ({ page }) => {
@@ -54,6 +85,8 @@ test('typed references complete, delete and escape', async ({ page }) => {
     await input.fill('Literal \\@{skill:missing}');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await expect.poll(async () => (await inputs(page)).at(-1)?.content?.[0]?.raw).toBe('Literal @{skill:missing}');
+    // An escaped reference is not expanded, so there is no second form to show.
+    await expect(page.getByTestId('sent-text-disclosure')).toHaveCount(0);
     await input.fill('Plain request');
     await expect(page.getByText('Preview message', { exact: true })).toHaveCount(0);
 });
