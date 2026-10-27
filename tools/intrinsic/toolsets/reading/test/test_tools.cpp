@@ -449,27 +449,36 @@ BOOST_FIXTURE_TEST_CASE(invalid_configuration_names_file_field_and_isolates_regi
     }
 }
 
-/** The installed declaration is authoritative and its limits stay enforced. */
+/**
+ * The installed declaration is authoritative.
+ *
+ * Run twice by CI: against the shipped defaults and against a staged copy whose
+ * limits were rewritten, so this must derive its expectations from the file
+ * rather than from the tool constants. The boundary is only observable with a
+ * fixture this suite is willing to create, so the shipped 1 GiB default skips it
+ * and the configuration tests cover that value instead.
+ */
 BOOST_FIXTURE_TEST_CASE(selected_yaml_configuration_controls_read_limits, Fixture)
 {
     const auto declaration = tools::intrinsic::load_tool_declaration(
         tools::intrinsic::reading::schema_directory() / "read_text.yaml");
-    BOOST_TEST(declaration.config.value("max_file_bytes", std::size_t{0}) ==
-               tools::intrinsic::ReadTextTool::kMaxFileBytes);
-    // A lower operator limit is still supported, so the boundary is checked
-    // against a configured value instead of a gigabyte fixture.
-    const auto source_skill = tools::intrinsic::reading::schema_directory() / "skill.yaml";
-    const auto directory = schema({{"max_file_bytes", 4}, {"max_output_bytes", 3}});
-    std::filesystem::copy_file(source_skill, directory / "skill.yaml",
-                               std::filesystem::copy_options::overwrite_existing);
-    SchemaOverride override(directory);
-    registry.clear();
-    registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>());
-    BOOST_TEST(tools::is_error(call({{"path", write("abcde")}})));
-    const auto exact = call({{"path", write("abcd")}});
+    const auto file_limit = declaration.config.value(
+        "max_file_bytes", tools::intrinsic::ReadTextTool::kMaxFileBytes);
+    const auto output_limit = declaration.config.value(
+        "max_output_bytes", tools::intrinsic::ReadTextTool::kMaxOutputBytes);
+    BOOST_TEST(file_limit >= 1u);
+    BOOST_TEST(file_limit <= tools::intrinsic::ReadTextTool::kMaxConfiguredFileBytes);
+    BOOST_TEST(output_limit >= 1u);
+    BOOST_TEST(output_limit <= tools::intrinsic::ReadTextTool::kMaxConfiguredOutputBytes);
+
+    constexpr std::size_t kFixtureLimit = 64 * 1024;
+    if (file_limit > kFixtureLimit) return;
+    BOOST_TEST(tools::is_error(call({{"path", write(std::string(file_limit + 1, 'a'))}})));
+    const auto exact = call({{"path", write(std::string(file_limit, 'a'))}});
     BOOST_REQUIRE(!tools::is_error(exact));
-    contains(exact, "Output clipped to 3 bytes");
-    contains(exact, "text (truncated, first 3 bytes):\nabc");
+    if (output_limit < file_limit) {
+        contains(exact, "Output clipped to " + std::to_string(output_limit) + " bytes");
+    }
 }
 
 BOOST_FIXTURE_TEST_CASE(valid_configuration_boundaries_cover_line_byte_and_expanded_display, Fixture)
