@@ -27,46 +27,6 @@ std::size_t with_slack(std::size_t cap, std::size_t slack)
     return cap > std::numeric_limits<std::size_t>::max() - slack ? cap : cap + slack;
 }
 
-/**
- * Terminator probe at one window position.
- *
- * incomplete means the window ends inside a sequence that may still become a
- * longer terminator ("\r" before "\n", or a partial UTF-8 newline). The caller
- * carries those bytes into the next window. At EOF the same bytes are resolved
- * with detail::line_break_width, which reports a lone CR as a terminator and a
- * truncated UTF-8 prefix as ordinary content.
- */
-struct BreakProbe {
-    std::size_t width = 0;
-    bool incomplete = false;
-};
-
-BreakProbe probe_break(std::string_view window, std::size_t at)
-{
-    switch (static_cast<unsigned char>(window[at])) {
-        case '\r':
-            if (at + 1 == window.size()) return {0, true};
-            return {window[at + 1] == '\n' ? 2u : 1u, false};
-        case '\n':
-        case '\v':
-        case '\f':
-            return {1, false};
-        case 0xc2:
-            if (at + 1 == window.size()) return {0, true};
-            return {static_cast<unsigned char>(window[at + 1]) == 0x85 ? 2u : 0u, false};
-        case 0xe2:
-            if (at + 1 == window.size()) return {0, true};
-            if (static_cast<unsigned char>(window[at + 1]) != 0x80) return {0, false};
-            if (at + 2 == window.size()) return {0, true};
-            {
-                const auto third = static_cast<unsigned char>(window[at + 2]);
-                return {third == 0xa8 || third == 0xa9 ? 3u : 0u, false};
-            }
-        default:
-            return {0, false};
-    }
-}
-
 struct ScanTotals {
     std::size_t bytes = 0;
     std::size_t lines = 1;
@@ -104,7 +64,7 @@ ScanTotals scan_file(
         std::size_t scanned = 0;
         std::size_t offset = 0;
         while (offset < window.size()) {
-            const auto probe = probe_break(window, offset);
+            const auto probe = detail::probe_break(window, offset);
             if (probe.incomplete) break;
             if (probe.width == 0) {
                 ++offset;

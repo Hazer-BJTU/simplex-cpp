@@ -36,3 +36,10 @@ target_link_libraries(test_stream_read PRIVATE textedit_lib Boost::unit_test_fra
 set_target_properties(test_stream_read PROPERTIES ENABLE_EXPORTS ON)
 add_test(NAME test_stream_read COMMAND test_stream_read)
 set_tests_properties(test_stream_read PROPERTIES TIMEOUT 120)
+
+add_executable(test_stream_edit test_stream_edit.cpp)
+target_link_libraries(test_stream_edit PRIVATE textedit_lib fileio_lib Boost::unit_test_framework)
+# Executable symbol interposition caps read() so every buffer edge is exercised.
+set_target_properties(test_stream_edit PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME test_stream_edit COMMAND test_stream_edit)
+set_tests_properties(test_stream_edit PROPERTIES TIMEOUT 180)

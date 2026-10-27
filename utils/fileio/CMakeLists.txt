@@ -1,7 +1,8 @@
 # Application-independent synchronous file operations and private POSIX RAII.
 add_library(fileio_lib SHARED
     src/atomic_write.cpp src/directory_tree_lock.cpp src/child_path.cpp src/session_lock.cpp src/read_prefix.cpp
-    src/replace_existing.cpp src/base64.cpp src/streaming.cpp)
+    src/replace_existing.cpp src/base64.cpp src/streaming.cpp
+    src/staged_replace.cpp)
 target_include_directories(fileio_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 set_target_properties(fileio_lib PROPERTIES OUTPUT_NAME simplex_fileio)
 target_compile_options(fileio_lib PRIVATE
