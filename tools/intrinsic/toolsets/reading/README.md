@@ -43,9 +43,12 @@ digits. Byte selection may cut a UTF-8 character.
 Relative paths use the host working directory, not the configured workspace
 hint. Symlinks are followed. Non-regular files and embedded NUL paths are
 refused. Reading does not modify contents, though access times can change.
-Files over the configured limit (default 16 MiB) fail; the implementation
-loads the whole file before selection. Input size does not bound combined
-index/rendering memory.
+Files over the configured limit (default 1 GiB) fail, and the limit is enforced
+on bytes actually read, so a file that grows during the scan cannot outrun it.
+The host scans the file once with fixed buffers: input memory does not scale with
+file size, while the rendered output stays inside the display budget. A large
+file therefore costs synchronous scan time, not memory. Counting line totals
+still traverses the whole file.
 
 ## Host configuration
 
@@ -54,14 +57,16 @@ model-facing declaration:
 
 ```yaml
 config:
-  max_file_bytes: 16777216
+  max_file_bytes: 1073741824
   max_output_bytes: 65536
 ```
 
 Both fields are integer byte counts. `max_file_bytes` accepts 1–1073741824
 (1 GiB); `max_output_bytes` accepts 1–16777216 (16 MiB). Omitted fields retain
-16 MiB / 64 KiB defaults. They need not be ordered: indexed/hex display can be
-larger than source content. Null, booleans, floats, strings, unknown keys, and
+1 GiB / 64 KiB defaults, and the file ceiling is also the largest configurable
+value. They need not be ordered: indexed/hex display can be larger than source
+content. Because scanning is streaming, raising `max_file_bytes` raises the
+supported input size and the scan time, not the memory a read needs. Null, booleans, floats, strings, unknown keys, and
 values outside the ranges disable this tool with file/field diagnostics.
 The common loader requires `config` to be a mapping; omission and `{}` are valid.
 

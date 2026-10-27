@@ -4,6 +4,8 @@
 #include "tools/intrinsic/editing/schemas.hpp"
 #include "tools/intrinsic/tool_result.hpp"
 
+#include <format>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -11,7 +13,25 @@ namespace tools::intrinsic {
 
 StrReplaceEditTool::StrReplaceEditTool()
     : DeclaredTool(editing::schema_directory() / "str_replace_edit.yaml")
-{}
+{
+    initialize_configuration([this](const nlohmann::json& config) {
+        for (const auto& [key, value] : config.items()) {
+            if (key != "max_file_bytes") {
+                configuration_error(key, "unknown str_replace_edit configuration field");
+            }
+        }
+        const auto found = config.find("max_file_bytes");
+        if (found == config.end()) {
+            max_file_bytes_ = kMaxFileBytes;
+            return;
+        }
+        if (!found->is_number_integer() || *found < 1 || *found > kMaxConfiguredFileBytes) {
+            configuration_error("max_file_bytes", std::format(
+                "must be an integer from 1 to {} bytes", kMaxConfiguredFileBytes));
+        }
+        max_file_bytes_ = found->get<std::size_t>();
+    });
+}
 
 void StrReplaceEditTool::ensure_arguments(model_io::InvokeQuery& query) const
 {
@@ -46,7 +66,8 @@ boost::asio::awaitable<model_io::Content> StrReplaceEditTool::invoke(
 
     textedit::EditResult edit;
     try {
-        edit = textedit::str_replace_file(path, old_text, new_text, context);
+        edit = textedit::str_replace_file(
+            path, old_text, new_text, context, max_file_bytes_);
     } catch (const std::exception& error) {
         invoke_failed(std::string("str_replace_edit: ") + error.what());
     }

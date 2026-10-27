@@ -62,6 +62,7 @@ struct PreparedEdit {
  * large spans show their first and last 24 rows with an omission marker.
  * Invalid UTF-8 in the excerpt is repaired for display only. Coordinates and
  * edited content remain raw byte-based. No full-file line index is allocated.
+ * This in-memory variant is the reference for str_replace_file's previews.
  */
 [[nodiscard]] PreparedEdit prepare_str_replace(
     std::string_view original,
@@ -72,13 +73,22 @@ struct PreparedEdit {
 
 /**
  * Edit an existing single-link regular file, with the same pure semantics.
- * Missing/ambiguous matches and unchanged content never write. Before commit,
- * the original bytes and file identity are checked again. A change detected
- * during the initial read also returns Conflict. Conflict means no
+ *
+ * The source is scanned once by a streaming exact matcher; the replacement is
+ * staged in a private candidate beside the destination, and memory stays
+ * proportional to old_text, the preview budget and fixed IO buffers rather than
+ * to file size. A temporary file approximately the size of the edited output
+ * exists until publication, so a missing or ambiguous match creates and removes
+ * one. Missing/ambiguous matches and unchanged content never publish. Before
+ * commit, the candidate is compared against the still-unchanged source (shared
+ * prefix, the matched span byte for byte, then the suffix to the end), so exact
+ * comparison is never replaced by a digest or timestamp. A change detected
+ * during the scan or that verification returns Conflict. Conflict means no
  * replacement was published. PublishedSyncFailed means the replacement is
  * visible but directory fsync failed; do not retry blindly. Other IO failures
  * throw before publication. External writers that ignore this protocol can
  * still race after the final check. The path is not a workspace restriction.
+ * max_file_bytes bounds the scanned source and the resulting size.
  */
 [[nodiscard]] EditResult str_replace_file(
     const std::filesystem::path& path,

@@ -14,8 +14,10 @@ namespace tools::intrinsic {
  */
 class ReadTextTool final : public DeclaredTool {
 public:
-    /// Default limits, preserved for callers of the earlier fixed-limit API.
-    static constexpr std::size_t kMaxFileBytes = 16 * 1024 * 1024;
+    /// Default host limits. The file ceiling is the largest configurable value:
+    /// scanning is bounded memory, so a large file is a latency cost, not a
+    /// memory one. The rendered output budget is deliberately much smaller.
+    static constexpr std::size_t kMaxFileBytes = 1024 * 1024 * 1024;
     static constexpr std::size_t kMaxOutputBytes = 64 * 1024;
     static constexpr std::size_t kMaxConfiguredFileBytes = 1024 * 1024 * 1024;
     static constexpr std::size_t kMaxConfiguredOutputBytes = 16 * 1024 * 1024;

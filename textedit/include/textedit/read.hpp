@@ -99,16 +99,18 @@ struct BoundedLineReadResult : BoundedReadResult {
     ByteReadFormat format = ByteReadFormat::Plain);
 
 /**
- * Read a regular file and apply read_lines to the loaded bytes.
+ * Read a regular file and apply read_lines to the observed bytes.
  *
- * Synchronous, follows symlinks, and does not modify content. The whole file is
- * loaded to determine its logical lines. max_file_bytes (default 16 MiB) bounds
- * input memory; one extra byte detects oversize input, which throws
- * std::length_error instead of returning a misleading partial last line.
- * This bound does not include index/output memory. Zero allows empty files.
- * SIZE_MAX is invalid because the lookahead byte must fit. Files changing while
- * read do not provide a consistent filesystem snapshot. IO failures throw
- * std::system_error; invalid paths/limits throw std::invalid_argument.
+ * Synchronous, follows symlinks, and does not modify content. The file is
+ * scanned once with fixed buffers, so input memory does not scale with file
+ * size; this variant still returns the whole selection it was asked for.
+ * max_file_bytes (default 16 MiB) bounds the bytes read; a file that exceeds it,
+ * including one that grows during the scan, throws std::length_error. The limit
+ * is checked on observed bytes, never on metadata alone, and SIZE_MAX is invalid
+ * because one lookahead byte must fit. Zero allows empty files. IO failures
+ * throw std::system_error; invalid paths/limits throw std::invalid_argument.
+ * A file modified by another actor while it is scanned is not a snapshot:
+ * totals and the selection describe the bytes this scan observed.
  */
 [[nodiscard]] LineReadResult read_file_lines(
     const std::filesystem::path& path,
@@ -118,9 +120,10 @@ struct BoundedLineReadResult : BoundedReadResult {
     std::size_t max_file_bytes = 16 * 1024 * 1024);
 
 /**
- * File counterpart of read_bytes. Uses the same bounded whole-file loading and
- * error contract as read_file_lines. For repeated selections from one loaded
- * string, use read_bytes directly to avoid repeated disk reads.
+ * File counterpart of read_bytes with the same scan and error contract. Byte
+ * selections may seek past uninteresting content, but total_lines is still an
+ * exact count, so the source is scanned once end to end. For repeated
+ * selections from one in-memory string, use read_bytes directly.
  */
 [[nodiscard]] ReadResult read_file_bytes(
     const std::filesystem::path& path,
@@ -161,7 +164,14 @@ struct BoundedLineReadResult : BoundedReadResult {
     ByteReadFormat format,
     std::size_t output_bytes);
 
-/** File counterparts with the same whole-file bound as read_file_lines/bytes. */
+/**
+ * File counterparts with the same scan and byte-limit contract.
+ *
+ * These are the model-facing variants: only the displayed prefix within
+ * output_bytes is ever rendered or retained, in addition to the row index state
+ * of the selected rows. Malformed UTF-8 in that prefix is repaired, and rows cut
+ * by the budget keep their true byte length so byte-range labels stay exact.
+ */
 [[nodiscard]] BoundedLineReadResult read_file_lines_bounded(
     const std::filesystem::path& path,
     std::size_t start_line,
