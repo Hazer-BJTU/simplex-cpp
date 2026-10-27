@@ -2,6 +2,8 @@
 
 #include "fileio/atomic_write.hpp"
 
+#include "posix_identity.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -20,29 +22,14 @@
 namespace fileio {
 namespace {
 
-[[noreturn]] void fail(const char* operation)
-{
-    throw std::system_error(errno, std::generic_category(), operation);
-}
-
-/** Own a descriptor on all exits, including exceptions while writing. */
-class Descriptor {
-public:
-    explicit Descriptor(int value) : value_(value) {}
-    ~Descriptor() { if (value_ >= 0) ::close(value_); }
-    Descriptor(const Descriptor&) = delete;
-    Descriptor& operator=(const Descriptor&) = delete;
-    int get() const noexcept { return value_; }
-
-    void close()
-    {
-        const auto value = std::exchange(value_, -1);
-        if (::close(value) != 0) fail("close replacement file");
-    }
-
-private:
-    int value_;
-};
+using detail::Descriptor;
+using detail::checked_path;
+using detail::checked_regular;
+using detail::fail;
+using detail::identity_of;
+using detail::open_source;
+using detail::same_file;
+using detail::write_all;
 
 /** Delete only a temporary file that has not been renamed into place. */
 struct TemporaryPath {
@@ -50,65 +37,6 @@ struct TemporaryPath {
     bool published = false;
     ~TemporaryPath() { if (!published) ::unlink(path.c_str()); }
 };
-
-std::filesystem::path checked_path(const std::filesystem::path& path)
-{
-    if (path.native().find('\0') != std::string::npos) {
-        throw std::invalid_argument("file path contains NUL");
-    }
-    return std::filesystem::absolute(path);
-}
-
-struct stat checked_regular(int descriptor)
-{
-    struct stat info {};
-    if (::fstat(descriptor, &info) != 0) fail("inspect editable file");
-    if (!S_ISREG(info.st_mode) || info.st_nlink != 1 ||
-        (info.st_mode & 07000) != 0) {
-        throw std::system_error(
-            std::make_error_code(std::errc::operation_not_supported),
-            "editing requires a single-link regular file without special mode bits");
-    }
-    return info;
-}
-
-int open_source(const std::filesystem::path& path)
-{
-    const auto descriptor = ::open(
-        path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
-    if (descriptor < 0) fail("open editable file");
-    return descriptor;
-}
-
-/** Compare the fields that reveal ordinary concurrent content/identity changes. */
-bool same_file(const struct stat& left, const struct stat& right)
-{
-    return S_ISREG(right.st_mode) && right.st_nlink == 1 &&
-           left.st_dev == right.st_dev && left.st_ino == right.st_ino &&
-           left.st_size == right.st_size && left.st_mode == right.st_mode &&
-           left.st_uid == right.st_uid && left.st_gid == right.st_gid &&
-           left.st_mtim.tv_sec == right.st_mtim.tv_sec &&
-           left.st_mtim.tv_nsec == right.st_mtim.tv_nsec &&
-           left.st_ctim.tv_sec == right.st_ctim.tv_sec &&
-           left.st_ctim.tv_nsec == right.st_ctim.tv_nsec;
-}
-
-FileIdentity identity_of(const struct stat& info)
-{
-    return {
-        static_cast<std::uintmax_t>(info.st_dev),
-        static_cast<std::uintmax_t>(info.st_ino),
-        static_cast<std::uintmax_t>(info.st_size),
-        static_cast<std::uintmax_t>(info.st_mode),
-        static_cast<std::uintmax_t>(info.st_uid),
-        static_cast<std::uintmax_t>(info.st_gid),
-        static_cast<std::uintmax_t>(info.st_nlink),
-        static_cast<std::intmax_t>(info.st_mtim.tv_sec),
-        static_cast<std::intmax_t>(info.st_ctim.tv_sec),
-        info.st_mtim.tv_nsec,
-        info.st_ctim.tv_nsec
-    };
-}
 
 void compare_expected(int descriptor, std::string_view expected)
 {
@@ -132,18 +60,6 @@ void compare_expected(int descriptor, std::string_view expected)
         if (count < 0) fail("compare editable file");
         if (count != 0) throw ReplaceConflict("file grew before replacement");
         break;
-    }
-}
-
-void write_all(int descriptor, std::string_view bytes)
-{
-    std::size_t offset = 0;
-    while (offset < bytes.size()) {
-        const auto count = ::write(descriptor, bytes.data() + offset,
-                                   bytes.size() - offset);
-        if (count < 0 && errno == EINTR) continue;
-        if (count <= 0) fail("write replacement file");
-        offset += static_cast<std::size_t>(count);
     }
 }
 

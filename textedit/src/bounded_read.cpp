@@ -1,7 +1,7 @@
 #include "textedit/read.hpp"
 
+#include "display.hpp"
 #include "line_break.hpp"
-#include "read_detail.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -10,83 +10,7 @@
 namespace textedit {
 namespace {
 
-/**
- * Append validated UTF-8 scalars while enforcing the output byte budget.
- *
- * Invalid source bytes each become U+FFFD. This decision is made before any
- * clipping, so an arbitrary run of continuation bytes cannot make the writer
- * retreat or hide display_replaced. The writer never retains input views.
- */
-class DisplayWriter {
-public:
-    explicit DisplayWriter(std::size_t budget) : budget_(budget) {}
-
-    void append(std::string_view source)
-    {
-        for (std::size_t offset = 0; offset < source.size();) {
-            const auto first = static_cast<unsigned char>(source[offset]);
-            std::size_t width = 1;
-            bool valid = first < 0x80;
-            if (!valid) {
-                if (first >= 0xc2 && first <= 0xdf) width = 2;
-                else if (first >= 0xe0 && first <= 0xef) width = 3;
-                else if (first >= 0xf0 && first <= 0xf4) width = 4;
-                if (width > 1 && source.size() - offset >= width) {
-                    valid = true;
-                    for (std::size_t index = 1; index < width; ++index) {
-                        const auto byte = static_cast<unsigned char>(source[offset + index]);
-                        if (byte < 0x80 || byte > 0xbf ||
-                            (index == 1 && first == 0xe0 && byte < 0xa0) ||
-                            (index == 1 && first == 0xed && byte > 0x9f) ||
-                            (index == 1 && first == 0xf0 && byte < 0x90) ||
-                            (index == 1 && first == 0xf4 && byte > 0x8f)) {
-                            valid = false;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            const std::size_t emitted = valid ? width : 3;
-            if (emitted > budget_ - output_.size()) {
-                truncated_ = true;
-                return;
-            }
-            if (valid) {
-                output_.append(source.data() + offset, width);
-                offset += width;
-            } else {
-                output_ += "\xef\xbf\xbd";
-                replaced_ = true;
-                ++offset;
-            }
-        }
-    }
-
-    /** Hex output is ASCII and expands every byte by exactly four bytes. */
-    void append_hex(std::string_view source)
-    {
-        constexpr char digits[] = "0123456789ABCDEF";
-        const auto fits = std::min(source.size(), (budget_ - output_.size()) / 4);
-        for (std::size_t offset = 0; offset < fits; ++offset) {
-            const auto byte = static_cast<unsigned char>(source[offset]);
-            output_ += "\\x";
-            output_ += digits[byte >> 4];
-            output_ += digits[byte & 0x0f];
-        }
-        truncated_ |= fits != source.size();
-    }
-
-    [[nodiscard]] bool truncated() const noexcept { return truncated_; }
-    [[nodiscard]] bool replaced() const noexcept { return replaced_; }
-    [[nodiscard]] std::string take() { return std::move(output_); }
-
-private:
-    std::size_t budget_;
-    std::string output_;
-    bool truncated_ = false;
-    bool replaced_ = false;
-};
+using detail::DisplayWriter;
 
 /** Find one logical line start without storing a vector of preceding starts. */
 std::size_t line_start_at(std::string_view text, std::size_t target)
@@ -209,31 +133,6 @@ BoundedReadResult read_bytes_bounded(
     result.display_replaced = writer.replaced();
     result.text = writer.take();
     return result;
-}
-
-BoundedLineReadResult read_file_lines_bounded(
-    const std::filesystem::path& path,
-    std::size_t start_line,
-    std::size_t line_count,
-    LineReadFormat format,
-    std::size_t output_bytes,
-    std::size_t max_file_bytes)
-{
-    const auto bytes = detail::load_file(path, max_file_bytes);
-    return read_lines_bounded(bytes, start_line, line_count, format, output_bytes);
-}
-
-BoundedReadResult read_file_bytes_bounded(
-    const std::filesystem::path& path,
-    std::size_t start_byte,
-    std::size_t byte_count,
-    ByteReadFormat format,
-    std::size_t output_bytes,
-    std::size_t max_file_bytes)
-{
-    const auto bytes = detail::load_file(path, max_file_bytes);
-    return read_bytes_bounded(bytes, start_byte, byte_count, format,
-                              output_bytes);
 }
 
 } // namespace textedit
