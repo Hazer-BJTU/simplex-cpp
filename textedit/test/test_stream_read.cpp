@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
@@ -21,6 +22,10 @@ constexpr auto all = std::numeric_limits<std::size_t>::max();
 
 /// Maximum bytes one interposed read() returns; zero restores normal calls.
 std::size_t read_cap = 0;
+
+/// Bytes read per inode while counting, to prove the single-scan budget.
+std::map<ino_t, std::size_t> counted_reads;
+bool counting = false;
 
 /** Restore the normal read length even when an assertion throws. */
 struct TinyReads {
@@ -201,7 +206,14 @@ std::vector<std::string> corpus()
 extern "C" ssize_t read(int descriptor, void* buffer, size_t count)
 {
     if (read_cap != 0 && count > read_cap) count = read_cap;
-    return static_cast<ssize_t>(::syscall(SYS_read, descriptor, buffer, count));
+    const auto result = static_cast<ssize_t>(::syscall(SYS_read, descriptor, buffer, count));
+    if (counting && result > 0) {
+        struct stat info {};
+        if (::fstat(descriptor, &info) == 0) {
+            counted_reads[info.st_ino] += static_cast<std::size_t>(result);
+        }
+    }
+    return result;
 }
 
 BOOST_FIXTURE_TEST_CASE(line_reads_match_string_rendering_at_every_chunk_edge, Scratch)
@@ -348,4 +360,24 @@ BOOST_FIXTURE_TEST_CASE(large_dense_file_stays_bounded_with_final_counts, Scratc
     BOOST_TEST(hex.output_truncated);
     BOOST_TEST(hex.text.size() <= 4096u);
     BOOST_TEST(hex.text.starts_with("\\x0A\\x0A"));
+}
+
+BOOST_FIXTURE_TEST_CASE(reads_scan_the_source_exactly_once, Scratch)
+{
+    const std::string text = std::string(400000, 'a') + "\r\n" + std::string(200000, 'b');
+    const auto path = write(text);
+    struct stat source {};
+    BOOST_REQUIRE(::stat(path.c_str(), &source) == 0);
+    counted_reads.clear();
+    counting = true;
+    const auto lines = textedit::read_file_lines_bounded(
+        path, 0, 3, textedit::LineReadFormat::ByteRange, 4096, text.size() * 2);
+    const auto hex = textedit::read_file_bytes_bounded(
+        path, 5, 10, textedit::ByteReadFormat::HexEscaped, 40, text.size() * 2);
+    counting = false;
+    BOOST_TEST(lines.total_bytes == text.size());
+    BOOST_TEST(hex.total_bytes == text.size());
+    // Two calls, each one full scan of one file, and nothing else.
+    BOOST_TEST(counted_reads.size() == 1u);
+    BOOST_TEST(counted_reads[source.st_ino] == 2 * text.size());
 }

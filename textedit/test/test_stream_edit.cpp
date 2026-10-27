@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
@@ -22,6 +23,32 @@ namespace fs = std::filesystem;
 
 /// Maximum bytes one interposed read() returns; zero restores normal calls.
 std::size_t read_cap = 0;
+
+/// Bytes moved per inode while counting, to prove the scan budget.
+std::map<ino_t, std::size_t> counted_reads;
+std::map<ino_t, std::size_t> counted_writes;
+bool counting = false;
+
+void count_transfer(std::map<ino_t, std::size_t>& table, int descriptor, ssize_t bytes)
+{
+    if (!counting || bytes <= 0) return;
+    struct stat info {};
+    if (::fstat(descriptor, &info) != 0) return;
+    table[info.st_ino] += static_cast<std::size_t>(bytes);
+}
+
+/** Count every transfer for the duration of one library call. */
+struct Counting {
+    Counting()
+    {
+        counted_reads.clear();
+        counted_writes.clear();
+        counting = true;
+    }
+    ~Counting() { counting = false; }
+    Counting(const Counting&) = delete;
+    Counting& operator=(const Counting&) = delete;
+};
 
 /** Cap every read so terminators, scalars and matches cross chunk edges. */
 struct TinyReads {
@@ -214,7 +241,16 @@ std::vector<Case> cases()
 extern "C" ssize_t read(int descriptor, void* buffer, size_t count)
 {
     if (read_cap != 0 && count > read_cap) count = read_cap;
-    return static_cast<ssize_t>(::syscall(SYS_read, descriptor, buffer, count));
+    const auto result = static_cast<ssize_t>(::syscall(SYS_read, descriptor, buffer, count));
+    count_transfer(counted_reads, descriptor, result);
+    return result;
+}
+
+extern "C" ssize_t write(int descriptor, const void* buffer, size_t count)
+{
+    const auto result = static_cast<ssize_t>(::syscall(SYS_write, descriptor, buffer, count));
+    count_transfer(counted_writes, descriptor, result);
+    return result;
 }
 
 BOOST_FIXTURE_TEST_CASE(file_edits_match_in_memory_planning_at_every_chunk_edge, Scratch)
@@ -296,5 +332,53 @@ BOOST_FIXTURE_TEST_CASE(unsafe_targets_and_limits_are_rejected_without_writing, 
         path, "old", "new", 3,
         std::numeric_limits<std::size_t>::max()), std::invalid_argument);
     BOOST_TEST(read(path) == "old");
+    no_temporary_files();
+}
+
+BOOST_FIXTURE_TEST_CASE(successful_edit_keeps_the_documented_scan_budget, Scratch)
+{
+    const std::string text = std::string(300000, 'a') + "needle" + std::string(150000, 'b');
+    const auto path = write(text);
+    struct stat source {};
+    BOOST_REQUIRE(::stat(path.c_str(), &source) == 0);
+    textedit::EditResult result;
+    {
+        Counting counted;
+        result = textedit::str_replace_file(path, "needle", "REPLACED", 3);
+    }
+    BOOST_REQUIRE(result.status == textedit::EditStatus::Modified);
+    const auto edited_bytes = text.size() - 6 + 8;
+    // Two source reads (scan + verification), one candidate read and one
+    // candidate write; no hidden snapshot or preview pass.
+    BOOST_TEST(counted_reads.size() == 2u);
+    BOOST_TEST(counted_writes.size() == 1u);
+    BOOST_TEST(counted_reads[source.st_ino] == 2 * text.size());
+    const auto candidate = counted_writes.begin()->first;
+    BOOST_TEST(counted_writes[candidate] == edited_bytes);
+    BOOST_TEST(counted_reads[candidate] == edited_bytes);
+    BOOST_TEST(read(path).size() == edited_bytes);
+}
+
+BOOST_FIXTURE_TEST_CASE(failed_matches_stop_reading_and_never_write_the_target, Scratch)
+{
+    const auto path = write("one\ntwo\n");
+    struct stat source {};
+    BOOST_REQUIRE(::stat(path.c_str(), &source) == 0);
+    textedit::EditResult result;
+    {
+        Counting counted;
+        result = textedit::str_replace_file(path, "absent", "x", 3);
+        BOOST_CHECK(result.status == textedit::EditStatus::NotFound);
+        // A missing match still scans the source once, but writes nothing.
+        BOOST_TEST(counted_writes.empty());
+        BOOST_TEST(counted_reads[source.st_ino] == 8u);
+    }
+    {
+        Counting counted;
+        const auto ambiguous = textedit::str_replace_file(path, "o", "0", 3);
+        BOOST_CHECK(ambiguous.status == textedit::EditStatus::Ambiguous);
+        BOOST_TEST(counted_writes.empty());
+    }
+    BOOST_TEST(read(path) == "one\ntwo\n");
     no_temporary_files();
 }
