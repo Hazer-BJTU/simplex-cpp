@@ -213,7 +213,13 @@ inline void PreviewSide::focus_windows(
         const auto middle_bytes = row.start < match_byte ? position_->length : 0;
         append(prefix, prefix_bytes);
         append(middle.substr(std::min(middle_from, middle.size())), middle_bytes);
-        append(suffix_head, middle_bytes + middle.size());
+        // For a row that starts after the match, middle.substr(middle_from)
+        // begins at row offset 0, so the suffix starts at the remaining length
+        // of middle rather than at its full size.
+        const auto suffix_offset = row.start < match_byte
+            ? middle_bytes + middle.size()
+            : middle.size() - middle_from;
+        append(suffix_head, suffix_offset);
         return text;
     };
     for (auto* rows : {&rows_.head, &rows_.tail}) {

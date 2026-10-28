@@ -200,6 +200,12 @@ std::vector<Case> cases()
     std::string long_span = "head\n";
     for (int line = 0; line < 100; ++line) long_span += "block\n";
     long_span += "tail\n";
+    // A unique match whose last changed row starts after match_byte and
+    // continues into a long suffix. The focus window must map both pieces
+    // relative to the row start, not to the full changed span.
+    std::string long_row_old = std::string(199, 'a') + "\n" + std::string(300, 'b');
+    std::string long_row_text = "P" + long_row_old + std::string(600, 'c');
+    std::string long_row_new = std::string(199, 'd') + "\n" + std::string(300, 'e');
     return {
         {"", "a", "b"},
         {"a", "a", "b"},
@@ -214,6 +220,10 @@ std::vector<Case> cases()
         {"a\xc2\x85old\xc2\x85", "old", "new"},
         {std::string("\x80\x80old\x80", 9), "old", "\xef\xbf\xbd"},
         {long_line, "needle", "REPLACED"},
+        // A long last changed row that starts after the match and continues
+        // into a long suffix: both excerpt windows must slice the suffix from
+        // the row-relative middle end, not from the full span size.
+        {long_row_text, long_row_old, long_row_new},
         // Unchanged long row: the focus window must come from the preview pass.
         {long_line, "needle", "needle"},
         {long_line, long_line.substr(100, 300), "short"},
