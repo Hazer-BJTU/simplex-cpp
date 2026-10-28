@@ -1,0 +1,352 @@
+/**
+ * @file protocol/manifest.cpp
+ * @brief Registry walk, manifest document and canonical fingerprint.
+ *
+ * The fingerprint is computed over a document that contains no explanatory
+ * prose, no build metadata, no paths and no project version. Two builds of the
+ * same descriptors therefore agree, and a comment edit cannot look like a
+ * contract change. Regenerating the committed artifact is a build step, never a
+ * hand edit.
+ */
+
+#include "protocol/manifest.hpp"
+
+#include <openssl/evp.h>
+
+#include <algorithm>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace protocol {
+
+namespace {
+
+const char* kind_name(Kind kind) {
+    switch (kind) {
+        case Kind::text: return "text";
+        case Kind::integer: return "integer";
+        case Kind::boolean: return "boolean";
+        case Kind::any: return "any";
+        case Kind::enumeration: return "enumeration";
+        case Kind::record: return "record";
+        case Kind::records: return "records";
+        case Kind::texts: return "texts";
+    }
+    return "any";
+}
+
+/** Structure of one field; explanations are deliberately absent. */
+Json canonical_field(const FieldView& field) {
+    Json entry = Json::object();
+    entry["kind"] = kind_name(field.kind);
+    entry["name"] = field.name;
+    entry["required"] = field.required;
+    if (field.nullable) {
+        entry["nullable"] = true;
+    }
+    if (field.enumeration != nullptr) {
+        entry["enumeration"] = field.enumeration->name;
+    }
+    if (field.record != nullptr) {
+        entry["record"] = field.record->name;
+    }
+    return entry;
+}
+
+/** Published field: the structural entry plus its English explanation. */
+Json described_field(const FieldView& field) {
+    Json entry = canonical_field(field);
+    entry["summary"] = field.summary;
+    return entry;
+}
+
+Json enum_entry(const EnumDescriptor& descriptor, bool described) {
+    Json entry = Json::object();
+    Json spellings = Json::array();
+    for (const auto spelling : descriptor.spellings) {
+        spellings.push_back(spelling);
+    }
+    entry["spellings"] = std::move(spellings);
+    if (described) {
+        entry["summary"] = "Closed vocabulary; every other spelling is rejected.";
+    }
+    return entry;
+}
+
+Json record_entry(const RecordDescriptor& descriptor, bool described) {
+    Json entry = Json::object();
+    Json fields = Json::array();
+    for (const auto& field : descriptor.fields()) {
+        fields.push_back(described ? described_field(field) : canonical_field(field));
+    }
+    entry["fields"] = std::move(fields);
+    if (described) {
+        entry["summary"] = descriptor.summary;
+        entry["unknown_fields"] = "ignore unless the record declares rejection";
+    }
+    return entry;
+}
+
+std::string enum_name_of(EventName event) {
+    return std::string(detail::enum_to(event, "event"));
+}
+
+Json event_entry(EventName event, const EventDataSpec& spec) {
+    Json entry = Json::object();
+    entry["data"] = spec.record->name;
+    entry["array"] = spec.array;
+    entry["name"] = enum_name_of(event);
+    return entry;
+}
+
+/** Structural document without prose, used for the fingerprint. */
+Json canonical_document() {
+    Json document = Json::object();
+    document["manifest_format"] = manifest_format;
+    document["protocol"] = protocol_name;
+
+    Json records = Json::object();
+    for (const auto* descriptor : record_registry()) {
+        records[std::string(descriptor->name)] = record_entry(*descriptor, false);
+    }
+    document["records"] = std::move(records);
+
+    Json enums = Json::object();
+    for (const auto* descriptor : enum_registry()) {
+        enums[std::string(descriptor->name)] = enum_entry(*descriptor, false);
+    }
+    document["enumerations"] = std::move(enums);
+
+    Json events = Json::object();
+    for (const auto& spec : event_data_registry()) {
+        events[enum_name_of(spec.event)] = event_entry(spec.event, spec);
+    }
+    document["events"] = std::move(events);
+
+    Json messages = Json::array();
+    for (const auto& spec : message_registry()) {
+        messages.push_back(Json{{"family", spec.family}, {"record", spec.record->name}});
+    }
+    document["messages"] = std::move(messages);
+    return document;
+}
+
+} // namespace
+
+std::span<const RecordDescriptor* const> record_registry() {
+    static const RecordDescriptor* const records[] = {
+        &describe_record<Content>(),
+        &describe_record<Usage>(),
+        &describe_record<AnswerSource>(),
+        &describe_record<ExecutionIdentity>(),
+        &describe_record<Call>(),
+        &describe_record<Result>(),
+        &describe_record<Message>(),
+        &describe_record<ConfirmationOptions>(),
+        &describe_record<Options>(),
+        &describe_record<OptionChoice>(),
+        &describe_record<OptionCategory>(),
+        &describe_record<OptionsData>(),
+        &describe_record<EventQueue>(),
+        &describe_record<MemoryRetention>(),
+        &describe_record<AutoCompact>(),
+        &describe_record<LoopProgress>(),
+        &describe_record<StatusData>(),
+        &describe_record<PayloadRequest>(),
+        &describe_record<SignalRequest>(),
+        &describe_record<ConfirmationRequest>(),
+        &describe_record<ConfirmationResponse>(),
+        &describe_record<ToolError>(),
+        &describe_record<ToolRequest>(),
+        &describe_record<ToolResponse>(),
+        &describe_record<HistoryStep>(),
+        &describe_record<HistoryTurn>(),
+        &describe_record<HistoryPage>(),
+        &describe_record<AnswerPage>(),
+        &describe_record<EmptyData>(),
+        &describe_record<QueryErrorData>(),
+        &describe_record<InputAdmittedData>(),
+        &describe_record<InputRejectedData>(),
+        &describe_record<ArchiveRef>(),
+        &describe_record<ArchiveCleanup>(),
+        &describe_record<CompactFinishedData>(),
+        &describe_record<PersistedData>(),
+        &describe_record<ExportErrorData>(),
+        &describe_record<FailureData>(),
+        &describe_record<RunOutcomeData>(),
+        &describe_record<ErrorData>(),
+        &describe_record<OmissionMarker>(),
+        &describe_record<EventEnvelope>(),
+        &describe_record<PayloadEnvelope>(),
+        &describe_record<SignalEnvelope>(),
+        &describe_record<ConfirmationRequestEnvelope>(),
+        &describe_record<ConfirmationResponseEnvelope>(),
+        &describe_record<ToolRequestEnvelope>(),
+        &describe_record<ToolResponseEnvelope>(),
+    };
+    return records;
+}
+
+std::span<const EnumDescriptor* const> enum_registry() {
+    static const EnumDescriptor* const enums[] = {
+        &describe_enum<EnvelopeType>(),
+        &describe_enum<InputOperation>(),
+        &describe_enum<SignalOperation>(),
+        &describe_enum<ContentType>(),
+        &describe_enum<Modality>(),
+        &describe_enum<MessageType>(),
+        &describe_enum<CallScheduling>(),
+        &describe_enum<CallSecurity>(),
+        &describe_enum<ConfirmationMode>(),
+        &describe_enum<ConfirmationDecision>(),
+        &describe_enum<EventName>(),
+        &describe_enum<LoopStatus>(),
+        &describe_enum<LoopPhase>(),
+        &describe_enum<RunStatus>(),
+        &describe_enum<PersistBoundary>(),
+        &describe_enum<StorageKind>(),
+        &describe_enum<RejectionCode>(),
+        &describe_enum<FailureStage>(),
+        &describe_enum<ToolStatus>(),
+        &describe_enum<ToolErrorCode>(),
+    };
+    return enums;
+}
+
+Json schema_type(const FieldView& field) {
+    Json type = Json::object();
+    switch (field.kind) {
+        case Kind::text:
+            type = Json{{"type", "string"}};
+            break;
+        case Kind::integer:
+            type = Json{{"type", "integer"}, {"minimum", 0}};
+            break;
+        case Kind::boolean:
+            type = Json{{"type", "boolean"}};
+            break;
+        case Kind::any:
+            // An open extension point: described in prose, not constrained here.
+            type = Json::object();
+            break;
+        case Kind::enumeration:
+            type = Json{{"$ref", std::string("#/$defs/") + std::string(field.enumeration->name)}};
+            break;
+        case Kind::record:
+            type = Json{{"$ref", std::string("#/$defs/") + std::string(field.record->name)}};
+            break;
+        case Kind::records:
+            type = Json{{"type", "array"},
+                        {"items", Json{{"$ref", std::string("#/$defs/")
+                                                   + std::string(field.record->name)}}}};
+            break;
+        case Kind::texts:
+            type = Json{{"type", "array"}, {"items", Json{{"type", "string"}}}};
+            break;
+    }
+    if (field.nullable) {
+        return Json{{"anyOf", Json::array({type, Json{{"type", "null"}}})}};
+    }
+    return type;
+}
+
+Json canonical_contract() { return canonical_document(); }
+
+Json json_schema() {
+    Json definitions = Json::object();
+    for (const auto* descriptor : record_registry()) {
+        Json properties = Json::object();
+        Json required = Json::array();
+        for (const auto& field : descriptor->fields()) {
+            properties[std::string(field.name)] = schema_type(field);
+            if (field.required) {
+                required.push_back(field.name);
+            }
+        }
+        Json entry = Json{{"type", "object"},
+                          {"description", descriptor->summary},
+                          {"additionalProperties", true},
+                          {"properties", std::move(properties)}};
+        if (!required.empty()) {
+            entry["required"] = std::move(required);
+        }
+        definitions[std::string(descriptor->name)] = std::move(entry);
+    }
+    for (const auto* descriptor : enum_registry()) {
+        Json spellings = Json::array();
+        for (const auto spelling : descriptor->spellings) {
+            spellings.push_back(spelling);
+        }
+        definitions[std::string(descriptor->name)] =
+            Json{{"type", "string"}, {"enum", std::move(spellings)}};
+    }
+    return Json{{"$schema", "https://json-schema.org/draft/2020-12/schema"},
+                {"$id", "urn:simplex:worker-protocol"},
+                {"title", "Simplex worker protocol"},
+                {"description",
+                 "Generated from the compiled descriptors. Do not edit: regenerate with "
+                 "the protocol_manifest_export target."},
+                {"$defs", std::move(definitions)}};
+}
+
+Json manifest() {
+    Json document = canonical_document();
+    for (const auto* descriptor : record_registry()) {
+        Json& record = document["records"][std::string(descriptor->name)];
+        record["summary"] = descriptor->summary;
+        const auto views = descriptor->fields();
+        auto& fields = record["fields"];
+        for (std::size_t index = 0; index < views.size() && index < fields.size(); ++index) {
+            fields[index]["summary"] = views[index].summary;
+        }
+    }
+    document["json_schema"] = json_schema();
+    document["extension_policies"] = Json::array({
+        "extras, tool arguments, provider option values and route results are open JSON owned by "
+        "their provider, tool or plugin; the manifest describes their policy rather than their shape",
+        "unknown fields are ignored unless a record declares rejection",
+        "remote-tool routes are an open registry: the connection path names the route and no body "
+        "field overrides it",
+        "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
+        "the manifest describes built-in shapes only; it is not a claim that a configured provider "
+        "or plugin capability is enabled",
+    });
+    document["fingerprint_scope"] = Json::array({
+        "certified: field names, kinds, presence, nullability, closed vocabularies, record "
+        "references, the event registry and the message registry",
+        "not certified: ordering and delivery guarantees, backpressure and admission policy, "
+        "cancellation and shutdown behaviour, confirmation deadlines, authorization and security "
+        "judgement, persistence atomicity, and every explanatory sentence",
+    });
+    document["fingerprint"] = fingerprint();
+    return document;
+}
+
+std::string fingerprint() {
+    const std::string canonical = canonical_contract().dump();
+
+    using Context = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
+    Context context(EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+    if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1
+        || EVP_DigestUpdate(context.get(), canonical.data(), canonical.size()) != 1) {
+        throw std::runtime_error("cannot initialize the protocol fingerprint");
+    }
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int size = 0;
+    if (EVP_DigestFinal_ex(context.get(), digest, &size) != 1) {
+        throw std::runtime_error("cannot finish the protocol fingerprint");
+    }
+    constexpr char hex[] = "0123456789abcdef";
+    std::string text;
+    text.reserve(size * 2);
+    for (unsigned int index = 0; index < size; ++index) {
+        text.push_back(hex[digest[index] >> 4]);
+        text.push_back(hex[digest[index] & 0x0f]);
+    }
+    return text;
+}
+
+} // namespace protocol

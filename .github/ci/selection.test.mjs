@@ -5,8 +5,8 @@ import { checkResults } from './gate.mjs';
 
 const nativeTrees = [
     'core', 'dataclass', 'endpoint', 'extensions', 'intercom', 'io', 'llm', 'load',
-    'manager', 'loop', 'persistence', 'process', 'process_io', 'textedit', 'tools',
-    'utils', 'versioning', 'third_party',
+    'manager', 'loop', 'persistence', 'process', 'process_io', 'protocol', 'textedit',
+    'tools', 'utils', 'versioning', 'third_party',
 ];
 for (const tree of nativeTrees) {
     test(`${tree}: source, docs and runtime resources select the complete chain`, () => {
