@@ -277,7 +277,7 @@
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "fefaddc1fbb517e5bc850e64e8c708fa1dcbffcaf0aa9ed2f44b0e61fe16f1f9",
+  "fingerprint": "6ba6a64e3e35fa2c6ac2942a4572705a7b963966a8728894a655e058499387ca",
   "fingerprint_scope": [
     "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
     "not certified: ordering and delivery guarantees, backpressure and admission policy, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
@@ -456,7 +456,14 @@
         "additionalProperties": true,
         "description": "A proposed tool call. Arguments are tool-owned; the classifications are not.",
         "properties": {
-          "arguments": {},
+          "arguments": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
           "extras": {},
           "id": {
             "type": "string"
@@ -1556,9 +1563,7 @@
             "minimum": 0,
             "type": "integer"
           },
-          "invokes": {
-            "minItems": 1
-          },
+          "invokes": {},
           "omitted_parts": {
             "minimum": 0,
             "type": "integer"
@@ -2215,8 +2220,9 @@
         {
           "kind": "any",
           "name": "arguments",
+          "nullable": true,
           "required": true,
-          "summary": "Tool-specific arguments, normally an object."
+          "summary": "Tool-specific arguments as proposed; open JSON, including null. Execution validation belongs to the tool, not to a display projection."
         },
         {
           "enumeration": "CallScheduling",
@@ -3482,9 +3488,8 @@
         {
           "kind": "any",
           "name": "invokes",
-          "non_empty": true,
           "required": false,
-          "summary": "Array of Call, optionally ending in an omission marker; see parse_batch()."
+          "summary": "Array of Call, optionally ending in an omission marker; see parse_batch(). An engaged but empty array is a legitimate projection."
         }
       ],
       "summary": "A committed response as displayed: bounded content with its cursor fields. Exact text is read through answer pages.",

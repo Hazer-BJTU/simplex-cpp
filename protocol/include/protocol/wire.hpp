@@ -442,7 +442,10 @@ struct Call {
         return std::tuple{
             text("id", &Call::id, "Call identity used to correlate its result."),
             text("name", &Call::name, "Tool name."),
-            opaque("arguments", &Call::arguments, "Tool-specific arguments, normally an object."),
+            opaque("arguments", &Call::arguments,
+                   "Tool-specific arguments as proposed; open JSON, including null. Execution "
+                   "validation belongs to the tool, not to a display projection.")
+                .nullable_value(),
             enumeration<CallScheduling>("type", &Call::type,
                                         "Scheduling classification; parall_write is the exact spelling."),
             enumeration<CallSecurity>("security", &Call::security,
@@ -543,8 +546,8 @@ struct ResponseProjection {
             record<Usage>("cost", &ResponseProjection::cost,
                           "Provider-reported usage; absence means unavailable, not zero."),
             opaque("invokes", &ResponseProjection::invokes,
-                   "Array of Call, optionally ending in an omission marker; see parse_batch().")
-                .non_empty(),
+                   "Array of Call, optionally ending in an omission marker; see parse_batch(). "
+                   "An engaged but empty array is a legitimate projection."),
         };
     }
 };

@@ -299,6 +299,25 @@ BOOST_AUTO_TEST_CASE(producer_shapes_validate_without_loss) {
     envelope.data = many;
     BOOST_CHECK_NO_THROW(validate_event_data(envelope));
 
+    // An engaged but empty call array is what an empty invoke list projects to.
+    Json empty_calls = response_projection();
+    empty_calls["invokes"] = Json::array();
+    empty_calls["tool_calls"] = 0;
+    envelope.data = empty_calls;
+    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
+
+    // A model can propose null arguments; the projection must survive that.
+    Json null_arguments = response_projection();
+    null_arguments["invokes"] = Json::array({Json{{"id", "call-1"}, {"name", "read_text"},
+                                                  {"type", "read_only"},
+                                                  {"security", "default_deny"},
+                                                  {"arguments", nullptr}}});
+    envelope.data = null_arguments;
+    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
+    const auto parsed = protocol::from_json<ResponseProjection>(null_arguments);
+    BOOST_TEST(parsed.invokes->at(0).at("arguments").is_null());
+    BOOST_TEST(protocol::to_json(parsed)["invokes"].at(0).at("arguments").is_null());
+
     // An oversized summary travels as an omission object.
     envelope.event = EventName::compact_finished;
     envelope.data = Json{{"summary", Json{{"display_omitted", true},
