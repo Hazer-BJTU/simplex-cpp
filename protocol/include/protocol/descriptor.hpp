@@ -96,6 +96,8 @@ struct Rule {
     std::string_view when_equals;
     std::span<const std::string_view> requires_fields;
     std::span<const std::string_view> forbids_fields;
+    /** True when this scope rejects every field it does not name. */
+    bool closed = false;
 };
 
 struct RecordDescriptor;

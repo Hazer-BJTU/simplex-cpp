@@ -868,6 +868,8 @@ struct PayloadRequest {
     }
     friend std::span<const Rule> wire_rules(const PayloadRequest&);
     friend std::span<const std::string_view> wire_forbidden_fields(const PayloadRequest&);
+    friend bool wire_ignored_field(const PayloadRequest& request, std::string_view name);
+    friend bool wire_reject_unknown(const PayloadRequest& request);
 };
 
 /** One control signal. Signals have no request ID of their own. */

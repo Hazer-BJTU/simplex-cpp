@@ -277,7 +277,7 @@
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "17907c2057a2f47c64cc43eabe86c3c96f75e0c303e2e24d4af61ff5567902e7",
+  "fingerprint": "1b9c416d850e47464d49d15a8d48c0aa6e64b659a7b6563bc3c3b299927f53fc",
   "fingerprint_scope": [
     "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
     "not certified: ordering and delivery guarantees, backpressure and admission policy, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
@@ -355,8 +355,10 @@
             "type": "string"
           },
           "fingerprint": {
-            "minLength": 1,
-            "type": "string"
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "min": 1
+            }
           },
           "step": {
             "minimum": 0,
@@ -1251,18 +1253,20 @@
         "type": "object"
       },
       "Options": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "description": "Optional payload categories applied at the next run boundary; unknown categories are rejected.",
         "properties": {
           "confirmation": {
             "$ref": "#/$defs/ConfirmationOptions"
           },
           "model": {
-            "additionalProperties": true
+            "additionalProperties": true,
+            "type": "object"
           },
           "tools": {
             "additionalProperties": false,
-            "maxProperties": 0
+            "maxProperties": 0,
+            "type": "object"
           }
         },
         "type": "object"
@@ -1303,7 +1307,176 @@
       },
       "PayloadRequest": {
         "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "message"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "required": [
+                "content"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "continue"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "content"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "compact"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "content"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "history"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "content"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "options"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "answer"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "additionalProperties": false,
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "content"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "options"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "start"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "step"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "limit"
+                    ]
+                  }
+                ]
+              },
+              "required": [
+                "source"
+              ]
+            }
+          }
+        ],
         "description": "A message, continuation, compaction, history query or answer query; the operation decides which fields are required.",
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "role"
+              ]
+            },
+            {
+              "required": [
+                "invokes"
+              ]
+            },
+            {
+              "required": [
+                "invoke_return"
+              ]
+            },
+            {
+              "required": [
+                "type"
+              ]
+            },
+            {
+              "required": [
+                "text"
+              ]
+            }
+          ]
+        },
         "properties": {
           "content": {
             "items": {
@@ -1313,11 +1486,13 @@
             "type": "array"
           },
           "limit": {
+            "default": 10,
             "maximum": 10,
             "minimum": 1,
             "type": "integer"
           },
           "offset": {
+            "default": 0,
             "minimum": 0,
             "type": "integer"
           },
@@ -1328,22 +1503,27 @@
             "$ref": "#/$defs/Options"
           },
           "part": {
+            "default": 0,
             "minimum": 0,
             "type": "integer"
           },
           "request_id": {
-            "maxLength": 128,
-            "minLength": 1,
-            "type": "string"
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "max": 128,
+              "min": 1
+            }
           },
           "source": {
             "$ref": "#/$defs/AnswerSource"
           },
           "start": {
+            "default": 0,
             "minimum": 0,
             "type": "integer"
           },
           "step": {
+            "default": 0,
             "minimum": 0,
             "type": "integer"
           }
@@ -1400,8 +1580,17 @@
         "type": "object"
       },
       "PlanReadArguments": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "description": "Arguments of plan/read: the operation is the literal read.",
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "markdown"
+              ]
+            }
+          ]
+        },
         "properties": {
           "operation": {
             "const": "read",
@@ -1443,12 +1632,14 @@
         "type": "object"
       },
       "PlanReplaceArguments": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "description": "Arguments of plan/replace: replace plus at most 64 KiB of markdown.",
         "properties": {
           "markdown": {
-            "maxLength": 65536,
-            "type": "string"
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "max": 65536
+            }
           },
           "operation": {
             "const": "replace",
@@ -1524,14 +1715,17 @@
         "description": "One admitted user part. raw must be nonempty and extras, when present, an object.",
         "properties": {
           "extras": {
-            "additionalProperties": true
+            "additionalProperties": true,
+            "type": "object"
           },
           "modality": {
             "$ref": "#/$defs/Modality"
           },
           "raw": {
-            "minLength": 1,
-            "type": "string"
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "min": 1
+            }
           },
           "type": {
             "$ref": "#/$defs/ContentType"
@@ -1708,6 +1902,94 @@
       },
       "SignalRequest": {
         "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "cancel"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "required": [
+                "run_id"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "status"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "run_id"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "options"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "run_id"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "shutdown"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "run_id"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ],
         "description": "Control signal; additional fields are ignored and no request ID is echoed.",
         "properties": {
           "operation": {
@@ -3240,7 +3522,10 @@
         {
           "forbids": [
             "content",
-            "options"
+            "options",
+            "start",
+            "step",
+            "limit"
           ],
           "requires": [
             "source"

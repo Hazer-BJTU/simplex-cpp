@@ -155,6 +155,19 @@ BOOST_AUTO_TEST_CASE(payload_acceptance_matches_the_worker_boundary) {
         BOOST_TEST(rejects_payload(polluted));
     }
 
+    // Accepted: fields that belong to another operation are ignored, whatever
+    // their JSON type is; the worker never type-checks them for a message.
+    Json ignored = message_payload();
+    ignored["limit"] = 0;
+    ignored["start"] = "ignored";
+    ignored["source"] = Json::object();
+    BOOST_CHECK_NO_THROW(protocol::from_json<PayloadRequest>(ignored));
+
+    // Rejected: an answer query has a closed field set.
+    Json closed = Json{{"operation", "answer"}, {"request_id", "a"},
+                       {"source", source_json()}, {"unexpected", true}};
+    BOOST_TEST(rejects_payload(closed));
+
     // Rejected: an unknown or non-empty reserved options category.
     Json unknown_category = message_payload();
     unknown_category["options"] = Json{{"unknown", Json::object()}};

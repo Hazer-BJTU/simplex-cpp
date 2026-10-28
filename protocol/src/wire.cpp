@@ -51,14 +51,15 @@ void reject_fields(const PayloadRequest& request, std::string_view operation,
 std::span<const Rule> wire_rules(const PayloadRequest&) {
     static const std::array<std::string_view, 1> content{"content"};
     static const std::array<std::string_view, 2> history_forbidden{"content", "options"};
-    static const std::array<std::string_view, 2> answer_forbidden{"content", "options"};
+    static const std::array<std::string_view, 5> answer_forbidden{"content", "options", "start",
+                                                                  "step", "limit"};
     static const std::array<std::string_view, 1> source{"source"};
     static const Rule table[] = {
         {"operation", "message", content, {}},
         {"operation", "continue", {}, content},
         {"operation", "compact", {}, content},
         {"operation", "history", {}, history_forbidden},
-        {"operation", "answer", source, answer_forbidden},
+        {"operation", "answer", source, answer_forbidden, true},
     };
     return table;
 }
@@ -69,6 +70,30 @@ std::span<const std::string_view> wire_forbidden_fields(const PayloadRequest&) {
     static const std::array<std::string_view, 5> forbidden{
         "role", "invokes", "invoke_return", "type", "text"};
     return forbidden;
+}
+
+bool wire_ignored_field(const PayloadRequest& request, std::string_view name) {
+    // The worker parses a payload per operation and ignores the cursors that
+    // belong to another one, whatever their JSON type happens to be.
+    const bool cursor = name == "start" || name == "step" || name == "limit";
+    const bool answer_only = name == "source" || name == "part" || name == "offset";
+    switch (request.operation) {
+        case InputOperation::message:
+        case InputOperation::continue_request:
+        case InputOperation::compact:
+            return cursor || answer_only;
+        case InputOperation::history:
+            return answer_only;
+        case InputOperation::answer:
+            return false;
+    }
+    return false;
+}
+
+bool wire_reject_unknown(const PayloadRequest& request) {
+    // An answer query has a closed field set; the other operations tolerate
+    // fields that do not belong to them.
+    return request.operation == InputOperation::answer;
 }
 
 std::span<const Rule> wire_rules(const SignalRequest&) {

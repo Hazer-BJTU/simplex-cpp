@@ -292,8 +292,11 @@ Json schema_type(const FieldView& field) {
             type = Json{{"type", "boolean"}};
             break;
         case Kind::any:
-            // An open extension point: described in prose, not constrained here.
-            type = Json::object();
+            // An open extension point. Constraints that do pin its container
+            // kind still apply, and the schema has to say so.
+            type = (constraints.object_only || constraints.empty_object)
+                ? Json{{"type", "object"}}
+                : Json::object();
             break;
         case Kind::enumeration:
             type = Json{{"$ref", std::string("#/$defs/") + std::string(field.enumeration->name)}};
@@ -313,8 +316,15 @@ Json schema_type(const FieldView& field) {
     if (constraints.constant != nullptr) {
         type["const"] = constraints.constant;
     }
-    if (constraints.min_length) type["minLength"] = *constraints.min_length;
-    if (constraints.max_length) type["maxLength"] = *constraints.max_length;
+    // Lengths are UTF-8 bytes, not characters: JSON Schema `maxLength` counts
+    // code points, so publishing it here would accept a 129-byte identifier of
+    // 43 multibyte characters. The byte limits travel as annotations instead.
+    if (constraints.min_length || constraints.max_length) {
+        Json bytes = Json::object();
+        if (constraints.min_length) bytes["min"] = *constraints.min_length;
+        if (constraints.max_length) bytes["max"] = *constraints.max_length;
+        type["x-simplex-utf8-bytes"] = std::move(bytes);
+    }
     if (constraints.minimum) type["minimum"] = *constraints.minimum;
     if (constraints.maximum) type["maximum"] = *constraints.maximum;
     if (constraints.non_empty) type["minItems"] = 1;
@@ -339,14 +349,54 @@ Json json_schema() {
         Json required = Json::array();
         for (const auto& field : descriptor->fields()) {
             properties[std::string(field.name)] = schema_type(field);
+            if (!field.default_json.empty()) {
+                properties[std::string(field.name)]["default"] =
+                    Json::parse(field.default_json);
+            }
             if (field.required) {
                 required.push_back(field.name);
             }
         }
+        const bool closed = descriptor->unknown != nullptr
+            && descriptor->unknown() == UnknownFields::reject;
         Json entry = Json{{"type", "object"},
                           {"description", descriptor->summary},
-                          {"additionalProperties", true},
+                          {"additionalProperties", !closed},
                           {"properties", std::move(properties)}};
+        Json forbidden = Json::array();
+        for (const auto name : descriptor->forbidden()) {
+            forbidden.push_back(Json{{"required", Json::array({name})}});
+        }
+        if (!forbidden.empty()) {
+            entry["not"] = Json{{"anyOf", std::move(forbidden)}};
+        }
+        Json conditions = Json::array();
+        for (const auto& rule : descriptor->rules()) {
+            Json then = Json::object();
+            if (!rule.requires_fields.empty()) {
+                Json required = Json::array();
+                for (const auto name : rule.requires_fields) required.push_back(name);
+                then["required"] = std::move(required);
+            }
+            if (!rule.forbids_fields.empty()) {
+                Json forbidden_here = Json::array();
+                for (const auto name : rule.forbids_fields) {
+                    forbidden_here.push_back(Json{{"required", Json::array({name})}});
+                }
+                then["not"] = Json{{"anyOf", std::move(forbidden_here)}};
+            }
+            if (rule.closed) {
+                then["additionalProperties"] = false;
+            }
+            conditions.push_back(Json{
+                {"if", Json{{"properties", Json{{std::string(rule.when_field),
+                                                  Json{{"const", rule.when_equals}}}}},
+                             {"required", Json::array({rule.when_field})}}},
+                {"then", std::move(then)}});
+        }
+        if (!conditions.empty()) {
+            entry["allOf"] = std::move(conditions);
+        }
         if (!required.empty()) {
             entry["required"] = std::move(required);
         }

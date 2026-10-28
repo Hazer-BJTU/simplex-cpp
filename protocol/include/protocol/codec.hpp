@@ -86,6 +86,24 @@ bool rule_matches(const R& record, const Rule& rule);
 template <class R>
 bool field_present(const R& record, std::string_view name);
 
+/** True when this instance does not parse a field at all (operation scope). */
+template <class R>
+bool ignored_field(const R& record, std::string_view name) {
+    if constexpr (requires { wire_ignored_field(record, name); }) {
+        return wire_ignored_field(record, name);
+    }
+    return false;
+}
+
+/** True when this instance closes its field set (answer queries). */
+template <class R>
+bool closed_scope(const R& record) {
+    if constexpr (requires { wire_reject_unknown(record); }) {
+        return wire_reject_unknown(record);
+    }
+    return unknown_policy<R>() == UnknownFields::reject;
+}
+
 } // namespace detail
 
 /** Serialize one described record, omitting absent optional fields. */
@@ -135,7 +153,7 @@ R from_json(const Json& input, const std::string& path = {}) {
         }
     }
 
-    if (unknown_policy<R>() == UnknownFields::reject) {
+    if (detail::closed_scope(record)) {
         const auto& descriptor = describe_record<R>();
         for (const auto& [key, value] : input.items()) {
             const auto known = std::ranges::any_of(descriptor.fields(), [&](const FieldView& view) {
@@ -263,6 +281,9 @@ void decode_one(M& target, const Json& input, const std::string& path) {
 template <class R, class FieldType>
 void read_field(R& record, const Json& input, const FieldType& field, const std::string& path) {
     using Member = std::remove_cvref_t<decltype(record.*(field.member))>;
+    if (detail::ignored_field(record, field.name)) {
+        return;  // The owning operation ignores this field; do not even type-check it.
+    }
     const std::string name(field.name);
     const std::string here = detail::join_path(path, field.name);
     const auto found = input.find(name);

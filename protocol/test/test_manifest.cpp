@@ -209,8 +209,12 @@ BOOST_AUTO_TEST_CASE(schema_publishes_the_same_constraints) {
     BOOST_TEST(limit.at("maximum").get<std::uint64_t>() == 10);
     BOOST_TEST(limit.at("minimum").get<std::uint64_t>() == 1);
     const Json& request_id = request.at("properties").at("request_id");
-    BOOST_TEST(request_id.at("minLength").get<std::uint64_t>() == 1);
-    BOOST_TEST(request_id.at("maxLength").get<std::uint64_t>() == 128);
+    // UTF-8 byte limits are annotations: maxLength counts code points.
+    BOOST_TEST(request_id.at("x-simplex-utf8-bytes").at("min").get<std::uint64_t>() == 1);
+    BOOST_TEST(request_id.at("x-simplex-utf8-bytes").at("max").get<std::uint64_t>() == 128);
+    BOOST_TEST(!request_id.contains("maxLength"));
+    BOOST_TEST(request.at("properties").at("limit").at("default").get<std::uint64_t>() == 10);
+    BOOST_TEST(request.at("allOf").dump().find("content") != std::string::npos);
 
     const Json& envelope = schema.at("$defs").at("EventEnvelope").at("properties").at("type");
     BOOST_TEST(envelope.at("const").get<std::string>() == "event");
